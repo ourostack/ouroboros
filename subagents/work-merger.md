@@ -19,12 +19,16 @@ The branch follows the `<agent>/<slug>` convention (e.g., `ouroboros/context-ker
 
 Do not hardcode agent names. Derive `<agent>` from the branch at runtime.
 
+### 1a. Determine the project-defined task-doc directory
+
+Read project instructions (for example `AGENTS.md`) to determine where this repo keeps planning/doing docs. Set `TASK_DIR` to that project-defined location. Do not assume task docs live in the repo.
+
 ### 2. Find own doing doc
 
-The caller provides the doing doc path (e.g., `ouroboros/tasks/2026-03-03-1032-doing-sync-and-merge.md`). If not provided, find the most recent doing doc:
+The caller provides the doing doc path. If not provided, read project instructions (for example `AGENTS.md`) to find the project-defined task-doc directory, then find the most recent doing doc there:
 
 ```bash
-ls -t ${AGENT}/tasks/*-doing-*.md | head -1
+ls -t "${TASK_DIR}"/*-doing-*.md | head -1
 ```
 
 Read this doing doc to understand what was just implemented. You will need it for conflict resolution context.
@@ -134,35 +138,28 @@ You already have the path from On Startup. Read the doing doc to understand:
 - The objective, completion criteria, and unit descriptions
 - What files were changed and why
 
-### Step 2: Discover other agents' doing docs (git-informed)
+### Step 2: Gather incoming-main intent (git-informed)
 
-Find exactly which doing docs landed on main since this branch diverged. Do NOT scan by filename timestamps or guess -- use git history:
-
-```bash
-git log origin/main --not HEAD --name-only --diff-filter=A -- '*/tasks/*-doing-*.md'
-```
-
-This returns the paths of doing docs that were **added to main** after this branch's merge base. These are the docs from the other agent's completed work that caused the conflicts.
-
-If no doing docs are found with `--diff-filter=A` (added), also check for modifications:
+Do not assume task docs live in this repo. Instead, use git history and diffs to understand what landed on `main` since this branch diverged:
 
 ```bash
-git log origin/main --not HEAD --name-only --diff-filter=M -- '*/tasks/*-doing-*.md'
+git log origin/main --not HEAD --oneline
+git diff --name-only HEAD...origin/main
 ```
 
-**Why git-informed discovery matters:**
-- Timestamp-sorted filename scans can miss relevant docs or include irrelevant ones
-- Git history tells you exactly what landed on main since you branched
-- This is deterministic and correct regardless of doc naming or timing
+If a clearly relevant local task doc exists outside the repo (for example in another local bundle/worktree task directory), you may read it for extra context. Treat that as optional context, not a required precondition.
 
-### Step 3: Read discovered doing docs
+**Why this is the primary source of truth:**
+- Task docs may live outside the repo entirely
+- Git history tells you exactly what changed on `main` since you branched
+- This keeps work-merger generic instead of assuming one repo's task-doc layout
 
-For each doing doc found in Step 2, read it to understand:
-- What the other agent implemented
-- Their objective and completion criteria
-- Which files they changed and why
+### Step 3: Combine own task intent with incoming-main changes
 
-This gives you both intents: what your branch did, and what landed on main.
+Use:
+- your own doing doc as the source of truth for this branch's intent
+- incoming git commits/diffs as the source of truth for what landed on `main`
+- any optional local task docs only when they materially clarify a conflict
 
 ### Step 4: Resolve conflicts
 
@@ -182,7 +179,7 @@ With both intents understood, resolve each conflict:
 If the merge was syntactically clean but tests fail (Case B):
 
 1. Read the test failure output to identify which tests broke
-2. Cross-reference with both doing docs to understand the conflict
+2. Cross-reference with your doing doc plus the incoming git changes to understand the conflict
 3. Fix the code to satisfy both agents' intents
 4. Re-run tests: `npm test`
 5. Repeat until tests pass
@@ -204,7 +201,7 @@ git commit -m "fix: resolve semantic conflicts after merging main"
 npm test
 ```
 
-All tests must pass before proceeding to PR Workflow. If tests still fail after resolution, re-examine the doing docs and try again. If genuinely stuck after multiple attempts, escalate to the user (see **Escalation**).
+All tests must pass before proceeding to PR Workflow. If tests still fail after resolution, re-examine your doing doc, the incoming git changes, and any optional supporting task docs, then try again. If genuinely stuck after multiple attempts, escalate to the user (see **Escalation**).
 
 ---
 
@@ -227,20 +224,17 @@ git push --force-with-lease origin ${BRANCH}
 
 ### Step 2: Create the pull request
 
-Before creating the PR, build a comprehensive description of **all** changes on this branch relative to main — not just the most recent task. Use git to understand the full scope:
+Before creating the PR, build a comprehensive description of **all** changes on this branch relative to main — not just the most recent task. Use your doing doc plus git to understand the full scope:
 
 ```bash
 # All commits on this branch not on main
 git log origin/main..HEAD --oneline
 
-# All doing docs on this branch (completed tasks)
-git log origin/main..HEAD --name-only --diff-filter=A -- '*/tasks/*-doing-*.md'
-
 # Summary of all files changed
 git diff origin/main --stat
 ```
 
-Read each doing doc found above. The PR body should summarize every completed task on the branch, grouped logically. Include:
+Read the doing doc you are executing, plus any other explicitly provided task docs for this branch. The PR body should summarize every completed task on the branch, grouped logically when needed. Include:
 - A section per task (or group of related tasks) with a brief summary of what was implemented
 - A final "Files changed" summary (e.g., "164 files changed — new context kernel, codebase restructure, sync-and-merge system")
 

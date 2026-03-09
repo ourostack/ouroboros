@@ -23,7 +23,9 @@
 
 ### Agent Context (Required)
 
-Task docs go in `<agent>/tasks/` with naming scheme `YYYY-MM-DD-HHMM-{planning|doing}-<slug>.md`.
+Task docs go in `~/AgentBundles/<agent>.ouro/tasks/one-shots/` with naming scheme `YYYY-MM-DD-HHMM-{planning|doing}-<slug>.md`.
+Artifacts for a doing doc live adjacent to that doing doc in the same `one-shots/` directory.
+Do not create agent-specific task directories inside this repo.
 
 - Default `<agent>` from the current git branch using this shape: `<agent>[/<slug>]`.
   - The first path segment is always the agent name (e.g., `ouroboros`, `slugger`).
@@ -43,9 +45,9 @@ Task docs go in `<agent>/tasks/` with naming scheme `YYYY-MM-DD-HHMM-{planning|d
 ### Gate Flow
 
 0. **Branch**: Verify the current branch follows `<agent>/<slug>`. If on `main` or an ambiguous branch, STOP and create/switch to the correct branch before proceeding. This is always the first step — no planning, converting, or implementing without a proper branch.
-1. **Plan**: Launch `work-planner`. It produces/updates a planning doc under `<agent>/tasks/`.
+1. **Plan**: Launch `work-planner`. It produces/updates a planning doc under `~/AgentBundles/<agent>.ouro/tasks/one-shots/`.
 2. **Review**: Show the user the planning doc path and STOP. Wait for explicit user approval.
-3. **Convert**: Only after user approves the planning doc, re-run `work-planner` to convert to a doing doc in the same `<agent>/tasks/` directory. User must also review and sign off on the doing doc before implementation.
+3. **Convert**: Only after user approves the planning doc, re-run `work-planner` to convert to a doing doc in the same bundle `one-shots/` directory. User must also review and sign off on the doing doc before implementation.
 4. **Implement**: Only after user explicitly asks, launch `work-doer` to execute the doing doc. Never implement inside `work-planner`.
 5. **Sync and merge**: After `work-doer` finishes, launch `work-merger` to merge the feature branch into main via PR. It handles conflicts, CI, and race conditions autonomously.
 6. **Never self-approve**: Do not say "looks good" and proceed. The user reviews every planning and doing doc.
