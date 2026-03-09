@@ -63,6 +63,21 @@ function main() {
     process.exit(1)
   }
 
+  const changelogGateExit = spawnSync(process.execPath, [path.join(__dirname, "changelog-gate.cjs")], { stdio: "inherit" }).status ?? 1
+  if (changelogGateExit !== 0) {
+    const summary = {
+      overall_status: "fail",
+      lint: { status: "pass" },
+      changelog: { status: "fail" },
+      code_coverage: { status: "skip" },
+      nerves_coverage: { status: "skip" },
+      required_actions: [{ type: "changelog", target: "changelog.json", reason: "changelog gate failed -- add entry for current version" }],
+    }
+    writeJson(summaryPath, summary)
+    console.log(`coverage gate: fail (${summaryPath})`)
+    process.exit(1)
+  }
+
   const vitestExit = runNpm(["run", "test:coverage:vitest"]).status ?? 1
 
   if (existsSync(activePath)) {
