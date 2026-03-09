@@ -48,6 +48,41 @@ jobs:
             echo "No src/ changes detected — version bump not required"
           fi
 
+      - name: Build for wrapper publish guard (PRs only)
+        if: github.event_name == 'pull_request'
+        run: npm run build
+
+      - name: Check ouro.bot wrapper publish sync (PRs only)
+        if: github.event_name == 'pull_request'
+        run: |
+          node - <<'NODE'
+          const { execSync } = require('child_process')
+          const { assessWrapperPublishSync } = require('./dist/heart/daemon/wrapper-publish-guard.js')
+
+          const changedFiles = execSync(
+            'git diff --name-only "origin/${{ github.base_ref }}...HEAD" -- packages/ouro.bot/',
+            { encoding: 'utf-8' },
+          ).trim().split('\n').filter(Boolean)
+
+          const localVersion = require('./packages/ouro.bot/package.json').version
+          let publishedVersion = ''
+          try {
+            publishedVersion = execSync(`npm view "ouro.bot@${localVersion}" version`, {
+              encoding: 'utf-8',
+              stdio: ['ignore', 'pipe', 'ignore'],
+            }).trim()
+          } catch {
+            publishedVersion = ''
+          }
+
+          const result = assessWrapperPublishSync({ changedFiles, localVersion, publishedVersion })
+          if (!result.ok) {
+            console.error(`::error::${result.message}`)
+            process.exit(1)
+          }
+          console.log(result.message)
+          NODE
+
       - name: Upload Coverage Gate Artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -83,12 +118,44 @@ jobs:
       - name: Publish @ouro.bot/cli
         run: npm publish --access public --provenance --tag alpha
 
-      - name: Publish ouro.bot (if version is new)
+      - name: Build for wrapper publish guard
+        run: npm run build
+
+      - name: Publish ouro.bot (if wrapper sync passes)
         run: |
-          LOCAL=$(node -p "require('./packages/ouro.bot/package.json').version")
-          PUBLISHED=$(npm view "ouro.bot@${LOCAL}" version 2>/dev/null || echo "")
-          if [ "$LOCAL" = "$PUBLISHED" ]; then
-            echo "ouro.bot@${LOCAL} already published, skipping"
-          else
-            cd packages/ouro.bot && npm publish --access public --provenance --tag alpha
-          fi
+          node - <<'NODE'
+          const { execSync } = require('child_process')
+          const { assessWrapperPublishSync } = require('./dist/heart/daemon/wrapper-publish-guard.js')
+
+          const changedFiles = execSync(
+            'git diff-tree --no-commit-id --name-only -r HEAD -- packages/ouro.bot/',
+            { encoding: 'utf-8' },
+          ).trim().split('\n').filter(Boolean)
+
+          const localVersion = require('./packages/ouro.bot/package.json').version
+          let publishedVersion = ''
+          try {
+            publishedVersion = execSync(`npm view "ouro.bot@${localVersion}" version`, {
+              encoding: 'utf-8',
+              stdio: ['ignore', 'pipe', 'ignore'],
+            }).trim()
+          } catch {
+            publishedVersion = ''
+          }
+
+          const result = assessWrapperPublishSync({ changedFiles, localVersion, publishedVersion })
+          if (!result.ok) {
+            console.error(result.message)
+            process.exit(1)
+          }
+          if (changedFiles.length === 0) {
+            console.log('wrapper package unchanged')
+            process.exit(0)
+          }
+          if (publishedVersion === localVersion) {
+            console.log(`ouro.bot@${localVersion} already published, skipping`)
+            process.exit(0)
+          }
+          console.log(result.message)
+          NODE
+          cd packages/ouro.bot && npm publish --access public --provenance --tag latest
