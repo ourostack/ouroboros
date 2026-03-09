@@ -1,5 +1,6 @@
 import * as fs from "fs"
 import * as path from "path"
+import * as semver from "semver"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { BundleMeta } from "../../mind/bundle-manifest"
 
@@ -81,6 +82,17 @@ export async function applyPendingUpdates(bundlesRoot: string, currentVersion: s
         previousVersion = meta.runtimeVersion
 
         if (previousVersion === currentVersion) {
+          continue
+        }
+
+        // Skip downgrades — only update forward
+        if (semver.valid(previousVersion) && semver.valid(currentVersion) && semver.gte(previousVersion, currentVersion)) {
+          emitNervesEvent({
+            component: "daemon",
+            event: "daemon.update_hook_skip_downgrade",
+            message: "skipping downgrade",
+            meta: { agentRoot, previousVersion, currentVersion },
+          })
           continue
         }
       }

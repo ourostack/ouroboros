@@ -1181,10 +1181,12 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     const updateSummary = await applyPendingUpdates(bundlesRoot, currentVersion)
 
     if (updateSummary.updated.length > 0) {
-      for (const entry of updateSummary.updated) {
-        const from = entry.from ? ` (was ${entry.from})` : ""
-        deps.writeStdout(`updated ${entry.agent} to runtime ${entry.to}${from}`)
-      }
+      const agents = updateSummary.updated.map((e) => e.agent)
+      const from = updateSummary.updated[0].from
+      const to = updateSummary.updated[0].to
+      const fromStr = from ? ` (was ${from})` : ""
+      const count = agents.length
+      deps.writeStdout(`updated ${count} agent${count === 1 ? "" : "s"} to runtime ${to}${fromStr}`)
     }
 
     const daemonResult = await ensureDaemonRunning(deps)
