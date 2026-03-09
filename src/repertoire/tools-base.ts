@@ -47,6 +47,26 @@ export interface ToolDefinition {
 
 const postIt = (msg: string) => `post-it from past you:\n${msg}`;
 
+function normalizeOptionalText(value: unknown): string | null {
+  if (typeof value !== "string") return null
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+function buildTaskCreateInput(args: Record<string, string>) {
+  return {
+    title: args.title,
+    type: args.type,
+    category: args.category,
+    body: args.body,
+    status: normalizeOptionalText(args.status) ?? undefined,
+    validator: normalizeOptionalText(args.validator),
+    requester: normalizeOptionalText(args.requester),
+    cadence: normalizeOptionalText(args.cadence),
+    scheduledAt: normalizeOptionalText(args.scheduledAt),
+  }
+}
+
 export const baseToolDefinitions: ToolDefinition[] = [
   {
     tool: {
@@ -76,7 +96,11 @@ export const baseToolDefinitions: ToolDefinition[] = [
         },
       },
     },
-    handler: (a) => (fs.writeFileSync(a.path, a.content, "utf-8"), "ok"),
+    handler: (a) => {
+      fs.mkdirSync(path.dirname(a.path), { recursive: true })
+      fs.writeFileSync(a.path, a.content, "utf-8")
+      return "ok"
+    },
   },
   {
     tool: {
@@ -394,7 +418,8 @@ export const baseToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "task_create",
-        description: "create a new task in the bundle task system",
+        description:
+          "create a new task in the bundle task system. optionally set `scheduledAt` for a one-time reminder or `cadence` for recurring daemon-scheduled work.",
         parameters: {
           type: "object",
           properties: {
@@ -402,6 +427,11 @@ export const baseToolDefinitions: ToolDefinition[] = [
             type: { type: "string", enum: ["one-shot", "ongoing", "habit"] },
             category: { type: "string" },
             body: { type: "string" },
+            status: { type: "string" },
+            validator: { type: "string" },
+            requester: { type: "string" },
+            scheduledAt: { type: "string", description: "ISO timestamp for a one-time scheduled run/reminder" },
+            cadence: { type: "string", description: "recurrence like 30m, 1h, 1d, or cron" },
           },
           required: ["title", "type", "category", "body"],
         },
@@ -409,15 +439,52 @@ export const baseToolDefinitions: ToolDefinition[] = [
     },
     handler: (a) => {
       try {
-        const created = getTaskModule().createTask({
-          title: a.title,
-          type: a.type,
-          category: a.category,
-          body: a.body,
-        });
+        const created = getTaskModule().createTask(buildTaskCreateInput(a));
         return `created: ${created}`;
       } catch (error) {
         return `error: ${error instanceof Error ? error.message : String(error)}`;
+      }
+    },
+  },
+  {
+    tool: {
+      type: "function",
+      function: {
+        name: "schedule_reminder",
+        description:
+          "create a scheduled reminder or recurring daemon job. use `scheduledAt` for one-time reminders and `cadence` for recurring reminders. this writes canonical task fields that the daemon reconciles into OS-level jobs.",
+        parameters: {
+          type: "object",
+          properties: {
+            title: { type: "string" },
+            body: { type: "string" },
+            category: { type: "string" },
+            scheduledAt: { type: "string", description: "ISO timestamp for a one-time reminder" },
+            cadence: { type: "string", description: "recurrence like 30m, 1h, 1d, or cron" },
+          },
+          required: ["title", "body"],
+        },
+      },
+    },
+    handler: (a) => {
+      const scheduledAt = normalizeOptionalText(a.scheduledAt)
+      const cadence = normalizeOptionalText(a.cadence)
+      if (!scheduledAt && !cadence) {
+        return "error: provide scheduledAt or cadence"
+      }
+
+      try {
+        const created = getTaskModule().createTask({
+          title: a.title,
+          type: cadence ? "habit" : "one-shot",
+          category: normalizeOptionalText(a.category) ?? "reminder",
+          body: a.body,
+          scheduledAt,
+          cadence,
+        })
+        return `created: ${created}`
+      } catch (error) {
+        return `error: ${error instanceof Error ? error.message : String(error)}`
       }
     },
   },

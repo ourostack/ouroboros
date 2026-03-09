@@ -90,6 +90,70 @@ describe("task module", () => {
     expect(parsed.frontmatter.lastRun).toBeNull()
   })
 
+  it("persists scheduledAt and cadence metadata for scheduler reconciliation", async () => {
+    const tasks = await import("../../../repertoire/tasks")
+    const parser = await import("../../../repertoire/tasks/parser")
+    const module = tasks.getTaskModule()
+
+    const oneShotPath = module.createTask({
+      title: "Remind Ari",
+      type: "one-shot",
+      category: "reminder",
+      body: "Ping Ari about BB",
+      scheduledAt: "2026-03-10T17:00:00.000Z",
+    })
+
+    const habitPath = module.createTask({
+      title: "Heartbeat",
+      type: "habit",
+      category: "operations",
+      body: "Run heartbeat",
+      cadence: "30m",
+    })
+
+    const oneShot = parser.parseTaskFile(fs.readFileSync(oneShotPath, "utf-8"), oneShotPath)
+    const habit = parser.parseTaskFile(fs.readFileSync(habitPath, "utf-8"), habitPath)
+
+    expect(oneShot.frontmatter.scheduledAt).toBe("2026-03-10T17:00:00.000Z")
+    expect(oneShot.frontmatter.cadence).toBeNull()
+    expect(habit.frontmatter.cadence).toBe("30m")
+    expect(habit.frontmatter.scheduledAt).toBeNull()
+  })
+
+  it("links reminder task metadata to daemon scheduler jobs", async () => {
+    const parentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "task-module-scheduler-"))
+    removeDirSafe(agentRoot)
+    agentRoot = path.join(parentRoot, "slugger.ouro")
+    fs.mkdirSync(agentRoot, { recursive: true })
+
+    const tasks = await import("../../../repertoire/tasks")
+    const { TaskDrivenScheduler } = await import("../../../heart/daemon/task-scheduler")
+    const module = tasks.getTaskModule()
+
+    const created = module.createTask({
+      title: "Remind Ari",
+      type: "one-shot",
+      category: "reminder",
+      body: "Ping Ari about BB",
+      scheduledAt: "2026-03-10T17:00:00.000Z",
+    })
+
+    const stem = path.basename(created, ".md")
+    const scheduler = new TaskDrivenScheduler({
+      bundlesRoot: parentRoot,
+      agents: ["slugger"],
+    })
+
+    await scheduler.reconcile()
+
+    expect(scheduler.listJobs()).toEqual([
+      expect.objectContaining({
+        id: `slugger:${stem}:scheduledAt`,
+        schedule: "0 17 10 3 *",
+      }),
+    ])
+  })
+
   it("reuses singleton module instance and returns empty results for unknown board status", async () => {
     const tasks = await import("../../../repertoire/tasks")
     const first = tasks.getTaskModule()
