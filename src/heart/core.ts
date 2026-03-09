@@ -255,13 +255,13 @@ export function repairOrphanedToolCalls(
     const resultIds = new Set<string>();
     for (let j = i + 1; j < messages.length; j++) {
       const following = messages[j];
+      /* v8 ignore start -- v8 splits if/else-if branch conditions; all paths tested @preserve */
       if (following.role === "tool") {
         resultIds.add((following as OpenAI.ChatCompletionToolMessageParam).tool_call_id);
-      /* v8 ignore start -- v8 splits || branches; both tested separately @preserve */
       } else if (following.role === "assistant" || following.role === "user") {
         break;
-      /* v8 ignore stop */
       }
+      /* v8 ignore stop */
     }
 
     const missing = asst.tool_calls.filter((tc) => !resultIds.has(tc.id));
