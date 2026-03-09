@@ -81,13 +81,19 @@ export function createDebugActivityController(options: DebugActivityOptions): De
         textLength: text.length,
       },
     })
-    ensureTyping(true)
+    const shouldStartTyping = !typingActive
+    if (shouldStartTyping) {
+      typingActive = true
+    }
     enqueue("status_update", async () => {
       if (statusMessageGuid) {
         await options.transport.editStatus(statusMessageGuid, text)
-        return
+      } else {
+        statusMessageGuid = await options.transport.sendStatus(text)
       }
-      statusMessageGuid = await options.transport.sendStatus(text)
+      if (shouldStartTyping) {
+        await options.transport.setTyping(true)
+      }
     })
   }
 

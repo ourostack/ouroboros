@@ -380,6 +380,14 @@ export function setAgentConfigOverride(config: AgentConfig | null): void {
 }
 
 /**
+ * Clear only the cached agent config while preserving the resolved agent identity.
+ * Used when a running agent should pick up updated disk-backed config on the next turn.
+ */
+export function resetAgentConfigCache(): void {
+  _cachedAgentConfig = null
+}
+
+/**
  * Clear all cached identity state.
  * Used in tests and when switching agent context.
  */

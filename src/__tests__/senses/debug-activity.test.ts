@@ -114,8 +114,8 @@ describe("debug activity controller", () => {
     await controller.finish()
 
     expect(operations).toEqual([
-      "typing:true",
       "send:thinking...",
+      "typing:true",
       "edit:status-guid:Error: boom",
       "typing:false",
     ])

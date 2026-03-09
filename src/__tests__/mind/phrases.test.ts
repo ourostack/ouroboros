@@ -15,8 +15,6 @@ vi.mock("../../heart/identity", () => ({
   resetAgentConfigCache: vi.fn(),
 }))
 
-import * as identity from "../../heart/identity"
-
 describe("phrases - pickPhrase", () => {
   beforeEach(() => {
     vi.resetModules()
@@ -67,6 +65,7 @@ describe("phrases - getPhrases from agent.json", () => {
   })
 
   it("returns phrases directly from loadAgentConfig().phrases", async () => {
+    const identity = await import("../../heart/identity")
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
       configPath: "~/.agentsecrets/testagent/secrets.json",
@@ -87,15 +86,19 @@ describe("phrases - getPhrases from agent.json", () => {
   })
 
   it("refreshes the cached agent config before loading phrases", async () => {
+    const identity = await import("../../heart/identity")
+    vi.mocked(identity.resetAgentConfigCache).mockClear()
+    vi.mocked(identity.loadAgentConfig).mockClear()
     const { getPhrases } = await import("../../mind/phrases")
     getPhrases()
 
-    expect((identity as any).resetAgentConfigCache).toHaveBeenCalledTimes(1)
+    expect(identity.resetAgentConfigCache).toHaveBeenCalledTimes(1)
     expect(identity.loadAgentConfig).toHaveBeenCalledTimes(1)
   })
 
   it("returns placeholders when loadAgentConfig has auto-filled phrases", async () => {
     // loadAgentConfig now always returns phrases (auto-filled with placeholders if missing)
+    const identity = await import("../../heart/identity")
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
       configPath: "~/.agentsecrets/testagent/secrets.json",
