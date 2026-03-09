@@ -19,6 +19,7 @@ describe("ouro CLI parsing", () => {
     expect(parseOuroCommand([])).toEqual({ kind: "daemon.up" })
     expect(parseOuroCommand(["up"])).toEqual({ kind: "daemon.up" })
     expect(parseOuroCommand(["stop"])).toEqual({ kind: "daemon.stop" })
+    expect(parseOuroCommand(["down"])).toEqual({ kind: "daemon.stop" })
     expect(parseOuroCommand(["status"])).toEqual({ kind: "daemon.status" })
     expect(parseOuroCommand(["logs"])).toEqual({ kind: "daemon.logs" })
     expect(parseOuroCommand(["hatch"])).toEqual({ kind: "hatch.start" })

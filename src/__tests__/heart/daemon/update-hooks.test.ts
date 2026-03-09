@@ -121,9 +121,8 @@ describe("applyPendingUpdates", () => {
     const hook = vi.fn((_ctx: UpdateHookContext): UpdateHookResult => ({ ok: true }))
     registerUpdateHook(hook)
 
-    await expect(
-      applyPendingUpdates("/nonexistent/path", "0.1.0"),
-    ).resolves.toBeUndefined()
+    const result = await applyPendingUpdates("/nonexistent/path", "0.1.0")
+    expect(result.updated).toHaveLength(0)
 
     expect(hook).not.toHaveBeenCalled()
   })
@@ -187,6 +186,27 @@ describe("applyPendingUpdates", () => {
     expect(order).toEqual([1, 2])
   })
 
+  it("returns summary with updated agents", async () => {
+    const bundlesRoot = createTempDir("update-hooks-summary-")
+    const agent1 = path.join(bundlesRoot, "alpha.ouro")
+    const agent2 = path.join(bundlesRoot, "beta.ouro")
+    const agent3 = path.join(bundlesRoot, "gamma.ouro")
+    fs.mkdirSync(agent1, { recursive: true })
+    fs.mkdirSync(agent2, { recursive: true })
+    fs.mkdirSync(agent3, { recursive: true })
+    fs.writeFileSync(path.join(agent1, "bundle-meta.json"), JSON.stringify({ runtimeVersion: "0.0.1", bundleSchemaVersion: 1, lastUpdated: "2025-01-01T00:00:00Z" }))
+    fs.writeFileSync(path.join(agent2, "bundle-meta.json"), JSON.stringify({ runtimeVersion: "0.1.0", bundleSchemaVersion: 1, lastUpdated: "2025-01-01T00:00:00Z" }))
+    // agent3: no bundle-meta.json (first boot)
+
+    registerUpdateHook(() => ({ ok: true }))
+
+    const result = await applyPendingUpdates(bundlesRoot, "0.1.0")
+
+    expect(result.updated).toHaveLength(2)
+    expect(result.updated).toContainEqual({ agent: "alpha", from: "0.0.1", to: "0.1.0" })
+    expect(result.updated).toContainEqual({ agent: "gamma", from: undefined, to: "0.1.0" })
+  })
+
   it("skips non-.ouro directories", async () => {
     const bundlesRoot = createTempDir("update-hooks-non-ouro-")
     fs.mkdirSync(path.join(bundlesRoot, "notes"), { recursive: true })
@@ -218,9 +238,8 @@ describe("applyPendingUpdates", () => {
 
     registerUpdateHook(() => { throw "string-error" })
 
-    await expect(
-      applyPendingUpdates(bundlesRoot, "0.1.0"),
-    ).resolves.toBeUndefined()
+    const result = await applyPendingUpdates(bundlesRoot, "0.1.0")
+    expect(result.updated).toHaveLength(1)
   })
 
   it("handles unreadable bundles directory gracefully", async () => {
@@ -232,9 +251,8 @@ describe("applyPendingUpdates", () => {
     const hook = vi.fn((_ctx: UpdateHookContext): UpdateHookResult => ({ ok: true }))
     registerUpdateHook(hook)
 
-    await expect(
-      applyPendingUpdates(unreadableRoot, "0.1.0"),
-    ).resolves.toBeUndefined()
+    const result = await applyPendingUpdates(unreadableRoot, "0.1.0")
+    expect(result.updated).toHaveLength(0)
 
     expect(hook).not.toHaveBeenCalled()
   })

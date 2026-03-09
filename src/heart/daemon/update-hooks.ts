@@ -16,6 +16,16 @@ export interface UpdateHookResult {
 
 export type UpdateHook = (ctx: UpdateHookContext) => UpdateHookResult | Promise<UpdateHookResult>
 
+export interface UpdateSummaryEntry {
+  agent: string
+  from: string | undefined
+  to: string
+}
+
+export interface UpdateSummary {
+  updated: UpdateSummaryEntry[]
+}
+
 const _hooks: UpdateHook[] = []
 
 export function registerUpdateHook(hook: UpdateHook): void {
@@ -36,7 +46,9 @@ export function clearRegisteredHooks(): void {
   _hooks.length = 0
 }
 
-export async function applyPendingUpdates(bundlesRoot: string, currentVersion: string): Promise<void> {
+export async function applyPendingUpdates(bundlesRoot: string, currentVersion: string): Promise<UpdateSummary> {
+  const summary: UpdateSummary = { updated: [] }
+
   emitNervesEvent({
     component: "daemon",
     event: "daemon.apply_pending_updates_start",
@@ -45,14 +57,14 @@ export async function applyPendingUpdates(bundlesRoot: string, currentVersion: s
   })
 
   if (!fs.existsSync(bundlesRoot)) {
-    return
+    return summary
   }
 
   let entries: fs.Dirent[]
   try {
     entries = fs.readdirSync(bundlesRoot, { withFileTypes: true })
   } catch {
-    return
+    return summary
   }
 
   for (const entry of entries) {
@@ -94,6 +106,12 @@ export async function applyPendingUpdates(bundlesRoot: string, currentVersion: s
         })
       }
     }
+
+    summary.updated.push({
+      agent: entry.name.replace(/\.ouro$/, ""),
+      from: previousVersion,
+      to: currentVersion,
+    })
   }
 
   emitNervesEvent({
@@ -102,4 +120,6 @@ export async function applyPendingUpdates(bundlesRoot: string, currentVersion: s
     message: "pending updates applied",
     meta: { bundlesRoot },
   })
+
+  return summary
 }

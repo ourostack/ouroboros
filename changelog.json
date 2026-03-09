@@ -1,6 +1,25 @@
 {
-  "_note": "This changelog is maintained as part of the PR/version-bump workflow. Human-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
+  "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
+    {
+      "version": "0.1.0-alpha.25",
+      "changes": [
+        "The daemon now discovers all enabled agents in ~/AgentBundles, so ouro status and managed workers reflect every real agent instead of only slugger and ouroboros.",
+        "BlueBubbles typing now wraps the visible working phase correctly, and phrase updates from agent.json take effect on the next turn without requiring a restart."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.24",
+      "changes": [
+        "When you run 'ouro up', you now see which agents were updated and from what version, so you know exactly what happened during startup."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.23",
+      "changes": [
+        "You can now use 'ouro down' as an alias for 'ouro stop' to pair naturally with 'ouro up'."
+      ]
+    },
     {
       "version": "0.1.0-alpha.22",
       "changes": [
