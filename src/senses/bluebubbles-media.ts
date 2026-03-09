@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises"
 import * as os from "node:os"
 import * as path from "node:path"
 import OpenAI from "openai"
+import { emitNervesEvent } from "../nerves/runtime"
 import type { BlueBubblesAttachmentSummary } from "./bluebubbles-model"
 
 type BlueBubblesConfig = {
@@ -197,6 +198,15 @@ export async function hydrateBlueBubblesAttachments(
   channelConfig: BlueBubblesChannelConfig,
   deps: BlueBubblesMediaDeps = {},
 ): Promise<BlueBubblesHydratedAttachments> {
+  emitNervesEvent({
+    component: "senses",
+    event: "senses.bluebubbles_media_hydrate",
+    message: "hydrating bluebubbles attachments",
+    meta: {
+      attachmentCount: attachments.length,
+      preferAudioInput: deps.preferAudioInput ?? false,
+    },
+  })
   const fetchImpl = deps.fetchImpl ?? fetch
   const transcribeAudio = deps.transcribeAudio ?? transcribeAudioWithWhisper
   const preferAudioInput = deps.preferAudioInput ?? false
