@@ -116,7 +116,14 @@ jobs:
         run: npm run build
 
       - name: Publish @ouro.bot/cli
-        run: npm publish --access public --provenance --tag alpha
+        run: |
+          LOCAL=$(node -p "require('./package.json').version")
+          PUBLISHED=$(npm view "@ouro.bot/cli@${LOCAL}" version 2>/dev/null || echo "")
+          if [ "$LOCAL" = "$PUBLISHED" ]; then
+            echo "@ouro.bot/cli@${LOCAL} already published — skipping"
+          else
+            npm publish --access public --provenance --tag alpha
+          fi
 
       - name: Build for wrapper publish guard
         run: npm run build
