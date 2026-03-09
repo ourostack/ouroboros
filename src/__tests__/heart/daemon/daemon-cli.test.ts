@@ -2341,7 +2341,7 @@ describe("discoverExistingCredentials", () => {
     try {
       const result = discoverExistingCredentials(tmpDir)
       expect(result).toEqual([
-        { agentName: "myagent", provider: "anthropic", credentials: { setupToken: "sk-ant-test" } },
+        { agentName: "myagent", provider: "anthropic", credentials: { setupToken: "sk-ant-test" }, providerConfig: { setupToken: "sk-ant-test" } },
       ])
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true })
@@ -2359,7 +2359,7 @@ describe("discoverExistingCredentials", () => {
     try {
       const result = discoverExistingCredentials(tmpDir)
       expect(result).toEqual([
-        { agentName: "minimaxagent", provider: "minimax", credentials: { apiKey: "mm-key-123" } },
+        { agentName: "minimaxagent", provider: "minimax", credentials: { apiKey: "mm-key-123" }, providerConfig: { apiKey: "mm-key-123" } },
       ])
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true })
@@ -2377,7 +2377,7 @@ describe("discoverExistingCredentials", () => {
     try {
       const result = discoverExistingCredentials(tmpDir)
       expect(result).toEqual([
-        { agentName: "codexagent", provider: "openai-codex", credentials: { oauthAccessToken: "oauth-tok" } },
+        { agentName: "codexagent", provider: "openai-codex", credentials: { oauthAccessToken: "oauth-tok" }, providerConfig: { oauthAccessToken: "oauth-tok" } },
       ])
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true })
@@ -2401,6 +2401,7 @@ describe("discoverExistingCredentials", () => {
           agentName: "azureagent",
           provider: "azure",
           credentials: { apiKey: "az-key", endpoint: "https://az.endpoint", deployment: "gpt-deploy" },
+          providerConfig: { apiKey: "az-key", endpoint: "https://az.endpoint", deployment: "gpt-deploy" },
         },
       ])
     } finally {

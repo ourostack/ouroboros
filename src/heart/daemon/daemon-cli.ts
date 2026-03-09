@@ -711,6 +711,8 @@ export interface DiscoveredCredential {
   agentName: string
   provider: AgentProvider
   credentials: HatchCredentialsInput
+  /** Full provider config block (model, endpoint, etc.) for runtime patching. */
+  providerConfig: Record<string, string>
 }
 
 export function discoverExistingCredentials(secretsRoot: string): DiscoveredCredential[] {
@@ -741,13 +743,13 @@ export function discoverExistingCredentials(secretsRoot: string): DiscoveredCred
 
     for (const [provName, provConfig] of Object.entries(parsed.providers)) {
       if (provName === "anthropic" && provConfig.setupToken) {
-        found.push({ agentName: entry.name, provider: "anthropic", credentials: { setupToken: provConfig.setupToken } })
+        found.push({ agentName: entry.name, provider: "anthropic", credentials: { setupToken: provConfig.setupToken }, providerConfig: { ...provConfig } })
       } else if (provName === "openai-codex" && provConfig.oauthAccessToken) {
-        found.push({ agentName: entry.name, provider: "openai-codex", credentials: { oauthAccessToken: provConfig.oauthAccessToken } })
+        found.push({ agentName: entry.name, provider: "openai-codex", credentials: { oauthAccessToken: provConfig.oauthAccessToken }, providerConfig: { ...provConfig } })
       } else if (provName === "minimax" && provConfig.apiKey) {
-        found.push({ agentName: entry.name, provider: "minimax", credentials: { apiKey: provConfig.apiKey } })
+        found.push({ agentName: entry.name, provider: "minimax", credentials: { apiKey: provConfig.apiKey }, providerConfig: { ...provConfig } })
       } else if (provName === "azure" && provConfig.apiKey && provConfig.endpoint && provConfig.deployment) {
-        found.push({ agentName: entry.name, provider: "azure", credentials: { apiKey: provConfig.apiKey, endpoint: provConfig.endpoint, deployment: provConfig.deployment } })
+        found.push({ agentName: entry.name, provider: "azure", credentials: { apiKey: provConfig.apiKey, endpoint: provConfig.endpoint, deployment: provConfig.deployment }, providerConfig: { ...provConfig } })
       }
     }
   }
@@ -766,7 +768,7 @@ export function discoverExistingCredentials(secretsRoot: string): DiscoveredCred
 async function defaultRunAdoptionSpecialist(): Promise<string | null> {
   const { runCliSession } = await import("../../senses/cli")
   const { patchRuntimeConfig } = await import("../config")
-  const { setAgentName } = await import("../identity")
+  const { setAgentName, setAgentConfigOverride } = await import("../identity")
   const readlinePromises = await import("readline/promises")
   const crypto = await import("crypto")
 
@@ -779,19 +781,32 @@ async function defaultRunAdoptionSpecialist(): Promise<string | null> {
 
   let providerRaw: AgentProvider
   let credentials: HatchCredentialsInput = {}
+  let providerConfig: Record<string, string> = {}
 
   const tempDir = path.join(os.tmpdir(), `ouro-hatch-${crypto.randomUUID()}`)
 
   try {
     const secretsRoot = path.join(os.homedir(), ".agentsecrets")
     const discovered = discoverExistingCredentials(secretsRoot)
+    const existingBundleCount = listExistingBundles(getAgentBundlesRoot()).length
+    const hatchVerb = existingBundleCount > 0 ? "let's hatch a new agent." : "let's hatch your first agent."
+
+    // Default models per provider (used when entering new credentials)
+    const defaultModels: Record<AgentProvider, string> = {
+      anthropic: "claude-opus-4-6",
+      minimax: "MiniMax-Text-01",
+      "openai-codex": "gpt-5.4",
+      azure: "",
+    }
 
     if (discovered.length > 0) {
-      process.stdout.write("\n\ud83d\udc0d welcome to ouro! let's hatch your first agent.\n")
+      process.stdout.write(`\n\ud83d\udc0d welcome to ouroboros! ${hatchVerb}\n`)
       process.stdout.write("i found existing API credentials:\n\n")
       const unique = [...new Map(discovered.map((d) => [`${d.provider}`, d])).values()]
       for (let i = 0; i < unique.length; i++) {
-        process.stdout.write(`  ${i + 1}. ${unique[i].provider} (from ${unique[i].agentName})\n`)
+        const model = unique[i].providerConfig.model || unique[i].providerConfig.deployment || ""
+        const modelLabel = model ? `, ${model}` : ""
+        process.stdout.write(`  ${i + 1}. ${unique[i].provider}${modelLabel} (from ${unique[i].agentName})\n`)
       }
       process.stdout.write("\n")
       const choice = await coldPrompt("use one of these? enter number, or 'new' for a different key: ")
@@ -800,6 +815,7 @@ async function defaultRunAdoptionSpecialist(): Promise<string | null> {
       if (idx >= 0 && idx < unique.length) {
         providerRaw = unique[idx].provider
         credentials = unique[idx].credentials
+        providerConfig = unique[idx].providerConfig
       } else {
         const pRaw = await coldPrompt("provider (anthropic/azure/minimax/openai-codex): ")
         if (!isAgentProvider(pRaw)) {
@@ -808,6 +824,7 @@ async function defaultRunAdoptionSpecialist(): Promise<string | null> {
           return null
         }
         providerRaw = pRaw
+        providerConfig = { model: defaultModels[providerRaw] }
         if (providerRaw === "anthropic") credentials.setupToken = await coldPrompt("API key: ")
         if (providerRaw === "openai-codex") credentials.oauthAccessToken = await coldPrompt("OAuth token: ")
         if (providerRaw === "minimax") credentials.apiKey = await coldPrompt("API key: ")
@@ -818,7 +835,7 @@ async function defaultRunAdoptionSpecialist(): Promise<string | null> {
         }
       }
     } else {
-      process.stdout.write("\n\ud83d\udc0d welcome to ouro! let's hatch your first agent.\n")
+      process.stdout.write(`\n\ud83d\udc0d welcome to ouroboros! ${hatchVerb}\n`)
       process.stdout.write("i need an API key to power our conversation.\n\n")
       const pRaw = await coldPrompt("provider (anthropic/azure/minimax/openai-codex): ")
       if (!isAgentProvider(pRaw)) {
@@ -827,6 +844,7 @@ async function defaultRunAdoptionSpecialist(): Promise<string | null> {
         return null
       }
       providerRaw = pRaw
+      providerConfig = { model: defaultModels[providerRaw] }
       if (providerRaw === "anthropic") credentials.setupToken = await coldPrompt("API key: ")
       if (providerRaw === "openai-codex") credentials.oauthAccessToken = await coldPrompt("OAuth token: ")
       if (providerRaw === "minimax") credentials.apiKey = await coldPrompt("API key: ")
@@ -845,18 +863,34 @@ async function defaultRunAdoptionSpecialist(): Promise<string | null> {
     const bundlesRoot = getAgentBundlesRoot()
     const secretsRoot2 = path.join(os.homedir(), ".agentsecrets")
 
-    // Configure provider credentials in runtime config
-    patchRuntimeConfig({
-      providers: {
-        [providerRaw]: credentials,
-      },
-    })
-    setAgentName("AdoptionSpecialist")
+    // Suppress non-critical log noise during adoption (no secrets.json, etc.)
+    const { setRuntimeLogger } = await import("../../nerves/runtime")
+    const { createLogger } = await import("../../nerves")
+    setRuntimeLogger(createLogger({ level: "error" }))
 
+    // Configure runtime: set agent identity + config override so runAgent
+    // doesn't try to read from ~/AgentBundles/AdoptionSpecialist.ouro/
+    setAgentName("AdoptionSpecialist")
     // Build specialist system prompt
     const soulText = loadSoulText(bundleSourceDir)
     const identitiesDir = path.join(bundleSourceDir, "psyche", "identities")
     const identity = pickRandomIdentity(identitiesDir)
+
+    // Load identity-specific spinner phrases (falls back to DEFAULT_AGENT_PHRASES)
+    const { loadIdentityPhrases } = await import("./specialist-orchestrator")
+    const phrases = loadIdentityPhrases(bundleSourceDir, identity.fileName)
+
+    setAgentConfigOverride({
+      version: 1,
+      enabled: true,
+      provider: providerRaw,
+      phrases,
+    })
+    patchRuntimeConfig({
+      providers: {
+        [providerRaw]: { ...providerConfig, ...credentials },
+      },
+    })
     const existingBundles = listExistingBundles(bundlesRoot)
     const systemPrompt = buildSpecialistSystemPrompt(soulText, identity.content, existingBundles, {
       tempDir,
@@ -880,6 +914,10 @@ async function defaultRunAdoptionSpecialist(): Promise<string | null> {
       tools: specialistTools,
       execTool: specialistExecTool,
       exitOnToolCall: "complete_adoption",
+      autoFirstTurn: true,
+      banner: false,
+      disableCommands: true,
+      skipSystemPromptRefresh: true,
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: "hi" },
@@ -894,10 +932,21 @@ async function defaultRunAdoptionSpecialist(): Promise<string | null> {
     }
 
     return null
-  } catch {
+  } catch (err) {
+    process.stderr.write(`\nouro adoption error: ${err instanceof Error ? err.stack ?? err.message : String(err)}\n`)
     coldRl.close()
     return null
   } finally {
+    // Clear specialist config/identity so the hatched agent gets its own
+    setAgentConfigOverride(null)
+    const { resetProviderRuntime } = await import("../core")
+    resetProviderRuntime()
+    const { resetConfigCache } = await import("../config")
+    resetConfigCache()
+    // Restore default logging
+    const { setRuntimeLogger: restoreLogger } = await import("../../nerves/runtime")
+    restoreLogger(null)
+
     // Clean up temp dir if it still exists
     try {
       if (fs.existsSync(tempDir)) {

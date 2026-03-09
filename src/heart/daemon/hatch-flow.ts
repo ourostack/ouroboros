@@ -85,7 +85,7 @@ function buildSecretsTemplate(): Record<string, unknown> {
         setupToken: "",
       },
       "openai-codex": {
-        model: "gpt-5.2",
+        model: "gpt-5.4",
         oauthAccessToken: "",
       },
     },

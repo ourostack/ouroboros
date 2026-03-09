@@ -3,6 +3,7 @@
   "version": "0.1.0-alpha.19",
   "main": "dist/heart/daemon/ouro-entry.js",
   "bin": {
+    "cli": "dist/heart/daemon/ouro-bot-entry.js",
     "ouro": "dist/heart/daemon/ouro-entry.js",
     "ouro.bot": "dist/heart/daemon/ouro-bot-entry.js"
   },

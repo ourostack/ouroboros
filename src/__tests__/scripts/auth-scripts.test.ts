@@ -117,7 +117,7 @@ exit 97
       readFileSync(path.join(homeDir, ".agentsecrets", agent, "secrets.json"), "utf8"),
     ) as Record<string, any>
     expect(secrets.providers["openai-codex"].oauthAccessToken).toBe("oauth-token-first-run")
-    expect(secrets.providers["openai-codex"].model).toBe("gpt-5.2")
+    expect(secrets.providers["openai-codex"].model).toBe("gpt-5.4")
   })
 
   it("uses existing Codex auth token without invoking codex login", () => {

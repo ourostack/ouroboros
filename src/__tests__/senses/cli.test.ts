@@ -332,8 +332,6 @@ describe("CLI adapter - streaming onTextChunk with MarkdownStreamer", () => {
   it("onModelStart resets streamer state", () => {
     callbacks.onTextChunk("**open")
     callbacks.onModelStart()
-    callbacks.onModelStreamStart()
-    stdoutChunks.length = 0
     callbacks.onTextChunk("plain text")
     callbacks.flushMarkdown()
     const output = stdoutChunks.join("")
@@ -384,36 +382,41 @@ describe("CLI adapter - onReasoningChunk and onTextChunk rendering", () => {
     expect(output).toContain("\x1b[0m")
   })
 
-  it("reasoning then content: \\n\\n separator before text on stdout", () => {
+  it("reasoning then content: \\n separator before text on stdout", () => {
     callbacks.onReasoningChunk("thinking")
     callbacks.onTextChunk("answer")
     const output = stdoutChunks.join("")
     expect(output).toContain("\x1b[2mthinking\x1b[0m")
-    expect(output).toContain("\n\nanswer")
+    expect(output).toContain("\nanswer")
   })
 
-  it("text-only response has no \\n\\n prefix", () => {
+  it("text-only response has no reasoning separator", () => {
     callbacks.onTextChunk("just text")
     const output = stdoutChunks.join("")
     expect(output).toBe("just text")
-    expect(output).not.toContain("\n\n")
   })
 
-  it("multiple reasoning chunks before text: only one \\n\\n separator", () => {
+  it("multiple reasoning chunks before text: only one \\n separator", () => {
     callbacks.onReasoningChunk("step1")
     callbacks.onReasoningChunk("step2")
     callbacks.onTextChunk("answer")
     const output = stdoutChunks.join("")
-    const matches = output.match(/\n\n/g)
-    expect(matches).toHaveLength(1)
+    // Reasoning chunks: "\x1b[2mstep1\x1b[0m\x1b[2mstep2\x1b[0m"
+    // Then separator "\n" then "answer"
+    // Count separating newlines between reasoning and answer (not within reasoning)
+    const reasoningEnd = output.lastIndexOf("\x1b[0m")
+    const answerStart = output.indexOf("answer")
+    const gap = output.slice(reasoningEnd, answerStart)
+    const newlines = (gap.match(/\n/g) || []).length
+    expect(newlines).toBe(1)
   })
 
   it("onModelStart resets reasoning state for new turn", () => {
     callbacks.onReasoningChunk("thinking")
     callbacks.onModelStart()
-    callbacks.onModelStreamStart()
     stdoutChunks.length = 0
     callbacks.onTextChunk("answer")
+    callbacks.flushMarkdown()
     const output = stdoutChunks.join("")
     expect(output).toBe("answer")
     expect(output).not.toContain("\n\n")
@@ -453,14 +456,14 @@ describe("CLI adapter - onModelStart", () => {
     expect(stderrChunks.length).toBeGreaterThan(0)
 
     // Clean up spinner interval
-    callbacks.onModelStreamStart()
+    callbacks.flushMarkdown()
     stderrSpy.mockRestore()
     vi.restoreAllMocks()
   })
 })
 
 describe("CLI adapter - onModelStreamStart", () => {
-  it("stops spinner by clearing line on stderr", async () => {
+  it("is a no-op (content callbacks handle spinner stopping)", async () => {
     const stderrChunks: string[] = []
     vi.spyOn(process.stderr, "write").mockImplementation((chunk: any) => {
       stderrChunks.push(chunk.toString())
@@ -475,9 +478,17 @@ describe("CLI adapter - onModelStreamStart", () => {
     callbacks.onModelStart()
     stderrChunks.length = 0
     callbacks.onModelStreamStart()
+    // onModelStreamStart is a no-op — spinner is NOT stopped here
     const output = stderrChunks.join("")
-    expect(output).toContain("\x1b[K")
+    expect(output).not.toContain("\x1b[K")
 
+    // onTextChunk stops the spinner instead
+    stderrChunks.length = 0
+    callbacks.onTextChunk("hello")
+    const afterText = stderrChunks.join("")
+    expect(afterText).toContain("\x1b[K")
+
+    callbacks.flushMarkdown()
     vi.restoreAllMocks()
   })
 
@@ -568,7 +579,6 @@ describe("CLI adapter - onToolStart", () => {
     const callbacks = agent.createCliCallbacks()
 
     callbacks.onModelStart()
-    callbacks.onModelStreamStart()
     callbacks.onTextChunk("some text")
     callbacks.flushMarkdown()
     stdoutChunks.length = 0
@@ -770,7 +780,7 @@ describe("CLI adapter - phrase rotation", () => {
     const output = stderrChunks.join("")
     expect(getPhrases().thinking.some(p => output.includes(p))).toBe(true)
 
-    callbacks.onModelStreamStart()
+    callbacks.flushMarkdown()
   })
 
   it("onModelStart after tool uses FOLLOWUP_PHRASES", async () => {
@@ -780,7 +790,8 @@ describe("CLI adapter - phrase rotation", () => {
 
     // First model call
     callbacks.onModelStart()
-    callbacks.onModelStreamStart()
+    callbacks.onTextChunk("text")
+    callbacks.flushMarkdown()
     // Tool run
     callbacks.onToolStart("read_file", { path: "x" })
     callbacks.onToolEnd("read_file", "x", true)
@@ -790,7 +801,7 @@ describe("CLI adapter - phrase rotation", () => {
     const output = stderrChunks.join("")
     expect(getPhrases().followup.some(p => output.includes(p))).toBe(true)
 
-    callbacks.onModelStreamStart()
+    callbacks.flushMarkdown()
   })
 
   it("spinner rotates phrase after 1.5s", async () => {
@@ -810,11 +821,11 @@ describe("CLI adapter - phrase rotation", () => {
     // After rotation, output should contain a phrase from the pool
     expect(getPhrases().thinking.some(p => secondOutput.includes(p))).toBe(true)
 
-    callbacks.onModelStreamStart()
+    callbacks.flushMarkdown()
     vi.useRealTimers()
   })
 
-  it("onModelStreamStart stops phrase rotation", async () => {
+  it("onTextChunk stops phrase rotation", async () => {
     vi.useFakeTimers()
 
     vi.resetModules()
@@ -822,14 +833,113 @@ describe("CLI adapter - phrase rotation", () => {
     const callbacks = agent.createCliCallbacks()
 
     callbacks.onModelStart()
-    callbacks.onModelStreamStart()
+    callbacks.onTextChunk("hello")
 
     stderrChunks.length = 0
     vi.advanceTimersByTime(3000)
-    // No more spinner output after stop
+    // No more spinner output after content callback stopped it
     const output = stderrChunks.join("")
     expect(output).toBe("")
 
+    callbacks.flushMarkdown()
     vi.useRealTimers()
+  })
+
+  it("onReasoningChunk stops active spinner", async () => {
+    vi.resetModules()
+    const agent = await import("../../senses/cli")
+    const callbacks = agent.createCliCallbacks()
+
+    callbacks.onModelStart() // starts spinner
+    stderrChunks.length = 0
+    callbacks.onReasoningChunk("thinking")
+    // Spinner should have been stopped (emits \x1b[K clear)
+    const output = stderrChunks.join("")
+    expect(output).toContain("\x1b[K")
+
+    callbacks.flushMarkdown()
+  })
+
+  it("onClearText resets the markdown streamer", async () => {
+    const localStdout: string[] = []
+    vi.spyOn(process.stdout, "write").mockImplementation((chunk: any) => {
+      localStdout.push(chunk.toString())
+      return true
+    })
+
+    vi.resetModules()
+    const agent = await import("../../senses/cli")
+    const callbacks = agent.createCliCallbacks()
+
+    // Push some text then clear
+    callbacks.onTextChunk("partial content")
+    callbacks.onClearText?.()
+    // Push new text — should not include the old partial
+    localStdout.length = 0
+    callbacks.onTextChunk("fresh")
+    callbacks.flushMarkdown()
+    const output = localStdout.join("")
+    expect(output).toContain("fresh")
+    expect(output).not.toContain("partial")
+
+    vi.restoreAllMocks()
+  })
+})
+
+describe("createDebouncedLines", () => {
+  it("yields every line even with slow consumer (no swallowed input)", async () => {
+    vi.resetModules()
+    const { createDebouncedLines } = await import("../../senses/cli")
+
+    // Simulate a readline-like async iterator: lines arrive with gaps > debounce
+    async function* slowSource() {
+      yield "line1"
+      await new Promise((r) => setTimeout(r, 200))
+      yield "line2"
+      await new Promise((r) => setTimeout(r, 200))
+      yield "line3"
+    }
+
+    const collected: string[] = []
+    for await (const input of createDebouncedLines(slowSource(), 50)) {
+      collected.push(input)
+      // Simulate slow processing (like runAgent taking time)
+      await new Promise((r) => setTimeout(r, 100))
+    }
+    expect(collected).toEqual(["line1", "line2", "line3"])
+  })
+
+  it("merges rapid-fire lines into one batch (paste detection)", async () => {
+    vi.resetModules()
+    const { createDebouncedLines } = await import("../../senses/cli")
+
+    // Lines arrive faster than debounce window
+    async function* rapidSource() {
+      yield "a"
+      yield "b"
+      yield "c"
+    }
+
+    const collected: string[] = []
+    for await (const input of createDebouncedLines(rapidSource(), 50)) {
+      collected.push(input)
+    }
+    expect(collected).toEqual(["a\nb\nc"])
+  })
+
+  it("passes through directly with debounceMs=0", async () => {
+    vi.resetModules()
+    const { createDebouncedLines } = await import("../../senses/cli")
+
+    async function* source() {
+      yield "x"
+      yield "y"
+    }
+
+    const collected: string[] = []
+    for await (const input of createDebouncedLines(source(), 0)) {
+      collected.push(input)
+    }
+    expect(collected).toEqual(["x", "y"])
   })
 })

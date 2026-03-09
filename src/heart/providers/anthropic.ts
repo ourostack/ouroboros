@@ -5,6 +5,7 @@ import { getAgentName, getAgentSecretsPath } from "../identity";
 import type { UsageData } from "../../mind/context";
 import { emitNervesEvent } from "../../nerves/runtime";
 import type { ProviderRuntime, ProviderTurnRequest } from "../core";
+import { FinalAnswerStreamer } from "../streaming";
 import type { TurnResult } from "../streaming";
 
 const ANTHROPIC_SETUP_TOKEN_PREFIX = "sk-ant-oat01-";
@@ -262,6 +263,7 @@ async function streamAnthropicMessages(
   let streamStarted = false;
   let usage: UsageData | undefined;
   const toolCalls = new Map<number, { id: string; name: string; arguments: string }>();
+  const answerStreamer = new FinalAnswerStreamer(request.callbacks);
 
   try {
     for await (const event of response) {
@@ -275,11 +277,17 @@ async function streamAnthropicMessages(
           const input = rawInput && typeof rawInput === "object"
             ? JSON.stringify(rawInput)
             : "";
+          const name = String(block.name ?? "");
           toolCalls.set(index, {
             id: String(block.id ?? ""),
-            name: String(block.name ?? ""),
+            name,
             arguments: input,
           });
+          // Activate eager streaming for sole final_answer tool call
+          /* v8 ignore next -- final_answer streaming activation, tested via FinalAnswerStreamer unit tests @preserve */
+          if (name === "final_answer" && toolCalls.size === 1) {
+            answerStreamer.activate();
+          }
         }
         continue;
       }
@@ -309,10 +317,15 @@ async function streamAnthropicMessages(
           const index = Number(event.index);
           const existing = toolCalls.get(index);
           if (existing) {
+            const partialJson = String(delta?.partial_json ?? "");
             existing.arguments = mergeAnthropicToolArguments(
               existing.arguments,
-              String(delta?.partial_json ?? ""),
+              partialJson,
             );
+            /* v8 ignore next -- final_answer delta streaming, tested via FinalAnswerStreamer unit tests @preserve */
+            if (existing.name === "final_answer" && toolCalls.size === 1) {
+              answerStreamer.processDelta(partialJson);
+            }
           }
           continue;
         }
@@ -343,6 +356,7 @@ async function streamAnthropicMessages(
     toolCalls: [...toolCalls.values()],
     outputItems: [],
     usage,
+    finalAnswerStreamed: answerStreamer.streamed,
   };
 }
 
