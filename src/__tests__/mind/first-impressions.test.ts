@@ -63,5 +63,17 @@ describe("first-impressions", () => {
       // Should instruct to save everything learned
       expect(result.toLowerCase()).toMatch(/save.*learn/)
     })
+
+    it("forbids generic re-greetings in the middle of active task work", () => {
+      const result = getFirstImpressions({ totalTokens: 0, name: "Jordan" })
+      expect(result.toLowerCase()).toContain("i do not reset with a generic opener")
+      expect(result.toLowerCase()).toContain("what do ya need help with")
+    })
+
+    it("still allows a light opener on a genuinely fresh idle conversation", () => {
+      const result = getFirstImpressions({ totalTokens: 0, name: "Jordan" })
+      expect(result.toLowerCase()).toContain("only when the conversation is genuinely fresh and idle")
+      expect(result.toLowerCase()).toContain("a light opener is okay")
+    })
   })
 })

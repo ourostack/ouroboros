@@ -65,6 +65,7 @@ jobs:
           ).trim().split('\n').filter(Boolean)
 
           const localVersion = require('./packages/ouro.bot/package.json').version
+          const cliVersion = require('./package.json').version
           let publishedVersion = ''
           try {
             publishedVersion = execSync(`npm view "ouro.bot@${localVersion}" version`, {
@@ -75,7 +76,7 @@ jobs:
             publishedVersion = ''
           }
 
-          const result = assessWrapperPublishSync({ changedFiles, localVersion, publishedVersion })
+          const result = assessWrapperPublishSync({ changedFiles, localVersion, cliVersion, publishedVersion })
           if (!result.ok) {
             console.error(`::error::${result.message}`)
             process.exit(1)
@@ -142,6 +143,7 @@ jobs:
           ).trim().split('\n').filter(Boolean)
 
           const localVersion = require('./packages/ouro.bot/package.json').version
+          const cliVersion = require('./package.json').version
           let publishedVersion = ''
           try {
             publishedVersion = execSync(`npm view "ouro.bot@${localVersion}" version`, {
@@ -152,14 +154,10 @@ jobs:
             publishedVersion = ''
           }
 
-          const result = assessWrapperPublishSync({ changedFiles, localVersion, publishedVersion })
+          const result = assessWrapperPublishSync({ changedFiles, localVersion, cliVersion, publishedVersion })
           if (!result.ok) {
             console.error(result.message)
             process.exit(1)
-          }
-          if (changedFiles.length === 0) {
-            console.log('wrapper package unchanged — skipping publish')
-            process.exit(0)
           }
           if (publishedVersion === localVersion) {
             console.log(`ouro.bot@${localVersion} already published — skipping`)
@@ -171,4 +169,7 @@ jobs:
 
       - name: Publish ouro.bot
         if: steps.wrapper-check.outputs.should_publish == 'true'
-        run: cd packages/ouro.bot && npm publish --access public --provenance --tag latest
+        run: |
+          cd packages/ouro.bot
+          npm publish --access public --provenance --tag latest
+          npm dist-tag add "ouro.bot@$(node -p "require('./package.json').version")" alpha

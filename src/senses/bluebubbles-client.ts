@@ -242,7 +242,8 @@ function extractRepairData(payload: unknown): JsonRecord | null {
 }
 
 function providerSupportsAudioInput(provider: string): boolean {
-  return provider === "azure" || provider === "openai-codex"
+  void provider
+  return false
 }
 
 async function resolveChatGuid(

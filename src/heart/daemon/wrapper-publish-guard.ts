@@ -3,6 +3,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 export interface WrapperPublishSyncInput {
   changedFiles: string[]
   localVersion: string
+  cliVersion: string
   publishedVersion: string
 }
 
@@ -18,6 +19,27 @@ function wrapperPackageChanged(changedFiles: string[]): boolean {
 export function assessWrapperPublishSync(input: WrapperPublishSyncInput): WrapperPublishSyncResult {
   let result: WrapperPublishSyncResult
 
+  if (input.localVersion !== input.cliVersion) {
+    result = {
+      ok: false,
+      message: `ouro.bot wrapper version ${input.localVersion} must match @ouro.bot/cli version ${input.cliVersion}`,
+    }
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.wrapper_publish_guard_checked",
+      message: "evaluated wrapper publish sync",
+      meta: {
+        changed: wrapperPackageChanged(input.changedFiles),
+        localVersion: input.localVersion,
+        cliVersion: input.cliVersion,
+        publishedVersion: input.publishedVersion,
+        ok: result.ok,
+      },
+    })
+    return result
+  }
+
   if (!wrapperPackageChanged(input.changedFiles)) {
     result = {
       ok: true,
@@ -27,7 +49,13 @@ export function assessWrapperPublishSync(input: WrapperPublishSyncInput): Wrappe
       component: "daemon",
       event: "daemon.wrapper_publish_guard_checked",
       message: "evaluated wrapper publish sync",
-      meta: { changed: false, localVersion: input.localVersion, publishedVersion: input.publishedVersion, ok: result.ok },
+      meta: {
+        changed: false,
+        localVersion: input.localVersion,
+        cliVersion: input.cliVersion,
+        publishedVersion: input.publishedVersion,
+        ok: result.ok,
+      },
     })
     return result
   }
@@ -42,7 +70,13 @@ export function assessWrapperPublishSync(input: WrapperPublishSyncInput): Wrappe
       component: "daemon",
       event: "daemon.wrapper_publish_guard_checked",
       message: "evaluated wrapper publish sync",
-      meta: { changed: true, localVersion: input.localVersion, publishedVersion: input.publishedVersion, ok: result.ok },
+      meta: {
+        changed: true,
+        localVersion: input.localVersion,
+        cliVersion: input.cliVersion,
+        publishedVersion: input.publishedVersion,
+        ok: result.ok,
+      },
     })
     return result
   }
@@ -55,7 +89,13 @@ export function assessWrapperPublishSync(input: WrapperPublishSyncInput): Wrappe
     component: "daemon",
     event: "daemon.wrapper_publish_guard_checked",
     message: "evaluated wrapper publish sync",
-    meta: { changed: true, localVersion: input.localVersion, publishedVersion: input.publishedVersion, ok: result.ok },
+    meta: {
+      changed: true,
+      localVersion: input.localVersion,
+      cliVersion: input.cliVersion,
+      publishedVersion: input.publishedVersion,
+      ok: result.ok,
+    },
   })
   return result
 }
