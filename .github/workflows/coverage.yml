@@ -172,4 +172,4 @@ jobs:
         run: |
           cd packages/ouro.bot
           npm publish --access public --provenance --tag latest
-          npm dist-tag add "ouro.bot@$(node -p "require('./package.json').version")" alpha
+          npm dist-tag add "ouro.bot@$(node -p "require('./package.json').version")" alpha || echo "::warning::Unable to add ouro.bot alpha dist-tag; latest publish succeeded"

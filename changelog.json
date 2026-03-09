@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.29",
+      "changes": [
+        "Running `ouro up` now force-syncs the global `ouro.bot` wrapper so bare `npx ouro.bot` stops getting hijacked by stale global CLI bins and lands back on the intended latest runtime.",
+        "Bootstrap repair is now explicit about reclaiming the `ouro.bot` command from old global installs, which makes repeated bootstrap runs more trustworthy on machines with prior experimental installs."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.28",
       "changes": [
         "Bare npx ouro.bot now stays aligned with the current alpha CLI track because the published ouro.bot wrapper is version-locked and republished alongside the CLI instead of lagging behind it.",

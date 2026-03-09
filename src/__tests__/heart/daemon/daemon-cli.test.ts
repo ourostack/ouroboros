@@ -2269,6 +2269,10 @@ describe("specialist integration (zero agents -> adoption specialist)", () => {
       callOrder.push("installOuroCommand")
       return { installed: true, scriptPath: "/home/test/.local/bin/ouro", pathReady: true, shellProfileUpdated: null }
     })
+    const syncGlobalOuroBotWrapper = vi.fn(async () => {
+      callOrder.push("syncGlobalOuroBotWrapper")
+      return { installed: true }
+    })
     const runAdoptionSpecialist = vi.fn(async () => {
       callOrder.push("runAdoptionSpecialist")
       return "OrderBot"
@@ -2289,14 +2293,17 @@ describe("specialist integration (zero agents -> adoption specialist)", () => {
       listDiscoveredAgents: vi.fn(async () => []),
       runAdoptionSpecialist,
       installOuroCommand,
+      syncGlobalOuroBotWrapper,
       startChat,
     }
 
     await runOuroCli([], deps)
 
     expect(installOuroCommand).toHaveBeenCalledTimes(1)
+    expect(syncGlobalOuroBotWrapper).toHaveBeenCalledTimes(1)
     // System setup should happen before the specialist
     expect(callOrder.indexOf("installOuroCommand")).toBeLessThan(callOrder.indexOf("runAdoptionSpecialist"))
+    expect(callOrder.indexOf("syncGlobalOuroBotWrapper")).toBeLessThan(callOrder.indexOf("runAdoptionSpecialist"))
     expect(callOrder.indexOf("installSubagents")).toBeLessThan(callOrder.indexOf("runAdoptionSpecialist"))
   })
 
@@ -2325,6 +2332,32 @@ describe("specialist integration (zero agents -> adoption specialist)", () => {
     expect(installOuroCommand).toHaveBeenCalledTimes(1)
     expect(runAdoptionSpecialist).toHaveBeenCalledTimes(1)
     expect(startChat).toHaveBeenCalledWith("GracefulBot")
+  })
+
+  it("handles syncGlobalOuroBotWrapper failure gracefully during system setup", async () => {
+    const syncGlobalOuroBotWrapper = vi.fn(async () => { throw new Error("npm install failed") })
+    const runAdoptionSpecialist = vi.fn(async () => "WrapperBot")
+    const startChat = vi.fn(async () => {})
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({ ok: true })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => false),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+      listDiscoveredAgents: vi.fn(async () => []),
+      runAdoptionSpecialist,
+      syncGlobalOuroBotWrapper,
+      startChat,
+    }
+
+    await runOuroCli([], deps)
+
+    expect(syncGlobalOuroBotWrapper).toHaveBeenCalledTimes(1)
+    expect(runAdoptionSpecialist).toHaveBeenCalledTimes(1)
+    expect(startChat).toHaveBeenCalledWith("WrapperBot")
   })
 
   it("falls back to old hatch flow for explicit ouro hatch command even when specialist dep exists", async () => {
