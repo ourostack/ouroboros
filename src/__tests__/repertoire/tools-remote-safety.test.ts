@@ -1,4 +1,7 @@
 import { describe, it, expect } from "vitest"
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
 import { execTool, getToolsForChannel } from "../../repertoire/tools"
 import type { ToolContext } from "../../repertoire/tools"
 import { getChannelCapabilities } from "../../mind/friends/channel"
@@ -31,6 +34,61 @@ describe("remote channel tool safety", () => {
     expect(names).not.toContain("write_file")
     expect(names).not.toContain("git_commit")
     expect(names).not.toContain("gh_cli")
+  })
+
+  it("exposes local tools for trusted one-to-one bluebubbles contexts", () => {
+    const tools = getToolsForChannel(
+      getChannelCapabilities("bluebubbles"),
+      undefined,
+      {
+        friend: {
+          id: "friend-1",
+          name: "Ari",
+          trustLevel: "family",
+          externalIds: [{ provider: "imessage-handle", externalId: "ari@mendelow.me", linkedAt: "2026-03-08T00:00:00.000Z" }],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          createdAt: "2026-03-08T00:00:00.000Z",
+          updatedAt: "2026-03-08T00:00:00.000Z",
+          schemaVersion: 1,
+        },
+        channel: getChannelCapabilities("bluebubbles"),
+      },
+    )
+    const names = tools.map((t) => t.function.name)
+
+    expect(names).toContain("shell")
+    expect(names).toContain("read_file")
+    expect(names).toContain("write_file")
+    expect(names).toContain("git_commit")
+    expect(names).toContain("gh_cli")
+  })
+
+  it("keeps local tools blocked for shared bluebubbles group contexts even when trusted", () => {
+    const tools = getToolsForChannel(
+      getChannelCapabilities("bluebubbles"),
+      undefined,
+      {
+        friend: {
+          id: "group-1",
+          name: "Consciousness TBD",
+          trustLevel: "family",
+          externalIds: [{ provider: "imessage-handle", externalId: "group:any;+;group-guid", linkedAt: "2026-03-08T00:00:00.000Z" }],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          createdAt: "2026-03-08T00:00:00.000Z",
+          updatedAt: "2026-03-08T00:00:00.000Z",
+          schemaVersion: 1,
+        },
+        channel: getChannelCapabilities("bluebubbles"),
+      },
+    )
+    const names = tools.map((t) => t.function.name)
+
+    expect(names).not.toContain("shell")
+    expect(names).not.toContain("read_file")
   })
 
   it("returns explanatory denial messaging when remote context attempts local shell execution", async () => {
@@ -80,5 +138,36 @@ describe("remote channel tool safety", () => {
 
     expect(result.toLowerCase()).toContain("can't do that from here")
     expect(result.toLowerCase()).toContain("remote channel")
+  })
+
+  it("allows local file reads for trusted one-to-one bluebubbles contexts", async () => {
+    const filePath = path.join(os.tmpdir(), `bb-tools-${Date.now()}.txt`)
+    fs.writeFileSync(filePath, "hello from trusted dm", "utf8")
+
+    const remoteContext = {
+      signin: async () => undefined,
+      context: {
+        friend: {
+          id: "friend-1",
+          name: "Ari",
+          trustLevel: "family",
+          externalIds: [{ provider: "imessage-handle", externalId: "ari@mendelow.me", linkedAt: "2026-03-08T00:00:00.000Z" }],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          schemaVersion: 1,
+        },
+        channel: getChannelCapabilities("bluebubbles"),
+      },
+    } as unknown as ToolContext
+
+    try {
+      const result = await execTool("read_file", { path: filePath }, remoteContext)
+      expect(result).toContain("hello from trusted dm")
+    } finally {
+      fs.unlinkSync(filePath)
+    }
   })
 })
