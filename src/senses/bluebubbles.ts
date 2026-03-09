@@ -89,6 +89,18 @@ function buildInboundText(event: BlueBubblesNormalizedEvent): string {
   return `${event.sender.displayName}: ${baseText}`
 }
 
+function buildInboundContent(event: BlueBubblesNormalizedEvent): OpenAI.ChatCompletionUserMessageParam["content"] {
+  const text = buildInboundText(event)
+  if (event.kind !== "message" || !event.inputPartsForAgent || event.inputPartsForAgent.length === 0) {
+    return text
+  }
+
+  return [
+    { type: "text", text },
+    ...event.inputPartsForAgent,
+  ]
+}
+
 function createBlueBubblesCallbacks(
   client: BlueBubblesClient,
   chat: BlueBubblesChatRef,
@@ -257,7 +269,7 @@ export async function handleBlueBubblesEvent(
       ? existing.messages
       : [{ role: "system", content: await resolvedDeps.buildSystem("bluebubbles", undefined, context) }]
 
-  messages.push({ role: "user", content: buildInboundText(event) })
+  messages.push({ role: "user", content: buildInboundContent(event) })
 
   const callbacks = createBlueBubblesCallbacks(
     client,

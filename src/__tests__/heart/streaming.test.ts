@@ -315,6 +315,69 @@ describe("toResponsesInput", () => {
       { role: "user", content: [{ type: "text", text: "hi" }] },
     ]
     const result = toResponsesInput(messages)
+    expect(result.input).toEqual([
+      {
+        role: "user",
+        content: [{ type: "input_text", text: "hi" }],
+      },
+    ])
+  })
+
+  it("preserves multimodal user content for responses input", () => {
+    const messages = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "see attached" },
+          { type: "image_url", image_url: { url: "data:image/jpeg;base64,aGVsbG8=", detail: "auto" } },
+          { type: "input_audio", input_audio: { data: "YXVkaW8=", format: "mp3" } },
+          { type: "file", file: { file_data: "ZmlsZQ==", filename: "notes.txt" } },
+        ],
+      },
+    ]
+    const result = toResponsesInput(messages)
+    expect(result.input).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "input_text", text: "see attached" },
+          { type: "input_image", image_url: "data:image/jpeg;base64,aGVsbG8=", detail: "auto" },
+          { type: "input_audio", input_audio: { data: "YXVkaW8=", format: "mp3" } },
+          { type: "input_file", file_data: "ZmlsZQ==", filename: "notes.txt" },
+        ],
+      },
+    ])
+  })
+
+  it("drops invalid multimodal user parts and preserves file-id attachments", () => {
+    const messages = [
+      {
+        role: "user",
+        content: [
+          null,
+          { type: "image_url", image_url: { url: "" } },
+          { type: "input_audio", input_audio: { data: "YXVkaW8=", format: "m4a" } },
+          { type: "file", file: { file_id: "file-123", filename: "cached.txt" } },
+        ],
+      },
+    ]
+    const result = toResponsesInput(messages)
+    expect(result.input).toEqual([
+      {
+        role: "user",
+        content: [{ type: "input_file", file_id: "file-123", filename: "cached.txt" }],
+      },
+    ])
+  })
+
+  it("falls back to empty string when multimodal user content has no usable parts", () => {
+    const messages = [
+      {
+        role: "user",
+        content: [null, { type: "image_url", image_url: { url: "" } }],
+      },
+    ]
+    const result = toResponsesInput(messages)
     expect(result.input).toEqual([{ role: "user", content: "" }])
   })
 

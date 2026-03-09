@@ -798,6 +798,68 @@ describe("BlueBubbles sense runtime", () => {
     )
   })
 
+  it("passes hydrated BlueBubbles media through to the agent as structured user content", async () => {
+    mocks.repairEvent.mockResolvedValueOnce({
+      kind: "message",
+      eventType: "new-message",
+      messageGuid: "hydrated-image-msg",
+      timestamp: 10,
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        rawId: "ari@mendelow.me",
+        displayName: "ari@mendelow.me",
+      },
+      chat: {
+        chatGuid: "any;-;ari@mendelow.me",
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat:any;-;ari@mendelow.me",
+        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+      },
+      text: "",
+      textForAgent: "[image attachment: IMG_5045.heic.jpeg (600x800)]",
+      attachments: [{ guid: "image-guid", mimeType: "image/jpeg", transferName: "IMG_5045.heic.jpeg", width: 600, height: 800 }],
+      hasPayloadData: false,
+      requiresRepair: false,
+      inputPartsForAgent: [
+        {
+          type: "image_url",
+          image_url: {
+            url: "data:image/jpeg;base64,aGVsbG8=",
+            detail: "auto",
+          },
+        },
+      ],
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    expect(mocks.runAgent).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "user",
+          content: [
+            { type: "text", text: "[image attachment: IMG_5045.heic.jpeg (600x800)]" },
+            {
+              type: "image_url",
+              image_url: {
+                url: "data:image/jpeg;base64,aGVsbG8=",
+                detail: "auto",
+              },
+            },
+          ],
+        }),
+      ]),
+      expect.any(Object),
+      "bluebubbles",
+      expect.any(AbortSignal),
+      expect.any(Object),
+    )
+  })
+
   it("emits an explicit nerves error when mutation sidecar recording fails", async () => {
     const bluebubbles = await import("../../senses/bluebubbles")
     mocks.recordMutation.mockImplementationOnce(() => {

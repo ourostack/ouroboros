@@ -15,7 +15,7 @@ export type ResponseItem =
   | { type: "message"; id?: string; role: "assistant"; content: { type: string; text: string }[] }
   | { type: "function_call"; call_id: string; name: string; arguments: string; status: string }
   | { type: "function_call_output"; call_id: string; output: string }
-  | { role: "user"; content: string }
+  | { role: "user"; content: string | Array<Record<string, unknown>> }
   | { role: "assistant"; content: string };
 
 // Azure Responses API streaming event (untyped in SDK — use a flexible record)
@@ -110,6 +110,67 @@ export interface AssistantMessageWithReasoning extends OpenAI.ChatCompletionAssi
   _reasoning_items?: ResponseItem[];
 }
 
+function toResponsesUserContent(
+  content: OpenAI.ChatCompletionUserMessageParam["content"],
+): string | Array<Record<string, unknown>> {
+  if (typeof content === "string") {
+    return content
+  }
+  if (!Array.isArray(content)) {
+    return ""
+  }
+
+  const parts: Array<Record<string, unknown>> = []
+  for (const part of content) {
+    if (!part || typeof part !== "object") {
+      continue
+    }
+
+    if (part.type === "text" && typeof part.text === "string") {
+      parts.push({ type: "input_text", text: part.text })
+      continue
+    }
+
+    if (part.type === "image_url") {
+      const imageUrl = typeof part.image_url?.url === "string" ? part.image_url.url : ""
+      if (!imageUrl) continue
+      parts.push({
+        type: "input_image",
+        image_url: imageUrl,
+        detail: part.image_url?.detail ?? "auto",
+      })
+      continue
+    }
+
+    if (
+      part.type === "input_audio" &&
+      typeof part.input_audio?.data === "string" &&
+      (part.input_audio.format === "mp3" || part.input_audio.format === "wav")
+    ) {
+      parts.push({
+        type: "input_audio",
+        input_audio: {
+          data: part.input_audio.data,
+          format: part.input_audio.format,
+        },
+      })
+      continue
+    }
+
+    if (part.type === "file") {
+      const fileRecord: Record<string, unknown> = { type: "input_file" }
+      if (typeof part.file?.file_data === "string") fileRecord.file_data = part.file.file_data
+      if (typeof part.file?.file_id === "string") fileRecord.file_id = part.file.file_id
+      if (typeof part.file?.filename === "string") fileRecord.filename = part.file.filename
+      if (typeof part.file?.file_data === "string" || typeof part.file?.file_id === "string") {
+        parts.push(fileRecord)
+      }
+    }
+  }
+
+  return parts.length > 0 ? parts : ""
+}
+
 export function toResponsesInput(
   messages: OpenAI.ChatCompletionMessageParam[],
 ): { instructions: string; input: ResponseItem[] } {
@@ -127,7 +188,7 @@ export function toResponsesInput(
 
     if (msg.role === "user") {
       const u = msg as OpenAI.ChatCompletionUserMessageParam;
-      input.push({ role: "user", content: typeof u.content === "string" ? u.content : "" });
+      input.push({ role: "user", content: toResponsesUserContent(u.content) });
       continue;
     }
 

@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto"
 import { getBlueBubblesChannelConfig, getBlueBubblesConfig } from "../heart/config"
+import { loadAgentConfig } from "../heart/identity"
 import { emitNervesEvent } from "../nerves/runtime"
 import { normalizeBlueBubblesEvent, type BlueBubblesChatRef, type BlueBubblesNormalizedEvent } from "./bluebubbles-model"
+import { hydrateBlueBubblesAttachments } from "./bluebubbles-media"
 
 export interface BlueBubblesSendTextParams {
   chat: BlueBubblesChatRef
@@ -229,6 +231,10 @@ function extractRepairData(payload: unknown): JsonRecord | null {
   return asRecord(record?.data) ?? record
 }
 
+function providerSupportsAudioInput(provider: string): boolean {
+  return provider === "azure" || provider === "openai-codex"
+}
+
 export function createBlueBubblesClient(
   config: ClientConfig = getBlueBubblesConfig(),
   channelConfig: ChannelConfig = getBlueBubblesChannelConfig(),
@@ -378,7 +384,31 @@ export function createBlueBubblesClient(
           type: event.eventType,
           data,
         })
-        const hydrated = hydrateTextForAgent(normalized, data)
+        let hydrated = hydrateTextForAgent(normalized, data)
+        if (
+          hydrated.kind === "message" &&
+          hydrated.balloonBundleId !== "com.apple.messages.URLBalloonProvider" &&
+          hydrated.attachments.length > 0
+        ) {
+          const media = await hydrateBlueBubblesAttachments(
+            hydrated.attachments,
+            config,
+            channelConfig,
+            {
+              preferAudioInput: providerSupportsAudioInput(loadAgentConfig().provider),
+            },
+          )
+          const transcriptSuffix = media.transcriptAdditions.map((entry) => `[${entry}]`).join("\n")
+          const noticeSuffix = media.notices.map((entry) => `[${entry}]`).join("\n")
+          const combinedSuffix = [transcriptSuffix, noticeSuffix].filter(Boolean).join("\n")
+          hydrated = {
+            ...hydrated,
+            inputPartsForAgent: media.inputParts.length > 0 ? media.inputParts : undefined,
+            textForAgent: combinedSuffix
+              ? `${hydrated.textForAgent}${hydrated.textForAgent ? "\n" : ""}${combinedSuffix}`
+              : hydrated.textForAgent,
+          }
+        }
         emitNervesEvent({
           component: "senses",
           event: "senses.bluebubbles_repair_end",
