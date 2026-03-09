@@ -115,7 +115,7 @@ describe("BlueBubbles client", () => {
     expect(request).not.toHaveProperty("selectedMessageGuid")
   })
 
-  it("rejects empty text and missing chatGuid before calling fetch", async () => {
+  it("rejects empty text and missing routable chat identity before calling fetch", async () => {
     global.fetch = vi.fn() as typeof fetch
 
     const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
@@ -148,10 +148,9 @@ describe("BlueBubbles client", () => {
     await expect(
       client.sendText({
         chat: {
-          chatIdentifier: "ari@mendelow.me",
           isGroup: false,
-          sessionKey: "chat_identifier:ari@mendelow.me",
-          sendTarget: { kind: "chat_identifier", value: "ari@mendelow.me" },
+          sessionKey: "chat_identifier:unknown",
+          sendTarget: { kind: "chat_identifier", value: "unknown" },
         },
         text: "hello",
       }),

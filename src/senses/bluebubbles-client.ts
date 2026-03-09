@@ -21,6 +21,7 @@ export interface BlueBubblesClient {
 type ClientConfig = ReturnType<typeof getBlueBubblesConfig>
 type ChannelConfig = ReturnType<typeof getBlueBubblesChannelConfig>
 type JsonRecord = Record<string, unknown>
+type BlueBubblesChatQueryRecord = Record<string, unknown>
 
 function buildBlueBubblesApiUrl(baseUrl: string, endpoint: string, password: string): string {
   const root = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`
@@ -33,6 +34,12 @@ function asRecord(value: unknown): JsonRecord | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as JsonRecord
     : null
+}
+
+function readString(record: JsonRecord | null, key: string): string | undefined {
+  if (!record) return undefined
+  const value = record[key]
+  return typeof value === "string" ? value : undefined
 }
 
 function extractMessageGuid(payload: unknown): string | undefined {
@@ -73,6 +80,87 @@ function buildRepairUrl(baseUrl: string, messageGuid: string, password: string):
   const parsed = new URL(url)
   parsed.searchParams.set("with", "attachments,payloadData,chats,messageSummaryInfo")
   return parsed.toString()
+}
+
+function extractChatIdentifierFromGuid(chatGuid?: string): string | undefined {
+  if (!chatGuid) return undefined
+  const parts = chatGuid.split(";")
+  return parts.length >= 3 ? parts[2]?.trim() || undefined : undefined
+}
+
+function extractChatGuid(value: unknown): string | undefined {
+  const record = asRecord(value)
+  const candidates = [
+    record?.chatGuid,
+    record?.guid,
+    record?.chat_guid,
+    record?.identifier,
+    record?.chatIdentifier,
+    record?.chat_identifier,
+  ]
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim()
+    }
+  }
+  return undefined
+}
+
+function extractQueriedChatIdentifier(chat: BlueBubblesChatQueryRecord): string | undefined {
+  return readString(chat, "chatIdentifier")
+    ?? readString(chat, "identifier")
+    ?? readString(chat, "chat_identifier")
+    ?? extractChatIdentifierFromGuid(extractChatGuid(chat))
+}
+
+function extractChatQueryRows(payload: unknown): BlueBubblesChatQueryRecord[] {
+  const record = asRecord(payload)
+  const data = Array.isArray(record?.data)
+    ? record?.data
+    : Array.isArray(payload)
+      ? payload
+      : null
+  return Array.isArray(data)
+    ? data.map((entry) => asRecord(entry)).filter((entry): entry is BlueBubblesChatQueryRecord => entry !== null)
+    : []
+}
+
+async function resolveChatGuidForIdentifier(
+  config: ClientConfig,
+  channelConfig: ChannelConfig,
+  chatIdentifier: string,
+): Promise<string | undefined> {
+  const trimmedIdentifier = chatIdentifier.trim()
+  if (!trimmedIdentifier) return undefined
+
+  const url = buildBlueBubblesApiUrl(config.serverUrl, "/api/v1/chat/query", config.password)
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      limit: 500,
+      offset: 0,
+      with: ["participants"],
+    }),
+    signal: AbortSignal.timeout(channelConfig.requestTimeoutMs),
+  })
+
+  if (!response.ok) {
+    return undefined
+  }
+
+  const payload = await parseJsonBody(response)
+  const rows = extractChatQueryRows(payload)
+  for (const row of rows) {
+    const guid = extractChatGuid(row)
+    if (!guid) continue
+    const identifier = extractQueriedChatIdentifier(row)
+    if (identifier === trimmedIdentifier || guid === trimmedIdentifier) {
+      return guid
+    }
+  }
+
+  return undefined
 }
 
 function collectPreviewStrings(value: unknown, out: string[], depth = 0): void {
@@ -152,13 +240,15 @@ export function createBlueBubblesClient(
       if (!trimmedText) {
         throw new Error("BlueBubbles send requires non-empty text.")
       }
-      if (!params.chat.chatGuid) {
+      const resolvedChatGuid = params.chat.chatGuid
+        ?? await resolveChatGuidForIdentifier(config, channelConfig, params.chat.chatIdentifier ?? "")
+      if (!resolvedChatGuid) {
         throw new Error("BlueBubbles send currently requires chat.chatGuid from the inbound event.")
       }
 
       const url = buildBlueBubblesApiUrl(config.serverUrl, "/api/v1/message/text", config.password)
       const body: Record<string, unknown> = {
-        chatGuid: params.chat.chatGuid,
+        chatGuid: resolvedChatGuid,
         tempGuid: randomUUID(),
         message: trimmedText,
       }
@@ -173,7 +263,7 @@ export function createBlueBubblesClient(
         event: "senses.bluebubbles_send_start",
         message: "sending bluebubbles message",
         meta: {
-          chatGuid: params.chat.chatGuid,
+          chatGuid: resolvedChatGuid,
           hasReplyTarget: Boolean(params.replyToMessageGuid?.trim()),
         },
       })
@@ -208,7 +298,7 @@ export function createBlueBubblesClient(
         event: "senses.bluebubbles_send_end",
         message: "bluebubbles message sent",
         meta: {
-          chatGuid: params.chat.chatGuid,
+          chatGuid: resolvedChatGuid,
           messageGuid: messageGuid ?? null,
         },
       })
