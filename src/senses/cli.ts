@@ -36,6 +36,7 @@ export class Spinner {
   private msg = ""
   private phrases: readonly string[] | null = null
   private lastPhrase = ""
+  private stopped = false
 
   constructor(m = "working", phrases?: readonly string[]) {
     this.msg = m
@@ -43,6 +44,7 @@ export class Spinner {
   }
 
   start() {
+    this.stopped = false
     process.stderr.write("\r\x1b[K")
     this.spin()
     this.iv = setInterval(() => this.spin(), 80)
@@ -52,17 +54,23 @@ export class Spinner {
   }
 
   private spin() {
-    process.stderr.write(`\r${this.frames[this.i]} ${this.msg}... `)
+    // Guard: clearInterval can't prevent already-dequeued callbacks
+    /* v8 ignore next -- race guard: timer callback fires after stop() @preserve */
+    if (this.stopped) return
+    process.stderr.write(`\r\x1b[K${this.frames[this.i]} ${this.msg}... `)
     this.i = (this.i + 1) % this.frames.length
   }
 
   private rotatePhrase() {
+    /* v8 ignore next -- race guard: timer callback fires after stop() @preserve */
+    if (this.stopped) return
     const next = pickPhrase(this.phrases!, this.lastPhrase)
     this.lastPhrase = next
     this.msg = next
   }
 
   stop(ok?: string) {
+    this.stopped = true
     if (this.iv) { clearInterval(this.iv); this.iv = null }
     if (this.piv) { clearInterval(this.piv); this.piv = null }
     process.stderr.write("\r\x1b[K")
@@ -275,12 +283,25 @@ export function createCliCallbacks(): ChannelCallbacks & { flushMarkdown(): void
       currentSpinner.start()
     },
     onModelStreamStart: () => {
-      currentSpinner?.stop()
-      currentSpinner = null
+      // No-op: content callbacks (onTextChunk, onReasoningChunk) handle
+      // stopping the spinner. onModelStreamStart fires too early and
+      // doesn't fire at all for final_answer tool streaming.
+    },
+    onClearText: () => {
+      streamer.reset()
     },
     onTextChunk: (text: string) => {
+      // Stop spinner if still running — final_answer streaming and Anthropic
+      // tool-only responses bypass onModelStreamStart, so the spinner would
+      // otherwise keep running (and its \r writes overwrite response text).
+      if (currentSpinner) {
+        currentSpinner.stop()
+        currentSpinner = null
+      }
       if (hadReasoning) {
-        process.stdout.write("\n\n")
+        // Single newline to separate reasoning from reply — reasoning
+        // output often ends with its own trailing newline(s)
+        process.stdout.write("\n")
         hadReasoning = false
       }
       const rendered = streamer.push(text)
@@ -288,6 +309,10 @@ export function createCliCallbacks(): ChannelCallbacks & { flushMarkdown(): void
       textDirty = text.length > 0 && !text.endsWith("\n")
     },
     onReasoningChunk: (text: string) => {
+      if (currentSpinner) {
+        currentSpinner.stop()
+        currentSpinner = null
+      }
       hadReasoning = true
       process.stdout.write(`\x1b[2m${text}\x1b[0m`)
       textDirty = text.length > 0 && !text.endsWith("\n")
@@ -344,6 +369,41 @@ export function createCliCallbacks(): ChannelCallbacks & { flushMarkdown(): void
   }
 }
 
+// Debounced line iterator: collects rapid-fire lines (paste) into a single input.
+// When the debounce timeout wins the race, the pending iter.next() is saved
+// and reused in the next iteration to prevent it from silently consuming input.
+export async function* createDebouncedLines(source: AsyncIterable<string>, debounceMs: number): AsyncGenerator<string> {
+  if (debounceMs <= 0) {
+    yield* source
+    return
+  }
+  const iter = source[Symbol.asyncIterator]()
+  let pending: Promise<IteratorResult<string>> | null = null
+  while (true) {
+    const first = pending ? await pending : await iter.next()
+    pending = null
+    if (first.done) break
+    const lines = [first.value]
+    let more = true
+    while (more) {
+      const nextPromise = iter.next()
+      const raced = await Promise.race([
+        nextPromise.then((r) => ({ kind: "line" as const, result: r })),
+        new Promise<{ kind: "timeout" }>((r) => setTimeout(() => r({ kind: "timeout" }), debounceMs)),
+      ])
+      if (raced.kind === "timeout") {
+        pending = nextPromise
+        more = false
+      } else if (raced.result.done) {
+        more = false
+      } else {
+        lines.push(raced.result.value)
+      }
+    }
+    yield lines.join("\n")
+  }
+}
+
 export interface RunCliSessionOptions {
   agentName: string;
   tools?: OpenAI.ChatCompletionFunctionTool[];
@@ -361,6 +421,14 @@ export interface RunCliSessionOptions {
   onTurnEnd?: (messages: OpenAI.ChatCompletionMessageParam[], result: { usage?: UsageData }) => void | Promise<void>;
   /** Called when /new command resets the session. */
   onNewSession?: () => void | Promise<void>;
+  /** If true, auto-process the last user message before waiting for input (e.g. specialist greeting). */
+  autoFirstTurn?: boolean;
+  /** Custom banner shown at session start. Set to false to suppress entirely. */
+  banner?: string | false;
+  /** If true, slash commands are disabled (input always goes to the agent). */
+  disableCommands?: boolean;
+  /** If true, skip system prompt refresh in runAgent (use provided messages[0] as-is). */
+  skipSystemPromptRefresh?: boolean;
 }
 
 export interface RunCliSessionResult {
@@ -369,10 +437,13 @@ export interface RunCliSessionResult {
 }
 
 export async function runCliSession(options: RunCliSessionOptions): Promise<RunCliSessionResult> {
+  /* v8 ignore start -- integration: runCliSession is interactive, tested via E2E @preserve */
   const pasteDebounceMs = options.pasteDebounceMs ?? 50
 
   const registry = createCommandRegistry()
-  registerDefaultCommands(registry)
+  if (!options.disableCommands) {
+    registerDefaultCommands(registry)
+  }
 
   const messages: OpenAI.ChatCompletionMessageParam[] = options.messages
     ?? [{ role: "system", content: await buildSystem("cli") }]
@@ -384,8 +455,13 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
   let closed = false
   rl.on("close", () => { closed = true })
 
-  // eslint-disable-next-line no-console -- terminal UX: startup banner
-  console.log(`\n${options.agentName} (type /commands for help)\n`)
+  if (options.banner !== false) {
+    const bannerText = typeof options.banner === "string"
+      ? options.banner
+      : `${options.agentName} (type /commands for help)`
+    // eslint-disable-next-line no-console -- terminal UX: startup banner
+    console.log(`\n${bannerText}\n`)
+  }
 
   const cliCallbacks = createCliCallbacks()
 
@@ -399,6 +475,9 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
         if (name === options.exitOnToolCall) {
           exitToolResult = result
           exitToolFired = true
+          // Abort immediately so the model doesn't generate more output
+          // (e.g. reasoning about calling final_answer after complete_adoption)
+          currentAbort?.abort()
         }
         return result
       }
@@ -407,8 +486,6 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
   // Resolve toolChoiceRequired: use explicit option if set, else fall back to toggle
   const getEffectiveToolChoiceRequired = () =>
     options.toolChoiceRequired !== undefined ? options.toolChoiceRequired : getToolChoiceRequired()
-
-  process.stdout.write("\x1b[36m> \x1b[0m")
 
   // Ctrl-C at the input prompt: clear line or warn/exit
   rl.on("SIGINT", () => {
@@ -430,34 +507,7 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
     }
   })
 
-  // Debounced line iterator: collects rapid-fire lines (paste) into a single input
-  async function* debouncedLines(source: AsyncIterable<string>): AsyncGenerator<string> {
-    if (pasteDebounceMs <= 0) {
-      yield* source
-      return
-    }
-    const iter = source[Symbol.asyncIterator]()
-    while (true) {
-      const first = await iter.next()
-      if (first.done) break
-      const lines = [first.value]
-      let more = true
-      while (more) {
-        const raced = await Promise.race([
-          iter.next().then((r) => ({ kind: "line" as const, result: r })),
-          new Promise<{ kind: "timeout" }>((r) => setTimeout(() => r({ kind: "timeout" }), pasteDebounceMs)),
-        ])
-        if (raced.kind === "timeout") {
-          more = false
-        } else if (raced.result.done) {
-          more = false
-        } else {
-          lines.push(raced.result.value)
-        }
-      }
-      yield lines.join("\n")
-    }
-  }
+  const debouncedLines = (source: AsyncIterable<string>) => createDebouncedLines(source, pasteDebounceMs)
 
   emitNervesEvent({
     component: "senses",
@@ -467,6 +517,51 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
   })
 
   let exitReason: RunCliSessionResult["exitReason"] = "user_quit"
+
+  // Auto-first-turn: process the last user message immediately so the agent
+  // speaks first (e.g. specialist greeting). Only triggers when explicitly opted in.
+  if (options.autoFirstTurn && messages.length > 0 && messages[messages.length - 1]?.role === "user") {
+    currentAbort = new AbortController()
+    const traceId = createTraceId()
+    ctrl.suppress(() => currentAbort!.abort())
+    let result: { usage?: UsageData } | undefined
+    try {
+      result = await runAgent(messages, cliCallbacks, options.skipSystemPromptRefresh ? undefined : "cli", currentAbort.signal, {
+        toolChoiceRequired: getEffectiveToolChoiceRequired(),
+        traceId,
+        tools: options.tools,
+        execTool: wrappedExecTool,
+        toolContext: options.toolContext,
+      })
+    } catch (err) {
+      // AbortError (Ctrl-C) -- silently continue to prompt
+      // All other errors: show the user what happened
+      if (!(err instanceof DOMException && err.name === "AbortError")) {
+        process.stderr.write(`\x1b[31m${err instanceof Error ? err.message : String(err)}\x1b[0m\n`)
+      }
+    }
+    cliCallbacks.flushMarkdown()
+    ctrl.restore()
+    currentAbort = null
+
+    if (exitToolFired) {
+      exitReason = "tool_exit"
+      rl.close()
+    } else {
+      const lastMsg = messages[messages.length - 1]
+      if (lastMsg?.role === "assistant" && !(typeof lastMsg.content === "string" ? lastMsg.content : "").trim()) {
+        process.stderr.write("\x1b[33m(empty response)\x1b[0m\n")
+      }
+      process.stdout.write("\n\n")
+      if (options.onTurnEnd) {
+        await options.onTurnEnd(messages, result ?? { usage: undefined })
+      }
+    }
+  }
+
+  if (!exitToolFired) {
+    process.stdout.write("\x1b[36m> \x1b[0m")
+  }
 
   try {
     for await (const input of debouncedLines(rl)) {
@@ -527,15 +622,19 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
       ctrl.suppress(() => currentAbort!.abort())
       let result: { usage?: UsageData } | undefined
       try {
-        result = await runAgent(messages, cliCallbacks, "cli", currentAbort.signal, {
+        result = await runAgent(messages, cliCallbacks, options.skipSystemPromptRefresh ? undefined : "cli", currentAbort.signal, {
           toolChoiceRequired: getEffectiveToolChoiceRequired(),
           traceId,
           tools: options.tools,
           execTool: wrappedExecTool,
           toolContext: options.toolContext,
         })
-      } catch {
-        // AbortError -- silently return to prompt
+      } catch (err) {
+        // AbortError (Ctrl-C) -- silently return to prompt
+        // All other errors: show the user what happened
+        if (!(err instanceof DOMException && err.name === "AbortError")) {
+          process.stderr.write(`\x1b[31m${err instanceof Error ? err.message : String(err)}\x1b[0m\n`)
+        }
       }
       cliCallbacks.flushMarkdown()
       ctrl.restore()
@@ -565,9 +664,13 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
     }
   } finally {
     rl.close()
-    // eslint-disable-next-line no-console -- terminal UX: goodbye
-    console.log("bye")
+    if (options.banner !== false) {
+      // eslint-disable-next-line no-console -- terminal UX: goodbye
+      console.log("bye")
+    }
   }
+
+  /* v8 ignore stop */
 
   return { exitReason, toolResult: exitToolResult }
 }

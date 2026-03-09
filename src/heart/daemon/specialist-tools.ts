@@ -215,7 +215,10 @@ export function createSpecialistExecTool(
       try {
         const dir = path.dirname(args.path)
         fs.mkdirSync(dir, { recursive: true })
-        fs.writeFileSync(args.path, args.content, "utf-8")
+        const content = typeof args.content === "string"
+          ? args.content
+          : JSON.stringify(args.content, null, 2)
+        fs.writeFileSync(args.path, content, "utf-8")
         return `wrote ${args.path}`
       } catch (e) {
         return `error: ${e instanceof Error ? e.message : /* v8 ignore next -- defensive @preserve */ String(e)}`

@@ -1206,6 +1206,80 @@ describe("FinalAnswerParser", () => {
   })
 })
 
+describe("FinalAnswerStreamer", () => {
+  let FinalAnswerStreamer: any
+
+  beforeAll(async () => {
+    const streaming = await import("../../heart/streaming")
+    FinalAnswerStreamer = streaming.FinalAnswerStreamer
+  })
+
+  it("activate() calls onClearText and sets detected", () => {
+    let cleared = false
+    const streamer = new FinalAnswerStreamer({
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onClearText: () => { cleared = true },
+      flushMarkdown: () => {},
+    })
+    expect(streamer.detected).toBe(false)
+    streamer.activate()
+    expect(streamer.detected).toBe(true)
+    expect(cleared).toBe(true)
+  })
+
+  it("activate() is idempotent — second call is no-op", () => {
+    let clearCount = 0
+    const streamer = new FinalAnswerStreamer({
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onClearText: () => { clearCount++ },
+      flushMarkdown: () => {},
+    })
+    streamer.activate()
+    streamer.activate()
+    expect(clearCount).toBe(1)
+  })
+
+  it("processDelta() emits parsed answer text via onTextChunk", () => {
+    const chunks: string[] = []
+    const streamer = new FinalAnswerStreamer({
+      onModelStreamStart: () => {},
+      onTextChunk: (t: string) => { chunks.push(t) },
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onClearText: () => {},
+      flushMarkdown: () => {},
+    })
+    streamer.activate()
+    streamer.processDelta('{"answer":"hello"}')
+    expect(chunks.join("")).toBe("hello")
+    expect(streamer.streamed).toBe(true)
+  })
+
+  it("processDelta() is no-op when not detected", () => {
+    const chunks: string[] = []
+    const streamer = new FinalAnswerStreamer({
+      onModelStreamStart: () => {},
+      onTextChunk: (t: string) => { chunks.push(t) },
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      flushMarkdown: () => {},
+    })
+    streamer.processDelta('{"answer":"hello"}')
+    expect(chunks.length).toBe(0)
+    expect(streamer.streamed).toBe(false)
+  })
+})
+
 // --- Unit 20a: streamChatCompletion final_answer streaming integration tests ---
 
 describe("streamChatCompletion final_answer streaming", () => {

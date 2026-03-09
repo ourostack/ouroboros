@@ -219,7 +219,7 @@ describe("pickRandomIdentity", () => {
     const { pickRandomIdentity } = await import("../../../heart/daemon/specialist-orchestrator")
     const result = pickRandomIdentity("/nonexistent/identities/dir")
     expect(result.fileName).toBe("default")
-    expect(result.content).toContain("adoption specialist")
+    expect(result.content).toContain("serpent guide")
   })
 
   it("returns default identity for empty identities directory", async () => {
@@ -229,7 +229,7 @@ describe("pickRandomIdentity", () => {
 
     const result = pickRandomIdentity(identitiesDir)
     expect(result.fileName).toBe("default")
-    expect(result.content).toContain("adoption specialist")
+    expect(result.content).toContain("serpent guide")
   })
 
   it("filters out non-.md files", async () => {

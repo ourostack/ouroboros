@@ -109,6 +109,31 @@ describe("createSpecialistExecTool", () => {
     expect(fs.readFileSync(filePath, "utf-8")).toBe("test content")
   })
 
+  it("write_file coerces non-string content to JSON", async () => {
+    const tmpDir = makeTempDir("spec-tools-wf-obj")
+    cleanup.push(tmpDir)
+    const filePath = path.join(tmpDir, "agent.json")
+
+    const { createSpecialistExecTool } = await import("../../../heart/daemon/specialist-tools")
+    const execTool = createSpecialistExecTool({
+      tempDir: tmpDir,
+      credentials: { setupToken: "test" },
+      provider: "anthropic",
+      bundlesRoot: tmpDir,
+      secretsRoot: tmpDir,
+      animationWriter: () => {},
+    })
+
+    // Simulate model sending content as an object (parsed from JSON args)
+    const result = await execTool("write_file", {
+      path: filePath,
+      content: { name: "TestAgent", provider: "anthropic" } as unknown as string,
+    })
+    expect(result).toContain("wrote")
+    const written = fs.readFileSync(filePath, "utf-8")
+    expect(JSON.parse(written)).toEqual({ name: "TestAgent", provider: "anthropic" })
+  })
+
   it("write_file creates parent directories", async () => {
     const tmpDir = makeTempDir("spec-tools-wf-nested")
     cleanup.push(tmpDir)

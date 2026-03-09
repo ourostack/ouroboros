@@ -25,9 +25,17 @@ export async function playHatchAnimation(
 
   const write = writer ?? ((text: string) => process.stderr.write(text))
 
+  // Total animation time randomized between 3–5 seconds
+  const totalMs = 3000 + Math.floor(Math.random() * 2000)
+  const eggPhase = Math.floor(totalMs * 0.4)
+  const dotsPhase = Math.floor(totalMs * 0.4)
+  const revealPause = totalMs - eggPhase - dotsPhase
+
   write(`\n  ${EGG}`)
-  await wait(400)
+  await wait(eggPhase)
   write(DOTS)
-  await wait(400)
-  write(`${SNAKE} \x1b[1m${hatchlingName}\x1b[0m\n\n`)
+  await wait(dotsPhase)
+  write(`${SNAKE} \x1b[1m${hatchlingName}\x1b[0m`)
+  await wait(revealPause)
+  write("\n\n")
 }
