@@ -50,6 +50,42 @@ export function createBundleMeta(): BundleMeta {
   }
 }
 
+const _backfilledRoots = new Set<string>()
+
+/**
+ * If bundle-meta.json is missing from the agent root, create it with current runtime version.
+ * This backfills existing agent bundles that were created before bundle-meta.json was introduced.
+ * Only attempts once per bundleRoot per process.
+ */
+export function backfillBundleMeta(bundleRoot: string): void {
+  if (_backfilledRoots.has(bundleRoot)) return
+  _backfilledRoots.add(bundleRoot)
+
+  const metaPath = path.join(bundleRoot, "bundle-meta.json")
+  try {
+    if (fs.existsSync(metaPath)) {
+      return
+    }
+    const meta = createBundleMeta()
+    fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2) + "\n", "utf-8")
+    emitNervesEvent({
+      component: "mind",
+      event: "mind.bundle_meta_backfill",
+      message: "backfilled missing bundle-meta.json",
+      meta: { bundleRoot },
+    })
+  } catch {
+    // Non-blocking: if we can't write, that's okay
+  }
+}
+
+/**
+ * Reset the backfill tracking set. Used in tests.
+ */
+export function resetBackfillTracking(): void {
+  _backfilledRoots.clear()
+}
+
 const CANONICAL_FILE_PATHS = new Set(
   CANONICAL_BUNDLE_MANIFEST
     .filter((entry) => entry.kind === "file")

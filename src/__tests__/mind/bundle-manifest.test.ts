@@ -10,6 +10,7 @@ import {
   isCanonicalBundlePath,
   getPackageVersion,
   createBundleMeta,
+  backfillBundleMeta,
 } from "../../mind/bundle-manifest"
 import type { BundleMeta } from "../../mind/bundle-manifest"
 
@@ -121,5 +122,37 @@ describe("createBundleMeta", () => {
     const after = new Date().toISOString()
     expect(meta.lastUpdated >= before).toBe(true)
     expect(meta.lastUpdated <= after).toBe(true)
+  })
+})
+
+describe("backfillBundleMeta", () => {
+  it("creates bundle-meta.json when missing", () => {
+    const bundleRoot = createTempBundleRoot()
+
+    backfillBundleMeta(bundleRoot)
+
+    const metaPath = path.join(bundleRoot, "bundle-meta.json")
+    expect(fs.existsSync(metaPath)).toBe(true)
+    const meta = JSON.parse(fs.readFileSync(metaPath, "utf-8")) as BundleMeta
+    expect(meta.runtimeVersion).toBe(getPackageVersion())
+    expect(meta.bundleSchemaVersion).toBe(1)
+    expect(meta.lastUpdated).toBeTruthy()
+  })
+
+  it("does not overwrite existing bundle-meta.json", () => {
+    const bundleRoot = createTempBundleRoot()
+    const metaPath = path.join(bundleRoot, "bundle-meta.json")
+    const existingMeta = { runtimeVersion: "0.0.1", bundleSchemaVersion: 1, lastUpdated: "2025-01-01T00:00:00Z" }
+    fs.writeFileSync(metaPath, JSON.stringify(existingMeta), "utf-8")
+
+    backfillBundleMeta(bundleRoot)
+
+    const meta = JSON.parse(fs.readFileSync(metaPath, "utf-8")) as BundleMeta
+    expect(meta.runtimeVersion).toBe("0.0.1")
+    expect(meta.lastUpdated).toBe("2025-01-01T00:00:00Z")
+  })
+
+  it("handles non-existent bundleRoot gracefully", () => {
+    expect(() => backfillBundleMeta("/nonexistent/bundle/root")).not.toThrow()
   })
 })
