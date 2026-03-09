@@ -153,6 +153,12 @@ describe("toResponsesInput", () => {
     expect(result.input).toEqual([{ role: "user", content: "hi" }])
   })
 
+  it("falls back to empty user text when user content is neither string nor array", () => {
+    const messages = [{ role: "user", content: { unexpected: true } as never }]
+    const result = toResponsesInput(messages)
+    expect(result.input).toEqual([{ role: "user", content: "" }])
+  })
+
   it("converts assistant message (text only) to input item", () => {
     const messages = [{ role: "assistant", content: "hello" }]
     const result = toResponsesInput(messages)

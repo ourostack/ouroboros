@@ -117,6 +117,31 @@ describe("remote channel tool safety", () => {
     expect(names).toContain("read_file")
   })
 
+  it("treats missing externalIds as a non-shared trusted remote context", () => {
+    const tools = getToolsForChannel(
+      getChannelCapabilities("bluebubbles"),
+      undefined,
+      {
+        friend: {
+          id: "friend-4",
+          name: "Casey",
+          trustLevel: "family",
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          createdAt: "2026-03-08T00:00:00.000Z",
+          updatedAt: "2026-03-08T00:00:00.000Z",
+          schemaVersion: 1,
+        },
+        channel: getChannelCapabilities("bluebubbles"),
+      },
+    )
+    const names = tools.map((t) => t.function.name)
+
+    expect(names).toContain("shell")
+    expect(names).toContain("read_file")
+  })
+
   it("keeps local tools blocked for shared teams conversations even when trusted", () => {
     const tools = getToolsForChannel(
       getChannelCapabilities("teams"),
