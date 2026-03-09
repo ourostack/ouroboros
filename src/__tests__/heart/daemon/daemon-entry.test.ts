@@ -57,6 +57,9 @@ describe("daemon entrypoint", () => {
         stopAll = vi.fn(async () => undefined)
       },
     }))
+    vi.doMock("../../../heart/daemon/agent-discovery", () => ({
+      listEnabledBundleAgents: vi.fn(() => ["slugger", "ouroboros"]),
+    }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
     vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
 
@@ -199,6 +202,9 @@ describe("daemon entrypoint", () => {
       const actual = await vi.importActual<typeof import("os")>("os")
       return { ...actual, homedir: () => homeRoot }
     })
+    vi.doMock("../../../heart/daemon/agent-discovery", () => ({
+      listEnabledBundleAgents: vi.fn(() => ["Juno", "Northstar", "slugger"]),
+    }))
     vi.doMock("../../../heart/daemon/daemon", () => ({
       OuroDaemon: MockOuroDaemon,
     }))
