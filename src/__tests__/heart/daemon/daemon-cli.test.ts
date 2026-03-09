@@ -1,3 +1,5 @@
+import * as fs from "fs"
+import * as path from "path"
 import { describe, expect, it, vi } from "vitest"
 
 import {
@@ -7,6 +9,10 @@ import {
   type OuroCliDeps,
 } from "../../../heart/daemon/daemon-cli"
 import { OuroDaemon } from "../../../heart/daemon/daemon"
+
+const PACKAGE_VERSION = JSON.parse(
+  fs.readFileSync(path.join(process.cwd(), "package.json"), "utf-8"),
+) as { version: string }
 
 describe("ouro CLI parsing", () => {
   it("parses primary daemon commands", () => {
@@ -195,6 +201,28 @@ describe("ouro CLI parsing", () => {
 })
 
 describe("ouro CLI execution", () => {
+  it("prints the runtime version for short and long version flags", async () => {
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+    }
+
+    const shortResult = await runOuroCli(["-v"], deps)
+    const longResult = await runOuroCli(["--version"], deps)
+
+    expect(shortResult).toBe(PACKAGE_VERSION.version)
+    expect(longResult).toBe(PACKAGE_VERSION.version)
+    expect(deps.writeStdout).toHaveBeenNthCalledWith(1, PACKAGE_VERSION.version)
+    expect(deps.writeStdout).toHaveBeenNthCalledWith(2, PACKAGE_VERSION.version)
+    expect(deps.sendCommand).not.toHaveBeenCalled()
+  })
+
   it("starts daemon on `up` when socket is not live", async () => {
     const installSubagents = vi.fn(async () => ({
       claudeInstalled: 0,
@@ -329,11 +357,13 @@ describe("ouro CLI execution", () => {
 
     const result = await runOuroCli(["status"], deps)
 
-    expect(result).toContain("| Daemon  | unknown |")
-    expect(result).toContain("| Socket  | unknown |")
-    expect(result).toContain("| Workers | 0")
-    expect(result).toContain("| Senses  | 0")
-    expect(result).toContain("| Health  | unknown |")
+    expect(result).toContain("| Daemon       | unknown |")
+    expect(result).toContain("| Socket       | unknown |")
+    expect(result).toContain("| Version      | unknown |")
+    expect(result).toContain("| Last Updated | unknown |")
+    expect(result).toContain("| Workers      | 0")
+    expect(result).toContain("| Senses       | 0")
+    expect(result).toContain("| Health       | unknown |")
   })
 
   it("renders daemon status with Overview, Senses, and Workers sections", async () => {
@@ -346,6 +376,8 @@ describe("ouro CLI execution", () => {
           overview: {
             daemon: "running",
             socketPath: "/tmp/ouro-test.sock",
+            version: PACKAGE_VERSION.version,
+            lastUpdated: "2026-03-08T23:50:00.000Z",
             workerCount: 1,
             senseCount: 3,
             health: "ok",
@@ -398,6 +430,8 @@ describe("ouro CLI execution", () => {
     expect(result).toContain("Overview")
     expect(result).toContain("Senses")
     expect(result).toContain("Workers")
+    expect(result).toContain(PACKAGE_VERSION.version)
+    expect(result).toContain("2026-03-08T23:50:00.000Z")
     expect(result).toContain("BlueBubbles")
     expect(result).toContain("interactive")
     expect(result).toContain("/bluebubbles-webhook")

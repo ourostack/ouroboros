@@ -24,6 +24,7 @@ import {
 } from "./specialist-orchestrator"
 import { buildSpecialistSystemPrompt } from "./specialist-prompt"
 import { getSpecialistTools, createSpecialistExecTool } from "./specialist-tools"
+import { getRuntimeMetadata } from "./runtime-metadata"
 
 export type OuroCliCommand =
   | { kind: "daemon.up" }
@@ -65,6 +66,8 @@ interface StatusOverviewRow {
   daemon: string
   health: string
   socketPath: string
+  version: string
+  lastUpdated: string
   workerCount: number
   senseCount: number
 }
@@ -117,6 +120,8 @@ function parseStatusPayload(data: unknown): StatusPayload | null {
     daemon: stringField((overview as Record<string, unknown>).daemon) ?? "unknown",
     health: stringField((overview as Record<string, unknown>).health) ?? "unknown",
     socketPath: stringField((overview as Record<string, unknown>).socketPath) ?? "unknown",
+    version: stringField((overview as Record<string, unknown>).version) ?? "unknown",
+    lastUpdated: stringField((overview as Record<string, unknown>).lastUpdated) ?? "unknown",
     workerCount: numberField((overview as Record<string, unknown>).workerCount) ?? 0,
     senseCount: numberField((overview as Record<string, unknown>).senseCount) ?? 0,
   }
@@ -197,6 +202,8 @@ function formatDaemonStatusOutput(response: DaemonResponse, fallback: string): s
   const overviewRows = [
     ["Daemon", payload.overview.daemon],
     ["Socket", payload.overview.socketPath],
+    ["Version", payload.overview.version],
+    ["Last Updated", payload.overview.lastUpdated],
     ["Workers", String(payload.overview.workerCount)],
     ["Senses", String(payload.overview.senseCount)],
     ["Health", payload.overview.health],
@@ -250,11 +257,52 @@ function usage(): string {
     "Usage:",
     "  ouro [up]",
     "  ouro stop|status|logs|hatch",
+    "  ouro -v|--version",
     "  ouro chat <agent>",
     "  ouro msg --to <agent> [--session <id>] [--task <ref>] <message>",
     "  ouro poke <agent> --task <task-id>",
     "  ouro link <agent> --friend <id> --provider <provider> --external-id <external-id>",
   ].join("\n")
+}
+
+function formatVersionOutput(): string {
+  return getRuntimeMetadata().version
+}
+
+function buildStoppedStatusPayload(socketPath: string): StatusPayload {
+  const metadata = getRuntimeMetadata()
+  return {
+    overview: {
+      daemon: "stopped",
+      health: "warn",
+      socketPath,
+      version: metadata.version,
+      lastUpdated: metadata.lastUpdated,
+      workerCount: 0,
+      senseCount: 0,
+    },
+    senses: [],
+    workers: [],
+  }
+}
+
+function daemonUnavailableStatusOutput(socketPath: string): string {
+  return [
+    formatDaemonStatusOutput({
+      ok: true,
+      summary: "daemon not running",
+      data: buildStoppedStatusPayload(socketPath),
+    }, "daemon not running"),
+    "",
+    "daemon not running; run `ouro up`",
+  ].join("\n")
+}
+
+function isDaemonUnavailableError(error: unknown): boolean {
+  const code = typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code?: unknown }).code ?? "")
+    : ""
+  return code === "ENOENT" || code === "ECONNREFUSED"
 }
 
 function parseMessageCommand(args: string[]): OuroCliCommand {
@@ -982,6 +1030,12 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     return text
   }
 
+  if (args.length === 1 && (args[0] === "-v" || args[0] === "--version")) {
+    const text = formatVersionOutput()
+    deps.writeStdout(text)
+    return text
+  }
+
   let command: OuroCliCommand
   try {
     command = parseOuroCommand(args)
@@ -1126,6 +1180,16 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     if (command.kind === "message.send") {
       const pendingPath = deps.fallbackPendingMessage(command)
       const message = `daemon unavailable; queued message fallback at ${pendingPath}`
+      deps.writeStdout(message)
+      return message
+    }
+    if (command.kind === "daemon.status" && isDaemonUnavailableError(error)) {
+      const message = daemonUnavailableStatusOutput(deps.socketPath)
+      deps.writeStdout(message)
+      return message
+    }
+    if (command.kind === "daemon.stop" && isDaemonUnavailableError(error)) {
+      const message = "daemon not running"
       deps.writeStdout(message)
       return message
     }

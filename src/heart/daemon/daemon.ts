@@ -4,6 +4,7 @@ import * as path from "path"
 import { getAgentBundlesRoot } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { DaemonSenseManagerLike, DaemonSenseRow } from "./sense-manager"
+import { getRuntimeMetadata } from "./runtime-metadata"
 
 export interface DaemonCronJobSummary {
   id: string
@@ -114,6 +115,8 @@ interface DaemonStatusOverview {
   daemon: "running" | "stopped"
   health: "ok" | "warn"
   socketPath: string
+  version: string
+  lastUpdated: string
   workerCount: number
   senseCount: number
 }
@@ -356,6 +359,7 @@ export class OuroDaemon {
             daemon: "running",
             health: workers.every((worker) => worker.status === "running") ? "ok" : "warn",
             socketPath: this.socketPath,
+            ...getRuntimeMetadata(),
             workerCount: workers.length,
             senseCount: senses.length,
           },
