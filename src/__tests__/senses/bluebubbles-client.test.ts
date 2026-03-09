@@ -229,6 +229,232 @@ describe("BlueBubbles client", () => {
     expect(sendBody.chatGuid).toBe("any;-;ari@mendelow.me")
   })
 
+  it("can recover chat identifiers from guid-only chat query rows", async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify([
+            {
+              guid: "any;-;ari@mendelow.me",
+            },
+          ]),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ guid: "guid-only-result" }), { status: 200 }),
+      ) as typeof fetch
+
+    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+
+    const result = await client.sendText({
+      chat: {
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat_identifier:ari@mendelow.me",
+        sendTarget: { kind: "chat_identifier", value: "ari@mendelow.me" },
+      },
+      text: "guid fallback",
+    })
+
+    expect(result).toEqual({ messageGuid: "guid-only-result" })
+  })
+
+  it("treats malformed guid-only chat query rows as unresolved routing", async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify([
+            {
+              guid: "chat-guid-only",
+            },
+          ]),
+          { status: 200 },
+        ),
+      ) as typeof fetch
+
+    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+
+    await expect(
+      client.sendText({
+        chat: {
+          chatIdentifier: "ari@mendelow.me",
+          isGroup: false,
+          sessionKey: "chat_identifier:ari@mendelow.me",
+          sendTarget: { kind: "chat_identifier", value: "ari@mendelow.me" },
+        },
+        text: "bad guid shape",
+      }),
+    ).rejects.toThrow("requires chat.chatGuid")
+  })
+
+  it("treats empty identifiers embedded in chat guids as unresolved routing", async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify([
+            {
+              guid: "any;-;",
+            },
+          ]),
+          { status: 200 },
+        ),
+      ) as typeof fetch
+
+    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+
+    await expect(
+      client.sendText({
+        chat: {
+          chatIdentifier: "ari@mendelow.me",
+          isGroup: false,
+          sessionKey: "chat_identifier:ari@mendelow.me",
+          sendTarget: { kind: "chat_identifier", value: "ari@mendelow.me" },
+        },
+        text: "empty guid identifier",
+      }),
+    ).rejects.toThrow("requires chat.chatGuid")
+  })
+
+  it("fails clearly when identifier-only routing cannot be resolved", async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: [{ identifier: "someone-else" }, {}] }), { status: 200 }),
+      ) as typeof fetch
+
+    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+
+    await expect(
+      client.sendText({
+        chat: {
+          chatIdentifier: "ari@mendelow.me",
+          isGroup: false,
+          sessionKey: "chat_identifier:ari@mendelow.me",
+          sendTarget: { kind: "chat_identifier", value: "ari@mendelow.me" },
+        },
+        text: "still needs routing",
+      }),
+    ).rejects.toThrow("requires chat.chatGuid")
+  })
+
+  it("treats invalid chat-query payloads as unresolved routing instead of crashing", async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: { guid: "not-an-array" } }), { status: 200 }),
+      ) as typeof fetch
+
+    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+
+    await expect(
+      client.sendText({
+        chat: {
+          chatIdentifier: "ari@mendelow.me",
+          isGroup: false,
+          sessionKey: "chat_identifier:ari@mendelow.me",
+          sendTarget: { kind: "chat_identifier", value: "ari@mendelow.me" },
+        },
+        text: "bad payload",
+      }),
+    ).rejects.toThrow("requires chat.chatGuid")
+  })
+
+  it("fails clearly when identifier lookup returns an HTTP error", async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("no query access", { status: 503 })) as typeof fetch
+
+    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+
+    await expect(
+      client.sendText({
+        chat: {
+          chatIdentifier: "ari@mendelow.me",
+          isGroup: false,
+          sessionKey: "chat_identifier:ari@mendelow.me",
+          sendTarget: { kind: "chat_identifier", value: "ari@mendelow.me" },
+        },
+        text: "query failed",
+      }),
+    ).rejects.toThrow("requires chat.chatGuid")
+  })
+
   it("surfaces BlueBubbles send errors with response details", async () => {
     global.fetch = vi.fn().mockResolvedValue(
       new Response("private api required", { status: 403 }),

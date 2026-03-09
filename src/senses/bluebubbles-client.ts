@@ -36,8 +36,7 @@ function asRecord(value: unknown): JsonRecord | null {
     : null
 }
 
-function readString(record: JsonRecord | null, key: string): string | undefined {
-  if (!record) return undefined
+function readString(record: JsonRecord, key: string): string | undefined {
   const value = record[key]
   return typeof value === "string" ? value : undefined
 }
@@ -82,8 +81,7 @@ function buildRepairUrl(baseUrl: string, messageGuid: string, password: string):
   return parsed.toString()
 }
 
-function extractChatIdentifierFromGuid(chatGuid?: string): string | undefined {
-  if (!chatGuid) return undefined
+function extractChatIdentifierFromGuid(chatGuid: string): string | undefined {
   const parts = chatGuid.split(";")
   return parts.length >= 3 ? parts[2]?.trim() || undefined : undefined
 }
@@ -106,23 +104,24 @@ function extractChatGuid(value: unknown): string | undefined {
   return undefined
 }
 
-function extractQueriedChatIdentifier(chat: BlueBubblesChatQueryRecord): string | undefined {
-  return readString(chat, "chatIdentifier")
+function extractQueriedChatIdentifier(chat: BlueBubblesChatQueryRecord, chatGuid: string): string | undefined {
+  const explicitIdentifier = readString(chat, "chatIdentifier")
     ?? readString(chat, "identifier")
     ?? readString(chat, "chat_identifier")
-    ?? extractChatIdentifierFromGuid(extractChatGuid(chat))
+  if (explicitIdentifier) {
+    return explicitIdentifier
+  }
+
+  return extractChatIdentifierFromGuid(chatGuid)
 }
 
 function extractChatQueryRows(payload: unknown): BlueBubblesChatQueryRecord[] {
   const record = asRecord(payload)
-  const data = Array.isArray(record?.data)
-    ? record?.data
-    : Array.isArray(payload)
-      ? payload
-      : null
-  return Array.isArray(data)
-    ? data.map((entry) => asRecord(entry)).filter((entry): entry is BlueBubblesChatQueryRecord => entry !== null)
-    : []
+  const data = Array.isArray(record?.data) ? record.data : payload
+  if (!Array.isArray(data)) {
+    return []
+  }
+  return data.map((entry) => asRecord(entry)).filter((entry): entry is BlueBubblesChatQueryRecord => entry !== null)
 }
 
 async function resolveChatGuidForIdentifier(
@@ -154,7 +153,7 @@ async function resolveChatGuidForIdentifier(
   for (const row of rows) {
     const guid = extractChatGuid(row)
     if (!guid) continue
-    const identifier = extractQueriedChatIdentifier(row)
+    const identifier = extractQueriedChatIdentifier(row, guid)
     if (identifier === trimmedIdentifier || guid === trimmedIdentifier) {
       return guid
     }
