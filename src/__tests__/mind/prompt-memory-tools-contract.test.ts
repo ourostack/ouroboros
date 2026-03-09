@@ -51,6 +51,7 @@ function setupReadFileSync() {
     if (p.endsWith("TACIT.md")) return "tacit"
     if (p.endsWith("ASPIRATIONS.md")) return "aspirations"
     if (p.endsWith("secrets.json")) return JSON.stringify({})
+    if (p.endsWith("package.json")) return JSON.stringify({ version: "0.1.0-alpha.20" })
     return ""
   })
 }

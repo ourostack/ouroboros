@@ -56,10 +56,16 @@ vi.mock("../../mind/first-impressions", () => ({
   getFirstImpressions: vi.fn(() => null),
 }))
 
+import * as fs from "fs"
 import type OpenAI from "openai"
 
 beforeEach(() => {
   vi.resetModules()
+  vi.mocked(fs.readFileSync).mockImplementation((filePath: any, _encoding?: any) => {
+    const p = String(filePath)
+    if (p.endsWith("package.json")) return JSON.stringify({ version: "0.1.0-alpha.20" })
+    return ""
+  })
 })
 
 describe("refreshSystemPrompt", () => {

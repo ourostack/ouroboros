@@ -64,6 +64,8 @@ import * as fs from "fs"
 import { listSkills } from "../../repertoire/skills"
 import * as identity from "../../heart/identity"
 
+const MOCK_PACKAGE_JSON = JSON.stringify({ version: "0.1.0-alpha.20" })
+
 // Default psyche file contents used by the mock
 const MOCK_SOUL = "i am a witty, funny, competent chaos monkey coding assistant.\ni get things done, crack jokes, embrace chaos, deliver quality."
 const MOCK_IDENTITY = "i am Ouroboros.\ni use lowercase in my responses to the user except for proper nouns. no periods unless necessary. i never apply lowercase to code, file paths, environment variables, or tool arguments -- only to natural language output."
@@ -108,6 +110,7 @@ function setupReadFileSync() {
     if (p.endsWith("TACIT.md")) return MOCK_TACIT_KNOWLEDGE
     if (p.endsWith("ASPIRATIONS.md")) return MOCK_ASPIRATIONS
     if (p.endsWith("secrets.json")) return JSON.stringify({})
+    if (p.endsWith("package.json")) return MOCK_PACKAGE_JSON
     return ""
   })
 }
@@ -266,6 +269,7 @@ describe("buildSystem", () => {
           },
         })
       }
+      if (p.endsWith("package.json")) return MOCK_PACKAGE_JSON
       return ""
     })
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
@@ -309,6 +313,7 @@ describe("buildSystem", () => {
       if (p.endsWith("TACIT.md")) return MOCK_TACIT_KNOWLEDGE
       if (p.endsWith("ASPIRATIONS.md")) return MOCK_ASPIRATIONS
       if (p.endsWith("secrets.json")) return JSON.stringify({})
+      if (p.endsWith("package.json")) return MOCK_PACKAGE_JSON
       return ""
     })
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
@@ -352,6 +357,7 @@ describe("buildSystem", () => {
       if (p.endsWith("TACIT.md")) return MOCK_TACIT_KNOWLEDGE
       if (p.endsWith("ASPIRATIONS.md")) return MOCK_ASPIRATIONS
       if (p.endsWith("secrets.json")) return "{"
+      if (p.endsWith("package.json")) return MOCK_PACKAGE_JSON
       return ""
     })
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
@@ -398,6 +404,7 @@ describe("buildSystem", () => {
           },
         })
       }
+      if (p.endsWith("package.json")) return MOCK_PACKAGE_JSON
       return ""
     })
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
@@ -554,6 +561,7 @@ describe("buildSystem", () => {
       if (p.endsWith("LORE.md")) return MOCK_LORE
       if (p.endsWith("FRIENDS.md")) return MOCK_FRIENDS
       if (p.endsWith("secrets.json")) return JSON.stringify({})
+      if (p.endsWith("package.json")) return MOCK_PACKAGE_JSON
       return ""
     })
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
@@ -643,6 +651,7 @@ describe("buildSystem", () => {
       if (p.endsWith("LORE.md")) return MOCK_LORE
       if (p.endsWith("FRIENDS.md")) return MOCK_FRIENDS
       if (p.endsWith("secrets.json")) return JSON.stringify({})
+      if (p.endsWith("package.json")) return MOCK_PACKAGE_JSON
       return ""
     })
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
@@ -662,6 +671,7 @@ describe("buildSystem", () => {
       if (p.endsWith("LORE.md")) return MOCK_LORE
       if (p.endsWith("FRIENDS.md")) return MOCK_FRIENDS
       if (p.endsWith("secrets.json")) return JSON.stringify({})
+      if (p.endsWith("package.json")) return MOCK_PACKAGE_JSON
       return ""
     })
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
@@ -687,6 +697,7 @@ describe("buildSystem", () => {
         return MOCK_FRIENDS
       }
       if (p.endsWith("secrets.json")) return JSON.stringify({})
+      if (p.endsWith("package.json")) return MOCK_PACKAGE_JSON
       return ""
     })
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
@@ -828,6 +839,7 @@ describe("provider section contract", () => {
 describe("runtimeInfoSection", () => {
   beforeEach(() => {
     vi.resetModules()
+    vi.mocked(fs.existsSync).mockReset()
     setAgentProvider("minimax")
   })
 
@@ -919,6 +931,7 @@ describe("runtimeInfoSection", () => {
       if (p.endsWith("TACIT.md")) return MOCK_TACIT_KNOWLEDGE
       if (p.endsWith("ASPIRATIONS.md")) return MOCK_ASPIRATIONS
       if (p.endsWith("secrets.json")) return JSON.stringify({})
+      if (p.endsWith("package.json")) return MOCK_PACKAGE_JSON
       return ""
     })
     vi.mocked(fs.existsSync).mockReturnValue(true)
@@ -946,6 +959,7 @@ describe("runtimeInfoSection", () => {
       if (p.endsWith("TACIT.md")) return MOCK_TACIT_KNOWLEDGE
       if (p.endsWith("ASPIRATIONS.md")) return MOCK_ASPIRATIONS
       if (p.endsWith("secrets.json")) return JSON.stringify({})
+      if (p.endsWith("package.json")) return MOCK_PACKAGE_JSON
       return ""
     })
     vi.mocked(fs.existsSync).mockReturnValue(true)
@@ -1006,6 +1020,8 @@ describe("runtimeInfoSection", () => {
 describe("psyche loading", () => {
   beforeEach(() => {
     vi.resetModules()
+    vi.mocked(fs.existsSync).mockReset()
+    vi.mocked(fs.readdirSync).mockReset()
     setAgentProvider("minimax")
   })
 
@@ -1030,6 +1046,7 @@ describe("psyche loading", () => {
     vi.mocked(fs.readFileSync).mockImplementation((filePath: any, _encoding?: any) => {
       const p = String(filePath)
       if (p.endsWith("secrets.json")) return JSON.stringify({})
+      if (p.endsWith("package.json")) return MOCK_PACKAGE_JSON
       throw new Error("ENOENT: no such file or directory")
     })
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
@@ -1053,8 +1070,12 @@ describe("psyche loading", () => {
     const callCount1 = vi.mocked(fs.readFileSync).mock.calls.length
     await buildSystem()
     const callCount2 = vi.mocked(fs.readFileSync).mock.calls.length
-    // Second call should not trigger more readFileSync calls for psyche files
-    expect(callCount2).toBe(callCount1)
+    // Second call should not re-read psyche files. Non-psyche reads (package.json,
+    // bundle-meta.json, secrets.json) still happen, so filter to psyche paths only.
+    const psycheCallsAfterFirst = vi.mocked(fs.readFileSync).mock.calls
+      .slice(callCount1)
+      .filter(c => String(c[0]).includes("psyche"))
+    expect(psycheCallsAfterFirst.length).toBe(0)
   })
 
   it("resetPsycheCache clears cached psyche text", async () => {
@@ -1912,6 +1933,8 @@ describe("contextSection", () => {
 describe("buildSystem with context", () => {
   beforeEach(() => {
     vi.resetModules()
+    vi.mocked(fs.existsSync).mockReset()
+    vi.mocked(fs.readdirSync).mockReset()
     setAgentProvider("minimax")
   })
 
