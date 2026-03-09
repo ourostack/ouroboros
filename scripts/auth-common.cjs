@@ -22,7 +22,7 @@ const DEFAULT_SECRETS_TEMPLATE = {
       setupToken: "",
     },
     "openai-codex": {
-      model: "gpt-5.2",
+      model: "gpt-5.4",
       oauthAccessToken: "",
     },
   },

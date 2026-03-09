@@ -8,16 +8,10 @@ function makeTempDir(prefix: string): string {
 }
 
 describe("getSpecialistTools", () => {
-  it("returns adoption tools plus the broader base tool surface", async () => {
+  it("returns exactly 5 tool schemas", async () => {
     const { getSpecialistTools } = await import("../../../heart/daemon/specialist-tools")
     const tools = getSpecialistTools()
-    const names = tools.map((t) => t.function.name)
-    expect(names).toContain("complete_adoption")
-    expect(names).toContain("final_answer")
-    expect(names).toContain("shell")
-    expect(names).toContain("task_create")
-    expect(names).toContain("schedule_reminder")
-    expect(names.length).toBeGreaterThan(5)
+    expect(tools).toHaveLength(5)
   })
 
   it("includes complete_adoption with name and handoff_message parameters", async () => {
@@ -38,14 +32,11 @@ describe("getSpecialistTools", () => {
     expect(faTool).toBeDefined()
   })
 
-  it("includes read_file, write_file, list_directory, and shell tools", async () => {
+  it("includes read_file, write_file, and list_directory tools", async () => {
     const { getSpecialistTools } = await import("../../../heart/daemon/specialist-tools")
     const tools = getSpecialistTools()
     const names = tools.map((t) => t.function.name).sort()
-    expect(names).toContain("list_directory")
-    expect(names).toContain("read_file")
-    expect(names).toContain("write_file")
-    expect(names).toContain("shell")
+    expect(names).toEqual(["complete_adoption", "final_answer", "list_directory", "read_file", "write_file"])
   })
 })
 
@@ -114,8 +105,33 @@ describe("createSpecialistExecTool", () => {
     })
 
     const result = await execTool("write_file", { path: filePath, content: "test content" })
-    expect(result).toBe("ok")
+    expect(result).toContain("wrote")
     expect(fs.readFileSync(filePath, "utf-8")).toBe("test content")
+  })
+
+  it("write_file coerces non-string content to JSON", async () => {
+    const tmpDir = makeTempDir("spec-tools-wf-obj")
+    cleanup.push(tmpDir)
+    const filePath = path.join(tmpDir, "agent.json")
+
+    const { createSpecialistExecTool } = await import("../../../heart/daemon/specialist-tools")
+    const execTool = createSpecialistExecTool({
+      tempDir: tmpDir,
+      credentials: { setupToken: "test" },
+      provider: "anthropic",
+      bundlesRoot: tmpDir,
+      secretsRoot: tmpDir,
+      animationWriter: () => {},
+    })
+
+    // Simulate model sending content as an object (parsed from JSON args)
+    const result = await execTool("write_file", {
+      path: filePath,
+      content: { name: "TestAgent", provider: "anthropic" } as unknown as string,
+    })
+    expect(result).toContain("wrote")
+    const written = fs.readFileSync(filePath, "utf-8")
+    expect(JSON.parse(written)).toEqual({ name: "TestAgent", provider: "anthropic" })
   })
 
   it("write_file creates parent directories", async () => {
@@ -134,7 +150,7 @@ describe("createSpecialistExecTool", () => {
     })
 
     const result = await execTool("write_file", { path: filePath, content: "nested" })
-    expect(result).toBe("ok")
+    expect(result).toContain("wrote")
     expect(fs.readFileSync(filePath, "utf-8")).toBe("nested")
   })
 
@@ -175,24 +191,6 @@ describe("createSpecialistExecTool", () => {
 
     const result = await execTool("list_directory", { path: "/nonexistent/dir" })
     expect(result).toContain("error:")
-  })
-
-  it("delegates shell to the shared base tool handler", async () => {
-    const tmpDir = makeTempDir("spec-tools-shell")
-    cleanup.push(tmpDir)
-
-    const { createSpecialistExecTool } = await import("../../../heart/daemon/specialist-tools")
-    const execTool = createSpecialistExecTool({
-      tempDir: tmpDir,
-      credentials: { setupToken: "test" },
-      provider: "anthropic",
-      bundlesRoot: tmpDir,
-      secretsRoot: tmpDir,
-      animationWriter: () => {},
-    })
-
-    const result = await execTool("shell", { command: "printf specialist-ok" })
-    expect(result).toBe("specialist-ok")
   })
 
   it("write_file returns error on failure", async () => {

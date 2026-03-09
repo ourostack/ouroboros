@@ -119,7 +119,7 @@ async function setupAzure(
   apiKey = "azure-test-key",
   endpoint = "https://test.openai.azure.com",
   deployment = "test-deployment",
-  modelName = "gpt-5.2-chat",
+  modelName = "gpt-5.4-chat",
 ) {
   await setAgentProvider("azure")
   const config = await import("../../heart/config")
@@ -389,7 +389,7 @@ describe("runAgent", () => {
     await setupConfig({
       providers: {
         "openai-codex": {
-          model: "gpt-5.2",
+          model: "gpt-5.4",
           oauthAccessToken: makeOpenAICodexAccessToken(),
         },
       },
@@ -1595,7 +1595,7 @@ describe("runAgent", () => {
     expect(mockResponsesCreate).toHaveBeenCalledTimes(1)
     expect(mockCreate).not.toHaveBeenCalled()
     const params = mockResponsesCreate.mock.calls[0][0]
-    expect(params.model).toBe("gpt-5.2-chat")
+    expect(params.model).toBe("gpt-5.4-chat")
     expect(params.stream).toBe(true)
     expect(params.store).toBe(false)
     expect(params.include).toEqual(["reasoning.encrypted_content"])
@@ -4215,7 +4215,7 @@ describe("openai-codex oauth provider contract", () => {
     await setupConfig({
       providers: {
         "openai-codex": {
-          model: "gpt-5.2",
+          model: "gpt-5.4",
           oauthAccessToken: makeOpenAICodexAccessToken(),
         },
       },
@@ -4228,7 +4228,7 @@ describe("openai-codex oauth provider contract", () => {
     try {
       const core = await import("../../heart/core")
       expect(core.getProvider()).toBe("openai-codex")
-      expect(core.getModel()).toBe("gpt-5.2")
+      expect(core.getModel()).toBe("gpt-5.4")
       expect(mockExit).not.toHaveBeenCalled()
     } finally {
       mockExit.mockRestore()
@@ -4243,7 +4243,7 @@ describe("openai-codex oauth provider contract", () => {
     await setupConfig({
       providers: {
         "openai-codex": {
-          model: "gpt-5.2",
+          model: "gpt-5.4",
           oauthAccessToken: "",
         },
       },
@@ -4274,7 +4274,7 @@ describe("openai-codex oauth provider contract", () => {
     await setupConfig({
       providers: {
         "openai-codex": {
-          model: "gpt-5.2",
+          model: "gpt-5.4",
           oauthAccessToken: makeOpenAICodexAccessToken(),
         },
       },
@@ -4311,7 +4311,7 @@ describe("openai-codex oauth provider contract", () => {
     await setupConfig({
       providers: {
         "openai-codex": {
-          model: "gpt-5.2",
+          model: "gpt-5.4",
           oauthAccessToken: makeOpenAICodexAccessToken(),
         },
       },
@@ -4348,7 +4348,7 @@ describe("openai-codex oauth provider contract", () => {
     await setupConfig({
       providers: {
         "openai-codex": {
-          model: "gpt-5.2",
+          model: "gpt-5.4",
           oauthAccessToken: " \n\t ",
         },
       },
@@ -4380,7 +4380,7 @@ describe("openai-codex oauth provider contract", () => {
     await setupConfig({
       providers: {
         "openai-codex": {
-          model: "gpt-5.2",
+          model: "gpt-5.4",
           oauthAccessToken: tokenWithoutAccountId,
         },
       },
@@ -4413,7 +4413,7 @@ describe("openai-codex oauth provider contract", () => {
     await setupConfig({
       providers: {
         "openai-codex": {
-          model: "gpt-5.2",
+          model: "gpt-5.4",
           oauthAccessToken: malformedToken,
         },
       },
@@ -4444,7 +4444,7 @@ describe("openai-codex oauth provider contract", () => {
     await setupConfig({
       providers: {
         "openai-codex": {
-          model: "gpt-5.2",
+          model: "gpt-5.4",
           oauthAccessToken: "not-a-jwt",
         },
       },
@@ -4476,7 +4476,7 @@ describe("openai-codex oauth provider contract", () => {
     await setupConfig({
       providers: {
         "openai-codex": {
-          model: "gpt-5.2",
+          model: "gpt-5.4",
           oauthAccessToken: arrayPayloadToken,
         },
       },
@@ -4508,7 +4508,7 @@ describe("openai-codex oauth provider contract", () => {
     await setupConfig({
       providers: {
         "openai-codex": {
-          model: "gpt-5.2",
+          model: "gpt-5.4",
           oauthAccessToken: nonStringAccountIdToken,
         },
       },
@@ -4539,7 +4539,7 @@ describe("openai-codex oauth provider contract", () => {
     await setupConfig({
       providers: {
         "openai-codex": {
-          model: "gpt-5.2",
+          model: "gpt-5.4",
           oauthAccessToken,
         },
       },
@@ -4625,7 +4625,7 @@ describe("openai-codex oauth provider contract", () => {
     expect(second.content).toBe("done")
     expect(mockResponsesCreate).toHaveBeenCalledTimes(2)
     expect(mockResponsesCreate.mock.calls[0][0]).toEqual(expect.objectContaining({
-      model: "gpt-5.2",
+      model: "gpt-5.4",
       tool_choice: "required",
     }))
     expect(mockResponsesCreate.mock.calls[0][0]).not.toHaveProperty("metadata")
@@ -4637,7 +4637,7 @@ describe("openai-codex oauth provider contract", () => {
     await setupConfig({
       providers: {
         "openai-codex": {
-          model: "gpt-5.2",
+          model: "gpt-5.4",
           oauthAccessToken: makeOpenAICodexAccessToken(),
         },
       },
@@ -4672,7 +4672,7 @@ describe("openai-codex oauth provider contract", () => {
     await setupConfig({
       providers: {
         "openai-codex": {
-          model: "gpt-5.2",
+          model: "gpt-5.4",
           oauthAccessToken: makeOpenAICodexAccessToken(),
         },
       },
@@ -7622,7 +7622,7 @@ describe("resetProviderRuntime", () => {
     expect(core.getProvider()).toBe("minimax")
 
     // Switch provider via config mock
-    await setupAzure("az-key", "https://test.openai.azure.com", "dep-1", "gpt-5.2-chat")
+    await setupAzure("az-key", "https://test.openai.azure.com", "dep-1", "gpt-5.4-chat")
 
     // Reset provider runtime so it re-creates
     core.resetProviderRuntime()

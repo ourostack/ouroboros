@@ -105,6 +105,36 @@ export class FinalAnswerParser {
   }
 }
 
+// Shared helper: wraps FinalAnswerParser with onClearText + onTextChunk wiring.
+// Used by all streaming providers (Chat Completions, Responses API, Anthropic)
+// so the eager-match streaming pattern lives in one place.
+export class FinalAnswerStreamer {
+  private parser = new FinalAnswerParser();
+  private _detected = false;
+  private callbacks: ChannelCallbacks;
+
+  constructor(callbacks: ChannelCallbacks) {
+    this.callbacks = callbacks;
+  }
+
+  get detected(): boolean { return this._detected; }
+  get streamed(): boolean { return this.parser.active; }
+
+  /** Mark final_answer as detected. Calls onClearText on the callbacks. */
+  activate(): void {
+    if (this._detected) return;
+    this._detected = true;
+    this.callbacks.onClearText?.();
+  }
+
+  /** Feed an argument delta through the parser. Emits text via onTextChunk. */
+  processDelta(delta: string): void {
+    if (!this._detected) return;
+    const text = this.parser.process(delta);
+    if (text) this.callbacks.onTextChunk(text);
+  }
+}
+
 // Assistant message with optional reasoning items (persisted through sessions)
 export interface AssistantMessageWithReasoning extends OpenAI.ChatCompletionAssistantMessageParam {
   _reasoning_items?: ResponseItem[];
@@ -271,8 +301,7 @@ export async function streamChatCompletion(
   > = {};
   let streamStarted = false;
   let usage: UsageData | undefined;
-  const answerParser = new FinalAnswerParser();
-  let finalAnswerDetected = false;
+  const answerStreamer = new FinalAnswerStreamer(callbacks);
 
   // State machine for parsing inline <think> tags (MiniMax pattern)
   let contentBuf = "";
@@ -383,20 +412,18 @@ export async function streamChatCompletion(
           // Detect final_answer tool call on first name delta.
           // Only activate streaming if this is the sole tool call (index 0
           // and no other indices seen). Mixed calls are rejected by core.ts.
-          if (tc.function.name === "final_answer" && !finalAnswerDetected
+          if (tc.function.name === "final_answer" && !answerStreamer.detected
               && tc.index === 0 && Object.keys(toolCalls).length === 1) {
-            finalAnswerDetected = true;
-            callbacks.onClearText?.();
+            answerStreamer.activate();
           }
         }
         if (tc.function?.arguments) {
           toolCalls[tc.index].arguments += tc.function.arguments;
           // Feed final_answer argument deltas to the parser for progressive
           // streaming, but only when it appears to be the sole tool call.
-          if (finalAnswerDetected && toolCalls[tc.index].name === "final_answer"
+          if (answerStreamer.detected && toolCalls[tc.index].name === "final_answer"
               && Object.keys(toolCalls).length === 1) {
-            const text = answerParser.process(tc.function.arguments);
-            if (text) callbacks.onTextChunk(text);
+            answerStreamer.processDelta(tc.function.arguments);
           }
         }
       }
@@ -410,7 +437,7 @@ export async function streamChatCompletion(
     toolCalls: Object.values(toolCalls),
     outputItems: [],
     usage,
-    finalAnswerStreamed: answerParser.active,
+    finalAnswerStreamed: answerStreamer.streamed,
   };
 }
 
@@ -438,9 +465,8 @@ export async function streamResponsesApi(
   const outputItems: ResponseItem[] = [];
   let currentToolCall: { call_id: string; name: string; arguments: string } | null = null;
   let usage: UsageData | undefined;
-  const answerParser = new FinalAnswerParser();
+  const answerStreamer = new FinalAnswerStreamer(callbacks);
   let functionCallCount = 0;
-  let finalAnswerDetected = false;
 
   for await (const event of response) {
     if (signal?.aborted) break;
@@ -473,8 +499,7 @@ export async function streamResponsesApi(
           // Only activate when this is the first (and so far only) function call.
           // Mixed calls are rejected by core.ts; no need to stream their args.
           if (String(event.item.name) === "final_answer" && functionCallCount === 1) {
-            finalAnswerDetected = true;
-            callbacks.onClearText?.();
+            answerStreamer.activate();
           }
         }
         break;
@@ -484,10 +509,9 @@ export async function streamResponsesApi(
           currentToolCall.arguments += event.delta;
           // Feed final_answer argument deltas to the parser for progressive
           // streaming, but only when it appears to be the sole function call.
-          if (finalAnswerDetected && currentToolCall.name === "final_answer"
+          if (answerStreamer.detected && currentToolCall.name === "final_answer"
               && functionCallCount === 1) {
-            const text = answerParser.process(String(event.delta));
-            if (text) callbacks.onTextChunk(text);
+            answerStreamer.processDelta(String(event.delta));
           }
         }
         break;
@@ -528,6 +552,6 @@ export async function streamResponsesApi(
     toolCalls,
     outputItems,
     usage,
-    finalAnswerStreamed: answerParser.active,
+    finalAnswerStreamed: answerStreamer.streamed,
   };
 }

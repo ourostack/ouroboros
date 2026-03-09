@@ -125,7 +125,7 @@ describe("loadConfig", () => {
           setupToken: "",
         },
         "openai-codex": {
-          model: "gpt-5.2",
+          model: "gpt-5.4",
           oauthAccessToken: "",
         },
       },
@@ -416,7 +416,7 @@ describe("getOpenAICodexConfig", () => {
     const configData = {
       providers: {
         "openai-codex": {
-          model: "gpt-5.2",
+          model: "gpt-5.4",
           oauthAccessToken: "oauth-token-123",
         },
       },
@@ -427,7 +427,7 @@ describe("getOpenAICodexConfig", () => {
     expect(typeof (config as any).getOpenAICodexConfig).toBe("function")
     const codex = (config as any).getOpenAICodexConfig()
 
-    expect(codex.model).toBe("gpt-5.2")
+    expect(codex.model).toBe("gpt-5.4")
     expect(codex.oauthAccessToken).toBe("oauth-token-123")
   })
 })

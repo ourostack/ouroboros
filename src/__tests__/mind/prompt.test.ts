@@ -587,7 +587,7 @@ describe("buildSystem", () => {
     patchRuntimeConfig({
       providers: {
         "openai-codex": {
-          model: "gpt-5.2",
+          model: "gpt-5.4",
           oauthAccessToken: makeOpenAICodexAccessToken(),
         },
       },
@@ -599,7 +599,7 @@ describe("buildSystem", () => {
       const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
       resetPsycheCache()
       const result = await buildSystem()
-      expect(result).toContain("openai codex (gpt-5.2)")
+      expect(result).toContain("openai codex (gpt-5.4)")
     } finally {
       mockExit.mockRestore()
     }

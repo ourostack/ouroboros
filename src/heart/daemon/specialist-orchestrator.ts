@@ -70,11 +70,11 @@ export function pickRandomIdentity(
   try {
     files = fs.readdirSync(identitiesDir).filter((f) => f.endsWith(".md"))
   } catch {
-    return { fileName: "default", content: "I am the adoption specialist." }
+    return { fileName: "default", content: "I am a serpent guide who helps humans hatch their first agent." }
   }
 
   if (files.length === 0) {
-    return { fileName: "default", content: "I am the adoption specialist." }
+    return { fileName: "default", content: "I am a serpent guide who helps humans hatch their first agent." }
   }
   const idx = Math.floor(random() * files.length)
   const fileName = files[idx]
