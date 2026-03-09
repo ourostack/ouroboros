@@ -29,6 +29,10 @@ export const CANONICAL_BUNDLE_MANIFEST: readonly BundleManifestEntry[] = [
   { path: "senses/teams", kind: "dir" },
 ]
 
+export function getChangelogPath(): string {
+  throw new Error("Not implemented")
+}
+
 export function getPackageVersion(): string {
   const packageJsonPath = path.resolve(__dirname, "../../package.json")
   const raw = fs.readFileSync(packageJsonPath, "utf-8")

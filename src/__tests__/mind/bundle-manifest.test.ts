@@ -9,6 +9,7 @@ import {
   findNonCanonicalBundlePaths,
   isCanonicalBundlePath,
   getPackageVersion,
+  getChangelogPath,
   createBundleMeta,
   backfillBundleMeta,
   resetBackfillTracking,
@@ -159,5 +160,22 @@ describe("backfillBundleMeta", () => {
 
   it("handles non-existent bundleRoot gracefully", () => {
     expect(() => backfillBundleMeta("/nonexistent/bundle/root")).not.toThrow()
+  })
+})
+
+describe("getChangelogPath", () => {
+  it("returns a valid absolute path", () => {
+    const result = getChangelogPath()
+    expect(path.isAbsolute(result)).toBe(true)
+  })
+
+  it("returns a path ending with changelog.json", () => {
+    const result = getChangelogPath()
+    expect(result).toMatch(/changelog\.json$/)
+  })
+
+  it("points to an existing file", () => {
+    const result = getChangelogPath()
+    expect(fs.existsSync(result)).toBe(true)
   })
 })
