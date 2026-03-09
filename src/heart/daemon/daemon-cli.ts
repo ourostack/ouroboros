@@ -238,6 +238,49 @@ function formatDaemonStatusOutput(response: DaemonResponse, fallback: string): s
 export async function ensureDaemonRunning(deps: OuroCliDeps): Promise<EnsureDaemonResult> {
   const alive = await deps.checkSocketAlive(deps.socketPath)
   if (alive) {
+    const localRuntime = getRuntimeMetadata()
+    try {
+      const status = await deps.sendCommand(deps.socketPath, { kind: "daemon.status" })
+      const payload = parseStatusPayload(status.data)
+      const runningVersion = payload?.overview.version ?? "unknown"
+
+      if (
+        localRuntime.version !== "unknown" &&
+        runningVersion !== "unknown" &&
+        runningVersion !== localRuntime.version
+      ) {
+        try {
+          await deps.sendCommand(deps.socketPath, { kind: "daemon.stop" })
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error)
+          return {
+            alreadyRunning: true,
+            message: `daemon already running (${deps.socketPath}; could not replace stale daemon ${runningVersion} -> ${localRuntime.version}: ${reason})`,
+          }
+        }
+
+        deps.cleanupStaleSocket(deps.socketPath)
+        const started = await deps.startDaemonProcess(deps.socketPath)
+        return {
+          alreadyRunning: false,
+          message: `restarted stale daemon from ${runningVersion} to ${localRuntime.version} (pid ${started.pid ?? "unknown"})`,
+        }
+      }
+
+      if (localRuntime.version === "unknown" || runningVersion === "unknown") {
+        return {
+          alreadyRunning: true,
+          message: `daemon already running (${deps.socketPath}; unable to verify version)`,
+        }
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      return {
+        alreadyRunning: true,
+        message: `daemon already running (${deps.socketPath}; unable to verify version: ${reason})`,
+      }
+    }
+
     return {
       alreadyRunning: true,
       message: `daemon already running (${deps.socketPath})`,
