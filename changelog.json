@@ -5,6 +5,8 @@
       "version": "0.1.0-alpha.25",
       "changes": [
         "The daemon now discovers all enabled agents in ~/AgentBundles, so ouro status and managed workers reflect every real agent instead of only slugger and ouroboros.",
+        "Runtime updates no longer downgrade your bundle-meta.json if you happen to be running a newer version than the installed CLI. Only forward updates are applied.",
+        "The 'ouro up' update summary is now a single consolidated line (e.g. 'updated 4 agents to runtime X (was Y)') instead of one line per agent.",
         "BlueBubbles typing now wraps the visible working phase correctly, and phrase updates from agent.json take effect on the next turn without requiring a restart."
       ]
     },

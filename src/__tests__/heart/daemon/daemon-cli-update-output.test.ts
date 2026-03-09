@@ -34,22 +34,34 @@ function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
 }
 
 describe("ouro up: update output", () => {
-  it("prints update summary for each updated agent", async () => {
+  it("prints consolidated summary for multiple updated agents", async () => {
     mocks.applyPendingUpdates.mockResolvedValueOnce({
       updated: [
         { agent: "slugger", from: "0.1.0-alpha.20", to: "0.1.0-alpha.21" },
-        { agent: "codex", from: "0.1.0-alpha.19", to: "0.1.0-alpha.21" },
+        { agent: "codex", from: "0.1.0-alpha.20", to: "0.1.0-alpha.21" },
       ],
     })
 
     const deps = makeDeps()
     await runOuroCli(["up"], deps)
 
-    expect(deps.writeStdout).toHaveBeenCalledWith("updated slugger to runtime 0.1.0-alpha.21 (was 0.1.0-alpha.20)")
-    expect(deps.writeStdout).toHaveBeenCalledWith("updated codex to runtime 0.1.0-alpha.21 (was 0.1.0-alpha.19)")
+    expect(deps.writeStdout).toHaveBeenCalledWith("updated 2 agents to runtime 0.1.0-alpha.21 (was 0.1.0-alpha.20)")
   })
 
-  it("prints update summary without 'was' for first-boot agents", async () => {
+  it("prints singular for single updated agent", async () => {
+    mocks.applyPendingUpdates.mockResolvedValueOnce({
+      updated: [
+        { agent: "slugger", from: "0.1.0-alpha.20", to: "0.1.0-alpha.21" },
+      ],
+    })
+
+    const deps = makeDeps()
+    await runOuroCli(["up"], deps)
+
+    expect(deps.writeStdout).toHaveBeenCalledWith("updated 1 agent to runtime 0.1.0-alpha.21 (was 0.1.0-alpha.20)")
+  })
+
+  it("prints summary without 'was' for first-boot agents", async () => {
     mocks.applyPendingUpdates.mockResolvedValueOnce({
       updated: [
         { agent: "newbie", from: undefined, to: "0.1.0-alpha.21" },
@@ -59,7 +71,7 @@ describe("ouro up: update output", () => {
     const deps = makeDeps()
     await runOuroCli(["up"], deps)
 
-    expect(deps.writeStdout).toHaveBeenCalledWith("updated newbie to runtime 0.1.0-alpha.21")
+    expect(deps.writeStdout).toHaveBeenCalledWith("updated 1 agent to runtime 0.1.0-alpha.21")
   })
 
   it("does not print update summary when no agents updated", async () => {

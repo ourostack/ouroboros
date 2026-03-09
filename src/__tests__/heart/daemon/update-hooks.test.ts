@@ -207,6 +207,78 @@ describe("applyPendingUpdates", () => {
     expect(result.updated).toContainEqual({ agent: "gamma", from: undefined, to: "0.1.0" })
   })
 
+  it("skips downgrades (stored version newer than current)", async () => {
+    const bundlesRoot = createTempDir("update-hooks-downgrade-")
+    const agentDir = path.join(bundlesRoot, "test-agent.ouro")
+    fs.mkdirSync(agentDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(agentDir, "bundle-meta.json"),
+      JSON.stringify({ runtimeVersion: "0.2.0", bundleSchemaVersion: 1, lastUpdated: "2025-01-01T00:00:00Z" }),
+    )
+
+    const hook = vi.fn((_ctx: UpdateHookContext): UpdateHookResult => ({ ok: true }))
+    registerUpdateHook(hook)
+
+    const result = await applyPendingUpdates(bundlesRoot, "0.1.0")
+
+    expect(hook).not.toHaveBeenCalled()
+    expect(result.updated).toHaveLength(0)
+  })
+
+  it("skips downgrades for prerelease versions", async () => {
+    const bundlesRoot = createTempDir("update-hooks-downgrade-pre-")
+    const agentDir = path.join(bundlesRoot, "test-agent.ouro")
+    fs.mkdirSync(agentDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(agentDir, "bundle-meta.json"),
+      JSON.stringify({ runtimeVersion: "0.1.0-alpha.25", bundleSchemaVersion: 1, lastUpdated: "2025-01-01T00:00:00Z" }),
+    )
+
+    const hook = vi.fn((_ctx: UpdateHookContext): UpdateHookResult => ({ ok: true }))
+    registerUpdateHook(hook)
+
+    const result = await applyPendingUpdates(bundlesRoot, "0.1.0-alpha.24")
+
+    expect(hook).not.toHaveBeenCalled()
+    expect(result.updated).toHaveLength(0)
+  })
+
+  it("allows upgrades for prerelease versions", async () => {
+    const bundlesRoot = createTempDir("update-hooks-upgrade-pre-")
+    const agentDir = path.join(bundlesRoot, "test-agent.ouro")
+    fs.mkdirSync(agentDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(agentDir, "bundle-meta.json"),
+      JSON.stringify({ runtimeVersion: "0.1.0-alpha.23", bundleSchemaVersion: 1, lastUpdated: "2025-01-01T00:00:00Z" }),
+    )
+
+    const hook = vi.fn((_ctx: UpdateHookContext): UpdateHookResult => ({ ok: true }))
+    registerUpdateHook(hook)
+
+    const result = await applyPendingUpdates(bundlesRoot, "0.1.0-alpha.24")
+
+    expect(hook).toHaveBeenCalledTimes(1)
+    expect(result.updated).toHaveLength(1)
+  })
+
+  it("proceeds when stored version is not valid semver", async () => {
+    const bundlesRoot = createTempDir("update-hooks-invalid-ver-")
+    const agentDir = path.join(bundlesRoot, "test-agent.ouro")
+    fs.mkdirSync(agentDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(agentDir, "bundle-meta.json"),
+      JSON.stringify({ runtimeVersion: "not-a-version", bundleSchemaVersion: 1, lastUpdated: "2025-01-01T00:00:00Z" }),
+    )
+
+    const hook = vi.fn((_ctx: UpdateHookContext): UpdateHookResult => ({ ok: true }))
+    registerUpdateHook(hook)
+
+    const result = await applyPendingUpdates(bundlesRoot, "0.1.0")
+
+    expect(hook).toHaveBeenCalledTimes(1)
+    expect(result.updated).toHaveLength(1)
+  })
+
   it("skips non-.ouro directories", async () => {
     const bundlesRoot = createTempDir("update-hooks-non-ouro-")
     fs.mkdirSync(path.join(bundlesRoot, "notes"), { recursive: true })
