@@ -1,4 +1,0 @@
-Unit 2c no-op rationale
-
-No new/re-landed code exists from Unit 2b, so there is no incremental code coverage target for Unit 2c.
-Coverage verification will run in Unit 7 final verification.

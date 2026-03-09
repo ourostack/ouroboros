@@ -112,7 +112,7 @@ async function setupMinimax(apiKey = "test-key", model = "test-model") {
   await setAgentProvider("minimax")
   const config = await import("../../heart/config")
   config.resetConfigCache()
-  config.setTestConfig({ providers: { minimax: { apiKey, model } } })
+  config.patchRuntimeConfig({ providers: { minimax: { apiKey, model } } })
 }
 
 async function setupAzure(
@@ -124,7 +124,7 @@ async function setupAzure(
   await setAgentProvider("azure")
   const config = await import("../../heart/config")
   config.resetConfigCache()
-  config.setTestConfig({ providers: { azure: { apiKey, endpoint, deployment, modelName } } })
+  config.patchRuntimeConfig({ providers: { azure: { apiKey, endpoint, deployment, modelName } } })
 }
 
 function makeAnthropicSetupToken(): string {
@@ -159,7 +159,7 @@ async function setupConfig(partial: Record<string, unknown>) {
   else await setAgentProvider("minimax")
   const config = await import("../../heart/config")
   config.resetConfigCache()
-  config.setTestConfig(partial as any)
+  config.patchRuntimeConfig(partial as any)
 }
 
 async function resetConfig() {
@@ -2843,6 +2843,106 @@ describe("runAgent", () => {
     await runAgent(messages, callbacks)
     // Messages should have an assistant reply
     expect(messages.some((m: any) => m.role === "assistant")).toBe(true)
+  })
+
+  it("uses custom tools when options.tools is provided", async () => {
+    const customTool: any = {
+      type: "function",
+      function: {
+        name: "custom_tool",
+        description: "A custom tool",
+        parameters: { type: "object", properties: {} },
+      },
+    }
+
+    mockCreate.mockReturnValue(makeStream([makeChunk("hello")]))
+
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+    }
+
+    const messages: any[] = [{ role: "user", content: "hello" }]
+    await runAgent(messages, callbacks, undefined, undefined, {
+      tools: [customTool],
+    } as any)
+
+    expect(mockCreate).toHaveBeenCalled()
+    const apiCall = mockCreate.mock.calls[0][0]
+    const toolNames = apiCall.tools.map((t: any) => t.function.name)
+    expect(toolNames).toContain("custom_tool")
+    // Should NOT contain any of the default tools (like read_file)
+    expect(toolNames).not.toContain("read_file")
+  })
+
+  it("uses custom execTool when options.execTool is provided", async () => {
+    const customExecTool = vi.fn().mockResolvedValue("custom result")
+
+    // First call returns a tool call, second call returns text (done)
+    mockCreate
+      .mockReturnValueOnce(makeStream([
+        makeChunk(undefined, [
+          { index: 0, id: "call_1", function: { name: "my_tool", arguments: '{"arg":"val"}' } },
+        ]),
+      ]))
+      .mockReturnValueOnce(makeStream([makeChunk("done")]))
+
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+    }
+
+    const messages: any[] = [{ role: "user", content: "hello" }]
+    await runAgent(messages, callbacks, undefined, undefined, {
+      tools: [{
+        type: "function",
+        function: {
+          name: "my_tool",
+          description: "test",
+          parameters: { type: "object", properties: {} },
+        },
+      }],
+      execTool: customExecTool,
+      toolChoiceRequired: false,
+    } as any)
+
+    expect(customExecTool).toHaveBeenCalledWith("my_tool", { arg: "val" }, undefined)
+    // Verify the custom result ended up in the messages
+    const toolMsg = messages.find((m: any) => m.role === "tool")
+    expect(toolMsg?.content).toBe("custom result")
+  })
+
+  it("uses default tools and execTool when overrides are not provided", async () => {
+    // This is the existing behavior -- just verify it still works
+    mockCreate.mockReturnValue(makeStream([makeChunk("hello")]))
+
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+    }
+
+    const messages: any[] = [{ role: "user", content: "hello" }]
+    await runAgent(messages, callbacks)
+
+    // Should have called the API with default tools (which include read_file etc.)
+    const apiCall = mockCreate.mock.calls[0][0]
+    const toolNames = apiCall.tools.map((t: any) => t.function.name)
+    expect(toolNames).toContain("read_file")
   })
 })
 
@@ -7527,5 +7627,172 @@ describe("resetProviderRuntime", () => {
     // Reset provider runtime so it re-creates
     core.resetProviderRuntime()
     expect(core.getProvider()).toBe("azure")
+  })
+})
+
+describe("repairOrphanedToolCalls", () => {
+  it("injects synthetic results for orphaned tool_calls with no matching tool result", async () => {
+    vi.resetModules()
+    const { repairOrphanedToolCalls } = await import("../../heart/core")
+    const messages: any[] = [
+      { role: "user", content: "hello" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "tc-1", type: "function", function: { name: "read_file", arguments: "{}" } }],
+      },
+      // Missing tool result for tc-1
+      { role: "user", content: "next" },
+    ]
+
+    repairOrphanedToolCalls(messages)
+
+    expect(messages.length).toBe(4)
+    expect(messages[2].role).toBe("tool")
+    expect(messages[2].tool_call_id).toBe("tc-1")
+    expect(messages[2].content).toContain("interrupted")
+  })
+
+  it("removes orphaned tool results that have no matching tool_calls", async () => {
+    vi.resetModules()
+    const { repairOrphanedToolCalls } = await import("../../heart/core")
+    const messages: any[] = [
+      { role: "user", content: "hello" },
+      { role: "tool", tool_call_id: "orphan-1", content: "stale result" },
+      { role: "user", content: "next" },
+    ]
+
+    repairOrphanedToolCalls(messages)
+
+    expect(messages.length).toBe(2)
+    expect(messages.every((m: any) => m.role !== "tool")).toBe(true)
+  })
+
+  it("leaves valid tool call/result pairs untouched", async () => {
+    vi.resetModules()
+    const { repairOrphanedToolCalls } = await import("../../heart/core")
+    const messages: any[] = [
+      { role: "user", content: "hello" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "tc-1", type: "function", function: { name: "read_file", arguments: "{}" } }],
+      },
+      { role: "tool", tool_call_id: "tc-1", content: "file contents" },
+      { role: "assistant", content: "done" },
+    ]
+
+    repairOrphanedToolCalls(messages)
+
+    expect(messages.length).toBe(4)
+    expect(messages[2].role).toBe("tool")
+    expect(messages[2].content).toBe("file contents")
+  })
+
+  it("handles empty messages array", async () => {
+    vi.resetModules()
+    const { repairOrphanedToolCalls } = await import("../../heart/core")
+    const messages: any[] = []
+
+    repairOrphanedToolCalls(messages)
+
+    expect(messages.length).toBe(0)
+  })
+
+  it("stops scanning for results when hitting a subsequent assistant message", async () => {
+    vi.resetModules()
+    const { repairOrphanedToolCalls } = await import("../../heart/core")
+    const messages: any[] = [
+      { role: "user", content: "hello" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "tc-1", type: "function", function: { name: "shell", arguments: "{}" } }],
+      },
+      { role: "tool", tool_call_id: "tc-1", content: "ok" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "tc-2", type: "function", function: { name: "read_file", arguments: "{}" } }],
+      },
+      // tc-2 has no result -- the break at the assistant boundary above means tc-1's result is NOT counted for tc-2
+    ]
+
+    repairOrphanedToolCalls(messages)
+
+    // Should inject synthetic result for tc-2 after the second assistant message
+    expect(messages.length).toBe(5)
+    expect(messages[4].role).toBe("tool")
+    expect(messages[4].tool_call_id).toBe("tc-2")
+    expect(messages[4].content).toContain("interrupted")
+  })
+
+  it("skips system messages between tool calls when scanning for results", async () => {
+    vi.resetModules()
+    const { repairOrphanedToolCalls } = await import("../../heart/core")
+    const messages: any[] = [
+      { role: "user", content: "hello" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "tc-1", type: "function", function: { name: "shell", arguments: "{}" } }],
+      },
+      { role: "system", content: "internal note" },
+      { role: "tool", tool_call_id: "tc-1", content: "ok" },
+    ]
+
+    repairOrphanedToolCalls(messages)
+
+    // system message should be skipped, tc-1 result found
+    expect(messages.length).toBe(4)
+    expect(messages[3].content).toBe("ok")
+  })
+
+  it("handles multiple orphaned tool_calls in same assistant message", async () => {
+    vi.resetModules()
+    const { repairOrphanedToolCalls } = await import("../../heart/core")
+    const messages: any[] = [
+      { role: "user", content: "do stuff" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          { id: "tc-a", type: "function", function: { name: "shell", arguments: "{}" } },
+          { id: "tc-b", type: "function", function: { name: "read_file", arguments: "{}" } },
+        ],
+      },
+    ]
+
+    repairOrphanedToolCalls(messages)
+
+    expect(messages.length).toBe(4)
+    expect(messages[2].tool_call_id).toBe("tc-a")
+    expect(messages[3].tool_call_id).toBe("tc-b")
+  })
+
+  it("inserts synthetic results after existing tool results when some calls are missing", async () => {
+    vi.resetModules()
+    const { repairOrphanedToolCalls } = await import("../../heart/core")
+    const messages: any[] = [
+      { role: "user", content: "do stuff" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          { id: "tc-a", type: "function", function: { name: "shell", arguments: "{}" } },
+          { id: "tc-b", type: "function", function: { name: "read_file", arguments: "{}" } },
+        ],
+      },
+      { role: "tool", tool_call_id: "tc-a", content: "ok" },
+      // tc-b has no result -- synthetic result should be inserted after the existing tool result
+    ]
+
+    repairOrphanedToolCalls(messages)
+
+    expect(messages.length).toBe(4)
+    expect(messages[2].tool_call_id).toBe("tc-a")
+    expect(messages[2].content).toBe("ok")
+    expect(messages[3].tool_call_id).toBe("tc-b")
+    expect(messages[3].content).toContain("interrupted")
   })
 })

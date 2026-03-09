@@ -905,7 +905,7 @@ describe("getIntegrationsConfig", () => {
   })
 })
 
-describe("setTestConfig", () => {
+describe("patchRuntimeConfig", () => {
   beforeEach(async () => {
     vi.resetModules()
   })
@@ -913,9 +913,9 @@ describe("setTestConfig", () => {
   it("deep-merges partial config into cached config", async () => {
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({}))
 
-    const { setTestConfig, resetConfigCache, getAzureConfig } = await import("../../heart/config")
+    const { patchRuntimeConfig, resetConfigCache, getAzureConfig } = await import("../../heart/config")
     resetConfigCache()
-    setTestConfig({ providers: { azure: { apiKey: "test-key" } } })
+    patchRuntimeConfig({ providers: { azure: { apiKey: "test-key" } } })
     const azure = getAzureConfig()
 
     expect(azure.apiKey).toBe("test-key")
@@ -938,9 +938,9 @@ describe("setTestConfig", () => {
     }
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(configData))
 
-    const { setTestConfig, resetConfigCache, getAzureConfig } = await import("../../heart/config")
+    const { patchRuntimeConfig, resetConfigCache, getAzureConfig } = await import("../../heart/config")
     resetConfigCache()
-    setTestConfig({ providers: { azure: { apiKey: "overridden-key" } } })
+    patchRuntimeConfig({ providers: { azure: { apiKey: "overridden-key" } } })
     const azure = getAzureConfig()
 
     expect(azure.apiKey).toBe("overridden-key")
@@ -951,9 +951,9 @@ describe("setTestConfig", () => {
   it("works with resetConfigCache to restore defaults", async () => {
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({}))
 
-    const { setTestConfig, resetConfigCache, getContextConfig } = await import("../../heart/config")
+    const { patchRuntimeConfig, resetConfigCache, getContextConfig } = await import("../../heart/config")
     resetConfigCache()
-    setTestConfig({ context: { maxTokens: 99999 } })
+    patchRuntimeConfig({ context: { maxTokens: 99999 } })
 
     expect(getContextConfig().maxTokens).toBe(99999)
 
@@ -964,9 +964,9 @@ describe("setTestConfig", () => {
   it("handles empty partial (no-op)", async () => {
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({}))
 
-    const { setTestConfig, resetConfigCache, getContextConfig } = await import("../../heart/config")
+    const { patchRuntimeConfig, resetConfigCache, getContextConfig } = await import("../../heart/config")
     resetConfigCache()
-    setTestConfig({})
+    patchRuntimeConfig({})
     const ctx = getContextConfig()
 
     expect(ctx.maxTokens).toBe(80000)
@@ -976,9 +976,9 @@ describe("setTestConfig", () => {
   it("can set nested config sections (teamsChannel, integrations)", async () => {
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({}))
 
-    const { setTestConfig, resetConfigCache, getTeamsChannelConfig, getIntegrationsConfig } = await import("../../heart/config")
+    const { patchRuntimeConfig, resetConfigCache, getTeamsChannelConfig, getIntegrationsConfig } = await import("../../heart/config")
     resetConfigCache()
-    setTestConfig({
+    patchRuntimeConfig({
       teamsChannel: { skipConfirmation: true, port: 5000 },
       integrations: { perplexityApiKey: "pplx-test" },
     })
@@ -995,13 +995,77 @@ describe("setTestConfig", () => {
   it("can overwrite then reset then overwrite again", async () => {
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({}))
 
-    const { setTestConfig, resetConfigCache, getMinimaxConfig } = await import("../../heart/config")
+    const { patchRuntimeConfig, resetConfigCache, getMinimaxConfig } = await import("../../heart/config")
     resetConfigCache()
-    setTestConfig({ providers: { minimax: { apiKey: "first" } } })
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "first" } } })
     expect(getMinimaxConfig().apiKey).toBe("first")
 
     resetConfigCache()
-    setTestConfig({ providers: { minimax: { apiKey: "second" } } })
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "second" } } })
     expect(getMinimaxConfig().apiKey).toBe("second")
+  })
+})
+
+describe("getTeamsSecondaryConfig", () => {
+  it("returns secondary teams config from secrets", async () => {
+    vi.resetModules()
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+      teamsSecondary: {
+        clientId: "sec-id",
+        clientSecret: "sec-secret",
+        tenantId: "sec-tenant",
+        managedIdentityClientId: "",
+      },
+    }))
+
+    const { getTeamsSecondaryConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+
+    const cfg = getTeamsSecondaryConfig()
+    expect(cfg.clientId).toBe("sec-id")
+    expect(cfg.clientSecret).toBe("sec-secret")
+  })
+})
+
+describe("resolveOAuthForTenant", () => {
+  it("returns base oauth config when no tenantId given", async () => {
+    vi.resetModules()
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+      oauth: {
+        graphConnectionName: "graph-conn",
+        adoConnectionName: "ado-conn",
+        githubConnectionName: "gh-conn",
+      },
+    }))
+
+    const { resolveOAuthForTenant, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+
+    const result = resolveOAuthForTenant()
+    expect(result.graphConnectionName).toBe("graph-conn")
+    expect(result.adoConnectionName).toBe("ado-conn")
+  })
+
+  it("applies tenant overrides when tenantId matches", async () => {
+    vi.resetModules()
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+      oauth: {
+        graphConnectionName: "default-graph",
+        adoConnectionName: "default-ado",
+        githubConnectionName: "default-gh",
+        tenantOverrides: {
+          "tenant-x": {
+            graphConnectionName: "tenant-x-graph",
+          },
+        },
+      },
+    }))
+
+    const { resolveOAuthForTenant, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+
+    const result = resolveOAuthForTenant("tenant-x")
+    expect(result.graphConnectionName).toBe("tenant-x-graph")
+    expect(result.adoConnectionName).toBe("default-ado")
   })
 })

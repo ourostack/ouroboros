@@ -1,9 +1,11 @@
 import OpenAI from "openai"
 import { App } from "@microsoft/teams.apps"
 import { DevtoolsPlugin } from "@microsoft/teams.dev"
-import { runAgent, ChannelCallbacks, RunAgentOptions, createSummarize } from "../heart/core"
+import { runAgent, ChannelCallbacks, RunAgentOptions, createSummarize, repairOrphanedToolCalls } from "../heart/core"
 import type { ToolContext } from "../repertoire/tools"
-import { getOAuthConfig } from "../heart/config"
+import { getToolsForChannel, summarizeArgs } from "../repertoire/tools"
+import { getChannelCapabilities } from "../mind/friends/channel"
+import { getOAuthConfig, resolveOAuthForTenant, getTeamsSecondaryConfig } from "../heart/config"
 import { buildSystem } from "../mind/prompt"
 import { pickPhrase, getPhrases } from "../mind/phrases"
 import { formatToolResult, formatKick, formatError } from "../mind/format"
@@ -16,7 +18,8 @@ import { FileFriendStore } from "../mind/friends/store-file"
 import { FriendResolver } from "../mind/friends/resolver"
 import { accumulateFriendTokens } from "../mind/friends/tokens"
 import { createTurnCoordinator } from "../heart/turn-coordinator"
-import { getAgentRoot } from "../heart/identity"
+import { getAgentRoot, getAgentName } from "../heart/identity"
+import * as http from "http"
 import * as path from "path"
 import { enforceTrustGate } from "./trust-gate"
 
@@ -291,7 +294,13 @@ export function createTeamsCallbacks(
     onToolStart: (name: string, args: Record<string, string>) => {
       stopPhraseRotation()
       flushTextBuffer()
-      const argSummary = Object.values(args).join(", ")
+      // Emit a placeholder to satisfy the 15s Copilot timeout for initial
+      // stream.emit(). Without this, long tool chains (e.g. ADO batch ops)
+      // never emit before the timeout and the user sees "this response was
+      // stopped". The placeholder is replaced by actual content on next emit.
+      // https://learn.microsoft.com/en-us/answers/questions/2288017/m365-custom-engine-agents-timeout-message-after-15
+      if (!streamHasContent) safeEmit("⏳")
+      const argSummary = summarizeArgs(name, args) || Object.keys(args).join(", ")
       safeUpdate(`running ${name} (${argSummary})...`)
       hadToolRun = true
     },
@@ -394,7 +403,12 @@ export async function withConversationLock(convId: string, fn: () => Promise<voi
 // Create a fresh friend store per request so mkdirSync re-runs if directories
 // are deleted while the process is alive.
 function getFriendStore(): InstanceType<typeof FileFriendStore> {
-  const friendsPath = path.join(getAgentRoot(), "friends")
+  // On Azure App Service, os.homedir() returns /root which is ephemeral.
+  // Use /home/.agentstate/ (persistent) when WEBSITE_SITE_NAME is set.
+  /* v8 ignore next 3 -- Azure vs local path branch; environment-specific @preserve */
+  const friendsPath = process.env.WEBSITE_SITE_NAME
+    ? path.join("/home", ".agentstate", getAgentName(), "friends")
+    : path.join(getAgentRoot(), "friends")
   return new FileFriendStore(friendsPath)
 }
 
@@ -408,6 +422,12 @@ export interface TeamsMessageContext {
   aadObjectId?: string
   tenantId?: string
   displayName?: string
+  // Resolved OAuth connection names for this tenant
+  graphConnectionName?: string
+  adoConnectionName?: string
+  githubConnectionName?: string
+  // Bot Framework API client for proactive messaging
+  botApi?: ToolContext["botApi"]
 }
 
 // Handle an incoming Teams message
@@ -433,6 +453,8 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
     signin: teamsContext.signin,
     friendStore: store,
     summarize: createSummarize(),
+    tenantId: teamsContext.tenantId,
+    botApi: teamsContext.botApi,
   } : undefined
 
   if (toolContext) {
@@ -491,6 +513,9 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
     ? existing.messages
     : [{ role: "system", content: await buildSystem("teams", undefined, toolContext?.context) }]
 
+  // Repair any orphaned tool calls from a previous aborted turn
+  repairOrphanedToolCalls(messages)
+
   // Push user message
   messages.push({ role: "user", content: text })
 
@@ -514,9 +539,9 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
   // This must happen after the stream is done so the OAuth card renders properly.
   if (teamsContext) {
     const allContent = messages.map(m => typeof m.content === "string" ? m.content : "").join("\n")
-    if (allContent.includes("AUTH_REQUIRED:graph")) await teamsContext.signin("graph")
-    if (allContent.includes("AUTH_REQUIRED:ado")) await teamsContext.signin("ado")
-    if (allContent.includes("AUTH_REQUIRED:github")) await teamsContext.signin("github")
+    if (allContent.includes("AUTH_REQUIRED:graph") && teamsContext.graphConnectionName) await teamsContext.signin(teamsContext.graphConnectionName)
+    if (allContent.includes("AUTH_REQUIRED:ado") && teamsContext.adoConnectionName) await teamsContext.signin(teamsContext.adoConnectionName)
+    if (allContent.includes("AUTH_REQUIRED:github") && teamsContext.githubConnectionName) await teamsContext.signin(teamsContext.githubConnectionName)
   }
 
   // Trim context and save session
@@ -529,52 +554,81 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
   // SDK auto-closes the stream after our handler returns (app.process.js)
 }
 
-// Start the Teams app in DevtoolsPlugin mode (local dev) or Bot Service mode (real Teams).
-// Mode is determined by getTeamsConfig().clientId.
-// Text is always accumulated in textBuffer and flushed periodically (chunked streaming).
-export function startTeamsApp(): void {
+// Internal port for the secondary bot App (not exposed externally).
+// The primary app proxies /api/messages-secondary → localhost:SECONDARY_PORT/api/messages.
+const SECONDARY_INTERNAL_PORT = 3979
+
+// Collect all unique OAuth connection names across top-level config and tenant overrides.
+/* v8 ignore start -- runtime Teams SDK config; no unit-testable surface @preserve */
+function allOAuthConnectionNames(): string[] {
+  const oauthConfig = getOAuthConfig()
+  const names = new Set<string>()
+  if (oauthConfig.graphConnectionName) names.add(oauthConfig.graphConnectionName)
+  if (oauthConfig.adoConnectionName) names.add(oauthConfig.adoConnectionName)
+  if (oauthConfig.githubConnectionName) names.add(oauthConfig.githubConnectionName)
+  if (oauthConfig.tenantOverrides) {
+    for (const ov of Object.values(oauthConfig.tenantOverrides)) {
+      if (ov.graphConnectionName) names.add(ov.graphConnectionName)
+      if (ov.adoConnectionName) names.add(ov.adoConnectionName)
+      if (ov.githubConnectionName) names.add(ov.githubConnectionName)
+    }
+  }
+  return [...names]
+}
+
+// Create an App instance from a TeamsConfig. Returns { app, mode }.
+function createBotApp(teamsConfig: { clientId: string, clientSecret: string, tenantId: string, managedIdentityClientId: string }): { app: InstanceType<typeof App>, mode: string } {
   const mentionStripping = { activity: { mentions: { stripText: true as const } } }
-  const teamsConfig = getTeamsConfig()
-
-  let app: InstanceType<typeof App>
-  let mode: string
-
   const oauthConfig = getOAuthConfig()
 
-  if (teamsConfig.clientId) {
-    // Bot Service mode -- real Teams connection with SingleTenant credentials
-    app = new App({
-      clientId: teamsConfig.clientId,
-      clientSecret: teamsConfig.clientSecret,
-      tenantId: teamsConfig.tenantId,
-      oauth: { defaultConnectionName: oauthConfig.graphConnectionName },
-      ...mentionStripping,
-    })
-    mode = "Bot Service"
+  if (teamsConfig.clientId && teamsConfig.clientSecret) {
+    return {
+      app: new App({
+        clientId: teamsConfig.clientId,
+        clientSecret: teamsConfig.clientSecret,
+        tenantId: teamsConfig.tenantId,
+        oauth: { defaultConnectionName: oauthConfig.graphConnectionName },
+        ...mentionStripping,
+      }),
+      mode: "Bot Service (client secret)",
+    }
+  } else if (teamsConfig.clientId) {
+    return {
+      app: new App({
+        clientId: teamsConfig.clientId,
+        tenantId: teamsConfig.tenantId,
+        ...(teamsConfig.managedIdentityClientId ? { managedIdentityClientId: teamsConfig.managedIdentityClientId } : {}),
+        oauth: { defaultConnectionName: oauthConfig.graphConnectionName },
+        ...mentionStripping,
+      }),
+      mode: "Bot Service (managed identity)",
+    }
   } else {
-    // DevtoolsPlugin mode -- local development with Teams DevtoolsPlugin UI
-    app = new App({
-      plugins: [new DevtoolsPlugin()],
-      ...mentionStripping,
-    })
-    mode = "DevtoolsPlugin"
+    return {
+      app: new App({
+        plugins: [new DevtoolsPlugin()],
+        ...mentionStripping,
+      }),
+      mode: "DevtoolsPlugin",
+    }
   }
+}
+/* v8 ignore stop */
+
+// Register message, verify-state, and error handlers on an App instance.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?: any }, label: string): void {
+  const connectionNames = allOAuthConnectionNames()
 
   // Override default OAuth verify-state handler.  The SDK's built-in handler
   // uses a single defaultConnectionName, which breaks multi-connection setups
   // (graph + ado + github).  The verifyState activity only carries a `state`
   // code with no connectionName, so we try each configured connection until
   // one succeeds.
-  const allConnectionNames = [
-    oauthConfig.graphConnectionName,
-    oauthConfig.adoConnectionName,
-    oauthConfig.githubConnectionName,
-  ].filter(Boolean)
-
   app.on("signin.verify-state", async (ctx) => {
     const { api, activity } = ctx
     if (!activity.value?.state) return { status: 404 }
-    for (const cn of allConnectionNames) {
+    for (const cn of connectionNames) {
       try {
         await api.users.token.get({
           channelId: activity.channelId,
@@ -582,11 +636,11 @@ export function startTeamsApp(): void {
           connectionName: cn,
           code: activity.value.state,
         })
-        emitNervesEvent({ level: "info", event: "channel.verify_state", component: "channels", message: `verify-state succeeded for connection "${cn}"`, meta: { connectionName: cn } })
+        emitNervesEvent({ level: "info", event: "channel.verify_state", component: "channels", message: `[${label}] verify-state succeeded for connection "${cn}"`, meta: { connectionName: cn } })
         return { status: 200 }
       } catch { /* try next */ }
     }
-    emitNervesEvent({ level: "warn", event: "channel.verify_state", component: "channels", message: "verify-state failed for all connections", meta: {} })
+    emitNervesEvent({ level: "warn", event: "channel.verify_state", component: "channels", message: `[${label}] verify-state failed for all connections`, meta: {} })
     return { status: 412 }
   })
 
@@ -598,17 +652,13 @@ export function startTeamsApp(): void {
     const userId = activity.from?.id || ""
     const channelId = activity.channelId || "msteams"
 
-    emitNervesEvent({ level: "info", event: "channel.message_received", component: "channels", message: "incoming teams message", meta: { userId: userId.slice(0, 12), conversationId: convId.slice(0, 20) } })
+    emitNervesEvent({ level: "info", event: "channel.message_received", component: "channels", message: `[${label}] incoming teams message`, meta: { userId: userId.slice(0, 12), conversationId: convId.slice(0, 20) } })
 
     // Resolve pending confirmations IMMEDIATELY — before token fetches or
     // the conversation lock.  The original message holds the lock while
     // awaiting confirmation, so acquiring it here would deadlock.  Token
     // fetches are also unnecessary (and slow) for a simple yes/no reply.
     if (resolvePendingConfirmation(convId, text)) {
-      // Don't emit on this stream — the original message's stream is still
-      // active.  Opening a second streaming response in the same conversation
-      // can corrupt the first.  The original stream will show tool progress
-      // once the confirmation Promise resolves.
       return
     }
 
@@ -624,24 +674,28 @@ export function startTeamsApp(): void {
     }
 
     try {
+      // Resolve OAuth connection names for this user's tenant (supports per-tenant overrides).
+      const tenantId = activity.conversation?.tenantId
+      const tenantOAuth = resolveOAuthForTenant(tenantId)
+
       // Fetch tokens for both OAuth connections independently.
       // Failures are silently caught -- the tool handler will request signin if needed.
       let graphToken: string | undefined
       let adoToken: string | undefined
       let githubToken: string | undefined
       try {
-        const graphRes = await api.users.token.get({ userId, connectionName: oauthConfig.graphConnectionName, channelId })
+        const graphRes = await api.users.token.get({ userId, connectionName: tenantOAuth.graphConnectionName, channelId })
         graphToken = graphRes?.token
       } catch { /* no token yet — tool handler will trigger signin */ }
       try {
-        const adoRes = await api.users.token.get({ userId, connectionName: oauthConfig.adoConnectionName, channelId })
+        const adoRes = await api.users.token.get({ userId, connectionName: tenantOAuth.adoConnectionName, channelId })
         adoToken = adoRes?.token
       } catch { /* no token yet — tool handler will trigger signin */ }
       try {
-        const githubRes = await api.users.token.get({ userId, connectionName: oauthConfig.githubConnectionName, channelId })
+        const githubRes = await api.users.token.get({ userId, connectionName: tenantOAuth.githubConnectionName, channelId })
         githubToken = githubRes?.token
       } catch { /* no token yet — tool handler will trigger signin */ }
-      emitNervesEvent({ level: "info", event: "channel.token_status", component: "channels", message: "oauth token availability", meta: { graph: !!graphToken, ado: !!adoToken, github: !!githubToken } })
+      emitNervesEvent({ level: "info", event: "channel.token_status", component: "channels", message: "oauth token availability", meta: { graph: !!graphToken, ado: !!adoToken, github: !!githubToken, tenantId } })
 
       const teamsContext: TeamsMessageContext = {
         graphToken,
@@ -661,6 +715,11 @@ export function startTeamsApp(): void {
         aadObjectId: activity.from?.aadObjectId,
         tenantId: activity.conversation?.tenantId,
         displayName: activity.from?.name,
+        graphConnectionName: tenantOAuth.graphConnectionName,
+        adoConnectionName: tenantOAuth.adoConnectionName,
+        githubConnectionName: tenantOAuth.githubConnectionName,
+        /* v8 ignore next -- bot API availability branch; requires live SDK context @preserve */
+        botApi: app.id && api ? { id: app.id, conversations: api.conversations } : undefined,
       }
 
       /* v8 ignore next 5 -- bot-framework integration callback; tested via handleTeamsMessage sendMessage path @preserve */
@@ -678,6 +737,25 @@ export function startTeamsApp(): void {
     }
   })
 
+  app.event("error", ({ error }) => {
+    const msg = error instanceof Error ? error.message : String(error)
+    emitNervesEvent({ level: "error", event: "channel.app_error", component: "channels", message: `[${label}] ${msg}`, meta: {} })
+  })
+}
+
+// Start the Teams app in DevtoolsPlugin mode (local dev) or Bot Service mode (real Teams).
+// Mode is determined by getTeamsConfig().clientId.
+// Text is always accumulated in textBuffer and flushed periodically (chunked streaming).
+//
+// Dual-bot support: if teamsSecondary is configured with a clientId, a second App
+// instance starts on an internal port and the primary app proxies requests from
+// /api/messages-secondary to it. This lets a single App Service serve two bot
+// registrations (e.g. one per tenant) without SDK modifications.
+export function startTeamsApp(): void {
+  const teamsConfig = getTeamsConfig()
+  const { app, mode } = createBotApp(teamsConfig)
+  registerBotHandlers(app, "primary")
+
   // Prevent SDK internal stream errors (e.g. "Content stream is not allowed
   // on a already completed streamed message") from crashing the process.
   // Guard: only register once even if startTeamsApp is called multiple times.
@@ -691,12 +769,56 @@ export function startTeamsApp(): void {
     process.on("unhandledRejection", handler)
   }
 
-  app.event("error", ({ error }) => {
-    const msg = error instanceof Error ? error.message : String(error)
-    emitNervesEvent({ level: "error", event: "channel.app_error", component: "channels", message: msg, meta: {} })
-  })
-
-  const port = getTeamsChannelConfig().port
+  /* v8 ignore next -- PORT env branch; runtime-only @preserve */
+  const port = process.env.PORT ? Number(process.env.PORT) : getTeamsChannelConfig().port
   app.start(port)
-  emitNervesEvent({ level: "info", event: "channel.app_started", component: "channels", message: `Teams bot started on port ${port} with ${mode} (chunked streaming)`, meta: { port, mode } })
+  // Diagnostic: log tool count at startup to verify deploy
+  const startupTools = getToolsForChannel(getChannelCapabilities("teams"))
+  const toolNames = startupTools.map((t) => t.function.name)
+  emitNervesEvent({ level: "info", event: "channel.app_started", component: "channels", message: `Teams bot started on port ${port} with ${mode} (chunked streaming)`, meta: { port, mode, toolCount: toolNames.length, hasProactive: toolNames.includes("teams_send_message") } })
+
+  // --- Secondary bot (dual-bot support) ---
+  // If teamsSecondary has a clientId, start a second App on an internal port
+  // and proxy /api/messages-secondary on the primary app to it.
+  /* v8 ignore start -- dual-bot proxy wiring; requires live Teams SDK + HTTP @preserve */
+  const secondaryConfig = getTeamsSecondaryConfig()
+  if (secondaryConfig.clientId) {
+    const { app: secondaryApp, mode: secondaryMode } = createBotApp(secondaryConfig)
+    registerBotHandlers(secondaryApp, "secondary")
+    secondaryApp.start(SECONDARY_INTERNAL_PORT)
+    emitNervesEvent({ level: "info", event: "channel.app_started", component: "channels", message: `Secondary bot started on internal port ${SECONDARY_INTERNAL_PORT} with ${secondaryMode}`, meta: { port: SECONDARY_INTERNAL_PORT, mode: secondaryMode } })
+
+    // Proxy: forward /api/messages-secondary on the primary app's Express
+    // to localhost:SECONDARY_INTERNAL_PORT/api/messages.
+    // The SDK's HttpPlugin exposes .post() bound to its Express instance.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const httpPlugin = (app as any).http as { post: (...args: unknown[]) => void }
+    httpPlugin.post("/api/messages-secondary", (req: { headers: Record<string, string>, body: unknown }, res: http.ServerResponse) => {
+      const body = JSON.stringify(req.body)
+      const proxyReq = http.request({
+        hostname: "127.0.0.1",
+        port: SECONDARY_INTERNAL_PORT,
+        path: "/api/messages",
+        method: "POST",
+        headers: {
+          ...req.headers,
+          "content-length": Buffer.byteLength(body).toString(),
+        },
+      }, (proxyRes) => {
+        res.writeHead(proxyRes.statusCode ?? 200, proxyRes.headers as Record<string, string | string[]>)
+        proxyRes.pipe(res)
+      })
+      proxyReq.on("error", (err) => {
+        emitNervesEvent({ level: "error", event: "channel.proxy_error", component: "channels", message: `secondary proxy error: ${err.message}`, meta: {} })
+        if (!res.headersSent) {
+          res.writeHead(502)
+          res.end("Bad Gateway")
+        }
+      })
+      proxyReq.write(body)
+      proxyReq.end()
+    })
+    emitNervesEvent({ level: "info", event: "channel.proxy_ready", component: "channels", message: "proxy /api/messages-secondary → secondary bot ready", meta: {} })
+  }
+  /* v8 ignore stop */
 }

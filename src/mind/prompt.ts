@@ -8,6 +8,7 @@ import * as os from "os";
 import type { Channel, ResolvedContext } from "./friends/types";
 import { getChannelCapabilities } from "./friends/channel";
 import { emitNervesEvent } from "../nerves/runtime";
+import { backfillBundleMeta } from "./bundle-manifest";
 import { getFirstImpressions } from "./first-impressions";
 import { getTaskModule } from "../repertoire/tasks";
 
@@ -422,6 +423,9 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     message: "buildSystem started",
     meta: { channel, has_context: Boolean(context), tool_choice_required: Boolean(options?.toolChoiceRequired) },
   });
+
+  // Backfill bundle-meta.json for existing agents that don't have one
+  backfillBundleMeta(getAgentRoot());
 
   const system = [
     soulSection(),

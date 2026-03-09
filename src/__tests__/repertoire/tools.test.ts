@@ -74,7 +74,7 @@ import { listSkills, loadSkill } from "../../repertoire/skills"
 
 describe("execTool", () => {
   let execTool: (name: string, args: any, ctx?: any) => Promise<string>
-  let setTestConfig: (partial: any) => void
+  let patchRuntimeConfig: (partial: any) => void
 
   beforeEach(async () => {
     vi.resetModules()
@@ -110,7 +110,7 @@ describe("execTool", () => {
     mockTaskModule.boardSessions.mockReset().mockReturnValue([])
     const config = await import("../../heart/config")
     config.resetConfigCache()
-    setTestConfig = config.setTestConfig
+    patchRuntimeConfig = config.patchRuntimeConfig
     const tools = await import("../../repertoire/tools")
     execTool = tools.execTool
   })
@@ -283,11 +283,11 @@ describe("execTool", () => {
 
   // ── web_search ──
   it("web_search calls perplexity API and returns results", async () => {
-    setTestConfig({ integrations: { perplexityApiKey: "test-key" } })
+    patchRuntimeConfig({ integrations: { perplexityApiKey: "test-key" } })
     vi.resetModules()
     const config = await import("../../heart/config")
     config.resetConfigCache()
-    config.setTestConfig({ integrations: { perplexityApiKey: "test-key" } })
+    config.patchRuntimeConfig({ integrations: { perplexityApiKey: "test-key" } })
 
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
@@ -310,7 +310,7 @@ describe("execTool", () => {
     vi.resetModules()
     const config = await import("../../heart/config")
     config.resetConfigCache()
-    config.setTestConfig({ integrations: {} })
+    config.patchRuntimeConfig({ integrations: {} })
 
     const tools = await import("../../repertoire/tools")
     const result = await tools.execTool("web_search", { query: "test" })
@@ -321,7 +321,7 @@ describe("execTool", () => {
     vi.resetModules()
     const config = await import("../../heart/config")
     config.resetConfigCache()
-    config.setTestConfig({ integrations: { perplexityApiKey: "test-key" } })
+    config.patchRuntimeConfig({ integrations: { perplexityApiKey: "test-key" } })
 
     const mockFetch = vi.fn().mockResolvedValue({
       ok: false,
@@ -340,7 +340,7 @@ describe("execTool", () => {
     vi.resetModules()
     const config = await import("../../heart/config")
     config.resetConfigCache()
-    config.setTestConfig({ integrations: { perplexityApiKey: "test-key" } })
+    config.patchRuntimeConfig({ integrations: { perplexityApiKey: "test-key" } })
 
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
@@ -358,7 +358,7 @@ describe("execTool", () => {
     vi.resetModules()
     const config = await import("../../heart/config")
     config.resetConfigCache()
-    config.setTestConfig({ integrations: { perplexityApiKey: "test-key" } })
+    config.patchRuntimeConfig({ integrations: { perplexityApiKey: "test-key" } })
 
     const mockFetch = vi.fn().mockRejectedValue(new Error("fetch failed"))
     vi.stubGlobal("fetch", mockFetch)
@@ -745,6 +745,26 @@ describe("summarizeArgs", () => {
     expect(summarizeArgs("get_friend_note", { friendId: "friend-123" })).toBe("friendId=friend-123")
   })
 
+  it("returns org/project for ado_batch_update", () => {
+    expect(summarizeArgs("ado_batch_update", { organization: "contoso", project: "web", items: [] })).toBe("organization=contoso project=web")
+  })
+
+  it("returns org/project/title for ado_create_epic", () => {
+    expect(summarizeArgs("ado_create_epic", { organization: "contoso", project: "web", title: "New epic" })).toBe("organization=contoso project=web title=New epic")
+  })
+
+  it("returns org/project/title for ado_create_issue", () => {
+    expect(summarizeArgs("ado_create_issue", { organization: "contoso", project: "web", title: "Bug" })).toBe("organization=contoso project=web title=Bug")
+  })
+
+  it("returns org/project/workItemIds for ado_move_items", () => {
+    expect(summarizeArgs("ado_move_items", { organization: "contoso", project: "web", workItemIds: [1, 2] })).toBe("organization=contoso project=web workItemIds=1,2")
+  })
+
+  it("returns org/project for ado_restructure_backlog", () => {
+    expect(summarizeArgs("ado_restructure_backlog", { organization: "contoso", project: "web" })).toBe("organization=contoso project=web")
+  })
+
   it("returns key=value summary for unknown tool", () => {
     expect(summarizeArgs("unknown_tool", { key: "value" })).toBe("key=value")
   })
@@ -801,9 +821,11 @@ describe("ToolDefinition type and registry", () => {
       expect(def.tool.type).toBe("function")
       expect(def.tool.function.name).toBeDefined()
       expect(typeof def.handler).toBe("function")
-      // All teams tools have an integration
-      expect(def.integration).toBeDefined()
-      expect(["ado", "graph"]).toContain(def.integration)
+      // All teams tools have an integration, except teams_send_message (uses botApi, not OAuth)
+      if (def.tool.function.name !== "teams_send_message") {
+        expect(def.integration).toBeDefined()
+        expect(["ado", "graph"]).toContain(def.integration)
+      }
     }
   })
 
@@ -824,7 +846,7 @@ describe("ToolDefinition type and registry", () => {
     vi.resetModules()
     const toolsTeams = await import("../../repertoire/tools-teams")
     const nonMutate = toolsTeams.teamsToolDefinitions.filter(
-      (d: any) => !["graph_mutate", "ado_mutate"].includes(d.tool.function.name)
+      (d: any) => !["graph_mutate", "ado_mutate", "teams_send_message"].includes(d.tool.function.name)
     )
     for (const def of nonMutate) {
       expect(def.confirmationRequired).toBeFalsy()
@@ -998,8 +1020,9 @@ describe("getToolsForChannel with ChannelCapabilities", () => {
     expect(names).toContain("ado_restructure_backlog")
     expect(names).toContain("ado_validate_structure")
     expect(names).toContain("ado_preview_changes")
-    // remote-safe base tools + 8 teams tools + 11 semantic ado tools
-    expect(result.length).toBe(remoteBaseCount + 19)
+    // remote-safe base tools + 8 teams tools + 11 semantic ado tools + 1 teams_send_message (no integration gate)
+    expect(names).toContain("teams_send_message")
+    expect(result.length).toBe(remoteBaseCount + 20)
   })
 
   it("returns base + graph-only tools when only graph integration", async () => {
@@ -1027,8 +1050,8 @@ describe("getToolsForChannel with ChannelCapabilities", () => {
     expect(names).not.toContain("ado_mutate")
     expect(names).not.toContain("ado_work_items")
     expect(names).not.toContain("ado_docs")
-    // remote-safe base tools + 4 graph tools
-    expect(result.length).toBe(remoteBaseCount + 4)
+    // remote-safe base tools + 4 graph tools + 1 teams_send_message (no integration gate)
+    expect(result.length).toBe(remoteBaseCount + 5)
   })
 
   it("returns base + ado-only tools when only ado integration", async () => {
@@ -1058,8 +1081,8 @@ describe("getToolsForChannel with ChannelCapabilities", () => {
     expect(names).not.toContain("graph_docs")
     // Should have semantic ado tools
     expect(names).toContain("ado_backlog_list")
-    // remote-safe base tools + 4 ado tools + 11 semantic ado tools
-    expect(result.length).toBe(remoteBaseCount + 15)
+    // remote-safe base tools + 4 ado tools + 11 semantic ado tools + 1 teams_send_message (no integration gate)
+    expect(result.length).toBe(remoteBaseCount + 16)
   })
 })
 
@@ -1703,7 +1726,7 @@ describe("execTool for generic ADO tools", () => {
 
     const result = await execTool("ado_query", { organization: "myorg", path: "/_apis/git/repositories" }, ctx)
     expect(result).toBe('{"value": []}')
-    expect(adoRequest).toHaveBeenCalledWith("test-token", "GET", "myorg", "/_apis/git/repositories", undefined)
+    expect(adoRequest).toHaveBeenCalledWith("test-token", "GET", "myorg", "/_apis/git/repositories", undefined, undefined)
   })
 
   it("ado_query calls adoRequest with POST for WIQL", async () => {
@@ -1721,7 +1744,7 @@ describe("execTool for generic ADO tools", () => {
     const body = '{"query": "SELECT [System.Id] FROM WorkItems"}'
     const result = await execTool("ado_query", { organization: "myorg", path: "/_apis/wit/wiql", method: "POST", body }, ctx)
     expect(result).toBe('{"workItems": []}')
-    expect(adoRequest).toHaveBeenCalledWith("test-token", "POST", "myorg", "/_apis/wit/wiql", body)
+    expect(adoRequest).toHaveBeenCalledWith("test-token", "POST", "myorg", "/_apis/wit/wiql", body, undefined)
   })
 
   it("ado_query returns AUTH_REQUIRED when adoToken missing", async () => {
@@ -1760,7 +1783,7 @@ describe("execTool for generic ADO tools", () => {
     const body = '[{"op": "replace", "path": "/fields/System.Title", "value": "Updated"}]'
     const result = await execTool("ado_mutate", { method: "PATCH", organization: "myorg", path: "/_apis/wit/workitems/456", body }, ctx)
     expect(result).toBe('{"id": 456}')
-    expect(adoRequest).toHaveBeenCalledWith("test-token", "PATCH", "myorg", "/_apis/wit/workitems/456", body)
+    expect(adoRequest).toHaveBeenCalledWith("test-token", "PATCH", "myorg", "/_apis/wit/workitems/456", body, undefined)
   })
 
   it("ado_mutate rejects invalid method", async () => {
@@ -1933,6 +1956,14 @@ describe("execTool for docs tools", () => {
     const result = await execTool("ado_docs", {})
     expect(typeof result).toBe("string")
   })
+
+  it("ado_docs includes Host line for endpoints with custom host", async () => {
+    vi.resetModules()
+    const { execTool } = await import("../../repertoire/tools")
+
+    const result = await execTool("ado_docs", { query: "group entitlement" })
+    expect(result).toContain("Host: vsaex.dev.azure.com")
+  })
 })
 
 describe("getToolsForChannel includes docs tools", () => {
@@ -1957,8 +1988,8 @@ describe("getToolsForChannel includes docs tools", () => {
     expect(names).toContain("ado_backlog_list")
     expect(names).not.toContain("read_file")
     expect(names).not.toContain("shell")
-    // remote-safe base tools + 8 teams tools (4 generic + 2 aliases + 2 docs) + 11 semantic ado tools
-    expect(teamsTools.length).toBe(remoteBaseCount + 19)
+    // remote-safe base tools + 8 teams tools (4 generic + 2 aliases + 2 docs) + 11 semantic ado tools + 1 teams_send_message
+    expect(teamsTools.length).toBe(remoteBaseCount + 20)
   })
 
   it("cli channel does NOT include graph_docs or ado_docs", async () => {
@@ -2006,6 +2037,10 @@ describe("summarizeArgs for docs tools", () => {
 
   it("returns empty string for ado_docs with no query", () => {
     expect(summarizeArgs("ado_docs", {})).toBe("")
+  })
+
+  it("returns user_name and user_id for teams_send_message", () => {
+    expect(summarizeArgs("teams_send_message", { user_name: "Alice", user_id: "uid-1", message: "hi" })).toBe("user_name=Alice user_id=uid-1")
   })
 
   it("returns type+key summary for save_friend_note", () => {

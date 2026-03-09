@@ -1,4 +1,0 @@
-Unit 2b no-op rationale
-
-No Unit 2a code tests were added because there were no small re-land-now code candidates.
-Therefore no implementation reland was performed in Unit 2b.

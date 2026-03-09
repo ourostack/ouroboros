@@ -3,3 +3,5 @@ dist/
 coverage/
 .DS_Store
 manifest.zip
+manifest.*.zip
+.azure/

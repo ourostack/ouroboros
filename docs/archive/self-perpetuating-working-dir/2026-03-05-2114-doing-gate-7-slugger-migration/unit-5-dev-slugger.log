@@ -1,9 +1,0 @@
-
-> ouroboros-agent-harness@1.0.0 dev:slugger
-> tsc && node dist/cli-entry.js --agent slugger
-
-
-slugger (type /commands for help)
-
-[36m> [0m/exit
-bye

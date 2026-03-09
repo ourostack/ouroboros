@@ -81,7 +81,7 @@ export const teamsToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "ado_query",
-        description: "GET or POST (for WIQL read queries) any Azure DevOps API endpoint. Use ado_docs first to look up the correct path.",
+        description: "GET or POST (for WIQL read queries) any Azure DevOps API endpoint. Use ado_docs first to look up the correct path and host.",
         parameters: {
           type: "object",
           properties: {
@@ -89,6 +89,7 @@ export const teamsToolDefinitions: ToolDefinition[] = [
             path: { type: "string", description: "ADO API path after /{org}, e.g. /_apis/wit/wiql" },
             method: { type: "string", enum: ["GET", "POST"], description: "HTTP method (defaults to GET)" },
             body: { type: "string", description: "JSON request body (optional, used with POST for WIQL)" },
+            host: { type: "string", description: "API host override for non-standard APIs (e.g. 'vsapm.dev.azure.com' for entitlements, 'vssps.dev.azure.com' for users). Omit for standard dev.azure.com." },
           },
           required: ["organization", "path"],
         },
@@ -99,7 +100,7 @@ export const teamsToolDefinitions: ToolDefinition[] = [
         return "AUTH_REQUIRED:ado -- I need access to Azure DevOps. Please sign in when prompted.";
       }
       const method = args.method || "GET";
-      const result = await adoRequest(ctx.adoToken, method, args.organization, args.path, args.body);
+      const result = await adoRequest(ctx.adoToken, method, args.organization, args.path, args.body, args.host);
       checkAndRecord403(result, "ado", args.organization, method, ctx);
       return result;
     },
@@ -110,7 +111,7 @@ export const teamsToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "ado_mutate",
-        description: "POST/PATCH/DELETE any Azure DevOps API endpoint for actual mutations. Use ado_docs first to look up the correct path.",
+        description: "POST/PATCH/DELETE any Azure DevOps API endpoint for actual mutations. Use ado_docs first to look up the correct path and host.",
         parameters: {
           type: "object",
           properties: {
@@ -118,6 +119,7 @@ export const teamsToolDefinitions: ToolDefinition[] = [
             organization: { type: "string", description: "Azure DevOps organization name" },
             path: { type: "string", description: "ADO API path after /{org}" },
             body: { type: "string", description: "JSON request body (optional)" },
+            host: { type: "string", description: "API host override for non-standard APIs (e.g. 'vsapm.dev.azure.com' for entitlements, 'vssps.dev.azure.com' for users). Omit for standard dev.azure.com." },
           },
           required: ["method", "organization", "path"],
         },
@@ -132,7 +134,7 @@ export const teamsToolDefinitions: ToolDefinition[] = [
       }
       /* v8 ignore next -- fallback unreachable: method is validated against MUTATE_METHODS above @preserve */
       const action = METHOD_TO_ACTION[args.method] || args.method;
-      const result = await adoRequest(ctx.adoToken, args.method, args.organization, args.path, args.body);
+      const result = await adoRequest(ctx.adoToken, args.method, args.organization, args.path, args.body, args.host);
       checkAndRecord403(result, "ado", args.organization, action, ctx);
       return result;
     },
@@ -198,6 +200,56 @@ export const teamsToolDefinitions: ToolDefinition[] = [
     },
     integration: "ado",
   },
+  // -- Proactive messaging --
+  {
+    tool: {
+      type: "function",
+      function: {
+        name: "teams_send_message",
+        description:
+          "send a proactive 1:1 Teams message to a user. requires their AAD object ID (use graph_query /users to find it). the message appears as coming from the bot.",
+        parameters: {
+          type: "object",
+          properties: {
+            user_id: { type: "string", description: "AAD object ID of the user to message" },
+            user_name: { type: "string", description: "display name of the user (for logging)" },
+            message: { type: "string", description: "message text to send" },
+            tenant_id: { type: "string", description: "tenant ID (optional, defaults to current conversation tenant)" },
+          },
+          required: ["user_id", "message"],
+        },
+      },
+    },
+    /* v8 ignore start -- proactive messaging requires live Teams SDK conversation client @preserve */
+    handler: async (args, ctx) => {
+      if (!ctx?.botApi) {
+        return "proactive messaging is not available -- no bot API context (this tool only works in the Teams channel)";
+      }
+      try {
+        const tenantId = args.tenant_id || ctx.tenantId;
+        // Cast to the SDK's ConversationClient shape (kept as `unknown` in ToolContext to avoid type coupling)
+        const conversations = ctx.botApi.conversations as {
+          create(params: Record<string, unknown>): Promise<{ id: string }>;
+          activities(conversationId: string): { create(params: Record<string, unknown>): Promise<unknown> };
+        };
+        const conversation = await conversations.create({
+          bot: { id: ctx.botApi.id },
+          members: [{ id: args.user_id, role: "user", name: args.user_name || args.user_id }],
+          tenantId,
+          isGroup: false,
+        });
+        await conversations.activities(conversation.id).create({
+          type: "message",
+          text: args.message,
+        });
+        return `message sent to ${args.user_name || args.user_id}`;
+      } catch (e) {
+        return `failed to send proactive message: ${e instanceof Error ? e.message : String(e)}`;
+      }
+    },
+    /* v8 ignore stop */
+    confirmationRequired: true,
+  },
   // -- Documentation tools --
   {
     tool: {
@@ -257,6 +309,7 @@ interface EndpointEntry {
   description: string;
   params: string;
   scopes?: string;
+  host?: string;
 }
 
 function searchEndpoints(entries: EndpointEntry[], query: string): string {
@@ -282,6 +335,7 @@ function searchEndpoints(entries: EndpointEntry[], query: string): string {
       `  ${e.description}`,
       `  Params: ${e.params || "none"}`,
     ];
+    if (e.host) lines.push(`  Host: ${e.host}`);
     if (e.scopes) lines.push(`  Scopes: ${e.scopes}`);
     return lines.join("\n");
   }).join("\n\n");
@@ -309,5 +363,6 @@ export function summarizeTeamsArgs(name: string, args: Record<string, string>): 
   if (name === "ado_mutate") return summarizeKeyValues(["method", "organization", "path"]);
   if (name === "graph_docs") return summarizeKeyValues(["query"]);
   if (name === "ado_docs") return summarizeKeyValues(["query"]);
+  if (name === "teams_send_message") return summarizeKeyValues(["user_name", "user_id"]);
   return undefined;
 }

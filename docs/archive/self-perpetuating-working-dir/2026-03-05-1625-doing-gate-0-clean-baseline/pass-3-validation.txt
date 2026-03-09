@@ -1,5 +1,0 @@
-planning_doc_exists: yes
-commit_start_exists: yes
-commit_end_exists: yes
-archive_branch_local: yes
-archive_branch_remote: yes

@@ -36,12 +36,14 @@ export interface TeamsConfig {
   clientId: string
   clientSecret: string
   tenantId: string
+  managedIdentityClientId: string
 }
 
 export interface OAuthConfig {
   graphConnectionName: string
   adoConnectionName: string
   githubConnectionName: string
+  tenantOverrides?: Record<string, { graphConnectionName?: string, adoConnectionName?: string, githubConnectionName?: string }>
 }
 
 export interface ContextConfig {
@@ -80,6 +82,7 @@ export interface OuroborosConfig {
     "openai-codex": OpenAICodexProviderConfig
   }
   teams: TeamsConfig
+  teamsSecondary: TeamsConfig
   oauth: OAuthConfig
   context: ContextConfig
   teamsChannel: TeamsChannelConfig
@@ -116,11 +119,18 @@ const DEFAULT_SECRETS_TEMPLATE: Omit<OuroborosConfig, "context"> = {
     clientId: "",
     clientSecret: "",
     tenantId: "",
+    managedIdentityClientId: "",
   },
   oauth: {
     graphConnectionName: "graph",
     adoConnectionName: "ado",
     githubConnectionName: "",
+  },
+  teamsSecondary: {
+    clientId: "",
+    clientSecret: "",
+    tenantId: "",
+    managedIdentityClientId: "",
   },
   teamsChannel: {
     skipConfirmation: true,
@@ -151,6 +161,7 @@ function defaultRuntimeConfig(): OuroborosConfig {
       "openai-codex": { ...DEFAULT_SECRETS_TEMPLATE.providers["openai-codex"] },
     },
     teams: { ...DEFAULT_SECRETS_TEMPLATE.teams },
+    teamsSecondary: { ...DEFAULT_SECRETS_TEMPLATE.teamsSecondary },
     oauth: { ...DEFAULT_SECRETS_TEMPLATE.oauth },
     context: { ...DEFAULT_AGENT_CONTEXT },
     teamsChannel: { ...DEFAULT_SECRETS_TEMPLATE.teamsChannel },
@@ -286,7 +297,7 @@ export type DeepPartial<T> = {
   [P in keyof T]?: T[P] extends object ? DeepPartial<T[P]> : T[P]
 }
 
-export function setTestConfig(partial: DeepPartial<OuroborosConfig>): void {
+export function patchRuntimeConfig(partial: DeepPartial<OuroborosConfig>): void {
   loadConfig() // ensure _cachedConfig exists
   const contextPatch = partial.context as Partial<ContextConfig> | undefined
   if (contextPatch) {
@@ -327,6 +338,11 @@ export function getTeamsConfig(): TeamsConfig {
   return { ...config.teams }
 }
 
+export function getTeamsSecondaryConfig(): TeamsConfig {
+  const config = loadConfig()
+  return { ...config.teamsSecondary }
+}
+
 export function getContextConfig(): ContextConfig {
   if (_testContextOverride) {
     return { ..._testContextOverride }
@@ -347,6 +363,17 @@ export function getContextConfig(): ContextConfig {
 export function getOAuthConfig(): OAuthConfig {
   const config = loadConfig()
   return { ...config.oauth }
+}
+
+/** Resolve OAuth connection names for a specific tenant, falling back to defaults. */
+export function resolveOAuthForTenant(tenantId?: string): Omit<OAuthConfig, "tenantOverrides"> {
+  const base = getOAuthConfig()
+  const overrides = tenantId ? base.tenantOverrides?.[tenantId] : undefined
+  return {
+    graphConnectionName: overrides?.graphConnectionName ?? base.graphConnectionName,
+    adoConnectionName: overrides?.adoConnectionName ?? base.adoConnectionName,
+    githubConnectionName: overrides?.githubConnectionName ?? base.githubConnectionName,
+  }
 }
 
 export function getTeamsChannelConfig(): TeamsChannelConfig {
@@ -398,7 +425,11 @@ function sanitizeKey(key: string): string {
 }
 
 export function sessionPath(friendId: string, channel: string, key: string): string {
-  const dir = path.join(os.homedir(), ".agentstate", getAgentName(), "sessions", friendId, channel)
+  // On Azure App Service, os.homedir() returns /root which is ephemeral.
+  // Use /home (persistent storage) when WEBSITE_SITE_NAME is set.
+  /* v8 ignore next -- Azure vs local path branch; environment-specific @preserve */
+  const homeBase = process.env.WEBSITE_SITE_NAME ? "/home" : os.homedir()
+  const dir = path.join(homeBase, ".agentstate", getAgentName(), "sessions", friendId, channel)
   fs.mkdirSync(dir, { recursive: true })
   return path.join(dir, sanitizeKey(key) + ".json")
 }

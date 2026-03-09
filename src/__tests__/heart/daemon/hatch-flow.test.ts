@@ -146,7 +146,8 @@ describe("hatch flow", () => {
     expect(secrets.providers.azure.endpoint).toBe("https://example.openai.azure.com")
     expect(secrets.providers.azure.deployment).toBe("gpt-4o-mini")
 
-    expect(fs.existsSync(path.join(result.bundleRoot, "psyche", "IDENTITY.md"))).toBe(true)
+    // Psyche files are no longer written by runHatchFlow (specialist writes them now)
+    expect(fs.existsSync(path.join(result.bundleRoot, "psyche", "IDENTITY.md"))).toBe(false)
   })
 
   it("writes provider-specific secrets for openai-codex hatch flows", async () => {
