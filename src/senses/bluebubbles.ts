@@ -285,6 +285,20 @@ export async function handleBlueBubblesEvent(
   await callbacks.flush()
   resolvedDeps.postTurn(messages, sessPath, result.usage)
   await resolvedDeps.accumulateFriendTokens(store, friendId, result.usage)
+  try {
+    await client.markChatRead(event.chat)
+  } catch (error) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.bluebubbles_mark_read_error",
+      message: "failed to mark bluebubbles chat as read",
+      meta: {
+        chatGuid: event.chat.chatGuid ?? null,
+        reason: error instanceof Error ? error.message : String(error),
+      },
+    })
+  }
 
   emitNervesEvent({
     component: "senses",

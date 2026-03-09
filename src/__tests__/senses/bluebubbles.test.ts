@@ -24,6 +24,9 @@ const mocks = vi.hoisted(() => ({
   storeCtor: vi.fn(),
   emitNervesEvent: vi.fn(),
   sendText: vi.fn().mockResolvedValue({ messageGuid: "sent-guid" }),
+  editMessage: vi.fn().mockResolvedValue(undefined),
+  setTyping: vi.fn().mockResolvedValue(undefined),
+  markChatRead: vi.fn().mockResolvedValue(undefined),
   repairEvent: vi.fn(async (event: unknown) => event),
   recordMutation: vi.fn(),
   createServer: vi.fn(),
@@ -96,6 +99,9 @@ vi.mock("../../nerves/runtime", () => ({
 vi.mock("../../senses/bluebubbles-client", () => ({
   createBlueBubblesClient: vi.fn(() => ({
     sendText: (...args: any[]) => mocks.sendText(...args),
+    editMessage: (...args: any[]) => mocks.editMessage(...args),
+    setTyping: (...args: any[]) => mocks.setTyping(...args),
+    markChatRead: (...args: any[]) => mocks.markChatRead(...args),
     repairEvent: (...args: any[]) => mocks.repairEvent(...args),
   })),
 }))
@@ -367,6 +373,9 @@ function resetMocks(): void {
   mocks.storeCtor.mockReset()
   mocks.emitNervesEvent.mockReset()
   mocks.sendText.mockReset().mockResolvedValue({ messageGuid: "sent-guid" })
+  mocks.editMessage.mockReset().mockResolvedValue(undefined)
+  mocks.setTyping.mockReset().mockResolvedValue(undefined)
+  mocks.markChatRead.mockReset().mockResolvedValue(undefined)
   mocks.repairEvent.mockReset().mockImplementation(async (event: unknown) => event)
   mocks.recordMutation.mockReset()
   mocks.listen.mockReset().mockImplementation((_: number, cb?: () => void) => cb?.())
@@ -594,6 +603,8 @@ describe("BlueBubbles sense runtime", () => {
       }),
     )
     expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+    expect(mocks.markChatRead).toHaveBeenCalledTimes(1)
+    expect(mocks.markChatRead).toHaveBeenCalledWith(expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }))
   })
 
   it("keeps edit and unsend mutations notifyable while treating delivery as state-only", async () => {
@@ -654,6 +665,9 @@ describe("BlueBubbles sense runtime", () => {
       }),
     )
     expect(mocks.runAgent).toHaveBeenCalledTimes(2)
+    expect(mocks.markChatRead).toHaveBeenCalledTimes(2)
+    expect(mocks.markChatRead).toHaveBeenNthCalledWith(1, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }))
+    expect(mocks.markChatRead).toHaveBeenNthCalledWith(2, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }))
   })
 
   it("returns explicit from-me handling without invoking the agent loop", async () => {
@@ -669,6 +683,7 @@ describe("BlueBubbles sense runtime", () => {
     )
     expect(mocks.runAgent).not.toHaveBeenCalled()
     expect(mocks.sendText).not.toHaveBeenCalled()
+    expect(mocks.markChatRead).not.toHaveBeenCalled()
   })
 
   it("can still run a turn when only chat identifier routing is present", async () => {
@@ -857,6 +872,75 @@ describe("BlueBubbles sense runtime", () => {
       "bluebubbles",
       expect.any(AbortSignal),
       expect.any(Object),
+    )
+  })
+
+  it("marks handled inbound chats as read after a successful turn", async () => {
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    expect(mocks.markChatRead).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatGuid: "any;-;ari@mendelow.me",
+      }),
+    )
+  })
+
+  it("emits a warning instead of failing the turn when mark-read transport throws", async () => {
+    const bluebubbles = await import("../../senses/bluebubbles")
+    mocks.markChatRead.mockRejectedValueOnce(new Error("read transport down"))
+
+    await expect(bluebubbles.handleBlueBubblesEvent(dmThreadPayload)).resolves.toEqual(
+      expect.objectContaining({
+        handled: true,
+        notifiedAgent: true,
+      }),
+    )
+
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: "warn",
+        event: "senses.bluebubbles_mark_read_error",
+        meta: expect.objectContaining({
+          chatGuid: "any;-;ari@mendelow.me",
+          reason: "read transport down",
+        }),
+      }),
+    )
+  })
+
+  it("captures string-thrown mark-read failures explicitly too", async () => {
+    const bluebubbles = await import("../../senses/bluebubbles")
+    mocks.markChatRead.mockRejectedValueOnce("read transport string failure")
+
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: "warn",
+        event: "senses.bluebubbles_mark_read_error",
+        meta: expect.objectContaining({
+          reason: "read transport string failure",
+        }),
+      }),
+    )
+  })
+
+  it("uses null chatGuid in mark-read warnings when only identifier routing is available", async () => {
+    const bluebubbles = await import("../../senses/bluebubbles")
+    mocks.markChatRead.mockRejectedValueOnce(new Error("identifier read failure"))
+
+    await bluebubbles.handleBlueBubblesEvent(identifierOnlyPayload)
+
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: "warn",
+        event: "senses.bluebubbles_mark_read_error",
+        meta: expect.objectContaining({
+          chatGuid: null,
+          reason: "identifier read failure",
+        }),
+      }),
     )
   })
 

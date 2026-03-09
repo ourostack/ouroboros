@@ -15,8 +15,18 @@ export interface BlueBubblesSendTextResult {
   messageGuid?: string
 }
 
+export interface BlueBubblesEditMessageParams {
+  messageGuid: string
+  text: string
+  backwardsCompatibilityMessage?: string
+  partIndex?: number
+}
+
 export interface BlueBubblesClient {
   sendText(params: BlueBubblesSendTextParams): Promise<BlueBubblesSendTextResult>
+  editMessage(params: BlueBubblesEditMessageParams): Promise<void>
+  setTyping(chat: BlueBubblesChatRef, typing: boolean): Promise<void>
+  markChatRead(chat: BlueBubblesChatRef): Promise<void>
   repairEvent(event: BlueBubblesNormalizedEvent): Promise<BlueBubblesNormalizedEvent>
 }
 
@@ -235,6 +245,15 @@ function providerSupportsAudioInput(provider: string): boolean {
   return provider === "azure" || provider === "openai-codex"
 }
 
+async function resolveChatGuid(
+  chat: BlueBubblesChatRef,
+  config: ClientConfig,
+  channelConfig: ChannelConfig,
+): Promise<string | undefined> {
+  return chat.chatGuid
+    ?? await resolveChatGuidForIdentifier(config, channelConfig, chat.chatIdentifier ?? "")
+}
+
 export function createBlueBubblesClient(
   config: ClientConfig = getBlueBubblesConfig(),
   channelConfig: ChannelConfig = getBlueBubblesChannelConfig(),
@@ -245,8 +264,7 @@ export function createBlueBubblesClient(
       if (!trimmedText) {
         throw new Error("BlueBubbles send requires non-empty text.")
       }
-      const resolvedChatGuid = params.chat.chatGuid
-        ?? await resolveChatGuidForIdentifier(config, channelConfig, params.chat.chatIdentifier ?? "")
+      const resolvedChatGuid = await resolveChatGuid(params.chat, config, channelConfig)
       if (!resolvedChatGuid) {
         throw new Error("BlueBubbles send currently requires chat.chatGuid from the inbound event.")
       }
@@ -309,6 +327,77 @@ export function createBlueBubblesClient(
       })
 
       return { messageGuid }
+    },
+
+    async editMessage(params: BlueBubblesEditMessageParams): Promise<void> {
+      const messageGuid = params.messageGuid.trim()
+      const text = params.text.trim()
+      if (!messageGuid) {
+        throw new Error("BlueBubbles edit requires messageGuid.")
+      }
+      if (!text) {
+        throw new Error("BlueBubbles edit requires non-empty text.")
+      }
+
+      const url = buildBlueBubblesApiUrl(
+        config.serverUrl,
+        `/api/v1/message/${encodeURIComponent(messageGuid)}/edit`,
+        config.password,
+      )
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          editedMessage: text,
+          backwardsCompatibilityMessage: params.backwardsCompatibilityMessage ?? `Edited to: ${text}`,
+          partIndex: typeof params.partIndex === "number" ? params.partIndex : 0,
+        }),
+        signal: AbortSignal.timeout(channelConfig.requestTimeoutMs),
+      })
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => "")
+        throw new Error(`BlueBubbles edit failed (${response.status}): ${errorText || "unknown"}`)
+      }
+    },
+
+    async setTyping(chat: BlueBubblesChatRef, typing: boolean): Promise<void> {
+      const resolvedChatGuid = await resolveChatGuid(chat, config, channelConfig)
+      if (!resolvedChatGuid) {
+        return
+      }
+      const url = buildBlueBubblesApiUrl(
+        config.serverUrl,
+        `/api/v1/chat/${encodeURIComponent(resolvedChatGuid)}/typing`,
+        config.password,
+      )
+      const response = await fetch(url, {
+        method: typing ? "POST" : "DELETE",
+        signal: AbortSignal.timeout(channelConfig.requestTimeoutMs),
+      })
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => "")
+        throw new Error(`BlueBubbles typing failed (${response.status}): ${errorText || "unknown"}`)
+      }
+    },
+
+    async markChatRead(chat: BlueBubblesChatRef): Promise<void> {
+      const resolvedChatGuid = await resolveChatGuid(chat, config, channelConfig)
+      if (!resolvedChatGuid) {
+        return
+      }
+      const url = buildBlueBubblesApiUrl(
+        config.serverUrl,
+        `/api/v1/chat/${encodeURIComponent(resolvedChatGuid)}/read`,
+        config.password,
+      )
+      const response = await fetch(url, {
+        method: "POST",
+        signal: AbortSignal.timeout(channelConfig.requestTimeoutMs),
+      })
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => "")
+        throw new Error(`BlueBubbles read failed (${response.status}): ${errorText || "unknown"}`)
+      }
     },
 
     async repairEvent(event: BlueBubblesNormalizedEvent): Promise<BlueBubblesNormalizedEvent> {
@@ -404,9 +493,7 @@ export function createBlueBubblesClient(
           hydrated = {
             ...hydrated,
             inputPartsForAgent: media.inputParts.length > 0 ? media.inputParts : undefined,
-            textForAgent: combinedSuffix
-              ? `${hydrated.textForAgent}${hydrated.textForAgent ? "\n" : ""}${combinedSuffix}`
-              : hydrated.textForAgent,
+            textForAgent: [hydrated.textForAgent, combinedSuffix].filter(Boolean).join("\n"),
           }
         }
         emitNervesEvent({

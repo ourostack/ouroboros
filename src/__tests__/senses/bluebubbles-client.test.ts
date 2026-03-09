@@ -122,6 +122,241 @@ describe("BlueBubbles client", () => {
     expect(request).not.toHaveProperty("selectedMessageGuid")
   })
 
+  it("edits outbound messages through the BlueBubbles edit endpoint", async () => {
+    global.fetch = vi.fn().mockResolvedValue(new Response("", { status: 200 })) as typeof fetch
+
+    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+
+    await expect(
+      client.editMessage({
+        messageGuid: "sent-guid",
+        text: "  updated text  ",
+      }),
+    ).resolves.toBeUndefined()
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      "http://bluebubbles.local/api/v1/message/sent-guid/edit?password=secret-token",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          editedMessage: "updated text",
+          backwardsCompatibilityMessage: "Edited to: updated text",
+          partIndex: 0,
+        }),
+        signal: expect.any(AbortSignal),
+      }),
+    )
+  })
+
+  it("supports explicit backwards-compatibility text and part indexes for edits", async () => {
+    global.fetch = vi.fn().mockResolvedValue(new Response("", { status: 200 })) as typeof fetch
+
+    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+
+    await client.editMessage({
+      messageGuid: "sent-guid",
+      text: "updated text",
+      backwardsCompatibilityMessage: "compat text",
+      partIndex: 2,
+    })
+
+    expect(JSON.parse((global.fetch as any).mock.calls[0][1].body)).toEqual({
+      editedMessage: "updated text",
+      backwardsCompatibilityMessage: "compat text",
+      partIndex: 2,
+    })
+  })
+
+  it("rejects empty edit message ids and bodies before calling fetch", async () => {
+    global.fetch = vi.fn() as typeof fetch
+
+    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+
+    await expect(client.editMessage({ messageGuid: "   ", text: "updated" })).rejects.toThrow(
+      "BlueBubbles edit requires messageGuid.",
+    )
+    await expect(client.editMessage({ messageGuid: "sent-guid", text: "   " })).rejects.toThrow(
+      "BlueBubbles edit requires non-empty text.",
+    )
+    expect(global.fetch).not.toHaveBeenCalled()
+  })
+
+  it("marks chats as read and toggles typing through the BlueBubbles chat endpoints", async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("", { status: 200 }))
+      .mockResolvedValueOnce(new Response("", { status: 200 }))
+      .mockResolvedValueOnce(new Response("", { status: 200 })) as typeof fetch
+
+    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+
+    await expect(client.markChatRead(dmChat)).resolves.toBeUndefined()
+    await expect(client.setTyping(dmChat, true)).resolves.toBeUndefined()
+    await expect(client.setTyping(dmChat, false)).resolves.toBeUndefined()
+
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      1,
+      "http://bluebubbles.local/api/v1/chat/any%3B-%3Bari%40mendelow.me/read?password=secret-token",
+      expect.objectContaining({ method: "POST", signal: expect.any(AbortSignal) }),
+    )
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      2,
+      "http://bluebubbles.local/api/v1/chat/any%3B-%3Bari%40mendelow.me/typing?password=secret-token",
+      expect.objectContaining({ method: "POST", signal: expect.any(AbortSignal) }),
+    )
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      3,
+      "http://bluebubbles.local/api/v1/chat/any%3B-%3Bari%40mendelow.me/typing?password=secret-token",
+      expect.objectContaining({ method: "DELETE", signal: expect.any(AbortSignal) }),
+    )
+  })
+
+  it("surfaces edit, typing, and read transport errors with response details", async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("edit nope", { status: 500 }))
+      .mockResolvedValueOnce(new Response("typing nope", { status: 502 }))
+      .mockResolvedValueOnce(new Response("read nope", { status: 503 })) as typeof fetch
+
+    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+
+    await expect(client.editMessage({ messageGuid: "sent-guid", text: "updated" })).rejects.toThrow(
+      "BlueBubbles edit failed (500): edit nope",
+    )
+    await expect(client.setTyping(dmChat, true)).rejects.toThrow(
+      "BlueBubbles typing failed (502): typing nope",
+    )
+    await expect(client.markChatRead(dmChat)).rejects.toThrow(
+      "BlueBubbles read failed (503): read nope",
+    )
+  })
+
+  it("falls back to unknown when edit, typing, or read error bodies cannot be read", async () => {
+    const unreadable = (status: number) => ({
+      ok: false,
+      status,
+      text: vi.fn().mockRejectedValue(new Error("body stream gone")),
+    })
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(unreadable(500))
+      .mockResolvedValueOnce(unreadable(502))
+      .mockResolvedValueOnce(unreadable(503)) as typeof fetch
+
+    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+
+    await expect(client.editMessage({ messageGuid: "sent-guid", text: "updated" })).rejects.toThrow(
+      "BlueBubbles edit failed (500): unknown",
+    )
+    await expect(client.setTyping(dmChat, true)).rejects.toThrow(
+      "BlueBubbles typing failed (502): unknown",
+    )
+    await expect(client.markChatRead(dmChat)).rejects.toThrow(
+      "BlueBubbles read failed (503): unknown",
+    )
+  })
+
+  it("no-ops typing and read operations when no chat guid can be resolved", async () => {
+    global.fetch = vi.fn() as typeof fetch
+
+    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+
+    const unresolvedChat = {
+      isGroup: false,
+      sessionKey: "chat_identifier:missing",
+      sendTarget: { kind: "chat_identifier", value: "missing" } as const,
+    }
+
+    await expect(client.setTyping(unresolvedChat, true)).resolves.toBeUndefined()
+    await expect(client.markChatRead(unresolvedChat)).resolves.toBeUndefined()
+    expect(global.fetch).not.toHaveBeenCalled()
+  })
+
   it("rejects empty text and missing routable chat identity before calling fetch", async () => {
     global.fetch = vi.fn() as typeof fetch
 
@@ -1248,6 +1483,176 @@ describe("BlueBubbles client", () => {
       expect.any(Object),
       expect.any(Object),
       expect.objectContaining({ preferAudioInput: true }),
+    )
+  })
+
+  it("appends repair notices from hydrated media when no structured input is available", async () => {
+    const hydrateBlueBubblesAttachments = vi.fn().mockResolvedValue({
+      inputParts: [],
+      transcriptAdditions: [],
+      notices: ["attachment hydration failed for file.pdf: socket reset"],
+    })
+    vi.doMock("../../senses/bluebubbles-media", () => ({
+      hydrateBlueBubblesAttachments,
+    }))
+
+    global.fetch = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          data: {
+            guid: "file-guid",
+            text: "",
+            handle: {
+              address: "ari@mendelow.me",
+              service: "iMessage",
+            },
+            attachments: [
+              {
+                guid: "file-1",
+                mimeType: "application/pdf",
+                transferName: "file.pdf",
+              },
+            ],
+            chats: [
+              {
+                guid: "any;-;ari@mendelow.me",
+                style: 45,
+                chatIdentifier: "ari@mendelow.me",
+                displayName: "",
+              },
+            ],
+          },
+        }),
+        { status: 200 },
+      ),
+    ) as typeof fetch
+
+    vi.resetModules()
+    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+
+    const result = await client.repairEvent({
+      kind: "message",
+      eventType: "new-message",
+      messageGuid: "file-guid",
+      timestamp: 1,
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        rawId: "ari@mendelow.me",
+        displayName: "ari@mendelow.me",
+      },
+      chat: dmChat,
+      text: "",
+      textForAgent: "[file attachment: file.pdf]",
+      attachments: [{ guid: "file-1", mimeType: "application/pdf", transferName: "file.pdf" }],
+      hasPayloadData: false,
+      requiresRepair: true,
+    })
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        requiresRepair: false,
+        inputPartsForAgent: undefined,
+        textForAgent:
+          "[attachment: file.pdf]\n[attachment hydration failed for file.pdf: socket reset]",
+      }),
+    )
+  })
+
+  it("appends hydrated media suffixes cleanly when the repaired agent text is empty", async () => {
+    const hydrateBlueBubblesAttachments = vi.fn().mockResolvedValue({
+      inputParts: [],
+      transcriptAdditions: ["voice note transcript: hello"],
+      notices: [],
+    })
+    vi.doMock("../../senses/bluebubbles-media", () => ({
+      hydrateBlueBubblesAttachments,
+    }))
+
+    global.fetch = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          data: {
+            guid: "audio-guid",
+            text: "",
+            handle: {
+              address: "ari@mendelow.me",
+              service: "iMessage",
+            },
+            attachments: [
+              {
+                guid: "audio-1",
+                mimeType: "audio/mp3",
+                transferName: "Audio Message.mp3",
+              },
+            ],
+            chats: [
+              {
+                guid: "any;-;ari@mendelow.me",
+                style: 45,
+                chatIdentifier: "ari@mendelow.me",
+                displayName: "",
+              },
+            ],
+          },
+        }),
+        { status: 200 },
+      ),
+    ) as typeof fetch
+
+    vi.resetModules()
+    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+
+    const result = await client.repairEvent({
+      kind: "message",
+      eventType: "new-message",
+      messageGuid: "audio-guid",
+      timestamp: 1,
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        rawId: "ari@mendelow.me",
+        displayName: "ari@mendelow.me",
+      },
+      chat: dmChat,
+      text: "",
+      textForAgent: "",
+      attachments: [{ guid: "audio-1", mimeType: "audio/mp3", transferName: "Audio Message.mp3" }],
+      hasPayloadData: false,
+      requiresRepair: true,
+    })
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        requiresRepair: false,
+        textForAgent: "[audio attachment: Audio Message.mp3]\n[voice note transcript: hello]",
+      }),
     )
   })
 
