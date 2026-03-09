@@ -9,13 +9,14 @@ import { CANONICAL_BUNDLE_MANIFEST } from "../../mind/bundle-manifest"
 function candidateBundleRoots(agent: string): string[] {
   return [
     join(os.homedir(), "AgentBundles", `${agent}.ouro`),
+    join(os.homedir(), "AgentBundles--backup", `${agent}.ouro`),
     join(process.cwd(), `${agent}.ouro`),
   ]
 }
 
 function resolveBundleRoot(agent: string): string | null {
   for (const candidate of candidateBundleRoots(agent)) {
-    if (existsSync(candidate)) {
+    if (existsSync(join(candidate, "agent.json"))) {
       return candidate
     }
   }

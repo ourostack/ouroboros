@@ -25,11 +25,11 @@ function buildCommandArgs(runner: CodingRunner, workdir: string): { command: str
       command: "claude",
       args: [
         "-p",
+        "--verbose",
+        "--no-session-persistence",
         "--dangerously-skip-permissions",
         "--add-dir",
         workdir,
-        "--input-format",
-        "stream-json",
         "--output-format",
         "stream-json",
       ],
@@ -85,7 +85,7 @@ export function spawnCodingProcess(request: CodingSessionRequest, deps: SpawnCod
     stdio: ["pipe", "pipe", "pipe"],
   })
 
-  proc.stdin.write(`${prompt}\n`)
+  proc.stdin.end(`${prompt}\n`)
 
   emitNervesEvent({
     component: "repertoire",

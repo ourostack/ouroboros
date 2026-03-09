@@ -5,7 +5,7 @@ import { spawnCodingProcess } from "../../../repertoire/coding/spawner"
 class FakeProcess {
   readonly pid: number | undefined
   readonly stdin = {
-    write: vi.fn(),
+    end: vi.fn(),
   }
   readonly stdout = {
     on: vi.fn(),
@@ -46,11 +46,11 @@ describe("coding spawner", () => {
     expect(result.command).toBe("claude")
     expect(result.args).toEqual([
       "-p",
+      "--verbose",
+      "--no-session-persistence",
       "--dangerously-skip-permissions",
       "--add-dir",
       "/Users/test/AgentWorkspaces/ouroboros",
-      "--input-format",
-      "stream-json",
       "--output-format",
       "stream-json",
     ])
@@ -65,17 +65,17 @@ describe("coding spawner", () => {
       "claude",
       [
         "-p",
+        "--verbose",
+        "--no-session-persistence",
         "--dangerously-skip-permissions",
         "--add-dir",
         "/Users/test/AgentWorkspaces/ouroboros",
-        "--input-format",
-        "stream-json",
         "--output-format",
         "stream-json",
       ],
       { cwd: "/Users/test/AgentWorkspaces/ouroboros", stdio: ["pipe", "pipe", "pipe"] },
     )
-    expect((result.process as any).stdin.write).toHaveBeenCalledWith(`${result.prompt}\n`)
+    expect((result.process as any).stdin.end).toHaveBeenCalledWith(`${result.prompt}\n`)
   })
 
   it("builds codex command and prompt fallback when files are missing", () => {

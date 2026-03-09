@@ -40,6 +40,8 @@ export interface CodingSession {
   scopeFile?: string
   stateFile?: string
   status: CodingSessionStatus
+  stdoutTail: string
+  stderrTail: string
   pid: number | null
   startedAt: string
   lastActivityAt: string
@@ -48,6 +50,22 @@ export interface CodingSession {
   lastExitCode: number | null
   lastSignal: NodeJS.Signals | null
   failure: CodingFailureDiagnostics | null
+}
+
+export type CodingSessionUpdateKind =
+  | "spawned"
+  | "progress"
+  | "waiting_input"
+  | "stalled"
+  | "completed"
+  | "failed"
+  | "killed"
+
+export interface CodingSessionUpdate {
+  kind: CodingSessionUpdateKind
+  session: CodingSession
+  stream?: "stdout" | "stderr"
+  text?: string
 }
 
 export interface CodingActionResult {

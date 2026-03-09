@@ -4,7 +4,7 @@ import type { ToolContext, ToolDefinition } from "./tools-base";
 import { teamsToolDefinitions, summarizeTeamsArgs } from "./tools-teams";
 import { adoSemanticToolDefinitions } from "./ado-semantic";
 import { githubToolDefinitions, summarizeGithubArgs } from "./tools-github";
-import type { ChannelCapabilities } from "../mind/friends/types";
+import type { ChannelCapabilities, ResolvedContext } from "../mind/friends/types";
 import { emitNervesEvent } from "../nerves/runtime";
 
 // Re-export types and constants used by the rest of the codebase
@@ -16,9 +16,40 @@ export { teamsTools } from "./tools-teams";
 const allDefinitions: ToolDefinition[] = [...baseToolDefinitions, ...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions];
 const REMOTE_BLOCKED_LOCAL_TOOLS = new Set(["shell", "read_file", "write_file", "git_commit", "gh_cli"]);
 
-function baseToolsForCapabilities(capabilities?: ChannelCapabilities): OpenAI.ChatCompletionFunctionTool[] {
-  const isRemoteChannel = capabilities?.channel === "teams" || capabilities?.channel === "bluebubbles";
-  if (!isRemoteChannel) return tools;
+function isRemoteChannel(capabilities?: ChannelCapabilities): boolean {
+  return capabilities?.channel === "teams" || capabilities?.channel === "bluebubbles";
+}
+
+function isSharedRemoteContext(friend: ResolvedContext["friend"]): boolean {
+  const externalIds = friend.externalIds ?? [];
+  return externalIds.some((externalId) =>
+    externalId.externalId.startsWith("group:") || externalId.provider === "teams-conversation",
+  );
+}
+
+function isTrustedRemoteContext(context?: Pick<ResolvedContext, "friend" | "channel">): boolean {
+  if (!context?.friend || !isRemoteChannel(context.channel)) return false;
+  const trustLevel = context.friend.trustLevel ?? "stranger";
+  return trustLevel !== "stranger" && !isSharedRemoteContext(context.friend);
+}
+
+function shouldBlockLocalTools(
+  capabilities?: ChannelCapabilities,
+  context?: Pick<ResolvedContext, "friend" | "channel">,
+): boolean {
+  if (!isRemoteChannel(capabilities)) return false;
+  return !isTrustedRemoteContext(context);
+}
+
+function blockedLocalToolMessage(): string {
+  return "I can't do that from here because I'm talking to multiple people in a shared remote channel, and local shell/file/git/gh operations could let conversations interfere with each other. Ask me for a remote-safe alternative (Graph/ADO/web), or run that operation from CLI.";
+}
+
+function baseToolsForCapabilities(
+  capabilities?: ChannelCapabilities,
+  context?: Pick<ResolvedContext, "friend" | "channel">,
+): OpenAI.ChatCompletionFunctionTool[] {
+  if (!shouldBlockLocalTools(capabilities, context)) return tools;
   return tools.filter((tool) => !REMOTE_BLOCKED_LOCAL_TOOLS.has(tool.function.name));
 }
 
@@ -40,8 +71,9 @@ function applyPreference(tool: OpenAI.ChatCompletionFunctionTool, pref: string):
 export function getToolsForChannel(
   capabilities?: ChannelCapabilities,
   toolPreferences?: Record<string, string>,
+  context?: Pick<ResolvedContext, "friend" | "channel">,
 ): OpenAI.ChatCompletionFunctionTool[] {
-  const baseTools = baseToolsForCapabilities(capabilities);
+  const baseTools = baseToolsForCapabilities(capabilities, context);
 
   if (!capabilities || capabilities.availableIntegrations.length === 0) {
     return baseTools;
@@ -101,11 +133,8 @@ export async function execTool(name: string, args: Record<string, string>, ctx?:
     return `unknown: ${name}`;
   }
 
-  const isRemoteChannel =
-    ctx?.context?.channel?.channel === "teams" || ctx?.context?.channel?.channel === "bluebubbles";
-  if (isRemoteChannel && REMOTE_BLOCKED_LOCAL_TOOLS.has(name)) {
-    const message =
-      "I can't do that from here because I'm talking to multiple people in a shared remote channel, and local shell/file/git/gh operations could let conversations interfere with each other. Ask me for a remote-safe alternative (Graph/ADO/web), or run that operation from CLI.";
+  if (shouldBlockLocalTools(ctx?.context?.channel, ctx?.context) && REMOTE_BLOCKED_LOCAL_TOOLS.has(name)) {
+    const message = blockedLocalToolMessage();
     emitNervesEvent({
       level: "warn",
       event: "tool.error",
@@ -179,6 +208,7 @@ export function summarizeArgs(name: string, args: Record<string, string>): strin
   if (name === "task_board" || name === "task_board_deps" || name === "task_board_sessions") return "";
   if (name === "coding_spawn") return summarizeKeyValues(args, ["runner", "workdir", "taskRef"]);
   if (name === "coding_status") return summarizeKeyValues(args, ["sessionId"]);
+  if (name === "coding_tail") return summarizeKeyValues(args, ["sessionId"]);
   if (name === "coding_send_input") return summarizeKeyValues(args, ["sessionId", "input"]);
   if (name === "coding_kill") return summarizeKeyValues(args, ["sessionId"]);
   if (name === "claude") return summarizeKeyValues(args, ["prompt"]);

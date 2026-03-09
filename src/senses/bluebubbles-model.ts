@@ -1,3 +1,4 @@
+import OpenAI from "openai"
 import { emitNervesEvent } from "../nerves/runtime"
 
 type JsonRecord = Record<string, unknown>
@@ -46,6 +47,7 @@ export type BlueBubblesNormalizedMessage = {
   hasPayloadData: boolean
   requiresRepair: boolean
   repairNotice?: string
+  inputPartsForAgent?: OpenAI.Chat.ChatCompletionContentPart[]
   threadOriginatorGuid?: string
   replyToGuid?: string
 }

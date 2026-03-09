@@ -158,9 +158,13 @@ describe("coding session manager branch coverage", () => {
 
     proc.emitStdout("status: NEEDS_REVIEW")
     expect(manager.getSession(session.id)?.status).toBe("waiting_input")
+    expect(manager.getSession(session.id)?.stdoutTail).toContain("status: NEEDS_REVIEW")
 
     proc.emitStderr("❌ blocked")
     expect(manager.getSession(session.id)?.status).toBe("waiting_input")
+    expect(manager.getSession(session.id)?.stderrTail).toContain("❌ blocked")
+    expect(manager.listSessions()[0]?.stdoutTail).toContain("status: NEEDS_REVIEW")
+    expect(manager.listSessions()[0]?.stderrTail).toContain("❌ blocked")
 
     proc.emitStdout("✅ all units complete")
     expect(manager.getSession(session.id)?.status).toBe("completed")
@@ -180,6 +184,102 @@ describe("coding session manager branch coverage", () => {
 
     expect(manager.sendInput("coding-404", "x")).toEqual({ ok: false, message: "session not found: coding-404" })
     expect(manager.killSession("coding-404")).toEqual({ ok: false, message: "session not found: coding-404" })
+  })
+
+  it("notifies subscribed listeners for progress and terminal updates", async () => {
+    const proc = new FakeProcess(515)
+    const manager = new CodingSessionManager({
+      ...noPersistence,
+      spawnProcess: vi.fn(() => proc),
+      nowIso: nowFactory(),
+    })
+
+    const session = await manager.spawnSession({
+      runner: "codex",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      prompt: "do it",
+    })
+
+    const listener = vi.fn()
+    manager.subscribe(session.id, listener)
+
+    proc.emitStdout("thinking")
+    proc.emitExit(0, null)
+
+    expect(listener).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "progress",
+        stream: "stdout",
+        text: "thinking",
+      }),
+    )
+    expect(listener).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "completed",
+        session: expect.objectContaining({ id: session.id, status: "completed" }),
+      }),
+    )
+  })
+
+  it("removes listeners on unsubscribe and tolerates listener failures", async () => {
+    const proc = new FakeProcess(516)
+    const manager = new CodingSessionManager({
+      ...noPersistence,
+      spawnProcess: vi.fn(() => proc),
+      nowIso: nowFactory(),
+    })
+
+    const session = await manager.spawnSession({
+      runner: "codex",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      prompt: "do it",
+    })
+
+    const stableListener = vi.fn()
+    const failingListener = vi.fn(() => Promise.reject(new Error("listener boom")))
+    const stringFailingListener = vi.fn(() => Promise.reject("listener boom string"))
+    const unsubscribe = manager.subscribe(session.id, stableListener)
+    manager.subscribe(session.id, failingListener)
+    manager.subscribe(session.id, stringFailingListener)
+
+    unsubscribe()
+    unsubscribe()
+    proc.emitStdout("thinking")
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(stableListener).not.toHaveBeenCalled()
+    expect(failingListener).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "progress", text: "thinking" }),
+    )
+    expect(stringFailingListener).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "progress", text: "thinking" }),
+    )
+  })
+
+  it("drops empty listener sets and tolerates redundant unsubscribe calls", async () => {
+    const proc = new FakeProcess(517)
+    const manager = new CodingSessionManager({
+      ...noPersistence,
+      spawnProcess: vi.fn(() => proc),
+      nowIso: nowFactory(),
+    })
+
+    const session = await manager.spawnSession({
+      runner: "codex",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      prompt: "do it",
+    })
+
+    const listener = vi.fn()
+    const unsubscribe = manager.subscribe(session.id, listener)
+    unsubscribe()
+    unsubscribe()
+
+    proc.emitStdout("thinking")
+    await Promise.resolve()
+
+    expect(listener).not.toHaveBeenCalled()
   })
 
   it("marks status as running when sending input from waiting_input/stalled", async () => {

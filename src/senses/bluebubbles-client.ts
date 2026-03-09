@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto"
 import { getBlueBubblesChannelConfig, getBlueBubblesConfig } from "../heart/config"
+import { loadAgentConfig } from "../heart/identity"
 import { emitNervesEvent } from "../nerves/runtime"
 import { normalizeBlueBubblesEvent, type BlueBubblesChatRef, type BlueBubblesNormalizedEvent } from "./bluebubbles-model"
+import { hydrateBlueBubblesAttachments } from "./bluebubbles-media"
 
 export interface BlueBubblesSendTextParams {
   chat: BlueBubblesChatRef
@@ -13,14 +15,25 @@ export interface BlueBubblesSendTextResult {
   messageGuid?: string
 }
 
+export interface BlueBubblesEditMessageParams {
+  messageGuid: string
+  text: string
+  backwardsCompatibilityMessage?: string
+  partIndex?: number
+}
+
 export interface BlueBubblesClient {
   sendText(params: BlueBubblesSendTextParams): Promise<BlueBubblesSendTextResult>
+  editMessage(params: BlueBubblesEditMessageParams): Promise<void>
+  setTyping(chat: BlueBubblesChatRef, typing: boolean): Promise<void>
+  markChatRead(chat: BlueBubblesChatRef): Promise<void>
   repairEvent(event: BlueBubblesNormalizedEvent): Promise<BlueBubblesNormalizedEvent>
 }
 
 type ClientConfig = ReturnType<typeof getBlueBubblesConfig>
 type ChannelConfig = ReturnType<typeof getBlueBubblesChannelConfig>
 type JsonRecord = Record<string, unknown>
+type BlueBubblesChatQueryRecord = Record<string, unknown>
 
 function buildBlueBubblesApiUrl(baseUrl: string, endpoint: string, password: string): string {
   const root = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`
@@ -33,6 +46,11 @@ function asRecord(value: unknown): JsonRecord | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as JsonRecord
     : null
+}
+
+function readString(record: JsonRecord, key: string): string | undefined {
+  const value = record[key]
+  return typeof value === "string" ? value : undefined
 }
 
 function extractMessageGuid(payload: unknown): string | undefined {
@@ -73,6 +91,87 @@ function buildRepairUrl(baseUrl: string, messageGuid: string, password: string):
   const parsed = new URL(url)
   parsed.searchParams.set("with", "attachments,payloadData,chats,messageSummaryInfo")
   return parsed.toString()
+}
+
+function extractChatIdentifierFromGuid(chatGuid: string): string | undefined {
+  const parts = chatGuid.split(";")
+  return parts.length >= 3 ? parts[2]?.trim() || undefined : undefined
+}
+
+function extractChatGuid(value: unknown): string | undefined {
+  const record = asRecord(value)
+  const candidates = [
+    record?.chatGuid,
+    record?.guid,
+    record?.chat_guid,
+    record?.identifier,
+    record?.chatIdentifier,
+    record?.chat_identifier,
+  ]
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim()
+    }
+  }
+  return undefined
+}
+
+function extractQueriedChatIdentifier(chat: BlueBubblesChatQueryRecord, chatGuid: string): string | undefined {
+  const explicitIdentifier = readString(chat, "chatIdentifier")
+    ?? readString(chat, "identifier")
+    ?? readString(chat, "chat_identifier")
+  if (explicitIdentifier) {
+    return explicitIdentifier
+  }
+
+  return extractChatIdentifierFromGuid(chatGuid)
+}
+
+function extractChatQueryRows(payload: unknown): BlueBubblesChatQueryRecord[] {
+  const record = asRecord(payload)
+  const data = Array.isArray(record?.data) ? record.data : payload
+  if (!Array.isArray(data)) {
+    return []
+  }
+  return data.map((entry) => asRecord(entry)).filter((entry): entry is BlueBubblesChatQueryRecord => entry !== null)
+}
+
+async function resolveChatGuidForIdentifier(
+  config: ClientConfig,
+  channelConfig: ChannelConfig,
+  chatIdentifier: string,
+): Promise<string | undefined> {
+  const trimmedIdentifier = chatIdentifier.trim()
+  if (!trimmedIdentifier) return undefined
+
+  const url = buildBlueBubblesApiUrl(config.serverUrl, "/api/v1/chat/query", config.password)
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      limit: 500,
+      offset: 0,
+      with: ["participants"],
+    }),
+    signal: AbortSignal.timeout(channelConfig.requestTimeoutMs),
+  })
+
+  if (!response.ok) {
+    return undefined
+  }
+
+  const payload = await parseJsonBody(response)
+  const rows = extractChatQueryRows(payload)
+  for (const row of rows) {
+    const guid = extractChatGuid(row)
+    if (!guid) continue
+    const identifier = extractQueriedChatIdentifier(row, guid)
+    if (identifier === trimmedIdentifier || guid === trimmedIdentifier) {
+      return guid
+    }
+  }
+
+  return undefined
 }
 
 function collectPreviewStrings(value: unknown, out: string[], depth = 0): void {
@@ -142,6 +241,19 @@ function extractRepairData(payload: unknown): JsonRecord | null {
   return asRecord(record?.data) ?? record
 }
 
+function providerSupportsAudioInput(provider: string): boolean {
+  return provider === "azure" || provider === "openai-codex"
+}
+
+async function resolveChatGuid(
+  chat: BlueBubblesChatRef,
+  config: ClientConfig,
+  channelConfig: ChannelConfig,
+): Promise<string | undefined> {
+  return chat.chatGuid
+    ?? await resolveChatGuidForIdentifier(config, channelConfig, chat.chatIdentifier ?? "")
+}
+
 export function createBlueBubblesClient(
   config: ClientConfig = getBlueBubblesConfig(),
   channelConfig: ChannelConfig = getBlueBubblesChannelConfig(),
@@ -152,13 +264,14 @@ export function createBlueBubblesClient(
       if (!trimmedText) {
         throw new Error("BlueBubbles send requires non-empty text.")
       }
-      if (!params.chat.chatGuid) {
+      const resolvedChatGuid = await resolveChatGuid(params.chat, config, channelConfig)
+      if (!resolvedChatGuid) {
         throw new Error("BlueBubbles send currently requires chat.chatGuid from the inbound event.")
       }
 
       const url = buildBlueBubblesApiUrl(config.serverUrl, "/api/v1/message/text", config.password)
       const body: Record<string, unknown> = {
-        chatGuid: params.chat.chatGuid,
+        chatGuid: resolvedChatGuid,
         tempGuid: randomUUID(),
         message: trimmedText,
       }
@@ -173,7 +286,7 @@ export function createBlueBubblesClient(
         event: "senses.bluebubbles_send_start",
         message: "sending bluebubbles message",
         meta: {
-          chatGuid: params.chat.chatGuid,
+          chatGuid: resolvedChatGuid,
           hasReplyTarget: Boolean(params.replyToMessageGuid?.trim()),
         },
       })
@@ -208,12 +321,84 @@ export function createBlueBubblesClient(
         event: "senses.bluebubbles_send_end",
         message: "bluebubbles message sent",
         meta: {
-          chatGuid: params.chat.chatGuid,
+          chatGuid: resolvedChatGuid,
           messageGuid: messageGuid ?? null,
         },
       })
 
       return { messageGuid }
+    },
+
+    async editMessage(params: BlueBubblesEditMessageParams): Promise<void> {
+      const messageGuid = params.messageGuid.trim()
+      const text = params.text.trim()
+      if (!messageGuid) {
+        throw new Error("BlueBubbles edit requires messageGuid.")
+      }
+      if (!text) {
+        throw new Error("BlueBubbles edit requires non-empty text.")
+      }
+
+      const editTimeoutMs = Math.max(channelConfig.requestTimeoutMs, 120000)
+      const url = buildBlueBubblesApiUrl(
+        config.serverUrl,
+        `/api/v1/message/${encodeURIComponent(messageGuid)}/edit`,
+        config.password,
+      )
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          editedMessage: text,
+          backwardsCompatibilityMessage: params.backwardsCompatibilityMessage ?? `Edited to: ${text}`,
+          partIndex: typeof params.partIndex === "number" ? params.partIndex : 0,
+        }),
+        signal: AbortSignal.timeout(editTimeoutMs),
+      })
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => "")
+        throw new Error(`BlueBubbles edit failed (${response.status}): ${errorText || "unknown"}`)
+      }
+    },
+
+    async setTyping(chat: BlueBubblesChatRef, typing: boolean): Promise<void> {
+      const resolvedChatGuid = await resolveChatGuid(chat, config, channelConfig)
+      if (!resolvedChatGuid) {
+        return
+      }
+      const url = buildBlueBubblesApiUrl(
+        config.serverUrl,
+        `/api/v1/chat/${encodeURIComponent(resolvedChatGuid)}/typing`,
+        config.password,
+      )
+      const response = await fetch(url, {
+        method: typing ? "POST" : "DELETE",
+        signal: AbortSignal.timeout(channelConfig.requestTimeoutMs),
+      })
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => "")
+        throw new Error(`BlueBubbles typing failed (${response.status}): ${errorText || "unknown"}`)
+      }
+    },
+
+    async markChatRead(chat: BlueBubblesChatRef): Promise<void> {
+      const resolvedChatGuid = await resolveChatGuid(chat, config, channelConfig)
+      if (!resolvedChatGuid) {
+        return
+      }
+      const url = buildBlueBubblesApiUrl(
+        config.serverUrl,
+        `/api/v1/chat/${encodeURIComponent(resolvedChatGuid)}/read`,
+        config.password,
+      )
+      const response = await fetch(url, {
+        method: "POST",
+        signal: AbortSignal.timeout(channelConfig.requestTimeoutMs),
+      })
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => "")
+        throw new Error(`BlueBubbles read failed (${response.status}): ${errorText || "unknown"}`)
+      }
     },
 
     async repairEvent(event: BlueBubblesNormalizedEvent): Promise<BlueBubblesNormalizedEvent> {
@@ -289,7 +474,29 @@ export function createBlueBubblesClient(
           type: event.eventType,
           data,
         })
-        const hydrated = hydrateTextForAgent(normalized, data)
+        let hydrated = hydrateTextForAgent(normalized, data)
+        if (
+          hydrated.kind === "message" &&
+          hydrated.balloonBundleId !== "com.apple.messages.URLBalloonProvider" &&
+          hydrated.attachments.length > 0
+        ) {
+          const media = await hydrateBlueBubblesAttachments(
+            hydrated.attachments,
+            config,
+            channelConfig,
+            {
+              preferAudioInput: providerSupportsAudioInput(loadAgentConfig().provider),
+            },
+          )
+          const transcriptSuffix = media.transcriptAdditions.map((entry) => `[${entry}]`).join("\n")
+          const noticeSuffix = media.notices.map((entry) => `[${entry}]`).join("\n")
+          const combinedSuffix = [transcriptSuffix, noticeSuffix].filter(Boolean).join("\n")
+          hydrated = {
+            ...hydrated,
+            inputPartsForAgent: media.inputParts.length > 0 ? media.inputParts : undefined,
+            textForAgent: [hydrated.textForAgent, combinedSuffix].filter(Boolean).join("\n"),
+          }
+        }
         emitNervesEvent({
           component: "senses",
           event: "senses.bluebubbles_repair_end",

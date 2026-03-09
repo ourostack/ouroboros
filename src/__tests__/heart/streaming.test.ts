@@ -153,6 +153,12 @@ describe("toResponsesInput", () => {
     expect(result.input).toEqual([{ role: "user", content: "hi" }])
   })
 
+  it("falls back to empty user text when user content is neither string nor array", () => {
+    const messages = [{ role: "user", content: { unexpected: true } as never }]
+    const result = toResponsesInput(messages)
+    expect(result.input).toEqual([{ role: "user", content: "" }])
+  })
+
   it("converts assistant message (text only) to input item", () => {
     const messages = [{ role: "assistant", content: "hello" }]
     const result = toResponsesInput(messages)
@@ -313,6 +319,93 @@ describe("toResponsesInput", () => {
   it("handles non-string content in user message", () => {
     const messages = [
       { role: "user", content: [{ type: "text", text: "hi" }] },
+    ]
+    const result = toResponsesInput(messages)
+    expect(result.input).toEqual([
+      {
+        role: "user",
+        content: [{ type: "input_text", text: "hi" }],
+      },
+    ])
+  })
+
+  it("preserves multimodal user content for responses input", () => {
+    const messages = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "see attached" },
+          { type: "image_url", image_url: { url: "data:image/jpeg;base64,aGVsbG8=", detail: "auto" } },
+          { type: "input_audio", input_audio: { data: "YXVkaW8=", format: "mp3" } },
+          { type: "file", file: { file_data: "ZmlsZQ==", filename: "notes.txt" } },
+        ],
+      },
+    ]
+    const result = toResponsesInput(messages)
+    expect(result.input).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "input_text", text: "see attached" },
+          { type: "input_image", image_url: "data:image/jpeg;base64,aGVsbG8=", detail: "auto" },
+          { type: "input_audio", input_audio: { data: "YXVkaW8=", format: "mp3" } },
+          { type: "input_file", file_data: "ZmlsZQ==", filename: "notes.txt" },
+        ],
+      },
+    ])
+  })
+
+  it("drops invalid multimodal user parts and preserves file-id attachments", () => {
+    const messages = [
+      {
+        role: "user",
+        content: [
+          null,
+          { type: "image_url", image_url: { url: "" } },
+          { type: "input_audio", input_audio: { data: "YXVkaW8=", format: "m4a" } },
+          { type: "file", file: { file_id: "file-123", filename: "cached.txt" } },
+        ],
+      },
+    ]
+    const result = toResponsesInput(messages)
+    expect(result.input).toEqual([
+      {
+        role: "user",
+        content: [{ type: "input_file", file_id: "file-123", filename: "cached.txt" }],
+      },
+    ])
+  })
+
+  it("defaults image detail, drops non-string image urls, and ignores filename-only file parts", () => {
+    const messages = [
+      {
+        role: "user",
+        content: [
+          { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
+          { type: "image_url", image_url: { url: 123 } },
+          { type: "file", file: { file_id: "file-456" } },
+          { type: "file", file: { filename: "name-only.txt" } },
+        ],
+      },
+    ]
+    const result = toResponsesInput(messages)
+    expect(result.input).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "input_image", image_url: "data:image/png;base64,AAAA", detail: "auto" },
+          { type: "input_file", file_id: "file-456" },
+        ],
+      },
+    ])
+  })
+
+  it("falls back to empty string when multimodal user content has no usable parts", () => {
+    const messages = [
+      {
+        role: "user",
+        content: [null, { type: "image_url", image_url: { url: "" } }],
+      },
     ]
     const result = toResponsesInput(messages)
     expect(result.input).toEqual([{ role: "user", content: "" }])

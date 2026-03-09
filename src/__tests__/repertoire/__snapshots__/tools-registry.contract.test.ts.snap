@@ -7,6 +7,7 @@ exports[`tool registry contract > tool surface area snapshot 1`] = `
   "coding_send_input",
   "coding_spawn",
   "coding_status",
+  "coding_tail",
   "get_current_time",
   "get_friend_note",
   "gh_cli",

@@ -13,6 +13,10 @@ import { getTaskModule } from "./tasks";
 import { codingToolDefinitions } from "./coding/tools";
 import { readMemoryFacts, saveMemoryFact, searchMemoryFacts } from "../mind/memory";
 
+export interface CodingFeedbackTarget {
+  send: (message: string) => Promise<void>;
+}
+
 export interface ToolContext {
   graphToken?: string;
   adoToken?: string;
@@ -21,6 +25,7 @@ export interface ToolContext {
   context?: ResolvedContext;
   friendStore?: FriendStore;
   summarize?: (transcript: string, instruction: string) => Promise<string>;
+  codingFeedback?: CodingFeedbackTarget;
   tenantId?: string;
   // Bot Framework API client for proactive messaging (Teams channel only).
   // Provides conversations.create() and conversations.activities().create().
@@ -233,7 +238,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
       try {
         const result = spawnSync(
           "claude",
-          ["-p", "--dangerously-skip-permissions", "--add-dir", "."],
+          ["-p", "--no-session-persistence", "--dangerously-skip-permissions", "--add-dir", "."],
           {
             input: a.prompt,
             encoding: "utf-8",

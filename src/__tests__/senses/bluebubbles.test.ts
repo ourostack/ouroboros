@@ -24,6 +24,9 @@ const mocks = vi.hoisted(() => ({
   storeCtor: vi.fn(),
   emitNervesEvent: vi.fn(),
   sendText: vi.fn().mockResolvedValue({ messageGuid: "sent-guid" }),
+  editMessage: vi.fn().mockResolvedValue(undefined),
+  setTyping: vi.fn().mockResolvedValue(undefined),
+  markChatRead: vi.fn().mockResolvedValue(undefined),
   repairEvent: vi.fn(async (event: unknown) => event),
   recordMutation: vi.fn(),
   createServer: vi.fn(),
@@ -96,6 +99,9 @@ vi.mock("../../nerves/runtime", () => ({
 vi.mock("../../senses/bluebubbles-client", () => ({
   createBlueBubblesClient: vi.fn(() => ({
     sendText: (...args: any[]) => mocks.sendText(...args),
+    editMessage: (...args: any[]) => mocks.editMessage(...args),
+    setTyping: (...args: any[]) => mocks.setTyping(...args),
+    markChatRead: (...args: any[]) => mocks.markChatRead(...args),
     repairEvent: (...args: any[]) => mocks.repairEvent(...args),
   })),
 }))
@@ -189,6 +195,78 @@ const readPayload = {
     attachments: [],
     dateCreated: 1772948413321,
     dateRead: 1772948415000,
+    isFromMe: false,
+    chats: [
+      {
+        guid: "any;-;ari@mendelow.me",
+        style: 45,
+        chatIdentifier: "ari@mendelow.me",
+        displayName: "",
+      },
+    ],
+  },
+}
+
+const editPayload = {
+  type: "updated-message",
+  data: {
+    guid: "4A4F2A85-21AD-4AC6-98A8-34B8F4D07AA9",
+    text: "edited version",
+    handle: {
+      address: "ari@mendelow.me",
+      service: "iMessage",
+    },
+    attachments: [],
+    dateCreated: 1772949000000,
+    dateEdited: 1772949005000,
+    isFromMe: false,
+    chats: [
+      {
+        guid: "any;-;ari@mendelow.me",
+        style: 45,
+        chatIdentifier: "ari@mendelow.me",
+        displayName: "",
+      },
+    ],
+  },
+}
+
+const unsendPayload = {
+  type: "updated-message",
+  data: {
+    guid: "A9C0AB3C-858A-42BC-9951-66A5C9B1B2B8",
+    text: "",
+    handle: {
+      address: "ari@mendelow.me",
+      service: "iMessage",
+    },
+    attachments: [],
+    dateCreated: 1772949100000,
+    dateRetracted: 1772949105000,
+    isFromMe: false,
+    chats: [
+      {
+        guid: "any;-;ari@mendelow.me",
+        style: 45,
+        chatIdentifier: "ari@mendelow.me",
+        displayName: "",
+      },
+    ],
+  },
+}
+
+const deliveryPayload = {
+  type: "updated-message",
+  data: {
+    guid: "D4CF9CC0-C1B5-4CF0-9397-E29FE23BAE51",
+    text: "delivered",
+    handle: {
+      address: "ari@mendelow.me",
+      service: "iMessage",
+    },
+    attachments: [],
+    dateCreated: 1772949150000,
+    isDelivered: true,
     isFromMe: false,
     chats: [
       {
@@ -295,6 +373,9 @@ function resetMocks(): void {
   mocks.storeCtor.mockReset()
   mocks.emitNervesEvent.mockReset()
   mocks.sendText.mockReset().mockResolvedValue({ messageGuid: "sent-guid" })
+  mocks.editMessage.mockReset().mockResolvedValue(undefined)
+  mocks.setTyping.mockReset().mockResolvedValue(undefined)
+  mocks.markChatRead.mockReset().mockResolvedValue(undefined)
   mocks.repairEvent.mockReset().mockImplementation(async (event: unknown) => event)
   mocks.recordMutation.mockReset()
   mocks.listen.mockReset().mockImplementation((_: number, cb?: () => void) => cb?.())
@@ -423,6 +504,182 @@ describe("BlueBubbles sense runtime", () => {
     )
   })
 
+  it("surfaces debug activity as visible status messages for a tool-heavy turn", async () => {
+    mocks.sendText
+      .mockResolvedValueOnce({ messageGuid: "status-guid" })
+      .mockResolvedValueOnce({ messageGuid: "tool-guid" })
+      .mockResolvedValueOnce({ messageGuid: "tool-done-guid" })
+      .mockResolvedValueOnce({ messageGuid: "followup-guid" })
+      .mockResolvedValueOnce({ messageGuid: "final-guid" })
+    mocks.runAgent.mockImplementationOnce(async (_messages, callbacks) => {
+      callbacks.onModelStart()
+      callbacks.onToolStart("read_file", { path: "notes.txt" })
+      callbacks.onToolEnd("read_file", "ok", true)
+      callbacks.onTextChunk("got it")
+      return {
+        content: "got it",
+        toolCalls: [],
+        outputItems: [],
+        usage: { input_tokens: 1, output_tokens: 1, reasoning_tokens: 0, total_tokens: 2 },
+      }
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    expect(mocks.sendText).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        chat: expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }),
+        replyToMessageGuid: "C4B2E437-A373-43F6-9740-9CD84E5893A0",
+        text: "thinking...",
+      }),
+    )
+    expect(mocks.sendText).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        chat: expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }),
+        replyToMessageGuid: "C4B2E437-A373-43F6-9740-9CD84E5893A0",
+        text: "running read_file (notes.txt)...",
+      }),
+    )
+    expect(mocks.sendText).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({
+        chat: expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }),
+        replyToMessageGuid: "C4B2E437-A373-43F6-9740-9CD84E5893A0",
+        text: "\u2713 read_file (ok)",
+      }),
+    )
+    expect(mocks.sendText).toHaveBeenNthCalledWith(
+      4,
+      expect.objectContaining({
+        chat: expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }),
+        replyToMessageGuid: "C4B2E437-A373-43F6-9740-9CD84E5893A0",
+        text: "followup...",
+      }),
+    )
+    expect(mocks.sendText).toHaveBeenNthCalledWith(
+      5,
+      expect.objectContaining({
+        chat: expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }),
+        replyToMessageGuid: "C4B2E437-A373-43F6-9740-9CD84E5893A0",
+        text: "got it",
+      }),
+    )
+    expect(mocks.editMessage).not.toHaveBeenCalled()
+    expect(mocks.setTyping).toHaveBeenNthCalledWith(1, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), true)
+    expect(mocks.setTyping).toHaveBeenNthCalledWith(2, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), false)
+  })
+
+  it("routes coding feedback messages back to the requesting bluebubbles chat/thread", async () => {
+    mocks.runAgent.mockImplementationOnce(async (_messages, _callbacks, _channel, _signal, options) => {
+      await options.toolContext.codingFeedback.send("codex coding-001 completed: hi")
+      return {
+        content: "done",
+        toolCalls: [],
+        outputItems: [],
+        usage: { input_tokens: 1, output_tokens: 1, reasoning_tokens: 0, total_tokens: 2 },
+      }
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    expect(mocks.sendText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chat: expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }),
+        replyToMessageGuid: "C4B2E437-A373-43F6-9740-9CD84E5893A0",
+        text: "codex coding-001 completed: hi",
+      }),
+    )
+  })
+
+  it("routes coding feedback for mutations without forcing a reply target", async () => {
+    mocks.runAgent.mockImplementationOnce(async (_messages, _callbacks, _channel, _signal, options) => {
+      await options.toolContext.codingFeedback.send("codex coding-002 completed: hi")
+      return {
+        content: "done",
+        toolCalls: [],
+        outputItems: [],
+        usage: { input_tokens: 1, output_tokens: 1, reasoning_tokens: 0, total_tokens: 2 },
+      }
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(reactionPayload)
+
+    expect(mocks.sendText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chat: expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }),
+        replyToMessageGuid: undefined,
+        text: "codex coding-002 completed: hi",
+      }),
+    )
+  })
+
+  it("surfaces string-thrown activity transport failures explicitly", async () => {
+    mocks.sendText
+      .mockResolvedValueOnce({ messageGuid: "status-guid" })
+      .mockRejectedValueOnce("status send failure")
+      .mockResolvedValueOnce({ messageGuid: "final-guid" })
+    mocks.runAgent.mockImplementationOnce(async (_messages, callbacks) => {
+      callbacks.onModelStart()
+      callbacks.onToolStart("read_file", { path: "notes.txt" })
+      return {
+        content: "done",
+        toolCalls: [],
+        outputItems: [],
+        usage: { input_tokens: 1, output_tokens: 1, reasoning_tokens: 0, total_tokens: 2 },
+      }
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: "warn",
+        event: "senses.bluebubbles_activity_error",
+        meta: expect.objectContaining({
+          operation: "status_update",
+          reason: "status send failure",
+        }),
+      }),
+    )
+  })
+
+  it("surfaces Error-thrown activity transport failures explicitly too", async () => {
+    mocks.sendText
+      .mockResolvedValueOnce({ messageGuid: "status-guid" })
+      .mockRejectedValueOnce(new Error("status send error object"))
+      .mockResolvedValueOnce({ messageGuid: "final-guid" })
+    mocks.runAgent.mockImplementationOnce(async (_messages, callbacks) => {
+      callbacks.onModelStart()
+      callbacks.onToolStart("read_file", { path: "notes.txt" })
+      return {
+        content: "done",
+        toolCalls: [],
+        outputItems: [],
+        usage: { input_tokens: 1, output_tokens: 1, reasoning_tokens: 0, total_tokens: 2 },
+      }
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: "warn",
+        event: "senses.bluebubbles_activity_error",
+        meta: expect.objectContaining({
+          operation: "status_update",
+          reason: "status send error object",
+        }),
+      }),
+    )
+  })
+
   it("uses group chat identity rather than sender handle instability for group sessions", async () => {
     mocks.resolveContext.mockResolvedValueOnce({
       friend: {
@@ -522,6 +779,71 @@ describe("BlueBubbles sense runtime", () => {
       }),
     )
     expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+    expect(mocks.markChatRead).toHaveBeenCalledTimes(1)
+    expect(mocks.markChatRead).toHaveBeenCalledWith(expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }))
+  })
+
+  it("keeps edit and unsend mutations notifyable while treating delivery as state-only", async () => {
+    const bluebubbles = await import("../../senses/bluebubbles")
+
+    const runtimeDeps = {
+      getAgentName: () => "testagent",
+      recordMutation: mocks.recordMutation,
+    } as any
+
+    const editResult = await bluebubbles.handleBlueBubblesEvent(editPayload, runtimeDeps)
+    const unsendResult = await bluebubbles.handleBlueBubblesEvent(unsendPayload, runtimeDeps)
+    const deliveryResult = await bluebubbles.handleBlueBubblesEvent(deliveryPayload, runtimeDeps)
+
+    expect(editResult).toEqual(
+      expect.objectContaining({
+        handled: true,
+        notifiedAgent: true,
+        kind: "mutation",
+      }),
+    )
+    expect(unsendResult).toEqual(
+      expect.objectContaining({
+        handled: true,
+        notifiedAgent: true,
+        kind: "mutation",
+      }),
+    )
+    expect(deliveryResult).toEqual(
+      expect.objectContaining({
+        handled: true,
+        notifiedAgent: false,
+        reason: "mutation_state_only",
+      }),
+    )
+    expect(mocks.recordMutation).toHaveBeenNthCalledWith(
+      1,
+      "testagent",
+      expect.objectContaining({
+        mutationType: "edit",
+        messageGuid: "4A4F2A85-21AD-4AC6-98A8-34B8F4D07AA9",
+      }),
+    )
+    expect(mocks.recordMutation).toHaveBeenNthCalledWith(
+      2,
+      "testagent",
+      expect.objectContaining({
+        mutationType: "unsend",
+        messageGuid: "A9C0AB3C-858A-42BC-9951-66A5C9B1B2B8",
+      }),
+    )
+    expect(mocks.recordMutation).toHaveBeenNthCalledWith(
+      3,
+      "testagent",
+      expect.objectContaining({
+        mutationType: "delivery",
+        messageGuid: "D4CF9CC0-C1B5-4CF0-9397-E29FE23BAE51",
+      }),
+    )
+    expect(mocks.runAgent).toHaveBeenCalledTimes(2)
+    expect(mocks.markChatRead).toHaveBeenCalledTimes(2)
+    expect(mocks.markChatRead).toHaveBeenNthCalledWith(1, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }))
+    expect(mocks.markChatRead).toHaveBeenNthCalledWith(2, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }))
   })
 
   it("returns explicit from-me handling without invoking the agent loop", async () => {
@@ -537,6 +859,33 @@ describe("BlueBubbles sense runtime", () => {
     )
     expect(mocks.runAgent).not.toHaveBeenCalled()
     expect(mocks.sendText).not.toHaveBeenCalled()
+    expect(mocks.markChatRead).not.toHaveBeenCalled()
+  })
+
+  it("stops typing even when the agent turn throws before a final answer is sent", async () => {
+    mocks.sendText
+      .mockResolvedValueOnce({ messageGuid: "status-guid" })
+      .mockResolvedValueOnce({ messageGuid: "error-guid" })
+    mocks.runAgent.mockImplementationOnce(async (_messages, callbacks) => {
+      callbacks.onModelStart()
+      callbacks.onError(new Error("turn blew up"), "terminal")
+      throw new Error("turn blew up")
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await expect(bluebubbles.handleBlueBubblesEvent(dmThreadPayload)).rejects.toThrow("turn blew up")
+
+    expect(mocks.sendText).toHaveBeenCalledTimes(2)
+    expect(mocks.sendText).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        chat: expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }),
+        text: "Error: turn blew up",
+      }),
+    )
+    expect(mocks.editMessage).not.toHaveBeenCalled()
+    expect(mocks.setTyping).toHaveBeenNthCalledWith(1, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), true)
+    expect(mocks.setTyping).toHaveBeenNthCalledWith(2, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), false)
   })
 
   it("can still run a turn when only chat identifier routing is present", async () => {
@@ -582,7 +931,31 @@ describe("BlueBubbles sense runtime", () => {
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
 
     expect(mocks.buildSystem).not.toHaveBeenCalled()
-    expect(mocks.sendText).not.toHaveBeenCalled()
+    expect(mocks.sendText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "thinking...",
+      }),
+    )
+    expect(mocks.sendText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "running query_session...",
+      }),
+    )
+    expect(mocks.sendText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "\u2713 query_session (done)",
+      }),
+    )
+    expect(mocks.sendText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "Error: temporary",
+      }),
+    )
+    expect(mocks.sendText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "Error: fatal",
+      }),
+    )
     expect(mocks.postTurn).toHaveBeenCalledTimes(1)
   })
 
@@ -663,6 +1036,137 @@ describe("BlueBubbles sense runtime", () => {
       "bluebubbles",
       expect.any(AbortSignal),
       expect.any(Object),
+    )
+  })
+
+  it("passes hydrated BlueBubbles media through to the agent as structured user content", async () => {
+    mocks.repairEvent.mockResolvedValueOnce({
+      kind: "message",
+      eventType: "new-message",
+      messageGuid: "hydrated-image-msg",
+      timestamp: 10,
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        rawId: "ari@mendelow.me",
+        displayName: "ari@mendelow.me",
+      },
+      chat: {
+        chatGuid: "any;-;ari@mendelow.me",
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat:any;-;ari@mendelow.me",
+        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+      },
+      text: "",
+      textForAgent: "[image attachment: IMG_5045.heic.jpeg (600x800)]",
+      attachments: [{ guid: "image-guid", mimeType: "image/jpeg", transferName: "IMG_5045.heic.jpeg", width: 600, height: 800 }],
+      hasPayloadData: false,
+      requiresRepair: false,
+      inputPartsForAgent: [
+        {
+          type: "image_url",
+          image_url: {
+            url: "data:image/jpeg;base64,aGVsbG8=",
+            detail: "auto",
+          },
+        },
+      ],
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    expect(mocks.runAgent).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "user",
+          content: [
+            { type: "text", text: "[image attachment: IMG_5045.heic.jpeg (600x800)]" },
+            {
+              type: "image_url",
+              image_url: {
+                url: "data:image/jpeg;base64,aGVsbG8=",
+                detail: "auto",
+              },
+            },
+          ],
+        }),
+      ]),
+      expect.any(Object),
+      "bluebubbles",
+      expect.any(AbortSignal),
+      expect.any(Object),
+    )
+  })
+
+  it("marks handled inbound chats as read after a successful turn", async () => {
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    expect(mocks.markChatRead).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatGuid: "any;-;ari@mendelow.me",
+      }),
+    )
+  })
+
+  it("emits a warning instead of failing the turn when mark-read transport throws", async () => {
+    const bluebubbles = await import("../../senses/bluebubbles")
+    mocks.markChatRead.mockRejectedValueOnce(new Error("read transport down"))
+
+    await expect(bluebubbles.handleBlueBubblesEvent(dmThreadPayload)).resolves.toEqual(
+      expect.objectContaining({
+        handled: true,
+        notifiedAgent: true,
+      }),
+    )
+
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: "warn",
+        event: "senses.bluebubbles_mark_read_error",
+        meta: expect.objectContaining({
+          chatGuid: "any;-;ari@mendelow.me",
+          reason: "read transport down",
+        }),
+      }),
+    )
+  })
+
+  it("captures string-thrown mark-read failures explicitly too", async () => {
+    const bluebubbles = await import("../../senses/bluebubbles")
+    mocks.markChatRead.mockRejectedValueOnce("read transport string failure")
+
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: "warn",
+        event: "senses.bluebubbles_mark_read_error",
+        meta: expect.objectContaining({
+          reason: "read transport string failure",
+        }),
+      }),
+    )
+  })
+
+  it("uses null chatGuid in mark-read warnings when only identifier routing is available", async () => {
+    const bluebubbles = await import("../../senses/bluebubbles")
+    mocks.markChatRead.mockRejectedValueOnce(new Error("identifier read failure"))
+
+    await bluebubbles.handleBlueBubblesEvent(identifierOnlyPayload)
+
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: "warn",
+        event: "senses.bluebubbles_mark_read_error",
+        meta: expect.objectContaining({
+          chatGuid: null,
+          reason: "identifier read failure",
+        }),
+      }),
     )
   })
 

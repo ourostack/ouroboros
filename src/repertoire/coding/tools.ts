@@ -1,6 +1,7 @@
 import type OpenAI from "openai"
 
-import { getCodingSessionManager } from "./index"
+import { attachCodingSessionFeedback, formatCodingTail, getCodingSessionManager } from "./index"
+import type { ToolContext } from "../tools-base"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { CodingRunner, CodingSessionRequest } from "./types"
 
@@ -68,6 +69,21 @@ const codingStatusTool: OpenAI.ChatCompletionTool = {
   },
 }
 
+const codingTailTool: OpenAI.ChatCompletionTool = {
+  type: "function",
+  function: {
+    name: "coding_tail",
+    description: "show recent stdout/stderr tail for a coding session in a readable format",
+    parameters: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string" },
+      },
+      required: ["sessionId"],
+    },
+  },
+}
+
 const codingSendInputTool: OpenAI.ChatCompletionTool = {
   type: "function",
   function: {
@@ -102,7 +118,7 @@ const codingKillTool: OpenAI.ChatCompletionTool = {
 export const codingToolDefinitions = [
   {
     tool: codingSpawnTool,
-    handler: async (args: Record<string, string>): Promise<string> => {
+    handler: async (args: Record<string, string>, ctx?: ToolContext): Promise<string> => {
       emitCodingToolEvent("coding_spawn")
       const rawRunner = requireArg(args, "runner")
       if (!rawRunner) return "runner is required"
@@ -130,7 +146,19 @@ export const codingToolDefinitions = [
       const stateFile = optionalArg(args, "stateFile")
       if (stateFile) request.stateFile = stateFile
 
-      const session = await getCodingSessionManager().spawnSession(request)
+      const manager = getCodingSessionManager()
+      const session = await manager.spawnSession(request)
+      if (args.runner === "codex" && args.taskRef) {
+        emitNervesEvent({
+          component: "repertoire",
+          event: "repertoire.coding_codex_spawned",
+          message: "spawned codex coding session",
+          meta: { sessionId: session.id, taskRef: args.taskRef },
+        })
+      }
+      if (ctx?.codingFeedback) {
+        attachCodingSessionFeedback(manager, session, ctx.codingFeedback)
+      }
       return JSON.stringify(session)
     },
   },
@@ -147,6 +175,18 @@ export const codingToolDefinitions = [
       const session = manager.getSession(sessionId)
       if (!session) return `session not found: ${sessionId}`
       return JSON.stringify(session)
+    },
+  },
+  {
+    tool: codingTailTool,
+    handler: (args: Record<string, string>): string => {
+      emitCodingToolEvent("coding_tail")
+      const sessionId = requireArg(args, "sessionId")
+      if (!sessionId) return "sessionId is required"
+
+      const session = getCodingSessionManager().getSession(sessionId)
+      if (!session) return `session not found: ${sessionId}`
+      return formatCodingTail(session)
     },
   },
   {

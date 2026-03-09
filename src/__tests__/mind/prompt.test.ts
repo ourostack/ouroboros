@@ -1836,6 +1836,41 @@ describe("buildSystem with context", () => {
     expect(result).toContain("Jordan")
   })
 
+  it("includes local tools in the system prompt for trusted one-to-one bluebubbles contexts", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const ctx = {
+      friend: {
+        id: "uuid-bb-1",
+        name: "Ari",
+        trustLevel: "family" as const,
+        externalIds: [{ provider: "imessage-handle" as const, externalId: "ari@mendelow.me", linkedAt: "2026-01-01T00:00:00.000Z" }],
+        tenantMemberships: [],
+        toolPreferences: {},
+        notes: {},
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        schemaVersion: 1,
+      },
+      channel: {
+        channel: "bluebubbles" as const,
+        availableIntegrations: [],
+        supportsMarkdown: false,
+        supportsStreaming: false,
+        supportsRichCards: false,
+        maxMessageLength: Infinity,
+      },
+    }
+
+    const result = await buildSystem("bluebubbles", undefined, ctx)
+    expect(result).toContain("- read_file:")
+    expect(result).toContain("- shell:")
+  })
+
   it("omits context section when context is undefined", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
