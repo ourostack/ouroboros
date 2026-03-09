@@ -156,6 +156,8 @@ describe("coding tool contracts", () => {
       runner: "claude",
       workdir: "/Users/test/AgentWorkspaces/slugger",
       status: "waiting_input",
+      stdoutTail: "status: NEEDS_REVIEW",
+      stderrTail: "",
       pid: 100,
       startedAt: "2026-03-05T23:50:00.000Z",
       lastActivityAt: "2026-03-05T23:51:00.000Z",
@@ -170,6 +172,8 @@ describe("coding tool contracts", () => {
     expect(JSON.parse(result)).toMatchObject({
       id: "coding-001",
       status: "waiting_input",
+      stdoutTail: "status: NEEDS_REVIEW",
+      stderrTail: "",
     })
   })
 
@@ -186,6 +190,8 @@ describe("coding tool contracts", () => {
         runner: "claude",
         workdir: "/Users/test/AgentWorkspaces/slugger",
         status: "running",
+        stdoutTail: "still working",
+        stderrTail: "",
         pid: 100,
         startedAt: "2026-03-05T23:50:00.000Z",
         lastActivityAt: "2026-03-05T23:51:00.000Z",
@@ -199,6 +205,8 @@ describe("coding tool contracts", () => {
         runner: "codex",
         workdir: "/Users/test/AgentWorkspaces/ouroboros",
         status: "running",
+        stdoutTail: "",
+        stderrTail: "warning: nested-session guard",
         pid: null,
         startedAt: "2026-03-05T23:52:00.000Z",
         lastActivityAt: "2026-03-05T23:52:00.000Z",
@@ -211,7 +219,18 @@ describe("coding tool contracts", () => {
 
     const result = await execTool("coding_status", {})
     expect(manager.listSessions).toHaveBeenCalledTimes(1)
-    expect(JSON.parse(result)).toHaveLength(2)
+    expect(JSON.parse(result)).toMatchObject([
+      expect.objectContaining({
+        id: "coding-001",
+        stdoutTail: "still working",
+        stderrTail: "",
+      }),
+      expect.objectContaining({
+        id: "coding-002",
+        stdoutTail: "",
+        stderrTail: "warning: nested-session guard",
+      }),
+    ])
   })
 
   it("coding_send_input validates required args", async () => {
