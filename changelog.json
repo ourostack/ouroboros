@@ -2,7 +2,7 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Human-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.20",
+      "version": "0.1.0-alpha.21",
       "changes": [
         "You now know your runtime version and can see when it changed. Your system prompt shows your current version and what you were running before, so you can track what's new.",
         "A changelog file is now shipped with the runtime. You can read it to understand exactly what changed between versions.",
