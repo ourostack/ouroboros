@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
+import * as fs from "fs"
+import * as os from "os"
+import * as path from "path"
 
 describe("daemon entrypoint", () => {
   afterEach(() => {
@@ -129,6 +132,119 @@ describe("daemon entrypoint", () => {
     onHandlers.SIGTERM?.()
     await Promise.resolve()
     expect(exitSpy).toHaveBeenCalledWith(0)
+
+    argvSpy.mockRestore()
+  })
+
+  it("discovers managed agents from ~/AgentBundles instead of hardcoding them", async () => {
+    vi.resetModules()
+
+    const homeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-entry-home-"))
+    const bundlesRoot = path.join(homeRoot, "AgentBundles")
+    fs.mkdirSync(bundlesRoot, { recursive: true })
+    for (const [name, enabled] of [
+      ["Juno", true],
+      ["Northstar", true],
+      ["slugger", true],
+      ["Disabled", false],
+    ] as const) {
+      const agentRoot = path.join(bundlesRoot, `${name}.ouro`)
+      fs.mkdirSync(agentRoot, { recursive: true })
+      fs.writeFileSync(
+        path.join(agentRoot, "agent.json"),
+        JSON.stringify({
+          version: 1,
+          enabled,
+          provider: "anthropic",
+          phrases: { thinking: ["t"], tool: ["x"], followup: ["f"] },
+        }, null, 2) + "\n",
+        "utf-8",
+      )
+    }
+
+    const start = vi.fn(async () => undefined)
+    const stop = vi.fn(async () => undefined)
+    const emitNervesEvent = vi.fn()
+    const configureDaemonRuntimeLogger = vi.fn()
+    const processManagerCtor = vi.fn()
+    const schedulerCtor = vi.fn()
+    const senseManagerCtor = vi.fn()
+
+    vi.spyOn(process, "on").mockImplementation(((
+      _event: string,
+      _cb: () => void,
+    ) => process) as any)
+
+    class MockOuroDaemon {
+      start = start
+      stop = stop
+    }
+
+    class MockProcessManager {
+      constructor(options: unknown) {
+        processManagerCtor(options)
+      }
+      listAgentSnapshots = vi.fn(() => [])
+    }
+
+    class MockScheduler {
+      constructor(options: unknown) {
+        schedulerCtor(options)
+      }
+      listJobs = vi.fn(() => [])
+      triggerJob = vi.fn(async (jobId: string) => ({ ok: false, message: `unknown scheduled job: ${jobId}` }))
+    }
+
+    vi.doMock("os", async () => {
+      const actual = await vi.importActual<typeof import("os")>("os")
+      return { ...actual, homedir: () => homeRoot }
+    })
+    vi.doMock("../../../heart/daemon/daemon", () => ({
+      OuroDaemon: MockOuroDaemon,
+    }))
+    vi.doMock("../../../heart/daemon/process-manager", () => ({
+      DaemonProcessManager: MockProcessManager,
+    }))
+    vi.doMock("../../../heart/daemon/task-scheduler", () => ({
+      TaskDrivenScheduler: MockScheduler,
+    }))
+    vi.doMock("../../../heart/daemon/sense-manager", () => ({
+      DaemonSenseManager: class MockSenseManager {
+        constructor(options: unknown) {
+          senseManagerCtor(options)
+        }
+        listSenseRows = vi.fn(() => [])
+        startAutoStartSenses = vi.fn(async () => undefined)
+        stopAll = vi.fn(async () => undefined)
+      },
+    }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
+    vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
+
+    const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
+
+    await import("../../../heart/daemon/daemon-entry")
+    await Promise.resolve()
+
+    expect(processManagerCtor).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agents: [
+          expect.objectContaining({ name: "Juno" }),
+          expect.objectContaining({ name: "Northstar" }),
+          expect.objectContaining({ name: "slugger" }),
+        ],
+      }),
+    )
+    expect(schedulerCtor).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agents: ["Juno", "Northstar", "slugger"],
+      }),
+    )
+    expect(senseManagerCtor).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agents: ["Juno", "Northstar", "slugger"],
+      }),
+    )
 
     argvSpy.mockRestore()
   })

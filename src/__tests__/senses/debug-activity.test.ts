@@ -28,8 +28,8 @@ describe("debug activity controller", () => {
     await controller.finish()
 
     expect(operations).toEqual([
-      "typing:true",
       "send:thinking...",
+      "typing:true",
       "edit:status-guid:running read_file (notes.txt)...",
       "edit:status-guid:\u2713 read_file (ok)",
       "edit:status-guid:followup...",

@@ -12,6 +12,7 @@ vi.mock("../../heart/identity", () => ({
       followup: ["processing"],
     },
   })),
+  resetAgentConfigCache: vi.fn(),
 }))
 
 import * as identity from "../../heart/identity"
@@ -83,6 +84,14 @@ describe("phrases - getPhrases from agent.json", () => {
     expect(phrases.thinking).toEqual(["custom thinking"])
     expect(phrases.tool).toEqual(["custom tool"])
     expect(phrases.followup).toEqual(["custom followup"])
+  })
+
+  it("refreshes the cached agent config before loading phrases", async () => {
+    const { getPhrases } = await import("../../mind/phrases")
+    getPhrases()
+
+    expect((identity as any).resetAgentConfigCache).toHaveBeenCalledTimes(1)
+    expect(identity.loadAgentConfig).toHaveBeenCalledTimes(1)
   })
 
   it("returns placeholders when loadAgentConfig has auto-filled phrases", async () => {

@@ -570,6 +570,8 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.editMessage).not.toHaveBeenCalled()
     expect(mocks.setTyping).toHaveBeenNthCalledWith(1, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), true)
     expect(mocks.setTyping).toHaveBeenNthCalledWith(2, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), false)
+    expect(mocks.sendText.mock.invocationCallOrder[0]).toBeLessThan(mocks.setTyping.mock.invocationCallOrder[0])
+    expect(mocks.setTyping.mock.invocationCallOrder[1]).toBeLessThan(mocks.sendText.mock.invocationCallOrder[4])
   })
 
   it("routes coding feedback messages back to the requesting bluebubbles chat/thread", async () => {
