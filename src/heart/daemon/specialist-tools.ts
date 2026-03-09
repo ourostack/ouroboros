@@ -2,6 +2,7 @@ import type OpenAI from "openai"
 import * as fs from "fs"
 import * as path from "path"
 import { baseToolDefinitions, finalAnswerTool } from "../../repertoire/tools-base"
+import type { ToolContext } from "../../repertoire/tools-base"
 import { writeSecretsFile, type HatchCredentialsInput } from "./hatch-flow"
 import { playHatchAnimation } from "./hatch-animation"
 import { createBundleMeta } from "../../mind/bundle-manifest"
@@ -31,15 +32,11 @@ const completeAdoptionTool: OpenAI.ChatCompletionFunctionTool = {
   },
 }
 
-const readFileTool = baseToolDefinitions.find((d) => d.tool.function.name === "read_file")!
-const writeFileTool = baseToolDefinitions.find((d) => d.tool.function.name === "write_file")!
-const listDirTool = baseToolDefinitions.find((d) => d.tool.function.name === "list_directory")!
-
 /**
  * Returns the specialist's tool schema array.
  */
 export function getSpecialistTools(): OpenAI.ChatCompletionFunctionTool[] {
-  return [completeAdoptionTool, finalAnswerTool, readFileTool.tool, writeFileTool.tool, listDirTool.tool]
+  return [completeAdoptionTool, finalAnswerTool, ...baseToolDefinitions.map((definition) => definition.tool)]
 }
 
 export interface SpecialistExecToolDeps {
@@ -203,31 +200,14 @@ export function createSpecialistExecTool(
       return execCompleteAdoption(args, deps)
     }
 
-    if (name === "read_file") {
-      try {
-        return fs.readFileSync(args.path, "utf-8")
-      } catch (e) {
-        return `error: ${e instanceof Error ? e.message : /* v8 ignore next -- defensive @preserve */ String(e)}`
+    const baseDefinition = baseToolDefinitions.find((definition) => definition.tool.function.name === name)
+    if (baseDefinition) {
+      const toolContext: ToolContext = {
+        signin: async () => undefined,
       }
-    }
-
-    if (name === "write_file") {
       try {
-        const dir = path.dirname(args.path)
-        fs.mkdirSync(dir, { recursive: true })
-        fs.writeFileSync(args.path, args.content, "utf-8")
-        return `wrote ${args.path}`
-      } catch (e) {
-        return `error: ${e instanceof Error ? e.message : /* v8 ignore next -- defensive @preserve */ String(e)}`
-      }
-    }
-
-    if (name === "list_directory") {
-      try {
-        return fs
-          .readdirSync(args.path, { withFileTypes: true })
-          .map((e) => `${e.isDirectory() ? "d" : "-"}  ${e.name}`)
-          .join("\n")
+        await toolContext.signin("specialist")
+        return await baseDefinition.handler(args, toolContext)
       } catch (e) {
         return `error: ${e instanceof Error ? e.message : /* v8 ignore next -- defensive @preserve */ String(e)}`
       }

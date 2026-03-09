@@ -501,9 +501,45 @@ describe("execTool", () => {
       type: "one-shot",
       category: "infrastructure",
       body: "## scope\nship it",
+      scheduledAt: "2026-03-09T08:30:00.000Z",
+      cadence: "1h",
     })
     expect(result).toContain("created:")
-    expect(mockTaskModule.createTask).toHaveBeenCalled()
+    expect(mockTaskModule.createTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Ship task board",
+        type: "one-shot",
+        category: "infrastructure",
+        body: "## scope\nship it",
+        scheduledAt: "2026-03-09T08:30:00.000Z",
+        cadence: "1h",
+      }),
+    )
+  })
+
+  it("task_create normalizes blank optional task metadata", async () => {
+    const result = await execTool("task_create", {
+      title: "Ship task board",
+      type: "one-shot",
+      category: "infrastructure",
+      body: "## scope\nship it",
+      status: "   ",
+      validator: "   ",
+      requester: "   ",
+      scheduledAt: "   ",
+      cadence: "   ",
+    })
+
+    expect(result).toContain("created:")
+    expect(mockTaskModule.createTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: undefined,
+        validator: null,
+        requester: null,
+        scheduledAt: null,
+        cadence: null,
+      }),
+    )
   })
 
   it("task_create surfaces module exceptions", async () => {
@@ -530,6 +566,85 @@ describe("execTool", () => {
       body: "## scope\nbreak",
     })
     expect(result).toContain("error: create failed as string")
+  })
+
+  it("schedule_reminder creates a scheduled one-shot task", async () => {
+    const result = await execTool("schedule_reminder", {
+      title: "Ping Ari",
+      body: "Remind Ari to check the daemon",
+      scheduledAt: "2026-03-10T17:00:00.000Z",
+    })
+
+    expect(result).toContain("created:")
+    expect(mockTaskModule.createTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Ping Ari",
+        type: "one-shot",
+        category: "reminder",
+        body: "Remind Ari to check the daemon",
+        scheduledAt: "2026-03-10T17:00:00.000Z",
+        cadence: null,
+      }),
+    )
+  })
+
+  it("schedule_reminder creates a recurring habit when cadence is provided", async () => {
+    const result = await execTool("schedule_reminder", {
+      title: "Heartbeat",
+      body: "Run heartbeat",
+      cadence: "30m",
+      category: "operations",
+    })
+
+    expect(result).toContain("created:")
+    expect(mockTaskModule.createTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Heartbeat",
+        type: "habit",
+        category: "operations",
+        body: "Run heartbeat",
+        cadence: "30m",
+        scheduledAt: null,
+      }),
+    )
+  })
+
+  it("schedule_reminder requires either scheduledAt or cadence", async () => {
+    const result = await execTool("schedule_reminder", {
+      title: "Incomplete reminder",
+      body: "Needs a schedule",
+    })
+
+    expect(result).toBe("error: provide scheduledAt or cadence")
+    expect(mockTaskModule.createTask).not.toHaveBeenCalled()
+  })
+
+  it("schedule_reminder stringifies non-Error task creation failures", async () => {
+    mockTaskModule.createTask.mockImplementationOnce(() => {
+      throw "scheduler exploded"
+    })
+
+    const result = await execTool("schedule_reminder", {
+      title: "Broken reminder",
+      body: "This will fail",
+      scheduledAt: "2026-03-10T17:00:00.000Z",
+    })
+
+    expect(result).toBe("error: scheduler exploded")
+  })
+
+  it("schedule_reminder surfaces Error task creation failures", async () => {
+    mockTaskModule.createTask.mockImplementationOnce(() => {
+      throw new Error("scheduler exploded")
+    })
+
+    const result = await execTool("schedule_reminder", {
+      title: "Broken reminder",
+      body: "This will fail",
+      scheduledAt: "2026-03-10T17:00:00.000Z",
+    })
+
+    expect(result).toBe("error: scheduler exploded")
   })
 
   it("task_update_status surfaces module errors", async () => {
@@ -693,6 +808,15 @@ describe("summarizeArgs", () => {
         body: "ignored",
       }),
     ).toBe("title=Ship task module type=one-shot category=infrastructure")
+  })
+
+  it("returns title and schedule fields for schedule_reminder", () => {
+    expect(
+      summarizeArgs("schedule_reminder", {
+        title: "Ping Ari",
+        scheduledAt: "2026-03-10T17:00:00.000Z",
+      }),
+    ).toBe("title=Ping Ari scheduledAt=2026-03-10T17:00:00.000Z")
   })
 
   it("returns name/status for task_update_status", () => {

@@ -117,6 +117,7 @@ export function buildSpecialistSystemPrompt(
       "- `write_file`: Write a file to disk. Use this to write psyche files and agent.json to the temp directory.",
       "- `read_file`: Read a file from disk. Useful for reviewing existing agent bundles or migration sources.",
       "- `list_directory`: List directory contents. Useful for exploring existing agent bundles.",
+      "- I also have the normal local harness tools when useful here, including `shell`, task tools like `task_create` and `schedule_reminder`, memory tools, coding tools, and repo helpers.",
       "- `complete_adoption`: Finalize the bundle. Validates, scaffolds structural dirs, moves to ~/AgentBundles/, writes secrets, plays hatch animation. I call this with `name` (PascalCase) and `handoff_message` (warm message for the human).",
       "- `final_answer`: End the conversation with a final message. I call this after complete_adoption succeeds.",
       "",

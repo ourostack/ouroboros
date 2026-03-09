@@ -20,6 +20,7 @@ exports[`tool registry contract > tool surface area snapshot 1`] = `
   "query_session",
   "read_file",
   "save_friend_note",
+  "schedule_reminder",
   "send_message",
   "shell",
   "task_board",
