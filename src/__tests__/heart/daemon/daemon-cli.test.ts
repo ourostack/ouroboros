@@ -270,7 +270,7 @@ describe("ouro CLI execution", () => {
     expect(result).toContain("already running")
     expect(installSubagents).toHaveBeenCalledTimes(1)
     expect(deps.startDaemonProcess).not.toHaveBeenCalled()
-    expect(deps.sendCommand).not.toHaveBeenCalled()
+    expect(deps.sendCommand).toHaveBeenCalledWith("/tmp/ouro-test.sock", { kind: "daemon.status" })
   })
 
   it("attempts .ouro UTI registration during `up` setup", async () => {
@@ -1465,7 +1465,7 @@ describe("multi-agent prompt, agent-name shortcut, and help", () => {
 
     expect(promptInput).toHaveBeenCalled()
     expect(startChat).toHaveBeenCalledWith("slugger")
-    expect(deps.sendCommand).not.toHaveBeenCalled()
+    expect(deps.sendCommand).toHaveBeenCalledWith("/tmp/ouro-test.sock", { kind: "daemon.status" })
   })
 
   it("routes ouro <agent-name> to startChat when agent is discovered", async () => {
@@ -1645,7 +1645,7 @@ describe("single agent → chat via startChat", () => {
 
     expect(startChat).toHaveBeenCalledWith("slugger")
     expect(deps.startDaemonProcess).not.toHaveBeenCalled()
-    expect(deps.sendCommand).not.toHaveBeenCalled()
+    expect(deps.sendCommand).toHaveBeenCalledWith("/tmp/ouro-test.sock", { kind: "daemon.status" })
   })
 
   it("falls back to chat.connect daemon command when startChat not provided", async () => {
@@ -1911,6 +1911,82 @@ describe("ensureDaemonRunning", () => {
     expect(deps.cleanupStaleSocket).not.toHaveBeenCalled()
   })
 
+  it("keeps a running daemon when the daemon version is unknown", async () => {
+    vi.resetModules()
+    vi.doMock("../../../heart/daemon/runtime-metadata", () => ({
+      getRuntimeMetadata: () => ({
+        version: "0.1.0-alpha.20",
+        lastUpdated: "2026-03-09T11:00:00.000Z",
+      }),
+    }))
+
+    const { ensureDaemonRunning } = await import("../../../heart/daemon/daemon-cli")
+
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({
+        ok: true,
+        summary: "running",
+        data: {
+          overview: {
+            daemon: "running",
+            health: "ok",
+            socketPath: "/tmp/ouro-test.sock",
+            version: "unknown",
+            lastUpdated: "2026-03-08T00:00:00.000Z",
+            workerCount: 0,
+            senseCount: 0,
+          },
+          senses: [],
+          workers: [],
+        },
+      })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 777 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+    }
+
+    const result = await ensureDaemonRunning(deps)
+
+    expect(result.alreadyRunning).toBe(true)
+    expect(result.message).toContain("unable to verify version")
+    expect(deps.startDaemonProcess).not.toHaveBeenCalled()
+  })
+
+  it("keeps a running daemon when version verification throws a non-Error value", async () => {
+    vi.resetModules()
+    vi.doMock("../../../heart/daemon/runtime-metadata", () => ({
+      getRuntimeMetadata: () => ({
+        version: "0.1.0-alpha.20",
+        lastUpdated: "2026-03-09T11:00:00.000Z",
+      }),
+    }))
+
+    const { ensureDaemonRunning } = await import("../../../heart/daemon/daemon-cli")
+
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => {
+        throw "non-error-status-failure"
+      }),
+      startDaemonProcess: vi.fn(async () => ({ pid: 777 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+    }
+
+    const result = await ensureDaemonRunning(deps)
+
+    expect(result.alreadyRunning).toBe(true)
+    expect(result.message).toContain("non-error-status-failure")
+    expect(deps.startDaemonProcess).not.toHaveBeenCalled()
+  })
+
   it("keeps the running daemon when stale replacement cannot complete", async () => {
     vi.resetModules()
     vi.doMock("../../../heart/daemon/runtime-metadata", () => ({
@@ -1964,6 +2040,61 @@ describe("ensureDaemonRunning", () => {
     expect(result.alreadyRunning).toBe(true)
     expect(result.message).toContain("could not replace stale daemon")
     expect(result.message).toContain("permission denied")
+    expect(deps.startDaemonProcess).not.toHaveBeenCalled()
+  })
+
+  it("keeps the running daemon when stale replacement fails with a non-Error value", async () => {
+    vi.resetModules()
+    vi.doMock("../../../heart/daemon/runtime-metadata", () => ({
+      getRuntimeMetadata: () => ({
+        version: "0.1.0-alpha.20",
+        lastUpdated: "2026-03-09T11:00:00.000Z",
+      }),
+    }))
+
+    const { ensureDaemonRunning } = await import("../../../heart/daemon/daemon-cli")
+
+    const sendCommand = vi.fn(async (_socketPath, command) => {
+      if (command.kind === "daemon.status") {
+        return {
+          ok: true,
+          summary: "running",
+          data: {
+            overview: {
+              daemon: "running",
+              health: "ok",
+              socketPath: "/tmp/ouro-test.sock",
+              version: "0.1.0-alpha.6",
+              lastUpdated: "2026-03-08T00:00:00.000Z",
+              workerCount: 0,
+              senseCount: 0,
+            },
+            senses: [],
+            workers: [],
+          },
+        }
+      }
+      if (command.kind === "daemon.stop") {
+        throw "string-stop-failure"
+      }
+      throw new Error(`unexpected command ${command.kind}`)
+    })
+
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand,
+      startDaemonProcess: vi.fn(async () => ({ pid: 777 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+    }
+
+    const result = await ensureDaemonRunning(deps)
+
+    expect(result.alreadyRunning).toBe(true)
+    expect(result.message).toContain("string-stop-failure")
     expect(deps.startDaemonProcess).not.toHaveBeenCalled()
   })
 
