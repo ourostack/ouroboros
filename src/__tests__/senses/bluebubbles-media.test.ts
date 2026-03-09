@@ -571,19 +571,31 @@ describe("BlueBubbles media hydration", () => {
     })
   })
 
-  it("uses on-device whisper fallback when no explicit transcriber is provided", async () => {
-    const execFile = vi.fn((_: string, __: string[], ___: Record<string, unknown>, callback: (error: Error | null) => void) =>
-      callback(null),
-    )
+  it("bootstraps whisper.cpp when no explicit transcriber is provided", async () => {
+    let prefixChecks = 0
+    const execFile = vi.fn((command: string, args: string[], _: Record<string, unknown>, callback: (error: Error | null, stdout?: string) => void) => {
+      if (command === "brew" && args[0] === "--prefix") {
+        prefixChecks += 1
+        if (prefixChecks === 1) {
+          callback(new Error("not installed"))
+          return
+        }
+        callback(null, "/opt/homebrew/opt/whisper-cpp\n")
+        return
+      }
+      callback(null)
+    })
     const mkdtemp = vi.fn().mockResolvedValue("/tmp/ouro-bb-audio-123")
+    const access = vi.fn().mockRejectedValue(new Error("missing"))
+    const mkdir = vi.fn().mockResolvedValue(undefined)
     const writeFile = vi.fn().mockResolvedValue(undefined)
     const readFile = vi.fn().mockResolvedValue(JSON.stringify({ text: " transcribed locally " }))
     const rm = vi.fn().mockResolvedValue(undefined)
 
     vi.doMock("node:child_process", () => ({ execFile }))
-    vi.doMock("node:fs/promises", () => ({ mkdtemp, writeFile, readFile, rm }))
-    vi.doMock("node:os", () => ({ tmpdir: () => "/tmp" }))
-    global.fetch = vi.fn().mockResolvedValue(new Response(Buffer.from("audio-bytes"), { status: 200 })) as typeof fetch
+    vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile, rm }))
+    vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
+    global.fetch = vi.fn().mockResolvedValue(new Response(Buffer.from("model-bytes"), { status: 200 })) as typeof fetch
 
     const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
     const result = await hydrateBlueBubblesAttachments(
@@ -606,11 +618,28 @@ describe("BlueBubbles media hydration", () => {
       },
     )
 
+    expect(execFile).toHaveBeenCalledWith("brew", ["install", "whisper-cpp"], expect.any(Object), expect.any(Function))
+    expect(mkdir).toHaveBeenCalledWith("/Users/test/.agentstate/tools/whisper-cpp/models", { recursive: true })
+    expect(writeFile).toHaveBeenCalledWith(
+      "/Users/test/.agentstate/tools/whisper-cpp/models/ggml-base.en.bin",
+      Buffer.from("model-bytes"),
+    )
     expect(writeFile).toHaveBeenCalledWith("/tmp/ouro-bb-audio-123/Voice Note.m4a", Buffer.from("audio-bytes"))
     expect(execFile).toHaveBeenCalledWith(
-      "whisper",
-      expect.arrayContaining(["/tmp/ouro-bb-audio-123/Voice Note.m4a", "--model", "turbo"]),
-      { timeout: 120000 },
+      "ffmpeg",
+      expect.arrayContaining(["-i", "/tmp/ouro-bb-audio-123/Voice Note.m4a", "/tmp/ouro-bb-audio-123/Voice Note.wav"]),
+      expect.any(Object),
+      expect.any(Function),
+    )
+    expect(execFile).toHaveBeenCalledWith(
+      "/opt/homebrew/opt/whisper-cpp/bin/whisper-cli",
+      expect.arrayContaining([
+        "-m",
+        "/Users/test/.agentstate/tools/whisper-cpp/models/ggml-base.en.bin",
+        "-f",
+        "/tmp/ouro-bb-audio-123/Voice Note.wav",
+      ]),
+      expect.any(Object),
       expect.any(Function),
     )
     expect(readFile).toHaveBeenCalledWith("/tmp/ouro-bb-audio-123/Voice Note.json", "utf8")

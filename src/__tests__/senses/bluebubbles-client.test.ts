@@ -1368,20 +1368,12 @@ describe("BlueBubbles client", () => {
     )
   })
 
-  it("hydrates repaired voice notes into raw audio input for audio-capable providers", async () => {
+  it("keeps OpenAI Codex voice notes on the local-transcription path for the current Responses contract", async () => {
     const { loadAgentConfig } = await import("../../heart/identity")
-    vi.mocked(loadAgentConfig).mockReturnValue({ provider: "azure" } as any)
+    vi.mocked(loadAgentConfig).mockReturnValue({ provider: "openai-codex" } as any)
     const hydrateBlueBubblesAttachments = vi.fn().mockResolvedValue({
-      inputParts: [
-        {
-          type: "input_audio",
-          input_audio: {
-            data: Buffer.from("audio-bytes").toString("base64"),
-            format: "mp3",
-          },
-        },
-      ],
-      transcriptAdditions: [],
+      inputParts: [],
+      transcriptAdditions: ["voice note transcript: hello from codex"],
       notices: [],
     })
     vi.doMock("../../senses/bluebubbles-media", () => ({
@@ -1466,23 +1458,15 @@ describe("BlueBubbles client", () => {
       expect.objectContaining({
         kind: "message",
         requiresRepair: false,
-        textForAgent: "[audio attachment: Audio Message.mp3]",
-        inputPartsForAgent: [
-          {
-            type: "input_audio",
-            input_audio: {
-              data: Buffer.from("audio-bytes").toString("base64"),
-              format: "mp3",
-            },
-          },
-        ],
+        textForAgent: "[audio attachment: Audio Message.mp3]\n[voice note transcript: hello from codex]",
+        inputPartsForAgent: undefined,
       }),
     )
     expect(hydrateBlueBubblesAttachments).toHaveBeenCalledWith(
       [{ guid: "audio-1", mimeType: "audio/mp3", transferName: "Audio Message.mp3" }],
       expect.any(Object),
       expect.any(Object),
-      expect.objectContaining({ preferAudioInput: true }),
+      expect.objectContaining({ preferAudioInput: false }),
     )
   })
 
