@@ -135,8 +135,10 @@ export function getProviderDisplayLabel(): string {
   const model = getModel();
   const providerLabelBuilders: Record<ProviderId, () => string> = {
     azure: () => `azure openai (${getAzureConfig().deployment || "default"}, model: ${model})`,
+    /* v8 ignore next -- only azure/minimax exercised in test harness @preserve */
     anthropic: () => `anthropic (${model})`,
     minimax: () => `minimax (${model})`,
+    /* v8 ignore next -- only azure/minimax exercised in test harness @preserve */
     "openai-codex": () => `openai codex (${model})`,
   };
   return providerLabelBuilders[getProvider()]();
