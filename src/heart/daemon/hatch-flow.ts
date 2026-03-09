@@ -226,36 +226,6 @@ function writeFriendImprint(bundleRoot: string, humanName: string, now: Date): v
   fs.writeFileSync(path.join(friendsDir, `${id}.json`), `${JSON.stringify(record, null, 2)}\n`, "utf-8")
 }
 
-function writeHatchlingPsyche(bundleRoot: string, input: HatchFlowInput, identityFileName: string): void {
-  const psycheDir = path.join(bundleRoot, "psyche")
-  fs.mkdirSync(psycheDir, { recursive: true })
-  fs.writeFileSync(
-    path.join(psycheDir, "SOUL.md"),
-    "# SOUL\n\nI am a practical, collaborative agent. I keep commitments and communicate clearly.\n",
-    "utf-8",
-  )
-  fs.writeFileSync(
-    path.join(psycheDir, "IDENTITY.md"),
-    `# IDENTITY\n\nI'm ${input.agentName}, newly hatched and ready to help ${input.humanName}.`,
-    "utf-8",
-  )
-  fs.writeFileSync(
-    path.join(psycheDir, "LORE.md"),
-    `# LORE\n\nHatched with specialist identity seed: ${identityFileName}.`,
-    "utf-8",
-  )
-  fs.writeFileSync(
-    path.join(psycheDir, "TACIT.md"),
-    "# TACIT\n\n- Save what I learn.\n- Keep tasks current.\n",
-    "utf-8",
-  )
-  fs.writeFileSync(
-    path.join(psycheDir, "ASPIRATIONS.md"),
-    "# ASPIRATIONS\n\n- Become a reliable partner for my primary friend.\n",
-    "utf-8",
-  )
-}
-
 function writeMemoryScaffold(bundleRoot: string): void {
   const memoryRoot = path.join(bundleRoot, "psyche", "memory")
   fs.mkdirSync(path.join(memoryRoot, "daily"), { recursive: true })
@@ -316,7 +286,6 @@ export async function runHatchFlow(input: HatchFlowInput, deps: HatchFlowDeps = 
   writeReadme(path.join(bundleRoot, "senses", "teams"), "Teams sense config.")
 
   writeHatchlingAgentConfig(bundleRoot, input)
-  writeHatchlingPsyche(bundleRoot, input, selected.fileName)
   writeMemoryScaffold(bundleRoot)
   writeFriendImprint(bundleRoot, input.humanName, now)
   writeHeartbeatTask(bundleRoot, now)

@@ -297,7 +297,7 @@ export type DeepPartial<T> = {
   [P in keyof T]?: T[P] extends object ? DeepPartial<T[P]> : T[P]
 }
 
-export function setTestConfig(partial: DeepPartial<OuroborosConfig>): void {
+export function patchRuntimeConfig(partial: DeepPartial<OuroborosConfig>): void {
   loadConfig() // ensure _cachedConfig exists
   const contextPatch = partial.context as Partial<ContextConfig> | undefined
   if (contextPatch) {

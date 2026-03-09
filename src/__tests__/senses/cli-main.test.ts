@@ -1041,3 +1041,163 @@ describe("agent.ts main(agentName) parameter", () => {
     expect(setAgentName).not.toHaveBeenCalled()
   })
 })
+
+// ── runCliSession tests ──
+import { runCliSession } from "../../senses/cli"
+
+describe("runCliSession", () => {
+  beforeEach(() => {
+    resetMocks()
+    setupSpies()
+  })
+
+  afterEach(() => {
+    restoreSpies()
+    vi.restoreAllMocks()
+  })
+
+  it("returns exitReason 'user_quit' on /exit", async () => {
+    setupBasic({ inputSequence: ["/exit"] })
+
+    const result = await runCliSession({
+      agentName: "testagent",
+      pasteDebounceMs: 0,
+    })
+
+    expect(result.exitReason).toBe("user_quit")
+  })
+
+  it("processes input and returns exitReason 'user_quit' when input ends", async () => {
+    const { mockRl } = createMockRl(["hello"])
+    mocks.createInterface.mockReturnValue(mockRl)
+
+    const result = await runCliSession({
+      agentName: "testagent",
+      pasteDebounceMs: 0,
+    })
+
+    expect(result.exitReason).toBe("user_quit")
+    expect(mocks.runAgent).toHaveBeenCalled()
+  })
+
+  it("passes custom tools to runAgent when provided", async () => {
+    const customTools: any[] = [{
+      type: "function",
+      function: { name: "custom_tool", description: "test", parameters: { type: "object", properties: {} } },
+    }]
+    setupBasic({ inputSequence: ["hello", "/exit"] })
+
+    await runCliSession({
+      agentName: "testagent",
+      tools: customTools,
+      pasteDebounceMs: 0,
+    })
+
+    expect(mocks.runAgent).toHaveBeenCalled()
+    const opts = mocks.runAgent.mock.calls[0][4]
+    expect(opts.tools).toBe(customTools)
+  })
+
+  it("passes custom execTool to runAgent when provided", async () => {
+    const customExecTool = vi.fn().mockResolvedValue("custom result")
+    setupBasic({ inputSequence: ["hello", "/exit"] })
+
+    await runCliSession({
+      agentName: "testagent",
+      execTool: customExecTool,
+      pasteDebounceMs: 0,
+    })
+
+    expect(mocks.runAgent).toHaveBeenCalled()
+    const opts = mocks.runAgent.mock.calls[0][4]
+    expect(opts.execTool).toBeDefined()
+  })
+
+  it("returns exitReason 'tool_exit' when exitOnToolCall fires", async () => {
+    const customExecTool = vi.fn().mockResolvedValue(JSON.stringify({ agentName: "MyAgent" }))
+    setupBasic({ inputSequence: ["create the agent"] })
+
+    // Simulate the execTool being called with the target tool name
+    mocks.runAgent.mockImplementation(async (_msgs: any, _cb: any, _channel?: string, _signal?: AbortSignal, options?: any) => {
+      // Simulate calling the wrapped execTool with the exit tool
+      if (options?.execTool) {
+        await options.execTool("complete_adoption", { name: "MyAgent" })
+      }
+      return { usage: undefined }
+    })
+
+    const result = await runCliSession({
+      agentName: "AdoptionSpecialist",
+      execTool: customExecTool,
+      exitOnToolCall: "complete_adoption",
+      pasteDebounceMs: 0,
+    })
+
+    expect(result.exitReason).toBe("tool_exit")
+    expect(result.toolResult).toBe(JSON.stringify({ agentName: "MyAgent" }))
+    expect(customExecTool).toHaveBeenCalledWith("complete_adoption", { name: "MyAgent" }, undefined)
+  })
+
+  it("continues processing when a non-exit tool is called", async () => {
+    const customExecTool = vi.fn().mockResolvedValue("file content")
+    setupBasic({ inputSequence: ["read file", "/exit"] })
+
+    mocks.runAgent.mockImplementation(async (_msgs: any, _cb: any, _channel?: string, _signal?: AbortSignal, options?: any) => {
+      if (options?.execTool) {
+        await options.execTool("read_file", { path: "/tmp/test.txt" })
+      }
+      return { usage: undefined }
+    })
+
+    const result = await runCliSession({
+      agentName: "AdoptionSpecialist",
+      execTool: customExecTool,
+      exitOnToolCall: "complete_adoption",
+      pasteDebounceMs: 0,
+    })
+
+    // Should NOT exit early -- read_file is not the exit tool
+    expect(result.exitReason).toBe("user_quit")
+  })
+
+  it("passes toolChoiceRequired option when specified", async () => {
+    setupBasic({ inputSequence: ["hello", "/exit"] })
+
+    await runCliSession({
+      agentName: "testagent",
+      toolChoiceRequired: true,
+      pasteDebounceMs: 0,
+    })
+
+    expect(mocks.runAgent).toHaveBeenCalled()
+    const opts = mocks.runAgent.mock.calls[0][4]
+    expect(opts.toolChoiceRequired).toBe(true)
+  })
+
+  it("defaults pasteDebounceMs to 50 when not provided", async () => {
+    setupBasic({ inputSequence: ["/exit"] })
+
+    const result = await runCliSession({
+      agentName: "testagent",
+    })
+
+    expect(result.exitReason).toBe("user_quit")
+  })
+
+  it("calls onTurnEnd with fallback usage when runAgent throws", async () => {
+    setupBasic({ inputSequence: ["hello", "/exit"] })
+    mocks.runAgent.mockRejectedValue(new DOMException("aborted", "AbortError"))
+
+    const onTurnEnd = vi.fn()
+    await runCliSession({
+      agentName: "testagent",
+      pasteDebounceMs: 0,
+      onTurnEnd,
+    })
+
+    expect(onTurnEnd).toHaveBeenCalledWith(
+      expect.any(Array),
+      { usage: undefined },
+    )
+  })
+})

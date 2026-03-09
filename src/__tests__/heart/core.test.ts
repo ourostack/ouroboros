@@ -112,7 +112,7 @@ async function setupMinimax(apiKey = "test-key", model = "test-model") {
   await setAgentProvider("minimax")
   const config = await import("../../heart/config")
   config.resetConfigCache()
-  config.setTestConfig({ providers: { minimax: { apiKey, model } } })
+  config.patchRuntimeConfig({ providers: { minimax: { apiKey, model } } })
 }
 
 async function setupAzure(
@@ -124,7 +124,7 @@ async function setupAzure(
   await setAgentProvider("azure")
   const config = await import("../../heart/config")
   config.resetConfigCache()
-  config.setTestConfig({ providers: { azure: { apiKey, endpoint, deployment, modelName } } })
+  config.patchRuntimeConfig({ providers: { azure: { apiKey, endpoint, deployment, modelName } } })
 }
 
 function makeAnthropicSetupToken(): string {
@@ -159,7 +159,7 @@ async function setupConfig(partial: Record<string, unknown>) {
   else await setAgentProvider("minimax")
   const config = await import("../../heart/config")
   config.resetConfigCache()
-  config.setTestConfig(partial as any)
+  config.patchRuntimeConfig(partial as any)
 }
 
 async function resetConfig() {
@@ -2843,6 +2843,106 @@ describe("runAgent", () => {
     await runAgent(messages, callbacks)
     // Messages should have an assistant reply
     expect(messages.some((m: any) => m.role === "assistant")).toBe(true)
+  })
+
+  it("uses custom tools when options.tools is provided", async () => {
+    const customTool: any = {
+      type: "function",
+      function: {
+        name: "custom_tool",
+        description: "A custom tool",
+        parameters: { type: "object", properties: {} },
+      },
+    }
+
+    mockCreate.mockReturnValue(makeStream([makeChunk("hello")]))
+
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+    }
+
+    const messages: any[] = [{ role: "user", content: "hello" }]
+    await runAgent(messages, callbacks, undefined, undefined, {
+      tools: [customTool],
+    } as any)
+
+    expect(mockCreate).toHaveBeenCalled()
+    const apiCall = mockCreate.mock.calls[0][0]
+    const toolNames = apiCall.tools.map((t: any) => t.function.name)
+    expect(toolNames).toContain("custom_tool")
+    // Should NOT contain any of the default tools (like read_file)
+    expect(toolNames).not.toContain("read_file")
+  })
+
+  it("uses custom execTool when options.execTool is provided", async () => {
+    const customExecTool = vi.fn().mockResolvedValue("custom result")
+
+    // First call returns a tool call, second call returns text (done)
+    mockCreate
+      .mockReturnValueOnce(makeStream([
+        makeChunk(undefined, [
+          { index: 0, id: "call_1", function: { name: "my_tool", arguments: '{"arg":"val"}' } },
+        ]),
+      ]))
+      .mockReturnValueOnce(makeStream([makeChunk("done")]))
+
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+    }
+
+    const messages: any[] = [{ role: "user", content: "hello" }]
+    await runAgent(messages, callbacks, undefined, undefined, {
+      tools: [{
+        type: "function",
+        function: {
+          name: "my_tool",
+          description: "test",
+          parameters: { type: "object", properties: {} },
+        },
+      }],
+      execTool: customExecTool,
+      toolChoiceRequired: false,
+    } as any)
+
+    expect(customExecTool).toHaveBeenCalledWith("my_tool", { arg: "val" }, undefined)
+    // Verify the custom result ended up in the messages
+    const toolMsg = messages.find((m: any) => m.role === "tool")
+    expect(toolMsg?.content).toBe("custom result")
+  })
+
+  it("uses default tools and execTool when overrides are not provided", async () => {
+    // This is the existing behavior -- just verify it still works
+    mockCreate.mockReturnValue(makeStream([makeChunk("hello")]))
+
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+    }
+
+    const messages: any[] = [{ role: "user", content: "hello" }]
+    await runAgent(messages, callbacks)
+
+    // Should have called the API with default tools (which include read_file etc.)
+    const apiCall = mockCreate.mock.calls[0][0]
+    const toolNames = apiCall.tools.map((t: any) => t.function.name)
+    expect(toolNames).toContain("read_file")
   })
 })
 
