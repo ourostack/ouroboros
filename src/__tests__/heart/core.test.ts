@@ -7727,6 +7727,27 @@ describe("repairOrphanedToolCalls", () => {
     expect(messages[4].content).toContain("interrupted")
   })
 
+  it("skips system messages between tool calls when scanning for results", async () => {
+    vi.resetModules()
+    const { repairOrphanedToolCalls } = await import("../../heart/core")
+    const messages: any[] = [
+      { role: "user", content: "hello" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "tc-1", type: "function", function: { name: "shell", arguments: "{}" } }],
+      },
+      { role: "system", content: "internal note" },
+      { role: "tool", tool_call_id: "tc-1", content: "ok" },
+    ]
+
+    repairOrphanedToolCalls(messages)
+
+    // system message should be skipped, tc-1 result found
+    expect(messages.length).toBe(4)
+    expect(messages[3].content).toBe("ok")
+  })
+
   it("handles multiple orphaned tool_calls in same assistant message", async () => {
     vi.resetModules()
     const { repairOrphanedToolCalls } = await import("../../heart/core")
