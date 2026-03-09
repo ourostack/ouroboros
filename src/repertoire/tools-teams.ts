@@ -220,6 +220,7 @@ export const teamsToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    /* v8 ignore start -- proactive messaging requires live Teams SDK conversation client @preserve */
     handler: async (args, ctx) => {
       if (!ctx?.botApi) {
         return "proactive messaging is not available -- no bot API context (this tool only works in the Teams channel)";
@@ -246,6 +247,7 @@ export const teamsToolDefinitions: ToolDefinition[] = [
         return `failed to send proactive message: ${e instanceof Error ? e.message : String(e)}`;
       }
     },
+    /* v8 ignore stop */
     confirmationRequired: true,
   },
   // -- Documentation tools --

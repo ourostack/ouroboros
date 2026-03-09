@@ -373,6 +373,20 @@ describe("adoRequest", () => {
     expect(result).toContain("ERROR")
     expect(result).toContain("400")
   })
+
+  it("uses custom host when provided", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ count: 1 }),
+    })
+
+    await adoRequest("token", "GET", "myorg", "/_apis/graph/users", undefined, "vssps.dev.azure.com")
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://vssps.dev.azure.com/myorg/_apis/graph/users?api-version=7.1",
+      expect.objectContaining({ method: "GET" }),
+    )
+  })
 })
 
 describe("discoverOrganizations", () => {

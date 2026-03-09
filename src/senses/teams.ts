@@ -558,6 +558,7 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
 const SECONDARY_INTERNAL_PORT = 3979
 
 // Collect all unique OAuth connection names across top-level config and tenant overrides.
+/* v8 ignore start -- runtime Teams SDK config; no unit-testable surface @preserve */
 function allOAuthConnectionNames(): string[] {
   const oauthConfig = getOAuthConfig()
   const names = new Set<string>()
@@ -611,6 +612,7 @@ function createBotApp(teamsConfig: { clientId: string, clientSecret: string, ten
     }
   }
 }
+/* v8 ignore stop */
 
 // Register message, verify-state, and error handlers on an App instance.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -775,6 +777,7 @@ export function startTeamsApp(): void {
   // --- Secondary bot (dual-bot support) ---
   // If teamsSecondary has a clientId, start a second App on an internal port
   // and proxy /api/messages-secondary on the primary app to it.
+  /* v8 ignore start -- dual-bot proxy wiring; requires live Teams SDK + HTTP @preserve */
   const secondaryConfig = getTeamsSecondaryConfig()
   if (secondaryConfig.clientId) {
     const { app: secondaryApp, mode: secondaryMode } = createBotApp(secondaryConfig)
@@ -814,4 +817,5 @@ export function startTeamsApp(): void {
     })
     emitNervesEvent({ level: "info", event: "channel.proxy_ready", component: "channels", message: "proxy /api/messages-secondary → secondary bot ready", meta: {} })
   }
+  /* v8 ignore stop */
 }

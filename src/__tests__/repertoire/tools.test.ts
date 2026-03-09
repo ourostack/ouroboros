@@ -745,6 +745,26 @@ describe("summarizeArgs", () => {
     expect(summarizeArgs("get_friend_note", { friendId: "friend-123" })).toBe("friendId=friend-123")
   })
 
+  it("returns org/project for ado_batch_update", () => {
+    expect(summarizeArgs("ado_batch_update", { organization: "contoso", project: "web", items: [] })).toBe("organization=contoso project=web")
+  })
+
+  it("returns org/project/title for ado_create_epic", () => {
+    expect(summarizeArgs("ado_create_epic", { organization: "contoso", project: "web", title: "New epic" })).toBe("organization=contoso project=web title=New epic")
+  })
+
+  it("returns org/project/title for ado_create_issue", () => {
+    expect(summarizeArgs("ado_create_issue", { organization: "contoso", project: "web", title: "Bug" })).toBe("organization=contoso project=web title=Bug")
+  })
+
+  it("returns org/project/workItemIds for ado_move_items", () => {
+    expect(summarizeArgs("ado_move_items", { organization: "contoso", project: "web", workItemIds: [1, 2] })).toBe("organization=contoso project=web workItemIds=1,2")
+  })
+
+  it("returns org/project for ado_restructure_backlog", () => {
+    expect(summarizeArgs("ado_restructure_backlog", { organization: "contoso", project: "web" })).toBe("organization=contoso project=web")
+  })
+
   it("returns key=value summary for unknown tool", () => {
     expect(summarizeArgs("unknown_tool", { key: "value" })).toBe("key=value")
   })
