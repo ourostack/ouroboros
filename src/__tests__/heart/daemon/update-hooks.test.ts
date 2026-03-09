@@ -206,4 +206,36 @@ describe("applyPendingUpdates", () => {
       expect.objectContaining({ agentRoot: path.join(bundlesRoot, "test-agent.ouro") }),
     )
   })
+
+  it("handles hook throwing non-Error value", async () => {
+    const bundlesRoot = createTempDir("update-hooks-non-error-throw-")
+    const agentDir = path.join(bundlesRoot, "test-agent.ouro")
+    fs.mkdirSync(agentDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(agentDir, "bundle-meta.json"),
+      JSON.stringify({ runtimeVersion: "0.0.1", bundleSchemaVersion: 1, lastUpdated: "2025-01-01T00:00:00Z" }),
+    )
+
+    registerUpdateHook(() => { throw "string-error" })
+
+    await expect(
+      applyPendingUpdates(bundlesRoot, "0.1.0"),
+    ).resolves.toBeUndefined()
+  })
+
+  it("handles unreadable bundles directory gracefully", async () => {
+    // Create a file where a directory is expected -- readdirSync will throw
+    const unreadableRoot = path.join(os.tmpdir(), `update-hooks-file-${Date.now()}`)
+    fs.writeFileSync(unreadableRoot, "not-a-directory", "utf-8")
+    createdDirs.push(unreadableRoot)
+
+    const hook = vi.fn((_ctx: UpdateHookContext): UpdateHookResult => ({ ok: true }))
+    registerUpdateHook(hook)
+
+    await expect(
+      applyPendingUpdates(unreadableRoot, "0.1.0"),
+    ).resolves.toBeUndefined()
+
+    expect(hook).not.toHaveBeenCalled()
+  })
 })
