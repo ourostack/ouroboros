@@ -1,3 +1,5 @@
+import { emitNervesEvent } from "../../nerves/runtime"
+
 export interface DaemonRuntimeSyncDeps {
   socketPath: string
   localVersion: string
@@ -25,6 +27,7 @@ export async function ensureCurrentDaemonRuntime(
 ): Promise<DaemonRuntimeSyncResult> {
   try {
     const runningVersion = await deps.fetchRunningVersion()
+    let result: DaemonRuntimeSyncResult
 
     if (
       isKnownVersion(deps.localVersion) &&
@@ -35,36 +38,73 @@ export async function ensureCurrentDaemonRuntime(
         await deps.stopDaemon()
       } catch (error) {
         const reason = formatErrorReason(error)
-        return {
+        result = {
           alreadyRunning: true,
           message: `daemon already running (${deps.socketPath}; could not replace stale daemon ${runningVersion} -> ${deps.localVersion}: ${reason})`,
         }
+        emitNervesEvent({
+          level: "warn",
+          component: "daemon",
+          event: "daemon.runtime_sync_decision",
+          message: "evaluated daemon runtime sync outcome",
+          meta: { socketPath: deps.socketPath, localVersion: deps.localVersion, runningVersion, action: "stale_replace_failed", reason },
+        })
+        return result
       }
 
       deps.cleanupStaleSocket(deps.socketPath)
       const started = await deps.startDaemonProcess(deps.socketPath)
-      return {
+      result = {
         alreadyRunning: false,
         message: `restarted stale daemon from ${runningVersion} to ${deps.localVersion} (pid ${started.pid ?? "unknown"})`,
       }
+      emitNervesEvent({
+        component: "daemon",
+        event: "daemon.runtime_sync_decision",
+        message: "evaluated daemon runtime sync outcome",
+        meta: { socketPath: deps.socketPath, localVersion: deps.localVersion, runningVersion, action: "stale_restarted", pid: started.pid ?? null },
+      })
+      return result
     }
 
     if (!isKnownVersion(deps.localVersion) || !isKnownVersion(runningVersion)) {
-      return {
+      result = {
         alreadyRunning: true,
         message: `daemon already running (${deps.socketPath}; unable to verify version)`,
       }
+      emitNervesEvent({
+        component: "daemon",
+        event: "daemon.runtime_sync_decision",
+        message: "evaluated daemon runtime sync outcome",
+        meta: { socketPath: deps.socketPath, localVersion: deps.localVersion, runningVersion, action: "unknown_version" },
+      })
+      return result
     }
   } catch (error) {
     const reason = formatErrorReason(error)
-    return {
+    const result = {
       alreadyRunning: true,
       message: `daemon already running (${deps.socketPath}; unable to verify version: ${reason})`,
     }
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.runtime_sync_decision",
+      message: "evaluated daemon runtime sync outcome",
+      meta: { socketPath: deps.socketPath, localVersion: deps.localVersion, action: "status_lookup_failed", reason },
+    })
+    return result
   }
 
-  return {
+  const result = {
     alreadyRunning: true,
     message: `daemon already running (${deps.socketPath})`,
   }
+  emitNervesEvent({
+    component: "daemon",
+    event: "daemon.runtime_sync_decision",
+    message: "evaluated daemon runtime sync outcome",
+    meta: { socketPath: deps.socketPath, localVersion: deps.localVersion, action: "already_current" },
+  })
+  return result
 }
