@@ -11,7 +11,8 @@
     "dist/",
     "AdoptionSpecialist.ouro/",
     "subagents/",
-    "assets/"
+    "assets/",
+    "changelog.json"
   ],
   "exports": {
     ".": "./dist/heart/daemon/daemon-cli.js",

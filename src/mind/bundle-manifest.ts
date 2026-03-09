@@ -30,7 +30,14 @@ export const CANONICAL_BUNDLE_MANIFEST: readonly BundleManifestEntry[] = [
 ]
 
 export function getChangelogPath(): string {
-  throw new Error("Not implemented")
+  const changelogPath = path.resolve(__dirname, "../../changelog.json")
+  emitNervesEvent({
+    component: "mind",
+    event: "mind.changelog_path_resolved",
+    message: "resolved changelog path",
+    meta: { path: changelogPath },
+  })
+  return changelogPath
 }
 
 export function getPackageVersion(): string {
