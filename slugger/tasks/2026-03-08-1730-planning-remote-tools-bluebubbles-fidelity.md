@@ -130,3 +130,4 @@ Fix the current trusted remote iMessage experience so Slugger can actually opera
 
 ## Progress Log
 - 2026-03-08 17:30 Created validated planning doc for trusted remote tools, coding inspectability, and BlueBubbles fidelity fixes.
+- 2026-03-08 17:35 Approved the planning doc and expanded completion criteria to preserve the full BlueBubbles feature envelope.
