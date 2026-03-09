@@ -201,7 +201,8 @@ export function summarizeArgs(name: string, args: Record<string, string>): strin
   if (name === "git_commit") return summarizeKeyValues(args, ["message"]);
   if (name === "gh_cli") return summarizeKeyValues(args, ["command"]);
   if (name === "load_skill") return summarizeKeyValues(args, ["name"]);
-  if (name === "task_create") return summarizeKeyValues(args, ["title", "type", "category"]);
+  if (name === "task_create") return summarizeKeyValues(args, ["title", "type", "category", "scheduledAt", "cadence"]);
+  if (name === "schedule_reminder") return summarizeKeyValues(args, ["title", "scheduledAt", "cadence"]);
   if (name === "task_update_status") return summarizeKeyValues(args, ["name", "status"]);
   if (name === "task_board_status") return summarizeKeyValues(args, ["status"]);
   if (name === "task_board_action") return summarizeKeyValues(args, ["scope"]);

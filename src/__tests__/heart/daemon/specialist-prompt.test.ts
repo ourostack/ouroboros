@@ -50,7 +50,7 @@ describe("buildSpecialistSystemPrompt", () => {
     expect(prompt.length).toBeGreaterThan(0)
   })
 
-  it("includes tool guidance for complete_adoption, final_answer, read_file, write_file, list_directory", async () => {
+  it("includes tool guidance for complete_adoption and the broader local tool surface", async () => {
     const { buildSpecialistSystemPrompt } = await import("../../../heart/daemon/specialist-prompt")
     const prompt = buildSpecialistSystemPrompt("soul", "identity", [], {
       tempDir: "/tmp/ouro-hatch-test",
@@ -61,6 +61,8 @@ describe("buildSpecialistSystemPrompt", () => {
     expect(prompt).toContain("read_file")
     expect(prompt).toContain("write_file")
     expect(prompt).toContain("list_directory")
+    expect(prompt).toContain("shell")
+    expect(prompt).toContain("schedule_reminder")
   })
 
   it("includes tempDir path in the prompt", async () => {
