@@ -8,7 +8,10 @@ import {
   CANONICAL_BUNDLE_MANIFEST,
   findNonCanonicalBundlePaths,
   isCanonicalBundlePath,
+  getPackageVersion,
+  createBundleMeta,
 } from "../../mind/bundle-manifest"
+import type { BundleMeta } from "../../mind/bundle-manifest"
 
 const createdDirs: string[] = []
 
@@ -77,5 +80,46 @@ describe("bundle-manifest", () => {
   it("returns empty list when bundle root is missing", () => {
     const missingRoot = path.join(os.tmpdir(), "does-not-exist-bundle-root")
     expect(findNonCanonicalBundlePaths(missingRoot)).toEqual([])
+  })
+
+  it("includes bundle-meta.json in canonical manifest", () => {
+    const paths = CANONICAL_BUNDLE_MANIFEST.map((e) => e.path)
+    expect(paths).toContain("bundle-meta.json")
+    const entry = CANONICAL_BUNDLE_MANIFEST.find((e) => e.path === "bundle-meta.json")
+    expect(entry?.kind).toBe("file")
+  })
+
+  it("accepts bundle-meta.json as a canonical path", () => {
+    expect(isCanonicalBundlePath("bundle-meta.json")).toBe(true)
+  })
+})
+
+describe("getPackageVersion", () => {
+  it("returns a semver-like version string", () => {
+    const version = getPackageVersion()
+    expect(typeof version).toBe("string")
+    expect(version.length).toBeGreaterThan(0)
+    // Should look like a version (starts with digit)
+    expect(version).toMatch(/^\d+\.\d+\.\d+/)
+  })
+})
+
+describe("createBundleMeta", () => {
+  it("returns BundleMeta with current runtime version", () => {
+    const meta: BundleMeta = createBundleMeta()
+    expect(meta.runtimeVersion).toBe(getPackageVersion())
+  })
+
+  it("returns bundleSchemaVersion 1", () => {
+    const meta: BundleMeta = createBundleMeta()
+    expect(meta.bundleSchemaVersion).toBe(1)
+  })
+
+  it("returns a valid ISO timestamp for lastUpdated", () => {
+    const before = new Date().toISOString()
+    const meta: BundleMeta = createBundleMeta()
+    const after = new Date().toISOString()
+    expect(meta.lastUpdated >= before).toBe(true)
+    expect(meta.lastUpdated <= after).toBe(true)
   })
 })

@@ -7,8 +7,15 @@ export interface BundleManifestEntry {
   kind: "file" | "dir"
 }
 
+export interface BundleMeta {
+  runtimeVersion: string
+  bundleSchemaVersion: number
+  lastUpdated: string
+}
+
 export const CANONICAL_BUNDLE_MANIFEST: readonly BundleManifestEntry[] = [
   { path: "agent.json", kind: "file" },
+  { path: "bundle-meta.json", kind: "file" },
   { path: "psyche/SOUL.md", kind: "file" },
   { path: "psyche/IDENTITY.md", kind: "file" },
   { path: "psyche/LORE.md", kind: "file" },
@@ -21,6 +28,27 @@ export const CANONICAL_BUNDLE_MANIFEST: readonly BundleManifestEntry[] = [
   { path: "senses", kind: "dir" },
   { path: "senses/teams", kind: "dir" },
 ]
+
+export function getPackageVersion(): string {
+  const packageJsonPath = path.resolve(__dirname, "../../package.json")
+  const raw = fs.readFileSync(packageJsonPath, "utf-8")
+  const parsed = JSON.parse(raw) as { version: string }
+  emitNervesEvent({
+    component: "mind",
+    event: "mind.package_version_read",
+    message: "read package version",
+    meta: { version: parsed.version },
+  })
+  return parsed.version
+}
+
+export function createBundleMeta(): BundleMeta {
+  return {
+    runtimeVersion: getPackageVersion(),
+    bundleSchemaVersion: 1,
+    lastUpdated: new Date().toISOString(),
+  }
+}
 
 const CANONICAL_FILE_PATHS = new Set(
   CANONICAL_BUNDLE_MANIFEST
