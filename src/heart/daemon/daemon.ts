@@ -8,6 +8,9 @@ import { getRuntimeMetadata } from "./runtime-metadata"
 import { applyPendingUpdates, registerUpdateHook } from "./update-hooks"
 import { bundleMetaHook } from "./hooks/bundle-meta"
 import { getPackageVersion } from "../../mind/bundle-manifest"
+import { startUpdateChecker, stopUpdateChecker } from "./update-checker"
+import { performStagedRestart } from "./staged-restart"
+import { execSync, spawnSync } from "child_process"
 
 export interface DaemonCronJobSummary {
   id: string
@@ -209,7 +212,41 @@ export class OuroDaemon {
 
     // Register update hooks and apply pending updates before starting agents
     registerUpdateHook(bundleMetaHook)
-    await applyPendingUpdates(this.bundlesRoot, getPackageVersion())
+    const currentVersion = getPackageVersion()
+    await applyPendingUpdates(this.bundlesRoot, currentVersion)
+
+    // Start periodic update checker (polls npm registry every 30 minutes)
+    const bundlesRoot = this.bundlesRoot
+    const daemon = this
+    startUpdateChecker({
+      currentVersion,
+      deps: {
+        distTag: "alpha",
+        fetchRegistryJson: /* v8 ignore next -- integration: real HTTP fetch @preserve */ async () => {
+          const res = await fetch("https://registry.npmjs.org/@ouro.bot/cli")
+          return res.json()
+        },
+      },
+      onUpdate: /* v8 ignore start -- integration: real npm install + process spawn @preserve */ async (result) => {
+        if (!result.latestVersion) return
+        await performStagedRestart(result.latestVersion, {
+          execSync: (cmd) => execSync(cmd, { stdio: "inherit" }),
+          spawnSync,
+          resolveNewCodePath: (_version) => {
+            try {
+              const resolved = execSync(`node -e "console.log(require.resolve('@ouro.bot/cli/package.json'))"`, { encoding: "utf-8" }).trim()
+              return resolved ? path.dirname(resolved) : null
+            } catch {
+              return null
+            }
+          },
+          gracefulShutdown: () => daemon.stop(),
+          nodePath: process.execPath,
+          bundlesRoot,
+        })
+      },
+      /* v8 ignore stop */
+    })
 
     await this.processManager.startAutoStartAgents()
     await this.senseManager?.startAutoStartSenses()
@@ -314,6 +351,7 @@ export class OuroDaemon {
       meta: { socketPath: this.socketPath },
     })
 
+    stopUpdateChecker()
     this.scheduler.stop?.()
     await this.processManager.stopAll()
     await this.senseManager?.stopAll()
