@@ -346,7 +346,7 @@ export function createCliCallbacks(): ChannelCallbacks & { flushMarkdown(): void
 
 export interface RunCliSessionOptions {
   agentName: string;
-  tools?: OpenAI.ChatCompletionTool[];
+  tools?: OpenAI.ChatCompletionFunctionTool[];
   execTool?: (name: string, args: Record<string, string>, ctx?: ToolContext) => Promise<string>;
   toolChoiceRequired?: boolean;
   exitOnToolCall?: string;
@@ -615,44 +615,6 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
   const startupCount = drainToMessages()
   if (startupCount > 0) {
     saveSession(sessPath, sessionMessages)
-  }
-
-  // Wire up the CLI session with session-aware callbacks
-  // We use a custom runAgent wrapper that handles session persistence per-turn
-  const originalRunAgent = runAgent
-  const sessionAwareRunAgent = async (
-    msgs: OpenAI.ChatCompletionMessageParam[],
-    callbacks: ChannelCallbacks,
-    channel?: string,
-    signal?: AbortSignal,
-    runOpts?: any,
-  ) => {
-    // Inject trust gate check
-    const trustGate = enforceTrustGate({
-      friend: resolvedContext.friend,
-      provider: "local",
-      externalId: localExternalId,
-      channel: "cli",
-    })
-    if (!trustGate.allowed) {
-      if (trustGate.reason === "stranger_first_reply") {
-        process.stdout.write(`${trustGate.autoReply}\n`)
-      }
-      return { usage: undefined }
-    }
-
-    const result = await originalRunAgent(msgs, callbacks, channel as any, signal, {
-      ...runOpts,
-      toolContext: cliToolContext,
-    })
-
-    // Post-turn: save session, accumulate tokens, drain pending, refresh prompt
-    postTurn(sessionMessages, sessPath, result?.usage)
-    await accumulateFriendTokens(friendStore, resolvedContext.friend.id, result?.usage)
-    drainToMessages()
-    await refreshSystemPrompt(sessionMessages, "cli", undefined, resolvedContext)
-
-    return result
   }
 
   // Note: main() does NOT use runCliSession because it has additional

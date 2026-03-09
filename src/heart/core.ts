@@ -174,7 +174,7 @@ export interface RunAgentOptions {
   toolContext?: ToolContext;
   traceId?: string;
   drainSteeringFollowUps?: () => Array<{ text: string }>;
-  tools?: OpenAI.ChatCompletionTool[];
+  tools?: OpenAI.ChatCompletionFunctionTool[];
   execTool?: (name: string, args: Record<string, string>, ctx?: ToolContext) => Promise<string>;
 }
 

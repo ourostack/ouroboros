@@ -21,7 +21,6 @@ import {
   listExistingBundles,
   loadSoulText,
   pickRandomIdentity,
-  loadIdentityPhrases,
 } from "./specialist-orchestrator"
 import { buildSpecialistSystemPrompt } from "./specialist-prompt"
 import { getSpecialistTools, createSpecialistExecTool } from "./specialist-tools"
