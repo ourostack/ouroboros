@@ -20,9 +20,8 @@ function isRemoteChannel(capabilities?: ChannelCapabilities): boolean {
   return capabilities?.channel === "teams" || capabilities?.channel === "bluebubbles";
 }
 
-function isSharedRemoteContext(context?: Pick<ResolvedContext, "friend" | "channel">): boolean {
-  if (!context?.friend) return true;
-  const externalIds = context.friend.externalIds ?? [];
+function isSharedRemoteContext(friend: ResolvedContext["friend"]): boolean {
+  const externalIds = friend.externalIds ?? [];
   return externalIds.some((externalId) =>
     externalId.externalId.startsWith("group:") || externalId.provider === "teams-conversation",
   );
@@ -31,7 +30,7 @@ function isSharedRemoteContext(context?: Pick<ResolvedContext, "friend" | "chann
 function isTrustedRemoteContext(context?: Pick<ResolvedContext, "friend" | "channel">): boolean {
   if (!context?.friend || !isRemoteChannel(context.channel)) return false;
   const trustLevel = context.friend.trustLevel ?? "stranger";
-  return trustLevel !== "stranger" && !isSharedRemoteContext(context);
+  return trustLevel !== "stranger" && !isSharedRemoteContext(context.friend);
 }
 
 function shouldBlockLocalTools(
@@ -42,10 +41,7 @@ function shouldBlockLocalTools(
   return !isTrustedRemoteContext(context);
 }
 
-function blockedLocalToolMessage(ctx?: ToolContext): string {
-  if (isTrustedRemoteContext(ctx?.context)) {
-    return "";
-  }
+function blockedLocalToolMessage(): string {
   return "I can't do that from here because I'm talking to multiple people in a shared remote channel, and local shell/file/git/gh operations could let conversations interfere with each other. Ask me for a remote-safe alternative (Graph/ADO/web), or run that operation from CLI.";
 }
 
@@ -136,7 +132,7 @@ export async function execTool(name: string, args: Record<string, string>, ctx?:
   }
 
   if (shouldBlockLocalTools(ctx?.context?.channel, ctx?.context) && REMOTE_BLOCKED_LOCAL_TOOLS.has(name)) {
-    const message = blockedLocalToolMessage(ctx);
+    const message = blockedLocalToolMessage();
     emitNervesEvent({
       level: "warn",
       event: "tool.error",

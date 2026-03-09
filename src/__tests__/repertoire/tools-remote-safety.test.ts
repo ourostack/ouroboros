@@ -91,6 +91,58 @@ describe("remote channel tool safety", () => {
     expect(names).not.toContain("read_file")
   })
 
+  it("exposes local tools for trusted one-to-one teams contexts", () => {
+    const tools = getToolsForChannel(
+      getChannelCapabilities("teams"),
+      undefined,
+      {
+        friend: {
+          id: "friend-2",
+          name: "Jordan",
+          trustLevel: "friend",
+          externalIds: [{ provider: "teams-user", externalId: "8:orgid:user-guid", linkedAt: "2026-03-08T00:00:00.000Z" }],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          createdAt: "2026-03-08T00:00:00.000Z",
+          updatedAt: "2026-03-08T00:00:00.000Z",
+          schemaVersion: 1,
+        },
+        channel: getChannelCapabilities("teams"),
+      },
+    )
+    const names = tools.map((t) => t.function.name)
+
+    expect(names).toContain("shell")
+    expect(names).toContain("read_file")
+  })
+
+  it("keeps local tools blocked for shared teams conversations even when trusted", () => {
+    const tools = getToolsForChannel(
+      getChannelCapabilities("teams"),
+      undefined,
+      {
+        friend: {
+          id: "friend-3",
+          name: "Project Group",
+          trustLevel: "family",
+          externalIds: [{ provider: "teams-conversation", externalId: "19:conversation-id", linkedAt: "2026-03-08T00:00:00.000Z" }],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          createdAt: "2026-03-08T00:00:00.000Z",
+          updatedAt: "2026-03-08T00:00:00.000Z",
+          schemaVersion: 1,
+        },
+        channel: getChannelCapabilities("teams"),
+      },
+    )
+    const names = tools.map((t) => t.function.name)
+
+    expect(names).not.toContain("shell")
+    expect(names).not.toContain("read_file")
+  })
+
   it("returns explanatory denial messaging when remote context attempts local shell execution", async () => {
     const remoteContext = {
       signin: async () => undefined,
@@ -138,6 +190,51 @@ describe("remote channel tool safety", () => {
 
     expect(result.toLowerCase()).toContain("can't do that from here")
     expect(result.toLowerCase()).toContain("remote channel")
+  })
+
+  it("keeps local tools blocked for stranger one-to-one bluebubbles contexts", async () => {
+    const tools = getToolsForChannel(
+      getChannelCapabilities("bluebubbles"),
+      undefined,
+      {
+        friend: {
+          id: "friend-4",
+          name: "Unknown",
+          trustLevel: "stranger",
+          externalIds: [{ provider: "imessage-handle", externalId: "unknown@example.com", linkedAt: "2026-03-08T00:00:00.000Z" }],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          createdAt: "2026-03-08T00:00:00.000Z",
+          updatedAt: "2026-03-08T00:00:00.000Z",
+          schemaVersion: 1,
+        },
+        channel: getChannelCapabilities("bluebubbles"),
+      },
+    )
+
+    expect(tools.map((t) => t.function.name)).not.toContain("shell")
+
+    const result = await execTool("shell", { command: "echo hello" }, {
+      signin: async () => undefined,
+      context: {
+        friend: {
+          id: "friend-4",
+          name: "Unknown",
+          trustLevel: "stranger",
+          externalIds: [{ provider: "imessage-handle", externalId: "unknown@example.com", linkedAt: "2026-03-08T00:00:00.000Z" }],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          schemaVersion: 1,
+        },
+        channel: getChannelCapabilities("bluebubbles"),
+      },
+    } as unknown as ToolContext)
+
+    expect(result.toLowerCase()).toContain("can't do that from here")
   })
 
   it("allows local file reads for trusted one-to-one bluebubbles contexts", async () => {
