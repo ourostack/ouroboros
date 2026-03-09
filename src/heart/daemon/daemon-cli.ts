@@ -26,6 +26,7 @@ import { buildSpecialistSystemPrompt } from "./specialist-prompt"
 import { getSpecialistTools, createSpecialistExecTool } from "./specialist-tools"
 import { getRuntimeMetadata } from "./runtime-metadata"
 import { ensureCurrentDaemonRuntime } from "./daemon-runtime-sync"
+import { listEnabledBundleAgents } from "./agent-discovery"
 import { applyPendingUpdates, registerUpdateHook } from "./update-hooks"
 import { bundleMetaHook } from "./hooks/bundle-meta"
 import { getPackageVersion } from "../../mind/bundle-manifest"
@@ -659,35 +660,11 @@ async function defaultPromptInput(question: string): Promise<string> {
 }
 
 function defaultListDiscoveredAgents(): string[] {
-  const bundlesRoot = getAgentBundlesRoot()
-  let entries: fs.Dirent[]
-  try {
-    entries = fs.readdirSync(bundlesRoot, { withFileTypes: true })
-  } catch {
-    return []
-  }
-
-  const discovered: string[] = []
-  for (const entry of entries) {
-    if (!entry.isDirectory() || !entry.name.endsWith(".ouro")) continue
-    const agentName = entry.name.slice(0, -5)
-    const configPath = path.join(bundlesRoot, entry.name, "agent.json")
-    let enabled = true
-    try {
-      const raw = fs.readFileSync(configPath, "utf-8")
-      const parsed = JSON.parse(raw) as { enabled?: unknown }
-      if (typeof parsed.enabled === "boolean") {
-        enabled = parsed.enabled
-      }
-    } catch {
-      continue
-    }
-    if (enabled) {
-      discovered.push(agentName)
-    }
-  }
-
-  return discovered.sort((left, right) => left.localeCompare(right))
+  return listEnabledBundleAgents({
+    bundlesRoot: getAgentBundlesRoot(),
+    readdirSync: fs.readdirSync,
+    readFileSync: fs.readFileSync,
+  })
 }
 
 async function defaultLinkFriendIdentity(command: Extract<OuroCliCommand, { kind: "friend.link" }>): Promise<string> {

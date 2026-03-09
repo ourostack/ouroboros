@@ -7,6 +7,7 @@ import { HealthMonitor } from "./health-monitor"
 import { TaskDrivenScheduler } from "./task-scheduler"
 import { configureDaemonRuntimeLogger } from "./runtime-logging"
 import { DaemonSenseManager } from "./sense-manager"
+import { listEnabledBundleAgents } from "./agent-discovery"
 
 function parseSocketPath(argv: string[]): string {
   const socketIndex = argv.indexOf("--socket")
@@ -28,7 +29,7 @@ emitNervesEvent({
   meta: { socketPath },
 })
 
-const managedAgents = ["ouroboros", "slugger"] as const
+const managedAgents = listEnabledBundleAgents()
 
 const processManager = new DaemonProcessManager({
   agents: managedAgents.map((agent) => ({

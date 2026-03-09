@@ -218,12 +218,12 @@ function createBlueBubblesCallbacks(
         return
       }
       textBuffer = ""
+      await activity.finish()
       await client.sendText({
         chat,
         text: trimmed,
         replyToMessageGuid,
       })
-      await activity.finish()
     },
 
     async finish(): Promise<void> {

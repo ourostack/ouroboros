@@ -3,7 +3,7 @@
 // Pools are loaded from agent.json via loadAgentConfig().
 // If agent.json has no phrases, loadAgentConfig() auto-fills placeholders.
 
-import { loadAgentConfig } from "../heart/identity"
+import { loadAgentConfig, resetAgentConfigCache } from "../heart/identity"
 import { emitNervesEvent } from "../nerves/runtime"
 
 export interface PhrasePools {
@@ -20,6 +20,7 @@ export function getPhrases(): PhrasePools {
     message: "loading phrase pools",
     meta: {},
   })
+  resetAgentConfigCache()
   const phrases = loadAgentConfig().phrases
   emitNervesEvent({
     event: "repertoire.load_end",

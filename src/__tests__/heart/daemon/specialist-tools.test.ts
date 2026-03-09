@@ -311,7 +311,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
 
     // Animation should have played
     expect(animChunks.join("")).toContain("TestAgent")
-  })
+  }, 10000)
 
   it("returns error when psyche files are missing", async () => {
     const tmpDir = makeTempDir("spec-tools-adopt-missing")

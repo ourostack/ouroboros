@@ -875,6 +875,7 @@ describe("daemon CLI default dependency branches", () => {
     vi.doMock("fs", () => ({
       existsSync: vi.fn(() => false),
       unlinkSync: vi.fn(),
+      readFileSync: vi.fn(() => JSON.stringify({ enabled: true })),
       readdirSync: vi.fn(() => {
         throw new Error("read failed")
       }),
@@ -917,6 +918,7 @@ describe("daemon CLI default dependency branches", () => {
     vi.doMock("fs", () => ({
       existsSync: vi.fn(() => false),
       unlinkSync: vi.fn(),
+      readFileSync: vi.fn(() => JSON.stringify({ enabled: true })),
       readdirSync: vi.fn(() => {
         throw new Error("read failed")
       }),

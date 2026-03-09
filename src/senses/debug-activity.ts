@@ -61,16 +61,6 @@ export function createDebugActivityController(options: DebugActivityOptions): De
     return phrase
   }
 
-  function ensureTyping(active: boolean): void {
-    if (typingActive === active) {
-      return
-    }
-    typingActive = active
-    enqueue(active ? "typing_start" : "typing_stop", async () => {
-      await options.transport.setTyping(active)
-    })
-  }
-
   function setStatus(text: string): void {
     emitNervesEvent({
       component: "senses",
@@ -81,13 +71,19 @@ export function createDebugActivityController(options: DebugActivityOptions): De
         textLength: text.length,
       },
     })
-    ensureTyping(true)
+    const shouldStartTyping = !typingActive
+    if (shouldStartTyping) {
+      typingActive = true
+    }
     enqueue("status_update", async () => {
       if (statusMessageGuid) {
         await options.transport.editStatus(statusMessageGuid, text)
-        return
+      } else {
+        statusMessageGuid = await options.transport.sendStatus(text)
       }
-      statusMessageGuid = await options.transport.sendStatus(text)
+      if (shouldStartTyping) {
+        await options.transport.setTyping(true)
+      }
     })
   }
 
@@ -133,7 +129,10 @@ export function createDebugActivityController(options: DebugActivityOptions): De
         await queue
         return
       }
-      ensureTyping(false)
+      typingActive = false
+      enqueue("typing_stop", async () => {
+        await options.transport.setTyping(false)
+      })
       await queue
     },
   }
