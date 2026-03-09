@@ -268,7 +268,7 @@ function usage(): string {
   return [
     "Usage:",
     "  ouro [up]",
-    "  ouro stop|status|logs|hatch",
+    "  ouro stop|down|status|logs|hatch",
     "  ouro -v|--version",
     "  ouro chat <agent>",
     "  ouro msg --to <agent> [--session <id>] [--task <ref>] <message>",
@@ -494,7 +494,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (!head) return { kind: "daemon.up" }
 
   if (head === "up") return { kind: "daemon.up" }
-  if (head === "stop") return { kind: "daemon.stop" }
+  if (head === "stop" || head === "down") return { kind: "daemon.stop" }
   if (head === "status") return { kind: "daemon.status" }
   if (head === "logs") return { kind: "daemon.logs" }
   if (head === "hatch") return parseHatchCommand(args.slice(1))

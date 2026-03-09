@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Human-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.23",
+      "changes": [
+        "You can now use 'ouro down' as an alias for 'ouro stop' to pair naturally with 'ouro up'."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.22",
       "changes": [
         "You now know your runtime version and can see when it changed. Your system prompt shows your current version and what you were running before, so you can track what's new.",
