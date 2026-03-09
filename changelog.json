@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.28",
+      "changes": [
+        "Bare npx ouro.bot now stays aligned with the current alpha CLI track because the published ouro.bot wrapper is version-locked and republished alongside the CLI instead of lagging behind it.",
+        "Slugger no longer re-opens active iMessage task threads with generic greetings like 'hiya' when work is already in motion; fresh idle conversations can still start warmly.",
+        "BlueBubbles voice notes now use a harness-managed whisper.cpp transcription path for the current OpenAI, Anthropic, and MiniMax runtime contracts, including automatic local provisioning and truthful error notices when transcription cannot complete."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.27",
       "changes": [
         "The daemon now discovers all enabled agents in ~/AgentBundles, so ouro status and managed workers reflect every real agent instead of only slugger and ouroboros.",
