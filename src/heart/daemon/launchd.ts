@@ -1,9 +1,13 @@
 import { emitNervesEvent } from "../../nerves/runtime"
 
-export const DAEMON_LABEL = "bot.ouro.daemon"
+export const DAEMON_PLIST_LABEL = "bot.ouro.daemon"
 
-export interface LaunchdExecDeps {
+export interface LaunchdDeps {
   exec: (cmd: string) => void
+  writeFile: (filePath: string, content: string) => void
+  removeFile: (filePath: string) => void
+  existsFile: (filePath: string) => boolean
+  mkdirp: (dir: string) => void
   homeDir: string
 }
 
@@ -12,18 +16,6 @@ export interface DaemonPlistOptions {
   entryPath: string
   socketPath: string
   logDir?: string
-}
-
-export interface InstallLaunchAgentOptions extends DaemonPlistOptions {
-  deps: LaunchdExecDeps
-}
-
-export interface UninstallLaunchAgentOptions {
-  deps: LaunchdExecDeps
-}
-
-export interface IsDaemonInstalledOptions {
-  homeDir: string
 }
 
 export function generateDaemonPlist(_options: DaemonPlistOptions): string {
@@ -36,7 +28,7 @@ export function generateDaemonPlist(_options: DaemonPlistOptions): string {
   throw new Error("not implemented")
 }
 
-export function installLaunchAgent(_options: InstallLaunchAgentOptions): void {
+export function installLaunchAgent(_deps: LaunchdDeps, _options: DaemonPlistOptions): void {
   emitNervesEvent({
     component: "daemon",
     event: "daemon.launchd_install",
@@ -46,7 +38,7 @@ export function installLaunchAgent(_options: InstallLaunchAgentOptions): void {
   throw new Error("not implemented")
 }
 
-export function uninstallLaunchAgent(_options: UninstallLaunchAgentOptions): void {
+export function uninstallLaunchAgent(_deps: LaunchdDeps): void {
   emitNervesEvent({
     component: "daemon",
     event: "daemon.launchd_uninstall",
@@ -56,7 +48,7 @@ export function uninstallLaunchAgent(_options: UninstallLaunchAgentOptions): voi
   throw new Error("not implemented")
 }
 
-export function isDaemonInstalled(_options: IsDaemonInstalledOptions): boolean {
+export function isDaemonInstalled(_deps: Pick<LaunchdDeps, "existsFile" | "homeDir">): boolean {
   emitNervesEvent({
     component: "daemon",
     event: "daemon.launchd_check_installed",
