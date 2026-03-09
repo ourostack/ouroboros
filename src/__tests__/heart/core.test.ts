@@ -7699,6 +7699,34 @@ describe("repairOrphanedToolCalls", () => {
     expect(messages.length).toBe(0)
   })
 
+  it("stops scanning for results when hitting a subsequent assistant message", async () => {
+    vi.resetModules()
+    const { repairOrphanedToolCalls } = await import("../../heart/core")
+    const messages: any[] = [
+      { role: "user", content: "hello" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "tc-1", type: "function", function: { name: "shell", arguments: "{}" } }],
+      },
+      { role: "tool", tool_call_id: "tc-1", content: "ok" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "tc-2", type: "function", function: { name: "read_file", arguments: "{}" } }],
+      },
+      // tc-2 has no result -- the break at the assistant boundary above means tc-1's result is NOT counted for tc-2
+    ]
+
+    repairOrphanedToolCalls(messages)
+
+    // Should inject synthetic result for tc-2 after the second assistant message
+    expect(messages.length).toBe(5)
+    expect(messages[4].role).toBe("tool")
+    expect(messages[4].tool_call_id).toBe("tc-2")
+    expect(messages[4].content).toContain("interrupted")
+  })
+
   it("handles multiple orphaned tool_calls in same assistant message", async () => {
     vi.resetModules()
     const { repairOrphanedToolCalls } = await import("../../heart/core")
