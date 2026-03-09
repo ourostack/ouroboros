@@ -3,13 +3,22 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 
+// Hoisted mocks (available before vi.mock factories run)
+const mocks = vi.hoisted(() => ({
+  applyPendingUpdates: vi.fn(async () => undefined),
+}))
+
 // Mock update-hooks module
-const mockApplyPendingUpdates = vi.fn(async () => undefined)
 vi.mock("../../../heart/daemon/update-hooks", () => ({
-  applyPendingUpdates: mockApplyPendingUpdates,
+  applyPendingUpdates: (...a: any[]) => mocks.applyPendingUpdates(...a),
   registerUpdateHook: vi.fn(),
   getRegisteredHooks: vi.fn(() => []),
   clearRegisteredHooks: vi.fn(),
+}))
+
+// Mock bundle-meta hook (daemon imports this)
+vi.mock("../../../heart/daemon/hooks/bundle-meta", () => ({
+  bundleMetaHook: vi.fn(),
 }))
 
 // Mock bundle-manifest to control getPackageVersion
@@ -29,7 +38,7 @@ function tmpSocketPath(name: string): string {
 describe("daemon boot: applyPendingUpdates wiring", () => {
   afterEach(() => {
     vi.restoreAllMocks()
-    mockApplyPendingUpdates.mockClear()
+    mocks.applyPendingUpdates.mockClear()
   })
 
   function makeDaemon(socketPath: string, bundlesRoot?: string) {
@@ -83,8 +92,8 @@ describe("daemon boot: applyPendingUpdates wiring", () => {
     await daemon.start()
     await daemon.stop()
 
-    expect(mockApplyPendingUpdates).toHaveBeenCalledTimes(1)
-    expect(mockApplyPendingUpdates).toHaveBeenCalledWith(bundlesRoot, "0.1.0-test")
+    expect(mocks.applyPendingUpdates).toHaveBeenCalledTimes(1)
+    expect(mocks.applyPendingUpdates).toHaveBeenCalledWith(bundlesRoot, "0.1.0-test")
 
     fs.rmSync(bundlesRoot, { recursive: true, force: true })
   })
@@ -94,7 +103,7 @@ describe("daemon boot: applyPendingUpdates wiring", () => {
     const socketPath = tmpSocketPath("daemon-boot-order")
     const callOrder: string[] = []
 
-    mockApplyPendingUpdates.mockImplementation(async () => {
+    mocks.applyPendingUpdates.mockImplementation(async () => {
       callOrder.push("applyPendingUpdates")
     })
 
@@ -117,11 +126,11 @@ describe("daemon boot: applyPendingUpdates wiring", () => {
     const { daemon } = makeDaemon(socketPath, bundlesRoot)
 
     await daemon.start()
-    mockApplyPendingUpdates.mockClear()
+    mocks.applyPendingUpdates.mockClear()
     await daemon.start() // second call should be no-op
     await daemon.stop()
 
-    expect(mockApplyPendingUpdates).not.toHaveBeenCalled()
+    expect(mocks.applyPendingUpdates).not.toHaveBeenCalled()
 
     fs.rmSync(bundlesRoot, { recursive: true, force: true })
   })
