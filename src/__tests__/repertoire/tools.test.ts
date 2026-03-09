@@ -1956,6 +1956,14 @@ describe("execTool for docs tools", () => {
     const result = await execTool("ado_docs", {})
     expect(typeof result).toBe("string")
   })
+
+  it("ado_docs includes Host line for endpoints with custom host", async () => {
+    vi.resetModules()
+    const { execTool } = await import("../../repertoire/tools")
+
+    const result = await execTool("ado_docs", { query: "group entitlement" })
+    expect(result).toContain("Host: vsaex.dev.azure.com")
+  })
 })
 
 describe("getToolsForChannel includes docs tools", () => {
@@ -2029,6 +2037,10 @@ describe("summarizeArgs for docs tools", () => {
 
   it("returns empty string for ado_docs with no query", () => {
     expect(summarizeArgs("ado_docs", {})).toBe("")
+  })
+
+  it("returns user_name and user_id for teams_send_message", () => {
+    expect(summarizeArgs("teams_send_message", { user_name: "Alice", user_id: "uid-1", message: "hi" })).toBe("user_name=Alice user_id=uid-1")
   })
 
   it("returns type+key summary for save_friend_note", () => {

@@ -7629,3 +7629,95 @@ describe("resetProviderRuntime", () => {
     expect(core.getProvider()).toBe("azure")
   })
 })
+
+describe("repairOrphanedToolCalls", () => {
+  it("injects synthetic results for orphaned tool_calls with no matching tool result", async () => {
+    vi.resetModules()
+    const { repairOrphanedToolCalls } = await import("../../heart/core")
+    const messages: any[] = [
+      { role: "user", content: "hello" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "tc-1", type: "function", function: { name: "read_file", arguments: "{}" } }],
+      },
+      // Missing tool result for tc-1
+      { role: "user", content: "next" },
+    ]
+
+    repairOrphanedToolCalls(messages)
+
+    expect(messages.length).toBe(4)
+    expect(messages[2].role).toBe("tool")
+    expect(messages[2].tool_call_id).toBe("tc-1")
+    expect(messages[2].content).toContain("interrupted")
+  })
+
+  it("removes orphaned tool results that have no matching tool_calls", async () => {
+    vi.resetModules()
+    const { repairOrphanedToolCalls } = await import("../../heart/core")
+    const messages: any[] = [
+      { role: "user", content: "hello" },
+      { role: "tool", tool_call_id: "orphan-1", content: "stale result" },
+      { role: "user", content: "next" },
+    ]
+
+    repairOrphanedToolCalls(messages)
+
+    expect(messages.length).toBe(2)
+    expect(messages.every((m: any) => m.role !== "tool")).toBe(true)
+  })
+
+  it("leaves valid tool call/result pairs untouched", async () => {
+    vi.resetModules()
+    const { repairOrphanedToolCalls } = await import("../../heart/core")
+    const messages: any[] = [
+      { role: "user", content: "hello" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "tc-1", type: "function", function: { name: "read_file", arguments: "{}" } }],
+      },
+      { role: "tool", tool_call_id: "tc-1", content: "file contents" },
+      { role: "assistant", content: "done" },
+    ]
+
+    repairOrphanedToolCalls(messages)
+
+    expect(messages.length).toBe(4)
+    expect(messages[2].role).toBe("tool")
+    expect(messages[2].content).toBe("file contents")
+  })
+
+  it("handles empty messages array", async () => {
+    vi.resetModules()
+    const { repairOrphanedToolCalls } = await import("../../heart/core")
+    const messages: any[] = []
+
+    repairOrphanedToolCalls(messages)
+
+    expect(messages.length).toBe(0)
+  })
+
+  it("handles multiple orphaned tool_calls in same assistant message", async () => {
+    vi.resetModules()
+    const { repairOrphanedToolCalls } = await import("../../heart/core")
+    const messages: any[] = [
+      { role: "user", content: "do stuff" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          { id: "tc-a", type: "function", function: { name: "shell", arguments: "{}" } },
+          { id: "tc-b", type: "function", function: { name: "read_file", arguments: "{}" } },
+        ],
+      },
+    ]
+
+    repairOrphanedToolCalls(messages)
+
+    expect(messages.length).toBe(4)
+    expect(messages[2].tool_call_id).toBe("tc-a")
+    expect(messages[3].tool_call_id).toBe("tc-b")
+  })
+})

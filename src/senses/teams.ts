@@ -405,6 +405,7 @@ export async function withConversationLock(convId: string, fn: () => Promise<voi
 function getFriendStore(): InstanceType<typeof FileFriendStore> {
   // On Azure App Service, os.homedir() returns /root which is ephemeral.
   // Use /home/.agentstate/ (persistent) when WEBSITE_SITE_NAME is set.
+  /* v8 ignore next 3 -- Azure vs local path branch; environment-specific @preserve */
   const friendsPath = process.env.WEBSITE_SITE_NAME
     ? path.join("/home", ".agentstate", getAgentName(), "friends")
     : path.join(getAgentRoot(), "friends")
@@ -717,6 +718,7 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
         graphConnectionName: tenantOAuth.graphConnectionName,
         adoConnectionName: tenantOAuth.adoConnectionName,
         githubConnectionName: tenantOAuth.githubConnectionName,
+        /* v8 ignore next -- bot API availability branch; requires live SDK context @preserve */
         botApi: app.id && api ? { id: app.id, conversations: api.conversations } : undefined,
       }
 
@@ -767,6 +769,7 @@ export function startTeamsApp(): void {
     process.on("unhandledRejection", handler)
   }
 
+  /* v8 ignore next -- PORT env branch; runtime-only @preserve */
   const port = process.env.PORT ? Number(process.env.PORT) : getTeamsChannelConfig().port
   app.start(port)
   // Diagnostic: log tool count at startup to verify deploy
