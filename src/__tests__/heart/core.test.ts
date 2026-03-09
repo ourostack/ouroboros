@@ -7769,4 +7769,30 @@ describe("repairOrphanedToolCalls", () => {
     expect(messages[2].tool_call_id).toBe("tc-a")
     expect(messages[3].tool_call_id).toBe("tc-b")
   })
+
+  it("inserts synthetic results after existing tool results when some calls are missing", async () => {
+    vi.resetModules()
+    const { repairOrphanedToolCalls } = await import("../../heart/core")
+    const messages: any[] = [
+      { role: "user", content: "do stuff" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          { id: "tc-a", type: "function", function: { name: "shell", arguments: "{}" } },
+          { id: "tc-b", type: "function", function: { name: "read_file", arguments: "{}" } },
+        ],
+      },
+      { role: "tool", tool_call_id: "tc-a", content: "ok" },
+      // tc-b has no result -- synthetic result should be inserted after the existing tool result
+    ]
+
+    repairOrphanedToolCalls(messages)
+
+    expect(messages.length).toBe(4)
+    expect(messages[2].tool_call_id).toBe("tc-a")
+    expect(messages[2].content).toBe("ok")
+    expect(messages[3].tool_call_id).toBe("tc-b")
+    expect(messages[3].content).toContain("interrupted")
+  })
 })
