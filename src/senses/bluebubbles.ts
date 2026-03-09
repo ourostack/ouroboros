@@ -9,6 +9,7 @@ import { accumulateFriendTokens } from "../mind/friends/tokens"
 import { FriendResolver, type FriendResolverParams } from "../mind/friends/resolver"
 import { FileFriendStore } from "../mind/friends/store-file"
 import { buildSystem } from "../mind/prompt"
+import { getPhrases } from "../mind/phrases"
 import { emitNervesEvent } from "../nerves/runtime"
 import {
   normalizeBlueBubblesEvent,
@@ -17,9 +18,11 @@ import {
 } from "./bluebubbles-model"
 import { createBlueBubblesClient, type BlueBubblesClient } from "./bluebubbles-client"
 import { recordBlueBubblesMutation } from "./bluebubbles-mutation-log"
+import { createDebugActivityController } from "./debug-activity"
 
 type BlueBubblesCallbacks = ChannelCallbacks & {
   flush(): Promise<void>
+  finish(): Promise<void>
 }
 
 export interface BlueBubblesHandleResult {
@@ -107,9 +110,46 @@ function createBlueBubblesCallbacks(
   replyToMessageGuid?: string,
 ): BlueBubblesCallbacks {
   let textBuffer = ""
+  const phrases = getPhrases()
+  const activity = createDebugActivityController({
+    thinkingPhrases: phrases.thinking,
+    followupPhrases: phrases.followup,
+    transport: {
+      sendStatus: async (text: string) => {
+        const sent = await client.sendText({
+          chat,
+          text,
+          replyToMessageGuid,
+        })
+        return sent.messageGuid
+      },
+      editStatus: async (messageGuid: string, text: string) => {
+        await client.editMessage({
+          messageGuid,
+          text,
+        })
+      },
+      setTyping: async (active: boolean) => {
+        await client.setTyping(chat, active)
+      },
+    },
+    onTransportError: (operation, error) => {
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.bluebubbles_activity_error",
+        message: "bluebubbles activity transport failed",
+        meta: {
+          operation,
+          reason: error instanceof Error ? error.message : String(error),
+        },
+      })
+    },
+  })
 
   return {
     onModelStart(): void {
+      activity.onModelStart()
       emitNervesEvent({
         component: "senses",
         event: "senses.bluebubbles_turn_start",
@@ -128,12 +168,14 @@ function createBlueBubblesCallbacks(
     },
 
     onTextChunk(text: string): void {
+      activity.onTextChunk(text)
       textBuffer += text
     },
 
     onReasoningChunk(_text: string): void {},
 
     onToolStart(name: string, _args: Record<string, string>): void {
+      activity.onToolStart(name, _args)
       emitNervesEvent({
         component: "senses",
         event: "senses.bluebubbles_tool_start",
@@ -143,6 +185,7 @@ function createBlueBubblesCallbacks(
     },
 
     onToolEnd(name: string, summary: string, success: boolean): void {
+      activity.onToolEnd(name, summary, success)
       emitNervesEvent({
         component: "senses",
         event: "senses.bluebubbles_tool_end",
@@ -152,6 +195,7 @@ function createBlueBubblesCallbacks(
     },
 
     onError(error: Error, severity: "transient" | "terminal"): void {
+      activity.onError(error)
       emitNervesEvent({
         level: severity === "terminal" ? "error" : "warn",
         component: "senses",
@@ -166,8 +210,10 @@ function createBlueBubblesCallbacks(
     },
 
     async flush(): Promise<void> {
+      await activity.drain()
       const trimmed = textBuffer.trim()
       if (!trimmed) {
+        await activity.finish()
         return
       }
       textBuffer = ""
@@ -176,6 +222,11 @@ function createBlueBubblesCallbacks(
         text: trimmed,
         replyToMessageGuid,
       })
+      await activity.finish()
+    },
+
+    async finish(): Promise<void> {
+      await activity.finish()
     },
   }
 }
@@ -281,40 +332,44 @@ export async function handleBlueBubblesEvent(
     toolContext,
   }
 
-  const result = await resolvedDeps.runAgent(messages, callbacks, "bluebubbles", controller.signal, agentOptions)
-  await callbacks.flush()
-  resolvedDeps.postTurn(messages, sessPath, result.usage)
-  await resolvedDeps.accumulateFriendTokens(store, friendId, result.usage)
   try {
-    await client.markChatRead(event.chat)
-  } catch (error) {
+    const result = await resolvedDeps.runAgent(messages, callbacks, "bluebubbles", controller.signal, agentOptions)
+    await callbacks.flush()
+    resolvedDeps.postTurn(messages, sessPath, result.usage)
+    await resolvedDeps.accumulateFriendTokens(store, friendId, result.usage)
+    try {
+      await client.markChatRead(event.chat)
+    } catch (error) {
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.bluebubbles_mark_read_error",
+        message: "failed to mark bluebubbles chat as read",
+        meta: {
+          chatGuid: event.chat.chatGuid ?? null,
+          reason: error instanceof Error ? error.message : String(error),
+        },
+      })
+    }
+
     emitNervesEvent({
-      level: "warn",
       component: "senses",
-      event: "senses.bluebubbles_mark_read_error",
-      message: "failed to mark bluebubbles chat as read",
+      event: "senses.bluebubbles_turn_end",
+      message: "bluebubbles event handled",
       meta: {
-        chatGuid: event.chat.chatGuid ?? null,
-        reason: error instanceof Error ? error.message : String(error),
+        messageGuid: event.messageGuid,
+        kind: event.kind,
+        sessionKey: event.chat.sessionKey,
       },
     })
-  }
 
-  emitNervesEvent({
-    component: "senses",
-    event: "senses.bluebubbles_turn_end",
-    message: "bluebubbles event handled",
-    meta: {
-      messageGuid: event.messageGuid,
+    return {
+      handled: true,
+      notifiedAgent: true,
       kind: event.kind,
-      sessionKey: event.chat.sessionKey,
-    },
-  })
-
-  return {
-    handled: true,
-    notifiedAgent: true,
-    kind: event.kind,
+    }
+  } finally {
+    await callbacks.finish()
   }
 }
 

@@ -504,6 +504,125 @@ describe("BlueBubbles sense runtime", () => {
     )
   })
 
+  it("uses one editable debug activity message for a tool-heavy turn", async () => {
+    mocks.sendText
+      .mockResolvedValueOnce({ messageGuid: "status-guid" })
+      .mockResolvedValueOnce({ messageGuid: "final-guid" })
+    mocks.runAgent.mockImplementationOnce(async (_messages, callbacks) => {
+      callbacks.onModelStart()
+      callbacks.onToolStart("read_file", { path: "notes.txt" })
+      callbacks.onToolEnd("read_file", "ok", true)
+      callbacks.onTextChunk("got it")
+      return {
+        content: "got it",
+        toolCalls: [],
+        outputItems: [],
+        usage: { input_tokens: 1, output_tokens: 1, reasoning_tokens: 0, total_tokens: 2 },
+      }
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    expect(mocks.sendText).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        chat: expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }),
+        replyToMessageGuid: "C4B2E437-A373-43F6-9740-9CD84E5893A0",
+        text: "thinking...",
+      }),
+    )
+    expect(mocks.editMessage).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        messageGuid: "status-guid",
+        text: "running read_file (notes.txt)...",
+      }),
+    )
+    expect(mocks.editMessage).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        messageGuid: "status-guid",
+        text: "\u2713 read_file (ok)",
+      }),
+    )
+    expect(mocks.editMessage).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({
+        messageGuid: "status-guid",
+        text: "followup...",
+      }),
+    )
+    expect(mocks.sendText).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        chat: expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }),
+        replyToMessageGuid: "C4B2E437-A373-43F6-9740-9CD84E5893A0",
+        text: "got it",
+      }),
+    )
+    expect(mocks.setTyping).toHaveBeenNthCalledWith(1, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), true)
+    expect(mocks.setTyping).toHaveBeenNthCalledWith(2, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), false)
+  })
+
+  it("surfaces string-thrown activity transport failures explicitly", async () => {
+    mocks.sendText.mockResolvedValueOnce({ messageGuid: "status-guid" }).mockResolvedValueOnce({ messageGuid: "final-guid" })
+    mocks.editMessage.mockRejectedValueOnce("edit string failure")
+    mocks.runAgent.mockImplementationOnce(async (_messages, callbacks) => {
+      callbacks.onModelStart()
+      callbacks.onToolStart("read_file", { path: "notes.txt" })
+      return {
+        content: "done",
+        toolCalls: [],
+        outputItems: [],
+        usage: { input_tokens: 1, output_tokens: 1, reasoning_tokens: 0, total_tokens: 2 },
+      }
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: "warn",
+        event: "senses.bluebubbles_activity_error",
+        meta: expect.objectContaining({
+          operation: "status_update",
+          reason: "edit string failure",
+        }),
+      }),
+    )
+  })
+
+  it("surfaces Error-thrown activity transport failures explicitly too", async () => {
+    mocks.sendText.mockResolvedValueOnce({ messageGuid: "status-guid" }).mockResolvedValueOnce({ messageGuid: "final-guid" })
+    mocks.editMessage.mockRejectedValueOnce(new Error("edit error object"))
+    mocks.runAgent.mockImplementationOnce(async (_messages, callbacks) => {
+      callbacks.onModelStart()
+      callbacks.onToolStart("read_file", { path: "notes.txt" })
+      return {
+        content: "done",
+        toolCalls: [],
+        outputItems: [],
+        usage: { input_tokens: 1, output_tokens: 1, reasoning_tokens: 0, total_tokens: 2 },
+      }
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: "warn",
+        event: "senses.bluebubbles_activity_error",
+        meta: expect.objectContaining({
+          operation: "status_update",
+          reason: "edit error object",
+        }),
+      }),
+    )
+  })
+
   it("uses group chat identity rather than sender handle instability for group sessions", async () => {
     mocks.resolveContext.mockResolvedValueOnce({
       friend: {
@@ -686,6 +805,28 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.markChatRead).not.toHaveBeenCalled()
   })
 
+  it("stops typing even when the agent turn throws before a final answer is sent", async () => {
+    mocks.sendText.mockResolvedValueOnce({ messageGuid: "status-guid" })
+    mocks.runAgent.mockImplementationOnce(async (_messages, callbacks) => {
+      callbacks.onModelStart()
+      callbacks.onError(new Error("turn blew up"), "terminal")
+      throw new Error("turn blew up")
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await expect(bluebubbles.handleBlueBubblesEvent(dmThreadPayload)).rejects.toThrow("turn blew up")
+
+    expect(mocks.sendText).toHaveBeenCalledTimes(1)
+    expect(mocks.editMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageGuid: "status-guid",
+        text: "Error: turn blew up",
+      }),
+    )
+    expect(mocks.setTyping).toHaveBeenNthCalledWith(1, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), true)
+    expect(mocks.setTyping).toHaveBeenNthCalledWith(2, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), false)
+  })
+
   it("can still run a turn when only chat identifier routing is present", async () => {
     const bluebubbles = await import("../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(identifierOnlyPayload)
@@ -729,7 +870,12 @@ describe("BlueBubbles sense runtime", () => {
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
 
     expect(mocks.buildSystem).not.toHaveBeenCalled()
-    expect(mocks.sendText).not.toHaveBeenCalled()
+    expect(mocks.sendText).toHaveBeenCalledTimes(1)
+    expect(mocks.sendText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "thinking...",
+      }),
+    )
     expect(mocks.postTurn).toHaveBeenCalledTimes(1)
   })
 
