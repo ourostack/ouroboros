@@ -376,6 +376,30 @@ describe("toResponsesInput", () => {
     ])
   })
 
+  it("defaults image detail, drops non-string image urls, and ignores filename-only file parts", () => {
+    const messages = [
+      {
+        role: "user",
+        content: [
+          { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
+          { type: "image_url", image_url: { url: 123 } },
+          { type: "file", file: { file_id: "file-456" } },
+          { type: "file", file: { filename: "name-only.txt" } },
+        ],
+      },
+    ]
+    const result = toResponsesInput(messages)
+    expect(result.input).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "input_image", image_url: "data:image/png;base64,AAAA", detail: "auto" },
+          { type: "input_file", file_id: "file-456" },
+        ],
+      },
+    ])
+  })
+
   it("falls back to empty string when multimodal user content has no usable parts", () => {
     const messages = [
       {
