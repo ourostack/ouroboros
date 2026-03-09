@@ -11,6 +11,7 @@ export interface BundleMeta {
   runtimeVersion: string
   bundleSchemaVersion: number
   lastUpdated: string
+  previousRuntimeVersion?: string
 }
 
 export const CANONICAL_BUNDLE_MANIFEST: readonly BundleManifestEntry[] = [
