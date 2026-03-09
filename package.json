@@ -9,7 +9,8 @@
   "files": [
     "dist/",
     "AdoptionSpecialist.ouro/",
-    "subagents/"
+    "subagents/",
+    "assets/"
   ],
   "exports": {
     ".": "./dist/heart/daemon/daemon-cli.js",

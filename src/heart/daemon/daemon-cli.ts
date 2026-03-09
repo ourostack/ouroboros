@@ -17,7 +17,13 @@ import {
   type HatchFlowInput,
   type HatchFlowResult,
 } from "./hatch-flow"
-import { runAdoptionSpecialist as runSpecialistOrchestrator } from "./specialist-orchestrator"
+import {
+  listExistingBundles,
+  loadSoulText,
+  pickRandomIdentity,
+} from "./specialist-orchestrator"
+import { buildSpecialistSystemPrompt } from "./specialist-prompt"
+import { getSpecialistTools, createSpecialistExecTool } from "./specialist-tools"
 
 export type OuroCliCommand =
   | { kind: "daemon.up" }
@@ -707,11 +713,13 @@ export function discoverExistingCredentials(secretsRoot: string): DiscoveredCred
   })
 }
 
-/* v8 ignore next 95 -- integration: interactive terminal specialist session @preserve */
+/* v8 ignore start -- integration: interactive terminal specialist session @preserve */
 async function defaultRunAdoptionSpecialist(): Promise<string | null> {
-  const readlineModule = await import("readline")
+  const { runCliSession } = await import("../../senses/cli")
+  const { patchRuntimeConfig } = await import("../config")
+  const { setAgentName } = await import("../identity")
   const readlinePromises = await import("readline/promises")
-  const { createCliCallbacks, InputController } = await import("../../senses/cli")
+  const crypto = await import("crypto")
 
   // Phase 1: cold CLI — collect provider/credentials with a simple readline
   const coldRl = readlinePromises.createInterface({ input: process.stdin, output: process.stdout })
@@ -723,12 +731,14 @@ async function defaultRunAdoptionSpecialist(): Promise<string | null> {
   let providerRaw: AgentProvider
   let credentials: HatchCredentialsInput = {}
 
+  const tempDir = path.join(os.tmpdir(), `ouro-hatch-${crypto.randomUUID()}`)
+
   try {
     const secretsRoot = path.join(os.homedir(), ".agentsecrets")
     const discovered = discoverExistingCredentials(secretsRoot)
 
     if (discovered.length > 0) {
-      process.stdout.write("\n🐍 welcome to ouro! let's hatch your first agent.\n")
+      process.stdout.write("\n\ud83d\udc0d welcome to ouro! let's hatch your first agent.\n")
       process.stdout.write("i found existing API credentials:\n\n")
       const unique = [...new Map(discovered.map((d) => [`${d.provider}`, d])).values()]
       for (let i = 0; i < unique.length; i++) {
@@ -759,7 +769,7 @@ async function defaultRunAdoptionSpecialist(): Promise<string | null> {
         }
       }
     } else {
-      process.stdout.write("\n🐍 welcome to ouro! let's hatch your first agent.\n")
+      process.stdout.write("\n\ud83d\udc0d welcome to ouro! let's hatch your first agent.\n")
       process.stdout.write("i need an API key to power our conversation.\n\n")
       const pRaw = await coldPrompt("provider (anthropic/azure/minimax/openai-codex): ")
       if (!isAgentProvider(pRaw)) {
@@ -781,34 +791,75 @@ async function defaultRunAdoptionSpecialist(): Promise<string | null> {
     coldRl.close()
     process.stdout.write("\n")
 
-    // Phase 2: warm specialist session — full CLI experience with markdown, spinners, input control
+    // Phase 2: configure runtime for adoption specialist
     const bundleSourceDir = path.resolve(__dirname, "..", "..", "..", "AdoptionSpecialist.ouro")
     const bundlesRoot = getAgentBundlesRoot()
-    const cliCallbacks = createCliCallbacks()
+    const secretsRoot2 = path.join(os.homedir(), ".agentsecrets")
 
-    return await runSpecialistOrchestrator({
-      bundleSourceDir,
-      bundlesRoot,
-      secretsRoot,
-      provider: providerRaw,
-      credentials,
-      humanName: os.userInfo().username,
-      createReadline: () => {
-        const rl2 = readlineModule.createInterface({ input: process.stdin, output: process.stdout, terminal: true })
-        const ctrl = new InputController(rl2)
-        return {
-          question: (q: string) => new Promise<string>((resolve) => rl2.question(q, resolve)),
-          close: () => rl2.close(),
-          inputController: ctrl,
-        }
+    // Configure provider credentials in runtime config
+    patchRuntimeConfig({
+      providers: {
+        [providerRaw]: credentials,
       },
-      callbacks: cliCallbacks,
     })
+    setAgentName("AdoptionSpecialist")
+
+    // Build specialist system prompt
+    const soulText = loadSoulText(bundleSourceDir)
+    const identitiesDir = path.join(bundleSourceDir, "psyche", "identities")
+    const identity = pickRandomIdentity(identitiesDir)
+    const existingBundles = listExistingBundles(bundlesRoot)
+    const systemPrompt = buildSpecialistSystemPrompt(soulText, identity.content, existingBundles, {
+      tempDir,
+      provider: providerRaw,
+    })
+
+    // Build specialist tools
+    const specialistTools = getSpecialistTools()
+    const specialistExecTool = createSpecialistExecTool({
+      tempDir,
+      credentials,
+      provider: providerRaw,
+      bundlesRoot,
+      secretsRoot: secretsRoot2,
+      animationWriter: (text: string) => process.stdout.write(text),
+    })
+
+    // Run the adoption specialist session via runCliSession
+    const result = await runCliSession({
+      agentName: "AdoptionSpecialist",
+      tools: specialistTools,
+      execTool: specialistExecTool,
+      exitOnToolCall: "complete_adoption",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: "hi" },
+      ],
+    })
+
+    if (result.exitReason === "tool_exit" && result.toolResult) {
+      const parsed = typeof result.toolResult === "string" ? JSON.parse(result.toolResult) : result.toolResult
+      if (parsed.success && parsed.agentName) {
+        return parsed.agentName as string
+      }
+    }
+
+    return null
   } catch {
     coldRl.close()
     return null
+  } finally {
+    // Clean up temp dir if it still exists
+    try {
+      if (fs.existsSync(tempDir)) {
+        fs.rmSync(tempDir, { recursive: true, force: true })
+      }
+    } catch {
+      // Best effort cleanup
+    }
   }
 }
+/* v8 ignore stop */
 
 export function createDefaultOuroCliDeps(socketPath = "/tmp/ouroboros-daemon.sock"): OuroCliDeps {
   return {

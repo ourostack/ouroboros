@@ -25,7 +25,7 @@ export interface OuroPathInstallerDeps {
 }
 
 const WRAPPER_SCRIPT = `#!/bin/sh
-exec npx --yes @ouro.bot/cli@latest "$@"
+exec npx --yes ouro.bot "$@"
 `
 
 function detectShellProfile(homeDir: string, shell: string | undefined): string | null {
@@ -87,15 +87,32 @@ export function installOuroCommand(deps: OuroPathInstallerDeps = {}): OuroPathIn
     meta: { scriptPath, binDir },
   })
 
-  // If ouro already exists somewhere in PATH, skip
+  // If ouro already exists, check content and repair if stale
   if (existsSync(scriptPath)) {
+    let existingContent = ""
+    try {
+      existingContent = readFileSync(scriptPath, "utf-8")
+    } catch {
+      // Can't read — treat as stale, will overwrite below
+    }
+
+    if (existingContent === WRAPPER_SCRIPT) {
+      emitNervesEvent({
+        component: "daemon",
+        event: "daemon.ouro_path_install_skip",
+        message: "ouro command already installed",
+        meta: { scriptPath },
+      })
+      return { installed: false, scriptPath, pathReady: isBinDirInPath(binDir, envPath), shellProfileUpdated: null, skippedReason: "already-installed" }
+    }
+
+    // Content is stale — repair by overwriting
     emitNervesEvent({
       component: "daemon",
-      event: "daemon.ouro_path_install_skip",
-      message: "ouro command already installed",
+      event: "daemon.ouro_path_install_repair",
+      message: "repairing stale ouro wrapper script",
       meta: { scriptPath },
     })
-    return { installed: false, scriptPath, pathReady: isBinDirInPath(binDir, envPath), shellProfileUpdated: null, skippedReason: "already-installed" }
   }
 
   try {

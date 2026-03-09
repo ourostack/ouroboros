@@ -29,7 +29,13 @@ export interface OuroUtiRegistrationResult {
   registrationBundlePath?: string
 }
 
-function resolveIconSourcePath(repoRoot: string): string {
+function resolveIconSourcePath(repoRoot: string, existsSync: (p: string) => boolean): string {
+  // Prefer bundled asset (shipped with npm package)
+  const bundledPath = path.resolve(repoRoot, "assets", "ouroboros.png")
+  if (existsSync(bundledPath)) {
+    return bundledPath
+  }
+  // Fall back to adjacent repo path (dev environment)
   return path.resolve(repoRoot, "..", "ouroboros-website", "public", "images", "ouroboros.png")
 }
 
@@ -86,6 +92,7 @@ function buildInfoPlist(iconInstalled: boolean): string {
     "      <key>UTTypeConformsTo</key>",
     "      <array>",
     "        <string>public.folder</string>",
+    "        <string>com.apple.package</string>",
     "      </array>",
     "      <key>UTTypeTagSpecification</key>",
     "      <dict>",
@@ -107,6 +114,8 @@ function buildInfoPlist(iconInstalled: boolean): string {
     "      </array>",
     "      <key>CFBundleTypeRole</key>",
     "      <string>Editor</string>",
+    "      <key>LSTypeIsPackage</key>",
+    "      <true/>",
     `      ${iconTag.trim()}`,
     "    </dict>",
     "  </array>",
@@ -150,7 +159,7 @@ export function registerOuroBundleUti(deps: RegisterOuroBundleUtiDeps = {}): Our
   const plistPath = path.join(contentsDir, "Info.plist")
   const icnsPath = path.join(resourcesDir, "ouro.icns")
   const iconsetDir = path.join(supportRoot, "ouro.iconset")
-  const iconSourcePath = resolveIconSourcePath(repoRoot)
+  const iconSourcePath = resolveIconSourcePath(repoRoot, existsSync)
 
   emitNervesEvent({
     component: "daemon",
