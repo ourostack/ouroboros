@@ -31,3 +31,51 @@ jobs:
         with:
           name: coverage-gate-artifacts
           path: ${{ env.HOME }}/.agentstate/test-runs/ouroboros-agent-harness
+
+  publish:
+    needs: coverage
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Install latest npm (trusted publishing requires >=11.5.1)
+        run: npm install -g npm@latest
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Bump CLI prerelease version
+        run: npm version prerelease --preid=alpha --no-git-tag-version
+
+      - name: Build
+        run: npm run build
+
+      - name: Publish @ouro.bot/cli
+        run: npm publish --access public --provenance
+
+      - name: Bump wrapper prerelease version
+        working-directory: packages/ouro.bot
+        run: npm version prerelease --preid=alpha --no-git-tag-version
+
+      - name: Publish ouro.bot
+        working-directory: packages/ouro.bot
+        run: npm publish --access public --provenance
+
+      - name: Commit version bumps
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json packages/ouro.bot/package.json
+          git commit -m "chore: bump alpha.$(node -p 'require("./package.json").version.split(".").pop()') [skip ci]"
+          git push
