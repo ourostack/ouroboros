@@ -168,6 +168,25 @@ describe("createSpecialistExecTool", () => {
     expect(result).toContain("error:")
   })
 
+  it("write_file returns error on failure", async () => {
+    const tmpDir = makeTempDir("spec-tools-wf-err")
+    cleanup.push(tmpDir)
+
+    const { createSpecialistExecTool } = await import("../../../heart/daemon/specialist-tools")
+    const execTool = createSpecialistExecTool({
+      tempDir: tmpDir,
+      credentials: { setupToken: "test" },
+      provider: "anthropic",
+      bundlesRoot: tmpDir,
+      secretsRoot: tmpDir,
+      animationWriter: () => {},
+    })
+
+    // /dev/null is a file, not a dir, so mkdirSync for a child path will fail
+    const result = await execTool("write_file", { path: "/dev/null/impossible.txt", content: "fail" })
+    expect(result).toContain("error:")
+  })
+
   it("unknown tool returns error", async () => {
     const tmpDir = makeTempDir("spec-tools-unk")
     cleanup.push(tmpDir)

@@ -11,6 +11,7 @@ import {
   getPackageVersion,
   createBundleMeta,
   backfillBundleMeta,
+  resetBackfillTracking,
 } from "../../mind/bundle-manifest"
 import type { BundleMeta } from "../../mind/bundle-manifest"
 
@@ -126,6 +127,10 @@ describe("createBundleMeta", () => {
 })
 
 describe("backfillBundleMeta", () => {
+  afterEach(() => {
+    resetBackfillTracking()
+  })
+
   it("creates bundle-meta.json when missing", () => {
     const bundleRoot = createTempBundleRoot()
 

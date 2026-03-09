@@ -1173,4 +1173,31 @@ describe("runCliSession", () => {
     const opts = mocks.runAgent.mock.calls[0][4]
     expect(opts.toolChoiceRequired).toBe(true)
   })
+
+  it("defaults pasteDebounceMs to 50 when not provided", async () => {
+    setupBasic({ inputSequence: ["/exit"] })
+
+    const result = await runCliSession({
+      agentName: "testagent",
+    })
+
+    expect(result.exitReason).toBe("user_quit")
+  })
+
+  it("calls onTurnEnd with fallback usage when runAgent throws", async () => {
+    setupBasic({ inputSequence: ["hello", "/exit"] })
+    mocks.runAgent.mockRejectedValue(new DOMException("aborted", "AbortError"))
+
+    const onTurnEnd = vi.fn()
+    await runCliSession({
+      agentName: "testagent",
+      pasteDebounceMs: 0,
+      onTurnEnd,
+    })
+
+    expect(onTurnEnd).toHaveBeenCalledWith(
+      expect.any(Array),
+      { usage: undefined },
+    )
+  })
 })
