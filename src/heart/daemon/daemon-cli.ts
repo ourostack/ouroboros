@@ -30,6 +30,7 @@ import { listEnabledBundleAgents } from "./agent-discovery"
 import { applyPendingUpdates, registerUpdateHook } from "./update-hooks"
 import { bundleMetaHook } from "./hooks/bundle-meta"
 import { getPackageVersion } from "../../mind/bundle-manifest"
+import { syncGlobalOuroBotWrapper as defaultSyncGlobalOuroBotWrapper } from "./ouro-bot-global-installer"
 
 export type OuroCliCommand =
   | { kind: "daemon.up" }
@@ -58,6 +59,7 @@ export interface OuroCliDeps {
   promptInput?: (question: string) => Promise<string>
   registerOuroBundleType?: () => Promise<unknown> | unknown
   installOuroCommand?: () => OuroPathInstallResult
+  syncGlobalOuroBotWrapper?: () => Promise<unknown> | unknown
   startChat?: (agentName: string) => Promise<void>
   tailLogs?: (options?: { follow?: boolean; lines?: number; agentFilter?: string }) => () => void
 }
@@ -968,6 +970,7 @@ export function createDefaultOuroCliDeps(socketPath = "/tmp/ouroboros-daemon.soc
     runAdoptionSpecialist: defaultRunAdoptionSpecialist,
     registerOuroBundleType: defaultRegisterOuroBundleUti,
     installOuroCommand: defaultInstallOuroCommand,
+    syncGlobalOuroBotWrapper: defaultSyncGlobalOuroBotWrapper,
     /* v8 ignore next 3 -- integration: launches interactive CLI session @preserve */
     startChat: async (agentName: string) => {
       const { main } = await import("../../senses/cli")
@@ -1042,6 +1045,20 @@ async function performSystemSetup(deps: OuroCliDeps): Promise<void> {
         component: "daemon",
         event: "daemon.system_setup_ouro_cmd_error",
         message: "failed to install ouro command to PATH",
+        meta: { error: error instanceof Error ? error.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(error) },
+      })
+    }
+  }
+
+  if (deps.syncGlobalOuroBotWrapper) {
+    try {
+      await Promise.resolve(deps.syncGlobalOuroBotWrapper())
+    } catch (error) {
+      emitNervesEvent({
+        level: "warn",
+        component: "daemon",
+        event: "daemon.system_setup_ouro_bot_wrapper_error",
+        message: "failed to sync global ouro.bot wrapper",
         meta: { error: error instanceof Error ? error.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(error) },
       })
     }
