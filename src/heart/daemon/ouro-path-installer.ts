@@ -24,8 +24,10 @@ export interface OuroPathInstallerDeps {
   shell?: string
 }
 
+const CLI_PACKAGE_SPECIFIER = "@ouro.bot/cli@alpha"
+
 const WRAPPER_SCRIPT = `#!/bin/sh
-exec npx --yes ouro.bot "$@"
+exec npx --yes ${CLI_PACKAGE_SPECIFIER} "$@"
 `
 
 function detectShellProfile(homeDir: string, shell: string | undefined): string | null {

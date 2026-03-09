@@ -42,8 +42,8 @@ describe("installOuroCommand", () => {
     expect(result.installed).toBe(true)
     expect(result.scriptPath).toBe("/home/test/.local/bin/ouro")
     expect(written["/home/test/.local/bin/ouro"]).toContain("#!/bin/sh")
-    expect(written["/home/test/.local/bin/ouro"]).toContain('exec npx --yes ouro.bot "$@"')
-    expect(written["/home/test/.local/bin/ouro"]).not.toContain("@ouro.bot/cli@latest")
+    expect(written["/home/test/.local/bin/ouro"]).toContain('exec npx --yes @ouro.bot/cli@alpha "$@"')
+    expect(written["/home/test/.local/bin/ouro"]).not.toContain('exec npx --yes ouro.bot "$@"')
     expect(chmoded["/home/test/.local/bin/ouro"]).toBe(0o755)
     expect(mkdirCalls).toContain("/home/test/.local/bin")
   })
@@ -55,7 +55,7 @@ describe("installOuroCommand", () => {
   })
 
   it("skips if ouro script already exists with correct content", () => {
-    const correctContent = '#!/bin/sh\nexec npx --yes ouro.bot "$@"\n'
+    const correctContent = '#!/bin/sh\nexec npx --yes @ouro.bot/cli@alpha "$@"\n'
     const deps = makeDeps({
       existsSync: (p) => p === "/home/test/.local/bin/ouro",
       readFileSync: (p) => {
@@ -71,7 +71,7 @@ describe("installOuroCommand", () => {
   })
 
   it("repairs ouro script when content is stale", () => {
-    const staleContent = '#!/bin/sh\nexec npx --yes @ouro.bot/cli@latest "$@"\n'
+    const staleContent = '#!/bin/sh\nexec npx --yes ouro.bot "$@"\n'
     const deps = makeDeps({
       existsSync: (p) => p === "/home/test/.local/bin/ouro",
       readFileSync: (p) => {
@@ -83,7 +83,7 @@ describe("installOuroCommand", () => {
 
     expect(result.installed).toBe(true)
     expect(result.scriptPath).toBe("/home/test/.local/bin/ouro")
-    expect(written["/home/test/.local/bin/ouro"]).toContain('exec npx --yes ouro.bot "$@"')
+    expect(written["/home/test/.local/bin/ouro"]).toContain('exec npx --yes @ouro.bot/cli@alpha "$@"')
     expect(result.skippedReason).toBeUndefined()
   })
 
@@ -96,7 +96,7 @@ describe("installOuroCommand", () => {
 
     // When we can't read existing content, we should overwrite it
     expect(result.installed).toBe(true)
-    expect(written["/home/test/.local/bin/ouro"]).toContain('exec npx --yes ouro.bot "$@"')
+    expect(written["/home/test/.local/bin/ouro"]).toContain('exec npx --yes @ouro.bot/cli@alpha "$@"')
   })
 
   it("skips on Windows", () => {
@@ -192,7 +192,7 @@ describe("installOuroCommand", () => {
   })
 
   it("reports pathReady correctly when already-installed and in PATH", () => {
-    const correctContent = '#!/bin/sh\nexec npx --yes ouro.bot "$@"\n'
+    const correctContent = '#!/bin/sh\nexec npx --yes @ouro.bot/cli@alpha "$@"\n'
     const deps = makeDeps({
       existsSync: (p) => p === "/home/test/.local/bin/ouro",
       readFileSync: (p) => {
@@ -209,7 +209,7 @@ describe("installOuroCommand", () => {
   })
 
   it("reports pathReady false when already-installed but not in PATH", () => {
-    const correctContent = '#!/bin/sh\nexec npx --yes ouro.bot "$@"\n'
+    const correctContent = '#!/bin/sh\nexec npx --yes @ouro.bot/cli@alpha "$@"\n'
     const deps = makeDeps({
       existsSync: (p) => p === "/home/test/.local/bin/ouro",
       readFileSync: (p) => {

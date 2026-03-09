@@ -25,6 +25,7 @@ import {
 import { buildSpecialistSystemPrompt } from "./specialist-prompt"
 import { getSpecialistTools, createSpecialistExecTool } from "./specialist-tools"
 import { getRuntimeMetadata } from "./runtime-metadata"
+import { ensureCurrentDaemonRuntime } from "./daemon-runtime-sync"
 
 export type OuroCliCommand =
   | { kind: "daemon.up" }
@@ -238,10 +239,21 @@ function formatDaemonStatusOutput(response: DaemonResponse, fallback: string): s
 export async function ensureDaemonRunning(deps: OuroCliDeps): Promise<EnsureDaemonResult> {
   const alive = await deps.checkSocketAlive(deps.socketPath)
   if (alive) {
-    return {
-      alreadyRunning: true,
-      message: `daemon already running (${deps.socketPath})`,
-    }
+    const localRuntime = getRuntimeMetadata()
+    return ensureCurrentDaemonRuntime({
+      socketPath: deps.socketPath,
+      localVersion: localRuntime.version,
+      fetchRunningVersion: async () => {
+        const status = await deps.sendCommand(deps.socketPath, { kind: "daemon.status" })
+        const payload = parseStatusPayload(status.data)
+        return payload?.overview.version ?? "unknown"
+      },
+      stopDaemon: async () => {
+        await deps.sendCommand(deps.socketPath, { kind: "daemon.stop" })
+      },
+      cleanupStaleSocket: deps.cleanupStaleSocket,
+      startDaemonProcess: deps.startDaemonProcess,
+    })
   }
 
   deps.cleanupStaleSocket(deps.socketPath)
