@@ -89,7 +89,7 @@ export async function applyPendingUpdates(bundlesRoot: string, currentVersion: s
           message: "update hook threw",
           meta: {
             agentRoot,
-            error: err instanceof Error ? err.message : String(err),
+            error: err instanceof Error ? err.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(err),
           },
         })
       }
