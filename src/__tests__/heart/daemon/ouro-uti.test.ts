@@ -217,6 +217,44 @@ describe(".ouro UTI registration", () => {
     fs.rmSync(tempRepo, { recursive: true, force: true })
   })
 
+  it("plist conforms to com.apple.package for directory-as-package semantics", () => {
+    const writeFileSync = vi.fn()
+
+    registerOuroBundleUti({
+      platform: "darwin",
+      homeDir: "/tmp/home",
+      repoRoot: "/tmp/repo",
+      existsSync: vi.fn((target: string) => !target.endsWith("ouroboros.png")),
+      mkdirSync: vi.fn(),
+      writeFileSync,
+      rmSync: vi.fn(),
+      execFileSync: vi.fn(),
+    })
+
+    const plistContent = writeFileSync.mock.calls[0][1] as string
+    expect(plistContent).toContain("com.apple.package")
+    expect(plistContent).toContain("public.folder")
+  })
+
+  it("plist includes LSTypeIsPackage for Finder package display", () => {
+    const writeFileSync = vi.fn()
+
+    registerOuroBundleUti({
+      platform: "darwin",
+      homeDir: "/tmp/home",
+      repoRoot: "/tmp/repo",
+      existsSync: vi.fn((target: string) => !target.endsWith("ouroboros.png")),
+      mkdirSync: vi.fn(),
+      writeFileSync,
+      rmSync: vi.fn(),
+      execFileSync: vi.fn(),
+    })
+
+    const plistContent = writeFileSync.mock.calls[0][1] as string
+    expect(plistContent).toContain("LSTypeIsPackage")
+    expect(plistContent).toContain("<true/>")
+  })
+
   it("uses default exec callback when execFileSync dep is omitted", async () => {
     vi.resetModules()
     const execFileSync = vi.fn()
