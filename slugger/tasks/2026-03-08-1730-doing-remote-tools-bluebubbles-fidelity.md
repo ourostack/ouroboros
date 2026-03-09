@@ -1,6 +1,6 @@
 # Doing: Remote Tools And BlueBubbles Fidelity
 
-**Status**: drafting
+**Status**: READY_FOR_EXECUTION
 **Execution Mode**: direct
 **Created**: 2026-03-08 17:38
 **Planning**: ./2026-03-08-1730-planning-remote-tools-bluebubbles-fidelity.md
@@ -183,7 +183,7 @@ Fix the current trusted remote iMessage experience so Slugger can actually opera
 ### ⬜ Unit 7c: Final Coverage / Doc Sync
 **What**: Reconcile the doing doc, artifacts, and completion criteria against the finished work so the execution record is truthful and complete.
 **Output**: Updated doing doc and final artifact references.
-**Acceptance**: The doc matches verified reality, all completion criteria are either checked with evidence or clearly left open, and the task is ready for work-doer execution.
+**Acceptance**: The doc matches verified reality, all completion criteria are either checked with evidence or clearly left open, and the task is ready for truthful closeout after execution.
 
 ## Execution
 - **TDD strictly enforced**: tests → red → implement → green → refactor
@@ -197,3 +197,4 @@ Fix the current trusted remote iMessage experience so Slugger can actually opera
 ## Progress Log
 - 2026-03-08 17:38 Created from planning doc.
 - 2026-03-08 17:42 Validation pass corrected the remote-coding scope to the real runner-spawn and coding-tool surfaces.
+- 2026-03-08 17:44 Quality pass completed; doing doc is ready for execution review.
