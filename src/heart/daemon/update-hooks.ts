@@ -1,4 +1,7 @@
+import * as fs from "fs"
+import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
+import type { BundleMeta } from "../../mind/bundle-manifest"
 
 export interface UpdateHookContext {
   agentRoot: string
@@ -33,6 +36,70 @@ export function clearRegisteredHooks(): void {
   _hooks.length = 0
 }
 
-export async function applyPendingUpdates(_bundlesRoot: string, _currentVersion: string): Promise<void> {
-  throw new Error("Not implemented")
+export async function applyPendingUpdates(bundlesRoot: string, currentVersion: string): Promise<void> {
+  emitNervesEvent({
+    component: "daemon",
+    event: "daemon.apply_pending_updates_start",
+    message: "applying pending updates",
+    meta: { bundlesRoot, currentVersion },
+  })
+
+  if (!fs.existsSync(bundlesRoot)) {
+    return
+  }
+
+  let entries: fs.Dirent[]
+  try {
+    entries = fs.readdirSync(bundlesRoot, { withFileTypes: true })
+  } catch {
+    return
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.endsWith(".ouro")) continue
+
+    const agentRoot = path.join(bundlesRoot, entry.name)
+    let previousVersion: string | undefined
+
+    const metaPath = path.join(agentRoot, "bundle-meta.json")
+    try {
+      if (fs.existsSync(metaPath)) {
+        const raw = fs.readFileSync(metaPath, "utf-8")
+        const meta = JSON.parse(raw) as BundleMeta
+        previousVersion = meta.runtimeVersion
+
+        if (previousVersion === currentVersion) {
+          continue
+        }
+      }
+    } catch {
+      // Malformed or unreadable bundle-meta.json -- treat as needing update
+      previousVersion = undefined
+    }
+
+    const ctx: UpdateHookContext = { agentRoot, currentVersion, previousVersion }
+
+    for (const hook of _hooks) {
+      try {
+        await hook(ctx)
+      } catch (err) {
+        emitNervesEvent({
+          component: "daemon",
+          event: "daemon.update_hook_error",
+          message: "update hook threw",
+          meta: {
+            agentRoot,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        })
+      }
+    }
+  }
+
+  emitNervesEvent({
+    component: "daemon",
+    event: "daemon.apply_pending_updates_end",
+    message: "pending updates applied",
+    meta: { bundlesRoot },
+  })
 }
