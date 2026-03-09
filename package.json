@@ -35,6 +35,10 @@
     "@microsoft/teams.dev": "^2.0.5",
     "openai": "^6.27.0"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ouroborosbot/ouroboros"
+  },
   "devDependencies": {
     "@vitest/coverage-v8": "^4.0.18",
     "eslint": "^10.0.2",
