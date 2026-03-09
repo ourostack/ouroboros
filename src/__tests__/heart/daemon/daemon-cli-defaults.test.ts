@@ -131,7 +131,12 @@ describe("daemon CLI default dependency branches", () => {
       getAgentBundlesRoot: () => "/mock/AgentBundles",
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
-    vi.doMock("fs", () => ({ existsSync: vi.fn(() => false), unlinkSync: vi.fn() }))
+    vi.doMock("fs", () => ({
+      existsSync: vi.fn(() => false),
+      unlinkSync: vi.fn(),
+      readFileSync: vi.fn(() => JSON.stringify({ version: "9.9.9" })),
+      readdirSync: vi.fn(() => []),
+    }))
     vi.stubGlobal("console", { ...console, log: consoleLog })
 
     const { createDefaultOuroCliDeps, runOuroCli } = await import("../../../heart/daemon/daemon-cli")

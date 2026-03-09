@@ -26,6 +26,9 @@ import { buildSpecialistSystemPrompt } from "./specialist-prompt"
 import { getSpecialistTools, createSpecialistExecTool } from "./specialist-tools"
 import { getRuntimeMetadata } from "./runtime-metadata"
 import { ensureCurrentDaemonRuntime } from "./daemon-runtime-sync"
+import { applyPendingUpdates, registerUpdateHook } from "./update-hooks"
+import { bundleMetaHook } from "./hooks/bundle-meta"
+import { getPackageVersion } from "../../mind/bundle-manifest"
 
 export type OuroCliCommand =
   | { kind: "daemon.up" }
@@ -1170,6 +1173,19 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
   if (command.kind === "daemon.up") {
     await performSystemSetup(deps)
+
+    // Run update hooks before starting daemon so user sees the output
+    registerUpdateHook(bundleMetaHook)
+    const bundlesRoot = getAgentBundlesRoot()
+    const currentVersion = getPackageVersion()
+    const updateSummary = await applyPendingUpdates(bundlesRoot, currentVersion)
+
+    if (updateSummary.updated.length > 0) {
+      for (const entry of updateSummary.updated) {
+        const from = entry.from ? ` (was ${entry.from})` : ""
+        deps.writeStdout(`updated ${entry.agent} to runtime ${entry.to}${from}`)
+      }
+    }
 
     const daemonResult = await ensureDaemonRunning(deps)
     deps.writeStdout(daemonResult.message)
