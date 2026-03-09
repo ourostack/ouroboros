@@ -174,6 +174,8 @@ export interface RunAgentOptions {
   toolContext?: ToolContext;
   traceId?: string;
   drainSteeringFollowUps?: () => Array<{ text: string }>;
+  tools?: OpenAI.ChatCompletionTool[];
+  execTool?: (name: string, args: Record<string, string>, ctx?: ToolContext) => Promise<string>;
 }
 
 // Re-export kick utilities for backward compat
@@ -332,7 +334,7 @@ export async function runAgent(
   try { require("events").setMaxListeners(50, signal); } catch { /* unsupported */ }
 
   const toolPreferences = currentContext?.friend?.toolPreferences;
-  const baseTools = getToolsForChannel(
+  const baseTools = options?.tools ?? getToolsForChannel(
     channel ? getChannelCapabilities(channel) : undefined,
     toolPreferences && Object.keys(toolPreferences).length > 0 ? toolPreferences : undefined,
   );
@@ -497,7 +499,8 @@ export async function runAgent(
           let toolResult: string;
           let success: boolean;
           try {
-            toolResult = await execTool(tc.name, args, options?.toolContext);
+            const execToolFn = options?.execTool ?? execTool;
+            toolResult = await execToolFn(tc.name, args, options?.toolContext);
             success = true;
           } catch (e) {
             toolResult = `error: ${e}`;
