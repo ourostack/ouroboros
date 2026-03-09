@@ -253,15 +253,14 @@ export function repairOrphanedToolCalls(
 
     // Collect tool result IDs that follow this assistant message
     const resultIds = new Set<string>();
+    const BOUNDARY_ROLES: ReadonlySet<string> = new Set(["assistant", "user"])
     for (let j = i + 1; j < messages.length; j++) {
       const following = messages[j];
-      /* v8 ignore start -- v8 splits if/else-if branch conditions; all paths tested @preserve */
       if (following.role === "tool") {
         resultIds.add((following as OpenAI.ChatCompletionToolMessageParam).tool_call_id);
-      } else if (following.role === "assistant" || following.role === "user") {
+      } else if (BOUNDARY_ROLES.has(following.role)) {
         break;
       }
-      /* v8 ignore stop */
     }
 
     const missing = asst.tool_calls.filter((tc) => !resultIds.has(tc.id));
