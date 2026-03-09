@@ -201,6 +201,78 @@ const readPayload = {
   },
 }
 
+const editPayload = {
+  type: "updated-message",
+  data: {
+    guid: "4A4F2A85-21AD-4AC6-98A8-34B8F4D07AA9",
+    text: "edited version",
+    handle: {
+      address: "ari@mendelow.me",
+      service: "iMessage",
+    },
+    attachments: [],
+    dateCreated: 1772949000000,
+    dateEdited: 1772949005000,
+    isFromMe: false,
+    chats: [
+      {
+        guid: "any;-;ari@mendelow.me",
+        style: 45,
+        chatIdentifier: "ari@mendelow.me",
+        displayName: "",
+      },
+    ],
+  },
+}
+
+const unsendPayload = {
+  type: "updated-message",
+  data: {
+    guid: "A9C0AB3C-858A-42BC-9951-66A5C9B1B2B8",
+    text: "",
+    handle: {
+      address: "ari@mendelow.me",
+      service: "iMessage",
+    },
+    attachments: [],
+    dateCreated: 1772949100000,
+    dateRetracted: 1772949105000,
+    isFromMe: false,
+    chats: [
+      {
+        guid: "any;-;ari@mendelow.me",
+        style: 45,
+        chatIdentifier: "ari@mendelow.me",
+        displayName: "",
+      },
+    ],
+  },
+}
+
+const deliveryPayload = {
+  type: "updated-message",
+  data: {
+    guid: "D4CF9CC0-C1B5-4CF0-9397-E29FE23BAE51",
+    text: "delivered",
+    handle: {
+      address: "ari@mendelow.me",
+      service: "iMessage",
+    },
+    attachments: [],
+    dateCreated: 1772949150000,
+    isDelivered: true,
+    isFromMe: false,
+    chats: [
+      {
+        guid: "any;-;ari@mendelow.me",
+        style: 45,
+        chatIdentifier: "ari@mendelow.me",
+        displayName: "",
+      },
+    ],
+  },
+}
+
 const fromMePayload = {
   ...dmThreadPayload,
   data: {
@@ -522,6 +594,66 @@ describe("BlueBubbles sense runtime", () => {
       }),
     )
     expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+  })
+
+  it("keeps edit and unsend mutations notifyable while treating delivery as state-only", async () => {
+    const bluebubbles = await import("../../senses/bluebubbles")
+
+    const runtimeDeps = {
+      getAgentName: () => "testagent",
+      recordMutation: mocks.recordMutation,
+    } as any
+
+    const editResult = await bluebubbles.handleBlueBubblesEvent(editPayload, runtimeDeps)
+    const unsendResult = await bluebubbles.handleBlueBubblesEvent(unsendPayload, runtimeDeps)
+    const deliveryResult = await bluebubbles.handleBlueBubblesEvent(deliveryPayload, runtimeDeps)
+
+    expect(editResult).toEqual(
+      expect.objectContaining({
+        handled: true,
+        notifiedAgent: true,
+        kind: "mutation",
+      }),
+    )
+    expect(unsendResult).toEqual(
+      expect.objectContaining({
+        handled: true,
+        notifiedAgent: true,
+        kind: "mutation",
+      }),
+    )
+    expect(deliveryResult).toEqual(
+      expect.objectContaining({
+        handled: true,
+        notifiedAgent: false,
+        reason: "mutation_state_only",
+      }),
+    )
+    expect(mocks.recordMutation).toHaveBeenNthCalledWith(
+      1,
+      "testagent",
+      expect.objectContaining({
+        mutationType: "edit",
+        messageGuid: "4A4F2A85-21AD-4AC6-98A8-34B8F4D07AA9",
+      }),
+    )
+    expect(mocks.recordMutation).toHaveBeenNthCalledWith(
+      2,
+      "testagent",
+      expect.objectContaining({
+        mutationType: "unsend",
+        messageGuid: "A9C0AB3C-858A-42BC-9951-66A5C9B1B2B8",
+      }),
+    )
+    expect(mocks.recordMutation).toHaveBeenNthCalledWith(
+      3,
+      "testagent",
+      expect.objectContaining({
+        mutationType: "delivery",
+        messageGuid: "D4CF9CC0-C1B5-4CF0-9397-E29FE23BAE51",
+      }),
+    )
+    expect(mocks.runAgent).toHaveBeenCalledTimes(2)
   })
 
   it("returns explicit from-me handling without invoking the agent loop", async () => {

@@ -160,6 +160,76 @@ describe("BlueBubbles client", () => {
     expect(global.fetch).not.toHaveBeenCalled()
   })
 
+  it("resolves identifier-only chats to a chatGuid before sending", async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            data: [
+              {
+                guid: "any;-;ari@mendelow.me",
+                chatIdentifier: "ari@mendelow.me",
+              },
+            ],
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: { guid: "resolved-guid" } }), { status: 200 }),
+      ) as typeof fetch
+
+    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+
+    const result = await client.sendText({
+      chat: {
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat_identifier:ari@mendelow.me",
+        sendTarget: { kind: "chat_identifier", value: "ari@mendelow.me" },
+      },
+      text: "hello from identifier",
+    })
+
+    expect(result).toEqual({ messageGuid: "resolved-guid" })
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      1,
+      "http://bluebubbles.local/api/v1/chat/query?password=secret-token",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          limit: 500,
+          offset: 0,
+          with: ["participants"],
+        }),
+      }),
+    )
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      2,
+      "http://bluebubbles.local/api/v1/message/text?password=secret-token",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.any(String),
+      }),
+    )
+    const sendBody = JSON.parse((global.fetch as any).mock.calls[1][1].body)
+    expect(sendBody.chatGuid).toBe("any;-;ari@mendelow.me")
+  })
+
   it("surfaces BlueBubbles send errors with response details", async () => {
     global.fetch = vi.fn().mockResolvedValue(
       new Response("private api required", { status: 403 }),
