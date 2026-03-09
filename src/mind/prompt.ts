@@ -308,8 +308,8 @@ function dateSection(): string {
   return `current date: ${today}`;
 }
 
-function toolsSection(channel: Channel, options?: BuildSystemOptions): string {
-  const channelTools = getToolsForChannel(getChannelCapabilities(channel));
+function toolsSection(channel: Channel, options?: BuildSystemOptions, context?: ResolvedContext): string {
+  const channelTools = getToolsForChannel(getChannelCapabilities(channel), undefined, context);
   const activeTools = (options?.toolChoiceRequired ?? true) ? [...channelTools, finalAnswerTool] : channelTools;
   const list = activeTools
     .map((t) => `- ${t.function.name}: ${t.function.description}`)
@@ -432,7 +432,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     runtimeInfoSection(channel),
     providerSection(),
     dateSection(),
-    toolsSection(channel, options),
+    toolsSection(channel, options, context),
     skillsSection(),
     taskBoardSection(),
     buildSessionSummary({

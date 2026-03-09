@@ -335,6 +335,7 @@ export async function runAgent(
   const baseTools = getToolsForChannel(
     channel ? getChannelCapabilities(channel) : undefined,
     toolPreferences && Object.keys(toolPreferences).length > 0 ? toolPreferences : undefined,
+    currentContext,
   );
   // Rebase provider-owned turn state from canonical messages at user-turn start.
   // This prevents stale provider caches from replaying prior-turn context.
