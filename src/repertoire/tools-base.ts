@@ -21,6 +21,14 @@ export interface ToolContext {
   context?: ResolvedContext;
   friendStore?: FriendStore;
   summarize?: (transcript: string, instruction: string) => Promise<string>;
+  tenantId?: string;
+  // Bot Framework API client for proactive messaging (Teams channel only).
+  // Provides conversations.create() and conversations.activities().create().
+  // Uses `unknown` wrapper to avoid coupling to @microsoft/teams.api types.
+  botApi?: {
+    id: string;
+    conversations: unknown;
+  };
 }
 
 export type ToolHandler = (args: Record<string, string>, ctx?: ToolContext) => string | Promise<string>;

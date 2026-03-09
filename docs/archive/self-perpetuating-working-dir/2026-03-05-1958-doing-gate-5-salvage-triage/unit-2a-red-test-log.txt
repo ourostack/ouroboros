@@ -1,8 +1,0 @@
-Unit 2a no-op rationale
-
-Re-land-now candidates from Unit 1:
-- 005ec3b (docs: reflection-generated task proposals)
-- 2f0c280 (docs: new reflection proposals)
-
-Both candidates are documentation/proposal content, not executable code deltas.
-No small code candidate exists for Gate 5 Unit 2a test-first flow.

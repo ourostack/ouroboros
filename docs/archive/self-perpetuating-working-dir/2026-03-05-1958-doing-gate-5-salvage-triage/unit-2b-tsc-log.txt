@@ -1,4 +1,0 @@
-Unit 2b no-op rationale
-
-No implementation changes were made in Unit 2b.
-TypeScript compile verification deferred to Unit 7 final verification.

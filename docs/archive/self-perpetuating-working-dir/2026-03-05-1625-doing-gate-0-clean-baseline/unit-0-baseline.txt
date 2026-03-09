@@ -1,3 +1,0 @@
-archive_branch_remote: yes
-archive_branch_local: yes
-revert_range_commit_count: 38

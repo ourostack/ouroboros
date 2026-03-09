@@ -1,1 +1,0 @@
-448cfcd docs(tasks): add reflection proposal for friend memory schema validation

@@ -366,7 +366,7 @@ describe("Teams adapter - createTeamsCallbacks (SDK-delegated streaming)", () =>
     const teams = await import("../../senses/teams")
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
     callbacks.onToolStart("read_file", { path: "package.json" })
-    expect(mockStream.update).toHaveBeenCalledWith("running read_file (package.json)...")
+    expect(mockStream.update).toHaveBeenCalledWith("running read_file (path=package.json)...")
   })
 
   it("onToolStart always flushes accumulated textBuffer before showing tool status", async () => {
@@ -486,12 +486,15 @@ describe("Teams adapter - message handling", () => {
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: mockRunAgent,
       buildSystem: vi.fn().mockReturnValue("system prompt"),
+      repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../heart/config", () => ({
       sessionPath: vi.fn().mockReturnValue("/tmp/teams-test-session.json"),
       getContextConfig: vi.fn().mockReturnValue({ maxTokens: 80000, contextMargin: 20 }),
       getTeamsConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "" }),
+      getTeamsSecondaryConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "", managedIdentityClientId: "" }),
       getOAuthConfig: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado" }),
+      resolveOAuthForTenant: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado", githubConnectionName: "" }),
       getAdoConfig: vi.fn().mockReturnValue({ organizations: [] }),
       getTeamsChannelConfig: vi.fn().mockReturnValue({ skipConfirmation: false, port: 3978 }),
     }))
@@ -724,6 +727,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       runAgent: vi.fn(),
       buildSystem: vi.fn().mockReturnValue("system prompt"),
       summarizeArgs: vi.fn().mockReturnValue(""),
+      repairOrphanedToolCalls: vi.fn(),
     }))
 
     const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {})
@@ -760,6 +764,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       runAgent: vi.fn(),
       buildSystem: vi.fn().mockReturnValue("system prompt"),
       summarizeArgs: vi.fn().mockReturnValue(""),
+      repairOrphanedToolCalls: vi.fn(),
     }))
 
     const teams = await import("../../senses/teams")
@@ -796,6 +801,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       runAgent: vi.fn(),
       buildSystem: vi.fn().mockReturnValue("system prompt"),
       summarizeArgs: vi.fn().mockReturnValue(""),
+      repairOrphanedToolCalls: vi.fn(),
     }))
 
     vi.spyOn(console, "log").mockImplementation(() => {})
@@ -828,12 +834,15 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       runAgent: vi.fn(),
       buildSystem: vi.fn().mockReturnValue("system prompt"),
       summarizeArgs: vi.fn().mockReturnValue(""),
+      repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../heart/config", () => ({
       sessionPath: vi.fn().mockReturnValue("/tmp/teams-session.json"),
       getContextConfig: vi.fn().mockReturnValue({ maxTokens: 80000, contextMargin: 20 }),
       getTeamsConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "" }),
+      getTeamsSecondaryConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "", managedIdentityClientId: "" }),
       getOAuthConfig: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado" }),
+      resolveOAuthForTenant: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado", githubConnectionName: "" }),
       getAdoConfig: vi.fn().mockReturnValue({ organizations: [] }),
       getTeamsChannelConfig: vi.fn().mockReturnValue({ skipConfirmation: false, port: 4000 }),
     }))
@@ -874,6 +883,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       runAgent: mockRunAgent,
       buildSystem: vi.fn().mockReturnValue("system prompt"),
       summarizeArgs: vi.fn().mockReturnValue(""),
+      repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../mind/prompt", () => ({
       buildSystem: vi.fn().mockResolvedValue("system prompt"),
@@ -940,6 +950,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       runAgent: runAgentFn,
       buildSystem: vi.fn().mockReturnValue("system prompt"),
       summarizeArgs: vi.fn().mockReturnValue(""),
+      repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../mind/prompt", () => ({
       buildSystem: vi.fn().mockResolvedValue("system prompt"),
@@ -1026,6 +1037,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       runAgent: mockRunAgent,
       buildSystem: vi.fn().mockReturnValue("system prompt"),
       summarizeArgs: vi.fn().mockReturnValue(""),
+      repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../mind/prompt", () => ({
       buildSystem: vi.fn().mockResolvedValue("system prompt"),
@@ -1110,6 +1122,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       runAgent: mockRunAgent,
       buildSystem: vi.fn().mockReturnValue("system prompt"),
       summarizeArgs: vi.fn().mockReturnValue(""),
+      repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../mind/prompt", () => ({
       buildSystem: vi.fn().mockResolvedValue("system prompt"),
@@ -1168,6 +1181,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       runAgent: vi.fn().mockRejectedValue(new Error("agent crashed")),
       buildSystem: vi.fn().mockReturnValue("system prompt"),
       summarizeArgs: vi.fn().mockReturnValue(""),
+      repairOrphanedToolCalls: vi.fn(),
     }))
 
     const teams = await import("../../senses/teams")
@@ -1213,6 +1227,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       runAgent: vi.fn().mockRejectedValue("string-crash"),
       buildSystem: vi.fn().mockReturnValue("system prompt"),
       summarizeArgs: vi.fn().mockReturnValue(""),
+      repairOrphanedToolCalls: vi.fn(),
     }))
 
     const teams = await import("../../senses/teams")
@@ -1260,6 +1275,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       runAgent: mockRunAgent,
       buildSystem: vi.fn().mockReturnValue("system prompt"),
       summarizeArgs: vi.fn().mockReturnValue(""),
+      repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../mind/prompt", () => ({
       buildSystem: vi.fn().mockResolvedValue("system prompt"),
@@ -1331,6 +1347,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       runAgent: mockRunAgent,
       buildSystem: vi.fn().mockReturnValue("system prompt"),
       summarizeArgs: vi.fn().mockReturnValue(""),
+      repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../mind/prompt", () => ({
       buildSystem: vi.fn().mockResolvedValue("system prompt"),
@@ -1401,6 +1418,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       runAgent: mockRunAgent,
       buildSystem: vi.fn().mockReturnValue("system prompt"),
       summarizeArgs: vi.fn().mockReturnValue(""),
+      repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../mind/prompt", () => ({
       buildSystem: vi.fn().mockResolvedValue("system prompt"),
@@ -1469,6 +1487,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       runAgent: vi.fn(),
       buildSystem: vi.fn().mockReturnValue("system prompt"),
       summarizeArgs: vi.fn().mockReturnValue(""),
+      repairOrphanedToolCalls: vi.fn(),
     }))
 
     const teams = await import("../../senses/teams")
@@ -1480,7 +1499,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       level: "error",
       event: "channel.app_error",
       component: "channels",
-      message: "SDK blew up",
+      message: "[primary] SDK blew up",
     }))
 
     // Cover non-Error branch
@@ -1490,7 +1509,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       level: "error",
       event: "channel.app_error",
       component: "channels",
-      message: "string error",
+      message: "[primary] string error",
     }))
 
     vi.restoreAllMocks()
@@ -1509,7 +1528,9 @@ describe("Teams adapter - startTeamsApp signin.verify-state handler", () => {
     vi.doMock("../../heart/config", () => ({
       sessionPath: vi.fn().mockReturnValue("/tmp/test-session"),
       getTeamsConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "" }),
+      getTeamsSecondaryConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "", managedIdentityClientId: "" }),
       getOAuthConfig: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado", githubConnectionName: "github" }),
+      resolveOAuthForTenant: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado", githubConnectionName: "github" }),
       getTeamsChannelConfig: vi.fn().mockReturnValue({ skipConfirmation: false, port: 3978, flushIntervalMs: 1000 }),
     }))
 
@@ -1532,6 +1553,7 @@ describe("Teams adapter - startTeamsApp signin.verify-state handler", () => {
       runAgent: vi.fn(),
       buildSystem: vi.fn().mockReturnValue("system prompt"),
       summarizeArgs: vi.fn().mockReturnValue(""),
+      repairOrphanedToolCalls: vi.fn(),
     }))
 
     return { handlers, emitNervesEventMock }
@@ -1600,7 +1622,7 @@ describe("Teams adapter - startTeamsApp signin.verify-state handler", () => {
       level: "warn",
       event: "channel.verify_state",
       component: "channels",
-      message: "verify-state failed for all connections",
+      message: "[primary] verify-state failed for all connections",
     }))
   })
 })
@@ -1632,7 +1654,9 @@ describe("Teams adapter - channel.message_received event", () => {
     vi.doMock("../../heart/config", () => ({
       sessionPath: vi.fn().mockReturnValue("/tmp/test-session"),
       getTeamsConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "" }),
+      getTeamsSecondaryConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "", managedIdentityClientId: "" }),
       getOAuthConfig: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado", githubConnectionName: "github" }),
+      resolveOAuthForTenant: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado", githubConnectionName: "github" }),
       getTeamsChannelConfig: vi.fn().mockReturnValue({ skipConfirmation: false, port: 3978, flushIntervalMs: 1000 }),
     }))
     vi.doMock("../../heart/core", () => ({
@@ -1687,7 +1711,9 @@ describe("Teams adapter - channel.message_received event", () => {
     vi.doMock("../../heart/config", () => ({
       sessionPath: vi.fn().mockReturnValue("/tmp/test-session"),
       getTeamsConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "" }),
+      getTeamsSecondaryConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "", managedIdentityClientId: "" }),
       getOAuthConfig: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado", githubConnectionName: "github" }),
+      resolveOAuthForTenant: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado", githubConnectionName: "github" }),
       getTeamsChannelConfig: vi.fn().mockReturnValue({ skipConfirmation: false, port: 3978, flushIntervalMs: 1000 }),
     }))
     vi.doMock("../../heart/core", () => ({
@@ -1751,6 +1777,7 @@ describe("Teams adapter - startTeamsApp AAD extraction (Bug 1)", () => {
       runAgent: mockRunAgent,
       buildSystem: vi.fn().mockReturnValue("system prompt"),
       summarizeArgs: vi.fn().mockReturnValue(""),
+      repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../mind/prompt", () => ({
       buildSystem: vi.fn().mockResolvedValue("system prompt"),
@@ -1833,6 +1860,7 @@ describe("Teams adapter - startTeamsApp AAD extraction (Bug 1)", () => {
       runAgent: mockRunAgent,
       buildSystem: vi.fn().mockReturnValue("system prompt"),
       summarizeArgs: vi.fn().mockReturnValue(""),
+      repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../mind/prompt", () => ({
       buildSystem: vi.fn().mockResolvedValue("system prompt"),
@@ -1911,7 +1939,9 @@ describe("Teams adapter - unhandledRejection guard", () => {
     vi.doMock("../../heart/config", () => ({
       sessionPath: vi.fn().mockReturnValue("/tmp/test-session"),
       getTeamsConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "" }),
+      getTeamsSecondaryConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "", managedIdentityClientId: "" }),
       getOAuthConfig: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado", githubConnectionName: "github" }),
+      resolveOAuthForTenant: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado", githubConnectionName: "github" }),
       getTeamsChannelConfig: vi.fn().mockReturnValue({ skipConfirmation: false, port: 3978, flushIntervalMs: 1000 }),
     }))
 
@@ -1931,6 +1961,7 @@ describe("Teams adapter - unhandledRejection guard", () => {
       runAgent: vi.fn(),
       buildSystem: vi.fn().mockReturnValue("system prompt"),
       summarizeArgs: vi.fn().mockReturnValue(""),
+      repairOrphanedToolCalls: vi.fn(),
     }))
 
     const teams = await import("../../senses/teams")
@@ -1981,6 +2012,7 @@ describe("Teams adapter - unhandledRejection guard", () => {
       runAgent: vi.fn(),
       buildSystem: vi.fn().mockReturnValue("system prompt"),
       summarizeArgs: vi.fn().mockReturnValue(""),
+      repairOrphanedToolCalls: vi.fn(),
     }))
 
     vi.spyOn(console, "log").mockImplementation(() => {})
@@ -2007,7 +2039,9 @@ describe("Teams adapter - startTeamsApp (Bot mode)", () => {
       sessionPath: vi.fn().mockReturnValue("/tmp/bot-session.json"),
       getContextConfig: vi.fn().mockReturnValue({ maxTokens: 80000, contextMargin: 20 }),
       getTeamsConfig: vi.fn().mockReturnValue({ clientId, clientSecret, tenantId }),
+      getTeamsSecondaryConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "", managedIdentityClientId: "" }),
       getOAuthConfig: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado" }),
+      resolveOAuthForTenant: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado", githubConnectionName: "" }),
       getAdoConfig: vi.fn().mockReturnValue({ organizations: [] }),
       getTeamsChannelConfig: vi.fn().mockReturnValue({ skipConfirmation: false, port: 3978 }),
     }))
@@ -2032,6 +2066,7 @@ describe("Teams adapter - startTeamsApp (Bot mode)", () => {
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: vi.fn(),
       buildSystem: vi.fn().mockReturnValue("system prompt"),
+      repairOrphanedToolCalls: vi.fn(),
     }))
     mockBotConfig("test-client-id", "test-secret", "test-tenant-id")
 
@@ -2065,6 +2100,7 @@ describe("Teams adapter - startTeamsApp (Bot mode)", () => {
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: vi.fn(),
       buildSystem: vi.fn().mockReturnValue("system prompt"),
+      repairOrphanedToolCalls: vi.fn(),
     }))
     mockBotConfig("my-app-id", "my-secret", "my-tenant")
 
@@ -2099,6 +2135,7 @@ describe("Teams adapter - startTeamsApp (Bot mode)", () => {
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: vi.fn(),
       buildSystem: vi.fn().mockReturnValue("system prompt"),
+      repairOrphanedToolCalls: vi.fn(),
     }))
     mockBotConfig("test-id", "test-secret", "test-tenant")
 
@@ -2132,6 +2169,7 @@ describe("Teams adapter - startTeamsApp (Bot mode)", () => {
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: vi.fn(),
       buildSystem: vi.fn().mockReturnValue("system prompt"),
+      repairOrphanedToolCalls: vi.fn(),
     }))
     mockBotConfig("test-id", "test-secret", "test-tenant")
 
@@ -2142,7 +2180,7 @@ describe("Teams adapter - startTeamsApp (Bot mode)", () => {
       level: "info",
       event: "channel.app_started",
       component: "channels",
-      meta: expect.objectContaining({ mode: "Bot Service" }),
+      meta: expect.objectContaining({ mode: "Bot Service (client secret)" }),
     }))
 
     vi.restoreAllMocks()
@@ -2167,6 +2205,7 @@ describe("Teams adapter - startTeamsApp (Bot mode)", () => {
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: vi.fn(),
       buildSystem: vi.fn().mockReturnValue("system prompt"),
+      repairOrphanedToolCalls: vi.fn(),
     }))
     mockBotConfig("test-id", "test-secret", "test-tenant")
 
@@ -2375,12 +2414,15 @@ describe("Teams adapter - session persistence", () => {
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: runAgentFn,
       buildSystem: vi.fn().mockReturnValue("system prompt"),
+      repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../heart/config", () => ({
       sessionPath: vi.fn().mockReturnValue("/tmp/teams-session.json"),
       getContextConfig: vi.fn().mockReturnValue({ maxTokens: 80000, contextMargin: 20 }),
       getTeamsConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "" }),
+      getTeamsSecondaryConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "", managedIdentityClientId: "" }),
       getOAuthConfig: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado" }),
+      resolveOAuthForTenant: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado", githubConnectionName: "" }),
       getAdoConfig: vi.fn().mockReturnValue({ organizations: [] }),
       getTeamsChannelConfig: vi.fn().mockReturnValue(teamsChannelConfig),
     }))
@@ -2785,12 +2827,15 @@ describe("Teams adapter - session persistence", () => {
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: runAgentFn,
       buildSystem: vi.fn().mockReturnValue("system prompt"),
+      repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../heart/config", () => ({
       sessionPath: vi.fn().mockReturnValue("/tmp/teams-session.json"),
       getContextConfig: vi.fn().mockReturnValue({ maxTokens: 80000, contextMargin: 20 }),
       getTeamsConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "" }),
+      getTeamsSecondaryConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "", managedIdentityClientId: "" }),
       getOAuthConfig: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado" }),
+      resolveOAuthForTenant: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado", githubConnectionName: "" }),
       getAdoConfig: vi.fn().mockReturnValue({ organizations: [] }),
       getTeamsChannelConfig: vi.fn().mockReturnValue({ skipConfirmation: true, port: 3978 }),
     }))
@@ -2866,6 +2911,8 @@ describe("Teams adapter - session persistence", () => {
       graphToken: undefined,
       adoToken: undefined,
       signin: signinFn,
+      graphConnectionName: "graph",
+      adoConnectionName: "ado",
     })
 
     expect(signinFn).toHaveBeenCalledWith("graph")
@@ -2886,6 +2933,8 @@ describe("Teams adapter - session persistence", () => {
       graphToken: undefined,
       adoToken: undefined,
       signin: signinFn,
+      graphConnectionName: "graph",
+      adoConnectionName: "ado",
     })
 
     expect(signinFn).toHaveBeenCalledWith("ado")
@@ -3329,12 +3378,15 @@ describe("Teams adapter - handleTeamsMessage unified chunked streaming", () => {
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: runAgentFn,
       buildSystem: vi.fn().mockReturnValue("system prompt"),
+      repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../heart/config", () => ({
       sessionPath: vi.fn().mockReturnValue("/tmp/teams-session.json"),
       getContextConfig: vi.fn().mockReturnValue({ maxTokens: 80000, contextMargin: 20 }),
       getTeamsConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "" }),
+      getTeamsSecondaryConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "", managedIdentityClientId: "" }),
       getOAuthConfig: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado" }),
+      resolveOAuthForTenant: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado", githubConnectionName: "" }),
       getAdoConfig: vi.fn().mockReturnValue({ organizations: [] }),
       getTeamsChannelConfig: vi.fn().mockReturnValue({ skipConfirmation: false, port: 3978 }),
     }))
@@ -3478,6 +3530,7 @@ describe("Teams adapter - startTeamsApp no --disable-streaming flag", () => {
       runAgent: vi.fn(),
       buildSystem: vi.fn().mockReturnValue("system prompt"),
       summarizeArgs: vi.fn().mockReturnValue(""),
+      repairOrphanedToolCalls: vi.fn(),
     }))
 
     const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {})
@@ -3513,12 +3566,15 @@ describe("Teams adapter - startTeamsApp no --disable-streaming flag", () => {
       runAgent: vi.fn(),
       buildSystem: vi.fn().mockReturnValue("system prompt"),
       summarizeArgs: vi.fn().mockReturnValue(""),
+      repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../heart/config", () => ({
       sessionPath: vi.fn().mockReturnValue("/tmp/teams-session.json"),
       getContextConfig: vi.fn().mockReturnValue({ maxTokens: 80000, contextMargin: 20 }),
       getTeamsConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "" }),
+      getTeamsSecondaryConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "", managedIdentityClientId: "" }),
       getOAuthConfig: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado" }),
+      resolveOAuthForTenant: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado", githubConnectionName: "" }),
       getAdoConfig: vi.fn().mockReturnValue({ organizations: [] }),
       getTeamsChannelConfig: vi.fn().mockReturnValue({ skipConfirmation: false, port: 3978 }),
     }))
@@ -3556,12 +3612,15 @@ describe("Teams adapter - confirmation callback", () => {
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: runAgentFn,
       buildSystem: vi.fn().mockReturnValue("system prompt"),
+      repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../heart/config", () => ({
       sessionPath: vi.fn().mockReturnValue("/tmp/teams-session.json"),
       getContextConfig: vi.fn().mockReturnValue({ maxTokens: 80000, contextMargin: 20 }),
       getTeamsConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "" }),
+      getTeamsSecondaryConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "", managedIdentityClientId: "" }),
       getOAuthConfig: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado" }),
+      resolveOAuthForTenant: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado", githubConnectionName: "" }),
       getAdoConfig: vi.fn().mockReturnValue({ organizations: [] }),
       getTeamsChannelConfig: vi.fn().mockReturnValue({ skipConfirmation: false, port: 3978 }),
     }))
@@ -3882,12 +3941,15 @@ describe("Teams adapter - confirmation callback", () => {
       runAgent: mockRunAgent,
       buildSystem: vi.fn().mockReturnValue("system prompt"),
       summarizeArgs: vi.fn().mockReturnValue(""),
+      repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../heart/config", () => ({
       sessionPath: vi.fn().mockReturnValue("/tmp/teams-session.json"),
       getContextConfig: vi.fn().mockReturnValue({ maxTokens: 80000, contextMargin: 20 }),
       getTeamsConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "" }),
+      getTeamsSecondaryConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "", managedIdentityClientId: "" }),
       getOAuthConfig: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado" }),
+      resolveOAuthForTenant: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado", githubConnectionName: "" }),
       getAdoConfig: vi.fn().mockReturnValue({ organizations: [] }),
       getTeamsChannelConfig: vi.fn().mockReturnValue({ skipConfirmation: false, port: 3978 }),
     }))
@@ -3968,12 +4030,15 @@ describe("Teams adapter - handleTeamsMessage with sendMessage", () => {
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: runAgentFn,
       buildSystem: vi.fn().mockReturnValue("system prompt"),
+      repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../heart/config", () => ({
       sessionPath: vi.fn().mockReturnValue("/tmp/teams-session.json"),
       getContextConfig: vi.fn().mockReturnValue({ maxTokens: 80000, contextMargin: 20 }),
       getTeamsConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "" }),
+      getTeamsSecondaryConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "", managedIdentityClientId: "" }),
       getOAuthConfig: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado" }),
+      resolveOAuthForTenant: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado", githubConnectionName: "" }),
       getAdoConfig: vi.fn().mockReturnValue({ organizations: [] }),
       getTeamsChannelConfig: vi.fn().mockReturnValue({ skipConfirmation: false, port: 3978 }),
     }))
@@ -4104,12 +4169,15 @@ describe("Teams adapter - handleTeamsMessage with sendMessage", () => {
       runAgent: mockRunAgent,
       buildSystem: vi.fn().mockReturnValue("system prompt"),
       summarizeArgs: vi.fn().mockReturnValue(""),
+      repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../heart/config", () => ({
       sessionPath: vi.fn().mockReturnValue("/tmp/teams-session.json"),
       getContextConfig: vi.fn().mockReturnValue({ maxTokens: 80000, contextMargin: 20 }),
       getTeamsConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "" }),
+      getTeamsSecondaryConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "", managedIdentityClientId: "" }),
       getOAuthConfig: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado" }),
+      resolveOAuthForTenant: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado", githubConnectionName: "" }),
       getAdoConfig: vi.fn().mockReturnValue({ organizations: [] }),
       getTeamsChannelConfig: vi.fn().mockReturnValue({ skipConfirmation: false, port: 3978 }),
     }))
@@ -4161,12 +4229,15 @@ describe("Teams adapter - context kernel wiring (Unit 1Hc)", () => {
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: runAgentFn,
       buildSystem: vi.fn().mockReturnValue("system prompt"),
+      repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../heart/config", () => ({
       sessionPath: vi.fn().mockReturnValue("/tmp/teams-session.json"),
       getContextConfig: vi.fn().mockReturnValue({ maxTokens: 80000, contextMargin: 20 }),
       getTeamsConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "" }),
+      getTeamsSecondaryConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "", managedIdentityClientId: "" }),
       getOAuthConfig: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado" }),
+      resolveOAuthForTenant: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado", githubConnectionName: "" }),
       getTeamsChannelConfig: vi.fn().mockReturnValue({ skipConfirmation: false, port: 3978 }),
     }))
     vi.doMock("../../mind/prompt", () => ({
@@ -4673,12 +4744,15 @@ describe("Teams adapter - GitHub token handling", () => {
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: runAgentFn,
       buildSystem: vi.fn().mockReturnValue("system prompt"),
+      repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../heart/config", () => ({
       sessionPath: vi.fn().mockReturnValue("/tmp/teams-session.json"),
       getContextConfig: vi.fn().mockReturnValue({ maxTokens: 80000, contextMargin: 20 }),
       getTeamsConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "" }),
+      getTeamsSecondaryConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "", managedIdentityClientId: "" }),
       getOAuthConfig: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado", githubConnectionName: "github" }),
+      resolveOAuthForTenant: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado", githubConnectionName: "github" }),
       getTeamsChannelConfig: vi.fn().mockReturnValue(teamsChannelConfig),
     }))
     vi.doMock("../../mind/prompt", () => ({
@@ -4774,6 +4848,9 @@ describe("Teams adapter - GitHub token handling", () => {
       adoToken: undefined,
       githubToken: undefined,
       signin: signinFn,
+      graphConnectionName: "graph",
+      adoConnectionName: "ado",
+      githubConnectionName: "github",
     })
 
     expect(signinFn).toHaveBeenCalledWith("github")

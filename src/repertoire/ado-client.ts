@@ -47,14 +47,17 @@ function resolveContentType(method: string, path: string): string {
 }
 
 // Generic ADO API request. Returns response body as pretty-printed JSON string.
+// `host` overrides the base URL for non-standard APIs (e.g. "vsapm.dev.azure.com", "vssps.dev.azure.com").
 export async function adoRequest(
   token: string,
   method: string,
   org: string,
   path: string,
   body?: string,
+  host?: string,
 ): Promise<string> {
   try {
+    const base = host ? `https://${host}/${org}` : `${ADO_BASE}/${org}`
     emitNervesEvent({
       event: "client.request_start",
       component: "clients",
@@ -63,7 +66,7 @@ export async function adoRequest(
     })
 
     const fullPath = ensureApiVersion(path)
-    const url = `${ADO_BASE}/${org}${fullPath}`
+    const url = `${base}${fullPath}`
 
     const contentType = resolveContentType(method, path)
 

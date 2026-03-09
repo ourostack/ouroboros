@@ -6,7 +6,7 @@ This guide covers the manual Azure/Entra setup required for Ouroboros to call Mi
 
 - An Azure subscription with access to Azure Portal
 - An existing Azure Bot resource (the one used by Ouroboros)
-- The app registration for the bot (matching `CLIENT_ID` in `.env`)
+- The app registration for the bot (matching `teams.clientId` in `secrets.json`)
 - Admin access to the Azure AD (Entra ID) tenant
 - A dev tunnel for local testing
 
@@ -20,7 +20,7 @@ This guide covers the manual Azure/Entra setup required for Ouroboros to call Mi
    ```
    api://botid-{your-bot-id}
    ```
-   where `{your-bot-id}` is the bot's app ID (same as `CLIENT_ID`).
+   where `{your-bot-id}` is the bot's app ID (same as `teams.clientId` in secrets.json).
 4. Add a scope:
    - **Scope name**: `access_as_user`
    - **Who can consent**: Admins and users
@@ -60,7 +60,7 @@ After adding all permissions, click **Grant admin consent for {tenant}** if you 
 
 ### 1.4 Add a Client Secret (if not already present)
 
-Go to **Certificates & secrets** > **Client secrets** > **New client secret**. Copy the value and set it as `CLIENT_SECRET` in your `.env` file.
+Go to **Certificates & secrets** > **Client secrets** > **New client secret**. Copy the value and set it as `teams.clientSecret` in your `secrets.json`.
 
 ### 1.5 Authentication Redirect URI
 
@@ -77,22 +77,22 @@ You need **two** OAuth connection settings on the Azure Bot resource -- one for 
 
 1. Go to **Azure Portal** > **Azure Bot** resource > **Configuration** > **OAuth Connection Settings** > **Add Setting**.
 2. Fill in:
-   - **Name**: `graph` (must match `OAUTH_GRAPH_CONNECTION` env var or the default)
+   - **Name**: `graph` (must match `oauth.graphConnectionName` in secrets.json, default: `graph`)
    - **Service Provider**: Azure Active Directory v2
-   - **Client ID**: your bot's app ID (`CLIENT_ID`)
-   - **Client Secret**: your bot's client secret (`CLIENT_SECRET`)
+   - **Client ID**: your bot's app ID (`teams.clientId`)
+   - **Client Secret**: your bot's client secret (`teams.clientSecret`)
    - **Token Exchange URL**: `api://botid-{your-bot-id}`
-   - **Tenant ID**: your tenant ID (`TENANT_ID`)
+   - **Tenant ID**: your tenant ID (`teams.tenantId`)
    - **Scopes**: `User.Read Mail.ReadWrite Calendars.ReadWrite Files.ReadWrite.All Chat.Read Sites.ReadWrite.All`
 
 ### 2.2 ADO Connection (`ado`)
 
 1. Same as above, add another OAuth connection setting.
 2. Fill in:
-   - **Name**: `ado` (must match `OAUTH_ADO_CONNECTION` env var or the default)
+   - **Name**: `ado` (must match `oauth.adoConnectionName` in secrets.json, default: `ado`)
    - **Service Provider**: Azure Active Directory v2
-   - **Client ID**: your bot's app ID (`CLIENT_ID`)
-   - **Client Secret**: your bot's client secret (`CLIENT_SECRET`)
+   - **Client ID**: your bot's app ID (`teams.clientId`)
+   - **Client Secret**: your bot's client secret (`teams.clientSecret`)
    - **Token Exchange URL**: `api://botid-{your-bot-id}`
    - **Tenant ID**: your tenant ID (`TENANT_ID`)
    - **Scopes**: `499b84ac-1321-427f-aa17-267ca6975798/.default` (this is the Azure DevOps resource ID; the `.default` scope requests all configured ADO permissions)
@@ -159,8 +159,8 @@ The manifest already includes `webApplicationInfo` (committed separately):
 ```json
 {
   "webApplicationInfo": {
-    "id": "93b3681b-1565-4ff7-bf1f-1d370e247604",
-    "resource": "api://botid-93b3681b-1565-4ff7-bf1f-1d370e247604"
+    "id": "{your-bot-app-id}",
+    "resource": "api://botid-{your-bot-app-id}"
   }
 }
 ```
@@ -182,32 +182,33 @@ This tells Teams to enable SSO token exchange with the app registration. The `id
 5. Add the tunnel domain to `manifest.json` `validDomains` array.
 6. Re-upload the app package to Teams if the manifest changed.
 
-## 5. Required Environment Variables
+## 5. Required Configuration
 
-Add these to your `.env` file:
+Add these to `~/.agentsecrets/<agent>/secrets.json`:
 
-```bash
-# Existing bot credentials
-CLIENT_ID=your-bot-app-id
-CLIENT_SECRET=your-bot-client-secret
-TENANT_ID=your-tenant-id
-
-# OAuth connection names (optional, defaults shown)
-OAUTH_GRAPH_CONNECTION=graph
-OAUTH_ADO_CONNECTION=ado
-
-# Azure DevOps organizations (comma-separated)
-ADO_ORGANIZATIONS=org1,org2
+```json
+{
+  "teams": {
+    "clientId": "your-bot-app-id",
+    "clientSecret": "your-bot-client-secret",
+    "tenantId": "your-tenant-id"
+  },
+  "oauth": {
+    "graphConnectionName": "graph",
+    "adoConnectionName": "ado",
+    "githubConnectionName": "github"
+  }
+}
 ```
 
-| Variable | Required | Default | Description |
+| Field | Required | Default | Description |
 |---|---|---|---|
-| `CLIENT_ID` | Yes | -- | Bot app registration ID |
-| `CLIENT_SECRET` | Yes | -- | Bot app registration client secret |
-| `TENANT_ID` | Yes | -- | Azure AD tenant ID |
-| `OAUTH_GRAPH_CONNECTION` | No | `graph` | Name of the Graph OAuth connection on Azure Bot |
-| `OAUTH_ADO_CONNECTION` | No | `ado` | Name of the ADO OAuth connection on Azure Bot |
-| `ADO_ORGANIZATIONS` | No | (empty) | Comma-separated list of ADO organizations the bot can access |
+| `teams.clientId` | Yes | -- | Bot app registration ID |
+| `teams.clientSecret` | Yes* | -- | Bot client secret (*or use `managedIdentityClientId`) |
+| `teams.tenantId` | Yes | -- | Azure AD tenant ID |
+| `oauth.graphConnectionName` | No | `graph` | Name of the Graph OAuth connection on Azure Bot |
+| `oauth.adoConnectionName` | No | `ado` | Name of the ADO OAuth connection on Azure Bot |
+| `oauth.githubConnectionName` | No | `""` | Name of the GitHub OAuth connection on Azure Bot |
 
 ## 6. Verification
 

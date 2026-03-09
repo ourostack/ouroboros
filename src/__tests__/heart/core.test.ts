@@ -7629,3 +7629,170 @@ describe("resetProviderRuntime", () => {
     expect(core.getProvider()).toBe("azure")
   })
 })
+
+describe("repairOrphanedToolCalls", () => {
+  it("injects synthetic results for orphaned tool_calls with no matching tool result", async () => {
+    vi.resetModules()
+    const { repairOrphanedToolCalls } = await import("../../heart/core")
+    const messages: any[] = [
+      { role: "user", content: "hello" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "tc-1", type: "function", function: { name: "read_file", arguments: "{}" } }],
+      },
+      // Missing tool result for tc-1
+      { role: "user", content: "next" },
+    ]
+
+    repairOrphanedToolCalls(messages)
+
+    expect(messages.length).toBe(4)
+    expect(messages[2].role).toBe("tool")
+    expect(messages[2].tool_call_id).toBe("tc-1")
+    expect(messages[2].content).toContain("interrupted")
+  })
+
+  it("removes orphaned tool results that have no matching tool_calls", async () => {
+    vi.resetModules()
+    const { repairOrphanedToolCalls } = await import("../../heart/core")
+    const messages: any[] = [
+      { role: "user", content: "hello" },
+      { role: "tool", tool_call_id: "orphan-1", content: "stale result" },
+      { role: "user", content: "next" },
+    ]
+
+    repairOrphanedToolCalls(messages)
+
+    expect(messages.length).toBe(2)
+    expect(messages.every((m: any) => m.role !== "tool")).toBe(true)
+  })
+
+  it("leaves valid tool call/result pairs untouched", async () => {
+    vi.resetModules()
+    const { repairOrphanedToolCalls } = await import("../../heart/core")
+    const messages: any[] = [
+      { role: "user", content: "hello" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "tc-1", type: "function", function: { name: "read_file", arguments: "{}" } }],
+      },
+      { role: "tool", tool_call_id: "tc-1", content: "file contents" },
+      { role: "assistant", content: "done" },
+    ]
+
+    repairOrphanedToolCalls(messages)
+
+    expect(messages.length).toBe(4)
+    expect(messages[2].role).toBe("tool")
+    expect(messages[2].content).toBe("file contents")
+  })
+
+  it("handles empty messages array", async () => {
+    vi.resetModules()
+    const { repairOrphanedToolCalls } = await import("../../heart/core")
+    const messages: any[] = []
+
+    repairOrphanedToolCalls(messages)
+
+    expect(messages.length).toBe(0)
+  })
+
+  it("stops scanning for results when hitting a subsequent assistant message", async () => {
+    vi.resetModules()
+    const { repairOrphanedToolCalls } = await import("../../heart/core")
+    const messages: any[] = [
+      { role: "user", content: "hello" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "tc-1", type: "function", function: { name: "shell", arguments: "{}" } }],
+      },
+      { role: "tool", tool_call_id: "tc-1", content: "ok" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "tc-2", type: "function", function: { name: "read_file", arguments: "{}" } }],
+      },
+      // tc-2 has no result -- the break at the assistant boundary above means tc-1's result is NOT counted for tc-2
+    ]
+
+    repairOrphanedToolCalls(messages)
+
+    // Should inject synthetic result for tc-2 after the second assistant message
+    expect(messages.length).toBe(5)
+    expect(messages[4].role).toBe("tool")
+    expect(messages[4].tool_call_id).toBe("tc-2")
+    expect(messages[4].content).toContain("interrupted")
+  })
+
+  it("skips system messages between tool calls when scanning for results", async () => {
+    vi.resetModules()
+    const { repairOrphanedToolCalls } = await import("../../heart/core")
+    const messages: any[] = [
+      { role: "user", content: "hello" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "tc-1", type: "function", function: { name: "shell", arguments: "{}" } }],
+      },
+      { role: "system", content: "internal note" },
+      { role: "tool", tool_call_id: "tc-1", content: "ok" },
+    ]
+
+    repairOrphanedToolCalls(messages)
+
+    // system message should be skipped, tc-1 result found
+    expect(messages.length).toBe(4)
+    expect(messages[3].content).toBe("ok")
+  })
+
+  it("handles multiple orphaned tool_calls in same assistant message", async () => {
+    vi.resetModules()
+    const { repairOrphanedToolCalls } = await import("../../heart/core")
+    const messages: any[] = [
+      { role: "user", content: "do stuff" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          { id: "tc-a", type: "function", function: { name: "shell", arguments: "{}" } },
+          { id: "tc-b", type: "function", function: { name: "read_file", arguments: "{}" } },
+        ],
+      },
+    ]
+
+    repairOrphanedToolCalls(messages)
+
+    expect(messages.length).toBe(4)
+    expect(messages[2].tool_call_id).toBe("tc-a")
+    expect(messages[3].tool_call_id).toBe("tc-b")
+  })
+
+  it("inserts synthetic results after existing tool results when some calls are missing", async () => {
+    vi.resetModules()
+    const { repairOrphanedToolCalls } = await import("../../heart/core")
+    const messages: any[] = [
+      { role: "user", content: "do stuff" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          { id: "tc-a", type: "function", function: { name: "shell", arguments: "{}" } },
+          { id: "tc-b", type: "function", function: { name: "read_file", arguments: "{}" } },
+        ],
+      },
+      { role: "tool", tool_call_id: "tc-a", content: "ok" },
+      // tc-b has no result -- synthetic result should be inserted after the existing tool result
+    ]
+
+    repairOrphanedToolCalls(messages)
+
+    expect(messages.length).toBe(4)
+    expect(messages[2].tool_call_id).toBe("tc-a")
+    expect(messages[2].content).toBe("ok")
+    expect(messages[3].tool_call_id).toBe("tc-b")
+    expect(messages[3].content).toContain("interrupted")
+  })
+})

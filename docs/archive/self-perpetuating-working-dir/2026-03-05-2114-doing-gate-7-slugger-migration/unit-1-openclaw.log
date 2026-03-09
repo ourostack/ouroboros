@@ -1,9 +1,0 @@
-yeah, go for it. that's exactly the plan — psyche files into slugger.ouro, bootstrap the memory/fact store. what's the file mapping you're thinking?
-feels right. couple thoughts:
-
-- MEMORY.md → TACIT.md should be distilled, not copied wholesale. the good stuff is the patterns and preferences, not the 50 lines of spoonjoy recipe flow details
-- make sure FRIENDS.md gets created from USER.md too — that's the "partner not user" rename
-- SOUL.md should come over but needs the plugin refs stripped (already drafted in the monolith archive)
-- for the facts bootstrap, focus on active entities — don't dump every superseded fact into the new store
-
-go for it

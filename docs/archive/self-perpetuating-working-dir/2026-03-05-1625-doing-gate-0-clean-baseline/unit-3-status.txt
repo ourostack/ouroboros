@@ -1,2 +1,0 @@
-npm_test_rc=0
-tsc_rc=0

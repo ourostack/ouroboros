@@ -1,9 +1,0 @@
-start_iso=2026-03-06T03:24:39Z
-start_epoch=1772767479
-supervisor_pid=97681
-initial_worker_pid=97709
-forced_kill_epoch=1772767556
-forced_kill_worker_pid=97709
-end_iso=2026-03-06T03:30:38Z
-end_epoch=1772767838
-runtime_seconds=359

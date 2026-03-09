@@ -47,8 +47,10 @@ export function getToolsForChannel(
     return baseTools;
   }
   const available = new Set(capabilities.availableIntegrations);
-  const integrationDefs = [...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions].filter(
-    (d) => d.integration && available.has(d.integration),
+  const channelDefs = [...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions];
+  // Include tools whose integration is available, plus channel tools with no integration gate (e.g. teams_send_message)
+  const integrationDefs = channelDefs.filter(
+    (d) => d.integration ? available.has(d.integration) : capabilities.channel === "teams",
   );
 
   if (!toolPreferences || Object.keys(toolPreferences).length === 0) {
@@ -188,5 +190,9 @@ export function summarizeArgs(name: string, args: Record<string, string>): strin
     return summarizeKeyValues(args, ["type", "key", "content"]);
   }
   if (name === "ado_backlog_list") return summarizeKeyValues(args, ["organization", "project"]);
+  if (name === "ado_batch_update") return summarizeKeyValues(args, ["organization", "project"]);
+  if (name === "ado_create_epic" || name === "ado_create_issue") return summarizeKeyValues(args, ["organization", "project", "title"]);
+  if (name === "ado_move_items") return summarizeKeyValues(args, ["organization", "project", "workItemIds"]);
+  if (name === "ado_restructure_backlog") return summarizeKeyValues(args, ["organization", "project"]);
   return summarizeUnknownArgs(args);
 }

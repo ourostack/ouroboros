@@ -1005,3 +1005,67 @@ describe("patchRuntimeConfig", () => {
     expect(getMinimaxConfig().apiKey).toBe("second")
   })
 })
+
+describe("getTeamsSecondaryConfig", () => {
+  it("returns secondary teams config from secrets", async () => {
+    vi.resetModules()
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+      teamsSecondary: {
+        clientId: "sec-id",
+        clientSecret: "sec-secret",
+        tenantId: "sec-tenant",
+        managedIdentityClientId: "",
+      },
+    }))
+
+    const { getTeamsSecondaryConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+
+    const cfg = getTeamsSecondaryConfig()
+    expect(cfg.clientId).toBe("sec-id")
+    expect(cfg.clientSecret).toBe("sec-secret")
+  })
+})
+
+describe("resolveOAuthForTenant", () => {
+  it("returns base oauth config when no tenantId given", async () => {
+    vi.resetModules()
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+      oauth: {
+        graphConnectionName: "graph-conn",
+        adoConnectionName: "ado-conn",
+        githubConnectionName: "gh-conn",
+      },
+    }))
+
+    const { resolveOAuthForTenant, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+
+    const result = resolveOAuthForTenant()
+    expect(result.graphConnectionName).toBe("graph-conn")
+    expect(result.adoConnectionName).toBe("ado-conn")
+  })
+
+  it("applies tenant overrides when tenantId matches", async () => {
+    vi.resetModules()
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+      oauth: {
+        graphConnectionName: "default-graph",
+        adoConnectionName: "default-ado",
+        githubConnectionName: "default-gh",
+        tenantOverrides: {
+          "tenant-x": {
+            graphConnectionName: "tenant-x-graph",
+          },
+        },
+      },
+    }))
+
+    const { resolveOAuthForTenant, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+
+    const result = resolveOAuthForTenant("tenant-x")
+    expect(result.graphConnectionName).toBe("tenant-x-graph")
+    expect(result.adoConnectionName).toBe("default-ado")
+  })
+})

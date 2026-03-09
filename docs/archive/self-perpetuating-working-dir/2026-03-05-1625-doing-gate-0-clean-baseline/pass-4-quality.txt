@@ -1,4 +1,0 @@
-unit_headers_with_emoji: 5
-tbd_mentions: 0
-completion_criteria_lines: 8
-has_coverage_section: yes

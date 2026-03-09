@@ -1,7 +1,0 @@
-
-> ouroboros-agent-harness@1.0.0 supervisor
-> tsc && node dist/supervisor-entry.js --agents ouroboros,slugger
-
-{"ts":"2026-03-06T05:34:18.287Z","level":"info","event":"supervisor.entry_start","trace_id":"43276fb7-edda-44fc-8bb0-d9738b4ed7d6","component":"supervisor","message":"starting supervisor entrypoint","meta":{"agents":["ouroboros","slugger"]}}
-{"ts":"2026-03-06T05:34:18.290Z","level":"info","event":"supervisor.worker_started","trace_id":"d55873b6-2148-4e51-ace6-9241f8558552","component":"supervisor","message":"inner dialog worker started","meta":{"agent":"ouroboros","pid":84877}}
-{"ts":"2026-03-06T05:34:18.291Z","level":"info","event":"supervisor.worker_started","trace_id":"a8c816a9-0c04-403d-b9c6-d54865833caa","component":"supervisor","message":"inner dialog worker started","meta":{"agent":"slugger","pid":84878}}
