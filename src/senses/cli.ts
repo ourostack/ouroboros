@@ -12,7 +12,7 @@ import { getPendingDir, drainPending } from "../mind/pending"
 import { refreshSystemPrompt } from "../mind/prompt-refresh"
 import type { UsageData } from "../mind/context"
 import { createCommandRegistry, registerDefaultCommands, parseSlashCommand, getToolChoiceRequired } from "./commands"
-import { getAgentName, setAgentName, getAgentRoot, loadAgentConfig } from "../heart/identity"
+import { getAgentName, setAgentName, getAgentRoot, getAgentBundlesRoot, loadAgentConfig } from "../heart/identity"
 import { createTraceId } from "../nerves"
 import { FileFriendStore } from "../mind/friends/store-file"
 import { FriendResolver } from "../mind/friends/resolver"
@@ -22,6 +22,9 @@ import { configureCliRuntimeLogger } from "../nerves/cli-logging"
 import { emitNervesEvent } from "../nerves/runtime"
 import { enforceTrustGate } from "./trust-gate"
 import { acquireSessionLock, SessionLockError } from "./session-lock"
+import { applyPendingUpdates, registerUpdateHook } from "../heart/daemon/update-hooks"
+import { bundleMetaHook } from "../heart/daemon/hooks/bundle-meta"
+import { getPackageVersion } from "../mind/bundle-manifest"
 
 // readline.Interface exposes undocumented mutable line/cursor for in-progress input
 type ReadlineInternals = readline.Interface & { line: string; cursor: number }
@@ -678,6 +681,10 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
 export async function main(agentName?: string, options?: { pasteDebounceMs?: number }) {
   if (agentName) setAgentName(agentName)
   const pasteDebounceMs = options?.pasteDebounceMs ?? 50
+
+  // Fallback: apply pending updates for daemon-less direct CLI usage
+  registerUpdateHook(bundleMetaHook)
+  await applyPendingUpdates(getAgentBundlesRoot(), getPackageVersion())
 
   // Fail fast if provider is misconfigured (triggers human-readable error + exit)
   getProvider()

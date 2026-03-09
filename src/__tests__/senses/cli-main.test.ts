@@ -96,6 +96,7 @@ vi.mock("../../heart/identity", () => ({
   setAgentName: vi.fn(),
   getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/testagent/secrets.json"),
   getAgentRoot: vi.fn(() => "/mock/agent/root"),
+  getAgentBundlesRoot: vi.fn(() => "/mock/bundles"),
   loadAgentConfig: vi.fn(() => ({
     name: "testagent",
     configPath: "~/.agentsecrets/testagent/secrets.json",
@@ -124,6 +125,16 @@ vi.mock("../../mind/friends/resolver", () => {
 })
 vi.mock("../../senses/trust-gate", () => ({
   enforceTrustGate: (...a: any[]) => mocks.enforceTrustGate(...a),
+}))
+vi.mock("../../mind/bundle-manifest", () => ({
+  getPackageVersion: vi.fn(() => "0.1.0-alpha.20"),
+  getChangelogPath: vi.fn(() => "/mock/changelog.json"),
+  createBundleMeta: vi.fn(),
+  backfillBundleMeta: vi.fn(),
+  resetBackfillTracking: vi.fn(),
+  CANONICAL_BUNDLE_MANIFEST: [],
+  isCanonicalBundlePath: vi.fn().mockReturnValue(true),
+  findNonCanonicalBundlePaths: vi.fn().mockReturnValue([]),
 }))
 vi.mock("../../heart/daemon/update-hooks", () => ({
   applyPendingUpdates: (...a: any[]) => mocks.applyPendingUpdates(...a),

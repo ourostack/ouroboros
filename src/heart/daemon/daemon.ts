@@ -5,6 +5,9 @@ import { getAgentBundlesRoot } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { DaemonSenseManagerLike, DaemonSenseRow } from "./sense-manager"
 import { getRuntimeMetadata } from "./runtime-metadata"
+import { applyPendingUpdates, registerUpdateHook } from "./update-hooks"
+import { bundleMetaHook } from "./hooks/bundle-meta"
+import { getPackageVersion } from "../../mind/bundle-manifest"
 
 export interface DaemonCronJobSummary {
   id: string
@@ -203,6 +206,11 @@ export class OuroDaemon {
       message: "starting daemon server",
       meta: { socketPath: this.socketPath },
     })
+
+    // Register update hooks and apply pending updates before starting agents
+    registerUpdateHook(bundleMetaHook)
+    await applyPendingUpdates(this.bundlesRoot, getPackageVersion())
+
     await this.processManager.startAutoStartAgents()
     await this.senseManager?.startAutoStartSenses()
     this.scheduler.start?.()
