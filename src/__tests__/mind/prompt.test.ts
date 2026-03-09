@@ -889,6 +889,118 @@ describe("runtimeInfoSection", () => {
     expect(result).toContain("short")
     expect(result).toContain("i do not use markdown")
   })
+
+  it("always includes runtime version line", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { runtimeInfoSection, resetPsycheCache } = await import("../../mind/prompt")
+    const { getPackageVersion } = await import("../../mind/bundle-manifest")
+    resetPsycheCache()
+    const result = runtimeInfoSection("cli")
+    expect(result).toContain(`runtime version: ${getPackageVersion()}`)
+  })
+
+  it("includes 'previously' line when previousRuntimeVersion differs from current", async () => {
+    const bundleMeta = {
+      runtimeVersion: "0.0.9",
+      bundleSchemaVersion: 1,
+      lastUpdated: "2025-01-01T00:00:00Z",
+      previousRuntimeVersion: "0.0.8",
+    }
+    vi.mocked(fs.readFileSync).mockImplementation((filePath: any, _encoding?: any) => {
+      const p = String(filePath)
+      if (p.endsWith("bundle-meta.json")) return JSON.stringify(bundleMeta)
+      if (p.endsWith("SOUL.md")) return MOCK_SOUL
+      if (p.endsWith("IDENTITY.md")) return MOCK_IDENTITY
+      if (p.endsWith("LORE.md")) return MOCK_LORE
+      if (p.endsWith("TACIT.md")) return MOCK_TACIT_KNOWLEDGE
+      if (p.endsWith("ASPIRATIONS.md")) return MOCK_ASPIRATIONS
+      if (p.endsWith("secrets.json")) return JSON.stringify({})
+      return ""
+    })
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { runtimeInfoSection, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = runtimeInfoSection("cli")
+    expect(result).toContain("previously: 0.0.8")
+  })
+
+  it("omits 'previously' line when previousRuntimeVersion is absent (first boot)", async () => {
+    const bundleMeta = {
+      runtimeVersion: "0.0.9",
+      bundleSchemaVersion: 1,
+      lastUpdated: "2025-01-01T00:00:00Z",
+    }
+    vi.mocked(fs.readFileSync).mockImplementation((filePath: any, _encoding?: any) => {
+      const p = String(filePath)
+      if (p.endsWith("bundle-meta.json")) return JSON.stringify(bundleMeta)
+      if (p.endsWith("SOUL.md")) return MOCK_SOUL
+      if (p.endsWith("IDENTITY.md")) return MOCK_IDENTITY
+      if (p.endsWith("LORE.md")) return MOCK_LORE
+      if (p.endsWith("TACIT.md")) return MOCK_TACIT_KNOWLEDGE
+      if (p.endsWith("ASPIRATIONS.md")) return MOCK_ASPIRATIONS
+      if (p.endsWith("secrets.json")) return JSON.stringify({})
+      return ""
+    })
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { runtimeInfoSection, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = runtimeInfoSection("cli")
+    expect(result).not.toContain("previously:")
+  })
+
+  it("always includes changelog pointer", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { runtimeInfoSection, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = runtimeInfoSection("cli")
+    expect(result).toContain("changelog available at:")
+    expect(result).toContain("changelog.json")
+  })
+
+  it("omits 'previously' line when previousRuntimeVersion equals current version", async () => {
+    // Use a fixed version string -- no need to read the real package.json
+    const currentVersion = "0.1.0-alpha.20"
+    const bundleMeta = {
+      runtimeVersion: currentVersion,
+      bundleSchemaVersion: 1,
+      lastUpdated: "2025-01-01T00:00:00Z",
+      previousRuntimeVersion: currentVersion,
+    }
+    vi.mocked(fs.readFileSync).mockImplementation((filePath: any, _encoding?: any) => {
+      const p = String(filePath)
+      if (p.endsWith("bundle-meta.json")) return JSON.stringify(bundleMeta)
+      if (p.endsWith("package.json")) return JSON.stringify({ version: currentVersion })
+      if (p.endsWith("SOUL.md")) return MOCK_SOUL
+      if (p.endsWith("IDENTITY.md")) return MOCK_IDENTITY
+      if (p.endsWith("LORE.md")) return MOCK_LORE
+      if (p.endsWith("TACIT.md")) return MOCK_TACIT_KNOWLEDGE
+      if (p.endsWith("ASPIRATIONS.md")) return MOCK_ASPIRATIONS
+      if (p.endsWith("secrets.json")) return JSON.stringify({})
+      return ""
+    })
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { runtimeInfoSection, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = runtimeInfoSection("cli")
+    expect(result).not.toContain("previously:")
+  })
 })
 
 describe("psyche loading", () => {
