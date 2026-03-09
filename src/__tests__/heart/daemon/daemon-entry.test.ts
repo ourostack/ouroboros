@@ -3,14 +3,25 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 
+const { listEnabledBundleAgentsMock } = vi.hoisted(() => ({
+  listEnabledBundleAgentsMock: vi.fn(() => [] as string[]),
+}))
+
+vi.mock("../../../heart/daemon/agent-discovery", () => ({
+  listEnabledBundleAgents: listEnabledBundleAgentsMock,
+}))
+
 describe("daemon entrypoint", () => {
   afterEach(() => {
+    listEnabledBundleAgentsMock.mockReset()
+    listEnabledBundleAgentsMock.mockReturnValue([])
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
   })
 
   it("boots daemon with default socket and wires signal handlers", async () => {
     vi.resetModules()
+    listEnabledBundleAgentsMock.mockReturnValue(["slugger", "ouroboros"])
 
     const start = vi.fn(async () => undefined)
     const stop = vi.fn(async () => undefined)
@@ -56,9 +67,6 @@ describe("daemon entrypoint", () => {
         startAutoStartSenses = vi.fn(async () => undefined)
         stopAll = vi.fn(async () => undefined)
       },
-    }))
-    vi.doMock("../../../heart/daemon/agent-discovery", () => ({
-      listEnabledBundleAgents: vi.fn(() => ["slugger", "ouroboros"]),
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
     vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
@@ -141,6 +149,7 @@ describe("daemon entrypoint", () => {
 
   it("discovers managed agents from ~/AgentBundles instead of hardcoding them", async () => {
     vi.resetModules()
+    listEnabledBundleAgentsMock.mockReturnValue(["Juno", "Northstar", "slugger"])
 
     const homeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-entry-home-"))
     const bundlesRoot = path.join(homeRoot, "AgentBundles")
@@ -202,9 +211,6 @@ describe("daemon entrypoint", () => {
       const actual = await vi.importActual<typeof import("os")>("os")
       return { ...actual, homedir: () => homeRoot }
     })
-    vi.doMock("../../../heart/daemon/agent-discovery", () => ({
-      listEnabledBundleAgents: vi.fn(() => ["Juno", "Northstar", "slugger"]),
-    }))
     vi.doMock("../../../heart/daemon/daemon", () => ({
       OuroDaemon: MockOuroDaemon,
     }))
