@@ -12,6 +12,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -24,6 +26,27 @@ jobs:
 
       - name: Run Coverage Gate
         run: npm run test:coverage
+
+      - name: Check version bump (PRs only)
+        if: github.event_name == 'pull_request'
+        run: |
+          if git diff --name-only "origin/${{ github.base_ref }}...HEAD" -- src/ | grep -q '^src/'; then
+            LOCAL=$(node -p "require('./package.json').version")
+            PUBLISHED=$(npm view "@ouro.bot/cli@${LOCAL}" version 2>/dev/null || echo "")
+            if [ "$LOCAL" = "$PUBLISHED" ]; then
+              echo ""
+              echo "::error::@ouro.bot/cli@${LOCAL} is already published on npm."
+              echo ""
+              echo "Bump the version before merging:"
+              echo "  npm version prerelease --preid=alpha"
+              echo "  git push"
+              echo ""
+              exit 1
+            fi
+            echo "@ouro.bot/cli@${LOCAL} is not yet published — ready to merge and publish"
+          else
+            echo "No src/ changes detected — version bump not required"
+          fi
 
       - name: Upload Coverage Gate Artifacts
         if: always()
@@ -54,27 +77,18 @@ jobs:
       - name: Install Dependencies
         run: npm ci
 
-      - name: Derive next CLI version from npm registry
-        run: |
-          CURRENT=$(npm view @ouro.bot/cli dist-tags.alpha 2>/dev/null || echo "0.1.0-alpha.0")
-          NEXT=$((${CURRENT##*.} + 1))
-          npm version "0.1.0-alpha.${NEXT}" --no-git-tag-version
-          echo "Publishing @ouro.bot/cli@0.1.0-alpha.${NEXT}"
-
       - name: Build
         run: npm run build
 
       - name: Publish @ouro.bot/cli
         run: npm publish --access public --provenance --tag alpha
 
-      - name: Derive next wrapper version from npm registry
-        working-directory: packages/ouro.bot
+      - name: Publish ouro.bot (if version is new)
         run: |
-          CURRENT=$(npm view ouro.bot dist-tags.alpha 2>/dev/null || echo "0.1.0-alpha.0")
-          NEXT=$((${CURRENT##*.} + 1))
-          npm version "0.1.0-alpha.${NEXT}" --no-git-tag-version
-          echo "Publishing ouro.bot@0.1.0-alpha.${NEXT}"
-
-      - name: Publish ouro.bot
-        working-directory: packages/ouro.bot
-        run: npm publish --access public --provenance --tag alpha
+          LOCAL=$(node -p "require('./packages/ouro.bot/package.json').version")
+          PUBLISHED=$(npm view "ouro.bot@${LOCAL}" version 2>/dev/null || echo "")
+          if [ "$LOCAL" = "$PUBLISHED" ]; then
+            echo "ouro.bot@${LOCAL} already published, skipping"
+          else
+            cd packages/ouro.bot && npm publish --access public --provenance --tag alpha
+          fi
