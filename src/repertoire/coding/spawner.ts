@@ -25,6 +25,7 @@ function buildCommandArgs(runner: CodingRunner, workdir: string): { command: str
       command: "claude",
       args: [
         "-p",
+        "--no-session-persistence",
         "--dangerously-skip-permissions",
         "--add-dir",
         workdir,

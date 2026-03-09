@@ -71,6 +71,8 @@ function isPidAlive(pid: number): boolean {
 function cloneSession(session: CodingSession): CodingSession {
   return {
     ...session,
+    stdoutTail: session.stdoutTail,
+    stderrTail: session.stderrTail,
     failure: session.failure
       ? {
           ...session.failure,
@@ -185,6 +187,8 @@ export class CodingSessionManager {
       scopeFile: normalizedRequest.scopeFile,
       stateFile: normalizedRequest.stateFile,
       status: "spawning",
+      stdoutTail: "",
+      stderrTail: "",
       pid: null,
       startedAt: now,
       lastActivityAt: now,
@@ -350,8 +354,10 @@ export class CodingSessionManager {
 
     if (stream === "stdout") {
       record.stdoutTail = appendTail(record.stdoutTail, text)
+      record.session.stdoutTail = record.stdoutTail
     } else {
       record.stderrTail = appendTail(record.stderrTail, text)
+      record.session.stderrTail = record.stderrTail
     }
 
     if (text.includes("status: NEEDS_REVIEW") || text.includes("❌ blocked")) {
@@ -426,6 +432,8 @@ export class CodingSessionManager {
     record.args = [...replacement.args]
     record.stdoutTail = ""
     record.stderrTail = ""
+    record.session.stdoutTail = ""
+    record.session.stderrTail = ""
 
     record.session.pid = replacement.process.pid ?? null
     record.session.restartCount += 1
@@ -510,6 +518,8 @@ export class CodingSessionManager {
         ...session,
         taskRef: session.taskRef ?? normalizedRequest.taskRef,
         failure: session.failure ?? null,
+        stdoutTail: session.stdoutTail ?? session.failure?.stdoutTail ?? "",
+        stderrTail: session.stderrTail ?? session.failure?.stderrTail ?? "",
       }
 
       if (typeof normalizedSession.pid === "number") {
@@ -537,8 +547,8 @@ export class CodingSessionManager {
         process: null,
         command: normalizedSession.failure?.command ?? "restored",
         args: normalizedSession.failure ? [...normalizedSession.failure.args] : [],
-        stdoutTail: normalizedSession.failure?.stdoutTail ?? "",
-        stderrTail: normalizedSession.failure?.stderrTail ?? "",
+        stdoutTail: normalizedSession.stdoutTail,
+        stderrTail: normalizedSession.stderrTail,
       })
 
       this.sequence = Math.max(this.sequence, extractSequence(normalizedSession.id))

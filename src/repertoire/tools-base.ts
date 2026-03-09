@@ -225,7 +225,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
       try {
         const result = spawnSync(
           "claude",
-          ["-p", "--dangerously-skip-permissions", "--add-dir", "."],
+          ["-p", "--no-session-persistence", "--dangerously-skip-permissions", "--add-dir", "."],
           {
             input: a.prompt,
             encoding: "utf-8",

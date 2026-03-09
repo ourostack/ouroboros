@@ -40,6 +40,8 @@ export interface CodingSession {
   scopeFile?: string
   stateFile?: string
   status: CodingSessionStatus
+  stdoutTail: string
+  stderrTail: string
   pid: number | null
   startedAt: string
   lastActivityAt: string
