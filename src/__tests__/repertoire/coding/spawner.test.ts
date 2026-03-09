@@ -46,12 +46,11 @@ describe("coding spawner", () => {
     expect(result.command).toBe("claude")
     expect(result.args).toEqual([
       "-p",
+      "--verbose",
       "--no-session-persistence",
       "--dangerously-skip-permissions",
       "--add-dir",
       "/Users/test/AgentWorkspaces/ouroboros",
-      "--input-format",
-      "stream-json",
       "--output-format",
       "stream-json",
     ])
@@ -66,12 +65,11 @@ describe("coding spawner", () => {
       "claude",
       [
         "-p",
+        "--verbose",
         "--no-session-persistence",
         "--dangerously-skip-permissions",
         "--add-dir",
         "/Users/test/AgentWorkspaces/ouroboros",
-        "--input-format",
-        "stream-json",
         "--output-format",
         "stream-json",
       ],

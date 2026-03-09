@@ -339,6 +339,7 @@ export function createBlueBubblesClient(
         throw new Error("BlueBubbles edit requires non-empty text.")
       }
 
+      const editTimeoutMs = Math.max(channelConfig.requestTimeoutMs, 120000)
       const url = buildBlueBubblesApiUrl(
         config.serverUrl,
         `/api/v1/message/${encodeURIComponent(messageGuid)}/edit`,
@@ -352,7 +353,7 @@ export function createBlueBubblesClient(
           backwardsCompatibilityMessage: params.backwardsCompatibilityMessage ?? `Edited to: ${text}`,
           partIndex: typeof params.partIndex === "number" ? params.partIndex : 0,
         }),
-        signal: AbortSignal.timeout(channelConfig.requestTimeoutMs),
+        signal: AbortSignal.timeout(editTimeoutMs),
       })
       if (!response.ok) {
         const errorText = await response.text().catch(() => "")

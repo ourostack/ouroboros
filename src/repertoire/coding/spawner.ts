@@ -25,12 +25,11 @@ function buildCommandArgs(runner: CodingRunner, workdir: string): { command: str
       command: "claude",
       args: [
         "-p",
+        "--verbose",
         "--no-session-persistence",
         "--dangerously-skip-permissions",
         "--add-dir",
         workdir,
-        "--input-format",
-        "stream-json",
         "--output-format",
         "stream-json",
       ],

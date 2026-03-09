@@ -123,10 +123,11 @@ function createBlueBubblesCallbacks(
         })
         return sent.messageGuid
       },
-      editStatus: async (messageGuid: string, text: string) => {
-        await client.editMessage({
-          messageGuid,
+      editStatus: async (_messageGuid: string, text: string) => {
+        await client.sendText({
+          chat,
           text,
+          replyToMessageGuid,
         })
       },
       setTyping: async (active: boolean) => {
