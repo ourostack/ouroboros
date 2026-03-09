@@ -33,6 +33,7 @@ export interface BlueBubblesAudioTranscriptionParams {
 
 interface BlueBubblesMediaDeps {
   fetchImpl?: typeof fetch
+  modelFetchImpl?: typeof fetch
   transcribeAudio?: (params: BlueBubblesAudioTranscriptionParams) => Promise<string>
   preferAudioInput?: boolean
 }
@@ -60,6 +61,12 @@ const AUDIO_INPUT_FORMAT_BY_EXTENSION: Record<string, "mp3" | "wav"> = {
   ".wav": "wav",
   ".mp3": "mp3",
 }
+const WHISPER_CPP_FORMULA = "whisper-cpp"
+const WHISPER_CPP_MODEL_NAME = "ggml-base.en.bin"
+const WHISPER_CPP_MODEL_URL = `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${WHISPER_CPP_MODEL_NAME}`
+const WHISPER_CPP_TOOLS_DIR = path.join(os.homedir(), ".agentstate", "tools", "whisper-cpp")
+const WHISPER_CPP_MODELS_DIR = path.join(WHISPER_CPP_TOOLS_DIR, "models")
+const WHISPER_CPP_MODEL_PATH = path.join(WHISPER_CPP_MODELS_DIR, WHISPER_CPP_MODEL_NAME)
 
 function buildBlueBubblesApiUrl(baseUrl: string, endpoint: string, password: string): string {
   const root = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`
@@ -112,43 +119,141 @@ function audioFormatForInput(contentType?: string, attachment?: BlueBubblesAttac
   return AUDIO_INPUT_FORMAT_BY_CONTENT_TYPE[contentType ?? ""] ?? AUDIO_INPUT_FORMAT_BY_EXTENSION[extension]
 }
 
-async function transcribeAudioWithWhisper(params: BlueBubblesAudioTranscriptionParams): Promise<string> {
+async function execFileText(file: string, args: string[], timeout: number): Promise<string> {
+  return await new Promise<string>((resolve, reject) => {
+    execFile(file, args, { timeout }, (error, stdout = "", stderr = "") => {
+      if (error) {
+        const detail = stderr.trim() || stdout.trim() || error.message
+        reject(new Error(detail))
+        return
+      }
+      resolve(stdout)
+    })
+  })
+}
+
+async function pathExists(targetPath: string): Promise<boolean> {
+  try {
+    await fs.access(targetPath)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function resolveWhisperCppBinary(timeoutMs: number): Promise<string> {
+  try {
+    const existing = (await execFileText("which", ["whisper-cli"], timeoutMs)).trim()
+    if (existing) {
+      return existing
+    }
+  } catch {
+    // fall through to managed install
+  }
+
+  let prefix = ""
+  try {
+    prefix = (await execFileText("brew", ["--prefix", WHISPER_CPP_FORMULA], timeoutMs)).trim()
+    if (prefix) {
+      const candidate = path.join(prefix, "bin", "whisper-cli")
+      if (await pathExists(candidate)) {
+        return candidate
+      }
+    }
+  } catch {
+    // fall through to managed install
+  }
+
+  await execFileText("brew", ["install", WHISPER_CPP_FORMULA], Math.max(timeoutMs, 300_000))
+  prefix = (await execFileText("brew", ["--prefix", WHISPER_CPP_FORMULA], timeoutMs)).trim()
+  if (!prefix) {
+    throw new Error("whisper.cpp installed but brew did not return a usable prefix")
+  }
+  const candidate = path.join(prefix, "bin", "whisper-cli")
+  if (!await pathExists(candidate)) {
+    throw new Error("whisper.cpp installed but whisper-cli binary is missing")
+  }
+  return candidate
+}
+
+async function ensureWhisperCppModel(timeoutMs: number, fetchImpl: typeof fetch): Promise<string> {
+  try {
+    await fs.access(WHISPER_CPP_MODEL_PATH)
+    return WHISPER_CPP_MODEL_PATH
+  } catch {
+    await fs.mkdir(WHISPER_CPP_MODELS_DIR, { recursive: true })
+    const response = await fetchImpl(WHISPER_CPP_MODEL_URL, {
+      method: "GET",
+      signal: AbortSignal.timeout(Math.max(timeoutMs, 300_000)),
+    })
+    if (!response.ok) {
+      throw new Error(`failed to download whisper.cpp model: HTTP ${response.status}`)
+    }
+    await fs.writeFile(WHISPER_CPP_MODEL_PATH, Buffer.from(await response.arrayBuffer()))
+    return WHISPER_CPP_MODEL_PATH
+  }
+}
+
+async function convertAudioForWhisperCpp(sourcePath: string, outputPath: string, timeoutMs: number): Promise<void> {
+  try {
+    await execFileText(
+      "ffmpeg",
+      ["-y", "-i", sourcePath, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", outputPath],
+      Math.max(timeoutMs, 120_000),
+    )
+    return
+  } catch (ffmpegError) {
+    try {
+      await execFileText(
+        "afconvert",
+        ["-f", "WAVE", "-d", "LEI16@16000", "-c", "1", sourcePath, outputPath],
+        Math.max(timeoutMs, 120_000),
+      )
+      return
+    } catch (afconvertError) {
+      const ffmpegReason = (ffmpegError as Error).message
+      const afconvertReason = (afconvertError as Error).message
+      throw new Error(`failed to prepare audio for whisper.cpp (ffmpeg: ${ffmpegReason}; afconvert: ${afconvertReason})`)
+    }
+  }
+}
+
+async function transcribeAudioWithWhisperCpp(
+  params: BlueBubblesAudioTranscriptionParams,
+  modelFetchImpl: typeof fetch = fetch,
+): Promise<string> {
   const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "ouro-bb-audio-"))
   const filename = sanitizeFilename(describeAttachment(params.attachment))
   const extension = fileExtensionForAudio(params.attachment, params.contentType)
   const audioPath = path.join(workDir, `${path.parse(filename).name}${extension}`)
+  const wavPath = path.join(workDir, `${path.parse(audioPath).name}.wav`)
+  const outputBase = path.join(workDir, path.parse(audioPath).name)
 
   try {
     await fs.writeFile(audioPath, params.buffer)
-    await new Promise<void>((resolve, reject) => {
-      execFile(
-        "whisper",
-        [
-          audioPath,
-          "--model",
-          "turbo",
-          "--output_dir",
-          workDir,
-          "--output_format",
-          "json",
-          "--verbose",
-          "False",
-        ],
-        { timeout: Math.max(params.timeoutMs, 120000) },
-        (error) => {
-          if (error) {
-            reject(error)
-            return
-          }
-          resolve()
-        },
-      )
-    })
+    const whisperCliPath = await resolveWhisperCppBinary(params.timeoutMs)
+    const modelPath = await ensureWhisperCppModel(params.timeoutMs, modelFetchImpl)
+    await convertAudioForWhisperCpp(audioPath, wavPath, params.timeoutMs)
+    await execFileText(
+      whisperCliPath,
+      ["-m", modelPath, "-f", wavPath, "-oj", "-of", outputBase],
+      Math.max(params.timeoutMs, 120_000),
+    )
 
-    const transcriptPath = path.join(workDir, `${path.parse(audioPath).name}.json`)
+    const transcriptPath = `${outputBase}.json`
     const raw = await fs.readFile(transcriptPath, "utf8")
-    const parsed = JSON.parse(raw) as { text?: unknown }
-    return typeof parsed.text === "string" ? parsed.text.trim() : ""
+    const parsed = JSON.parse(raw) as { text?: unknown; transcription?: Array<{ text?: unknown }> }
+    if (typeof parsed.text === "string") {
+      return parsed.text.trim()
+    }
+    if (Array.isArray(parsed.transcription)) {
+      return parsed.transcription
+        .map((entry) => (typeof entry?.text === "string" ? entry.text.trim() : ""))
+        .filter(Boolean)
+        .join(" ")
+        .trim()
+    }
+    return ""
   } finally {
     await fs.rm(workDir, { recursive: true, force: true }).catch(() => undefined)
   }
@@ -208,7 +313,9 @@ export async function hydrateBlueBubblesAttachments(
     },
   })
   const fetchImpl = deps.fetchImpl ?? fetch
-  const transcribeAudio = deps.transcribeAudio ?? transcribeAudioWithWhisper
+  const modelFetchImpl = deps.modelFetchImpl ?? fetch
+  const transcribeAudio = deps.transcribeAudio ?? ((params: BlueBubblesAudioTranscriptionParams) =>
+    transcribeAudioWithWhisperCpp(params, modelFetchImpl))
   const preferAudioInput = deps.preferAudioInput ?? false
   const inputParts: OpenAI.Chat.ChatCompletionContentPart[] = []
   const transcriptAdditions: string[] = []

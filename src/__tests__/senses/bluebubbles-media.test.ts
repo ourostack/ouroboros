@@ -586,7 +586,7 @@ describe("BlueBubbles media hydration", () => {
       callback(null)
     })
     const mkdtemp = vi.fn().mockResolvedValue("/tmp/ouro-bb-audio-123")
-    const access = vi.fn().mockRejectedValue(new Error("missing"))
+    const access = vi.fn().mockResolvedValueOnce(undefined).mockRejectedValue(new Error("missing"))
     const mkdir = vi.fn().mockResolvedValue(undefined)
     const writeFile = vi.fn().mockResolvedValue(undefined)
     const readFile = vi.fn().mockResolvedValue(JSON.stringify({ text: " transcribed locally " }))
@@ -595,7 +595,13 @@ describe("BlueBubbles media hydration", () => {
     vi.doMock("node:child_process", () => ({ execFile }))
     vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile, rm }))
     vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
-    global.fetch = vi.fn().mockResolvedValue(new Response(Buffer.from("model-bytes"), { status: 200 })) as typeof fetch
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(Buffer.from("audio-bytes"), {
+        status: 200,
+        headers: { "content-type": "audio/mp4" },
+      }),
+    )
+    const modelFetchImpl = vi.fn().mockResolvedValue(new Response(Buffer.from("model-bytes"), { status: 200 })) as typeof fetch
 
     const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
     const result = await hydrateBlueBubblesAttachments(
@@ -616,15 +622,26 @@ describe("BlueBubbles media hydration", () => {
         webhookPath: "/bluebubbles-webhook",
         requestTimeoutMs: 30000,
       },
+      {
+        fetchImpl,
+        modelFetchImpl,
+      },
     )
 
+    expect(fetchImpl).toHaveBeenCalledOnce()
+    expect(modelFetchImpl).toHaveBeenCalledOnce()
     expect(execFile).toHaveBeenCalledWith("brew", ["install", "whisper-cpp"], expect.any(Object), expect.any(Function))
     expect(mkdir).toHaveBeenCalledWith("/Users/test/.agentstate/tools/whisper-cpp/models", { recursive: true })
-    expect(writeFile).toHaveBeenCalledWith(
+    expect(writeFile).toHaveBeenNthCalledWith(
+      1,
+      "/tmp/ouro-bb-audio-123/Voice Note.m4a",
+      Buffer.from("audio-bytes"),
+    )
+    expect(writeFile).toHaveBeenNthCalledWith(
+      2,
       "/Users/test/.agentstate/tools/whisper-cpp/models/ggml-base.en.bin",
       Buffer.from("model-bytes"),
     )
-    expect(writeFile).toHaveBeenCalledWith("/tmp/ouro-bb-audio-123/Voice Note.m4a", Buffer.from("audio-bytes"))
     expect(execFile).toHaveBeenCalledWith(
       "ffmpeg",
       expect.arrayContaining(["-i", "/tmp/ouro-bb-audio-123/Voice Note.m4a", "/tmp/ouro-bb-audio-123/Voice Note.wav"]),
@@ -651,19 +668,271 @@ describe("BlueBubbles media hydration", () => {
     })
   })
 
-  it("ignores whisper temp cleanup failures after a successful local transcription", async () => {
-    const execFile = vi.fn((_: string, __: string[], ___: Record<string, unknown>, callback: (error: Error | null) => void) =>
-      callback(null),
+  it("uses an already-installed whisper.cpp brew prefix without reinstalling", async () => {
+    const execFile = vi.fn((command: string, args: string[], _: Record<string, unknown>, callback: (error: Error | null, stdout?: string) => void) => {
+      if (command === "which") {
+        callback(new Error("not found"))
+        return
+      }
+      if (command === "brew" && args[0] === "--prefix") {
+        callback(null, "/opt/homebrew/opt/whisper-cpp\n")
+        return
+      }
+      callback(null)
+    })
+    const access = vi.fn().mockResolvedValue(undefined)
+    const mkdir = vi.fn().mockResolvedValue(undefined)
+    const mkdtemp = vi.fn().mockResolvedValue("/tmp/ouro-bb-audio-installed")
+    const writeFile = vi.fn().mockResolvedValue(undefined)
+    const readFile = vi.fn().mockResolvedValue(JSON.stringify({ text: " preinstalled transcript " }))
+    const rm = vi.fn().mockResolvedValue(undefined)
+
+    vi.doMock("node:child_process", () => ({ execFile }))
+    vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile, rm }))
+    vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
+
+    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const result = await hydrateBlueBubblesAttachments(
+      [{ guid: "voice-guid", mimeType: "audio/mp4", transferName: "Voice Note.m4a" }],
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+      {
+        fetchImpl: vi.fn().mockResolvedValue(
+          new Response(Buffer.from("audio-bytes"), {
+            status: 200,
+            headers: { "content-type": "audio/mp4" },
+          }),
+        ),
+      },
     )
+
+    expect(execFile).not.toHaveBeenCalledWith("brew", ["install", "whisper-cpp"], expect.any(Object), expect.any(Function))
+    expect(execFile).toHaveBeenCalledWith(
+      "/opt/homebrew/opt/whisper-cpp/bin/whisper-cli",
+      expect.arrayContaining(["-m", "/Users/test/.agentstate/tools/whisper-cpp/models/ggml-base.en.bin"]),
+      expect.any(Object),
+      expect.any(Function),
+    )
+    expect(result).toEqual({
+      inputParts: [],
+      transcriptAdditions: ["voice note transcript: preinstalled transcript"],
+      notices: [],
+    })
+  })
+
+  it("reads whisper.cpp transcript text from the transcription array json shape", async () => {
+    const execFile = vi.fn((command: string, _: string[], ___: Record<string, unknown>, callback: (error: Error | null, stdout?: string) => void) => {
+      if (command === "which") {
+        callback(null, "/opt/homebrew/bin/whisper-cli\n")
+        return
+      }
+      callback(null)
+    })
+    const access = vi.fn().mockResolvedValue(undefined)
+    const mkdir = vi.fn().mockResolvedValue(undefined)
+    const mkdtemp = vi.fn().mockResolvedValue("/tmp/ouro-bb-audio-transcription-array")
+    const writeFile = vi.fn().mockResolvedValue(undefined)
+    const readFile = vi.fn().mockResolvedValue(
+      JSON.stringify({
+        transcription: [
+          { text: " Hello from Managed Whisper Smoke. " },
+          { text: 42 },
+          { text: " Second sentence. " },
+        ],
+      }),
+    )
+    const rm = vi.fn().mockResolvedValue(undefined)
+
+    vi.doMock("node:child_process", () => ({ execFile }))
+    vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile, rm }))
+    vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
+
+    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const result = await hydrateBlueBubblesAttachments(
+      [{ guid: "voice-guid", mimeType: "audio/mp4", transferName: "Voice Note.m4a" }],
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+      {
+        fetchImpl: vi.fn().mockResolvedValue(
+          new Response(Buffer.from("audio-bytes"), {
+            status: 200,
+            headers: { "content-type": "audio/mp4" },
+          }),
+        ),
+      },
+    )
+
+    expect(result).toEqual({
+      inputParts: [],
+      transcriptAdditions: ["voice note transcript: Hello from Managed Whisper Smoke. Second sentence."],
+      notices: [],
+    })
+  })
+
+  it("installs whisper.cpp when brew reports a prefix but the binary is still missing", async () => {
+    let prefixChecks = 0
+    const execFile = vi.fn((command: string, args: string[], _: Record<string, unknown>, callback: (error: Error | null, stdout?: string) => void) => {
+      if (command === "which") {
+        callback(new Error("not found"))
+        return
+      }
+      if (command === "brew" && args[0] === "--prefix") {
+        prefixChecks += 1
+        if (prefixChecks === 1) {
+          callback(null, "/opt/homebrew/opt/whisper-cpp\n")
+          return
+        }
+        callback(null, "/opt/homebrew/Cellar/whisper-cpp/1.8.3\n")
+        return
+      }
+      callback(null)
+    })
+    const access = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("missing binary"))
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValue(undefined)
+    const mkdir = vi.fn().mockResolvedValue(undefined)
+    const mkdtemp = vi.fn().mockResolvedValue("/tmp/ouro-bb-audio-prefix-missing")
+    const writeFile = vi.fn().mockResolvedValue(undefined)
+    const readFile = vi.fn().mockResolvedValue(JSON.stringify({ text: " repaired install transcript " }))
+    const rm = vi.fn().mockResolvedValue(undefined)
+
+    vi.doMock("node:child_process", () => ({ execFile }))
+    vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile, rm }))
+    vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
+
+    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const result = await hydrateBlueBubblesAttachments(
+      [{ guid: "voice-guid", mimeType: "audio/mp4", transferName: "Voice Note.m4a" }],
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+      {
+        fetchImpl: vi.fn().mockResolvedValue(
+          new Response(Buffer.from("audio-bytes"), {
+            status: 200,
+            headers: { "content-type": "audio/mp4" },
+          }),
+        ),
+      },
+    )
+
+    expect(execFile).toHaveBeenCalledWith("brew", ["install", "whisper-cpp"], expect.any(Object), expect.any(Function))
+    expect(execFile).toHaveBeenCalledWith(
+      "/opt/homebrew/Cellar/whisper-cpp/1.8.3/bin/whisper-cli",
+      expect.any(Array),
+      expect.any(Object),
+      expect.any(Function),
+    )
+    expect(result).toEqual({
+      inputParts: [],
+      transcriptAdditions: ["voice note transcript: repaired install transcript"],
+      notices: [],
+    })
+  })
+
+  it("installs whisper.cpp when brew returns an empty prefix before install", async () => {
+    let prefixChecks = 0
+    const execFile = vi.fn((command: string, args: string[], _: Record<string, unknown>, callback: (error: Error | null, stdout?: string) => void) => {
+      if (command === "which") {
+        callback(new Error("not found"))
+        return
+      }
+      if (command === "brew" && args[0] === "--prefix") {
+        prefixChecks += 1
+        if (prefixChecks === 1) {
+          callback(null, "\n")
+          return
+        }
+        callback(null, "/opt/homebrew/Cellar/whisper-cpp/1.8.3\n")
+        return
+      }
+      callback(null)
+    })
+    const access = vi.fn().mockResolvedValue(undefined)
+    const mkdir = vi.fn().mockResolvedValue(undefined)
+    const mkdtemp = vi.fn().mockResolvedValue("/tmp/ouro-bb-audio-empty-prefix")
+    const writeFile = vi.fn().mockResolvedValue(undefined)
+    const readFile = vi.fn().mockResolvedValue(JSON.stringify({ text: " empty prefix transcript " }))
+    const rm = vi.fn().mockResolvedValue(undefined)
+
+    vi.doMock("node:child_process", () => ({ execFile }))
+    vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile, rm }))
+    vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
+
+    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const result = await hydrateBlueBubblesAttachments(
+      [{ guid: "voice-guid", mimeType: "audio/mp4", transferName: "Voice Note.m4a" }],
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+      {
+        fetchImpl: vi.fn().mockResolvedValue(
+          new Response(Buffer.from("audio-bytes"), {
+            status: 200,
+            headers: { "content-type": "audio/mp4" },
+          }),
+        ),
+      },
+    )
+
+    expect(execFile).toHaveBeenCalledWith("brew", ["install", "whisper-cpp"], expect.any(Object), expect.any(Function))
+    expect(result).toEqual({
+      inputParts: [],
+      transcriptAdditions: ["voice note transcript: empty prefix transcript"],
+      notices: [],
+    })
+  })
+
+  it("ignores whisper temp cleanup failures after a successful local transcription", async () => {
+    const execFile = vi.fn((command: string, _: string[], ___: Record<string, unknown>, callback: (error: Error | null, stdout?: string) => void) => {
+      if (command === "which") {
+        callback(null, "/opt/homebrew/opt/whisper-cpp/bin/whisper-cli\n")
+        return
+      }
+      callback(null)
+    })
+    const access = vi.fn().mockResolvedValue(undefined)
+    const mkdir = vi.fn().mockResolvedValue(undefined)
     const mkdtemp = vi.fn().mockResolvedValue("/tmp/ouro-bb-audio-cleanup")
     const writeFile = vi.fn().mockResolvedValue(undefined)
     const readFile = vi.fn().mockResolvedValue(JSON.stringify({ text: " cleanup safe " }))
     const rm = vi.fn().mockRejectedValue(new Error("cleanup failed"))
 
     vi.doMock("node:child_process", () => ({ execFile }))
-    vi.doMock("node:fs/promises", () => ({ mkdtemp, writeFile, readFile, rm }))
-    vi.doMock("node:os", () => ({ tmpdir: () => "/tmp" }))
-    global.fetch = vi.fn().mockResolvedValue(new Response(Buffer.from("audio-bytes"), { status: 200 })) as typeof fetch
+    vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile, rm }))
+    vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
 
     const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
     const result = await hydrateBlueBubblesAttachments(
@@ -684,6 +953,14 @@ describe("BlueBubbles media hydration", () => {
         webhookPath: "/bluebubbles-webhook",
         requestTimeoutMs: 30000,
       },
+      {
+        fetchImpl: vi.fn().mockResolvedValue(
+          new Response(Buffer.from("audio-bytes"), {
+            status: 200,
+            headers: { "content-type": "audio/mp3" },
+          }),
+        ),
+      },
     )
 
     expect(rm).toHaveBeenCalledWith("/tmp/ouro-bb-audio-cleanup", { recursive: true, force: true })
@@ -695,17 +972,26 @@ describe("BlueBubbles media hydration", () => {
   })
 
   it("surfaces whisper fallback failures and still cleans up temp files", async () => {
-    const execFile = vi.fn((_: string, __: string[], ___: Record<string, unknown>, callback: (error: Error | null) => void) =>
-      callback(new Error("whisper failed")),
-    )
+    const execFile = vi.fn((command: string, _: string[], ___: Record<string, unknown>, callback: (error: Error | null, stdout?: string) => void) => {
+      if (command === "which") {
+        callback(null, "/opt/homebrew/opt/whisper-cpp/bin/whisper-cli\n")
+        return
+      }
+      if (command === "/opt/homebrew/opt/whisper-cpp/bin/whisper-cli") {
+        callback(new Error("whisper failed"))
+        return
+      }
+      callback(null)
+    })
+    const access = vi.fn().mockResolvedValue(undefined)
+    const mkdir = vi.fn().mockResolvedValue(undefined)
     const mkdtemp = vi.fn().mockResolvedValue("/tmp/ouro-bb-audio-456")
     const writeFile = vi.fn().mockResolvedValue(undefined)
     const rm = vi.fn().mockResolvedValue(undefined)
 
     vi.doMock("node:child_process", () => ({ execFile }))
-    vi.doMock("node:fs/promises", () => ({ mkdtemp, writeFile, readFile: vi.fn(), rm }))
-    vi.doMock("node:os", () => ({ tmpdir: () => "/tmp" }))
-    global.fetch = vi.fn().mockResolvedValue(new Response(Buffer.from("audio-bytes"), { status: 200 })) as typeof fetch
+    vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile: vi.fn(), rm }))
+    vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
 
     const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
     const result = await hydrateBlueBubblesAttachments(
@@ -725,6 +1011,14 @@ describe("BlueBubbles media hydration", () => {
         webhookPath: "/bluebubbles-webhook",
         requestTimeoutMs: 30000,
       },
+      {
+        fetchImpl: vi.fn().mockResolvedValue(
+          new Response(Buffer.from("audio-bytes"), {
+            status: 200,
+            headers: { "content-type": "audio/ogg" },
+          }),
+        ),
+      },
     )
 
     expect(writeFile).toHaveBeenCalledWith("/tmp/ouro-bb-audio-456/voice-guid.audio", Buffer.from("audio-bytes"))
@@ -737,18 +1031,23 @@ describe("BlueBubbles media hydration", () => {
   })
 
   it("preserves the original audio file extension for whisper fallback temp files", async () => {
-    const execFile = vi.fn((_: string, __: string[], ___: Record<string, unknown>, callback: (error: Error | null) => void) =>
-      callback(null),
-    )
+    const execFile = vi.fn((command: string, _: string[], ___: Record<string, unknown>, callback: (error: Error | null, stdout?: string) => void) => {
+      if (command === "which") {
+        callback(null, "/opt/homebrew/opt/whisper-cpp/bin/whisper-cli\n")
+        return
+      }
+      callback(null)
+    })
+    const access = vi.fn().mockResolvedValue(undefined)
+    const mkdir = vi.fn().mockResolvedValue(undefined)
     const mkdtemp = vi.fn().mockResolvedValue("/tmp/ouro-bb-audio-789")
     const writeFile = vi.fn().mockResolvedValue(undefined)
     const readFile = vi.fn().mockResolvedValue(JSON.stringify({ text: " caf transcript " }))
     const rm = vi.fn().mockResolvedValue(undefined)
 
     vi.doMock("node:child_process", () => ({ execFile }))
-    vi.doMock("node:fs/promises", () => ({ mkdtemp, writeFile, readFile, rm }))
-    vi.doMock("node:os", () => ({ tmpdir: () => "/tmp" }))
-    global.fetch = vi.fn().mockResolvedValue(new Response(Buffer.from("audio-bytes"), { status: 200 })) as typeof fetch
+    vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile, rm }))
+    vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
 
     const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
     const result = await hydrateBlueBubblesAttachments(
@@ -769,6 +1068,14 @@ describe("BlueBubbles media hydration", () => {
         webhookPath: "/bluebubbles-webhook",
         requestTimeoutMs: 30000,
       },
+      {
+        fetchImpl: vi.fn().mockResolvedValue(
+          new Response(Buffer.from("audio-bytes"), {
+            status: 200,
+            headers: { "content-type": "audio/x-caf" },
+          }),
+        ),
+      },
     )
 
     expect(writeFile).toHaveBeenCalledWith("/tmp/ouro-bb-audio-789/Audio Message.caf", Buffer.from("audio-bytes"))
@@ -776,6 +1083,288 @@ describe("BlueBubbles media hydration", () => {
       inputParts: [],
       transcriptAdditions: ["voice note transcript: caf transcript"],
       notices: [],
+    })
+  })
+
+  it("returns an explicit notice when whisper.cpp install completes without a usable brew prefix", async () => {
+    let prefixChecks = 0
+    const execFile = vi.fn((command: string, args: string[], _: Record<string, unknown>, callback: (error: Error | null, stdout?: string) => void) => {
+      if (command === "which") {
+        callback(new Error("not found"))
+        return
+      }
+      if (command === "brew" && args[0] === "--prefix") {
+        prefixChecks += 1
+        if (prefixChecks === 1) {
+          callback(new Error("not installed"))
+          return
+        }
+        callback(null, "\n")
+        return
+      }
+      callback(null)
+    })
+    const access = vi.fn().mockResolvedValue(undefined)
+    const mkdir = vi.fn().mockResolvedValue(undefined)
+    const mkdtemp = vi.fn().mockResolvedValue("/tmp/ouro-bb-audio-no-prefix")
+    const writeFile = vi.fn().mockResolvedValue(undefined)
+    const rm = vi.fn().mockResolvedValue(undefined)
+
+    vi.doMock("node:child_process", () => ({ execFile }))
+    vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile: vi.fn(), rm }))
+    vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
+
+    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const result = await hydrateBlueBubblesAttachments(
+      [{ guid: "voice-guid", mimeType: "audio/mp4", transferName: "Voice Note.m4a" }],
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+      {
+        fetchImpl: vi.fn().mockResolvedValue(
+          new Response(Buffer.from("audio-bytes"), {
+            status: 200,
+            headers: { "content-type": "audio/mp4" },
+          }),
+        ),
+      },
+    )
+
+    expect(result).toEqual({
+      inputParts: [],
+      transcriptAdditions: [],
+      notices: ["attachment hydration failed for Voice Note.m4a: whisper.cpp installed but brew did not return a usable prefix"],
+    })
+  })
+
+  it("returns an explicit notice when whisper.cpp installs but whisper-cli is still missing", async () => {
+    let prefixChecks = 0
+    const execFile = vi.fn((command: string, args: string[], _: Record<string, unknown>, callback: (error: Error | null, stdout?: string) => void) => {
+      if (command === "which") {
+        callback(new Error("not found"))
+        return
+      }
+      if (command === "brew" && args[0] === "--prefix") {
+        prefixChecks += 1
+        if (prefixChecks === 1) {
+          callback(new Error("not installed"))
+          return
+        }
+        callback(null, "/opt/homebrew/opt/whisper-cpp\n")
+        return
+      }
+      callback(null)
+    })
+    const access = vi.fn().mockRejectedValue(new Error("missing"))
+    const mkdir = vi.fn().mockResolvedValue(undefined)
+    const mkdtemp = vi.fn().mockResolvedValue("/tmp/ouro-bb-audio-missing-binary")
+    const writeFile = vi.fn().mockResolvedValue(undefined)
+    const rm = vi.fn().mockResolvedValue(undefined)
+
+    vi.doMock("node:child_process", () => ({ execFile }))
+    vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile: vi.fn(), rm }))
+    vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
+
+    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const result = await hydrateBlueBubblesAttachments(
+      [{ guid: "voice-guid", mimeType: "audio/mp4", transferName: "Voice Note.m4a" }],
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+      {
+        fetchImpl: vi.fn().mockResolvedValue(
+          new Response(Buffer.from("audio-bytes"), {
+            status: 200,
+            headers: { "content-type": "audio/mp4" },
+          }),
+        ),
+      },
+    )
+
+    expect(result).toEqual({
+      inputParts: [],
+      transcriptAdditions: [],
+      notices: ["attachment hydration failed for Voice Note.m4a: whisper.cpp installed but whisper-cli binary is missing"],
+    })
+  })
+
+  it("returns an explicit notice when the managed whisper.cpp model download fails", async () => {
+    const execFile = vi.fn((command: string, _: string[], ___: Record<string, unknown>, callback: (error: Error | null, stdout?: string) => void) => {
+      if (command === "which") {
+        callback(null, "/opt/homebrew/opt/whisper-cpp/bin/whisper-cli\n")
+        return
+      }
+      callback(null)
+    })
+    const access = vi.fn().mockRejectedValue(new Error("missing"))
+    const mkdir = vi.fn().mockResolvedValue(undefined)
+    const mkdtemp = vi.fn().mockResolvedValue("/tmp/ouro-bb-audio-model-fail")
+    const writeFile = vi.fn().mockResolvedValue(undefined)
+    const rm = vi.fn().mockResolvedValue(undefined)
+
+    vi.doMock("node:child_process", () => ({ execFile }))
+    vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile: vi.fn(), rm }))
+    vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
+
+    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const result = await hydrateBlueBubblesAttachments(
+      [{ guid: "voice-guid", mimeType: "audio/mp4", transferName: "Voice Note.m4a" }],
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+      {
+        fetchImpl: vi.fn().mockResolvedValue(
+          new Response(Buffer.from("audio-bytes"), {
+            status: 200,
+            headers: { "content-type": "audio/mp4" },
+          }),
+        ),
+        modelFetchImpl: vi.fn().mockResolvedValue(new Response("nope", { status: 503 })),
+      },
+    )
+
+    expect(result).toEqual({
+      inputParts: [],
+      transcriptAdditions: [],
+      notices: ["attachment hydration failed for Voice Note.m4a: failed to download whisper.cpp model: HTTP 503"],
+    })
+  })
+
+  it("falls back to afconvert when ffmpeg cannot prepare the voice note", async () => {
+    const execFile = vi.fn((command: string, _: string[], ___: Record<string, unknown>, callback: (error: Error | null, stdout?: string) => void) => {
+      if (command === "which") {
+        callback(null, "/opt/homebrew/opt/whisper-cpp/bin/whisper-cli\n")
+        return
+      }
+      if (command === "ffmpeg") {
+        callback(new Error("ffmpeg failed"))
+        return
+      }
+      callback(null)
+    })
+    const access = vi.fn().mockResolvedValue(undefined)
+    const mkdir = vi.fn().mockResolvedValue(undefined)
+    const mkdtemp = vi.fn().mockResolvedValue("/tmp/ouro-bb-audio-afconvert")
+    const writeFile = vi.fn().mockResolvedValue(undefined)
+    const readFile = vi.fn().mockResolvedValue(JSON.stringify({ text: " afconvert transcript " }))
+    const rm = vi.fn().mockResolvedValue(undefined)
+
+    vi.doMock("node:child_process", () => ({ execFile }))
+    vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile, rm }))
+    vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
+
+    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const result = await hydrateBlueBubblesAttachments(
+      [{ guid: "voice-guid", mimeType: "audio/mp4", transferName: "Voice Note.m4a" }],
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+      {
+        fetchImpl: vi.fn().mockResolvedValue(
+          new Response(Buffer.from("audio-bytes"), {
+            status: 200,
+            headers: { "content-type": "audio/mp4" },
+          }),
+        ),
+      },
+    )
+
+    expect(execFile).toHaveBeenCalledWith(
+      "afconvert",
+      expect.arrayContaining(["-f", "WAVE", "-d", "LEI16@16000", "-c", "1", "/tmp/ouro-bb-audio-afconvert/Voice Note.m4a"]),
+      expect.any(Object),
+      expect.any(Function),
+    )
+    expect(result).toEqual({
+      inputParts: [],
+      transcriptAdditions: ["voice note transcript: afconvert transcript"],
+      notices: [],
+    })
+  })
+
+  it("surfaces both ffmpeg and afconvert failures when audio preparation cannot complete", async () => {
+    const execFile = vi.fn((command: string, _: string[], ___: Record<string, unknown>, callback: (error: Error | null, stdout?: string) => void) => {
+      if (command === "which") {
+        callback(null, "/opt/homebrew/opt/whisper-cpp/bin/whisper-cli\n")
+        return
+      }
+      if (command === "ffmpeg") {
+        callback(new Error("ffmpeg failed"))
+        return
+      }
+      if (command === "afconvert") {
+        callback(new Error("afconvert failed"))
+        return
+      }
+      callback(null)
+    })
+    const access = vi.fn().mockResolvedValue(undefined)
+    const mkdir = vi.fn().mockResolvedValue(undefined)
+    const mkdtemp = vi.fn().mockResolvedValue("/tmp/ouro-bb-audio-convert-fail")
+    const writeFile = vi.fn().mockResolvedValue(undefined)
+    const rm = vi.fn().mockResolvedValue(undefined)
+
+    vi.doMock("node:child_process", () => ({ execFile }))
+    vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile: vi.fn(), rm }))
+    vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
+
+    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const result = await hydrateBlueBubblesAttachments(
+      [{ guid: "voice-guid", mimeType: "audio/mp4", transferName: "Voice Note.m4a" }],
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+      {
+        fetchImpl: vi.fn().mockResolvedValue(
+          new Response(Buffer.from("audio-bytes"), {
+            status: 200,
+            headers: { "content-type": "audio/mp4" },
+          }),
+        ),
+      },
+    )
+
+    expect(result).toEqual({
+      inputParts: [],
+      transcriptAdditions: [],
+      notices: [
+        "attachment hydration failed for Voice Note.m4a: failed to prepare audio for whisper.cpp (ffmpeg: ffmpeg failed; afconvert: afconvert failed)",
+      ],
     })
   })
 
@@ -846,18 +1435,23 @@ describe("BlueBubbles media hydration", () => {
   })
 
   it("returns an empty transcript when whisper json does not include text", async () => {
-    const execFile = vi.fn((_: string, __: string[], ___: Record<string, unknown>, callback: (error: Error | null) => void) =>
-      callback(null),
-    )
+    const execFile = vi.fn((command: string, _: string[], ___: Record<string, unknown>, callback: (error: Error | null, stdout?: string) => void) => {
+      if (command === "which") {
+        callback(null, "/opt/homebrew/opt/whisper-cpp/bin/whisper-cli\n")
+        return
+      }
+      callback(null)
+    })
+    const access = vi.fn().mockResolvedValue(undefined)
+    const mkdir = vi.fn().mockResolvedValue(undefined)
     const mkdtemp = vi.fn().mockResolvedValue("/tmp/ouro-bb-audio-999")
     const writeFile = vi.fn().mockResolvedValue(undefined)
     const readFile = vi.fn().mockResolvedValue(JSON.stringify({ text: 42 }))
     const rm = vi.fn().mockResolvedValue(undefined)
 
     vi.doMock("node:child_process", () => ({ execFile }))
-    vi.doMock("node:fs/promises", () => ({ mkdtemp, writeFile, readFile, rm }))
-    vi.doMock("node:os", () => ({ tmpdir: () => "/tmp" }))
-    global.fetch = vi.fn().mockResolvedValue(new Response(Buffer.from("audio-bytes"), { status: 200 })) as typeof fetch
+    vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile, rm }))
+    vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
 
     const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
     const result = await hydrateBlueBubblesAttachments(
@@ -877,6 +1471,14 @@ describe("BlueBubbles media hydration", () => {
         port: 18790,
         webhookPath: "/bluebubbles-webhook",
         requestTimeoutMs: 30000,
+      },
+      {
+        fetchImpl: vi.fn().mockResolvedValue(
+          new Response(Buffer.from("audio-bytes"), {
+            status: 200,
+            headers: { "content-type": "audio/mp4" },
+          }),
+        ),
       },
     )
 

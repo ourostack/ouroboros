@@ -1360,10 +1360,10 @@ describe("BlueBubbles client", () => {
           "[audio attachment: Audio Message.mp3]\n[voice note transcript: hello from audio]",
       }),
     )
-    expect(hydrateBlueBubblesAttachments).toHaveBeenCalledWith(
-      [{ guid: "audio-1", mimeType: "audio/mp3", transferName: "Audio Message.mp3" }],
-      expect.any(Object),
-      expect.any(Object),
+    expect(hydrateBlueBubblesAttachments.mock.calls[0]?.[0]).toEqual([
+      expect.objectContaining({ guid: "audio-1", mimeType: "audio/mp3", transferName: "Audio Message.mp3" }),
+    ])
+    expect(hydrateBlueBubblesAttachments.mock.calls[0]?.[3]).toEqual(
       expect.objectContaining({ preferAudioInput: false }),
     )
   })
@@ -1459,6 +1459,100 @@ describe("BlueBubbles client", () => {
         kind: "message",
         requiresRepair: false,
         textForAgent: "[audio attachment: Audio Message.mp3]\n[voice note transcript: hello from codex]",
+        inputPartsForAgent: undefined,
+      }),
+    )
+    expect(hydrateBlueBubblesAttachments).toHaveBeenCalledWith(
+      [{ guid: "audio-1", mimeType: "audio/mp3", transferName: "Audio Message.mp3" }],
+      expect.any(Object),
+      expect.any(Object),
+      expect.objectContaining({ preferAudioInput: false }),
+    )
+  })
+
+  it("keeps MiniMax voice notes on the local-transcription path", async () => {
+    const { loadAgentConfig } = await import("../../heart/identity")
+    vi.mocked(loadAgentConfig).mockReturnValue({ provider: "minimax" } as any)
+    const hydrateBlueBubblesAttachments = vi.fn().mockResolvedValue({
+      inputParts: [],
+      transcriptAdditions: ["voice note transcript: hello from minimax"],
+      notices: [],
+    })
+    vi.doMock("../../senses/bluebubbles-media", () => ({
+      hydrateBlueBubblesAttachments,
+    }))
+
+    global.fetch = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          data: {
+            guid: "voice-guid",
+            text: "",
+            handle: {
+              address: "ari@mendelow.me",
+              service: "iMessage",
+            },
+            attachments: [
+              {
+                guid: "audio-1",
+                mimeType: "audio/mp3",
+                transferName: "Audio Message.mp3",
+              },
+            ],
+            chats: [
+              {
+                guid: "any;-;ari@mendelow.me",
+                style: 45,
+                chatIdentifier: "ari@mendelow.me",
+                displayName: "",
+              },
+            ],
+          },
+        }),
+        { status: 200 },
+      ),
+    ) as typeof fetch
+
+    vi.resetModules()
+    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+
+    const result = await client.repairEvent({
+      kind: "message",
+      eventType: "new-message",
+      messageGuid: "voice-guid",
+      timestamp: 1,
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        rawId: "ari@mendelow.me",
+        displayName: "ari@mendelow.me",
+      },
+      chat: dmChat,
+      text: "",
+      textForAgent: "[audio attachment: Audio Message.mp3]",
+      attachments: [{ guid: "audio-1", mimeType: "audio/mp3", transferName: "Audio Message.mp3" }],
+      hasPayloadData: false,
+      requiresRepair: true,
+    })
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        kind: "message",
+        requiresRepair: false,
+        textForAgent: "[audio attachment: Audio Message.mp3]\n[voice note transcript: hello from minimax]",
         inputPartsForAgent: undefined,
       }),
     )
