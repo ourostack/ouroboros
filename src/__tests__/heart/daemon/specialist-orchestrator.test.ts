@@ -3,110 +3,16 @@ import * as os from "os"
 import * as path from "path"
 import { afterEach, describe, it, expect, vi, beforeEach } from "vitest"
 
-// Track calls to identity/config/provider functions
-const mockSetAgentName = vi.fn()
-const mockSetAgentConfigOverride = vi.fn()
-const mockResetIdentity = vi.fn()
-const mockResetConfigCache = vi.fn()
-const mockResetProviderRuntime = vi.fn()
-const mockWriteSecretsFile = vi.fn().mockReturnValue("/mock/secrets/path")
-
-// Mock session result
-const mockRunSpecialistSession = vi.fn()
-const mockCreateProviderRegistry = vi.fn(() => ({
-  resolve: () => ({
-    id: "anthropic",
-    model: "test-model",
-    client: {},
-    streamTurn: vi.fn(),
-    appendToolOutput: vi.fn(),
-    resetTurnState: vi.fn(),
-  }),
-}))
-const mockExecSpecialistTool = vi.fn().mockResolvedValue("tool result")
-
-// Mock the modules
-vi.mock("../../../heart/identity", () => ({
-  setAgentName: (...args: any[]) => mockSetAgentName(...args),
-  setAgentConfigOverride: (...args: any[]) => mockSetAgentConfigOverride(...args),
-  resetIdentity: (...args: any[]) => mockResetIdentity(...args),
-  getAgentName: vi.fn(() => "OriginalAgent"),
-  loadAgentConfig: vi.fn(() => ({
-    version: 1,
-    enabled: true,
-    provider: "anthropic",
-    phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
-  })),
-  getAgentSecretsPath: vi.fn(() => "/mock/secrets.json"),
-  getAgentRoot: vi.fn(() => "/mock/agent-root"),
-  getRepoRoot: vi.fn(() => "/mock/repo"),
-  getAgentBundlesRoot: vi.fn(() => "/mock/bundles"),
-  buildDefaultAgentTemplate: vi.fn(),
-  DEFAULT_AGENT_CONTEXT: { maxTokens: 80000, contextMargin: 20 },
-  DEFAULT_AGENT_PHRASES: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
-}))
-
-vi.mock("../../../heart/config", () => ({
-  resetConfigCache: (...args: any[]) => mockResetConfigCache(...args),
-  loadConfig: vi.fn(() => ({
-    providers: {
-      anthropic: { model: "test-model", setupToken: "test-token" },
-      azure: { modelName: "", apiKey: "", endpoint: "", deployment: "", apiVersion: "" },
-      minimax: { model: "", apiKey: "" },
-      "openai-codex": { model: "", oauthAccessToken: "" },
-    },
-    teams: { clientId: "", clientSecret: "", tenantId: "" },
-    oauth: { graphConnectionName: "", adoConnectionName: "", githubConnectionName: "" },
-    context: { maxTokens: 80000, contextMargin: 20 },
-    teamsChannel: { skipConfirmation: true, port: 3978 },
-    integrations: { perplexityApiKey: "", openaiEmbeddingsApiKey: "" },
-  })),
-  getAnthropicConfig: vi.fn(() => ({ model: "test-model", setupToken: "test-token" })),
-  getAzureConfig: vi.fn(() => ({ modelName: "", apiKey: "", endpoint: "", deployment: "", apiVersion: "" })),
-  getMinimaxConfig: vi.fn(() => ({ model: "", apiKey: "" })),
-  getOpenAICodexConfig: vi.fn(() => ({ model: "", oauthAccessToken: "" })),
-  getContextConfig: vi.fn(() => ({ maxTokens: 80000, contextMargin: 20 })),
-  getTeamsConfig: vi.fn(() => ({ clientId: "", clientSecret: "", tenantId: "" })),
-  getOAuthConfig: vi.fn(() => ({ graphConnectionName: "", adoConnectionName: "", githubConnectionName: "" })),
-  getTeamsChannelConfig: vi.fn(() => ({ skipConfirmation: true, port: 3978 })),
-  getIntegrationsConfig: vi.fn(() => ({ perplexityApiKey: "", openaiEmbeddingsApiKey: "" })),
-  getOpenAIEmbeddingsApiKey: vi.fn(() => ""),
-  patchRuntimeConfig: vi.fn(),
-  sessionPath: vi.fn(() => "/mock/session.json"),
-  logPath: vi.fn(() => "/mock/log.ndjson"),
-  getLogsDir: vi.fn(() => "/mock/logs"),
-  DeepPartial: undefined,
-}))
-
-vi.mock("../../../heart/core", () => ({
-  resetProviderRuntime: (...args: any[]) => mockResetProviderRuntime(...args),
-  createProviderRegistry: (...args: any[]) => mockCreateProviderRegistry(...args),
-}))
-
-vi.mock("../../../heart/daemon/hatch-flow", () => ({
-  writeSecretsFile: (...args: any[]) => mockWriteSecretsFile(...args),
-  runHatchFlow: vi.fn(),
-}))
-
-vi.mock("../../../heart/daemon/specialist-tools", () => ({
-  getSpecialistTools: vi.fn(() => []),
-  execSpecialistTool: (...args: any[]) => mockExecSpecialistTool(...args),
-}))
-
-vi.mock("../../../heart/daemon/specialist-session", () => ({
-  runSpecialistSession: (...args: any[]) => mockRunSpecialistSession(...args),
+vi.mock("../../../nerves/runtime", () => ({
+  emitNervesEvent: vi.fn(),
 }))
 
 function makeTempDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`))
 }
 
-describe("runAdoptionSpecialist", () => {
+describe("listExistingBundles", () => {
   const cleanup: string[] = []
-
-  beforeEach(() => {
-    vi.clearAllMocks()
-  })
 
   afterEach(() => {
     while (cleanup.length > 0) {
@@ -116,458 +22,278 @@ describe("runAdoptionSpecialist", () => {
     }
   })
 
-  function createBundleSource(): string {
-    const dir = makeTempDir("specialist-bundle")
+  it("returns sorted list of .ouro directories", async () => {
+    const { listExistingBundles } = await import("../../../heart/daemon/specialist-orchestrator")
+    const bundlesRoot = makeTempDir("bundles")
+    cleanup.push(bundlesRoot)
+
+    fs.mkdirSync(path.join(bundlesRoot, "Zebra.ouro"), { recursive: true })
+    fs.mkdirSync(path.join(bundlesRoot, "Alpha.ouro"), { recursive: true })
+    fs.mkdirSync(path.join(bundlesRoot, "Middle.ouro"), { recursive: true })
+
+    const result = listExistingBundles(bundlesRoot)
+    expect(result).toEqual(["Alpha", "Middle", "Zebra"])
+  })
+
+  it("filters out non-.ouro directories and non-directory .ouro entries", async () => {
+    const { listExistingBundles } = await import("../../../heart/daemon/specialist-orchestrator")
+    const bundlesRoot = makeTempDir("bundles")
+    cleanup.push(bundlesRoot)
+
+    fs.mkdirSync(path.join(bundlesRoot, "RealBot.ouro"), { recursive: true })
+    fs.mkdirSync(path.join(bundlesRoot, "not-a-bundle"), { recursive: true })
+    fs.writeFileSync(path.join(bundlesRoot, "fake.ouro"), "not a dir", "utf-8")
+
+    const result = listExistingBundles(bundlesRoot)
+    expect(result).toEqual(["RealBot"])
+  })
+
+  it("returns empty array for non-existent directory", async () => {
+    const { listExistingBundles } = await import("../../../heart/daemon/specialist-orchestrator")
+    const result = listExistingBundles("/nonexistent/path/to/bundles")
+    expect(result).toEqual([])
+  })
+
+  it("returns empty array for empty directory", async () => {
+    const { listExistingBundles } = await import("../../../heart/daemon/specialist-orchestrator")
+    const bundlesRoot = makeTempDir("empty-bundles")
+    cleanup.push(bundlesRoot)
+
+    const result = listExistingBundles(bundlesRoot)
+    expect(result).toEqual([])
+  })
+})
+
+describe("loadIdentityPhrases", () => {
+  const cleanup: string[] = []
+
+  afterEach(() => {
+    while (cleanup.length > 0) {
+      const entry = cleanup.pop()
+      if (!entry) continue
+      fs.rmSync(entry, { recursive: true, force: true })
+    }
+  })
+
+  it("loads identity-specific phrases from agent.json", async () => {
+    const { loadIdentityPhrases } = await import("../../../heart/daemon/specialist-orchestrator")
+    const dir = makeTempDir("identity-phrases")
     cleanup.push(dir)
 
-    // Create psyche/SOUL.md
-    const psycheDir = path.join(dir, "psyche")
-    fs.mkdirSync(psycheDir, { recursive: true })
-    fs.writeFileSync(path.join(psycheDir, "SOUL.md"), "# Soul\nI help humans hatch agents.", "utf-8")
-
-    // Create psyche/identities/
-    const identitiesDir = path.join(psycheDir, "identities")
-    fs.mkdirSync(identitiesDir, { recursive: true })
-    fs.writeFileSync(path.join(identitiesDir, "medusa.md"), "# Medusa\nI am Medusa.", "utf-8")
-    fs.writeFileSync(path.join(identitiesDir, "python.md"), "# Python\nI am Python.", "utf-8")
-
-    return dir
-  }
-
-  function makeDeps(overrides?: Record<string, unknown>) {
-    const bundleSourceDir = createBundleSource()
-    const bundlesRoot = makeTempDir("specialist-bundles-root")
-    const secretsRoot = makeTempDir("specialist-secrets-root")
-    cleanup.push(bundlesRoot, secretsRoot)
-
-    return {
-      bundleSourceDir,
-      bundlesRoot,
-      secretsRoot,
-      provider: "anthropic" as const,
-      credentials: { setupToken: "test-token" },
-      humanName: "Ari",
-      random: () => 0.5,
-      createReadline: () => ({
-        question: vi.fn().mockResolvedValue("test input"),
-        close: vi.fn(),
-      }),
-      callbacks: {
-        onModelStart: vi.fn(),
-        onModelStreamStart: vi.fn(),
-        onTextChunk: vi.fn(),
-        onReasoningChunk: vi.fn(),
-        onToolStart: vi.fn(),
-        onToolEnd: vi.fn(),
-        onError: vi.fn(),
-      },
-      ...overrides,
-    }
-  }
-
-  it("reads SOUL.md and picks a random identity from bundled AdoptionSpecialist.ouro", async () => {
-    mockRunSpecialistSession.mockResolvedValue({ hatchedAgentName: null })
-
-    const { runAdoptionSpecialist } = await import("../../../heart/daemon/specialist-orchestrator")
-    const deps = makeDeps()
-
-    await runAdoptionSpecialist(deps)
-
-    // Session should have been called with a system prompt containing soul and identity text
-    expect(mockRunSpecialistSession).toHaveBeenCalledTimes(1)
-    const sessionDeps = mockRunSpecialistSession.mock.calls[0][0]
-    expect(sessionDeps.systemPrompt).toContain("I help humans hatch agents")
-    // Identity should be either medusa or python (depends on random)
-    expect(
-      sessionDeps.systemPrompt.includes("Medusa") || sessionDeps.systemPrompt.includes("Python"),
-    ).toBe(true)
-  })
-
-  it("sets agent name to AdoptionSpecialist and overrides agent config", async () => {
-    mockRunSpecialistSession.mockResolvedValue({ hatchedAgentName: null })
-
-    const { runAdoptionSpecialist } = await import("../../../heart/daemon/specialist-orchestrator")
-    const deps = makeDeps()
-
-    await runAdoptionSpecialist(deps)
-
-    expect(mockSetAgentName).toHaveBeenCalledWith("AdoptionSpecialist")
-    expect(mockSetAgentConfigOverride).toHaveBeenCalled()
-    const overrideConfig = mockSetAgentConfigOverride.mock.calls[0][0]
-    expect(overrideConfig.provider).toBe("anthropic")
-  })
-
-  it("writes specialist secrets via writeSecretsFile", async () => {
-    mockRunSpecialistSession.mockResolvedValue({ hatchedAgentName: null })
-
-    const { runAdoptionSpecialist } = await import("../../../heart/daemon/specialist-orchestrator")
-    const deps = makeDeps()
-
-    await runAdoptionSpecialist(deps)
-
-    expect(mockWriteSecretsFile).toHaveBeenCalledWith(
-      "AdoptionSpecialist",
-      "anthropic",
-      { setupToken: "test-token" },
-      deps.secretsRoot,
-    )
-  })
-
-  it("resets provider runtime before creating specialist provider", async () => {
-    mockRunSpecialistSession.mockResolvedValue({ hatchedAgentName: null })
-
-    const { runAdoptionSpecialist } = await import("../../../heart/daemon/specialist-orchestrator")
-    const deps = makeDeps()
-
-    await runAdoptionSpecialist(deps)
-
-    expect(mockResetProviderRuntime).toHaveBeenCalled()
-    expect(mockResetConfigCache).toHaveBeenCalled()
-  })
-
-  it("builds system prompt with soul, identity, and existing bundles", async () => {
-    mockRunSpecialistSession.mockResolvedValue({ hatchedAgentName: null })
-
-    const { runAdoptionSpecialist } = await import("../../../heart/daemon/specialist-orchestrator")
-    const deps = makeDeps()
-
-    // Create some existing bundles in bundlesRoot
-    const existingBundle = path.join(deps.bundlesRoot, "ExistingBot.ouro")
-    fs.mkdirSync(existingBundle, { recursive: true })
     fs.writeFileSync(
-      path.join(existingBundle, "agent.json"),
-      JSON.stringify({ version: 1, enabled: true, provider: "anthropic" }),
-      "utf-8",
-    )
-
-    await runAdoptionSpecialist(deps)
-
-    const sessionDeps = mockRunSpecialistSession.mock.calls[0][0]
-    expect(sessionDeps.systemPrompt).toContain("ExistingBot")
-  })
-
-  it("runs the specialist session and returns hatchling name", async () => {
-    mockRunSpecialistSession.mockResolvedValue({ hatchedAgentName: "MyBot" })
-
-    const { runAdoptionSpecialist } = await import("../../../heart/daemon/specialist-orchestrator")
-    const deps = makeDeps()
-
-    const result = await runAdoptionSpecialist(deps)
-
-    expect(result).toBe("MyBot")
-  })
-
-  it("restores identity/config state after session (cleanup)", async () => {
-    mockRunSpecialistSession.mockResolvedValue({ hatchedAgentName: null })
-
-    const { runAdoptionSpecialist } = await import("../../../heart/daemon/specialist-orchestrator")
-    const deps = makeDeps()
-
-    await runAdoptionSpecialist(deps)
-
-    // After session, override should be cleared
-    expect(mockSetAgentConfigOverride).toHaveBeenCalledWith(null)
-    // Provider runtime should be reset again for cleanup
-    expect(mockResetProviderRuntime.mock.calls.length).toBeGreaterThanOrEqual(2)
-    expect(mockResetConfigCache.mock.calls.length).toBeGreaterThanOrEqual(2)
-  })
-
-  it("cleanup runs even if session throws", async () => {
-    mockRunSpecialistSession.mockRejectedValue(new Error("session exploded"))
-
-    const { runAdoptionSpecialist } = await import("../../../heart/daemon/specialist-orchestrator")
-    const deps = makeDeps()
-
-    await expect(runAdoptionSpecialist(deps)).rejects.toThrow("session exploded")
-
-    // Cleanup should still have run
-    expect(mockSetAgentConfigOverride).toHaveBeenCalledWith(null)
-    expect(mockResetProviderRuntime.mock.calls.length).toBeGreaterThanOrEqual(2)
-  })
-
-  it("returns null when session returns no hatchling", async () => {
-    mockRunSpecialistSession.mockResolvedValue({ hatchedAgentName: null })
-
-    const { runAdoptionSpecialist } = await import("../../../heart/daemon/specialist-orchestrator")
-    const deps = makeDeps()
-
-    const result = await runAdoptionSpecialist(deps)
-
-    expect(result).toBeNull()
-  })
-
-  it("handles non-existent bundlesRoot gracefully (empty bundle list)", async () => {
-    mockRunSpecialistSession.mockResolvedValue({ hatchedAgentName: null })
-
-    const { runAdoptionSpecialist } = await import("../../../heart/daemon/specialist-orchestrator")
-    const deps = makeDeps({ bundlesRoot: "/nonexistent/bundles/path" })
-
-    await runAdoptionSpecialist(deps)
-
-    const sessionDeps = mockRunSpecialistSession.mock.calls[0][0]
-    // With no bundles found, should say "no agents yet"
-    expect(sessionDeps.systemPrompt).toContain("no agents yet")
-  })
-
-  it("handles empty identities directory with default identity", async () => {
-    mockRunSpecialistSession.mockResolvedValue({ hatchedAgentName: null })
-
-    // Create a bundle source with empty identities dir
-    const dir = makeTempDir("specialist-empty-identities")
-    cleanup.push(dir)
-    const psycheDir = path.join(dir, "psyche")
-    fs.mkdirSync(psycheDir, { recursive: true })
-    fs.writeFileSync(path.join(psycheDir, "SOUL.md"), "# Soul\nTest soul.", "utf-8")
-    const identitiesDir = path.join(psycheDir, "identities")
-    fs.mkdirSync(identitiesDir, { recursive: true })
-    // No .md files in identities dir
-
-    const { runAdoptionSpecialist } = await import("../../../heart/daemon/specialist-orchestrator")
-    const deps = makeDeps({ bundleSourceDir: dir })
-
-    await runAdoptionSpecialist(deps)
-
-    const sessionDeps = mockRunSpecialistSession.mock.calls[0][0]
-    expect(sessionDeps.systemPrompt).toContain("I am the adoption specialist")
-  })
-
-  it("throws when provider registry returns null", async () => {
-    mockCreateProviderRegistry.mockReturnValueOnce({ resolve: () => null })
-
-    const { runAdoptionSpecialist } = await import("../../../heart/daemon/specialist-orchestrator")
-    const deps = makeDeps()
-
-    await expect(runAdoptionSpecialist(deps)).rejects.toThrow(
-      "Failed to create provider runtime for adoption specialist",
-    )
-
-    // Cleanup should still run even after provider creation failure
-    expect(mockSetAgentConfigOverride).toHaveBeenCalledWith(null)
-  })
-
-  it("filters non-.ouro entries and non-directories from bundle listing", async () => {
-    mockRunSpecialistSession.mockResolvedValue({ hatchedAgentName: null })
-
-    const { runAdoptionSpecialist } = await import("../../../heart/daemon/specialist-orchestrator")
-    const deps = makeDeps()
-
-    // Create a mix of entries: .ouro dirs, non-.ouro dir, file with .ouro extension
-    fs.mkdirSync(path.join(deps.bundlesRoot, "RealBot.ouro"), { recursive: true })
-    fs.mkdirSync(path.join(deps.bundlesRoot, "AlphaBot.ouro"), { recursive: true })
-    fs.mkdirSync(path.join(deps.bundlesRoot, "not-a-bundle"), { recursive: true })
-    fs.writeFileSync(path.join(deps.bundlesRoot, "fake.ouro"), "not a dir", "utf-8")
-
-    await runAdoptionSpecialist(deps)
-
-    const sessionDeps = mockRunSpecialistSession.mock.calls[0][0]
-    expect(sessionDeps.systemPrompt).toContain("RealBot")
-    expect(sessionDeps.systemPrompt).toContain("AlphaBot")
-    expect(sessionDeps.systemPrompt).not.toContain("not-a-bundle")
-    expect(sessionDeps.systemPrompt).not.toContain("fake")
-  })
-
-  it("uses Math.random when no random function provided", async () => {
-    mockRunSpecialistSession.mockResolvedValue({ hatchedAgentName: null })
-
-    const { runAdoptionSpecialist } = await import("../../../heart/daemon/specialist-orchestrator")
-    // Create deps without the random override
-    const bundleSourceDir = createBundleSource()
-    const bundlesRoot = makeTempDir("specialist-bundles-root")
-    const secretsRoot = makeTempDir("specialist-secrets-root")
-    cleanup.push(bundlesRoot, secretsRoot)
-
-    const deps = {
-      bundleSourceDir,
-      bundlesRoot,
-      secretsRoot,
-      provider: "anthropic" as const,
-      credentials: { setupToken: "test-token" },
-      humanName: "Ari",
-      // No random function -- should use Math.random
-      createReadline: () => ({
-        question: vi.fn().mockResolvedValue("test input"),
-        close: vi.fn(),
-      }),
-      callbacks: {
-        onModelStart: vi.fn(),
-        onModelStreamStart: vi.fn(),
-        onTextChunk: vi.fn(),
-        onReasoningChunk: vi.fn(),
-        onToolStart: vi.fn(),
-        onToolEnd: vi.fn(),
-        onError: vi.fn(),
-      },
-    }
-
-    await runAdoptionSpecialist(deps)
-
-    // Should succeed -- the identity will be randomly picked using Math.random
-    expect(mockRunSpecialistSession).toHaveBeenCalledTimes(1)
-  })
-
-  it("passes inputController hooks and flushMarkdown when readline has inputController", async () => {
-    mockRunSpecialistSession.mockResolvedValue({ hatchedAgentName: null })
-
-    const { runAdoptionSpecialist } = await import("../../../heart/daemon/specialist-orchestrator")
-    const mockCtrl = { suppress: vi.fn(), restore: vi.fn() }
-    const mockFlushMarkdown = vi.fn()
-    const deps = makeDeps({
-      createReadline: () => ({
-        question: vi.fn().mockResolvedValue("test input"),
-        close: vi.fn(),
-        inputController: mockCtrl,
-      }),
-      callbacks: {
-        onModelStart: vi.fn(),
-        onModelStreamStart: vi.fn(),
-        onTextChunk: vi.fn(),
-        onReasoningChunk: vi.fn(),
-        onToolStart: vi.fn(),
-        onToolEnd: vi.fn(),
-        onError: vi.fn(),
-        flushMarkdown: mockFlushMarkdown,
-      },
-    })
-
-    await runAdoptionSpecialist(deps)
-
-    const sessionDeps = mockRunSpecialistSession.mock.calls[0][0]
-    // suppressInput, restoreInput, writePrompt should be defined (truthy ctrl branch)
-    expect(sessionDeps.suppressInput).toBeDefined()
-    expect(sessionDeps.restoreInput).toBeDefined()
-    expect(sessionDeps.writePrompt).toBeDefined()
-    expect(sessionDeps.flushMarkdown).toBe(mockFlushMarkdown)
-
-    // Invoke them to cover the lambda bodies
-    sessionDeps.suppressInput(() => {})
-    expect(mockCtrl.suppress).toHaveBeenCalled()
-    sessionDeps.restoreInput()
-    expect(mockCtrl.restore).toHaveBeenCalled()
-    sessionDeps.writePrompt()
-  })
-
-  it("loads identity-specific phrases from agent.json when available", async () => {
-    mockRunSpecialistSession.mockResolvedValue({ hatchedAgentName: null })
-
-    const { runAdoptionSpecialist } = await import("../../../heart/daemon/specialist-orchestrator")
-    const deps = makeDeps()
-
-    // Write agent.json with identityPhrases into the bundle source
-    // random=0.5 picks python.md (second of two files)
-    fs.writeFileSync(
-      path.join(deps.bundleSourceDir, "agent.json"),
+      path.join(dir, "agent.json"),
       JSON.stringify({
         phrases: { thinking: ["base thinking"], tool: ["base tool"], followup: ["base followup"] },
         identityPhrases: {
-          python: {
-            thinking: ["the oracle contemplates", "reading the signs"],
-            tool: ["consulting the sacred texts"],
-            followup: ["the prophecy takes shape"],
+          medusa: {
+            thinking: ["the serpent contemplates"],
+            tool: ["consulting the oracle"],
+            followup: ["the prophecy unfolds"],
           },
         },
       }),
     )
 
-    await runAdoptionSpecialist(deps)
-
-    // Config override should use identity-specific phrases
-    const overrideConfig = mockSetAgentConfigOverride.mock.calls[0][0]
-    expect(overrideConfig.phrases.thinking).toContain("the oracle contemplates")
+    const result = loadIdentityPhrases(dir, "medusa.md")
+    expect(result.thinking).toContain("the serpent contemplates")
+    expect(result.tool).toContain("consulting the oracle")
+    expect(result.followup).toContain("the prophecy unfolds")
   })
 
-  it("falls back to base phrases from agent.json when identity phrases not found", async () => {
-    mockRunSpecialistSession.mockResolvedValue({ hatchedAgentName: null })
+  it("falls back to base phrases when identity not found", async () => {
+    const { loadIdentityPhrases } = await import("../../../heart/daemon/specialist-orchestrator")
+    const dir = makeTempDir("identity-phrases")
+    cleanup.push(dir)
 
-    const { runAdoptionSpecialist } = await import("../../../heart/daemon/specialist-orchestrator")
-    const deps = makeDeps()
-
-    // agent.json with base phrases but no matching identity
     fs.writeFileSync(
-      path.join(deps.bundleSourceDir, "agent.json"),
+      path.join(dir, "agent.json"),
       JSON.stringify({
         phrases: { thinking: ["base thinking"], tool: ["base tool"], followup: ["base followup"] },
         identityPhrases: {
-          nonexistent: { thinking: ["nope"], tool: ["nope"], followup: ["nope"] },
+          other: { thinking: ["nope"], tool: ["nope"], followup: ["nope"] },
         },
       }),
     )
 
-    await runAdoptionSpecialist(deps)
-
-    const overrideConfig = mockSetAgentConfigOverride.mock.calls[0][0]
-    expect(overrideConfig.phrases.thinking).toContain("base thinking")
+    const result = loadIdentityPhrases(dir, "medusa.md")
+    expect(result.thinking).toContain("base thinking")
   })
 
-  it("falls back to DEFAULT_AGENT_PHRASES when agent.json is missing", async () => {
-    mockRunSpecialistSession.mockResolvedValue({ hatchedAgentName: null })
+  it("falls back to DEFAULT_AGENT_PHRASES when agent.json missing", async () => {
+    const { loadIdentityPhrases } = await import("../../../heart/daemon/specialist-orchestrator")
+    const dir = makeTempDir("identity-phrases")
+    cleanup.push(dir)
+    // No agent.json
 
-    const { runAdoptionSpecialist } = await import("../../../heart/daemon/specialist-orchestrator")
-    const deps = makeDeps()
-    // No agent.json written — should fall back to defaults
+    const result = loadIdentityPhrases(dir, "medusa.md")
+    expect(result.thinking).toContain("working")
+  })
 
-    await runAdoptionSpecialist(deps)
+  it("falls back to DEFAULT_AGENT_PHRASES when agent.json is malformed", async () => {
+    const { loadIdentityPhrases } = await import("../../../heart/daemon/specialist-orchestrator")
+    const dir = makeTempDir("identity-phrases")
+    cleanup.push(dir)
 
-    const overrideConfig = mockSetAgentConfigOverride.mock.calls[0][0]
-    expect(overrideConfig.phrases.thinking).toContain("working")
+    fs.writeFileSync(path.join(dir, "agent.json"), "not-json{{{")
+
+    const result = loadIdentityPhrases(dir, "medusa.md")
+    expect(result.thinking).toContain("working")
   })
 
   it("falls back to DEFAULT_AGENT_PHRASES when base phrases are incomplete", async () => {
-    mockRunSpecialistSession.mockResolvedValue({ hatchedAgentName: null })
+    const { loadIdentityPhrases } = await import("../../../heart/daemon/specialist-orchestrator")
+    const dir = makeTempDir("identity-phrases")
+    cleanup.push(dir)
 
-    const { runAdoptionSpecialist } = await import("../../../heart/daemon/specialist-orchestrator")
-    const deps = makeDeps()
-    // agent.json with incomplete base phrases (missing followup) and no matching identity
     fs.writeFileSync(
-      path.join(deps.bundleSourceDir, "agent.json"),
+      path.join(dir, "agent.json"),
       JSON.stringify({
         phrases: { thinking: ["partial"], tool: ["partial"] },
         identityPhrases: {},
       }),
     )
 
-    await runAdoptionSpecialist(deps)
-
-    const overrideConfig = mockSetAgentConfigOverride.mock.calls[0][0]
-    expect(overrideConfig.phrases.thinking).toContain("working")
+    const result = loadIdentityPhrases(dir, "medusa.md")
+    expect(result.thinking).toContain("working")
   })
 
-  it("falls back to DEFAULT_AGENT_PHRASES when agent.json is malformed", async () => {
-    mockRunSpecialistSession.mockResolvedValue({ hatchedAgentName: null })
+  it("falls back to DEFAULT_AGENT_PHRASES when identity phrases are incomplete", async () => {
+    const { loadIdentityPhrases } = await import("../../../heart/daemon/specialist-orchestrator")
+    const dir = makeTempDir("identity-phrases")
+    cleanup.push(dir)
 
-    const { runAdoptionSpecialist } = await import("../../../heart/daemon/specialist-orchestrator")
-    const deps = makeDeps()
-    fs.writeFileSync(path.join(deps.bundleSourceDir, "agent.json"), "not-json{{{")
-
-    await runAdoptionSpecialist(deps)
-
-    const overrideConfig = mockSetAgentConfigOverride.mock.calls[0][0]
-    expect(overrideConfig.phrases.thinking).toContain("working")
-  })
-
-  it("wires execTool lambda to execSpecialistTool with correct deps", async () => {
-    // Capture the session deps to invoke the execTool lambda
-    mockRunSpecialistSession.mockImplementation(async (sessionDeps: any) => {
-      // Invoke the execTool lambda that the orchestrator passed in
-      await sessionDeps.execTool("read_file", { path: "/tmp/test.txt" })
-      return { hatchedAgentName: null }
-    })
-
-    const { runAdoptionSpecialist } = await import("../../../heart/daemon/specialist-orchestrator")
-    const deps = makeDeps()
-
-    await runAdoptionSpecialist(deps)
-
-    // execSpecialistTool should have been called with correct arguments
-    expect(mockExecSpecialistTool).toHaveBeenCalledWith(
-      "read_file",
-      { path: "/tmp/test.txt" },
-      expect.objectContaining({
-        humanName: "Ari",
-        provider: "anthropic",
-        credentials: { setupToken: "test-token" },
-        bundlesRoot: deps.bundlesRoot,
-        secretsRoot: deps.secretsRoot,
+    fs.writeFileSync(
+      path.join(dir, "agent.json"),
+      JSON.stringify({
+        identityPhrases: {
+          medusa: { thinking: ["partial"], tool: ["partial"] },
+        },
       }),
     )
+
+    const result = loadIdentityPhrases(dir, "medusa.md")
+    expect(result.thinking).toContain("working")
+  })
+})
+
+describe("pickRandomIdentity", () => {
+  const cleanup: string[] = []
+
+  afterEach(() => {
+    while (cleanup.length > 0) {
+      const entry = cleanup.pop()
+      if (!entry) continue
+      fs.rmSync(entry, { recursive: true, force: true })
+    }
+  })
+
+  it("picks a random identity from the identities directory", async () => {
+    const { pickRandomIdentity } = await import("../../../heart/daemon/specialist-orchestrator")
+    const identitiesDir = makeTempDir("identities")
+    cleanup.push(identitiesDir)
+
+    fs.writeFileSync(path.join(identitiesDir, "medusa.md"), "# Medusa\nI am Medusa.", "utf-8")
+    fs.writeFileSync(path.join(identitiesDir, "python.md"), "# Python\nI am Python.", "utf-8")
+
+    // random=0 picks first file
+    const result = pickRandomIdentity(identitiesDir, () => 0)
+    expect(result.fileName).toBe("medusa.md")
+    expect(result.content).toContain("I am Medusa")
+  })
+
+  it("picks second file with high random value", async () => {
+    const { pickRandomIdentity } = await import("../../../heart/daemon/specialist-orchestrator")
+    const identitiesDir = makeTempDir("identities")
+    cleanup.push(identitiesDir)
+
+    fs.writeFileSync(path.join(identitiesDir, "medusa.md"), "# Medusa\nI am Medusa.", "utf-8")
+    fs.writeFileSync(path.join(identitiesDir, "python.md"), "# Python\nI am Python.", "utf-8")
+
+    // random=0.99 picks second file
+    const result = pickRandomIdentity(identitiesDir, () => 0.99)
+    expect(result.fileName).toBe("python.md")
+    expect(result.content).toContain("I am Python")
+  })
+
+  it("returns default identity for non-existent directory", async () => {
+    const { pickRandomIdentity } = await import("../../../heart/daemon/specialist-orchestrator")
+    const result = pickRandomIdentity("/nonexistent/identities/dir")
+    expect(result.fileName).toBe("default")
+    expect(result.content).toContain("adoption specialist")
+  })
+
+  it("returns default identity for empty identities directory", async () => {
+    const { pickRandomIdentity } = await import("../../../heart/daemon/specialist-orchestrator")
+    const identitiesDir = makeTempDir("empty-identities")
+    cleanup.push(identitiesDir)
+
+    const result = pickRandomIdentity(identitiesDir)
+    expect(result.fileName).toBe("default")
+    expect(result.content).toContain("adoption specialist")
+  })
+
+  it("filters out non-.md files", async () => {
+    const { pickRandomIdentity } = await import("../../../heart/daemon/specialist-orchestrator")
+    const identitiesDir = makeTempDir("identities")
+    cleanup.push(identitiesDir)
+
+    fs.writeFileSync(path.join(identitiesDir, "medusa.md"), "# Medusa\nI am Medusa.", "utf-8")
+    fs.writeFileSync(path.join(identitiesDir, "readme.txt"), "not an identity", "utf-8")
+
+    // Only medusa.md should be picked
+    const result = pickRandomIdentity(identitiesDir, () => 0)
+    expect(result.fileName).toBe("medusa.md")
+  })
+
+  it("uses Math.random when no random function provided", async () => {
+    const { pickRandomIdentity } = await import("../../../heart/daemon/specialist-orchestrator")
+    const identitiesDir = makeTempDir("identities")
+    cleanup.push(identitiesDir)
+
+    fs.writeFileSync(path.join(identitiesDir, "medusa.md"), "# Medusa\nI am Medusa.", "utf-8")
+
+    // Should succeed without explicit random function
+    const result = pickRandomIdentity(identitiesDir)
+    expect(result.fileName).toBe("medusa.md")
+  })
+})
+
+describe("loadSoulText", () => {
+  const cleanup: string[] = []
+
+  afterEach(() => {
+    while (cleanup.length > 0) {
+      const entry = cleanup.pop()
+      if (!entry) continue
+      fs.rmSync(entry, { recursive: true, force: true })
+    }
+  })
+
+  it("reads SOUL.md from psyche directory", async () => {
+    const { loadSoulText } = await import("../../../heart/daemon/specialist-orchestrator")
+    const dir = makeTempDir("soul")
+    cleanup.push(dir)
+
+    const psycheDir = path.join(dir, "psyche")
+    fs.mkdirSync(psycheDir, { recursive: true })
+    fs.writeFileSync(path.join(psycheDir, "SOUL.md"), "# Soul\nI help humans hatch agents.", "utf-8")
+
+    const result = loadSoulText(dir)
+    expect(result).toContain("I help humans hatch agents")
+  })
+
+  it("returns empty string when SOUL.md is missing", async () => {
+    const { loadSoulText } = await import("../../../heart/daemon/specialist-orchestrator")
+    const dir = makeTempDir("no-soul")
+    cleanup.push(dir)
+
+    const result = loadSoulText(dir)
+    expect(result).toBe("")
+  })
+
+  it("returns empty string for non-existent directory", async () => {
+    const { loadSoulText } = await import("../../../heart/daemon/specialist-orchestrator")
+    const result = loadSoulText("/nonexistent/bundle/dir")
+    expect(result).toBe("")
   })
 })
