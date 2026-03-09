@@ -255,6 +255,70 @@ describe(".ouro UTI registration", () => {
     expect(plistContent).toContain("<true/>")
   })
 
+  it("prefers bundled assets/ouroboros.png over adjacent repo path", () => {
+    const existsSync = vi.fn((target: string) => {
+      // Bundled asset exists
+      if (target.includes("assets/ouroboros.png")) return true
+      return false
+    })
+    const execFileSync = vi.fn()
+    const mkdirSync = vi.fn()
+    const writeFileSync = vi.fn()
+    const rmSync = vi.fn()
+
+    const result = registerOuroBundleUti({
+      platform: "darwin",
+      homeDir: "/tmp/home",
+      repoRoot: "/tmp/repo",
+      existsSync,
+      mkdirSync,
+      writeFileSync,
+      rmSync,
+      execFileSync,
+    })
+
+    expect(result.attempted).toBe(true)
+    expect(result.registered).toBe(true)
+    expect(result.iconInstalled).toBe(true)
+
+    // sips args: ["-z", size, size, sourcePath, "--out", outPath]
+    const sipsCalls = execFileSync.mock.calls.filter((c) => c[0] === "sips")
+    expect(sipsCalls.length).toBeGreaterThan(0)
+    // The source image path (index 3 of args) should be the bundled asset
+    const sourceImagePath = sipsCalls[0][1][3] as string
+    expect(sourceImagePath).toContain("assets/ouroboros.png")
+    expect(sourceImagePath).not.toContain("ouroboros-website")
+  })
+
+  it("falls back to adjacent repo icon path when bundled asset is missing", () => {
+    const existsSync = vi.fn((target: string) => {
+      // Only the adjacent repo path exists
+      if (target.includes("ouroboros-website")) return true
+      return false
+    })
+    const execFileSync = vi.fn()
+
+    const result = registerOuroBundleUti({
+      platform: "darwin",
+      homeDir: "/tmp/home",
+      repoRoot: "/tmp/repo",
+      existsSync,
+      mkdirSync: vi.fn(),
+      writeFileSync: vi.fn(),
+      rmSync: vi.fn(),
+      execFileSync,
+    })
+
+    expect(result.attempted).toBe(true)
+    expect(result.registered).toBe(true)
+    expect(result.iconInstalled).toBe(true)
+
+    // sips args: ["-z", size, size, sourcePath, "--out", outPath]
+    const sipsCalls = execFileSync.mock.calls.filter((c) => c[0] === "sips")
+    const sourceImagePath = sipsCalls[0][1][3] as string
+    expect(sourceImagePath).toContain("ouroboros-website")
+  })
+
   it("uses default exec callback when execFileSync dep is omitted", async () => {
     vi.resetModules()
     const execFileSync = vi.fn()
