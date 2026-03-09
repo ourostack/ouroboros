@@ -11,6 +11,7 @@ export interface BundleMeta {
   runtimeVersion: string
   bundleSchemaVersion: number
   lastUpdated: string
+  previousRuntimeVersion?: string
 }
 
 export const CANONICAL_BUNDLE_MANIFEST: readonly BundleManifestEntry[] = [
@@ -28,6 +29,17 @@ export const CANONICAL_BUNDLE_MANIFEST: readonly BundleManifestEntry[] = [
   { path: "senses", kind: "dir" },
   { path: "senses/teams", kind: "dir" },
 ]
+
+export function getChangelogPath(): string {
+  const changelogPath = path.resolve(__dirname, "../../changelog.json")
+  emitNervesEvent({
+    component: "mind",
+    event: "mind.changelog_path_resolved",
+    message: "resolved changelog path",
+    meta: { path: changelogPath },
+  })
+  return changelogPath
+}
 
 export function getPackageVersion(): string {
   const packageJsonPath = path.resolve(__dirname, "../../package.json")

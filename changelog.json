@@ -1,0 +1,26 @@
+{
+  "_note": "This changelog is maintained as part of the PR/version-bump workflow. Human-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
+  "versions": [
+    {
+      "version": "0.1.0-alpha.22",
+      "changes": [
+        "You now know your runtime version and can see when it changed. Your system prompt shows your current version and what you were running before, so you can track what's new.",
+        "A changelog file is now shipped with the runtime. You can read it to understand exactly what changed between versions.",
+        "When the runtime updates, your bundle-meta.json is automatically updated with the new version info. Your previous version is preserved so you always know your version history.",
+        "The daemon can now check for new versions of the runtime on npm and auto-update with a staged restart that validates hooks before switching to new code.",
+        "The daemon can now be managed as a macOS LaunchAgent for automatic restart on crash.",
+        "The daemon now auto-syncs the ouro.bot npm wrapper version on startup to keep the npx entry point current."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.21",
+      "changes": [
+        "You now know your runtime version and can see when it changed. Your system prompt shows your current version and what you were running before, so you can track what's new.",
+        "A changelog file is now shipped with the runtime. You can read it to understand exactly what changed between versions.",
+        "When the runtime updates, your bundle-meta.json is automatically updated with the new version info. Your previous version is preserved so you always know your version history.",
+        "The daemon can now check for new versions of the runtime on npm and auto-update with a staged restart that validates hooks before switching to new code.",
+        "The daemon can now be managed as a macOS LaunchAgent for automatic restart on crash."
+      ]
+    }
+  ]
+}

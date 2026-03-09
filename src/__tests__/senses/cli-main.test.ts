@@ -7,6 +7,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 
 // ── hoisted mock fns (available before vi.mock factories run) ──
 const mocks = vi.hoisted(() => ({
+  applyPendingUpdates: vi.fn().mockResolvedValue(undefined),
   runAgent: vi.fn().mockResolvedValue({ usage: undefined }),
   buildSystem: vi.fn().mockResolvedValue("system prompt"),
   sessionPath: vi.fn().mockReturnValue("/tmp/test-session.json"),
@@ -95,6 +96,7 @@ vi.mock("../../heart/identity", () => ({
   setAgentName: vi.fn(),
   getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/testagent/secrets.json"),
   getAgentRoot: vi.fn(() => "/mock/agent/root"),
+  getAgentBundlesRoot: vi.fn(() => "/mock/bundles"),
   loadAgentConfig: vi.fn(() => ({
     name: "testagent",
     configPath: "~/.agentsecrets/testagent/secrets.json",
@@ -123,6 +125,25 @@ vi.mock("../../mind/friends/resolver", () => {
 })
 vi.mock("../../senses/trust-gate", () => ({
   enforceTrustGate: (...a: any[]) => mocks.enforceTrustGate(...a),
+}))
+vi.mock("../../mind/bundle-manifest", () => ({
+  getPackageVersion: vi.fn(() => "0.1.0-alpha.20"),
+  getChangelogPath: vi.fn(() => "/mock/changelog.json"),
+  createBundleMeta: vi.fn(),
+  backfillBundleMeta: vi.fn(),
+  resetBackfillTracking: vi.fn(),
+  CANONICAL_BUNDLE_MANIFEST: [],
+  isCanonicalBundlePath: vi.fn().mockReturnValue(true),
+  findNonCanonicalBundlePaths: vi.fn().mockReturnValue([]),
+}))
+vi.mock("../../heart/daemon/update-hooks", () => ({
+  applyPendingUpdates: (...a: any[]) => mocks.applyPendingUpdates(...a),
+  registerUpdateHook: vi.fn(),
+  clearRegisteredHooks: vi.fn(),
+  getRegisteredHooks: vi.fn().mockReturnValue([]),
+}))
+vi.mock("../../heart/daemon/hooks/bundle-meta", () => ({
+  bundleMetaHook: vi.fn(),
 }))
 vi.mock("os", async () => {
   const actual = await vi.importActual<typeof import("os")>("os")
@@ -196,6 +217,7 @@ function createMockRl(inputSequence: string[]) {
 
 /** Reset all hoisted mocks to default behaviour */
 function resetMocks() {
+  mocks.applyPendingUpdates.mockReset().mockResolvedValue(undefined)
   mocks.runAgent.mockReset().mockResolvedValue({ usage: undefined })
   mocks.buildSystem.mockReset().mockReturnValue("system prompt")
   mocks.sessionPath.mockReset().mockReturnValue("/tmp/test-session.json")
@@ -260,6 +282,14 @@ describe("agent.ts main()", () => {
   afterEach(() => {
     restoreSpies()
     vi.restoreAllMocks()
+  })
+
+  it("calls applyPendingUpdates on startup as fallback for daemon-less usage", async () => {
+    setupBasic({ inputSequence: ["/exit"] })
+
+    await main(undefined, { pasteDebounceMs: 0 })
+
+    expect(mocks.applyPendingUpdates).toHaveBeenCalledTimes(1)
   })
 
   it("runs full loop: processes input, exits on /exit", async () => {

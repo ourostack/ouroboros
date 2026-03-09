@@ -8,7 +8,8 @@ import * as os from "os";
 import type { Channel, ResolvedContext } from "./friends/types";
 import { getChannelCapabilities } from "./friends/channel";
 import { emitNervesEvent } from "../nerves/runtime";
-import { backfillBundleMeta } from "./bundle-manifest";
+import { backfillBundleMeta, getPackageVersion, getChangelogPath } from "./bundle-manifest";
+import type { BundleMeta } from "./bundle-manifest";
 import { getFirstImpressions } from "./first-impressions";
 import { getTaskModule } from "../repertoire/tasks";
 
@@ -202,12 +203,31 @@ function aspirationsSection(): string {
   return `## my aspirations\n${text}`;
 }
 
+function readBundleMeta(): BundleMeta | null {
+  try {
+    const metaPath = path.join(getAgentRoot(), "bundle-meta.json")
+    const raw = fs.readFileSync(metaPath, "utf-8")
+    return JSON.parse(raw) as BundleMeta
+  } catch {
+    return null
+  }
+}
+
 export function runtimeInfoSection(channel: Channel): string {
   const lines: string[] = [];
   const agentName = getAgentName();
+  const currentVersion = getPackageVersion();
 
   lines.push(`## runtime`);
   lines.push(`agent: ${agentName}`);
+  lines.push(`runtime version: ${currentVersion}`);
+
+  const bundleMeta = readBundleMeta()
+  if (bundleMeta?.previousRuntimeVersion && bundleMeta.previousRuntimeVersion !== currentVersion) {
+    lines.push(`previously: ${bundleMeta.previousRuntimeVersion}`)
+  }
+
+  lines.push(`changelog available at: ${getChangelogPath()}`);
   lines.push(`cwd: ${process.cwd()}`);
   lines.push(`channel: ${channel}`);
   lines.push(`current sense: ${channel}`);

@@ -9,6 +9,7 @@ import {
   findNonCanonicalBundlePaths,
   isCanonicalBundlePath,
   getPackageVersion,
+  getChangelogPath,
   createBundleMeta,
   backfillBundleMeta,
   resetBackfillTracking,
@@ -159,5 +160,83 @@ describe("backfillBundleMeta", () => {
 
   it("handles non-existent bundleRoot gracefully", () => {
     expect(() => backfillBundleMeta("/nonexistent/bundle/root")).not.toThrow()
+  })
+})
+
+describe("previousRuntimeVersion in BundleMeta", () => {
+  afterEach(() => {
+    resetBackfillTracking()
+  })
+
+  it("createBundleMeta does not set previousRuntimeVersion on first create", () => {
+    const meta = createBundleMeta()
+    expect(meta.previousRuntimeVersion).toBeUndefined()
+  })
+
+  it("backfillBundleMeta preserves existing previousRuntimeVersion", () => {
+    const bundleRoot = createTempBundleRoot()
+    const metaPath = path.join(bundleRoot, "bundle-meta.json")
+    const existingMeta = {
+      runtimeVersion: "0.0.1",
+      bundleSchemaVersion: 1,
+      lastUpdated: "2025-01-01T00:00:00Z",
+      previousRuntimeVersion: "0.0.0",
+    }
+    fs.writeFileSync(metaPath, JSON.stringify(existingMeta), "utf-8")
+
+    backfillBundleMeta(bundleRoot)
+
+    const meta = JSON.parse(fs.readFileSync(metaPath, "utf-8")) as BundleMeta
+    expect(meta.previousRuntimeVersion).toBe("0.0.0")
+  })
+
+  it("reads bundle-meta.json without previousRuntimeVersion field", () => {
+    const bundleRoot = createTempBundleRoot()
+    const metaPath = path.join(bundleRoot, "bundle-meta.json")
+    const existingMeta = {
+      runtimeVersion: "0.0.1",
+      bundleSchemaVersion: 1,
+      lastUpdated: "2025-01-01T00:00:00Z",
+    }
+    fs.writeFileSync(metaPath, JSON.stringify(existingMeta), "utf-8")
+
+    const raw = fs.readFileSync(metaPath, "utf-8")
+    const meta = JSON.parse(raw) as BundleMeta
+    expect(meta.runtimeVersion).toBe("0.0.1")
+    expect(meta.previousRuntimeVersion).toBeUndefined()
+  })
+
+  it("reads bundle-meta.json with previousRuntimeVersion field", () => {
+    const bundleRoot = createTempBundleRoot()
+    const metaPath = path.join(bundleRoot, "bundle-meta.json")
+    const existingMeta = {
+      runtimeVersion: "0.1.0",
+      bundleSchemaVersion: 1,
+      lastUpdated: "2025-01-01T00:00:00Z",
+      previousRuntimeVersion: "0.0.9",
+    }
+    fs.writeFileSync(metaPath, JSON.stringify(existingMeta), "utf-8")
+
+    const raw = fs.readFileSync(metaPath, "utf-8")
+    const meta = JSON.parse(raw) as BundleMeta
+    expect(meta.runtimeVersion).toBe("0.1.0")
+    expect(meta.previousRuntimeVersion).toBe("0.0.9")
+  })
+})
+
+describe("getChangelogPath", () => {
+  it("returns a valid absolute path", () => {
+    const result = getChangelogPath()
+    expect(path.isAbsolute(result)).toBe(true)
+  })
+
+  it("returns a path ending with changelog.json", () => {
+    const result = getChangelogPath()
+    expect(result).toMatch(/changelog\.json$/)
+  })
+
+  it("points to an existing file", () => {
+    const result = getChangelogPath()
+    expect(fs.existsSync(result)).toBe(true)
   })
 })
