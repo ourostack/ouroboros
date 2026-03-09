@@ -216,6 +216,11 @@ export function stripLastToolCalls(
   }
 }
 
+// Roles that end a tool-result scan. When scanning forward from an assistant
+// message, stop at the next assistant or user message (tool results must be
+// adjacent to their originating assistant message).
+const TOOL_SCAN_BOUNDARY_ROLES: ReadonlySet<string> = new Set(["assistant", "user"])
+
 // Repair orphaned tool_calls and tool results anywhere in the message history.
 // 1. If an assistant message has tool_calls but missing tool results, inject synthetic error results.
 // 2. If a tool result's tool_call_id doesn't match any tool_calls in a preceding assistant message, remove it.
@@ -253,12 +258,11 @@ export function repairOrphanedToolCalls(
 
     // Collect tool result IDs that follow this assistant message
     const resultIds = new Set<string>();
-    const BOUNDARY_ROLES: ReadonlySet<string> = new Set(["assistant", "user"])
     for (let j = i + 1; j < messages.length; j++) {
       const following = messages[j];
       if (following.role === "tool") {
         resultIds.add((following as OpenAI.ChatCompletionToolMessageParam).tool_call_id);
-      } else if (BOUNDARY_ROLES.has(following.role)) {
+      } else if (TOOL_SCAN_BOUNDARY_ROLES.has(following.role)) {
         break;
       }
     }
