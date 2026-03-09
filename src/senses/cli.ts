@@ -353,6 +353,14 @@ export interface RunCliSessionOptions {
   pasteDebounceMs?: number;
   /** Pre-built messages to start the session with (skips buildSystem if provided) */
   messages?: OpenAI.ChatCompletionMessageParam[];
+  /** ToolContext passed through to runAgent */
+  toolContext?: ToolContext;
+  /** Called before processing each input line. Return allowed:false to skip the turn. */
+  onInput?: (input: string) => { allowed: boolean; reply?: string };
+  /** Called after each agent turn completes (post-runAgent). */
+  onTurnEnd?: (messages: OpenAI.ChatCompletionMessageParam[], result: { usage?: UsageData }) => void | Promise<void>;
+  /** Called when /new command resets the session. */
+  onNewSession?: () => void | Promise<void>;
 }
 
 export interface RunCliSessionResult {
@@ -367,8 +375,7 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
   registerDefaultCommands(registry)
 
   const messages: OpenAI.ChatCompletionMessageParam[] = options.messages
-    ? [...options.messages]
-    : [{ role: "system", content: await buildSystem("cli") }]
+    ?? [{ role: "system", content: await buildSystem("cli") }]
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true })
   const ctrl = new InputController(rl)
@@ -466,6 +473,19 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
       if (closed) break
       if (!input.trim()) { process.stdout.write("\x1b[36m> \x1b[0m"); continue }
 
+      // Optional input gate (e.g. trust gate in main)
+      if (options.onInput) {
+        const gate = options.onInput(input)
+        if (!gate.allowed) {
+          if (gate.reply) {
+            process.stdout.write(`${gate.reply}\n`)
+          }
+          if (closed) break
+          process.stdout.write("\x1b[36m> \x1b[0m")
+          continue
+        }
+      }
+
       // Check for slash commands
       const parsed = parseSlashCommand(input)
       if (parsed) {
@@ -476,6 +496,7 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
           } else if (dispatchResult.result.action === "new") {
             messages.length = 0
             messages.push({ role: "system", content: await buildSystem("cli") })
+            await options.onNewSession?.()
             // eslint-disable-next-line no-console -- terminal UX: session cleared
             console.log("session cleared")
             process.stdout.write("\x1b[36m> \x1b[0m")
@@ -504,12 +525,14 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
       currentAbort = new AbortController()
       const traceId = createTraceId()
       ctrl.suppress(() => currentAbort!.abort())
+      let result: { usage?: UsageData } | undefined
       try {
-        await runAgent(messages, cliCallbacks, "cli", currentAbort.signal, {
+        result = await runAgent(messages, cliCallbacks, "cli", currentAbort.signal, {
           toolChoiceRequired: getEffectiveToolChoiceRequired(),
           traceId,
           tools: options.tools,
           execTool: wrappedExecTool,
+          toolContext: options.toolContext,
         })
       } catch {
         // AbortError -- silently return to prompt
@@ -531,6 +554,11 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
       }
 
       process.stdout.write("\n\n")
+
+      // Post-turn hook (session persistence, pending drain, prompt refresh, etc.)
+      if (options.onTurnEnd) {
+        await options.onTurnEnd(messages, result ?? { usage: undefined })
+      }
 
       if (closed) break
       process.stdout.write("\x1b[36m> \x1b[0m")
@@ -617,177 +645,38 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
     saveSession(sessPath, sessionMessages)
   }
 
-  // Note: main() does NOT use runCliSession because it has additional
-  // session management, trust gate, and pending drain concerns that are
-  // specific to the standard agent flow. runCliSession is designed for
-  // simpler use cases like the adoption specialist.
-
-  const registry = createCommandRegistry()
-  registerDefaultCommands(registry)
-
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true })
-  const ctrl = new InputController(rl)
-  let currentAbort: AbortController | null = null
-  const history: string[] = []
-  let closed = false
-  rl.on("close", () => { closed = true })
-
-  // eslint-disable-next-line no-console -- terminal UX: startup banner
-  console.log(`\n${getAgentName()} (type /commands for help)\n`)
-
-  const cliCallbacks = createCliCallbacks()
-
-  process.stdout.write("\x1b[36m> \x1b[0m")
-
-  // Ctrl-C at the input prompt: clear line or warn/exit
-  // readline with terminal:true catches Ctrl-C in raw mode (no ^C echo)
-  rl.on("SIGINT", () => {
-    const rlInt = rl as ReadlineInternals
-    const currentLine = rlInt.line || ""
-    const result = handleSigint(rl, currentLine)
-    if (result === "clear") {
-      rlInt.line = "";
-      rlInt.cursor = 0
-      process.stdout.write("\r\x1b[K\x1b[36m> \x1b[0m")
-    } else if (result === "warn") {
-      rlInt.line = "";
-      rlInt.cursor = 0
-      process.stdout.write("\r\x1b[K")
-      process.stderr.write("press Ctrl-C again to exit\n")
-      process.stdout.write("\x1b[36m> \x1b[0m")
-    } else {
-      rl.close()
-    }
-  })
-
-  // Debounced line iterator: collects rapid-fire lines (paste) into a single input
-  async function* debouncedLines(source: AsyncIterable<string>): AsyncGenerator<string> {
-    if (pasteDebounceMs <= 0) {
-      yield* source
-      return
-    }
-    const iter = source[Symbol.asyncIterator]()
-    while (true) {
-      const first = await iter.next()
-      if (first.done) break
-      // Collect any lines that arrive within the debounce window (paste detection)
-      const lines = [first.value]
-      let more = true
-      while (more) {
-        const raced = await Promise.race([
-          iter.next().then((r) => ({ kind: "line" as const, result: r })),
-          new Promise<{ kind: "timeout" }>((r) => setTimeout(() => r({ kind: "timeout" }), pasteDebounceMs)),
-        ])
-        if (raced.kind === "timeout") {
-          more = false
-        } else if (raced.result.done) {
-          more = false
-        } else {
-          lines.push(raced.result.value)
-        }
-      }
-      yield lines.join("\n")
-    }
-  }
-
   try {
-    for await (const input of debouncedLines(rl)) {
-      if (closed) break
-      if (!input.trim()) { process.stdout.write("\x1b[36m> \x1b[0m"); continue }
-
-      const trustGate = enforceTrustGate({
-        friend: resolvedContext.friend,
-        provider: "local",
-        externalId: localExternalId,
-        channel: "cli",
-      })
-      if (!trustGate.allowed) {
-        if (trustGate.reason === "stranger_first_reply") {
-          process.stdout.write(`${trustGate.autoReply}\n`)
-        }
-        if (closed) break
-        process.stdout.write("\x1b[36m> \x1b[0m")
-        continue
-      }
-
-      // Check for slash commands
-      const parsed = parseSlashCommand(input)
-      if (parsed) {
-        const dispatchResult = registry.dispatch(parsed.command, { channel: "cli" })
-        if (dispatchResult.handled && dispatchResult.result) {
-          if (dispatchResult.result.action === "exit") {
-            break
-          } else if (dispatchResult.result.action === "new") {
-            sessionMessages.length = 0
-            sessionMessages.push({ role: "system", content: await buildSystem("cli") })
-            deleteSession(sessPath)
-            // eslint-disable-next-line no-console -- terminal UX: session cleared
-            console.log("session cleared")
-            process.stdout.write("\x1b[36m> \x1b[0m")
-            continue
-          } else if (dispatchResult.result.action === "response") {
-            // eslint-disable-next-line no-console -- terminal UX: command dispatch result
-            console.log(dispatchResult.result.message || "")
-            process.stdout.write("\x1b[36m> \x1b[0m")
-            continue
+    await runCliSession({
+      agentName: getAgentName(),
+      pasteDebounceMs,
+      messages: sessionMessages,
+      toolContext: cliToolContext,
+      onInput: () => {
+        const trustGate = enforceTrustGate({
+          friend: resolvedContext.friend,
+          provider: "local",
+          externalId: localExternalId,
+          channel: "cli",
+        })
+        if (!trustGate.allowed) {
+          return {
+            allowed: false,
+            reply: trustGate.reason === "stranger_first_reply" ? trustGate.autoReply : undefined,
           }
         }
-      }
-
-      // Re-style the echoed input lines (readline terminal:true echoes each line)
-      // For multiline paste, each line was echoed separately — erase them all
-      const cols = process.stdout.columns || 80
-      const inputLines = input.split("\n")
-      let echoRows = 0
-      for (const line of inputLines) {
-        echoRows += Math.ceil((2 + line.length) / cols) // "> " prefix + line content
-      }
-      process.stdout.write(`\x1b[${echoRows}A\x1b[K` + `\x1b[1m> ${inputLines[0]}${inputLines.length > 1 ? ` (+${inputLines.length - 1} lines)` : ""}\x1b[0m\n\n`)
-
-      sessionMessages.push({ role: "user", content: input })
-      addHistory(history, input)
-
-      currentAbort = new AbortController()
-      const traceId = createTraceId()
-      ctrl.suppress(() => currentAbort!.abort())
-      let result: { usage?: UsageData } | undefined
-      try {
-        result = await runAgent(sessionMessages, cliCallbacks, "cli", currentAbort.signal, {
-          toolChoiceRequired: getToolChoiceRequired(),
-          toolContext: cliToolContext,
-          traceId,
-        })
-      } catch {
-        // AbortError — silently return to prompt
-      }
-      cliCallbacks.flushMarkdown()
-      ctrl.restore()
-      currentAbort = null
-
-      // Safety net: never silently swallow an empty response
-      const lastMsg = sessionMessages[sessionMessages.length - 1]
-      if (lastMsg?.role === "assistant" && !(typeof lastMsg.content === "string" ? lastMsg.content : "").trim()) {
-        process.stderr.write("\x1b[33m(empty response)\x1b[0m\n")
-      }
-
-      process.stdout.write("\n\n")
-
-      postTurn(sessionMessages, sessPath, result?.usage)
-      await accumulateFriendTokens(friendStore, resolvedContext.friend.id, result?.usage)
-
-      // Post-turn: drain any pending messages that arrived during runAgent
-      drainToMessages()
-
-      // Post-turn: refresh system prompt so active sessions metadata is current
-      await refreshSystemPrompt(sessionMessages, "cli", undefined, resolvedContext)
-
-      if (closed) break
-      process.stdout.write("\x1b[36m> \x1b[0m")
-    }
+        return { allowed: true }
+      },
+      onTurnEnd: async (msgs, result) => {
+        postTurn(msgs, sessPath, result.usage)
+        await accumulateFriendTokens(friendStore, resolvedContext.friend.id, result.usage)
+        drainToMessages()
+        await refreshSystemPrompt(msgs, "cli", undefined, resolvedContext)
+      },
+      onNewSession: () => {
+        deleteSession(sessPath)
+      },
+    })
   } finally {
     sessionLock?.release()
-    rl.close()
-    // eslint-disable-next-line no-console -- terminal UX: goodbye
-    console.log("bye")
   }
 }
