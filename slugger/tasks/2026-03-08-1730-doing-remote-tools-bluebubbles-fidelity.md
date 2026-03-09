@@ -81,7 +81,7 @@ Fix the current trusted remote iMessage experience so Slugger can actually opera
 **Acceptance**: The artifacts directory contains enough baseline evidence to compare pre/post behavior for tool gating, coding inspectability, media hydration, and activity lane behavior.
 
 ### ⬜ Unit 1a: Trusted Remote Tool Access — Tests
-**What**: Add failing tests that encode the desired simple rule: trusted one-to-one BlueBubbles conversations get the full feasible local tool surface, while genuinely shared remote contexts remain appropriately distinct.
+**What**: Add failing tests around `src/repertoire/tools.ts` that encode the desired simple rule: trusted one-to-one BlueBubbles conversations, keyed off the resolved friend/channel context that already includes trust level, get the full feasible local tool surface, while genuinely shared remote contexts remain appropriately distinct.
 **Output**: New or updated tests covering the remote tool-gating decision path.
 **Acceptance**: Tests exist and fail red against the current blanket denial behavior.
 
@@ -96,12 +96,12 @@ Fix the current trusted remote iMessage experience so Slugger can actually opera
 **Acceptance**: Changed tool-gating paths have full coverage, tests stay green, and no broader policy debt is introduced.
 
 ### ⬜ Unit 2a: Remote Coding Inspectability — Tests
-**What**: Add failing tests for remote coding inspection so active sessions expose enough recent output to understand progress or failure from a remote sense.
-**Output**: Tests covering `coding_status` and/or a dedicated `coding_tail` path for active sessions, plus tests for the observed nested-session failure mode.
+**What**: Add failing tests around `src/repertoire/coding/tools.ts`, `src/repertoire/coding/types.ts`, `src/repertoire/coding/manager.ts`, and `src/repertoire/coding/spawner.ts` so active sessions expose enough recent output to understand progress or failure from a remote sense.
+**Output**: Tests covering `coding_status` and/or a dedicated `coding_tail` path for active sessions, plus tests for the observed remote runner invocation failure that currently dead-ends Claude/Codex use.
 **Acceptance**: Tests fail red because the current tool surface does not expose enough live output or a working remote coding path.
 
 ### ⬜ Unit 2b: Remote Coding Inspectability — Implementation
-**What**: Expose recent stdout/stderr for active coding sessions in the supported remote workflow and resolve the observed nested-session dead-end with the minimum necessary change.
+**What**: Expose recent stdout/stderr for active coding sessions in the supported remote workflow and resolve the observed remote runner invocation dead-end with the minimum necessary change.
 **Output**: Updated coding tool surface and any minimal workflow/status changes required for truthful remote use.
 **Acceptance**: Unit 2a tests pass green and a remote agent can inspect active coding output without guessing.
 
@@ -196,3 +196,4 @@ Fix the current trusted remote iMessage experience so Slugger can actually opera
 
 ## Progress Log
 - 2026-03-08 17:38 Created from planning doc.
+- 2026-03-08 17:42 Validation pass corrected the remote-coding scope to the real runner-spawn and coding-tool surfaces.
