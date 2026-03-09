@@ -37,7 +37,6 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
-      contents: write
       id-token: write
     steps:
       - name: Checkout
@@ -55,8 +54,12 @@ jobs:
       - name: Install Dependencies
         run: npm ci
 
-      - name: Bump CLI prerelease version
-        run: npm version prerelease --preid=alpha --no-git-tag-version
+      - name: Derive next CLI version from npm registry
+        run: |
+          CURRENT=$(npm view @ouro.bot/cli dist-tags.alpha 2>/dev/null || echo "0.1.0-alpha.0")
+          NEXT=$((${CURRENT##*.} + 1))
+          npm version "0.1.0-alpha.${NEXT}" --no-git-tag-version
+          echo "Publishing @ouro.bot/cli@0.1.0-alpha.${NEXT}"
 
       - name: Build
         run: npm run build
@@ -64,18 +67,14 @@ jobs:
       - name: Publish @ouro.bot/cli
         run: npm publish --access public --provenance --tag alpha
 
-      - name: Bump wrapper prerelease version
+      - name: Derive next wrapper version from npm registry
         working-directory: packages/ouro.bot
-        run: npm version prerelease --preid=alpha --no-git-tag-version
+        run: |
+          CURRENT=$(npm view ouro.bot dist-tags.alpha 2>/dev/null || echo "0.1.0-alpha.0")
+          NEXT=$((${CURRENT##*.} + 1))
+          npm version "0.1.0-alpha.${NEXT}" --no-git-tag-version
+          echo "Publishing ouro.bot@0.1.0-alpha.${NEXT}"
 
       - name: Publish ouro.bot
         working-directory: packages/ouro.bot
         run: npm publish --access public --provenance --tag alpha
-
-      - name: Commit version bumps
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add package.json package-lock.json packages/ouro.bot/package.json
-          git commit -m "chore: bump alpha.$(node -p 'require("./package.json").version.split(".").pop()') [skip ci]"
-          git push
