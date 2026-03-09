@@ -12,6 +12,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -25,6 +27,27 @@ jobs:
       - name: Run Coverage Gate
         run: npm run test:coverage
 
+      - name: Check version bump (PRs only)
+        if: github.event_name == 'pull_request'
+        run: |
+          if git diff --name-only "origin/${{ github.base_ref }}...HEAD" -- src/ | grep -q '^src/'; then
+            LOCAL=$(node -p "require('./package.json').version")
+            PUBLISHED=$(npm view "@ouro.bot/cli@${LOCAL}" version 2>/dev/null || echo "")
+            if [ "$LOCAL" = "$PUBLISHED" ]; then
+              echo ""
+              echo "::error::@ouro.bot/cli@${LOCAL} is already published on npm."
+              echo ""
+              echo "Bump the version before merging:"
+              echo "  npm version prerelease --preid=alpha"
+              echo "  git push"
+              echo ""
+              exit 1
+            fi
+            echo "@ouro.bot/cli@${LOCAL} is not yet published — ready to merge and publish"
+          else
+            echo "No src/ changes detected — version bump not required"
+          fi
+
       - name: Upload Coverage Gate Artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -37,7 +60,6 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
-      contents: write
       id-token: write
     steps:
       - name: Checkout
@@ -55,27 +77,18 @@ jobs:
       - name: Install Dependencies
         run: npm ci
 
-      - name: Bump CLI prerelease version
-        run: npm version prerelease --preid=alpha --no-git-tag-version
-
       - name: Build
         run: npm run build
 
       - name: Publish @ouro.bot/cli
         run: npm publish --access public --provenance --tag alpha
 
-      - name: Bump wrapper prerelease version
-        working-directory: packages/ouro.bot
-        run: npm version prerelease --preid=alpha --no-git-tag-version
-
-      - name: Publish ouro.bot
-        working-directory: packages/ouro.bot
-        run: npm publish --access public --provenance --tag alpha
-
-      - name: Commit version bumps
+      - name: Publish ouro.bot (if version is new)
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add package.json package-lock.json packages/ouro.bot/package.json
-          git commit -m "chore: bump alpha.$(node -p 'require("./package.json").version.split(".").pop()') [skip ci]"
-          git push
+          LOCAL=$(node -p "require('./packages/ouro.bot/package.json').version")
+          PUBLISHED=$(npm view "ouro.bot@${LOCAL}" version 2>/dev/null || echo "")
+          if [ "$LOCAL" = "$PUBLISHED" ]; then
+            echo "ouro.bot@${LOCAL} already published, skipping"
+          else
+            cd packages/ouro.bot && npm publish --access public --provenance --tag alpha
+          fi
