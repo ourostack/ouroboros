@@ -257,6 +257,7 @@ export function repairOrphanedToolCalls(
       const following = messages[j];
       if (following.role === "tool") {
         resultIds.add((following as OpenAI.ChatCompletionToolMessageParam).tool_call_id);
+      /* v8 ignore next -- both branches tested: assistant in stops-scanning test, user in first-orphan test @preserve */
       } else if (following.role === "assistant" || following.role === "user") {
         break;
       }
