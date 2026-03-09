@@ -74,7 +74,7 @@ import { listSkills, loadSkill } from "../../repertoire/skills"
 
 describe("execTool", () => {
   let execTool: (name: string, args: any, ctx?: any) => Promise<string>
-  let setTestConfig: (partial: any) => void
+  let patchRuntimeConfig: (partial: any) => void
 
   beforeEach(async () => {
     vi.resetModules()
@@ -110,7 +110,7 @@ describe("execTool", () => {
     mockTaskModule.boardSessions.mockReset().mockReturnValue([])
     const config = await import("../../heart/config")
     config.resetConfigCache()
-    setTestConfig = config.setTestConfig
+    patchRuntimeConfig = config.patchRuntimeConfig
     const tools = await import("../../repertoire/tools")
     execTool = tools.execTool
   })
@@ -283,11 +283,11 @@ describe("execTool", () => {
 
   // ── web_search ──
   it("web_search calls perplexity API and returns results", async () => {
-    setTestConfig({ integrations: { perplexityApiKey: "test-key" } })
+    patchRuntimeConfig({ integrations: { perplexityApiKey: "test-key" } })
     vi.resetModules()
     const config = await import("../../heart/config")
     config.resetConfigCache()
-    config.setTestConfig({ integrations: { perplexityApiKey: "test-key" } })
+    config.patchRuntimeConfig({ integrations: { perplexityApiKey: "test-key" } })
 
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
@@ -310,7 +310,7 @@ describe("execTool", () => {
     vi.resetModules()
     const config = await import("../../heart/config")
     config.resetConfigCache()
-    config.setTestConfig({ integrations: {} })
+    config.patchRuntimeConfig({ integrations: {} })
 
     const tools = await import("../../repertoire/tools")
     const result = await tools.execTool("web_search", { query: "test" })
@@ -321,7 +321,7 @@ describe("execTool", () => {
     vi.resetModules()
     const config = await import("../../heart/config")
     config.resetConfigCache()
-    config.setTestConfig({ integrations: { perplexityApiKey: "test-key" } })
+    config.patchRuntimeConfig({ integrations: { perplexityApiKey: "test-key" } })
 
     const mockFetch = vi.fn().mockResolvedValue({
       ok: false,
@@ -340,7 +340,7 @@ describe("execTool", () => {
     vi.resetModules()
     const config = await import("../../heart/config")
     config.resetConfigCache()
-    config.setTestConfig({ integrations: { perplexityApiKey: "test-key" } })
+    config.patchRuntimeConfig({ integrations: { perplexityApiKey: "test-key" } })
 
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
@@ -358,7 +358,7 @@ describe("execTool", () => {
     vi.resetModules()
     const config = await import("../../heart/config")
     config.resetConfigCache()
-    config.setTestConfig({ integrations: { perplexityApiKey: "test-key" } })
+    config.patchRuntimeConfig({ integrations: { perplexityApiKey: "test-key" } })
 
     const mockFetch = vi.fn().mockRejectedValue(new Error("fetch failed"))
     vi.stubGlobal("fetch", mockFetch)

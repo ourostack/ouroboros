@@ -71,7 +71,7 @@ vi.mock("../../../heart/config", () => ({
   getTeamsChannelConfig: vi.fn(() => ({ skipConfirmation: true, port: 3978 })),
   getIntegrationsConfig: vi.fn(() => ({ perplexityApiKey: "", openaiEmbeddingsApiKey: "" })),
   getOpenAIEmbeddingsApiKey: vi.fn(() => ""),
-  setTestConfig: vi.fn(),
+  patchRuntimeConfig: vi.fn(),
   sessionPath: vi.fn(() => "/mock/session.json"),
   logPath: vi.fn(() => "/mock/log.ndjson"),
   getLogsDir: vi.fn(() => "/mock/logs"),

@@ -112,7 +112,7 @@ async function setupMinimax(apiKey = "test-key", model = "test-model") {
   await setAgentProvider("minimax")
   const config = await import("../../heart/config")
   config.resetConfigCache()
-  config.setTestConfig({ providers: { minimax: { apiKey, model } } })
+  config.patchRuntimeConfig({ providers: { minimax: { apiKey, model } } })
 }
 
 async function setupAzure(
@@ -124,7 +124,7 @@ async function setupAzure(
   await setAgentProvider("azure")
   const config = await import("../../heart/config")
   config.resetConfigCache()
-  config.setTestConfig({ providers: { azure: { apiKey, endpoint, deployment, modelName } } })
+  config.patchRuntimeConfig({ providers: { azure: { apiKey, endpoint, deployment, modelName } } })
 }
 
 function makeAnthropicSetupToken(): string {
@@ -159,7 +159,7 @@ async function setupConfig(partial: Record<string, unknown>) {
   else await setAgentProvider("minimax")
   const config = await import("../../heart/config")
   config.resetConfigCache()
-  config.setTestConfig(partial as any)
+  config.patchRuntimeConfig(partial as any)
 }
 
 async function resetConfig() {
