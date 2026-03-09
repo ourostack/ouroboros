@@ -5,7 +5,9 @@ import * as path from "path"
 
 // Hoisted mocks (available before vi.mock factories run)
 const mocks = vi.hoisted(() => ({
-  applyPendingUpdates: vi.fn(async () => undefined),
+  applyPendingUpdates: vi.fn(async () => ({ updated: [] })),
+  startUpdateChecker: vi.fn(),
+  stopUpdateChecker: vi.fn(),
 }))
 
 // Mock update-hooks module
@@ -19,6 +21,17 @@ vi.mock("../../../heart/daemon/update-hooks", () => ({
 // Mock bundle-meta hook (daemon imports this)
 vi.mock("../../../heart/daemon/hooks/bundle-meta", () => ({
   bundleMetaHook: vi.fn(),
+}))
+
+// Mock update-checker
+vi.mock("../../../heart/daemon/update-checker", () => ({
+  startUpdateChecker: (...a: any[]) => mocks.startUpdateChecker(...a),
+  stopUpdateChecker: (...a: any[]) => mocks.stopUpdateChecker(...a),
+}))
+
+// Mock staged-restart (daemon imports this)
+vi.mock("../../../heart/daemon/staged-restart", () => ({
+  performStagedRestart: vi.fn(),
 }))
 
 // Mock bundle-manifest to control getPackageVersion
@@ -39,6 +52,8 @@ describe("daemon boot: applyPendingUpdates wiring", () => {
   afterEach(() => {
     vi.restoreAllMocks()
     mocks.applyPendingUpdates.mockClear()
+    mocks.startUpdateChecker.mockClear()
+    mocks.stopUpdateChecker.mockClear()
   })
 
   function makeDaemon(socketPath: string, bundlesRoot?: string) {
@@ -116,6 +131,39 @@ describe("daemon boot: applyPendingUpdates wiring", () => {
     await daemon.stop()
 
     expect(callOrder).toEqual(["applyPendingUpdates", "startAutoStartAgents"])
+
+    fs.rmSync(bundlesRoot, { recursive: true, force: true })
+  })
+
+  it("starts update checker during start()", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-boot-checker-"))
+    const socketPath = tmpSocketPath("daemon-boot-checker")
+    const { daemon } = makeDaemon(socketPath, bundlesRoot)
+
+    await daemon.start()
+    await daemon.stop()
+
+    expect(mocks.startUpdateChecker).toHaveBeenCalledTimes(1)
+    expect(mocks.startUpdateChecker).toHaveBeenCalledWith(
+      expect.objectContaining({
+        currentVersion: "0.1.0-test",
+        deps: expect.objectContaining({ distTag: "alpha" }),
+      }),
+    )
+
+    fs.rmSync(bundlesRoot, { recursive: true, force: true })
+  })
+
+  it("stops update checker during stop()", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-boot-stop-checker-"))
+    const socketPath = tmpSocketPath("daemon-boot-stop-checker")
+    const { daemon } = makeDaemon(socketPath, bundlesRoot)
+
+    await daemon.start()
+    mocks.stopUpdateChecker.mockClear()
+    await daemon.stop()
+
+    expect(mocks.stopUpdateChecker).toHaveBeenCalledTimes(1)
 
     fs.rmSync(bundlesRoot, { recursive: true, force: true })
   })
