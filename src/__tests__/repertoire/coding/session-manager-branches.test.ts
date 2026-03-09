@@ -158,9 +158,13 @@ describe("coding session manager branch coverage", () => {
 
     proc.emitStdout("status: NEEDS_REVIEW")
     expect(manager.getSession(session.id)?.status).toBe("waiting_input")
+    expect(manager.getSession(session.id)?.stdoutTail).toContain("status: NEEDS_REVIEW")
 
     proc.emitStderr("❌ blocked")
     expect(manager.getSession(session.id)?.status).toBe("waiting_input")
+    expect(manager.getSession(session.id)?.stderrTail).toContain("❌ blocked")
+    expect(manager.listSessions()[0]?.stdoutTail).toContain("status: NEEDS_REVIEW")
+    expect(manager.listSessions()[0]?.stderrTail).toContain("❌ blocked")
 
     proc.emitStdout("✅ all units complete")
     expect(manager.getSession(session.id)?.status).toBe("completed")

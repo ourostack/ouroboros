@@ -251,7 +251,7 @@ describe("execTool", () => {
     expect(result).toBe("claude response")
     expect(spawnSync).toHaveBeenCalledWith(
       "claude",
-      ["-p", "--dangerously-skip-permissions", "--add-dir", "."],
+      ["-p", "--no-session-persistence", "--dangerously-skip-permissions", "--add-dir", "."],
       expect.objectContaining({ input: "What is 2+2?" })
     )
   })

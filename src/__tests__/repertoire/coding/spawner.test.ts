@@ -46,6 +46,7 @@ describe("coding spawner", () => {
     expect(result.command).toBe("claude")
     expect(result.args).toEqual([
       "-p",
+      "--no-session-persistence",
       "--dangerously-skip-permissions",
       "--add-dir",
       "/Users/test/AgentWorkspaces/ouroboros",
@@ -65,6 +66,7 @@ describe("coding spawner", () => {
       "claude",
       [
         "-p",
+        "--no-session-persistence",
         "--dangerously-skip-permissions",
         "--add-dir",
         "/Users/test/AgentWorkspaces/ouroboros",
