@@ -121,9 +121,11 @@ jobs:
       - name: Build for wrapper publish guard
         run: npm run build
 
-      - name: Publish ouro.bot (if wrapper sync passes)
+      - name: Check ouro.bot wrapper publish needed
+        id: wrapper-check
         run: |
           node - <<'NODE'
+          const fs = require('fs')
           const { execSync } = require('child_process')
           const { assessWrapperPublishSync } = require('./dist/heart/daemon/wrapper-publish-guard.js')
 
@@ -149,13 +151,17 @@ jobs:
             process.exit(1)
           }
           if (changedFiles.length === 0) {
-            console.log('wrapper package unchanged')
+            console.log('wrapper package unchanged — skipping publish')
             process.exit(0)
           }
           if (publishedVersion === localVersion) {
-            console.log(`ouro.bot@${localVersion} already published, skipping`)
+            console.log(`ouro.bot@${localVersion} already published — skipping`)
             process.exit(0)
           }
           console.log(result.message)
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, 'should_publish=true\n')
           NODE
-          cd packages/ouro.bot && npm publish --access public --provenance --tag latest
+
+      - name: Publish ouro.bot
+        if: steps.wrapper-check.outputs.should_publish == 'true'
+        run: cd packages/ouro.bot && npm publish --access public --provenance --tag latest
