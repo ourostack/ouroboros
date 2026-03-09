@@ -52,6 +52,22 @@ export interface CodingSession {
   failure: CodingFailureDiagnostics | null
 }
 
+export type CodingSessionUpdateKind =
+  | "spawned"
+  | "progress"
+  | "waiting_input"
+  | "stalled"
+  | "completed"
+  | "failed"
+  | "killed"
+
+export interface CodingSessionUpdate {
+  kind: CodingSessionUpdateKind
+  session: CodingSession
+  stream?: "stdout" | "stderr"
+  text?: string
+}
+
 export interface CodingActionResult {
   ok: boolean
   message: string

@@ -32,3 +32,4 @@ export type { CodingActionResult, CodingFailureDiagnostics, CodingRunner, Coding
 export { CodingSessionMonitor } from "./monitor"
 export type { CodingMonitorReport, CodingMonitorSummary, CodingRecoveryAction, CodingRecoveryActionType } from "./monitor"
 export { formatCodingMonitorReport } from "./reporter"
+export { attachCodingSessionFeedback, formatCodingTail } from "./feedback"

@@ -5,7 +5,13 @@ import * as path from "path"
 import { getAgentName } from "../../heart/identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { spawnCodingProcess, type CodingProcess, type SpawnCodingResult } from "./spawner"
-import type { CodingActionResult, CodingFailureDiagnostics, CodingSession, CodingSessionRequest } from "./types"
+import type {
+  CodingActionResult,
+  CodingFailureDiagnostics,
+  CodingSession,
+  CodingSessionRequest,
+  CodingSessionUpdate,
+} from "./types"
 
 interface CodingSessionRecord {
   request: CodingSessionRequest
@@ -139,6 +145,7 @@ function defaultFailureDiagnostics(
 
 export class CodingSessionManager {
   private readonly records = new Map<string, CodingSessionRecord>()
+  private readonly listeners = new Map<string, Set<(update: CodingSessionUpdate) => void | Promise<void>>>()
   private readonly spawnProcess: (request: CodingSessionRequest) => SpawnProcessResult
   private readonly nowIso: () => string
   private readonly maxRestarts: number
@@ -224,6 +231,7 @@ export class CodingSessionManager {
     })
 
     this.persistState()
+    this.notifyListeners(id, { kind: "spawned", session: cloneSession(session) })
     return cloneSession(session)
   }
 
@@ -236,6 +244,20 @@ export class CodingSessionManager {
   getSession(sessionId: string): CodingSession | null {
     const record = this.records.get(sessionId)
     return record ? cloneSession(record.session) : null
+  }
+
+  subscribe(sessionId: string, listener: (update: CodingSessionUpdate) => void | Promise<void>): () => void {
+    const listeners = this.listeners.get(sessionId) ?? new Set<(update: CodingSessionUpdate) => void | Promise<void>>()
+    listeners.add(listener)
+    this.listeners.set(sessionId, listeners)
+    return () => {
+      const current = this.listeners.get(sessionId)
+      if (!current) return
+      current.delete(listener)
+      if (current.size === 0) {
+        this.listeners.delete(sessionId)
+      }
+    }
   }
 
   sendInput(sessionId: string, input: string): CodingActionResult {
@@ -280,6 +302,7 @@ export class CodingSessionManager {
     })
 
     this.persistState()
+    this.notifyListeners(sessionId, { kind: "killed", session: cloneSession(record.session) })
     return { ok: true, message: `killed ${sessionId}` }
   }
 
@@ -301,6 +324,7 @@ export class CodingSessionManager {
         message: "coding session stalled",
         meta: { id: record.session.id, elapsedMs: elapsed },
       })
+      this.notifyListeners(record.session.id, { kind: "stalled", session: cloneSession(record.session) })
 
       if (record.request.autoRestartOnStall !== false && record.session.restartCount < this.maxRestarts) {
         this.restartSession(record, "stalled")
@@ -351,6 +375,7 @@ export class CodingSessionManager {
 
   private onOutput(record: CodingSessionRecord, text: string, stream: "stdout" | "stderr"): void {
     record.session.lastActivityAt = this.nowIso()
+    let updateKind: CodingSessionUpdate["kind"] = "progress"
 
     if (stream === "stdout") {
       record.stdoutTail = appendTail(record.stdoutTail, text)
@@ -362,10 +387,12 @@ export class CodingSessionManager {
 
     if (text.includes("status: NEEDS_REVIEW") || text.includes("❌ blocked")) {
       record.session.status = "waiting_input"
+      updateKind = "waiting_input"
     }
     if (text.includes("✅ all units complete")) {
       record.session.status = "completed"
       record.session.endedAt = this.nowIso()
+      updateKind = "completed"
     }
 
     emitNervesEvent({
@@ -376,6 +403,12 @@ export class CodingSessionManager {
     })
 
     this.persistState()
+    this.notifyListeners(record.session.id, {
+      kind: updateKind,
+      session: cloneSession(record.session),
+      stream,
+      text,
+    })
   }
 
   private onExit(record: CodingSessionRecord, code: number | null, signal: NodeJS.Signals | null): void {
@@ -395,6 +428,7 @@ export class CodingSessionManager {
       record.session.status = "completed"
       record.session.endedAt = this.nowIso()
       this.persistState()
+      this.notifyListeners(record.session.id, { kind: "completed", session: cloneSession(record.session) })
       return
     }
 
@@ -423,6 +457,7 @@ export class CodingSessionManager {
     })
 
     this.persistState()
+    this.notifyListeners(record.session.id, { kind: "failed", session: cloneSession(record.session) })
   }
 
   private restartSession(record: CodingSessionRecord, reason: "stalled" | "crash"): void {
@@ -453,6 +488,27 @@ export class CodingSessionManager {
     })
 
     this.persistState()
+  }
+
+  private notifyListeners(sessionId: string, update: CodingSessionUpdate): void {
+    const listeners = this.listeners.get(sessionId)
+    if (!listeners || listeners.size === 0) return
+
+    for (const listener of listeners) {
+      void Promise.resolve(listener(update)).catch((error) => {
+        emitNervesEvent({
+          level: "warn",
+          component: "repertoire",
+          event: "repertoire.coding_feedback_listener_error",
+          message: "coding session listener failed",
+          meta: {
+            sessionId,
+            kind: update.kind,
+            reason: error instanceof Error ? error.message : String(error),
+          },
+        })
+      })
+    }
   }
 
   private loadPersistedState(): void {

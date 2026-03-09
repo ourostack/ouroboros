@@ -13,6 +13,10 @@ import { getTaskModule } from "./tasks";
 import { codingToolDefinitions } from "./coding/tools";
 import { readMemoryFacts, saveMemoryFact, searchMemoryFacts } from "../mind/memory";
 
+export interface CodingFeedbackTarget {
+  send: (message: string) => Promise<void>;
+}
+
 export interface ToolContext {
   graphToken?: string;
   adoToken?: string;
@@ -21,6 +25,7 @@ export interface ToolContext {
   context?: ResolvedContext;
   friendStore?: FriendStore;
   summarize?: (transcript: string, instruction: string) => Promise<string>;
+  codingFeedback?: CodingFeedbackTarget;
 }
 
 export type ToolHandler = (args: Record<string, string>, ctx?: ToolContext) => string | Promise<string>;

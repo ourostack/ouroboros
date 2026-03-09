@@ -9,7 +9,7 @@ vi.mock("child_process", () => ({
 class FakeProcess {
   readonly pid: number | undefined
   readonly stdin = {
-    write: vi.fn(),
+    end: vi.fn(),
   }
   readonly stdout = {
     on: vi.fn(),
@@ -48,6 +48,6 @@ describe("coding spawner defaults", () => {
       { cwd: "/Users/test/AgentWorkspaces/ouroboros", stdio: ["pipe", "pipe", "pipe"] },
     )
     expect(result.process).toBe(proc)
-    expect(proc.stdin.write).toHaveBeenCalledWith(expect.stringContaining("taskRef: task-default"))
+    expect(proc.stdin.end).toHaveBeenCalledWith(expect.stringContaining("taskRef: task-default"))
   })
 })

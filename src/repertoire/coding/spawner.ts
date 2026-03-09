@@ -85,7 +85,7 @@ export function spawnCodingProcess(request: CodingSessionRequest, deps: SpawnCod
     stdio: ["pipe", "pipe", "pipe"],
   })
 
-  proc.stdin.write(`${prompt}\n`)
+  proc.stdin.end(`${prompt}\n`)
 
   emitNervesEvent({
     component: "repertoire",

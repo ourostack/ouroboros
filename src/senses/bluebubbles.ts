@@ -311,6 +311,15 @@ export async function handleBlueBubblesEvent(
     friendStore: store,
     summarize: createSummarize(),
     context,
+    codingFeedback: {
+      send: async (message: string) => {
+        await client.sendText({
+          chat: event.chat,
+          text: message,
+          replyToMessageGuid: event.kind === "message" ? event.messageGuid : undefined,
+        })
+      },
+    },
   }
 
   const friendId = context.friend.id

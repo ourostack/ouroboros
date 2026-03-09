@@ -206,6 +206,7 @@ export function summarizeArgs(name: string, args: Record<string, string>): strin
   if (name === "task_board" || name === "task_board_deps" || name === "task_board_sessions") return "";
   if (name === "coding_spawn") return summarizeKeyValues(args, ["runner", "workdir", "taskRef"]);
   if (name === "coding_status") return summarizeKeyValues(args, ["sessionId"]);
+  if (name === "coding_tail") return summarizeKeyValues(args, ["sessionId"]);
   if (name === "coding_send_input") return summarizeKeyValues(args, ["sessionId", "input"]);
   if (name === "coding_kill") return summarizeKeyValues(args, ["sessionId"]);
   if (name === "claude") return summarizeKeyValues(args, ["prompt"]);

@@ -1,0 +1,160 @@
+import { emitNervesEvent } from "../../nerves/runtime"
+import type { CodingSession, CodingSessionUpdate } from "./types"
+
+export interface CodingSessionFeedbackManagerLike {
+  subscribe(sessionId: string, listener: (update: CodingSessionUpdate) => void | Promise<void>): () => void
+}
+
+export interface CodingFeedbackTarget {
+  send(message: string): Promise<void>
+}
+
+const TERMINAL_UPDATE_KINDS = new Set<CodingSessionUpdate["kind"]>(["completed", "failed", "killed"])
+
+function clip(text: string, maxLength = 280): string {
+  const trimmed = text.trim()
+  if (trimmed.length <= maxLength) return trimmed
+  return `${trimmed.slice(0, maxLength - 3)}...`
+}
+
+function isNoiseLine(line: string): boolean {
+  return (
+    /^-+$/.test(line)
+    || /^Reading prompt from stdin/i.test(line)
+    || /^OpenAI Codex v/i.test(line)
+    || /^workdir:/i.test(line)
+    || /^model:/i.test(line)
+    || /^provider:/i.test(line)
+    || /^approval:/i.test(line)
+    || /^sandbox:/i.test(line)
+    || /^reasoning effort:/i.test(line)
+    || /^reasoning summaries:/i.test(line)
+    || /^session id:/i.test(line)
+    || /^mcp startup:/i.test(line)
+    || /^tokens used$/i.test(line)
+    || /^\d{1,3}(,\d{3})*$/.test(line)
+    || /^\d{4}-\d{2}-\d{2}T.*\bWARN\b/.test(line)
+    || line === "user"
+    || line === "codex"
+  )
+}
+
+function lastMeaningfulLine(text: string | undefined): string | null {
+  if (!text) return null
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !isNoiseLine(line))
+  if (lines.length === 0) return null
+  return clip(lines.at(-1)!)
+}
+
+function formatSessionLabel(session: CodingSession): string {
+  return `${session.runner} ${session.id}`
+}
+
+function isSafeProgressSnippet(snippet: string): boolean {
+  const wordCount = snippet.split(/\s+/).filter(Boolean).length
+  return (
+    snippet.length <= 80
+    && wordCount <= 8
+    && !snippet.includes(":")
+    && !snippet.startsWith("**")
+    && !/^Respond with\b/i.test(snippet)
+    && !/^Coding session metadata\b/i.test(snippet)
+    && !/^sessionId\b/i.test(snippet)
+    && !/^taskRef\b/i.test(snippet)
+    && !/^parentAgent\b/i.test(snippet)
+  )
+}
+
+function pickUpdateSnippet(update: CodingSessionUpdate): string | null {
+  return (
+    lastMeaningfulLine(update.text)
+    ?? lastMeaningfulLine(update.session.stderrTail)
+    ?? lastMeaningfulLine(update.session.stdoutTail)
+  )
+}
+
+function formatUpdateMessage(update: CodingSessionUpdate): string | null {
+  const label = formatSessionLabel(update.session)
+  const snippet = pickUpdateSnippet(update)
+
+  switch (update.kind) {
+    case "progress":
+      return snippet && isSafeProgressSnippet(snippet) ? `${label}: ${snippet}` : null
+    case "waiting_input":
+      return snippet ? `${label} waiting: ${snippet}` : `${label} waiting`
+    case "stalled":
+      return snippet ? `${label} stalled: ${snippet}` : `${label} stalled`
+    case "completed":
+      return snippet ? `${label} completed: ${snippet}` : `${label} completed`
+    case "failed":
+      return snippet ? `${label} failed: ${snippet}` : `${label} failed`
+    case "killed":
+      return `${label} killed`
+    case "spawned":
+      return `${label} started`
+  }
+}
+
+export function formatCodingTail(session: CodingSession): string {
+  const stdout = session.stdoutTail.trim() || "(empty)"
+  const stderr = session.stderrTail.trim() || "(empty)"
+  return [
+    `sessionId: ${session.id}`,
+    `runner: ${session.runner}`,
+    `status: ${session.status}`,
+    `workdir: ${session.workdir}`,
+    "",
+    "[stdout]",
+    stdout,
+    "",
+    "[stderr]",
+    stderr,
+  ].join("\n")
+}
+
+export function attachCodingSessionFeedback(
+  manager: CodingSessionFeedbackManagerLike,
+  session: CodingSession,
+  target: CodingFeedbackTarget,
+): () => void {
+  let lastMessage = ""
+  let closed = false
+  let unsubscribe = () => {}
+
+  const sendMessage = (message: string | null): void => {
+    if (closed || !message || message === lastMessage) {
+      return
+    }
+    lastMessage = message
+    void Promise.resolve(target.send(message)).catch((error) => {
+      emitNervesEvent({
+        level: "warn",
+        component: "repertoire",
+        event: "repertoire.coding_feedback_error",
+        message: "coding feedback transport failed",
+        meta: {
+          sessionId: session.id,
+          reason: error instanceof Error ? error.message : String(error),
+        },
+      })
+    })
+  }
+
+  sendMessage(formatUpdateMessage({ kind: "spawned", session }))
+  unsubscribe = manager.subscribe(session.id, async (update) => {
+    sendMessage(formatUpdateMessage(update))
+    if (TERMINAL_UPDATE_KINDS.has(update.kind)) {
+      closed = true
+      unsubscribe()
+    }
+  })
+
+  return () => {
+    closed = true
+    unsubscribe()
+  }
+}

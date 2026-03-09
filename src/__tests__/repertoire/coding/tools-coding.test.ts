@@ -2,28 +2,37 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("../../../repertoire/coding", () => ({
   getCodingSessionManager: vi.fn(),
+  attachCodingSessionFeedback: vi.fn(),
+  formatCodingTail: vi.fn((session: { stdoutTail?: string; stderrTail?: string }) =>
+    `tail\n${session.stdoutTail ?? ""}\n${session.stderrTail ?? ""}`.trim(),
+  ),
 }))
 
-import { getCodingSessionManager } from "../../../repertoire/coding"
+import { attachCodingSessionFeedback, formatCodingTail, getCodingSessionManager } from "../../../repertoire/coding"
 
 describe("coding tool contracts", () => {
   const manager = {
     spawnSession: vi.fn(),
     getSession: vi.fn(),
     listSessions: vi.fn(),
+    subscribe: vi.fn(),
     sendInput: vi.fn(),
     killSession: vi.fn(),
   }
 
-  let execTool: (name: string, args: Record<string, string>) => Promise<string>
+  let execTool: (name: string, args: Record<string, string>, ctx?: Record<string, unknown>) => Promise<string>
   let summarizeArgs: (name: string, args: Record<string, string>) => string
 
   beforeEach(async () => {
     vi.resetModules()
     vi.mocked(getCodingSessionManager).mockReturnValue(manager as unknown as ReturnType<typeof getCodingSessionManager>)
+    vi.mocked(attachCodingSessionFeedback).mockReset()
+    vi.mocked(formatCodingTail).mockClear()
     manager.spawnSession.mockReset()
     manager.getSession.mockReset()
     manager.listSessions.mockReset()
+    manager.subscribe.mockReset()
+    manager.subscribe.mockReturnValue(() => {})
     manager.sendInput.mockReset()
     manager.killSession.mockReset()
 
@@ -116,6 +125,41 @@ describe("coding tool contracts", () => {
       runner: "claude",
       status: "running",
     })
+  })
+
+  it("coding_spawn attaches coding feedback relay when context provides it", async () => {
+    manager.spawnSession.mockResolvedValue({
+      id: "coding-777",
+      runner: "codex",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      taskRef: "task-777",
+      status: "running",
+      stdoutTail: "",
+      stderrTail: "",
+      pid: 4321,
+      startedAt: "2026-03-05T23:50:00.000Z",
+      lastActivityAt: "2026-03-05T23:50:00.000Z",
+      endedAt: null,
+      restartCount: 0,
+      lastExitCode: null,
+      lastSignal: null,
+      failure: null,
+    })
+    const feedback = { send: vi.fn().mockResolvedValue(undefined) }
+
+    const result = await execTool(
+      "coding_spawn",
+      {
+        runner: "codex",
+        workdir: "/Users/test/AgentWorkspaces/ouroboros",
+        prompt: "execute",
+        taskRef: "task-777",
+      },
+      { codingFeedback: feedback },
+    )
+
+    expect(attachCodingSessionFeedback).toHaveBeenCalledWith(manager, expect.objectContaining({ id: "coding-777" }), feedback)
+    expect(JSON.parse(result)).toMatchObject({ id: "coding-777", runner: "codex" })
   })
 
   it("coding_spawn omits blank optional args", async () => {
@@ -233,6 +277,37 @@ describe("coding tool contracts", () => {
     ])
   })
 
+  it("coding_tail returns readable recent stdout/stderr for a session", async () => {
+    manager.getSession.mockReturnValue({
+      id: "coding-010",
+      runner: "codex",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      status: "completed",
+      stdoutTail: "all done",
+      stderrTail: "",
+      pid: null,
+      startedAt: "2026-03-05T23:50:00.000Z",
+      lastActivityAt: "2026-03-05T23:51:00.000Z",
+      endedAt: "2026-03-05T23:52:00.000Z",
+      restartCount: 0,
+      lastExitCode: 0,
+      lastSignal: null,
+      failure: null,
+    })
+
+    const result = await execTool("coding_tail", { sessionId: "coding-010" })
+    expect(formatCodingTail).toHaveBeenCalledWith(expect.objectContaining({ id: "coding-010", runner: "codex" }))
+    expect(result).toContain("tail")
+    expect(result).toContain("all done")
+  })
+
+  it("coding_tail validates sessionId and unknown sessions", async () => {
+    expect(await execTool("coding_tail", {})).toContain("sessionId is required")
+
+    manager.getSession.mockReturnValueOnce(null)
+    expect(await execTool("coding_tail", { sessionId: "coding-missing" })).toContain("session not found: coding-missing")
+  })
+
   it("coding_send_input validates required args", async () => {
     const missingSessionId = await execTool("coding_send_input", { input: "continue" })
     expect(missingSessionId).toContain("sessionId is required")
@@ -276,6 +351,7 @@ describe("coding tool contracts", () => {
       }),
     ).toContain("runner=claude")
     expect(summarizeArgs("coding_status", { sessionId: "coding-001" })).toBe("sessionId=coding-001")
+    expect(summarizeArgs("coding_tail", { sessionId: "coding-001" })).toBe("sessionId=coding-001")
     expect(summarizeArgs("coding_send_input", { sessionId: "coding-001", input: "continue" })).toContain("input=continue")
     expect(summarizeArgs("coding_kill", { sessionId: "coding-001" })).toBe("sessionId=coding-001")
   })

@@ -572,6 +572,52 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.setTyping).toHaveBeenNthCalledWith(2, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), false)
   })
 
+  it("routes coding feedback messages back to the requesting bluebubbles chat/thread", async () => {
+    mocks.runAgent.mockImplementationOnce(async (_messages, _callbacks, _channel, _signal, options) => {
+      await options.toolContext.codingFeedback.send("codex coding-001 completed: hi")
+      return {
+        content: "done",
+        toolCalls: [],
+        outputItems: [],
+        usage: { input_tokens: 1, output_tokens: 1, reasoning_tokens: 0, total_tokens: 2 },
+      }
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    expect(mocks.sendText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chat: expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }),
+        replyToMessageGuid: "C4B2E437-A373-43F6-9740-9CD84E5893A0",
+        text: "codex coding-001 completed: hi",
+      }),
+    )
+  })
+
+  it("routes coding feedback for mutations without forcing a reply target", async () => {
+    mocks.runAgent.mockImplementationOnce(async (_messages, _callbacks, _channel, _signal, options) => {
+      await options.toolContext.codingFeedback.send("codex coding-002 completed: hi")
+      return {
+        content: "done",
+        toolCalls: [],
+        outputItems: [],
+        usage: { input_tokens: 1, output_tokens: 1, reasoning_tokens: 0, total_tokens: 2 },
+      }
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(reactionPayload)
+
+    expect(mocks.sendText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chat: expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }),
+        replyToMessageGuid: undefined,
+        text: "codex coding-002 completed: hi",
+      }),
+    )
+  })
+
   it("surfaces string-thrown activity transport failures explicitly", async () => {
     mocks.sendText
       .mockResolvedValueOnce({ messageGuid: "status-guid" })
