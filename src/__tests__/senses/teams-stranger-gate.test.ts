@@ -73,6 +73,7 @@ vi.mock("../../heart/turn-coordinator", () => ({
 
 vi.mock("../../heart/identity", () => ({
   getAgentRoot: vi.fn(() => "/tmp/mock-agent"),
+  resetAgentConfigCache: vi.fn(),
   loadAgentConfig: vi.fn(() => ({
     name: "testagent",
     provider: "minimax",
