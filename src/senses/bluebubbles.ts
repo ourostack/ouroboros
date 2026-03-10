@@ -1,3 +1,4 @@
+import * as fs from "node:fs"
 import * as http from "node:http"
 import * as path from "node:path"
 import OpenAI from "openai"
@@ -8,6 +9,7 @@ import { loadSession, postTurn } from "../mind/context"
 import { accumulateFriendTokens } from "../mind/friends/tokens"
 import { FriendResolver, type FriendResolverParams } from "../mind/friends/resolver"
 import { FileFriendStore } from "../mind/friends/store-file"
+import type { FriendRecord } from "../mind/friends/types"
 import { buildSystem } from "../mind/prompt"
 import { getPhrases } from "../mind/phrases"
 import { emitNervesEvent } from "../nerves/runtime"
@@ -609,6 +611,192 @@ export function createBlueBubblesWebhookHandler(
       })
     }
   }
+}
+
+export interface DrainAndSendPendingResult {
+  sent: number
+  skipped: number
+  failed: number
+}
+
+const PROACTIVE_SEND_ALLOWED_TRUST: ReadonlySet<string> = new Set(["family", "friend"])
+
+function findImessageHandle(friend: FriendRecord): string | undefined {
+  for (const ext of friend.externalIds) {
+    if (ext.provider === "imessage-handle" && !ext.externalId.startsWith("group:")) {
+      return ext.externalId
+    }
+  }
+  return undefined
+}
+
+function scanPendingBlueBubblesFiles(pendingRoot: string): Array<{
+  friendId: string
+  key: string
+  filePath: string
+  content: string
+}> {
+  const results: Array<{ friendId: string; key: string; filePath: string; content: string }> = []
+
+  let friendIds: string[]
+  try {
+    friendIds = fs.readdirSync(pendingRoot)
+  } catch {
+    return results
+  }
+
+  for (const friendId of friendIds) {
+    const bbDir = path.join(pendingRoot, friendId, "bluebubbles")
+    let keys: string[]
+    try {
+      keys = fs.readdirSync(bbDir)
+    } catch {
+      continue
+    }
+
+    for (const key of keys) {
+      const keyDir = path.join(bbDir, key)
+      let files: string[]
+      try {
+        files = fs.readdirSync(keyDir)
+      } catch {
+        continue
+      }
+
+      for (const file of files.filter((f) => f.endsWith(".json")).sort()) {
+        const filePath = path.join(keyDir, file)
+        try {
+          const content = fs.readFileSync(filePath, "utf-8")
+          results.push({ friendId, key, filePath, content })
+        } catch {
+          // skip unreadable files
+        }
+      }
+    }
+  }
+
+  return results
+}
+
+export async function drainAndSendPendingBlueBubbles(
+  deps: Partial<RuntimeDeps> = {},
+  pendingRoot?: string,
+): Promise<DrainAndSendPendingResult> {
+  const resolvedDeps = { ...defaultDeps, ...deps }
+  const root = pendingRoot ?? path.join(getAgentRoot(), "state", "pending")
+  const client = resolvedDeps.createClient()
+  const store = resolvedDeps.createFriendStore()
+
+  const pendingFiles = scanPendingBlueBubblesFiles(root)
+  const result: DrainAndSendPendingResult = { sent: 0, skipped: 0, failed: 0 }
+
+  for (const { friendId, filePath, content } of pendingFiles) {
+    let parsed: { content?: string }
+    try {
+      parsed = JSON.parse(content) as { content?: string }
+    } catch {
+      result.failed++
+      try { fs.unlinkSync(filePath) } catch { /* ignore */ }
+      continue
+    }
+
+    const messageText = typeof parsed.content === "string" ? parsed.content : ""
+    if (!messageText.trim()) {
+      result.skipped++
+      try { fs.unlinkSync(filePath) } catch { /* ignore */ }
+      continue
+    }
+
+    let friend: FriendRecord | null
+    try {
+      friend = await store.get(friendId)
+    } catch {
+      friend = null
+    }
+
+    if (!friend) {
+      result.skipped++
+      try { fs.unlinkSync(filePath) } catch { /* ignore */ }
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.bluebubbles_proactive_no_friend",
+        message: "proactive send skipped: friend not found",
+        meta: { friendId },
+      })
+      continue
+    }
+
+    if (!PROACTIVE_SEND_ALLOWED_TRUST.has(friend.trustLevel ?? "stranger")) {
+      result.skipped++
+      try { fs.unlinkSync(filePath) } catch { /* ignore */ }
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.bluebubbles_proactive_trust_skip",
+        message: "proactive send skipped: trust level not allowed",
+        meta: { friendId, trustLevel: friend.trustLevel ?? "unknown" },
+      })
+      continue
+    }
+
+    const handle = findImessageHandle(friend)
+    if (!handle) {
+      result.skipped++
+      try { fs.unlinkSync(filePath) } catch { /* ignore */ }
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.bluebubbles_proactive_no_handle",
+        message: "proactive send skipped: no iMessage handle found",
+        meta: { friendId },
+      })
+      continue
+    }
+
+    const chat: BlueBubblesChatRef = {
+      chatIdentifier: handle,
+      isGroup: false,
+      sessionKey: friendId,
+      sendTarget: { kind: "chat_identifier", value: handle },
+    }
+
+    try {
+      await client.sendText({ chat, text: messageText })
+      result.sent++
+      try { fs.unlinkSync(filePath) } catch { /* ignore */ }
+
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.bluebubbles_proactive_sent",
+        message: "proactive bluebubbles message sent",
+        meta: { friendId, handle },
+      })
+    } catch (error) {
+      result.failed++
+      emitNervesEvent({
+        level: "error",
+        component: "senses",
+        event: "senses.bluebubbles_proactive_send_error",
+        message: "proactive bluebubbles send failed",
+        meta: {
+          friendId,
+          handle,
+          reason: error instanceof Error ? error.message : String(error),
+        },
+      })
+    }
+  }
+
+  if (result.sent > 0 || result.skipped > 0 || result.failed > 0) {
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.bluebubbles_proactive_drain_complete",
+      message: "bluebubbles proactive drain complete",
+      meta: { sent: result.sent, skipped: result.skipped, failed: result.failed },
+    })
+  }
+
+  return result
 }
 
 export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Server {
