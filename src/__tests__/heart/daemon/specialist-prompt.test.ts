@@ -62,7 +62,7 @@ describe("buildSpecialistSystemPrompt", () => {
     expect(prompt).toContain("write_file")
     expect(prompt).toContain("list_directory")
     expect(prompt).toContain("shell")
-    expect(prompt).toContain("schedule_reminder")
+    expect(prompt).toContain("ouro reminder create")
   })
 
   it("includes tempDir path in the prompt", async () => {

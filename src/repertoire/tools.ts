@@ -201,7 +201,6 @@ export function summarizeArgs(name: string, args: Record<string, string>): strin
   if (name === "grep") return summarizeKeyValues(args, ["pattern", "path", "include"]);
   if (name === "shell") return summarizeKeyValues(args, ["command"]);
   if (name === "load_skill") return summarizeKeyValues(args, ["name"]);
-  if (name === "schedule_reminder") return summarizeKeyValues(args, ["title", "scheduledAt", "cadence"]);
   if (name === "coding_spawn") return summarizeKeyValues(args, ["runner", "workdir", "taskRef"]);
   if (name === "coding_status") return summarizeKeyValues(args, ["sessionId"]);
   if (name === "coding_tail") return summarizeKeyValues(args, ["sessionId"]);

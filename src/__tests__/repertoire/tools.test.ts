@@ -464,13 +464,14 @@ describe("summarizeArgs", () => {
     expect(summarizeArgs("task_board_sessions", {})).toBe("")
   })
 
-  it("returns empty string for removed schedule_reminder tool", () => {
+  it("falls through to generic summary for removed schedule_reminder tool", () => {
+    // schedule_reminder was removed -- now hits the summarizeUnknownArgs fallback
     expect(
       summarizeArgs("schedule_reminder", {
         title: "Ping Ari",
         scheduledAt: "2026-03-10T17:00:00.000Z",
       }),
-    ).toBe("")
+    ).toBe("title=Ping Ari scheduledAt=2026-03-10T17:00:00.000Z")
   })
 
   it("returns truncated prompt for claude", () => {

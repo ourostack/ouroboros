@@ -9,7 +9,6 @@ import type { FriendStore } from "../mind/friends/store";
 import { emitNervesEvent } from "../nerves/runtime";
 import { getAgentRoot, getAgentName } from "../heart/identity";
 import * as os from "os";
-import { getTaskModule } from "./tasks";
 import { codingToolDefinitions } from "./coding/tools";
 import { readMemoryFacts, saveMemoryFact, searchMemoryFacts } from "../mind/memory";
 
@@ -43,12 +42,6 @@ export interface ToolDefinition {
   handler: ToolHandler;
   integration?: Integration;
   confirmationRequired?: boolean;
-}
-
-function normalizeOptionalText(value: unknown): string | null {
-  if (typeof value !== "string") return null
-  const trimmed = value.trim()
-  return trimmed.length > 0 ? trimmed : null
 }
 
 // Tracks which file paths have been read via read_file in this session.
@@ -513,48 +506,6 @@ export const baseToolDefinitions: ToolDefinition[] = [
       const friend = await ctx.friendStore.get(friendId);
       if (!friend) return `friend not found: ${friendId}`;
       return JSON.stringify(friend, null, 2);
-    },
-  },
-  {
-    tool: {
-      type: "function",
-      function: {
-        name: "schedule_reminder",
-        description:
-          "create a scheduled reminder or recurring daemon job. use `scheduledAt` for one-time reminders and `cadence` for recurring reminders. this writes canonical task fields that the daemon reconciles into OS-level jobs.",
-        parameters: {
-          type: "object",
-          properties: {
-            title: { type: "string" },
-            body: { type: "string" },
-            category: { type: "string" },
-            scheduledAt: { type: "string", description: "ISO timestamp for a one-time reminder" },
-            cadence: { type: "string", description: "recurrence like 30m, 1h, 1d, or cron" },
-          },
-          required: ["title", "body"],
-        },
-      },
-    },
-    handler: (a) => {
-      const scheduledAt = normalizeOptionalText(a.scheduledAt)
-      const cadence = normalizeOptionalText(a.cadence)
-      if (!scheduledAt && !cadence) {
-        return "error: provide scheduledAt or cadence"
-      }
-
-      try {
-        const created = getTaskModule().createTask({
-          title: a.title,
-          type: cadence ? "habit" : "one-shot",
-          category: normalizeOptionalText(a.category) ?? "reminder",
-          body: a.body,
-          scheduledAt,
-          cadence,
-        })
-        return `created: ${created}`
-      } catch (error) {
-        return `error: ${error instanceof Error ? error.message : String(error)}`
-      }
     },
   },
   {

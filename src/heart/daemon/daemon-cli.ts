@@ -49,6 +49,7 @@ export type OuroCliCommand =
   | { kind: "task.actionable" }
   | { kind: "task.deps" }
   | { kind: "task.sessions" }
+  | { kind: "reminder.create"; title: string; body: string; scheduledAt?: string; cadence?: string; category?: string }
   | { kind: "friend.link"; agent: string; friendId: string; provider: IdentityProvider; externalId: string }
   | { kind: "hatch.start"; agentName?: string; humanName?: string; provider?: AgentProvider; credentials?: HatchCredentialsInput; migrationPath?: string }
 
@@ -295,6 +296,7 @@ function usage(): string {
     "  ouro task update <id> <status>",
     "  ouro task show <id>",
     "  ouro task actionable|deps|sessions",
+    "  ouro reminder create <title> --body <body> [--at <iso>] [--cadence <interval>] [--category <category>]",
   ].join("\n")
 }
 
@@ -552,6 +554,51 @@ function parseTaskCommand(args: string[]): OuroCliCommand {
   throw new Error(`Usage\n${usage()}`)
 }
 
+function parseReminderCommand(args: string[]): OuroCliCommand {
+  const [sub, ...rest] = args
+  if (!sub) throw new Error(`Usage\n${usage()}`)
+
+  if (sub === "create") {
+    const title = rest[0]
+    if (!title) throw new Error(`Usage\n${usage()}`)
+
+    let body: string | undefined
+    let scheduledAt: string | undefined
+    let cadence: string | undefined
+    let category: string | undefined
+
+    for (let i = 1; i < rest.length; i++) {
+      if (rest[i] === "--body" && rest[i + 1]) {
+        body = rest[i + 1]
+        i += 1
+      } else if (rest[i] === "--at" && rest[i + 1]) {
+        scheduledAt = rest[i + 1]
+        i += 1
+      } else if (rest[i] === "--cadence" && rest[i + 1]) {
+        cadence = rest[i + 1]
+        i += 1
+      } else if (rest[i] === "--category" && rest[i + 1]) {
+        category = rest[i + 1]
+        i += 1
+      }
+    }
+
+    if (!body) throw new Error(`Usage\n${usage()}`)
+    if (!scheduledAt && !cadence) throw new Error(`Usage\n${usage()}`)
+
+    return {
+      kind: "reminder.create" as const,
+      title,
+      body,
+      ...(scheduledAt ? { scheduledAt } : {}),
+      ...(cadence ? { cadence } : {}),
+      ...(category ? { category } : {}),
+    }
+  }
+
+  throw new Error(`Usage\n${usage()}`)
+}
+
 export function parseOuroCommand(args: string[]): OuroCliCommand {
   const [head, second] = args
   if (!head) return { kind: "daemon.up" }
@@ -562,6 +609,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "logs") return { kind: "daemon.logs" }
   if (head === "hatch") return parseHatchCommand(args.slice(1))
   if (head === "task") return parseTaskCommand(args.slice(1))
+  if (head === "reminder") return parseReminderCommand(args.slice(1))
   if (head === "chat") {
     if (!second) throw new Error(`Usage\n${usage()}`)
     return { kind: "chat.connect", agent: second }
@@ -1037,7 +1085,7 @@ export function createDefaultOuroCliDeps(socketPath = "/tmp/ouroboros-daemon.soc
   }
 }
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "friend.link" } | { kind: "hatch.start" } | TaskCliCommand>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "friend.link" } | { kind: "hatch.start" } | TaskCliCommand | ReminderCliCommand>): DaemonCommand {
   return command
 }
 
@@ -1149,6 +1197,8 @@ type TaskCliCommand = Extract<OuroCliCommand,
   | { kind: "task.sessions" }
 >
 
+type ReminderCliCommand = Extract<OuroCliCommand, { kind: "reminder.create" }>
+
 function executeTaskCommand(command: TaskCliCommand, taskMod: TaskModule): string {
   if (command.kind === "task.board") {
     if (command.status) {
@@ -1212,6 +1262,22 @@ function executeTaskCommand(command: TaskCliCommand, taskMod: TaskModule): strin
   // command.kind === "task.sessions"
   const lines = taskMod.boardSessions()
   return lines.length > 0 ? lines.join("\n") : "no active sessions"
+}
+
+function executeReminderCommand(command: ReminderCliCommand, taskMod: TaskModule): string {
+  try {
+    const created = taskMod.createTask({
+      title: command.title,
+      type: command.cadence ? "habit" : "one-shot",
+      category: command.category ?? "reminder",
+      body: command.body,
+      scheduledAt: command.scheduledAt,
+      cadence: command.cadence,
+    })
+    return `created: ${created}`
+  } catch (error) {
+    return `error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(error)}`
+  }
 }
 
 export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefaultOuroCliDeps()): Promise<string> {
@@ -1341,6 +1407,16 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     const taskMod = deps.taskModule ?? getTaskModule()
     /* v8 ignore stop */
     const message = executeTaskCommand(command, taskMod)
+    deps.writeStdout(message)
+    return message
+  }
+
+  // ── reminder subcommands (local, no daemon socket needed) ──
+  if (command.kind === "reminder.create") {
+    /* v8 ignore start -- production default: requires full identity setup @preserve */
+    const taskMod = deps.taskModule ?? getTaskModule()
+    /* v8 ignore stop */
+    const message = executeReminderCommand(command, taskMod)
     deps.writeStdout(message)
     return message
   }
