@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
+import { emitNervesEvent } from "../../nerves/runtime"
 
 const tempDirs: string[] = []
 
@@ -55,10 +56,24 @@ describe("bluebubbles thread lane cleanup", () => {
     const dir = makeTempDir()
     const missingTrunk = path.join(dir, "chat_any;-;ari@mendelow.me.json")
     const nestedThread = path.join(dir, "chat_any;-;ari@mendelow.me_thread_123.json")
+    const liveTrunk = path.join(dir, "chat_any;-;someoneelse.json")
+    const textSibling = path.join(dir, "chat_any;-;someoneelse_thread_999.txt")
     writeFile(nestedThread)
+    writeFile(liveTrunk)
+    writeFile(textSibling)
 
+    expect(cleanupObsoleteBlueBubblesThreadSessions("  ")).toEqual([])
+    expect(cleanupObsoleteBlueBubblesThreadSessions(path.join(dir, "notes.txt"))).toEqual([])
     expect(cleanupObsoleteBlueBubblesThreadSessions(missingTrunk)).toEqual([])
     expect(cleanupObsoleteBlueBubblesThreadSessions(nestedThread)).toEqual([])
+    expect(cleanupObsoleteBlueBubblesThreadSessions(liveTrunk)).toEqual([])
     expect(fs.existsSync(nestedThread)).toBe(true)
+    expect(fs.existsSync(liveTrunk)).toBe(true)
+    expect(fs.existsSync(textSibling)).toBe(true)
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.bluebubbles_thread_lane_cleanup_test_noop",
+      message: "observed no-op cleanup paths in test",
+    })
   })
 })

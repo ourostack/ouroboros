@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
 import { Readable } from "node:stream"
 
 const mocks = vi.hoisted(() => ({
@@ -32,6 +35,19 @@ const mocks = vi.hoisted(() => ({
   createServer: vi.fn(),
   listen: vi.fn((_: number, cb?: () => void) => cb?.()),
 }))
+
+const tempDirs: string[] = []
+
+function makeTempDir(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bb-runtime-cleanup-"))
+  tempDirs.push(dir)
+  return dir
+}
+
+function writeFile(filePath: string): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true })
+  fs.writeFileSync(filePath, "{}")
+}
 
 vi.mock("../../heart/core", () => ({
   runAgent: (...args: any[]) => mocks.runAgent(...args),
@@ -479,6 +495,9 @@ describe("BlueBubbles sense runtime", () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
+    for (const dir of tempDirs.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it("handles DM threaded messages on the shared chat trunk and preserves the threaded send target", async () => {
@@ -588,6 +607,79 @@ describe("BlueBubbles sense runtime", () => {
       "bluebubbles",
       expect.any(AbortSignal),
       expect.any(Object),
+    )
+  })
+
+  it("removes obsolete sibling thread lanes before loading the shared chat trunk", async () => {
+    const dir = makeTempDir()
+    const trunk = path.join(dir, "chat_any;-;ari@mendelow.me.json")
+    const staleThread = path.join(dir, "chat_any;-;ari@mendelow.me_thread_123.json")
+    const unrelatedThread = path.join(dir, "chat_any;-;someoneelse_thread_999.json")
+    writeFile(trunk)
+    writeFile(staleThread)
+    writeFile(unrelatedThread)
+    mocks.sessionPath.mockReturnValueOnce(trunk)
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    expect(mocks.loadSession).toHaveBeenCalledWith(trunk)
+    expect(fs.existsSync(trunk)).toBe(true)
+    expect(fs.existsSync(staleThread)).toBe(false)
+    expect(fs.existsSync(unrelatedThread)).toBe(true)
+  })
+
+  it("logs cleanup errors but still handles the turn on the shared chat trunk", async () => {
+    const dir = makeTempDir()
+    const trunk = path.join(dir, "chat_any;-;ari@mendelow.me.json")
+    writeFile(trunk)
+    mocks.sessionPath.mockReturnValueOnce(trunk)
+    const cleanupModule = await import("../../senses/bluebubbles-session-cleanup")
+    vi.spyOn(cleanupModule, "cleanupObsoleteBlueBubblesThreadSessions").mockImplementation(() => {
+      throw new Error("cleanup boom")
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    expect(mocks.loadSession).toHaveBeenCalledWith(trunk)
+    expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: "warn",
+        event: "senses.bluebubbles_thread_lane_cleanup_error",
+        meta: expect.objectContaining({
+          sessionPath: trunk,
+          reason: "cleanup boom",
+        }),
+      }),
+    )
+  })
+
+  it("captures string-thrown cleanup failures explicitly too", async () => {
+    const dir = makeTempDir()
+    const trunk = path.join(dir, "chat_any;-;ari@mendelow.me.json")
+    writeFile(trunk)
+    mocks.sessionPath.mockReturnValueOnce(trunk)
+    const cleanupModule = await import("../../senses/bluebubbles-session-cleanup")
+    vi.spyOn(cleanupModule, "cleanupObsoleteBlueBubblesThreadSessions").mockImplementation(() => {
+      throw "cleanup string"
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    expect(mocks.loadSession).toHaveBeenCalledWith(trunk)
+    expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: "warn",
+        event: "senses.bluebubbles_thread_lane_cleanup_error",
+        meta: expect.objectContaining({
+          sessionPath: trunk,
+          reason: "cleanup string",
+        }),
+      }),
     )
   })
 
