@@ -1773,6 +1773,81 @@ describe("multi-agent prompt, agent-name shortcut, and help", () => {
   })
 })
 
+describe("ouro --help completeness (H10)", () => {
+  function makeHelpDeps(): OuroCliDeps {
+    return {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({ ok: true })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+    }
+  }
+
+  it("includes task subcommands in help output", async () => {
+    const deps = makeHelpDeps()
+    const result = await runOuroCli(["--help"], deps)
+
+    expect(result).toContain("ouro task board")
+    expect(result).toContain("ouro task create")
+    expect(result).toContain("ouro task update")
+    expect(result).toContain("ouro task show")
+    // actionable, deps, sessions are grouped on one line
+    expect(result).toContain("actionable")
+    expect(result).toContain("deps")
+    expect(result).toContain("sessions")
+  })
+
+  it("includes reminder subcommand in help output", async () => {
+    const deps = makeHelpDeps()
+    const result = await runOuroCli(["--help"], deps)
+
+    expect(result).toContain("ouro reminder create")
+  })
+
+  it("includes friend subcommands in help output", async () => {
+    const deps = makeHelpDeps()
+    const result = await runOuroCli(["--help"], deps)
+
+    expect(result).toContain("ouro friend list")
+    expect(result).toContain("ouro friend show")
+  })
+
+  it("includes whoami in help output", async () => {
+    const deps = makeHelpDeps()
+    const result = await runOuroCli(["--help"], deps)
+
+    expect(result).toContain("ouro whoami")
+  })
+
+  it("includes session subcommand in help output", async () => {
+    const deps = makeHelpDeps()
+    const result = await runOuroCli(["--help"], deps)
+
+    expect(result).toContain("ouro session list")
+  })
+
+  it("includes all core daemon commands in help output", async () => {
+    const deps = makeHelpDeps()
+    const result = await runOuroCli(["--help"], deps)
+
+    expect(result).toContain("ouro [up]")
+    expect(result).toContain("stop")
+    expect(result).toContain("down")
+    expect(result).toContain("status")
+    expect(result).toContain("logs")
+    expect(result).toContain("hatch")
+    expect(result).toContain("chat")
+    expect(result).toContain("msg")
+    expect(result).toContain("poke")
+    expect(result).toContain("link")
+    expect(result).toContain("-v|--version")
+  })
+})
+
 describe("single agent → chat via startChat", () => {
   it("calls ensureDaemonRunning then startChat when single agent discovered", async () => {
     const startChat = vi.fn(async () => {})
