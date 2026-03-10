@@ -203,6 +203,58 @@ describe("ouro CLI parsing", () => {
     expect(() => parseOuroCommand(["task", "unknown"])).toThrow("Usage")
   })
 
+  it("parses reminder subcommands", () => {
+    // ouro reminder create <title> --body <body> --at <iso>
+    expect(parseOuroCommand(["reminder", "create", "Ping Ari", "--body", "Check daemon status", "--at", "2026-03-10T17:00:00.000Z"])).toEqual({
+      kind: "reminder.create",
+      title: "Ping Ari",
+      body: "Check daemon status",
+      scheduledAt: "2026-03-10T17:00:00.000Z",
+    })
+
+    // ouro reminder create <title> --body <body> --cadence <cadence>
+    expect(parseOuroCommand(["reminder", "create", "Heartbeat", "--body", "Run heartbeat", "--cadence", "30m"])).toEqual({
+      kind: "reminder.create",
+      title: "Heartbeat",
+      body: "Run heartbeat",
+      cadence: "30m",
+    })
+
+    // ouro reminder create <title> --body <body> --cadence <cadence> --category <category>
+    expect(parseOuroCommand(["reminder", "create", "Heartbeat", "--body", "Run heartbeat", "--cadence", "30m", "--category", "operations"])).toEqual({
+      kind: "reminder.create",
+      title: "Heartbeat",
+      body: "Run heartbeat",
+      cadence: "30m",
+      category: "operations",
+    })
+
+    // ouro reminder create <title> --body <body> --at <iso> (one-shot with no cadence)
+    expect(parseOuroCommand(["reminder", "create", "Wake up", "--body", "Morning alarm", "--at", "2026-03-11T08:00:00.000Z"])).toEqual({
+      kind: "reminder.create",
+      title: "Wake up",
+      body: "Morning alarm",
+      scheduledAt: "2026-03-11T08:00:00.000Z",
+    })
+  })
+
+  it("rejects malformed reminder subcommands", () => {
+    // bare "reminder" with no subcommand
+    expect(() => parseOuroCommand(["reminder"])).toThrow("Usage")
+
+    // reminder create with no title
+    expect(() => parseOuroCommand(["reminder", "create"])).toThrow("Usage")
+
+    // reminder create with no --body
+    expect(() => parseOuroCommand(["reminder", "create", "Title only"])).toThrow("Usage")
+
+    // reminder create with --body but no schedule
+    expect(() => parseOuroCommand(["reminder", "create", "Title", "--body", "body text"])).toThrow("Usage")
+
+    // unknown reminder subcommand
+    expect(() => parseOuroCommand(["reminder", "unknown"])).toThrow("Usage")
+  })
+
   it("rejects deprecated command families", () => {
     expect(() => parseOuroCommand(["agent", "start", "slugger"])).toThrow("Unknown command")
     expect(() => parseOuroCommand(["cron", "list"])).toThrow("Unknown command")
@@ -3133,5 +3185,98 @@ describe("ouro task CLI execution", () => {
     const deps = makeDeps()
     const result = await runOuroCli(["task", "sessions"], deps)
     expect(result).toBe("no active sessions")
+  })
+})
+
+describe("ouro reminder CLI execution", () => {
+  const mockTaskModule = {
+    getBoard: vi.fn(),
+    createTask: vi.fn(),
+    updateStatus: vi.fn(),
+    getTask: vi.fn(),
+    boardStatus: vi.fn(),
+    boardAction: vi.fn(),
+    boardDeps: vi.fn(),
+    boardSessions: vi.fn(),
+  }
+
+  function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
+    return {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+      taskModule: mockTaskModule as any,
+      ...overrides,
+    }
+  }
+
+  it("ouro reminder create creates a one-shot reminder", async () => {
+    mockTaskModule.createTask.mockReturnValueOnce("/mock/tasks/one-shots/2026-03-10-ping-ari.md")
+    const deps = makeDeps()
+    const result = await runOuroCli(["reminder", "create", "Ping Ari", "--body", "Check daemon status", "--at", "2026-03-10T17:00:00.000Z"], deps)
+    expect(result).toContain("created:")
+    expect(result).toContain("/mock/tasks/one-shots/2026-03-10-ping-ari.md")
+    expect(mockTaskModule.createTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Ping Ari",
+        type: "one-shot",
+        category: "reminder",
+        body: "Check daemon status",
+        scheduledAt: "2026-03-10T17:00:00.000Z",
+      }),
+    )
+    // Should NOT send to daemon
+    expect(deps.sendCommand).not.toHaveBeenCalled()
+  })
+
+  it("ouro reminder create creates a recurring habit", async () => {
+    mockTaskModule.createTask.mockReturnValueOnce("/mock/tasks/habits/heartbeat.md")
+    const deps = makeDeps()
+    const result = await runOuroCli(["reminder", "create", "Heartbeat", "--body", "Run heartbeat", "--cadence", "30m"], deps)
+    expect(result).toContain("created:")
+    expect(mockTaskModule.createTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Heartbeat",
+        type: "habit",
+        category: "reminder",
+        body: "Run heartbeat",
+        cadence: "30m",
+      }),
+    )
+  })
+
+  it("ouro reminder create uses custom category", async () => {
+    mockTaskModule.createTask.mockReturnValueOnce("/mock/tasks/habits/ops.md")
+    const deps = makeDeps()
+    const result = await runOuroCli(["reminder", "create", "Ops check", "--body", "Check ops", "--cadence", "1h", "--category", "operations"], deps)
+    expect(result).toContain("created:")
+    expect(mockTaskModule.createTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        category: "operations",
+      }),
+    )
+  })
+
+  it("ouro reminder create surfaces task module exceptions", async () => {
+    mockTaskModule.createTask.mockImplementationOnce(() => {
+      throw new Error("scheduler exploded")
+    })
+    const deps = makeDeps()
+    const result = await runOuroCli(["reminder", "create", "Broken", "--body", "This will fail", "--at", "2026-03-10T17:00:00.000Z"], deps)
+    expect(result).toContain("error: scheduler exploded")
+  })
+
+  it("ouro reminder create surfaces non-Error exceptions", async () => {
+    mockTaskModule.createTask.mockImplementationOnce(() => {
+      throw "scheduler exploded string"
+    })
+    const deps = makeDeps()
+    const result = await runOuroCli(["reminder", "create", "Broken", "--body", "This will fail", "--at", "2026-03-10T17:00:00.000Z"], deps)
+    expect(result).toContain("error: scheduler exploded string")
   })
 })

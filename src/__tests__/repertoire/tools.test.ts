@@ -379,83 +379,14 @@ describe("execTool", () => {
     expect(await execTool("task_board_sessions", {})).toBe("unknown: task_board_sessions")
   })
 
-  it("schedule_reminder creates a scheduled one-shot task", async () => {
+  it("schedule_reminder tool is removed from baseToolDefinitions", async () => {
     const result = await execTool("schedule_reminder", {
       title: "Ping Ari",
       body: "Remind Ari to check the daemon",
       scheduledAt: "2026-03-10T17:00:00.000Z",
     })
 
-    expect(result).toContain("created:")
-    expect(mockTaskModule.createTask).toHaveBeenCalledWith(
-      expect.objectContaining({
-        title: "Ping Ari",
-        type: "one-shot",
-        category: "reminder",
-        body: "Remind Ari to check the daemon",
-        scheduledAt: "2026-03-10T17:00:00.000Z",
-        cadence: null,
-      }),
-    )
-  })
-
-  it("schedule_reminder creates a recurring habit when cadence is provided", async () => {
-    const result = await execTool("schedule_reminder", {
-      title: "Heartbeat",
-      body: "Run heartbeat",
-      cadence: "30m",
-      category: "operations",
-    })
-
-    expect(result).toContain("created:")
-    expect(mockTaskModule.createTask).toHaveBeenCalledWith(
-      expect.objectContaining({
-        title: "Heartbeat",
-        type: "habit",
-        category: "operations",
-        body: "Run heartbeat",
-        cadence: "30m",
-        scheduledAt: null,
-      }),
-    )
-  })
-
-  it("schedule_reminder requires either scheduledAt or cadence", async () => {
-    const result = await execTool("schedule_reminder", {
-      title: "Incomplete reminder",
-      body: "Needs a schedule",
-    })
-
-    expect(result).toBe("error: provide scheduledAt or cadence")
-    expect(mockTaskModule.createTask).not.toHaveBeenCalled()
-  })
-
-  it("schedule_reminder stringifies non-Error task creation failures", async () => {
-    mockTaskModule.createTask.mockImplementationOnce(() => {
-      throw "scheduler exploded"
-    })
-
-    const result = await execTool("schedule_reminder", {
-      title: "Broken reminder",
-      body: "This will fail",
-      scheduledAt: "2026-03-10T17:00:00.000Z",
-    })
-
-    expect(result).toBe("error: scheduler exploded")
-  })
-
-  it("schedule_reminder surfaces Error task creation failures", async () => {
-    mockTaskModule.createTask.mockImplementationOnce(() => {
-      throw new Error("scheduler exploded")
-    })
-
-    const result = await execTool("schedule_reminder", {
-      title: "Broken reminder",
-      body: "This will fail",
-      scheduledAt: "2026-03-10T17:00:00.000Z",
-    })
-
-    expect(result).toBe("error: scheduler exploded")
+    expect(result).toBe("unknown: schedule_reminder")
   })
 
   // ── unknown tool ──
@@ -533,13 +464,13 @@ describe("summarizeArgs", () => {
     expect(summarizeArgs("task_board_sessions", {})).toBe("")
   })
 
-  it("returns title and schedule fields for schedule_reminder", () => {
+  it("returns empty string for removed schedule_reminder tool", () => {
     expect(
       summarizeArgs("schedule_reminder", {
         title: "Ping Ari",
         scheduledAt: "2026-03-10T17:00:00.000Z",
       }),
-    ).toBe("title=Ping Ari scheduledAt=2026-03-10T17:00:00.000Z")
+    ).toBe("")
   })
 
   it("returns truncated prompt for claude", () => {
