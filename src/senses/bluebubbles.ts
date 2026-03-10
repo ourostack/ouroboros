@@ -236,6 +236,19 @@ function createReplyTargetController(event: BlueBubblesNormalizedEvent): BlueBub
   }
 }
 
+function emitBlueBubblesMarkReadWarning(chat: BlueBubblesChatRef, error: unknown): void {
+  emitNervesEvent({
+    level: "warn",
+    component: "senses",
+    event: "senses.bluebubbles_mark_read_error",
+    message: "failed to mark bluebubbles chat as read",
+    meta: {
+      chatGuid: chat.chatGuid ?? null,
+      reason: error instanceof Error ? error.message : String(error),
+    },
+  })
+}
+
 function createBlueBubblesCallbacks(
   client: BlueBubblesClient,
   chat: BlueBubblesChatRef,
@@ -266,7 +279,23 @@ function createBlueBubblesCallbacks(
         })
       },
       setTyping: async (active: boolean) => {
-        await client.setTyping(chat, active)
+        if (!active) {
+          await client.setTyping(chat, false)
+          return
+        }
+
+        const [markReadResult, typingResult] = await Promise.allSettled([
+          client.markChatRead(chat),
+          client.setTyping(chat, true),
+        ])
+
+        if (markReadResult.status === "rejected") {
+          emitBlueBubblesMarkReadWarning(chat, markReadResult.reason)
+        }
+
+        if (typingResult.status === "rejected") {
+          throw typingResult.reason
+        }
       },
     },
     onTransportError: (operation, error) => {
@@ -500,20 +529,6 @@ export async function handleBlueBubblesEvent(
     await callbacks.flush()
     resolvedDeps.postTurn(messages, sessPath, result.usage)
     await resolvedDeps.accumulateFriendTokens(store, friendId, result.usage)
-    try {
-      await client.markChatRead(event.chat)
-    } catch (error) {
-      emitNervesEvent({
-        level: "warn",
-        component: "senses",
-        event: "senses.bluebubbles_mark_read_error",
-        message: "failed to mark bluebubbles chat as read",
-        meta: {
-          chatGuid: event.chat.chatGuid ?? null,
-          reason: error instanceof Error ? error.message : String(error),
-        },
-      })
-    }
 
     emitNervesEvent({
       component: "senses",

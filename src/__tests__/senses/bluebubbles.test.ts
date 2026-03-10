@@ -1046,7 +1046,10 @@ describe("BlueBubbles sense runtime", () => {
     const bluebubbles = await import("../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
 
+    expect(mocks.markChatRead).toHaveBeenCalledTimes(1)
+    expect(mocks.markChatRead).toHaveBeenNthCalledWith(1, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }))
     expect(mocks.setTyping).toHaveBeenNthCalledWith(1, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), true)
+    expect(mocks.markChatRead.mock.invocationCallOrder[0]).toBeLessThan(mocks.sendText.mock.invocationCallOrder[0])
     expect(mocks.setTyping.mock.invocationCallOrder[0]).toBeLessThan(mocks.sendText.mock.invocationCallOrder[0])
     expect(mocks.sendText).toHaveBeenNthCalledWith(
       1,
@@ -1081,6 +1084,8 @@ describe("BlueBubbles sense runtime", () => {
     const bluebubbles = await import("../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
 
+    expect(mocks.markChatRead).toHaveBeenCalledTimes(1)
+    expect(mocks.markChatRead).toHaveBeenNthCalledWith(1, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }))
     expect(mocks.setTyping).toHaveBeenNthCalledWith(1, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), true)
     expect(mocks.sendText).toHaveBeenCalledTimes(1)
     expect(mocks.sendText).toHaveBeenNthCalledWith(
@@ -1092,6 +1097,7 @@ describe("BlueBubbles sense runtime", () => {
       }),
     )
     expect(mocks.setTyping).toHaveBeenNthCalledWith(2, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), false)
+    expect(mocks.markChatRead.mock.invocationCallOrder[0]).toBeLessThan(mocks.sendText.mock.invocationCallOrder[0])
     expect(mocks.setTyping.mock.invocationCallOrder[0]).toBeLessThan(mocks.sendText.mock.invocationCallOrder[0])
   })
 
@@ -1195,6 +1201,35 @@ describe("BlueBubbles sense runtime", () => {
           operation: "status_update",
           reason: "status send error object",
         }),
+      }),
+    )
+  })
+
+  it("still attempts mark-read when typing-start transport fails and surfaces the activity warning", async () => {
+    mocks.setTyping.mockRejectedValueOnce(new Error("typing transport down"))
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    expect(mocks.markChatRead).toHaveBeenCalledTimes(1)
+    expect(mocks.markChatRead).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatGuid: "any;-;ari@mendelow.me",
+      }),
+    )
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: "warn",
+        event: "senses.bluebubbles_activity_error",
+        meta: expect.objectContaining({
+          operation: "typing_start",
+          reason: "typing transport down",
+        }),
+      }),
+    )
+    expect(mocks.sendText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "got it",
       }),
     )
   })
@@ -1623,15 +1658,17 @@ describe("BlueBubbles sense runtime", () => {
     )
   })
 
-  it("marks handled inbound chats as read after a successful turn", async () => {
+  it("marks handled inbound chats as read when typing starts for a successful turn", async () => {
     const bluebubbles = await import("../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
 
+    expect(mocks.markChatRead).toHaveBeenCalledTimes(1)
     expect(mocks.markChatRead).toHaveBeenCalledWith(
       expect.objectContaining({
         chatGuid: "any;-;ari@mendelow.me",
       }),
     )
+    expect(mocks.markChatRead.mock.invocationCallOrder[0]).toBeLessThan(mocks.sendText.mock.invocationCallOrder[0])
   })
 
   it("emits a warning instead of failing the turn when mark-read transport throws", async () => {
@@ -1655,6 +1692,8 @@ describe("BlueBubbles sense runtime", () => {
         }),
       }),
     )
+    expect(mocks.setTyping).toHaveBeenNthCalledWith(1, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), true)
+    expect(mocks.setTyping.mock.invocationCallOrder[0]).toBeLessThan(mocks.sendText.mock.invocationCallOrder[0])
   })
 
   it("captures string-thrown mark-read failures explicitly too", async () => {
