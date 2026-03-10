@@ -17,6 +17,15 @@ export interface CodingFeedbackTarget {
   send: (message: string) => Promise<void>;
 }
 
+export type BlueBubblesReplyTargetSelection =
+  | { target: "current_lane" }
+  | { target: "top_level" }
+  | { target: "thread"; threadOriginatorGuid: string }
+
+export interface BlueBubblesReplyTargetController {
+  setSelection: (selection: BlueBubblesReplyTargetSelection) => string;
+}
+
 export interface ToolContext {
   graphToken?: string;
   adoToken?: string;
@@ -34,6 +43,7 @@ export interface ToolContext {
     id: string;
     conversations: unknown;
   };
+  bluebubblesReplyTarget?: BlueBubblesReplyTargetController;
 }
 
 export type ToolHandler = (args: Record<string, string>, ctx?: ToolContext) => string | Promise<string>;

@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.32",
+      "changes": [
+        "BlueBubbles now treats thread-vs-top-level placement as an agent choice instead of a hard harness mirror. Slugger can deliberately stay in the current reply lane, widen back to top-level, or target another active thread when that makes the conversation flow better.",
+        "BlueBubbles turns now surface inbound lane metadata and recent active lanes from the shared chat trunk, so the model gets enough context to choose the right reply placement without splitting the conversation into separate persisted thread sessions."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.31",
       "changes": [
         "BlueBubbles no longer silently deletes old per-thread session files when loading a chat trunk. It now only detects and warns about those obsolete artifacts so local state is never mutated without an explicit human choice.",
