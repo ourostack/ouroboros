@@ -251,6 +251,20 @@ describe("ouro CLI parsing", () => {
     // reminder create with --body but no schedule
     expect(() => parseOuroCommand(["reminder", "create", "Title", "--body", "body text"])).toThrow("Usage")
 
+    // reminder create with --category but no value (ignores incomplete flag)
+    expect(parseOuroCommand(["reminder", "create", "Title", "--body", "body text", "--at", "2026-03-10T17:00:00.000Z", "--category"])).toEqual({
+      kind: "reminder.create",
+      title: "Title",
+      body: "body text",
+      scheduledAt: "2026-03-10T17:00:00.000Z",
+    })
+
+    // reminder create with --cadence but no value (ignores incomplete flag, then fails on missing schedule)
+    expect(() => parseOuroCommand(["reminder", "create", "Title", "--body", "body text", "--cadence"])).toThrow("Usage")
+
+    // reminder create with --at but no value (ignores incomplete flag, then fails on missing schedule)
+    expect(() => parseOuroCommand(["reminder", "create", "Title", "--body", "body text", "--at"])).toThrow("Usage")
+
     // unknown reminder subcommand
     expect(() => parseOuroCommand(["reminder", "unknown"])).toThrow("Usage")
   })
