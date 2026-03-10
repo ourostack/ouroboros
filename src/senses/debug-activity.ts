@@ -12,6 +12,7 @@ export interface DebugActivityOptions {
   thinkingPhrases: readonly string[]
   followupPhrases: readonly string[]
   transport: DebugActivityTransport
+  startTypingOnModelStart?: boolean
   onTransportError?: (operation: string, error: unknown) => void
 }
 
@@ -61,6 +62,16 @@ export function createDebugActivityController(options: DebugActivityOptions): De
     return phrase
   }
 
+  function startTypingNow(): void {
+    if (typingActive) {
+      return
+    }
+    typingActive = true
+    enqueue("typing_start", async () => {
+      await options.transport.setTyping(true)
+    })
+  }
+
   function setStatus(text: string): void {
     emitNervesEvent({
       component: "senses",
@@ -90,6 +101,9 @@ export function createDebugActivityController(options: DebugActivityOptions): De
   return {
     onModelStart(): void {
       const pool = hadToolRun ? options.followupPhrases : options.thinkingPhrases
+      if (options.startTypingOnModelStart) {
+        startTypingNow()
+      }
       setStatus(`${nextPhrase(pool)}...`)
     },
 
