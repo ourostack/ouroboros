@@ -549,6 +549,44 @@ describe("BlueBubbles sense runtime", () => {
     )
   })
 
+  it("prefixes threaded inbound turns with chat-trunk metadata", async () => {
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    expect(mocks.runAgent).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "user",
+          content:
+            "[conversation scope: existing chat trunk | current turn: thread reply | thread id: 54D4109C-7170-41A1-8161-F6F8C863CC0D]\nthreaded reply",
+        }),
+      ]),
+      expect.any(Object),
+      "bluebubbles",
+      expect.any(AbortSignal),
+      expect.any(Object),
+    )
+  })
+
+  it("prefixes top-level inbound turns with chat-trunk metadata", async () => {
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    expect(mocks.runAgent).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "user",
+          content:
+            "[conversation scope: existing chat trunk | current turn: top-level]\ntop-level follow-up",
+        }),
+      ]),
+      expect.any(Object),
+      "bluebubbles",
+      expect.any(AbortSignal),
+      expect.any(Object),
+    )
+  })
+
   it("surfaces debug activity as visible status messages for a tool-heavy turn", async () => {
     mocks.sendText
       .mockResolvedValueOnce({ messageGuid: "status-guid" })
