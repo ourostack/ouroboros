@@ -501,7 +501,11 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.runAgent).toHaveBeenCalledWith(
       expect.arrayContaining([
         expect.objectContaining({ role: "system", content: "system prompt" }),
-        expect.objectContaining({ role: "user", content: "threaded reply" }),
+        expect.objectContaining({
+          role: "user",
+          content:
+            "[conversation scope: existing chat trunk | current turn: thread reply | thread id: 54D4109C-7170-41A1-8161-F6F8C863CC0D]\nthreaded reply",
+        }),
       ]),
       expect.any(Object),
       "bluebubbles",
@@ -807,7 +811,11 @@ describe("BlueBubbles sense runtime", () => {
     )
     expect(mocks.runAgent.mock.calls[0]?.[0]).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ role: "user", content: "ari@mendelow.me: yay!" }),
+        expect.objectContaining({
+          role: "user",
+          content:
+            "ari@mendelow.me: [conversation scope: existing chat trunk | current turn: thread reply | thread id: 3E02B90F-D374-4381-BDD2-3572D3EB1195]\nyay!",
+        }),
       ]),
     )
     expect(mocks.sendText).toHaveBeenCalledWith(
@@ -1168,7 +1176,11 @@ describe("BlueBubbles sense runtime", () => {
         expect.objectContaining({
           role: "user",
           content: [
-            { type: "text", text: "[image attachment: IMG_5045.heic.jpeg (600x800)]" },
+            {
+              type: "text",
+              text:
+                "[conversation scope: existing chat trunk | current turn: top-level]\n[image attachment: IMG_5045.heic.jpeg (600x800)]",
+            },
             {
               type: "image_url",
               image_url: {
