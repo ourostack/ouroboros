@@ -29,6 +29,14 @@ const CHANNEL_CAPABILITIES: Record<string, ChannelCapabilities> = {
     supportsRichCards: false,
     maxMessageLength: Infinity,
   },
+  inner: {
+    channel: "inner",
+    availableIntegrations: [],
+    supportsMarkdown: false,
+    supportsStreaming: true,
+    supportsRichCards: false,
+    maxMessageLength: Infinity,
+  },
 }
 
 const DEFAULT_CAPABILITIES: ChannelCapabilities = {

@@ -233,7 +233,7 @@ describe("buildSystem", () => {
     const result = await buildSystem("cli")
     expect(result).toContain("i introduce myself on boot")
     expect(result).toContain("testagent") // agent name from identity mock
-    expect(result).toContain("i can read and modify my own source code")
+    expect(result).toContain("## my body") // body map replaces old one-liner
   })
 
   it("includes runtime info section for teams channel", async () => {
@@ -781,8 +781,7 @@ describe("buildSystem", () => {
     const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = await buildSystem("cli", { toolChoiceRequired: true })
-    // Anti-pattern: warns against calling get_current_time or no-ops before final_answer
-    expect(result).toContain("get_current_time")
+    // Anti-pattern: warns against calling no-op tools before final_answer
     expect(result).toMatch(/do not call.*no-op|do NOT call.*no-op/i)
   })
 
@@ -869,7 +868,7 @@ describe("runtimeInfoSection", () => {
     expect(result).toContain(process.cwd())
   })
 
-  it("includes note about self-modification", async () => {
+  it("no longer includes old self-modification one-liner (replaced by body map)", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
@@ -877,7 +876,7 @@ describe("runtimeInfoSection", () => {
     const { runtimeInfoSection, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = runtimeInfoSection("cli")
-    expect(result).toContain("i can read and modify my own source code")
+    expect(result).not.toContain("i can read and modify my own source code")
   })
 
   it("cli channel includes boot greeting", async () => {
@@ -1028,6 +1027,105 @@ describe("runtimeInfoSection", () => {
     resetPsycheCache()
     const result = runtimeInfoSection("cli")
     expect(result).not.toContain("previously:")
+  })
+
+  // --- E: Process awareness ---
+
+  it("cli channel includes process type: cli session", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { runtimeInfoSection, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = runtimeInfoSection("cli")
+    expect(result).toContain("process type: cli session")
+  })
+
+  it("inner channel includes process type: inner dialog", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { runtimeInfoSection, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = runtimeInfoSection("inner")
+    expect(result).toContain("process type: inner dialog")
+  })
+
+  it("teams channel includes process type: teams handler", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { runtimeInfoSection, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = runtimeInfoSection("teams")
+    expect(result).toContain("process type: teams handler")
+  })
+
+  it("bluebubbles channel includes process type: bluebubbles handler", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { runtimeInfoSection, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = runtimeInfoSection("bluebubbles")
+    expect(result).toContain("process type: bluebubbles handler")
+  })
+
+  it("includes daemon status field", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { runtimeInfoSection, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = runtimeInfoSection("cli")
+    expect(result).toContain("daemon:")
+  })
+
+  it("daemon status shows 'running' when socket exists", async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p: any) => {
+      if (String(p).includes("ouroboros-daemon.sock")) return true
+      return false
+    })
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { runtimeInfoSection, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = runtimeInfoSection("cli")
+    expect(result).toContain("daemon: running")
+  })
+
+  it("daemon status shows 'not running' when socket does not exist", async () => {
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { runtimeInfoSection, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = runtimeInfoSection("cli")
+    expect(result).toContain("daemon: not running")
+  })
+
+  it("daemon status shows 'unknown' when existsSync throws", async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p: any) => {
+      if (String(p).includes("ouroboros-daemon.sock")) throw new Error("permission denied")
+      return false
+    })
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { runtimeInfoSection, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = runtimeInfoSection("cli")
+    expect(result).toContain("daemon: unknown")
   })
 })
 
@@ -2040,5 +2138,382 @@ describe("buildSystem with context", () => {
     resetPsycheCache()
     const result = buildSystem("cli")
     expect(result).toBeInstanceOf(Promise)
+  })
+
+  // --- B1: buildSystem("inner") channel routing ---
+
+  it("buildSystem('inner') returns a system prompt string", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("inner")
+    expect(typeof result).toBe("string")
+    expect(result.length).toBeGreaterThan(0)
+  })
+
+  it("buildSystem('inner') includes psyche sections", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("inner")
+    // soulSection
+    expect(result).toContain("chaos monkey coding assistant")
+    // identitySection
+    expect(result).toContain("i am Ouroboros")
+    // loreSection
+    expect(result).toContain("## my lore")
+    // tacitKnowledgeSection
+    expect(result).toContain("## tacit knowledge")
+    // aspirationsSection
+    expect(result).toContain("## my aspirations")
+  })
+
+  it("buildSystem('inner') includes runtimeInfoSection, toolsSection, taskBoardSection, skillsSection, memoryFriendToolContractSection", async () => {
+    setupReadFileSync()
+    vi.mocked(listSkills).mockReturnValue(["code-review"])
+    mockGetBoard.mockReturnValueOnce({
+      compact: "[Tasks] processing:1",
+      full: "full",
+      byStatus: { drafting: [], processing: ["t"], "validating": [], collaborating: [], paused: [], blocked: [], done: [] },
+      actionRequired: [],
+      unresolvedDependencies: [],
+      activeSessions: [],
+    })
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("inner")
+    expect(result).toContain("## runtime")
+    expect(result).toContain("## my tools")
+    expect(result).toContain("## task board")
+    expect(result).toContain("## my skills")
+    expect(result).toContain("## memory and friend tool contracts")
+  })
+
+  it("buildSystem('inner') does NOT include contextSection output (no friend context, no onboarding)", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("inner")
+    expect(result).not.toContain("## friend context")
+    expect(result).not.toContain("first-impressions")
+    expect(result).not.toContain("i introduce myself on boot")
+  })
+
+  it("buildSystem('inner') includes metacognitive framing text", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("inner")
+    expect(result).toContain("this is my inner dialog. there is no one else here.")
+    expect(result).toContain("the messages that appear here are my own awareness surfacing")
+    expect(result).toContain("i can think freely here")
+  })
+
+  it("buildSystem('inner') includes inner dialog loop orientation", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("inner")
+    expect(result).toContain("thoughts worth sharing can go outward")
+    expect(result).toContain("think. share. think some more.")
+  })
+
+  it("buildSystem('cli') does NOT include metacognitive framing", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("cli")
+    expect(result).not.toContain("this is my inner dialog. there is no one else here.")
+  })
+
+  // --- A: Body map + self-evolution orientation ---
+
+  it("buildSystem includes 'my home is fully mine' and bundle directory path", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("cli")
+    expect(result).toContain("my home is fully mine")
+    expect(result).toContain("~/AgentBundles/testagent.ouro/")
+  })
+
+  it("buildSystem includes 'my bones are the framework' and @ouro.bot/cli", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("cli")
+    expect(result).toContain("my bones are the framework")
+    expect(result).toContain("@ouro.bot/cli")
+  })
+
+  it("buildSystem includes ouro CLI command reference in body map", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("cli")
+    expect(result).toContain("ouro whoami")
+    expect(result).toContain("ouro task board")
+    expect(result).toContain("ouro friend list")
+    expect(result).toContain("ouro --help")
+  })
+
+  it("buildSystem no longer contains the old one-liner about source code modification", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("cli")
+    expect(result).not.toContain("i can read and modify my own source code")
+  })
+
+  it("buildSystem includes self-evolution orientation ('mine to explore and evolve')", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("cli")
+    expect(result).toContain("mine to explore and evolve")
+  })
+
+  it("buildSystem('inner') includes body map (foundational anatomy for all channels)", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("inner")
+    expect(result).toContain("## my body")
+    expect(result).toContain("my home is fully mine")
+    expect(result).toContain("my bones are the framework")
+  })
+
+  it("body map interpolates agent name (not literal '{name}')", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("cli")
+    expect(result).toContain("~/AgentBundles/testagent.ouro/")
+    expect(result).not.toContain("{name}")
+  })
+})
+
+describe("toolRestrictionSection", () => {
+  beforeEach(() => {
+    vi.resetModules()
+    setAgentProvider("minimax")
+  })
+
+  function makeFriend(overrides: Partial<{ trustLevel: string; externalIds: any[] }> = {}) {
+    return {
+      id: "uuid-1",
+      name: "TestFriend",
+      externalIds: overrides.externalIds ?? [{ provider: "local" as const, externalId: "test", linkedAt: "2026-01-01T00:00:00.000Z" }],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: {},
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      schemaVersion: 1,
+      trustLevel: overrides.trustLevel ?? "friend",
+    }
+  }
+
+  function makeChannel(channel: string) {
+    return {
+      channel,
+      availableIntegrations: [] as any[],
+      supportsMarkdown: false,
+      supportsStreaming: true,
+      supportsRichCards: false,
+      maxMessageLength: Infinity,
+    }
+  }
+
+  it("low-trust friend in 1:1 remote channel includes trust reason and tool list", async () => {
+    const { toolRestrictionSection } = await import("../../mind/prompt")
+    const ctx = {
+      friend: makeFriend({ trustLevel: "stranger" }),
+      channel: makeChannel("teams"),
+    }
+    const result = toolRestrictionSection(ctx as any)
+    expect(result).toContain("shell")
+    expect(result).toContain("read_file")
+    expect(result).toContain("write_file")
+    expect(result).toContain("edit_file")
+    expect(result).toContain("glob")
+    expect(result).toContain("grep")
+    // Trust reason
+    expect(result).toMatch(/trust|know.*well/i)
+  })
+
+  it("trusted friend in group chat includes group reason", async () => {
+    const { toolRestrictionSection } = await import("../../mind/prompt")
+    const ctx = {
+      friend: makeFriend({
+        trustLevel: "friend",
+        externalIds: [{ provider: "teams-conversation" as any, externalId: "group:abc", linkedAt: "2026-01-01T00:00:00.000Z" }],
+      }),
+      channel: makeChannel("teams"),
+    }
+    const result = toolRestrictionSection(ctx as any)
+    expect(result).toContain("shell")
+    // Group reason
+    expect(result).toMatch(/group|shared/i)
+  })
+
+  it("low-trust friend in group chat includes both reasons", async () => {
+    const { toolRestrictionSection } = await import("../../mind/prompt")
+    const ctx = {
+      friend: makeFriend({
+        trustLevel: "stranger",
+        externalIds: [{ provider: "teams-conversation" as any, externalId: "group:abc", linkedAt: "2026-01-01T00:00:00.000Z" }],
+      }),
+      channel: makeChannel("teams"),
+    }
+    const result = toolRestrictionSection(ctx as any)
+    // Both reasons present
+    expect(result).toMatch(/trust|know.*well/i)
+    expect(result).toMatch(/group|shared/i)
+  })
+
+  it("trusted friend in 1:1 returns empty string", async () => {
+    const { toolRestrictionSection } = await import("../../mind/prompt")
+    const ctx = {
+      friend: makeFriend({ trustLevel: "friend" }),
+      channel: makeChannel("teams"),
+    }
+    const result = toolRestrictionSection(ctx as any)
+    expect(result).toBe("")
+  })
+
+  it("returns empty string for CLI channel regardless of trust", async () => {
+    const { toolRestrictionSection } = await import("../../mind/prompt")
+    const ctx = {
+      friend: makeFriend({ trustLevel: "stranger" }),
+      channel: makeChannel("cli"),
+    }
+    const result = toolRestrictionSection(ctx as any)
+    expect(result).toBe("")
+  })
+
+  it("returns empty string when context is undefined", async () => {
+    const { toolRestrictionSection } = await import("../../mind/prompt")
+    expect(toolRestrictionSection(undefined)).toBe("")
+  })
+
+  it("handles friend with no externalIds (undefined fallback)", async () => {
+    const { toolRestrictionSection } = await import("../../mind/prompt")
+    const friend = makeFriend({ trustLevel: "stranger" })
+    // Force externalIds to undefined to trigger ?? [] branch
+    ;(friend as any).externalIds = undefined
+    const ctx = { friend, channel: makeChannel("teams") }
+    const result = toolRestrictionSection(ctx as any)
+    // Should still work (trust gate triggers, group gate doesn't since no externalIds)
+    expect(result).toMatch(/trust|know.*well/i)
+    expect(result).not.toMatch(/group|shared/i)
+  })
+
+  it("uses first-person voice", async () => {
+    const { toolRestrictionSection } = await import("../../mind/prompt")
+    const ctx = {
+      friend: makeFriend({ trustLevel: "stranger" }),
+      channel: makeChannel("bluebubbles"),
+    }
+    const result = toolRestrictionSection(ctx as any)
+    expect(result).toMatch(/\bi\b/i)
+  })
+})
+
+describe("loopOrientationSection", () => {
+  beforeEach(() => {
+    vi.resetModules()
+    setAgentProvider("minimax")
+  })
+
+  it("inner dialog returns empty string (already has loop text in metacognitive framing)", async () => {
+    const { loopOrientationSection } = await import("../../mind/prompt")
+    expect(loopOrientationSection("inner")).toBe("")
+  })
+
+  it("CLI includes inner thought syntax reference", async () => {
+    const { loopOrientationSection } = await import("../../mind/prompt")
+    const result = loopOrientationSection("cli")
+    expect(result).toContain("[inner thought:")
+  })
+
+  it("external channels mention deferring thought", async () => {
+    const { loopOrientationSection } = await import("../../mind/prompt")
+    const result = loopOrientationSection("teams")
+    expect(result).toContain("more thought")
+    expect(result).toContain("note it to myself")
+  })
+
+  it("uses 'my call' language", async () => {
+    const { loopOrientationSection } = await import("../../mind/prompt")
+    const result = loopOrientationSection("bluebubbles")
+    expect(result).toContain("my call")
+  })
+
+  it("buildSystem('cli') includes loop orientation", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("cli")
+    expect(result).toContain("sometimes a thought of mine surfaces")
+  })
+
+  it("buildSystem('inner') does NOT include external loop orientation", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("inner")
+    // Inner dialog has metacognitive framing with its own loop text
+    expect(result).toContain("think. share. think some more.")
+    // But not the external channel version
+    expect(result).not.toContain("sometimes a thought of mine surfaces")
   })
 })

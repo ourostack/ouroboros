@@ -14,7 +14,7 @@ describe("getSpecialistTools", () => {
     expect(tools).toHaveLength(5)
   })
 
-  it("includes complete_adoption with name and handoff_message parameters", async () => {
+  it("includes complete_adoption with name, handoff_message, and optional contact params", async () => {
     const { getSpecialistTools } = await import("../../../heart/daemon/specialist-tools")
     const tools = getSpecialistTools()
     const adoptTool = tools.find((t) => t.function.name === "complete_adoption")
@@ -23,6 +23,8 @@ describe("getSpecialistTools", () => {
     expect(params.required).toEqual(["name", "handoff_message"])
     expect(params.properties.name).toBeDefined()
     expect(params.properties.handoff_message).toBeDefined()
+    expect(params.properties.phone).toBeDefined()
+    expect(params.properties.teams_handle).toBeDefined()
   })
 
   it("includes final_answer tool", async () => {
@@ -481,4 +483,134 @@ describe("complete_adoption via createSpecialistExecTool", () => {
     expect(result).toContain("error")
     expect(result).toContain("name")
   })
+
+  it("creates initial friend record with phone externalId when provided", async () => {
+    const tmpDir = setupTempDir()
+    const bundlesRoot = makeTempDir("spec-tools-phone-bundles")
+    const secretsRoot = makeTempDir("spec-tools-phone-secrets")
+    cleanup.push(bundlesRoot, secretsRoot)
+
+    const { createSpecialistExecTool } = await import("../../../heart/daemon/specialist-tools")
+    const execTool = createSpecialistExecTool({
+      tempDir: tmpDir,
+      credentials: { setupToken: `sk-ant-oat01-${"a".repeat(80)}` },
+      provider: "anthropic",
+      bundlesRoot,
+      secretsRoot,
+      animationWriter: () => {},
+      humanName: "Ari",
+    })
+
+    const result = await execTool("complete_adoption", {
+      name: "PhoneAgent",
+      handoff_message: "Hello!",
+      phone: "+1234567890",
+    })
+
+    expect(result).toContain("success")
+    const finalBundle = path.join(bundlesRoot, "PhoneAgent.ouro")
+    const friendsDir = path.join(finalBundle, "friends")
+    const friendFiles = fs.readdirSync(friendsDir).filter((f) => f.endsWith(".json"))
+    expect(friendFiles.length).toBe(1)
+    const friend = JSON.parse(fs.readFileSync(path.join(friendsDir, friendFiles[0]), "utf-8"))
+    expect(friend.externalIds).toEqual(expect.arrayContaining([
+      expect.objectContaining({ provider: "imessage-handle", externalId: "+1234567890" }),
+    ]))
+    expect(friend.name).toBe("Ari")
+  }, 10000)
+
+  it("creates initial friend record with teams handle when provided", async () => {
+    const tmpDir = setupTempDir()
+    const bundlesRoot = makeTempDir("spec-tools-teams-bundles")
+    const secretsRoot = makeTempDir("spec-tools-teams-secrets")
+    cleanup.push(bundlesRoot, secretsRoot)
+
+    const { createSpecialistExecTool } = await import("../../../heart/daemon/specialist-tools")
+    const execTool = createSpecialistExecTool({
+      tempDir: tmpDir,
+      credentials: { setupToken: `sk-ant-oat01-${"a".repeat(80)}` },
+      provider: "anthropic",
+      bundlesRoot,
+      secretsRoot,
+      animationWriter: () => {},
+      humanName: "Ari",
+    })
+
+    const result = await execTool("complete_adoption", {
+      name: "TeamsAgent",
+      handoff_message: "Hello!",
+      teams_handle: "ari@company.com",
+    })
+
+    expect(result).toContain("success")
+    const finalBundle = path.join(bundlesRoot, "TeamsAgent.ouro")
+    const friendsDir = path.join(finalBundle, "friends")
+    const friendFiles = fs.readdirSync(friendsDir).filter((f) => f.endsWith(".json"))
+    expect(friendFiles.length).toBe(1)
+    const friend = JSON.parse(fs.readFileSync(path.join(friendsDir, friendFiles[0]), "utf-8"))
+    expect(friend.externalIds).toEqual(expect.arrayContaining([
+      expect.objectContaining({ provider: "aad", externalId: "ari@company.com" }),
+    ]))
+  }, 10000)
+
+  it("uses 'primary' as friend name when humanName not provided", async () => {
+    const tmpDir = setupTempDir()
+    const bundlesRoot = makeTempDir("spec-tools-noname-bundles")
+    const secretsRoot = makeTempDir("spec-tools-noname-secrets")
+    cleanup.push(bundlesRoot, secretsRoot)
+
+    const { createSpecialistExecTool } = await import("../../../heart/daemon/specialist-tools")
+    const execTool = createSpecialistExecTool({
+      tempDir: tmpDir,
+      credentials: { setupToken: `sk-ant-oat01-${"a".repeat(80)}` },
+      provider: "anthropic",
+      bundlesRoot,
+      secretsRoot,
+      animationWriter: () => {},
+      // humanName intentionally omitted
+    })
+
+    const result = await execTool("complete_adoption", {
+      name: "NoNameAgent",
+      handoff_message: "Hello!",
+      phone: "+1234567890",
+    })
+
+    expect(result).toContain("success")
+    const finalBundle = path.join(bundlesRoot, "NoNameAgent.ouro")
+    const friendsDir = path.join(finalBundle, "friends")
+    const friendFiles = fs.readdirSync(friendsDir).filter((f) => f.endsWith(".json"))
+    expect(friendFiles.length).toBe(1)
+    const friend = JSON.parse(fs.readFileSync(path.join(friendsDir, friendFiles[0]), "utf-8"))
+    expect(friend.name).toBe("primary")
+  }, 10000)
+
+  it("does not create friend record when no contact info provided", async () => {
+    const tmpDir = setupTempDir()
+    const bundlesRoot = makeTempDir("spec-tools-nocontact-bundles")
+    const secretsRoot = makeTempDir("spec-tools-nocontact-secrets")
+    cleanup.push(bundlesRoot, secretsRoot)
+
+    const { createSpecialistExecTool } = await import("../../../heart/daemon/specialist-tools")
+    const execTool = createSpecialistExecTool({
+      tempDir: tmpDir,
+      credentials: { setupToken: `sk-ant-oat01-${"a".repeat(80)}` },
+      provider: "anthropic",
+      bundlesRoot,
+      secretsRoot,
+      animationWriter: () => {},
+    })
+
+    const result = await execTool("complete_adoption", {
+      name: "NoContactAgent",
+      handoff_message: "Hello!",
+    })
+
+    expect(result).toContain("success")
+    const finalBundle = path.join(bundlesRoot, "NoContactAgent.ouro")
+    const friendsDir = path.join(finalBundle, "friends")
+    // Only README.md should be there, no friend JSON files
+    const friendFiles = fs.readdirSync(friendsDir).filter((f) => f.endsWith(".json"))
+    expect(friendFiles.length).toBe(0)
+  }, 10000)
 })

@@ -14,14 +14,8 @@ export type { ToolContext, ToolHandler, ToolDefinition } from "./tools-base";
 export { teamsTools } from "./tools-teams";
 
 // All tool definitions in a single registry
-const allDefinitions: ToolDefinition[] = [
-  ...baseToolDefinitions,
-  ...bluebubblesToolDefinitions,
-  ...teamsToolDefinitions,
-  ...adoSemanticToolDefinitions,
-  ...githubToolDefinitions,
-];
-const REMOTE_BLOCKED_LOCAL_TOOLS = new Set(["shell", "read_file", "write_file", "git_commit", "gh_cli"]);
+const allDefinitions: ToolDefinition[] = [...baseToolDefinitions, ...bluebubblesToolDefinitions, ...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions];
+const REMOTE_BLOCKED_LOCAL_TOOLS = new Set(["shell", "read_file", "write_file", "edit_file", "glob", "grep"]);
 
 function isRemoteChannel(capabilities?: ChannelCapabilities): boolean {
   return capabilities?.channel === "teams" || capabilities?.channel === "bluebubbles";
@@ -206,17 +200,11 @@ export function summarizeArgs(name: string, args: Record<string, string>): strin
 
   // Base tools
   if (name === "read_file" || name === "write_file") return summarizeKeyValues(args, ["path"]);
+  if (name === "edit_file") return summarizeKeyValues(args, ["path"]);
+  if (name === "glob") return summarizeKeyValues(args, ["pattern", "cwd"]);
+  if (name === "grep") return summarizeKeyValues(args, ["pattern", "path", "include"]);
   if (name === "shell") return summarizeKeyValues(args, ["command"]);
-  if (name === "list_directory") return summarizeKeyValues(args, ["path"]);
-  if (name === "git_commit") return summarizeKeyValues(args, ["message"]);
-  if (name === "gh_cli") return summarizeKeyValues(args, ["command"]);
   if (name === "load_skill") return summarizeKeyValues(args, ["name"]);
-  if (name === "task_create") return summarizeKeyValues(args, ["title", "type", "category", "scheduledAt", "cadence"]);
-  if (name === "schedule_reminder") return summarizeKeyValues(args, ["title", "scheduledAt", "cadence"]);
-  if (name === "task_update_status") return summarizeKeyValues(args, ["name", "status"]);
-  if (name === "task_board_status") return summarizeKeyValues(args, ["status"]);
-  if (name === "task_board_action") return summarizeKeyValues(args, ["scope"]);
-  if (name === "task_board" || name === "task_board_deps" || name === "task_board_sessions") return "";
   if (name === "coding_spawn") return summarizeKeyValues(args, ["runner", "workdir", "taskRef"]);
   if (name === "coding_status") return summarizeKeyValues(args, ["sessionId"]);
   if (name === "coding_tail") return summarizeKeyValues(args, ["sessionId"]);

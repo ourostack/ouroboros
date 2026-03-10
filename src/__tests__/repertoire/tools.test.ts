@@ -144,77 +144,20 @@ describe("execTool", () => {
     expect(execSync).toHaveBeenCalledWith("echo hello", { encoding: "utf-8", timeout: 30000 })
   })
 
-  // ── gh_cli ──
-  it("gh_cli runs gh command and returns output", async () => {
-    vi.mocked(execSync).mockReturnValue("pr list output")
+  // ── removed tools: gh_cli, list_directory, git_commit, get_current_time ──
+  it("gh_cli is no longer a registered tool", async () => {
     const result = await execTool("gh_cli", { command: "pr list" })
-    expect(result).toBe("pr list output")
-    expect(execSync).toHaveBeenCalledWith("gh pr list", { encoding: "utf-8", timeout: 60000 })
+    expect(result).toBe("unknown: gh_cli")
   })
 
-  it("gh_cli returns error on exception", async () => {
-    vi.mocked(execSync).mockImplementation(() => { throw new Error("gh not found") })
-    const result = await execTool("gh_cli", { command: "pr list" })
-    expect(result).toContain("error:")
-  })
-
-  // ── list_directory ──
-  it("list_directory lists directory contents", async () => {
-    vi.mocked(fs.readdirSync).mockReturnValue([
-      { name: "file.txt", isDirectory: () => false },
-      { name: "subdir", isDirectory: () => true },
-    ] as unknown as ReturnType<typeof fs.readdirSync>)
+  it("list_directory is no longer a registered tool", async () => {
     const result = await execTool("list_directory", { path: "/tmp" })
-    expect(result).toContain("file.txt")
-    expect(result).toContain("subdir")
-    expect(result).toContain("d  subdir")
-    expect(result).toContain("-  file.txt")
+    expect(result).toBe("unknown: list_directory")
   })
 
-  // ── git_commit ──
-  it("git_commit commits with valid paths", async () => {
-    vi.mocked(fs.existsSync).mockReturnValue(true)
-    vi.mocked(execSync)
-      .mockReturnValueOnce("") // git add
-      .mockReturnValueOnce("1 file changed\n") // git diff --cached --stat
-      .mockReturnValueOnce("") // git commit
-    const result = await execTool("git_commit", { message: "test commit", paths: ["/tmp/test.txt"] })
-    expect(result).toContain("committed")
-  })
-
-  it("git_commit returns error when paths missing", async () => {
-    const result = await execTool("git_commit", { message: "test" })
-    expect(result).toContain("paths are required")
-  })
-
-  it("git_commit returns error when paths is empty array", async () => {
-    const result = await execTool("git_commit", { message: "test", paths: [] })
-    expect(result).toContain("paths are required")
-  })
-
-  it("git_commit returns error when path does not exist", async () => {
-    vi.mocked(fs.existsSync).mockReturnValue(false)
-    const result = await execTool("git_commit", { message: "test", paths: ["/nonexistent"] })
-    expect(result).toContain("path does not exist")
-  })
-
-  it("git_commit returns error when nothing staged", async () => {
-    vi.mocked(fs.existsSync).mockReturnValue(true)
-    vi.mocked(execSync)
-      .mockReturnValueOnce("") // git add
-      .mockReturnValueOnce("") // empty diff
+  it("git_commit is no longer a registered tool", async () => {
     const result = await execTool("git_commit", { message: "test", paths: ["/tmp/test.txt"] })
-    expect(result).toContain("nothing was staged")
-  })
-
-  it("git_commit handles exception", async () => {
-    vi.mocked(fs.existsSync).mockReturnValue(true)
-    vi.mocked(execSync)
-      .mockReturnValueOnce("") // git add
-      .mockReturnValueOnce("1 file changed\n") // diff
-      .mockImplementationOnce(() => { throw new Error("commit failed") }) // commit
-    const result = await execTool("git_commit", { message: "test", paths: ["/tmp/test.txt"] })
-    expect(result).toContain("failed")
+    expect(result).toBe("unknown: git_commit")
   })
 
   // ── list_skills ──
@@ -237,11 +180,9 @@ describe("execTool", () => {
     expect(result).toContain("error:")
   })
 
-  // ── get_current_time ──
-  it("get_current_time returns date string", async () => {
+  it("get_current_time is no longer a registered tool", async () => {
     const result = await execTool("get_current_time", {})
-    expect(typeof result).toBe("string")
-    expect(result.length).toBeGreaterThan(5)
+    expect(result).toBe("unknown: get_current_time")
   })
 
   // ── claude ──
@@ -428,300 +369,24 @@ describe("execTool", () => {
     expect(result).toContain("disk failed as string")
   })
 
-  it("task_board returns full board output", async () => {
-    mockTaskModule.getBoard.mockReturnValueOnce({
-      compact: "[Tasks] processing:1",
-      full: "## processing\n- sample-task",
-      byStatus: {
-        drafting: [],
-        processing: ["sample-task"],
-        "validating": [],
-        collaborating: [],
-        paused: [],
-        blocked: [],
-        done: [],
-      },
-      actionRequired: [],
-      unresolvedDependencies: [],
-      activeSessions: [],
-    })
-
-    const result = await execTool("task_board", {})
-    expect(result).toContain("## processing")
-    expect(result).toContain("sample-task")
+  it("task tools return 'unknown' since they were consolidated into ouro task CLI", async () => {
+    expect(await execTool("task_board", {})).toBe("unknown: task_board")
+    expect(await execTool("task_create", { title: "x", type: "one-shot", category: "infra", body: "b" })).toBe("unknown: task_create")
+    expect(await execTool("task_update_status", { name: "x", status: "done" })).toBe("unknown: task_update_status")
+    expect(await execTool("task_board_status", { status: "processing" })).toBe("unknown: task_board_status")
+    expect(await execTool("task_board_action", {})).toBe("unknown: task_board_action")
+    expect(await execTool("task_board_deps", {})).toBe("unknown: task_board_deps")
+    expect(await execTool("task_board_sessions", {})).toBe("unknown: task_board_sessions")
   })
 
-  it("task_board falls back to compact output when full board is empty", async () => {
-    mockTaskModule.getBoard.mockReturnValueOnce({
-      compact: "[Tasks] drafting:1",
-      full: "",
-      byStatus: {
-        drafting: ["sample-task"],
-        processing: [],
-        "validating": [],
-        collaborating: [],
-        paused: [],
-        blocked: [],
-        done: [],
-      },
-      actionRequired: [],
-      unresolvedDependencies: [],
-      activeSessions: [],
-    })
-
-    const result = await execTool("task_board", {})
-    expect(result).toBe("[Tasks] drafting:1")
-  })
-
-  it("task_board returns a no-tasks fallback when board text is empty", async () => {
-    mockTaskModule.getBoard.mockReturnValueOnce({
-      compact: "",
-      full: "",
-      byStatus: {
-        drafting: [],
-        processing: [],
-        "validating": [],
-        collaborating: [],
-        paused: [],
-        blocked: [],
-        done: [],
-      },
-      actionRequired: [],
-      unresolvedDependencies: [],
-      activeSessions: [],
-    })
-
-    const result = await execTool("task_board", {})
-    expect(result).toBe("no tasks found")
-  })
-
-  it("task_create delegates to task module", async () => {
-    const result = await execTool("task_create", {
-      title: "Ship task board",
-      type: "one-shot",
-      category: "infrastructure",
-      body: "## scope\nship it",
-      scheduledAt: "2026-03-09T08:30:00.000Z",
-      cadence: "1h",
-    })
-    expect(result).toContain("created:")
-    expect(mockTaskModule.createTask).toHaveBeenCalledWith(
-      expect.objectContaining({
-        title: "Ship task board",
-        type: "one-shot",
-        category: "infrastructure",
-        body: "## scope\nship it",
-        scheduledAt: "2026-03-09T08:30:00.000Z",
-        cadence: "1h",
-      }),
-    )
-  })
-
-  it("task_create normalizes blank optional task metadata", async () => {
-    const result = await execTool("task_create", {
-      title: "Ship task board",
-      type: "one-shot",
-      category: "infrastructure",
-      body: "## scope\nship it",
-      status: "   ",
-      validator: "   ",
-      requester: "   ",
-      scheduledAt: "   ",
-      cadence: "   ",
-    })
-
-    expect(result).toContain("created:")
-    expect(mockTaskModule.createTask).toHaveBeenCalledWith(
-      expect.objectContaining({
-        status: undefined,
-        validator: null,
-        requester: null,
-        scheduledAt: null,
-        cadence: null,
-      }),
-    )
-  })
-
-  it("task_create surfaces module exceptions", async () => {
-    mockTaskModule.createTask.mockImplementationOnce(() => {
-      throw new Error("create failed")
-    })
-    const result = await execTool("task_create", {
-      title: "Broken create",
-      type: "one-shot",
-      category: "infrastructure",
-      body: "## scope\nbreak",
-    })
-    expect(result).toContain("error: create failed")
-  })
-
-  it("task_create stringifies non-Error thrown values", async () => {
-    mockTaskModule.createTask.mockImplementationOnce(() => {
-      throw "create failed as string"
-    })
-    const result = await execTool("task_create", {
-      title: "Broken create",
-      type: "one-shot",
-      category: "infrastructure",
-      body: "## scope\nbreak",
-    })
-    expect(result).toContain("error: create failed as string")
-  })
-
-  it("schedule_reminder creates a scheduled one-shot task", async () => {
+  it("schedule_reminder tool is removed from baseToolDefinitions", async () => {
     const result = await execTool("schedule_reminder", {
       title: "Ping Ari",
       body: "Remind Ari to check the daemon",
       scheduledAt: "2026-03-10T17:00:00.000Z",
     })
 
-    expect(result).toContain("created:")
-    expect(mockTaskModule.createTask).toHaveBeenCalledWith(
-      expect.objectContaining({
-        title: "Ping Ari",
-        type: "one-shot",
-        category: "reminder",
-        body: "Remind Ari to check the daemon",
-        scheduledAt: "2026-03-10T17:00:00.000Z",
-        cadence: null,
-      }),
-    )
-  })
-
-  it("schedule_reminder creates a recurring habit when cadence is provided", async () => {
-    const result = await execTool("schedule_reminder", {
-      title: "Heartbeat",
-      body: "Run heartbeat",
-      cadence: "30m",
-      category: "operations",
-    })
-
-    expect(result).toContain("created:")
-    expect(mockTaskModule.createTask).toHaveBeenCalledWith(
-      expect.objectContaining({
-        title: "Heartbeat",
-        type: "habit",
-        category: "operations",
-        body: "Run heartbeat",
-        cadence: "30m",
-        scheduledAt: null,
-      }),
-    )
-  })
-
-  it("schedule_reminder requires either scheduledAt or cadence", async () => {
-    const result = await execTool("schedule_reminder", {
-      title: "Incomplete reminder",
-      body: "Needs a schedule",
-    })
-
-    expect(result).toBe("error: provide scheduledAt or cadence")
-    expect(mockTaskModule.createTask).not.toHaveBeenCalled()
-  })
-
-  it("schedule_reminder stringifies non-Error task creation failures", async () => {
-    mockTaskModule.createTask.mockImplementationOnce(() => {
-      throw "scheduler exploded"
-    })
-
-    const result = await execTool("schedule_reminder", {
-      title: "Broken reminder",
-      body: "This will fail",
-      scheduledAt: "2026-03-10T17:00:00.000Z",
-    })
-
-    expect(result).toBe("error: scheduler exploded")
-  })
-
-  it("schedule_reminder surfaces Error task creation failures", async () => {
-    mockTaskModule.createTask.mockImplementationOnce(() => {
-      throw new Error("scheduler exploded")
-    })
-
-    const result = await execTool("schedule_reminder", {
-      title: "Broken reminder",
-      body: "This will fail",
-      scheduledAt: "2026-03-10T17:00:00.000Z",
-    })
-
-    expect(result).toBe("error: scheduler exploded")
-  })
-
-  it("task_update_status surfaces module errors", async () => {
-    mockTaskModule.updateStatus.mockReturnValueOnce({
-      ok: false,
-      from: "drafting",
-      to: "done",
-      reason: "invalid transition: drafting -> done",
-    })
-
-    const result = await execTool("task_update_status", { name: "sample-task", status: "done" })
-    expect(result).toContain("error:")
-    expect(result).toContain("invalid transition")
-  })
-
-  it("task_update_status uses default failure reason when module omits one", async () => {
-    mockTaskModule.updateStatus.mockReturnValueOnce({
-      ok: false,
-      from: "drafting",
-      to: "done",
-    })
-    const result = await execTool("task_update_status", { name: "sample-task", status: "done" })
-    expect(result).toContain("error: status update failed")
-  })
-
-  it("task_update_status includes archive details when present", async () => {
-    mockTaskModule.updateStatus.mockReturnValueOnce({
-      ok: true,
-      from: "validating",
-      to: "done",
-      archived: ["/mock/repo/testagent/tasks/archive/one-shots/2026-03-06-1200-sample-task.md"],
-    })
-
-    const result = await execTool("task_update_status", { name: "sample-task", status: "done" })
-    expect(result).toContain("updated: sample-task -> done")
-    expect(result).toContain("archived:")
-    expect(result).toContain("archive/one-shots")
-  })
-
-  it("task_update_status omits archive suffix when archived is undefined", async () => {
-    mockTaskModule.updateStatus.mockReturnValueOnce({
-      ok: true,
-      from: "processing",
-      to: "validating",
-    })
-    const result = await execTool("task_update_status", { name: "sample-task", status: "validating" })
-    expect(result).toBe("updated: sample-task -> validating")
-  })
-
-  it("task board detail tools return fallback text when empty", async () => {
-    expect(await execTool("task_board_status", { status: "processing" })).toBe("no tasks in that status")
-    expect(await execTool("task_board_action", {})).toBe("no action required")
-    expect(await execTool("task_board_deps", {})).toBe("no unresolved dependencies")
-    expect(await execTool("task_board_sessions", {})).toBe("no active sessions")
-  })
-
-  it("task board detail tools return populated values when present", async () => {
-    mockTaskModule.boardStatus.mockReturnValueOnce(["task-a", "task-b"])
-    mockTaskModule.boardAction.mockReturnValueOnce(["blocked tasks: task-a"])
-    mockTaskModule.boardDeps.mockReturnValueOnce(["task-a -> missing task-z"])
-    mockTaskModule.boardSessions.mockReturnValueOnce(["task-a"])
-
-    expect(await execTool("task_board_status", { status: "processing" })).toBe("task-a\ntask-b")
-    expect(await execTool("task_board_action", {})).toBe("blocked tasks: task-a")
-    expect(await execTool("task_board_deps", {})).toBe("task-a -> missing task-z")
-    expect(await execTool("task_board_sessions", {})).toBe("task-a")
-  })
-
-  it("task_board_action supports scoped filtering and no-match fallback", async () => {
-    mockTaskModule.boardAction.mockReturnValueOnce([
-      "blocked tasks: sample-task",
-      "missing category: another-task",
-    ])
-    expect(await execTool("task_board_action", { scope: "blocked" })).toContain("blocked tasks")
-
-    mockTaskModule.boardAction.mockReturnValueOnce(["blocked tasks: sample-task"])
-    expect(await execTool("task_board_action", { scope: "category" })).toBe("no matching action items")
+    expect(result).toBe("unknown: schedule_reminder")
   })
 
   // ── unknown tool ──
@@ -752,6 +417,22 @@ describe("summarizeArgs", () => {
     expect(summarizeArgs("write_file", { path: "/tmp/out.txt", content: "x" })).toBe("path=/tmp/out.txt")
   })
 
+  it("returns path for edit_file", () => {
+    expect(summarizeArgs("edit_file", { path: "/tmp/edit.txt", old_string: "x", new_string: "y" })).toBe("path=/tmp/edit.txt")
+  })
+
+  it("returns pattern and cwd for glob", () => {
+    expect(summarizeArgs("glob", { pattern: "**/*.ts", cwd: "/src" })).toBe("pattern=**/*.ts cwd=/src")
+  })
+
+  it("returns pattern only for glob with no cwd", () => {
+    expect(summarizeArgs("glob", { pattern: "*.json" })).toBe("pattern=*.json")
+  })
+
+  it("returns pattern and path for grep", () => {
+    expect(summarizeArgs("grep", { pattern: "log.*Error", path: "/src", include: "*.ts" })).toBe("pattern=log.*Error path=/src include=*.ts")
+  })
+
   it("returns short command for shell", () => {
     expect(summarizeArgs("shell", { command: "echo hi" })).toBe("command=echo hi")
   })
@@ -765,30 +446,11 @@ describe("summarizeArgs", () => {
     expect(summarizeArgs("shell", {})).toBe("")
   })
 
-  it("returns path for list_directory", () => {
+  it("falls through to unknown handler for removed tools (list_directory, git_commit, gh_cli)", () => {
+    // These tools have been removed, so summarizeArgs should treat them as unknown
     expect(summarizeArgs("list_directory", { path: "/tmp" })).toBe("path=/tmp")
-  })
-
-  it("returns empty string for list_directory with no path", () => {
-    expect(summarizeArgs("list_directory", {})).toBe("")
-  })
-
-  it("returns truncated message for git_commit", () => {
-    const msg = "a".repeat(70)
-    expect(summarizeArgs("git_commit", { message: msg })).toBe("message=" + "a".repeat(60) + "...")
-  })
-
-  it("returns empty string for git_commit with no message", () => {
-    expect(summarizeArgs("git_commit", {})).toBe("")
-  })
-
-  it("returns truncated command for gh_cli", () => {
-    const cmd = "a".repeat(70)
-    expect(summarizeArgs("gh_cli", { command: cmd })).toBe("command=" + "a".repeat(60) + "...")
-  })
-
-  it("returns empty string for gh_cli with no command", () => {
-    expect(summarizeArgs("gh_cli", {})).toBe("")
+    expect(summarizeArgs("git_commit", { message: "test" })).toBe("message=test")
+    expect(summarizeArgs("gh_cli", { command: "pr list" })).toBe("command=pr list")
   })
 
   it("returns name for load_skill", () => {
@@ -799,39 +461,25 @@ describe("summarizeArgs", () => {
     expect(summarizeArgs("load_skill", {})).toBe("")
   })
 
-  it("returns title/type/category for task_create", () => {
-    expect(
-      summarizeArgs("task_create", {
-        title: "Ship task module",
-        type: "one-shot",
-        category: "infrastructure",
-        body: "ignored",
-      }),
-    ).toBe("title=Ship task module type=one-shot category=infrastructure")
+  it("falls through to unknown handler for removed task tools (consolidated into ouro task CLI)", () => {
+    // These tools have been removed, so summarizeArgs should treat them as unknown
+    expect(summarizeArgs("task_create", { title: "Ship it", type: "one-shot", category: "infra", body: "ignored" })).toBe("title=Ship it type=one-shot category=infra body=ignored")
+    expect(summarizeArgs("task_update_status", { name: "sample", status: "processing" })).toBe("name=sample status=processing")
+    expect(summarizeArgs("task_board_status", { status: "blocked" })).toBe("status=blocked")
+    expect(summarizeArgs("task_board_action", { scope: "blocked" })).toBe("scope=blocked")
+    expect(summarizeArgs("task_board", {})).toBe("")
+    expect(summarizeArgs("task_board_deps", {})).toBe("")
+    expect(summarizeArgs("task_board_sessions", {})).toBe("")
   })
 
-  it("returns title and schedule fields for schedule_reminder", () => {
+  it("falls through to generic summary for removed schedule_reminder tool", () => {
+    // schedule_reminder was removed -- now hits the summarizeUnknownArgs fallback
     expect(
       summarizeArgs("schedule_reminder", {
         title: "Ping Ari",
         scheduledAt: "2026-03-10T17:00:00.000Z",
       }),
     ).toBe("title=Ping Ari scheduledAt=2026-03-10T17:00:00.000Z")
-  })
-
-  it("returns name/status for task_update_status", () => {
-    expect(summarizeArgs("task_update_status", { name: "sample", status: "processing" })).toBe("name=sample status=processing")
-  })
-
-  it("returns status or scope for task board detail tools", () => {
-    expect(summarizeArgs("task_board_status", { status: "blocked" })).toBe("status=blocked")
-    expect(summarizeArgs("task_board_action", { scope: "blocked" })).toBe("scope=blocked")
-  })
-
-  it("returns empty string for task board aggregate tools", () => {
-    expect(summarizeArgs("task_board", {})).toBe("")
-    expect(summarizeArgs("task_board_deps", {})).toBe("")
-    expect(summarizeArgs("task_board_sessions", {})).toBe("")
   })
 
   it("returns truncated prompt for claude", () => {
@@ -991,14 +639,33 @@ describe("ToolDefinition type and registry", () => {
     expect(names).toContain("read_file")
     expect(names).toContain("write_file")
     expect(names).toContain("shell")
-    expect(names).toContain("list_directory")
-    expect(names).toContain("git_commit")
     expect(names).toContain("list_skills")
     expect(names).toContain("load_skill")
-    expect(names).toContain("get_current_time")
     expect(names).toContain("claude")
     expect(names).toContain("web_search")
-    expect(names).toContain("gh_cli")
+  })
+
+  it("base tool definitions do NOT include removed tools", async () => {
+    vi.resetModules()
+    const toolsBase = await import("../../repertoire/tools-base")
+    const names = toolsBase.baseToolDefinitions.map((d: any) => d.tool.function.name)
+    expect(names).not.toContain("list_directory")
+    expect(names).not.toContain("git_commit")
+    expect(names).not.toContain("get_current_time")
+    expect(names).not.toContain("gh_cli")
+  })
+
+  it("base tool definitions do NOT include task tools (consolidated into ouro task CLI)", async () => {
+    vi.resetModules()
+    const toolsBase = await import("../../repertoire/tools-base")
+    const names = toolsBase.baseToolDefinitions.map((d: any) => d.tool.function.name)
+    expect(names).not.toContain("task_board")
+    expect(names).not.toContain("task_create")
+    expect(names).not.toContain("task_update_status")
+    expect(names).not.toContain("task_board_status")
+    expect(names).not.toContain("task_board_action")
+    expect(names).not.toContain("task_board_deps")
+    expect(names).not.toContain("task_board_sessions")
   })
 
   it("teams tool definitions include expected tool names", async () => {
@@ -1040,13 +707,15 @@ describe("tools array export (backward compat)", () => {
     expect(names).toContain("read_file")
     expect(names).toContain("write_file")
     expect(names).toContain("shell")
-    expect(names).toContain("list_directory")
-    expect(names).toContain("git_commit")
     expect(names).toContain("list_skills")
     expect(names).toContain("load_skill")
-    expect(names).toContain("get_current_time")
     expect(names).toContain("claude")
     expect(names).toContain("web_search")
+    // Removed tools should not be present
+    expect(names).not.toContain("list_directory")
+    expect(names).not.toContain("git_commit")
+    expect(names).not.toContain("get_current_time")
+    expect(names).not.toContain("gh_cli")
   })
 })
 
@@ -1115,18 +784,18 @@ describe("getToolsForChannel with ChannelCapabilities", () => {
     }
     const result = getToolsForChannel(teamsCaps)
     const names = result.map((t: any) => t.function.name)
-    const blockedLocalTools = new Set(["read_file", "write_file", "shell", "git_commit", "gh_cli"])
+    const blockedLocalTools = new Set(["read_file", "write_file", "shell", "edit_file", "glob", "grep"])
     const remoteBaseCount = tools.filter((t: any) => !blockedLocalTools.has(t.function.name)).length
     // Teams channel should exclude blocked local tools
     expect(names).not.toContain("read_file")
     expect(names).not.toContain("write_file")
     expect(names).not.toContain("shell")
+    // Removed tools should not be present at all
     expect(names).not.toContain("git_commit")
     expect(names).not.toContain("gh_cli")
+    expect(names).not.toContain("list_directory")
+    expect(names).not.toContain("get_current_time")
     // But still include safe base tools
-    expect(names).toContain("list_directory")
-    expect(names).toContain("get_current_time")
-    // Should have graph tools
     expect(names).toContain("graph_query")
     expect(names).toContain("graph_mutate")
     expect(names).toContain("graph_profile")
@@ -1162,7 +831,7 @@ describe("getToolsForChannel with ChannelCapabilities", () => {
     }
     const result = getToolsForChannel(caps)
     const names = result.map((t: any) => t.function.name)
-    const blockedLocalTools = new Set(["read_file", "write_file", "shell", "git_commit", "gh_cli"])
+    const blockedLocalTools = new Set(["read_file", "write_file", "shell", "edit_file", "glob", "grep"])
     const remoteBaseCount = tools.filter((t: any) => !blockedLocalTools.has(t.function.name)).length
     // Should have graph tools
     expect(names).toContain("graph_query")
@@ -1191,7 +860,7 @@ describe("getToolsForChannel with ChannelCapabilities", () => {
     }
     const result = getToolsForChannel(caps)
     const names = result.map((t: any) => t.function.name)
-    const blockedLocalTools = new Set(["read_file", "write_file", "shell", "git_commit", "gh_cli"])
+    const blockedLocalTools = new Set(["read_file", "write_file", "shell", "edit_file", "glob", "grep"])
     const remoteBaseCount = tools.filter((t: any) => !blockedLocalTools.has(t.function.name)).length
     // Should have ado tools
     expect(names).toContain("ado_query")
@@ -2104,7 +1773,7 @@ describe("getToolsForChannel includes docs tools", () => {
     }
     const teamsTools = getToolsForChannel(teamsCaps)
     const names = teamsTools.map((t: any) => t.function.name)
-    const blockedLocalTools = new Set(["read_file", "write_file", "shell", "git_commit", "gh_cli"])
+    const blockedLocalTools = new Set(["read_file", "write_file", "shell", "edit_file", "glob", "grep"])
     const remoteBaseCount = tools.filter((t: any) => !blockedLocalTools.has(t.function.name)).length
     expect(names).toContain("graph_docs")
     expect(names).toContain("ado_docs")

@@ -1,3 +1,4 @@
+import * as fs from "fs"
 import OpenAI from "openai"
 import { App } from "@microsoft/teams.apps"
 import { DevtoolsPlugin } from "@microsoft/teams.dev"
@@ -15,6 +16,8 @@ import { createCommandRegistry, registerDefaultCommands, parseSlashCommand } fro
 import { createTraceId } from "../nerves"
 import { emitNervesEvent } from "../nerves/runtime"
 import { FileFriendStore } from "../mind/friends/store-file"
+import type { FriendRecord } from "../mind/friends/types"
+import type { FriendStore } from "../mind/friends/store"
 import { FriendResolver } from "../mind/friends/resolver"
 import { accumulateFriendTokens } from "../mind/friends/tokens"
 import { createTurnCoordinator } from "../heart/turn-coordinator"
@@ -736,6 +739,202 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
     const msg = error instanceof Error ? error.message : String(error)
     emitNervesEvent({ level: "error", event: "channel.app_error", component: "channels", message: `[${label}] ${msg}`, meta: {} })
   })
+}
+
+export interface TeamsDrainAndSendResult {
+  sent: number
+  skipped: number
+  failed: number
+}
+
+export interface TeamsBotApi {
+  id: string
+  conversations: unknown
+}
+
+const TEAMS_PROACTIVE_ALLOWED_TRUST: ReadonlySet<string> = new Set(["family", "friend"])
+
+function findAadObjectId(friend: FriendRecord): { aadObjectId: string; tenantId?: string } | undefined {
+  for (const ext of friend.externalIds) {
+    if (ext.provider === "aad" && !ext.externalId.startsWith("group:")) {
+      return { aadObjectId: ext.externalId, tenantId: ext.tenantId }
+    }
+  }
+  return undefined
+}
+
+function scanPendingTeamsFiles(pendingRoot: string): Array<{
+  friendId: string
+  key: string
+  filePath: string
+  content: string
+}> {
+  const results: Array<{ friendId: string; key: string; filePath: string; content: string }> = []
+
+  let friendIds: string[]
+  try {
+    friendIds = fs.readdirSync(pendingRoot)
+  } catch {
+    return results
+  }
+
+  for (const friendId of friendIds) {
+    const teamsDir = path.join(pendingRoot, friendId, "teams")
+    let keys: string[]
+    try {
+      keys = fs.readdirSync(teamsDir)
+    } catch {
+      continue
+    }
+
+    for (const key of keys) {
+      const keyDir = path.join(teamsDir, key)
+      let files: string[]
+      try {
+        files = fs.readdirSync(keyDir)
+      } catch {
+        continue
+      }
+
+      for (const file of files.filter((f) => f.endsWith(".json")).sort()) {
+        const filePath = path.join(keyDir, file)
+        try {
+          const content = fs.readFileSync(filePath, "utf-8")
+          results.push({ friendId, key, filePath, content })
+        } catch {
+          // skip unreadable files
+        }
+      }
+    }
+  }
+
+  return results
+}
+
+export async function drainAndSendPendingTeams(
+  store: FriendStore,
+  botApi: TeamsBotApi,
+  pendingRoot?: string,
+): Promise<TeamsDrainAndSendResult> {
+  const root = pendingRoot ?? path.join(getAgentRoot(), "state", "pending")
+
+  const pendingFiles = scanPendingTeamsFiles(root)
+  const result: TeamsDrainAndSendResult = { sent: 0, skipped: 0, failed: 0 }
+
+  const conversations = botApi.conversations as {
+    create(params: Record<string, unknown>): Promise<{ id: string }>
+    activities(conversationId: string): { create(params: Record<string, unknown>): Promise<unknown> }
+  }
+
+  for (const { friendId, filePath, content } of pendingFiles) {
+    let parsed: { content?: string }
+    try {
+      parsed = JSON.parse(content) as { content?: string }
+    } catch {
+      result.failed++
+      try { fs.unlinkSync(filePath) } catch { /* ignore */ }
+      continue
+    }
+
+    const messageText = typeof parsed.content === "string" ? parsed.content : ""
+    if (!messageText.trim()) {
+      result.skipped++
+      try { fs.unlinkSync(filePath) } catch { /* ignore */ }
+      continue
+    }
+
+    let friend: FriendRecord | null
+    try {
+      friend = await store.get(friendId)
+    } catch {
+      friend = null
+    }
+
+    if (!friend) {
+      result.skipped++
+      try { fs.unlinkSync(filePath) } catch { /* ignore */ }
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.teams_proactive_no_friend",
+        message: "proactive send skipped: friend not found",
+        meta: { friendId },
+      })
+      continue
+    }
+
+    if (!TEAMS_PROACTIVE_ALLOWED_TRUST.has(friend.trustLevel ?? "stranger")) {
+      result.skipped++
+      try { fs.unlinkSync(filePath) } catch { /* ignore */ }
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.teams_proactive_trust_skip",
+        message: "proactive send skipped: trust level not allowed",
+        meta: { friendId, trustLevel: friend.trustLevel ?? "unknown" },
+      })
+      continue
+    }
+
+    const aadInfo = findAadObjectId(friend)
+    if (!aadInfo) {
+      result.skipped++
+      try { fs.unlinkSync(filePath) } catch { /* ignore */ }
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.teams_proactive_no_aad_id",
+        message: "proactive send skipped: no AAD object ID found",
+        meta: { friendId },
+      })
+      continue
+    }
+
+    try {
+      const conversation = await conversations.create({
+        bot: { id: botApi.id },
+        members: [{ id: aadInfo.aadObjectId, role: "user", name: friend.name || aadInfo.aadObjectId }],
+        tenantId: aadInfo.tenantId,
+        isGroup: false,
+      })
+      await conversations.activities(conversation.id).create({
+        type: "message",
+        text: messageText,
+      })
+      result.sent++
+      try { fs.unlinkSync(filePath) } catch { /* ignore */ }
+
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.teams_proactive_sent",
+        message: "proactive teams message sent",
+        meta: { friendId, aadObjectId: aadInfo.aadObjectId },
+      })
+    } catch (error) {
+      result.failed++
+      emitNervesEvent({
+        level: "error",
+        component: "senses",
+        event: "senses.teams_proactive_send_error",
+        message: "proactive teams send failed",
+        meta: {
+          friendId,
+          aadObjectId: aadInfo.aadObjectId,
+          reason: error instanceof Error ? error.message : String(error),
+        },
+      })
+    }
+  }
+
+  if (result.sent > 0 || result.skipped > 0 || result.failed > 0) {
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.teams_proactive_drain_complete",
+      message: "teams proactive drain complete",
+      meta: { sent: result.sent, skipped: result.skipped, failed: result.failed },
+    })
+  }
+
+  return result
 }
 
 // Start the Teams app in DevtoolsPlugin mode (local dev) or Bot Service mode (real Teams).

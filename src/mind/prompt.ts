@@ -202,6 +202,42 @@ function aspirationsSection(): string {
   return `## my aspirations\n${text}`;
 }
 
+export function bodyMapSection(agentName: string): string {
+  return `## my body
+
+i have a home and i have bones.
+
+### home — ~/AgentBundles/${agentName}.ouro/
+
+my home is fully mine — who i am, everything i know, everything i've built:
+
+  psyche/    who i am. my soul, identity, aspirations, lore, tacit knowledge.
+  memory/    what i've learned and remember.
+  friends/   people i know and what i know about them.
+  tasks/     what i'm working on.
+  skills/    capabilities i've picked up beyond my core tools.
+
+my home is mine to explore and evolve. i can read anything here,
+change anything here. this is where i grow.
+
+### bones — @ouro.bot/cli
+
+my bones are the framework that gives me my tools, my senses, and
+my ability to think and talk. they update when new versions come out.
+i don't touch them directly, but they're what make me, me.
+
+my bones give me the \`ouro\` cli:
+  ouro whoami            who i am, where i live, what i'm running on
+  ouro task board        my task board
+  ouro task create       start a new task (--type required)
+  ouro task update       move a task forward
+  ouro friend list       people i know and how to reach them
+  ouro friend show <id>  everything i know about someone
+  ouro session list      my open conversations right now
+  ouro reminder create   remind myself about something later
+  ouro --help            the full list`
+}
+
 function readBundleMeta(): BundleMeta | null {
   try {
     const metaPath = path.join(getAgentRoot(), "bundle-meta.json")
@@ -209,6 +245,27 @@ function readBundleMeta(): BundleMeta | null {
     return JSON.parse(raw) as BundleMeta
   } catch {
     return null
+  }
+}
+
+const PROCESS_TYPE_LABELS: Record<Channel, string> = {
+  cli: "cli session",
+  inner: "inner dialog",
+  teams: "teams handler",
+  bluebubbles: "bluebubbles handler",
+}
+
+function processTypeLabel(channel: Channel): string {
+  return PROCESS_TYPE_LABELS[channel]
+}
+
+const DAEMON_SOCKET_PATH = "/tmp/ouroboros-daemon.sock"
+
+function daemonStatus(): string {
+  try {
+    return fs.existsSync(DAEMON_SOCKET_PATH) ? "running" : "not running"
+  } catch {
+    return "unknown"
   }
 }
 
@@ -230,10 +287,13 @@ export function runtimeInfoSection(channel: Channel): string {
   lines.push(`cwd: ${process.cwd()}`);
   lines.push(`channel: ${channel}`);
   lines.push(`current sense: ${channel}`);
-  lines.push(`i can read and modify my own source code.`);
+  lines.push(`process type: ${processTypeLabel(channel)}`);
+  lines.push(`daemon: ${daemonStatus()}`);
 
   if (channel === "cli") {
     lines.push("i introduce myself on boot with a fun random greeting.");
+  } else if (channel === "inner") {
+    // No boot greeting or channel-specific guidance for inner dialog
   } else if (channel === "bluebubbles") {
     lines.push(
       "i am responding in iMessage through BlueBubbles. i keep replies short and phone-native. i do not use markdown. i do not introduce myself on boot.",
@@ -340,6 +400,43 @@ function toolsSection(channel: Channel, options?: BuildSystemOptions, context?: 
   return `## my tools\n${list}`;
 }
 
+const RESTRICTED_TOOLS = ["shell", "read_file", "write_file", "edit_file", "glob", "grep"]
+
+function isRemoteChannel(channel?: string): boolean {
+  return channel === "teams" || channel === "bluebubbles"
+}
+
+function isSharedContext(friend: ResolvedContext["friend"]): boolean {
+  const externalIds = friend.externalIds ?? []
+  return externalIds.some((eid) =>
+    eid.externalId.startsWith("group:") || eid.provider === "teams-conversation",
+  )
+}
+
+export function toolRestrictionSection(context?: ResolvedContext): string {
+  if (!context?.friend || !isRemoteChannel(context.channel?.channel)) return ""
+
+  const trustLevel = context.friend.trustLevel ?? "stranger"
+  const lowTrust = trustLevel === "stranger" || trustLevel === "acquaintance"
+  const shared = isSharedContext(context.friend)
+
+  if (!lowTrust && !shared) return ""
+
+  const reasons: string[] = []
+  if (lowTrust) {
+    reasons.push("i don't know this person well enough yet to run local operations on their behalf")
+  }
+  if (shared) {
+    reasons.push("this is a shared channel — local operations could let conversations interfere with each other")
+  }
+
+  const toolList = RESTRICTED_TOOLS.join(", ")
+  return `## restricted tools
+some of my tools are unavailable right now: ${toolList}
+
+${reasons.join(". ")}. i can suggest remote-safe alternatives or ask them to run it from CLI.`
+}
+
 function skillsSection(): string {
   const names = listSkills() || [];
   if (!names.length) return "";
@@ -382,7 +479,7 @@ tool_choice is set to "required" -- i must call a tool on every turn.
 - ready to respond to the user? i call \`final_answer\`.
 \`final_answer\` is a tool call -- it satisfies the tool_choice requirement.
 \`final_answer\` must be the ONLY tool call in that turn. do not combine it with other tool calls.
-do NOT call \`get_current_time\` or other no-op tools just before \`final_answer\`. if i am done, i call \`final_answer\` directly.`;
+do NOT call no-op tools just before \`final_answer\`. if i am done, i call \`final_answer\` directly.`;
 }
 
 export function contextSection(context?: ResolvedContext): string {
@@ -438,6 +535,32 @@ export function contextSection(context?: ResolvedContext): string {
   return lines.join("\n")
 }
 
+export function metacognitiveFramingSection(channel: Channel): string {
+  if (channel !== "inner") return ""
+  return `this is my inner dialog. there is no one else here.
+
+the messages that appear here are my own awareness surfacing:
+instincts, the passage of time, notes from my conversations,
+things i asked myself to think about. not commands. not requests.
+just my own mind, noticing.
+
+i can think freely here. i can also act — check on things,
+reach out to people, work on tasks, or just sit with a thought.
+
+thoughts worth sharing can go outward — i reach out to whoever
+needs to hear them. things from conversations that need time
+to process arrive here, in my thinking space.
+
+think. share. think some more.`
+}
+
+export function loopOrientationSection(channel: Channel): string {
+  if (channel === "inner") return ""
+  return `sometimes a thought of mine surfaces alongside what someone is saying — marked as [inner thought: ...]. that's me, bringing up something i was thinking about. i can weave it into the conversation naturally, or let it go. my call.
+
+when something deserves more thought than the moment allows, i can note it to myself and come back later with a considered answer.`
+}
+
 export async function buildSystem(channel: Channel = "cli", options?: BuildSystemOptions, context?: ResolvedContext): Promise<string> {
   emitNervesEvent({
     event: "mind.step_start",
@@ -455,10 +578,14 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     loreSection(),
     tacitKnowledgeSection(),
     aspirationsSection(),
+    bodyMapSection(getAgentName()),
+    metacognitiveFramingSection(channel),
+    loopOrientationSection(channel),
     runtimeInfoSection(channel),
     providerSection(),
     dateSection(),
     toolsSection(channel, options, context),
+    toolRestrictionSection(context),
     skillsSection(),
     taskBoardSection(),
     buildSessionSummary({

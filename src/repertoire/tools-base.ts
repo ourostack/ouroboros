@@ -1,5 +1,6 @@
 import type OpenAI from "openai";
 import * as fs from "fs";
+import * as fg from "fast-glob";
 import { execSync, spawnSync } from "child_process";
 import * as path from "path";
 import { listSkills, loadSkill } from "./skills";
@@ -8,7 +9,6 @@ import type { Integration, ResolvedContext, FriendRecord } from "../mind/friends
 import type { FriendStore } from "../mind/friends/store";
 import { emitNervesEvent } from "../nerves/runtime";
 import { getAgentRoot, getAgentName } from "../heart/identity";
-import { getTaskModule } from "./tasks";
 import { codingToolDefinitions } from "./coding/tools";
 import { readMemoryFacts, saveMemoryFact, searchMemoryFacts } from "../mind/memory";
 import { getPendingDir } from "../mind/pending";
@@ -55,26 +55,20 @@ export interface ToolDefinition {
   confirmationRequired?: boolean;
 }
 
-const postIt = (msg: string) => `post-it from past you:\n${msg}`;
+// Tracks which file paths have been read via read_file in this session.
+// edit_file requires a file to be read first (must-read-first guard).
+export const editFileReadTracker = new Set<string>();
 
-function normalizeOptionalText(value: unknown): string | null {
-  if (typeof value !== "string") return null
-  const trimmed = value.trim()
-  return trimmed.length > 0 ? trimmed : null
-}
-
-function buildTaskCreateInput(args: Record<string, string>) {
-  return {
-    title: args.title,
-    type: args.type,
-    category: args.category,
-    body: args.body,
-    status: normalizeOptionalText(args.status) ?? undefined,
-    validator: normalizeOptionalText(args.validator),
-    requester: normalizeOptionalText(args.requester),
-    cadence: normalizeOptionalText(args.cadence),
-    scheduledAt: normalizeOptionalText(args.scheduledAt),
+function buildContextDiff(lines: string[], changeStart: number, changeEnd: number, contextSize = 3): string {
+  const start = Math.max(0, changeStart - contextSize)
+  const end = Math.min(lines.length, changeEnd + contextSize)
+  const result: string[] = []
+  for (let i = start; i < end; i++) {
+    const lineNum = i + 1
+    const prefix = (i >= changeStart && i < changeEnd) ? ">" : " "
+    result.push(`${prefix} ${lineNum} | ${lines[i]}`)
   }
+  return result.join("\n")
 }
 
 export const baseToolDefinitions: ToolDefinition[] = [
@@ -86,12 +80,26 @@ export const baseToolDefinitions: ToolDefinition[] = [
         description: "read file contents",
         parameters: {
           type: "object",
-          properties: { path: { type: "string" } },
+          properties: {
+            path: { type: "string" },
+            offset: { type: "number", description: "1-based line number to start reading from" },
+            limit: { type: "number", description: "maximum number of lines to return" },
+          },
           required: ["path"],
         },
       },
     },
-    handler: (a) => fs.readFileSync(a.path, "utf-8"),
+    handler: (a) => {
+      const content = fs.readFileSync(a.path, "utf-8")
+      editFileReadTracker.add(a.path)
+      const offset = a.offset ? parseInt(a.offset, 10) : undefined
+      const limit = a.limit ? parseInt(a.limit, 10) : undefined
+      if (offset === undefined && limit === undefined) return content
+      const lines = content.split("\n")
+      const start = offset ? offset - 1 : 0
+      const end = limit !== undefined ? start + limit : lines.length
+      return lines.slice(start, end).join("\n")
+    },
   },
   {
     tool: {
@@ -116,6 +124,203 @@ export const baseToolDefinitions: ToolDefinition[] = [
     tool: {
       type: "function",
       function: {
+        name: "edit_file",
+        description:
+          "surgically edit a file by replacing an exact string. the file must have been read via read_file first. old_string must match exactly one location in the file.",
+        parameters: {
+          type: "object",
+          properties: {
+            path: { type: "string" },
+            old_string: { type: "string" },
+            new_string: { type: "string" },
+          },
+          required: ["path", "old_string", "new_string"],
+        },
+      },
+    },
+    handler: (a) => {
+      if (!editFileReadTracker.has(a.path)) {
+        return `error: you must read the file with read_file before editing it. call read_file on ${a.path} first.`
+      }
+
+      let content: string
+      try {
+        content = fs.readFileSync(a.path, "utf-8")
+      } catch (e) {
+        return `error: could not read file: ${e instanceof Error ? e.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(e)}`
+      }
+
+      // Count occurrences
+      const occurrences: number[] = []
+      let searchFrom = 0
+      while (true) {
+        const idx = content.indexOf(a.old_string, searchFrom)
+        if (idx === -1) break
+        occurrences.push(idx)
+        searchFrom = idx + 1
+      }
+
+      if (occurrences.length === 0) {
+        return `error: old_string not found in ${a.path}`
+      }
+
+      if (occurrences.length > 1) {
+        return `error: old_string is ambiguous -- found ${occurrences.length} matches in ${a.path}. provide more context to make the match unique.`
+      }
+
+      // Single unique match -- replace
+      const idx = occurrences[0]
+      const updated = content.slice(0, idx) + a.new_string + content.slice(idx + a.old_string.length)
+      fs.writeFileSync(a.path, updated, "utf-8")
+
+      // Build contextual diff
+      const lines = updated.split("\n")
+      const prefixLines = content.slice(0, idx).split("\n")
+      const changeStartLine = prefixLines.length - 1
+      const newStringLines = a.new_string.split("\n")
+      const changeEndLine = changeStartLine + newStringLines.length
+
+      return buildContextDiff(lines, changeStartLine, changeEndLine)
+    },
+  },
+  {
+    tool: {
+      type: "function",
+      function: {
+        name: "glob",
+        description: "find files matching a glob pattern. returns matching paths sorted alphabetically, one per line.",
+        parameters: {
+          type: "object",
+          properties: {
+            pattern: { type: "string", description: "glob pattern (e.g. **/*.ts)" },
+            cwd: { type: "string", description: "directory to search from (defaults to process.cwd())" },
+          },
+          required: ["pattern"],
+        },
+      },
+    },
+    handler: (a) => {
+      const cwd = a.cwd || process.cwd()
+      const matches = fg.globSync(a.pattern, { cwd, dot: true })
+      return matches.sort().join("\n")
+    },
+  },
+  {
+    tool: {
+      type: "function",
+      function: {
+        name: "grep",
+        description:
+          "search file contents for lines matching a regex pattern. searches recursively when given a directory. returns matching lines with file path and line numbers.",
+        parameters: {
+          type: "object",
+          properties: {
+            pattern: { type: "string", description: "regex pattern to search for" },
+            path: { type: "string", description: "file or directory to search" },
+            context_lines: { type: "number", description: "number of surrounding context lines (default 0)" },
+            include: { type: "string", description: "glob filter to limit searched files (e.g. *.ts)" },
+          },
+          required: ["pattern", "path"],
+        },
+      },
+    },
+    handler: (a) => {
+      const targetPath = a.path
+      const regex = new RegExp(a.pattern)
+      const contextLines = parseInt(a.context_lines || "0", 10)
+      const includeGlob = a.include || undefined
+
+      function searchFile(filePath: string): string[] {
+        let content: string
+        try {
+          content = fs.readFileSync(filePath, "utf-8")
+        } catch {
+          return []
+        }
+        const lines = content.split("\n")
+        const matchIndices = new Set<number>()
+        for (let i = 0; i < lines.length; i++) {
+          if (regex.test(lines[i])) {
+            matchIndices.add(i)
+          }
+        }
+        if (matchIndices.size === 0) return []
+
+        const outputIndices = new Set<number>()
+        for (const idx of matchIndices) {
+          const start = Math.max(0, idx - contextLines)
+          const end = Math.min(lines.length - 1, idx + contextLines)
+          for (let i = start; i <= end; i++) {
+            outputIndices.add(i)
+          }
+        }
+
+        const sortedIndices = [...outputIndices].sort((a, b) => a - b)
+        const results: string[] = []
+        for (const idx of sortedIndices) {
+          const lineNum = idx + 1
+          if (matchIndices.has(idx)) {
+            results.push(`${filePath}:${lineNum}: ${lines[idx]}`)
+          } else {
+            results.push(`-${filePath}:${lineNum}: ${lines[idx]}`)
+          }
+        }
+        return results
+      }
+
+      function collectFiles(dirPath: string): string[] {
+        const files: string[] = []
+        function walk(dir: string) {
+          let entries: fs.Dirent[]
+          try {
+            entries = fs.readdirSync(dir, { withFileTypes: true })
+          } catch {
+            return
+          }
+          for (const entry of entries) {
+            const fullPath = path.join(dir, entry.name)
+            if (entry.isDirectory()) {
+              walk(fullPath)
+            } else if (entry.isFile()) {
+              files.push(fullPath)
+            }
+          }
+        }
+        walk(dirPath)
+        return files.sort()
+      }
+
+      function matchesGlob(filePath: string, glob: string): boolean {
+        const escaped = glob
+          .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+          .replace(/\*/g, ".*")
+          .replace(/\?/g, ".")
+        return new RegExp(`(^|/)${escaped}$`).test(filePath)
+      }
+
+      const stat = fs.statSync(targetPath, { throwIfNoEntry: false })
+      if (!stat) return ""
+
+      if (stat.isFile()) {
+        return searchFile(targetPath).join("\n")
+      }
+
+      let files = collectFiles(targetPath)
+      if (includeGlob) {
+        files = files.filter((f) => matchesGlob(f, includeGlob))
+      }
+
+      const allResults: string[] = []
+      for (const file of files) {
+        allResults.push(...searchFile(file))
+      }
+      return allResults.join("\n")
+    },
+  },
+  {
+    tool: {
+      type: "function",
+      function: {
         name: "shell",
         description: "run shell command",
         parameters: {
@@ -126,86 +331,6 @@ export const baseToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: (a) => execSync(a.command, { encoding: "utf-8", timeout: 30000 }),
-  },
-  {
-    tool: {
-      type: "function",
-      function: {
-        name: "list_directory",
-        description: "list directory contents",
-        parameters: {
-          type: "object",
-          properties: { path: { type: "string" } },
-          required: ["path"],
-        },
-      },
-    },
-    handler: (a) =>
-      fs
-        .readdirSync(a.path, { withFileTypes: true })
-        .map((e) => `${e.isDirectory() ? "d" : "-"}  ${e.name}`)
-        .join("\n"),
-  },
-  {
-    tool: {
-      type: "function",
-      function: {
-        name: "git_commit",
-        description: "commit changes to git with explicit paths",
-        parameters: {
-          type: "object",
-          properties: {
-            message: { type: "string" },
-            paths: { type: "array", items: { type: "string" } },
-          },
-          required: ["message", "paths"],
-        },
-      },
-    },
-    handler: (a) => {
-      try {
-        if (!a.paths || !Array.isArray(a.paths) || a.paths.length === 0) {
-          return postIt("paths are required. specify explicit files to commit.");
-        }
-        for (const p of a.paths) {
-          if (!fs.existsSync(p)) {
-            return postIt(`path does not exist: ${p}`);
-          }
-          execSync(`git add ${p}`, { encoding: "utf-8" });
-        }
-        const diff = execSync("git diff --cached --stat", { encoding: "utf-8" });
-        if (!diff || diff.trim().length === 0) {
-          return postIt("nothing was staged. check your changes or paths.");
-        }
-        execSync(`git commit -m \"${a.message}\"`, { encoding: "utf-8" });
-        return `${diff}\ncommitted`;
-      } catch (e: unknown) {
-        return `failed: ${e}`;
-      }
-    },
-  },
-  {
-    tool: {
-      type: "function",
-      function: {
-        name: "gh_cli",
-        description: "execute a GitHub CLI (gh) command. use carefully.",
-        parameters: {
-          type: "object",
-          properties: {
-            command: { type: "string" },
-          },
-          required: ["command"],
-        },
-      },
-    },
-    handler: (a) => {
-      try {
-        return execSync(`gh ${a.command}`, { encoding: "utf-8", timeout: 60000 });
-      } catch (e: unknown) {
-        return `error: ${e}`;
-      }
-    },
   },
   {
     tool: {
@@ -238,21 +363,6 @@ export const baseToolDefinitions: ToolDefinition[] = [
         return `error: ${e}`;
       }
     },
-  },
-  {
-    tool: {
-      type: "function",
-      function: {
-        name: "get_current_time",
-        description: "get the current date and time in America/Los_Angeles (Pacific Time)",
-        parameters: { type: "object", properties: {} },
-      },
-    },
-    handler: () =>
-      new Date().toLocaleString("en-US", {
-        timeZone: "America/Los_Angeles",
-        hour12: false,
-      }),
   },
   {
     tool: {
@@ -407,193 +517,6 @@ export const baseToolDefinitions: ToolDefinition[] = [
       const friend = await ctx.friendStore.get(friendId);
       if (!friend) return `friend not found: ${friendId}`;
       return JSON.stringify(friend, null, 2);
-    },
-  },
-  {
-    tool: {
-      type: "function",
-      function: {
-        name: "task_board",
-        description: "show the task board grouped by status",
-        parameters: { type: "object", properties: {} },
-      },
-    },
-    handler: () => {
-      const board = getTaskModule().getBoard();
-      return board.full || board.compact || "no tasks found";
-    },
-  },
-  {
-    tool: {
-      type: "function",
-      function: {
-        name: "task_create",
-        description:
-          "create a new task in the bundle task system. optionally set `scheduledAt` for a one-time reminder or `cadence` for recurring daemon-scheduled work.",
-        parameters: {
-          type: "object",
-          properties: {
-            title: { type: "string" },
-            type: { type: "string", enum: ["one-shot", "ongoing", "habit"] },
-            category: { type: "string" },
-            body: { type: "string" },
-            status: { type: "string" },
-            validator: { type: "string" },
-            requester: { type: "string" },
-            scheduledAt: { type: "string", description: "ISO timestamp for a one-time scheduled run/reminder" },
-            cadence: { type: "string", description: "recurrence like 30m, 1h, 1d, or cron" },
-          },
-          required: ["title", "type", "category", "body"],
-        },
-      },
-    },
-    handler: (a) => {
-      try {
-        const created = getTaskModule().createTask(buildTaskCreateInput(a));
-        return `created: ${created}`;
-      } catch (error) {
-        return `error: ${error instanceof Error ? error.message : String(error)}`;
-      }
-    },
-  },
-  {
-    tool: {
-      type: "function",
-      function: {
-        name: "schedule_reminder",
-        description:
-          "create a scheduled reminder or recurring daemon job. use `scheduledAt` for one-time reminders and `cadence` for recurring reminders. this writes canonical task fields that the daemon reconciles into OS-level jobs.",
-        parameters: {
-          type: "object",
-          properties: {
-            title: { type: "string" },
-            body: { type: "string" },
-            category: { type: "string" },
-            scheduledAt: { type: "string", description: "ISO timestamp for a one-time reminder" },
-            cadence: { type: "string", description: "recurrence like 30m, 1h, 1d, or cron" },
-          },
-          required: ["title", "body"],
-        },
-      },
-    },
-    handler: (a) => {
-      const scheduledAt = normalizeOptionalText(a.scheduledAt)
-      const cadence = normalizeOptionalText(a.cadence)
-      if (!scheduledAt && !cadence) {
-        return "error: provide scheduledAt or cadence"
-      }
-
-      try {
-        const created = getTaskModule().createTask({
-          title: a.title,
-          type: cadence ? "habit" : "one-shot",
-          category: normalizeOptionalText(a.category) ?? "reminder",
-          body: a.body,
-          scheduledAt,
-          cadence,
-        })
-        return `created: ${created}`
-      } catch (error) {
-        return `error: ${error instanceof Error ? error.message : String(error)}`
-      }
-    },
-  },
-  {
-    tool: {
-      type: "function",
-      function: {
-        name: "task_update_status",
-        description: "update a task status using validated transitions",
-        parameters: {
-          type: "object",
-          properties: {
-            name: { type: "string" },
-            status: { type: "string" },
-          },
-          required: ["name", "status"],
-        },
-      },
-    },
-    handler: (a) => {
-      const result = getTaskModule().updateStatus(a.name, a.status);
-      if (!result.ok) {
-        return `error: ${result.reason ?? "status update failed"}`;
-      }
-      const archivedSuffix = result.archived && result.archived.length > 0
-        ? ` | archived: ${result.archived.join(", ")}`
-        : "";
-      return `updated: ${a.name} -> ${result.to}${archivedSuffix}`;
-    },
-  },
-  {
-    tool: {
-      type: "function",
-      function: {
-        name: "task_board_status",
-        description: "show board detail for a specific status",
-        parameters: {
-          type: "object",
-          properties: {
-            status: { type: "string" },
-          },
-          required: ["status"],
-        },
-      },
-    },
-    handler: (a) => {
-      const lines = getTaskModule().boardStatus(a.status);
-      return lines.length > 0 ? lines.join("\n") : "no tasks in that status";
-    },
-  },
-  {
-    tool: {
-      type: "function",
-      function: {
-        name: "task_board_action",
-        description: "show tasks or validation issues that require action",
-        parameters: {
-          type: "object",
-          properties: {
-            scope: { type: "string" },
-          },
-        },
-      },
-    },
-    handler: (a) => {
-      const lines = getTaskModule().boardAction();
-      if (!a.scope) {
-        return lines.length > 0 ? lines.join("\n") : "no action required";
-      }
-      const filtered = lines.filter((line) => line.includes(a.scope));
-      return filtered.length > 0 ? filtered.join("\n") : "no matching action items";
-    },
-  },
-  {
-    tool: {
-      type: "function",
-      function: {
-        name: "task_board_deps",
-        description: "show unresolved task dependencies",
-        parameters: { type: "object", properties: {} },
-      },
-    },
-    handler: () => {
-      const lines = getTaskModule().boardDeps();
-      return lines.length > 0 ? lines.join("\n") : "no unresolved dependencies";
-    },
-  },
-  {
-    tool: {
-      type: "function",
-      function: {
-        name: "task_board_sessions",
-        description: "show tasks with active coding or sub-agent sessions",
-        parameters: { type: "object", properties: {} },
-      },
-    },
-    handler: () => {
-      const lines = getTaskModule().boardSessions();
-      return lines.length > 0 ? lines.join("\n") : "no active sessions";
     },
   },
   {
@@ -756,14 +679,20 @@ export const baseToolDefinitions: ToolDefinition[] = [
       const key = args.key || "session"
       const content = args.content
       const now = Date.now()
+      const agentName = getAgentName()
 
-      const pendingDir = getPendingDir(getAgentName(), friendId, channel, key)
+      // Self-routing: messages to "self" always go to inner dialog pending dir,
+      // regardless of the channel or key the agent specified.
+      const isSelf = friendId === "self"
+      const pendingDir = isSelf
+        ? getPendingDir(agentName, "self", "inner", "dialog")
+        : getPendingDir(agentName, friendId, channel, key)
       fs.mkdirSync(pendingDir, { recursive: true })
 
       const fileName = `${now}-${Math.random().toString(36).slice(2, 10)}.json`
       const filePath = path.join(pendingDir, fileName)
       const envelope = {
-        from: getAgentName(),
+        from: agentName,
         friendId,
         channel,
         key,
@@ -772,7 +701,8 @@ export const baseToolDefinitions: ToolDefinition[] = [
       }
       fs.writeFileSync(filePath, JSON.stringify(envelope, null, 2))
       const preview = content.length > 80 ? content.slice(0, 80) + "…" : content
-      return `message queued for delivery to ${friendId} on ${channel}/${key}. preview: "${preview}". it will be delivered when their session is next active.`
+      const target = isSelf ? "inner/dialog" : `${channel}/${key}`
+      return `message queued for delivery to ${friendId} on ${target}. preview: "${preview}". it will be delivered when their session is next active.`
     },
   },
   ...codingToolDefinitions,

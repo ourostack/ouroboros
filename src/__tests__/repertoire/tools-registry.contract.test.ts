@@ -74,4 +74,58 @@ describe("tool registry contract", () => {
     const names = baseToolDefinitions.map((d) => d.tool.function.name).slice().sort();
     expect(names).toMatchSnapshot();
   });
+
+  it("final tool list after H-section audit (H10 contract)", () => {
+    const names = baseToolDefinitions.map((d) => d.tool.function.name).slice().sort();
+
+    // Removed in H1: git_commit, gh_cli, get_current_time, list_directory
+    expect(names).not.toContain("git_commit");
+    expect(names).not.toContain("gh_cli");
+    expect(names).not.toContain("get_current_time");
+    expect(names).not.toContain("list_directory");
+
+    // Removed in H6: 7 task tools
+    expect(names).not.toContain("task_board");
+    expect(names).not.toContain("task_create");
+    expect(names).not.toContain("task_update_status");
+    expect(names).not.toContain("task_board_status");
+    expect(names).not.toContain("task_board_action");
+    expect(names).not.toContain("task_board_deps");
+    expect(names).not.toContain("task_board_sessions");
+
+    // Removed in H7: schedule_reminder
+    expect(names).not.toContain("schedule_reminder");
+
+    // Added in H2: edit_file
+    expect(names).toContain("edit_file");
+
+    // Added in H3: glob
+    expect(names).toContain("glob");
+
+    // Added in H4: grep
+    expect(names).toContain("grep");
+
+    // Surviving tools from before H-section
+    expect(names).toContain("shell");
+    expect(names).toContain("read_file");
+    expect(names).toContain("write_file");
+    expect(names).toContain("send_message");
+    expect(names).toContain("query_session");
+    expect(names).toContain("web_search");
+    expect(names).toContain("memory_save");
+    expect(names).toContain("memory_search");
+    expect(names).toContain("save_friend_note");
+    expect(names).toContain("get_friend_note");
+    expect(names).toContain("list_skills");
+    expect(names).toContain("load_skill");
+    expect(names).toContain("claude");
+    expect(names).toContain("coding_spawn");
+    expect(names).toContain("coding_status");
+    expect(names).toContain("coding_tail");
+    expect(names).toContain("coding_send_input");
+    expect(names).toContain("coding_kill");
+
+    // Exact count: 21 tools total
+    expect(names).toHaveLength(21);
+  });
 });

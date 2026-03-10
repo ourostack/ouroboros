@@ -10,6 +10,9 @@ const mockSessionPath = vi.fn()
 const mockLoadSession = vi.fn()
 const mockPostTurn = vi.fn()
 const mockGetAgentRoot = vi.fn()
+const mockGetAgentName = vi.fn()
+const mockDrainPending = vi.fn()
+const mockGetPendingDir = vi.fn()
 
 vi.mock("../../mind/prompt", () => ({
   buildSystem: (...args: any[]) => mockBuildSystem(...args),
@@ -30,6 +33,12 @@ vi.mock("../../mind/context", () => ({
 
 vi.mock("../../heart/identity", () => ({
   getAgentRoot: (...args: any[]) => mockGetAgentRoot(...args),
+  getAgentName: (...args: any[]) => mockGetAgentName(...args),
+}))
+
+vi.mock("../../mind/pending", () => ({
+  drainPending: (...args: any[]) => mockDrainPending(...args),
+  getPendingDir: (...args: any[]) => mockGetPendingDir(...args),
 }))
 
 vi.mock("../../nerves/runtime", () => ({
@@ -72,24 +81,26 @@ describe("inner dialog runtime", () => {
     mockLoadSession.mockReset().mockReturnValue(null)
     mockPostTurn.mockReset().mockImplementation(() => {})
     mockGetAgentRoot.mockReset().mockReturnValue(agentRoot)
+    mockGetAgentName.mockReset().mockReturnValue("test-agent")
+    mockDrainPending.mockReset().mockReturnValue([])
+    mockGetPendingDir.mockReset().mockReturnValue("/tmp/fake-pending-dir")
   })
 
-  it("builds bootstrap message with aspirations and current state", () => {
+  it("builds bootstrap message with first-person awareness framing", () => {
     const message = buildInnerDialogBootstrapMessage("Learn and help Ari.", "No prior session found.")
-    expect(message).toContain("Learn and help Ari.")
-    expect(message).toContain("No prior session found.")
-    expect(message).toContain("decide what to do next")
+    expect(message).toBe("waking up. settling in.\n\nwhat needs my attention?")
   })
 
-  it("uses fallback aspirations text when aspirations are blank", () => {
+  it("returns same bootstrap message regardless of aspirations content", () => {
     const message = buildInnerDialogBootstrapMessage("", "No prior session found.")
-    expect(message).toContain("No explicit aspirations file found")
+    expect(message).toBe("waking up. settling in.\n\nwhat needs my attention?")
   })
 
-  it("returns default instincts", () => {
+  it("returns default instincts with first-person awareness framing", () => {
     const instincts = loadInnerDialogInstincts()
     expect(instincts.length).toBeGreaterThan(0)
-    expect(instincts[0].prompt.toLowerCase()).toContain("heartbeat")
+    expect(instincts[0].prompt).toContain("stirring")
+    expect(instincts[0].prompt).not.toContain("Heartbeat instinct:")
   })
 
   it("uses instinct text to produce user-role prompts (not hardcoded continue)", () => {
@@ -108,7 +119,7 @@ describe("inner dialog runtime", () => {
       "instinct",
       { cycleCount: 4, resting: false },
     )
-    expect(text.toLowerCase()).toContain("heartbeat instinct")
+    expect(text).toContain("stirring")
   })
 
   it("returns empty cleanup nudge when no non-canonical files are found", () => {
@@ -123,7 +134,7 @@ describe("inner dialog runtime", () => {
     expect(nudge).toContain("... (1 more)")
   })
 
-  it("starts autonomous turn with bootstrap context and runs agent on cli channel", async () => {
+  it("starts autonomous turn with bootstrap context and runs agent on inner channel", async () => {
     await runInnerDialogTurn({
       reason: "boot",
       instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
@@ -132,14 +143,14 @@ describe("inner dialog runtime", () => {
 
     expect(mockRunAgent).toHaveBeenCalledTimes(1)
     const [messages, _callbacks, channel] = mockRunAgent.mock.calls[0]
-    expect(channel).toBe("cli")
+    expect(channel).toBe("inner")
     expect(messages[0]).toMatchObject({ role: "system" })
     expect(messages[1]).toMatchObject({ role: "user" })
-    expect(String(messages[1].content)).toContain("Keep improving the harness")
+    expect(String(messages[1].content)).toContain("waking up. settling in.")
     expect(mockPostTurn).toHaveBeenCalledTimes(1)
   })
 
-  it("uses bootstrap fallback text when aspirations file is missing", async () => {
+  it("uses same bootstrap message when aspirations file is missing", async () => {
     fs.unlinkSync(path.join(agentRoot, "psyche", "ASPIRATIONS.md"))
 
     await runInnerDialogTurn({
@@ -149,7 +160,7 @@ describe("inner dialog runtime", () => {
     })
 
     const [messages] = mockRunAgent.mock.calls[0]
-    expect(String(messages[1].content)).toContain("No explicit aspirations file found")
+    expect(String(messages[1].content)).toContain("waking up. settling in.")
   })
 
   it("injects non-canonical cleanup nudge on boot when bundle scan finds legacy files", async () => {
@@ -204,7 +215,7 @@ describe("inner dialog runtime", () => {
 
     await runInnerDialogTurn({
       reason: "heartbeat",
-      instincts: [{ id: "resume", prompt: "Instinct: resume interrupted work.", enabled: true }],
+      instincts: [{ id: "resume", prompt: "what was i working on?", enabled: true }],
       now: () => new Date("2026-03-06T12:06:00.000Z"),
     })
 
@@ -212,8 +223,8 @@ describe("inner dialog runtime", () => {
     const lastUser = [...messages].reverse().find((message: OpenAI.ChatCompletionMessageParam) => message.role === "user")
     expect(lastUser).toBeDefined()
     const content = String(lastUser!.content)
-    expect(content).toContain("Instinct: resume interrupted work.")
-    expect(content).toContain("checkpoint:")
+    expect(content).toContain("what was i working on?")
+    expect(content).toContain("last i remember:")
     expect(content).toContain("Unit 2b editing src/repertoire/tools.ts")
   })
 
@@ -230,8 +241,8 @@ describe("inner dialog runtime", () => {
     const [messages] = mockRunAgent.mock.calls[0]
     const lastUser = [...messages].reverse().find((message: OpenAI.ChatCompletionMessageParam) => message.role === "user")
     expect(lastUser).toBeDefined()
-    expect(String(lastUser!.content).toLowerCase()).toContain("heartbeat")
-    expect(String(lastUser!.content)).toContain("reason: heartbeat")
+    expect(String(lastUser!.content)).toContain("stirring")
+    expect(String(lastUser!.content)).toContain("last i remember: ready for next cycle")
   })
 
   it("returns fallback checkpoint when assistant content is non-text object", () => {
@@ -360,5 +371,167 @@ describe("inner dialog runtime", () => {
     expect(content).toContain("Instinct: check in.")
     expect(content).toContain("## incoming messages")
     expect(content).toContain("**ouro-poke**: poke habit-heartbeat")
+  })
+
+  // --- C1: Inner dialog drains pending dir ---
+
+  it("calls drainPending with getPendingDir(agentName, 'self', 'inner', 'dialog') on boot", async () => {
+    mockGetPendingDir.mockReturnValue("/tmp/pending/test-agent/self/inner/dialog")
+    mockDrainPending.mockReturnValue([])
+
+    await runInnerDialogTurn({
+      reason: "boot",
+      instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
+      now: () => new Date("2026-03-09T10:00:00.000Z"),
+    })
+
+    expect(mockGetPendingDir).toHaveBeenCalledWith("test-agent", "self", "inner", "dialog")
+    expect(mockDrainPending).toHaveBeenCalledWith("/tmp/pending/test-agent/self/inner/dialog")
+  })
+
+  it("proceeds normally when drainPending returns no messages (boot)", async () => {
+    mockDrainPending.mockReturnValue([])
+
+    await runInnerDialogTurn({
+      reason: "boot",
+      instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
+      now: () => new Date("2026-03-09T10:01:00.000Z"),
+    })
+
+    expect(mockDrainPending).toHaveBeenCalledTimes(1)
+    const [messages] = mockRunAgent.mock.calls[0]
+    const lastUser = [...messages].reverse().find((m: OpenAI.ChatCompletionMessageParam) => m.role === "user")
+    const content = String(lastUser!.content)
+    expect(content).not.toContain("## pending messages")
+    expect(content).toContain("waking up. settling in.")
+  })
+
+  it("appends pending messages to user message when drainPending returns messages (boot)", async () => {
+    mockDrainPending.mockReturnValue([
+      { from: "cli-session", content: "Think about what I said about refactoring.", timestamp: 1000 },
+      { from: "ouroboros", content: "Hey, can you review my PR?", timestamp: 2000 },
+    ])
+
+    await runInnerDialogTurn({
+      reason: "boot",
+      instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
+      now: () => new Date("2026-03-09T10:02:00.000Z"),
+    })
+
+    const [messages] = mockRunAgent.mock.calls[0]
+    const lastUser = [...messages].reverse().find((m: OpenAI.ChatCompletionMessageParam) => m.role === "user")
+    const content = String(lastUser!.content)
+    expect(content).toContain("## pending messages")
+    expect(content).toContain("**cli-session**: Think about what I said about refactoring.")
+    expect(content).toContain("**ouroboros**: Hey, can you review my PR?")
+  })
+
+  it("appends pending messages to instinct message on resumed session", async () => {
+    mockLoadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "assistant", content: "checkpoint: working on task board" },
+      ],
+    })
+
+    mockDrainPending.mockReturnValue([
+      { from: "ari-cli", content: "Don't forget about the tests.", timestamp: 3000 },
+    ])
+
+    await runInnerDialogTurn({
+      reason: "heartbeat",
+      instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
+      now: () => new Date("2026-03-09T10:03:00.000Z"),
+    })
+
+    expect(mockGetPendingDir).toHaveBeenCalledWith("test-agent", "self", "inner", "dialog")
+    expect(mockDrainPending).toHaveBeenCalledTimes(1)
+    const [messages] = mockRunAgent.mock.calls[0]
+    const lastUser = [...messages].reverse().find((m: OpenAI.ChatCompletionMessageParam) => m.role === "user")
+    const content = String(lastUser!.content)
+    expect(content).toContain("Instinct: check in.")
+    expect(content).toContain("## pending messages")
+    expect(content).toContain("**ari-cli**: Don't forget about the tests.")
+  })
+
+  // --- B2: Channel fix + message reframing ---
+
+  it("calls buildSystem('inner', ...) not buildSystem('cli', ...)", async () => {
+    await runInnerDialogTurn({
+      reason: "boot",
+      instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
+      now: () => new Date("2026-03-10T01:00:00.000Z"),
+    })
+
+    expect(mockBuildSystem).toHaveBeenCalledTimes(1)
+    expect(mockBuildSystem.mock.calls[0][0]).toBe("inner")
+  })
+
+  it("calls runAgent with 'inner' channel not 'cli'", async () => {
+    await runInnerDialogTurn({
+      reason: "boot",
+      instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
+      now: () => new Date("2026-03-10T01:01:00.000Z"),
+    })
+
+    expect(mockRunAgent).toHaveBeenCalledTimes(1)
+    const [_messages, _callbacks, channel] = mockRunAgent.mock.calls[0]
+    expect(channel).toBe("inner")
+  })
+
+  it("bootstrap message is exactly 'waking up. settling in.\\n\\nwhat needs my attention?'", () => {
+    const message = buildInnerDialogBootstrapMessage("any aspirations", "any state")
+    expect(message).toBe("waking up. settling in.\n\nwhat needs my attention?")
+  })
+
+  it("default instinct message uses first-person awareness language", () => {
+    const instincts = loadInnerDialogInstincts()
+    const text = buildInstinctUserMessage(
+      instincts,
+      "heartbeat",
+      { cycleCount: 2, resting: false },
+    )
+    // Should NOT contain command-style language
+    expect(text).not.toContain("Heartbeat instinct:")
+    expect(text).not.toContain("check what changed")
+    expect(text).not.toContain("Orient yourself")
+    // Should contain first-person awareness
+    expect(text).toContain("stirring")
+  })
+
+  it("instinct message for heartbeat reason uses awareness framing", () => {
+    const text = buildInstinctUserMessage(
+      [{ id: "heartbeat_checkin", prompt: "...time passing. anything stirring?", enabled: true }],
+      "heartbeat",
+      { cycleCount: 3, resting: true },
+    )
+    expect(text).toContain("stirring")
+    expect(text).not.toContain("Instinct:")
+  })
+
+  it("pending messages appear before inbox messages in the user message", async () => {
+    mockDrainPending.mockReturnValue([
+      { from: "self-note", content: "Review my aspirations.", timestamp: 1000 },
+    ])
+
+    const drainInbox = vi.fn(() => [
+      { from: "ouroboros", content: "inbox message" },
+    ])
+
+    await runInnerDialogTurn({
+      reason: "boot",
+      instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
+      now: () => new Date("2026-03-09T10:04:00.000Z"),
+      drainInbox,
+    })
+
+    const [messages] = mockRunAgent.mock.calls[0]
+    const lastUser = [...messages].reverse().find((m: OpenAI.ChatCompletionMessageParam) => m.role === "user")
+    const content = String(lastUser!.content)
+    const pendingIdx = content.indexOf("## pending messages")
+    const inboxIdx = content.indexOf("## incoming messages")
+    expect(pendingIdx).toBeGreaterThan(-1)
+    expect(inboxIdx).toBeGreaterThan(-1)
+    expect(pendingIdx).toBeLessThan(inboxIdx)
   })
 })

@@ -1,4 +1,5 @@
 import type OpenAI from "openai"
+import * as crypto from "crypto"
 import * as fs from "fs"
 import * as path from "path"
 import { baseToolDefinitions, finalAnswerTool } from "../../repertoire/tools-base"
@@ -25,6 +26,14 @@ const completeAdoptionTool: OpenAI.ChatCompletionFunctionTool = {
           type: "string",
           description: "a warm handoff message to display to the human after the agent is hatched",
         },
+        phone: {
+          type: "string",
+          description: "the human's phone number (optional, for iMessage contact recognition)",
+        },
+        teams_handle: {
+          type: "string",
+          description: "the human's Teams email/handle (optional, for Teams contact recognition)",
+        },
       },
       required: ["name", "handoff_message"],
     },
@@ -33,13 +42,25 @@ const completeAdoptionTool: OpenAI.ChatCompletionFunctionTool = {
 
 const readFileTool = baseToolDefinitions.find((d) => d.tool.function.name === "read_file")!
 const writeFileTool = baseToolDefinitions.find((d) => d.tool.function.name === "write_file")!
-const listDirTool = baseToolDefinitions.find((d) => d.tool.function.name === "list_directory")!
+
+const listDirToolSchema: OpenAI.ChatCompletionFunctionTool = {
+  type: "function",
+  function: {
+    name: "list_directory",
+    description: "list directory contents",
+    parameters: {
+      type: "object",
+      properties: { path: { type: "string" } },
+      required: ["path"],
+    },
+  },
+}
 
 /**
  * Returns the specialist's tool schema array.
  */
 export function getSpecialistTools(): OpenAI.ChatCompletionFunctionTool[] {
-  return [completeAdoptionTool, finalAnswerTool, readFileTool.tool, writeFileTool.tool, listDirTool.tool]
+  return [completeAdoptionTool, finalAnswerTool, readFileTool.tool, writeFileTool.tool, listDirToolSchema]
 }
 
 export interface SpecialistExecToolDeps {
@@ -49,6 +70,7 @@ export interface SpecialistExecToolDeps {
   bundlesRoot: string
   secretsRoot: string
   animationWriter?: (text: string) => void
+  humanName?: string
 }
 
 const PSYCHE_FILES = ["SOUL.md", "IDENTITY.md", "LORE.md", "TACIT.md", "ASPIRATIONS.md"]
@@ -157,6 +179,33 @@ async function execCompleteAdoption(
       // Best effort cleanup
     }
     return `error: failed to write secrets: ${e instanceof Error ? e.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(e)}`
+  }
+
+  // Create initial friend record if contact info provided
+  const phone = args.phone
+  const teamsHandle = args.teams_handle
+  if (phone || teamsHandle) {
+    const friendId = crypto.randomUUID()
+    const now = new Date().toISOString()
+    const externalIds: Array<{ provider: string; externalId: string; linkedAt: string }> = []
+    if (phone) externalIds.push({ provider: "imessage-handle", externalId: phone, linkedAt: now })
+    if (teamsHandle) externalIds.push({ provider: "aad", externalId: teamsHandle, linkedAt: now })
+
+    const friendRecord = {
+      id: friendId,
+      name: deps.humanName ?? "primary",
+      trustLevel: "family",
+      externalIds,
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: {},
+      createdAt: now,
+      updatedAt: now,
+      schemaVersion: 1,
+    }
+
+    const friendPath = path.join(targetBundle, "friends", `${friendId}.json`)
+    fs.writeFileSync(friendPath, JSON.stringify(friendRecord, null, 2), "utf-8")
   }
 
   // Play hatch animation

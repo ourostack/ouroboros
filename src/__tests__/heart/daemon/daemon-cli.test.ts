@@ -131,6 +131,233 @@ describe("ouro CLI parsing", () => {
     })
   })
 
+  it("parses task subcommands", () => {
+    // ouro task board (no status filter)
+    expect(parseOuroCommand(["task", "board"])).toEqual({ kind: "task.board" })
+
+    // ouro task board <status> (positional status filter -- maps from task_board_status)
+    expect(parseOuroCommand(["task", "board", "processing"])).toEqual({
+      kind: "task.board",
+      status: "processing",
+    })
+
+    // ouro task create <title> --type <type>
+    expect(parseOuroCommand(["task", "create", "My Task", "--type", "feature"])).toEqual({
+      kind: "task.create",
+      title: "My Task",
+      type: "feature",
+    })
+
+    // ouro task create <title> with defaults (type defaults to one-shot)
+    expect(parseOuroCommand(["task", "create", "Quick Task"])).toEqual({
+      kind: "task.create",
+      title: "Quick Task",
+    })
+
+    // ouro task create <title> --type without value (ignores incomplete flag)
+    expect(parseOuroCommand(["task", "create", "Quick Task", "--type"])).toEqual({
+      kind: "task.create",
+      title: "Quick Task",
+    })
+
+    // ouro task update <id> <status>
+    expect(parseOuroCommand(["task", "update", "task-123", "in-progress"])).toEqual({
+      kind: "task.update",
+      id: "task-123",
+      status: "in-progress",
+    })
+
+    // ouro task show <id> (NEW -- read and format a task file)
+    expect(parseOuroCommand(["task", "show", "task-123"])).toEqual({
+      kind: "task.show",
+      id: "task-123",
+    })
+
+    // ouro task actionable
+    expect(parseOuroCommand(["task", "actionable"])).toEqual({ kind: "task.actionable" })
+
+    // ouro task deps
+    expect(parseOuroCommand(["task", "deps"])).toEqual({ kind: "task.deps" })
+
+    // ouro task sessions
+    expect(parseOuroCommand(["task", "sessions"])).toEqual({ kind: "task.sessions" })
+  })
+
+  it("rejects malformed task subcommands", () => {
+    // bare "task" with no subcommand
+    expect(() => parseOuroCommand(["task"])).toThrow("Usage")
+
+    // task create with no title
+    expect(() => parseOuroCommand(["task", "create"])).toThrow("Usage")
+
+    // task update with no id
+    expect(() => parseOuroCommand(["task", "update"])).toThrow("Usage")
+
+    // task update with no status
+    expect(() => parseOuroCommand(["task", "update", "task-123"])).toThrow("Usage")
+
+    // task show with no id
+    expect(() => parseOuroCommand(["task", "show"])).toThrow("Usage")
+
+    // unknown task subcommand
+    expect(() => parseOuroCommand(["task", "unknown"])).toThrow("Usage")
+  })
+
+  it("parses reminder subcommands", () => {
+    // ouro reminder create <title> --body <body> --at <iso>
+    expect(parseOuroCommand(["reminder", "create", "Ping Ari", "--body", "Check daemon status", "--at", "2026-03-10T17:00:00.000Z"])).toEqual({
+      kind: "reminder.create",
+      title: "Ping Ari",
+      body: "Check daemon status",
+      scheduledAt: "2026-03-10T17:00:00.000Z",
+    })
+
+    // ouro reminder create <title> --body <body> --cadence <cadence>
+    expect(parseOuroCommand(["reminder", "create", "Heartbeat", "--body", "Run heartbeat", "--cadence", "30m"])).toEqual({
+      kind: "reminder.create",
+      title: "Heartbeat",
+      body: "Run heartbeat",
+      cadence: "30m",
+    })
+
+    // ouro reminder create <title> --body <body> --cadence <cadence> --category <category>
+    expect(parseOuroCommand(["reminder", "create", "Heartbeat", "--body", "Run heartbeat", "--cadence", "30m", "--category", "operations"])).toEqual({
+      kind: "reminder.create",
+      title: "Heartbeat",
+      body: "Run heartbeat",
+      cadence: "30m",
+      category: "operations",
+    })
+
+    // ouro reminder create <title> --body <body> --at <iso> (one-shot with no cadence)
+    expect(parseOuroCommand(["reminder", "create", "Wake up", "--body", "Morning alarm", "--at", "2026-03-11T08:00:00.000Z"])).toEqual({
+      kind: "reminder.create",
+      title: "Wake up",
+      body: "Morning alarm",
+      scheduledAt: "2026-03-11T08:00:00.000Z",
+    })
+  })
+
+  it("rejects malformed reminder subcommands", () => {
+    // bare "reminder" with no subcommand
+    expect(() => parseOuroCommand(["reminder"])).toThrow("Usage")
+
+    // reminder create with no title
+    expect(() => parseOuroCommand(["reminder", "create"])).toThrow("Usage")
+
+    // reminder create with no --body
+    expect(() => parseOuroCommand(["reminder", "create", "Title only"])).toThrow("Usage")
+
+    // reminder create with --body but no schedule
+    expect(() => parseOuroCommand(["reminder", "create", "Title", "--body", "body text"])).toThrow("Usage")
+
+    // reminder create with --category but no value (ignores incomplete flag)
+    expect(parseOuroCommand(["reminder", "create", "Title", "--body", "body text", "--at", "2026-03-10T17:00:00.000Z", "--category"])).toEqual({
+      kind: "reminder.create",
+      title: "Title",
+      body: "body text",
+      scheduledAt: "2026-03-10T17:00:00.000Z",
+    })
+
+    // reminder create with --cadence but no value (ignores incomplete flag, then fails on missing schedule)
+    expect(() => parseOuroCommand(["reminder", "create", "Title", "--body", "body text", "--cadence"])).toThrow("Usage")
+
+    // reminder create with --at but no value (ignores incomplete flag, then fails on missing schedule)
+    expect(() => parseOuroCommand(["reminder", "create", "Title", "--body", "body text", "--at"])).toThrow("Usage")
+
+    // unknown reminder subcommand
+    expect(() => parseOuroCommand(["reminder", "unknown"])).toThrow("Usage")
+  })
+
+  it("parses whoami and session subcommands", () => {
+    // ouro whoami
+    expect(parseOuroCommand(["whoami"])).toEqual({ kind: "whoami" })
+
+    // ouro session list
+    expect(parseOuroCommand(["session", "list"])).toEqual({ kind: "session.list" })
+  })
+
+  it("rejects malformed session subcommands", () => {
+    // bare "session" with no subcommand
+    expect(() => parseOuroCommand(["session"])).toThrow("Usage")
+
+    // unknown session subcommand
+    expect(() => parseOuroCommand(["session", "unknown"])).toThrow("Usage")
+  })
+
+  it("parses friend subcommands", () => {
+    // ouro friend list
+    expect(parseOuroCommand(["friend", "list"])).toEqual({ kind: "friend.list" })
+
+    // ouro friend show <id>
+    expect(parseOuroCommand(["friend", "show", "abc-123"])).toEqual({
+      kind: "friend.show",
+      friendId: "abc-123",
+    })
+  })
+
+  it("parses friend link subcommand", () => {
+    expect(parseOuroCommand([
+      "friend", "link", "slugger",
+      "--friend", "friend-1",
+      "--provider", "aad",
+      "--external-id", "aad-user-123",
+    ])).toEqual({
+      kind: "friend.link",
+      agent: "slugger",
+      friendId: "friend-1",
+      provider: "aad",
+      externalId: "aad-user-123",
+    })
+  })
+
+  it("parses friend unlink subcommand", () => {
+    expect(parseOuroCommand([
+      "friend", "unlink", "slugger",
+      "--friend", "friend-1",
+      "--provider", "aad",
+      "--external-id", "aad-user-123",
+    ])).toEqual({
+      kind: "friend.unlink",
+      agent: "slugger",
+      friendId: "friend-1",
+      provider: "aad",
+      externalId: "aad-user-123",
+    })
+  })
+
+  it("ouro link still works as backward compat alias", () => {
+    expect(parseOuroCommand([
+      "link", "slugger",
+      "--friend", "friend-1",
+      "--provider", "aad",
+      "--external-id", "ext-1",
+    ])).toEqual({
+      kind: "friend.link",
+      agent: "slugger",
+      friendId: "friend-1",
+      provider: "aad",
+      externalId: "ext-1",
+    })
+  })
+
+  it("rejects malformed friend subcommands", () => {
+    // bare "friend" with no subcommand
+    expect(() => parseOuroCommand(["friend"])).toThrow("Usage")
+
+    // friend show with no id
+    expect(() => parseOuroCommand(["friend", "show"])).toThrow("Usage")
+
+    // unknown friend subcommand
+    expect(() => parseOuroCommand(["friend", "unknown"])).toThrow("Usage")
+
+    // friend link with no agent
+    expect(() => parseOuroCommand(["friend", "link"])).toThrow("Usage")
+
+    // friend unlink with no agent
+    expect(() => parseOuroCommand(["friend", "unlink"])).toThrow("Usage")
+  })
+
   it("rejects deprecated command families", () => {
     expect(() => parseOuroCommand(["agent", "start", "slugger"])).toThrow("Unknown command")
     expect(() => parseOuroCommand(["cron", "list"])).toThrow("Unknown command")
@@ -865,7 +1092,26 @@ describe("ouro CLI execution", () => {
     )
   })
 
-  it("routes link command through local friend linker instead of daemon socket", async () => {
+  it("routes link command through friend store instead of daemon socket", async () => {
+    const friendRecord = {
+      id: "friend-1",
+      name: "Ari",
+      trustLevel: "family" as const,
+      externalIds: [{ provider: "local" as const, externalId: "ari", linkedAt: "2026-01-01T00:00:00.000Z" }],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: {},
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      schemaVersion: 1,
+    }
+    const mockFriendStore = {
+      get: vi.fn(async () => friendRecord),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(async () => null),
+      listAll: vi.fn(),
+    }
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
       sendCommand: vi.fn(async () => ({ ok: true, message: "unexpected daemon call" })),
@@ -875,7 +1121,7 @@ describe("ouro CLI execution", () => {
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
       installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
-      linkFriendIdentity: vi.fn(async () => "linked aad:aad-user-123 to friend-1"),
+      friendStore: mockFriendStore as any,
     }
 
     const result = await runOuroCli([
@@ -890,13 +1136,7 @@ describe("ouro CLI execution", () => {
     ], deps)
 
     expect(result).toContain("linked aad:aad-user-123 to friend-1")
-    expect(deps.linkFriendIdentity).toHaveBeenCalledWith({
-      kind: "friend.link",
-      agent: "slugger",
-      friendId: "friend-1",
-      provider: "aad",
-      externalId: "aad-user-123",
-    })
+    expect(mockFriendStore.put).toHaveBeenCalled()
     expect(deps.sendCommand).not.toHaveBeenCalled()
   })
 
@@ -1594,6 +1834,81 @@ describe("multi-agent prompt, agent-name shortcut, and help", () => {
 
     expect(result).toContain("Usage:")
     expect(deps.sendCommand).not.toHaveBeenCalled()
+  })
+})
+
+describe("ouro --help completeness (H10)", () => {
+  function makeHelpDeps(): OuroCliDeps {
+    return {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({ ok: true })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+    }
+  }
+
+  it("includes task subcommands in help output", async () => {
+    const deps = makeHelpDeps()
+    const result = await runOuroCli(["--help"], deps)
+
+    expect(result).toContain("ouro task board")
+    expect(result).toContain("ouro task create")
+    expect(result).toContain("ouro task update")
+    expect(result).toContain("ouro task show")
+    // actionable, deps, sessions are grouped on one line
+    expect(result).toContain("actionable")
+    expect(result).toContain("deps")
+    expect(result).toContain("sessions")
+  })
+
+  it("includes reminder subcommand in help output", async () => {
+    const deps = makeHelpDeps()
+    const result = await runOuroCli(["--help"], deps)
+
+    expect(result).toContain("ouro reminder create")
+  })
+
+  it("includes friend subcommands in help output", async () => {
+    const deps = makeHelpDeps()
+    const result = await runOuroCli(["--help"], deps)
+
+    expect(result).toContain("ouro friend list")
+    expect(result).toContain("ouro friend show")
+  })
+
+  it("includes whoami in help output", async () => {
+    const deps = makeHelpDeps()
+    const result = await runOuroCli(["--help"], deps)
+
+    expect(result).toContain("ouro whoami")
+  })
+
+  it("includes session subcommand in help output", async () => {
+    const deps = makeHelpDeps()
+    const result = await runOuroCli(["--help"], deps)
+
+    expect(result).toContain("ouro session list")
+  })
+
+  it("includes all core daemon commands in help output", async () => {
+    const deps = makeHelpDeps()
+    const result = await runOuroCli(["--help"], deps)
+
+    expect(result).toContain("ouro [up]")
+    expect(result).toContain("stop")
+    expect(result).toContain("down")
+    expect(result).toContain("status")
+    expect(result).toContain("logs")
+    expect(result).toContain("hatch")
+    expect(result).toContain("chat")
+    expect(result).toContain("msg")
+    expect(result).toContain("poke")
+    expect(result).toContain("link")
+    expect(result).toContain("-v|--version")
   })
 })
 
@@ -2816,5 +3131,845 @@ describe("discoverExistingCredentials", () => {
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true })
     }
+  })
+})
+
+describe("ouro task CLI execution", () => {
+  const mockTaskModule = {
+    getBoard: vi.fn(),
+    createTask: vi.fn(),
+    updateStatus: vi.fn(),
+    getTask: vi.fn(),
+    boardStatus: vi.fn(),
+    boardAction: vi.fn(),
+    boardDeps: vi.fn(),
+    boardSessions: vi.fn(),
+  }
+
+  function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
+    return {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+      taskModule: mockTaskModule as any,
+      ...overrides,
+    }
+  }
+
+  it("ouro task board returns full board output", async () => {
+    mockTaskModule.getBoard.mockReturnValueOnce({
+      compact: "[Tasks] processing:1",
+      full: "## processing\n- sample-task",
+      byStatus: { drafting: [], processing: ["sample-task"], validating: [], collaborating: [], paused: [], blocked: [], done: [] },
+      actionRequired: [],
+      unresolvedDependencies: [],
+      activeSessions: [],
+    })
+
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "board"], deps)
+    expect(result).toContain("## processing")
+    expect(result).toContain("sample-task")
+    // Should NOT send to daemon
+    expect(deps.sendCommand).not.toHaveBeenCalled()
+  })
+
+  it("ouro task board returns no-tasks fallback when board is empty", async () => {
+    mockTaskModule.getBoard.mockReturnValueOnce({
+      compact: "",
+      full: "",
+      byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [] },
+      actionRequired: [],
+      unresolvedDependencies: [],
+      activeSessions: [],
+    })
+
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "board"], deps)
+    expect(result).toBe("no tasks found")
+  })
+
+  it("ouro task board <status> returns status-filtered board", async () => {
+    mockTaskModule.boardStatus.mockReturnValueOnce(["task-a", "task-b"])
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "board", "processing"], deps)
+    expect(result).toBe("task-a\ntask-b")
+    expect(mockTaskModule.boardStatus).toHaveBeenCalledWith("processing")
+  })
+
+  it("ouro task board <status> returns fallback when no tasks in status", async () => {
+    mockTaskModule.boardStatus.mockReturnValueOnce([])
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "board", "blocked"], deps)
+    expect(result).toBe("no tasks in that status")
+  })
+
+  it("ouro task create returns file path and initial content", async () => {
+    mockTaskModule.createTask.mockReturnValueOnce("/mock/tasks/one-shots/2026-03-09-my-task.md")
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "create", "My Task", "--type", "one-shot"], deps)
+    expect(result).toContain("created:")
+    expect(result).toContain("/mock/tasks/one-shots/2026-03-09-my-task.md")
+    expect(mockTaskModule.createTask).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "My Task", type: "one-shot" }),
+    )
+  })
+
+  it("ouro task create defaults type when --type not specified", async () => {
+    mockTaskModule.createTask.mockReturnValueOnce("/mock/tasks/one-shots/2026-03-09-quick-task.md")
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "create", "Quick Task"], deps)
+    expect(result).toContain("created:")
+    expect(mockTaskModule.createTask).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Quick Task", type: "one-shot" }),
+    )
+  })
+
+  it("ouro task create surfaces module exceptions", async () => {
+    mockTaskModule.createTask.mockImplementationOnce(() => {
+      throw new Error("create failed")
+    })
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "create", "Bad Task", "--type", "one-shot"], deps)
+    expect(result).toContain("error: create failed")
+  })
+
+  it("ouro task update delegates to updateStatus", async () => {
+    mockTaskModule.updateStatus.mockReturnValueOnce({ ok: true, from: "drafting", to: "processing" })
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "update", "my-task", "processing"], deps)
+    expect(result).toContain("updated: my-task -> processing")
+    expect(mockTaskModule.updateStatus).toHaveBeenCalledWith("my-task", "processing")
+  })
+
+  it("ouro task update surfaces module errors", async () => {
+    mockTaskModule.updateStatus.mockReturnValueOnce({
+      ok: false,
+      from: "drafting",
+      to: "done",
+      reason: "invalid transition",
+    })
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "update", "my-task", "done"], deps)
+    expect(result).toContain("error: invalid transition")
+  })
+
+  it("ouro task update uses default failure reason when module omits one", async () => {
+    mockTaskModule.updateStatus.mockReturnValueOnce({
+      ok: false,
+      from: "drafting",
+      to: "done",
+    })
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "update", "my-task", "done"], deps)
+    expect(result).toContain("error: status update failed")
+  })
+
+  it("ouro task update includes archive details", async () => {
+    mockTaskModule.updateStatus.mockReturnValueOnce({
+      ok: true,
+      from: "validating",
+      to: "done",
+      archived: ["/mock/archive/task.md"],
+    })
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "update", "my-task", "done"], deps)
+    expect(result).toContain("updated: my-task -> done")
+    expect(result).toContain("archived:")
+  })
+
+  it("ouro task show reads and formats a task file", async () => {
+    mockTaskModule.getTask.mockReturnValueOnce({
+      path: "/mock/tasks/one-shots/2026-03-09-my-task.md",
+      name: "2026-03-09-my-task.md",
+      stem: "2026-03-09-my-task",
+      type: "one-shot",
+      collection: "one-shots",
+      category: "infrastructure",
+      title: "My Task",
+      status: "processing",
+      created: "2026-03-09",
+      updated: "2026-03-09",
+      frontmatter: { type: "one-shot", title: "My Task", status: "processing" },
+      body: "## scope\ndo the thing",
+    })
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "show", "my-task"], deps)
+    expect(result).toContain("My Task")
+    expect(result).toContain("processing")
+    expect(result).toContain("one-shot")
+    expect(mockTaskModule.getTask).toHaveBeenCalledWith("my-task")
+  })
+
+  it("ouro task show formats task with empty body (no trailing body section)", async () => {
+    mockTaskModule.getTask.mockReturnValueOnce({
+      path: "/mock/tasks/one-shots/2026-03-09-my-task.md",
+      name: "2026-03-09-my-task.md",
+      stem: "2026-03-09-my-task",
+      type: "one-shot",
+      collection: "one-shots",
+      category: "infrastructure",
+      title: "My Task",
+      status: "drafting",
+      created: "2026-03-09",
+      updated: "2026-03-09",
+      frontmatter: {},
+      body: "",
+    })
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "show", "my-task"], deps)
+    expect(result).toContain("My Task")
+    expect(result).toContain("drafting")
+    // Empty body should not produce a trailing newline section
+    expect(result).not.toContain("\n\n")
+  })
+
+  it("ouro task show returns not-found when task does not exist", async () => {
+    mockTaskModule.getTask.mockReturnValueOnce(null)
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "show", "nonexistent"], deps)
+    expect(result).toContain("not found")
+  })
+
+  it("ouro task actionable returns actionable items", async () => {
+    mockTaskModule.boardAction.mockReturnValueOnce(["blocked tasks: task-a"])
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "actionable"], deps)
+    expect(result).toBe("blocked tasks: task-a")
+  })
+
+  it("ouro task actionable returns fallback when no action required", async () => {
+    mockTaskModule.boardAction.mockReturnValueOnce([])
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "actionable"], deps)
+    expect(result).toBe("no action required")
+  })
+
+  it("ouro task deps returns dependency info", async () => {
+    mockTaskModule.boardDeps.mockReturnValueOnce(["task-a -> missing task-z"])
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "deps"], deps)
+    expect(result).toBe("task-a -> missing task-z")
+  })
+
+  it("ouro task deps returns fallback when no dependencies", async () => {
+    mockTaskModule.boardDeps.mockReturnValueOnce([])
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "deps"], deps)
+    expect(result).toBe("no unresolved dependencies")
+  })
+
+  it("ouro task sessions returns active sessions", async () => {
+    mockTaskModule.boardSessions.mockReturnValueOnce(["task-a"])
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "sessions"], deps)
+    expect(result).toBe("task-a")
+  })
+
+  it("ouro task sessions returns fallback when no sessions", async () => {
+    mockTaskModule.boardSessions.mockReturnValueOnce([])
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "sessions"], deps)
+    expect(result).toBe("no active sessions")
+  })
+})
+
+describe("ouro reminder CLI execution", () => {
+  const mockTaskModule = {
+    getBoard: vi.fn(),
+    createTask: vi.fn(),
+    updateStatus: vi.fn(),
+    getTask: vi.fn(),
+    boardStatus: vi.fn(),
+    boardAction: vi.fn(),
+    boardDeps: vi.fn(),
+    boardSessions: vi.fn(),
+  }
+
+  function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
+    return {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+      taskModule: mockTaskModule as any,
+      ...overrides,
+    }
+  }
+
+  it("ouro reminder create creates a one-shot reminder", async () => {
+    mockTaskModule.createTask.mockReturnValueOnce("/mock/tasks/one-shots/2026-03-10-ping-ari.md")
+    const deps = makeDeps()
+    const result = await runOuroCli(["reminder", "create", "Ping Ari", "--body", "Check daemon status", "--at", "2026-03-10T17:00:00.000Z"], deps)
+    expect(result).toContain("created:")
+    expect(result).toContain("/mock/tasks/one-shots/2026-03-10-ping-ari.md")
+    expect(mockTaskModule.createTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Ping Ari",
+        type: "one-shot",
+        category: "reminder",
+        body: "Check daemon status",
+        scheduledAt: "2026-03-10T17:00:00.000Z",
+      }),
+    )
+    // Should NOT send to daemon
+    expect(deps.sendCommand).not.toHaveBeenCalled()
+  })
+
+  it("ouro reminder create creates a recurring habit", async () => {
+    mockTaskModule.createTask.mockReturnValueOnce("/mock/tasks/habits/heartbeat.md")
+    const deps = makeDeps()
+    const result = await runOuroCli(["reminder", "create", "Heartbeat", "--body", "Run heartbeat", "--cadence", "30m"], deps)
+    expect(result).toContain("created:")
+    expect(mockTaskModule.createTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Heartbeat",
+        type: "habit",
+        category: "reminder",
+        body: "Run heartbeat",
+        cadence: "30m",
+      }),
+    )
+  })
+
+  it("ouro reminder create uses custom category", async () => {
+    mockTaskModule.createTask.mockReturnValueOnce("/mock/tasks/habits/ops.md")
+    const deps = makeDeps()
+    const result = await runOuroCli(["reminder", "create", "Ops check", "--body", "Check ops", "--cadence", "1h", "--category", "operations"], deps)
+    expect(result).toContain("created:")
+    expect(mockTaskModule.createTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        category: "operations",
+      }),
+    )
+  })
+
+  it("ouro reminder create surfaces task module exceptions", async () => {
+    mockTaskModule.createTask.mockImplementationOnce(() => {
+      throw new Error("scheduler exploded")
+    })
+    const deps = makeDeps()
+    const result = await runOuroCli(["reminder", "create", "Broken", "--body", "This will fail", "--at", "2026-03-10T17:00:00.000Z"], deps)
+    expect(result).toContain("error: scheduler exploded")
+  })
+
+  it("ouro reminder create surfaces non-Error exceptions", async () => {
+    mockTaskModule.createTask.mockImplementationOnce(() => {
+      throw "scheduler exploded string"
+    })
+    const deps = makeDeps()
+    const result = await runOuroCli(["reminder", "create", "Broken", "--body", "This will fail", "--at", "2026-03-10T17:00:00.000Z"], deps)
+    expect(result).toContain("error: scheduler exploded string")
+  })
+})
+
+describe("ouro friend CLI execution", () => {
+  function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
+    return {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+      ...overrides,
+    }
+  }
+
+  it("ouro friend list returns all friends with summary info", async () => {
+    const mockFriendStore = {
+      get: vi.fn(),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      listAll: vi.fn(async () => [
+        {
+          id: "friend-1",
+          name: "Ari",
+          trustLevel: "family",
+          externalIds: [{ provider: "local", externalId: "ari", linkedAt: "2026-03-01T00:00:00.000Z" }],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          totalTokens: 1000,
+          createdAt: "2026-03-01T00:00:00.000Z",
+          updatedAt: "2026-03-09T12:00:00.000Z",
+          schemaVersion: 1,
+        },
+        {
+          id: "friend-2",
+          name: "Bob",
+          trustLevel: "friend",
+          externalIds: [],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          totalTokens: 500,
+          createdAt: "2026-03-02T00:00:00.000Z",
+          updatedAt: "2026-03-08T12:00:00.000Z",
+          schemaVersion: 1,
+        },
+      ]),
+    }
+    const deps = makeDeps({ friendStore: mockFriendStore as any })
+    const result = await runOuroCli(["friend", "list"], deps)
+
+    expect(result).toContain("Ari")
+    expect(result).toContain("friend-1")
+    expect(result).toContain("family")
+    expect(result).toContain("Bob")
+    expect(result).toContain("friend-2")
+    expect(result).toContain("friend")
+    expect(mockFriendStore.listAll).toHaveBeenCalled()
+    expect(deps.sendCommand).not.toHaveBeenCalled()
+  })
+
+  it("ouro friend list returns empty message when no friends", async () => {
+    const mockFriendStore = {
+      get: vi.fn(),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      listAll: vi.fn(async () => []),
+    }
+    const deps = makeDeps({ friendStore: mockFriendStore as any })
+    const result = await runOuroCli(["friend", "list"], deps)
+
+    expect(result).toContain("no friends")
+    expect(mockFriendStore.listAll).toHaveBeenCalled()
+  })
+
+  it("ouro friend show returns full friend record", async () => {
+    const friendRecord = {
+      id: "friend-1",
+      name: "Ari",
+      trustLevel: "family",
+      externalIds: [{ provider: "local", externalId: "ari", linkedAt: "2026-03-01T00:00:00.000Z" }],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: { role: { value: "engineer", savedAt: "2026-03-01T00:00:00.000Z" } },
+      totalTokens: 1000,
+      createdAt: "2026-03-01T00:00:00.000Z",
+      updatedAt: "2026-03-09T12:00:00.000Z",
+      schemaVersion: 1,
+    }
+    const mockFriendStore = {
+      get: vi.fn(async () => friendRecord),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      listAll: vi.fn(),
+    }
+    const deps = makeDeps({ friendStore: mockFriendStore as any })
+    const result = await runOuroCli(["friend", "show", "friend-1"], deps)
+
+    expect(result).toContain("Ari")
+    expect(result).toContain("family")
+    expect(result).toContain("friend-1")
+    expect(mockFriendStore.get).toHaveBeenCalledWith("friend-1")
+  })
+
+  it("ouro friend list handles store without listAll method", async () => {
+    const mockFriendStore = {
+      get: vi.fn(),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      // No listAll method
+    }
+    const deps = makeDeps({ friendStore: mockFriendStore as any })
+    const result = await runOuroCli(["friend", "list"], deps)
+    expect(result).toContain("does not support listing")
+  })
+
+  it("ouro friend list handles friend records without trustLevel", async () => {
+    const mockFriendStore = {
+      get: vi.fn(),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      listAll: vi.fn(async () => [
+        {
+          id: "friend-1",
+          name: "NoTrust",
+          // trustLevel intentionally missing
+          externalIds: [],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          totalTokens: 0,
+          createdAt: "2026-03-01T00:00:00.000Z",
+          updatedAt: "2026-03-01T00:00:00.000Z",
+          schemaVersion: 1,
+        },
+      ]),
+    }
+    const deps = makeDeps({ friendStore: mockFriendStore as any })
+    const result = await runOuroCli(["friend", "list"], deps)
+    expect(result).toContain("unknown")
+    expect(result).toContain("NoTrust")
+  })
+
+  it("ouro friend show returns not-found when friend does not exist", async () => {
+    const mockFriendStore = {
+      get: vi.fn(async () => null),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      listAll: vi.fn(),
+    }
+    const deps = makeDeps({ friendStore: mockFriendStore as any })
+    const result = await runOuroCli(["friend", "show", "nonexistent"], deps)
+
+    expect(result).toContain("not found")
+    expect(mockFriendStore.get).toHaveBeenCalledWith("nonexistent")
+  })
+
+  it("ouro friend link adds externalId and checks for orphans", async () => {
+    const targetFriend = {
+      id: "friend-1",
+      name: "Ari",
+      trustLevel: "family",
+      externalIds: [{ provider: "local", externalId: "ari", linkedAt: "2026-01-01T00:00:00.000Z" }],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: {},
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      schemaVersion: 1,
+    }
+    const mockFriendStore = {
+      get: vi.fn(async (id: string) => id === "friend-1" ? targetFriend : null),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(async () => null),
+      listAll: vi.fn(),
+    }
+    const deps = makeDeps({ friendStore: mockFriendStore as any })
+    const result = await runOuroCli([
+      "friend", "link", "slugger",
+      "--friend", "friend-1",
+      "--provider", "imessage-handle",
+      "--external-id", "+1234567890",
+    ], deps)
+
+    expect(result).toContain("linked")
+    expect(mockFriendStore.put).toHaveBeenCalledWith("friend-1", expect.objectContaining({
+      externalIds: expect.arrayContaining([
+        expect.objectContaining({ provider: "imessage-handle", externalId: "+1234567890" }),
+      ]),
+    }))
+    expect(mockFriendStore.findByExternalId).toHaveBeenCalledWith("imessage-handle", "+1234567890")
+  })
+
+  it("ouro friend link merges orphan friend when externalId found on another record", async () => {
+    const targetFriend = {
+      id: "friend-1",
+      name: "Ari",
+      trustLevel: "family",
+      externalIds: [{ provider: "local", externalId: "ari", linkedAt: "2026-01-01T00:00:00.000Z" }],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: { role: { value: "engineer", savedAt: "2026-01-01T00:00:00.000Z" } },
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      schemaVersion: 1,
+    }
+    const orphanFriend = {
+      id: "orphan-1",
+      name: "Unknown +1234567890",
+      trustLevel: "stranger",
+      externalIds: [
+        { provider: "imessage-handle", externalId: "+1234567890", linkedAt: "2026-02-01T00:00:00.000Z" },
+        { provider: "imessage-handle", externalId: "+0987654321", linkedAt: "2026-02-01T00:00:00.000Z" },
+      ],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: { phone: { value: "+1234567890", savedAt: "2026-02-01T00:00:00.000Z" } },
+      createdAt: "2026-02-01T00:00:00.000Z",
+      updatedAt: "2026-02-01T00:00:00.000Z",
+      schemaVersion: 1,
+    }
+    const mockFriendStore = {
+      get: vi.fn(async (id: string) => id === "friend-1" ? targetFriend : null),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(async () => orphanFriend),
+      listAll: vi.fn(),
+    }
+    const deps = makeDeps({ friendStore: mockFriendStore as any })
+    const result = await runOuroCli([
+      "friend", "link", "slugger",
+      "--friend", "friend-1",
+      "--provider", "imessage-handle",
+      "--external-id", "+1234567890",
+    ], deps)
+
+    expect(result).toContain("linked")
+    expect(result).toContain("merged")
+    // Orphan should be deleted
+    expect(mockFriendStore.delete).toHaveBeenCalledWith("orphan-1")
+    // Target should get orphan's extra externalIds and notes merged
+    const putCall = mockFriendStore.put.mock.calls[0]
+    const savedRecord = putCall[1]
+    // Should have original + new + orphan's other externalId
+    expect(savedRecord.externalIds).toEqual(expect.arrayContaining([
+      expect.objectContaining({ provider: "imessage-handle", externalId: "+0987654321" }),
+      expect.objectContaining({ provider: "imessage-handle", externalId: "+1234567890" }),
+    ]))
+    // Notes should be merged
+    expect(savedRecord.notes.phone).toBeDefined()
+    expect(savedRecord.notes.role).toBeDefined()
+    // Trust level should keep the higher one (family > stranger)
+    expect(savedRecord.trustLevel).toBe("family")
+  })
+
+  it("ouro friend link handles undefined trust levels when merging", async () => {
+    const targetFriend = {
+      id: "friend-1",
+      name: "Ari",
+      // trustLevel intentionally omitted
+      externalIds: [{ provider: "local" as const, externalId: "ari", linkedAt: "2026-01-01T00:00:00.000Z" }],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: {},
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      schemaVersion: 1,
+    }
+    const orphanFriend = {
+      id: "orphan-1",
+      name: "Unknown",
+      // trustLevel intentionally omitted
+      externalIds: [{ provider: "imessage-handle" as const, externalId: "+111", linkedAt: "2026-02-01T00:00:00.000Z" }],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: {},
+      createdAt: "2026-02-01T00:00:00.000Z",
+      updatedAt: "2026-02-01T00:00:00.000Z",
+      schemaVersion: 1,
+    }
+    const mockFriendStore = {
+      get: vi.fn(async (id: string) => id === "friend-1" ? targetFriend : null),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(async () => orphanFriend),
+      listAll: vi.fn(),
+    }
+    const deps = makeDeps({ friendStore: mockFriendStore as any })
+    await runOuroCli([
+      "friend", "link", "slugger",
+      "--friend", "friend-1",
+      "--provider", "imessage-handle",
+      "--external-id", "+111",
+    ], deps)
+
+    const putCall = mockFriendStore.put.mock.calls[0]
+    expect(putCall[1].trustLevel).toBe("stranger")
+  })
+
+  it("ouro friend link keeps orphan's higher trust when merging", async () => {
+    const targetFriend = {
+      id: "friend-1",
+      name: "Ari",
+      trustLevel: "acquaintance" as const,
+      externalIds: [{ provider: "local" as const, externalId: "ari", linkedAt: "2026-01-01T00:00:00.000Z" }],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: {},
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      schemaVersion: 1,
+    }
+    const orphanFriend = {
+      id: "orphan-1",
+      name: "Unknown",
+      trustLevel: "family" as const,
+      externalIds: [{ provider: "imessage-handle" as const, externalId: "+1234567890", linkedAt: "2026-02-01T00:00:00.000Z" }],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: {},
+      createdAt: "2026-02-01T00:00:00.000Z",
+      updatedAt: "2026-02-01T00:00:00.000Z",
+      schemaVersion: 1,
+    }
+    const mockFriendStore = {
+      get: vi.fn(async (id: string) => id === "friend-1" ? targetFriend : null),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(async () => orphanFriend),
+      listAll: vi.fn(),
+    }
+    const deps = makeDeps({ friendStore: mockFriendStore as any })
+    await runOuroCli([
+      "friend", "link", "slugger",
+      "--friend", "friend-1",
+      "--provider", "imessage-handle",
+      "--external-id", "+1234567890",
+    ], deps)
+
+    const putCall = mockFriendStore.put.mock.calls[0]
+    const savedRecord = putCall[1]
+    // Orphan had family (higher than acquaintance), so merged record should be family
+    expect(savedRecord.trustLevel).toBe("family")
+  })
+
+  it("ouro friend unlink removes matching externalId", async () => {
+    const targetFriend = {
+      id: "friend-1",
+      name: "Ari",
+      trustLevel: "family",
+      externalIds: [
+        { provider: "local", externalId: "ari", linkedAt: "2026-01-01T00:00:00.000Z" },
+        { provider: "imessage-handle", externalId: "+1234567890", linkedAt: "2026-02-01T00:00:00.000Z" },
+      ],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: {},
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      schemaVersion: 1,
+    }
+    const mockFriendStore = {
+      get: vi.fn(async () => targetFriend),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      listAll: vi.fn(),
+    }
+    const deps = makeDeps({ friendStore: mockFriendStore as any })
+    const result = await runOuroCli([
+      "friend", "unlink", "slugger",
+      "--friend", "friend-1",
+      "--provider", "imessage-handle",
+      "--external-id", "+1234567890",
+    ], deps)
+
+    expect(result).toContain("unlinked")
+    expect(mockFriendStore.put).toHaveBeenCalledWith("friend-1", expect.objectContaining({
+      externalIds: [
+        expect.objectContaining({ provider: "local", externalId: "ari" }),
+      ],
+    }))
+  })
+
+  it("ouro friend unlink returns not-found when friend does not exist", async () => {
+    const mockFriendStore = {
+      get: vi.fn(async () => null),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      listAll: vi.fn(),
+    }
+    const deps = makeDeps({ friendStore: mockFriendStore as any })
+    const result = await runOuroCli([
+      "friend", "unlink", "slugger",
+      "--friend", "friend-1",
+      "--provider", "imessage-handle",
+      "--external-id", "+1234567890",
+    ], deps)
+
+    expect(result).toContain("not found")
+  })
+
+  it("ouro friend unlink returns message when externalId not found on friend", async () => {
+    const targetFriend = {
+      id: "friend-1",
+      name: "Ari",
+      trustLevel: "family",
+      externalIds: [{ provider: "local", externalId: "ari", linkedAt: "2026-01-01T00:00:00.000Z" }],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: {},
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      schemaVersion: 1,
+    }
+    const mockFriendStore = {
+      get: vi.fn(async () => targetFriend),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      listAll: vi.fn(),
+    }
+    const deps = makeDeps({ friendStore: mockFriendStore as any })
+    const result = await runOuroCli([
+      "friend", "unlink", "slugger",
+      "--friend", "friend-1",
+      "--provider", "imessage-handle",
+      "--external-id", "+1234567890",
+    ], deps)
+
+    expect(result).toContain("not linked")
+    expect(mockFriendStore.put).not.toHaveBeenCalled()
+  })
+})
+
+describe("ouro whoami and session list CLI execution", () => {
+  function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
+    return {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+      ...overrides,
+    }
+  }
+
+  it("ouro whoami returns agent identity info", async () => {
+    const deps = makeDeps({
+      whoamiInfo: vi.fn(() => ({
+        agentName: "slugger",
+        homePath: "/Users/ari/AgentBundles/slugger.ouro",
+        bonesVersion: "0.1.0-alpha.31",
+      })),
+    })
+    const result = await runOuroCli(["whoami"], deps)
+
+    expect(result).toContain("slugger")
+    expect(result).toContain("/Users/ari/AgentBundles/slugger.ouro")
+    expect(result).toContain("0.1.0-alpha.31")
+    expect(deps.sendCommand).not.toHaveBeenCalled()
+  })
+
+  it("ouro session list returns sessions from scanner", async () => {
+    const deps = makeDeps({
+      scanSessions: vi.fn(async () => [
+        { friendId: "friend-1", friendName: "Ari", channel: "cli", lastActivity: "2026-03-09T12:00:00.000Z" },
+        { friendId: "self", friendName: "self", channel: "inner", lastActivity: "2026-03-09T11:00:00.000Z" },
+      ]),
+    })
+    const result = await runOuroCli(["session", "list"], deps)
+
+    expect(result).toContain("friend-1")
+    expect(result).toContain("Ari")
+    expect(result).toContain("cli")
+    expect(result).toContain("self")
+    expect(result).toContain("inner")
+    expect(deps.sendCommand).not.toHaveBeenCalled()
+  })
+
+  it("ouro session list returns empty message when no sessions", async () => {
+    const deps = makeDeps({
+      scanSessions: vi.fn(async () => []),
+    })
+    const result = await runOuroCli(["session", "list"], deps)
+
+    expect(result).toContain("no active sessions")
   })
 })

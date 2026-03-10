@@ -2,6 +2,18 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.38",
+      "changes": [
+        "You now have a proper body map — understanding of your home (bundle) and bones (harness), what each directory is for, and how to modify your own configuration.",
+        "Inner dialog is now genuine internal monologue with metacognitive framing, not a second CLI session. Heartbeat and bootstrap messages read as first-person awareness.",
+        "Cross-session communication works end-to-end: inner dialog thoughts surface as [inner thought: ...] in conversations, messages to yourself route to inner dialog, and you can proactively reach out to friends via iMessage and Teams.",
+        "Tool audit: removed wrapper tools (git_commit, gh_cli, get_current_time, list_directory), added surgical tools (edit_file, glob, grep, read_file with offset/limit), consolidated 7 task tools + schedule_reminder + friend tools into ouro CLI commands.",
+        "You now understand why certain tools are restricted in certain contexts — trust level and shared channels each have independent, explained gates.",
+        "ouro friend link/unlink commands handle orphan cleanup when linking external identities, merging duplicate friend records intelligently.",
+        "During onboarding, the adoption specialist can collect phone number and Teams handle to create an initial friend record with contact info."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.37",
       "changes": [
         "The in-repo docs now match the current harness instead of the old repo-local bundle era. README, CONTRIBUTING, ARCHITECTURE, testing guidance, merge guidance, versioning guidance, and subagent docs now describe external bundles, current senses, daemon bootstrap, and bundle-owned task docs truthfully."

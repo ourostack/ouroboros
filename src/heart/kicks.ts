@@ -1,6 +1,6 @@
 // TODO: Kicks enforce "any action" but not "meaningful action". After a narration
 // kick, the model can satisfy the constraint by calling a no-op tool like
-// get_current_time({}). We need to detect trivial compliance and either re-kick
+// list_skills({}). We need to detect trivial compliance and either re-kick
 // or discount the tool call. Ideally, the kick message would suggest a specific
 // tool call based on conversation context (what the user asked, what tools are
 // relevant) rather than just saying "call a tool". That's a bigger piece of work —
