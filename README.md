@@ -164,13 +164,10 @@ Plus 2 optional:
 
 - **FriendRecord** (`friends/types.ts`): the single merged type for a person the agent knows. Contains `displayName`, `externalIds[]` (cross-provider identity links), `toolPreferences` (keyed by integration name), `notes` (general friend knowledge), `tenantMemberships`, timestamps, and schema version.
 - **FriendStore** (`friends/store.ts`): domain-specific persistence interface (`get`, `put`, `delete`, `findByExternalId`).
-- **FileFriendStore** (`friends/store-file.ts`): two-backend storage split by PII boundary:
-  - **Agent knowledge** (`{agentRoot}/friends/{uuid}.json`): id, displayName, toolPreferences, notes, timestamps, schemaVersion. Committed to the repo -- no PII.
-  - **PII bridge** (`~/.agentstate/{agentName}/friends/{uuid}.json`): id, externalIds, tenantMemberships, schemaVersion. Local-only -- contains PII.
-  - `get()` merges both backends. `put()` splits and writes both. `findByExternalId()` scans PII bridge, then merges with agent knowledge.
+- **FileFriendStore** (`friends/store-file.ts`): bundle-local JSON storage at `{agentRoot}/friends/{uuid}.json`. Friend identity, notes, externalIds, tenantMemberships, timestamps, and schemaVersion are kept together in the bundle.
 - **Channel** (`friends/channel.ts`): `ChannelCapabilities` -- what the current channel supports (markdown, streaming, rich cards, max message length, available integrations).
 - **FriendResolver** (`friends/resolver.ts`): find-or-create by external ID. First encounter creates a new FriendRecord with system-provided name and empty notes/preferences. Returning friends are found via `findByExternalId()`. DisplayName is never overwritten on existing records.
-- **Session paths**: `~/.agentstate/{agentName}/sessions/{friendUuid}/{channel}/{sessionId}.json`. Each friend gets their own session directory.
+- **Session paths**: `{agentRoot}/state/sessions/{friendUuid}/{channel}/{sessionId}.json`. Each friend gets their own session directory inside the bundle-local runtime state area.
 
 Design principles: don't persist what you can re-derive; conversation IS the cache; the model manages memory freeform via `save_friend_note`; toolPreferences go to tool descriptions (not system prompt); notes go to system prompt (not tool descriptions).
 

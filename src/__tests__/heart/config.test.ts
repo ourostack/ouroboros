@@ -23,6 +23,7 @@ vi.mock("../../heart/identity", () => ({
     },
   })),
   getAgentName: vi.fn(() => "testagent"),
+  getAgentRoot: vi.fn(() => path.join(os.homedir(), "AgentBundles", "testagent.ouro")),
   getAgentSecretsPath: vi.fn(() => path.join(os.homedir(), ".agentsecrets", "testagent", "secrets.json")),
   DEFAULT_AGENT_CONTEXT: {
     maxTokens: 80000,
@@ -48,6 +49,9 @@ beforeEach(() => {
     },
   })
   vi.mocked(identity.getAgentName).mockReturnValue("testagent")
+  vi.mocked((identity as any).getAgentRoot).mockReturnValue(
+    path.join(os.homedir(), "AgentBundles", "testagent.ouro"),
+  )
   vi.mocked((identity as any).getAgentSecretsPath).mockReturnValue(
     path.join(os.homedir(), ".agentsecrets", "testagent", "secrets.json"),
   )
@@ -590,7 +594,7 @@ describe("sessionPath", () => {
     const { sessionPath } = await import("../../heart/config")
     const p = sessionPath("uuid-abc-123", "cli", "session")
 
-    expect(p).toBe(path.join(os.homedir(), ".agentstate", "testagent", "sessions", "uuid-abc-123", "cli", "session.json"))
+    expect(p).toBe(path.join(os.homedir(), "AgentBundles", "testagent.ouro", "state", "sessions", "uuid-abc-123", "cli", "session.json"))
   })
 
   it("returns correct path for teams channel with friendId", async () => {
@@ -599,7 +603,7 @@ describe("sessionPath", () => {
     const { sessionPath } = await import("../../heart/config")
     const p = sessionPath("uuid-xyz-456", "teams", "conv-123")
 
-    expect(p).toBe(path.join(os.homedir(), ".agentstate", "testagent", "sessions", "uuid-xyz-456", "teams", "conv-123.json"))
+    expect(p).toBe(path.join(os.homedir(), "AgentBundles", "testagent.ouro", "state", "sessions", "uuid-xyz-456", "teams", "conv-123.json"))
   })
 
   it("sanitizes key by replacing slashes and colons with underscores", async () => {
@@ -608,7 +612,7 @@ describe("sessionPath", () => {
     const { sessionPath } = await import("../../heart/config")
     const p = sessionPath("uuid-1", "teams", "a]conv/id:123")
 
-    expect(p).toBe(path.join(os.homedir(), ".agentstate", "testagent", "sessions", "uuid-1", "teams", "a]conv_id_123.json"))
+    expect(p).toBe(path.join(os.homedir(), "AgentBundles", "testagent.ouro", "state", "sessions", "uuid-1", "teams", "a]conv_id_123.json"))
   })
 
   it("auto-creates parent directories", async () => {
@@ -618,7 +622,7 @@ describe("sessionPath", () => {
     sessionPath("uuid-1", "cli", "session")
 
     expect(fs.mkdirSync).toHaveBeenCalledWith(
-      path.join(os.homedir(), ".agentstate", "testagent", "sessions", "uuid-1", "cli"),
+      path.join(os.homedir(), "AgentBundles", "testagent.ouro", "state", "sessions", "uuid-1", "cli"),
       { recursive: true },
     )
   })
@@ -635,7 +639,7 @@ describe("logPath", () => {
     const { getLogsDir } = await import("../../heart/config")
     const dir = getLogsDir()
 
-    expect(dir).toBe(path.join(os.homedir(), ".agentstate", "testagent", "logs"))
+    expect(dir).toBe(path.join(os.homedir(), "AgentBundles", "testagent.ouro", "state", "logs"))
   })
 
   it("returns NDJSON log path and sanitizes key", async () => {
@@ -644,7 +648,7 @@ describe("logPath", () => {
     const { logPath } = await import("../../heart/config")
     const p = logPath("teams", "a]conv/id:123")
 
-    expect(p).toBe(path.join(os.homedir(), ".agentstate", "testagent", "logs", "teams", "a]conv_id_123.ndjson"))
+    expect(p).toBe(path.join(os.homedir(), "AgentBundles", "testagent.ouro", "state", "logs", "teams", "a]conv_id_123.ndjson"))
   })
 })
 

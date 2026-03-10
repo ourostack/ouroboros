@@ -10,15 +10,22 @@ vi.mock("fs", () => ({
 import * as fs from "fs"
 
 let savedArgv: string[]
+let savedWebsiteSiteName: string | undefined
 
 beforeEach(() => {
   savedArgv = [...process.argv]
+  savedWebsiteSiteName = process.env.WEBSITE_SITE_NAME
   vi.mocked(fs.readFileSync).mockReset()
   vi.mocked(fs.writeFileSync).mockReset()
 })
 
 afterEach(() => {
   process.argv = savedArgv
+  if (savedWebsiteSiteName === undefined) {
+    delete process.env.WEBSITE_SITE_NAME
+  } else {
+    process.env.WEBSITE_SITE_NAME = savedWebsiteSiteName
+  }
 })
 
 describe("getAgentName", () => {
@@ -85,10 +92,11 @@ describe("setAgentName", () => {
 
   it("makes downstream paths resolve correctly", async () => {
     process.argv = ["node", "cli-entry.js"]
-    const { setAgentName, getAgentRoot, resetIdentity } = await import("../../heart/identity")
+    const { setAgentName, getAgentRoot, getAgentStateRoot, resetIdentity } = await import("../../heart/identity")
     resetIdentity()
     setAgentName("slugger")
     expect(getAgentRoot()).toBe(path.join(os.homedir(), "AgentBundles", "slugger.ouro"))
+    expect(getAgentStateRoot()).toBe(path.join(os.homedir(), "AgentBundles", "slugger.ouro", "state"))
   })
 })
 
@@ -104,9 +112,21 @@ describe("agent paths", () => {
 
   it("resolves agent bundle root", async () => {
     process.argv = ["node", "cli-entry.js", "--agent", "slugger"]
-    const { getAgentRoot, resetIdentity } = await import("../../heart/identity")
+    const { getAgentRoot, getAgentStateRoot, resetIdentity } = await import("../../heart/identity")
     resetIdentity()
     expect(getAgentRoot()).toBe(path.join(os.homedir(), "AgentBundles", "slugger.ouro"))
+    expect(getAgentStateRoot()).toBe(path.join(os.homedir(), "AgentBundles", "slugger.ouro", "state"))
+  })
+
+  it("uses persistent /home bundle paths on Azure App Service", async () => {
+    process.env.WEBSITE_SITE_NAME = "slugger-app"
+    process.argv = ["node", "cli-entry.js", "--agent", "slugger"]
+    const { getAgentBundlesRoot, getAgentRoot, getAgentStateRoot, resetIdentity } = await import("../../heart/identity")
+    resetIdentity()
+
+    expect(getAgentBundlesRoot()).toBe(path.join("/home", "AgentBundles"))
+    expect(getAgentRoot()).toBe(path.join("/home", "AgentBundles", "slugger.ouro"))
+    expect(getAgentStateRoot()).toBe(path.join("/home", "AgentBundles", "slugger.ouro", "state"))
   })
 
   it("resolves conventional secrets path", async () => {

@@ -1,9 +1,8 @@
 import * as fs from "fs"
 import * as path from "path"
-import * as os from "os"
 import {
   loadAgentConfig,
-  getAgentName,
+  getAgentRoot,
   getAgentSecretsPath,
   DEFAULT_AGENT_CONTEXT,
 } from "./identity"
@@ -416,7 +415,7 @@ export function getOpenAIEmbeddingsApiKey(): string {
 }
 
 export function getLogsDir(): string {
-  return path.join(os.homedir(), ".agentstate", getAgentName(), "logs")
+  return path.join(getAgentRoot(), "state", "logs")
 }
 
 
@@ -424,14 +423,21 @@ function sanitizeKey(key: string): string {
   return key.replace(/[/:]/g, "_")
 }
 
-export function sessionPath(friendId: string, channel: string, key: string): string {
-  // On Azure App Service, os.homedir() returns /root which is ephemeral.
-  // Use /home (persistent storage) when WEBSITE_SITE_NAME is set.
-  /* v8 ignore next -- Azure vs local path branch; environment-specific @preserve */
-  const homeBase = process.env.WEBSITE_SITE_NAME ? "/home" : os.homedir()
-  const dir = path.join(homeBase, ".agentstate", getAgentName(), "sessions", friendId, channel)
-  fs.mkdirSync(dir, { recursive: true })
+export function resolveSessionPath(
+  friendId: string,
+  channel: string,
+  key: string,
+  options?: { ensureDir?: boolean },
+): string {
+  const dir = path.join(getAgentRoot(), "state", "sessions", friendId, channel)
+  if (options?.ensureDir) {
+    fs.mkdirSync(dir, { recursive: true })
+  }
   return path.join(dir, sanitizeKey(key) + ".json")
+}
+
+export function sessionPath(friendId: string, channel: string, key: string): string {
+  return resolveSessionPath(friendId, channel, key, { ensureDir: true })
 }
 
 export function logPath(channel: string, key: string): string {

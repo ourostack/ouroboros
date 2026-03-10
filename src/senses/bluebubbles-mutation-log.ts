@@ -1,8 +1,8 @@
 import * as fs from "node:fs"
-import * as os from "node:os"
 import * as path from "node:path"
 import type { BlueBubblesNormalizedMutation } from "./bluebubbles-model"
 import { emitNervesEvent } from "../nerves/runtime"
+import { getAgentRoot } from "../heart/identity"
 
 function sanitizeKey(key: string): string {
   return key.replace(/[/:]/g, "_")
@@ -10,9 +10,8 @@ function sanitizeKey(key: string): string {
 
 export function getBlueBubblesMutationLogPath(agentName: string, sessionKey: string): string {
   return path.join(
-    os.homedir(),
-    ".agentstate",
-    agentName,
+    getAgentRoot(agentName),
+    "state",
     "senses",
     "bluebubbles",
     "mutations",
