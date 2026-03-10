@@ -18,6 +18,7 @@ import {
 } from "./bluebubbles-model"
 import { createBlueBubblesClient, type BlueBubblesClient } from "./bluebubbles-client"
 import { recordBlueBubblesMutation } from "./bluebubbles-mutation-log"
+import { cleanupObsoleteBlueBubblesThreadSessions } from "./bluebubbles-session-cleanup"
 import { createDebugActivityController } from "./debug-activity"
 
 type BlueBubblesCallbacks = ChannelCallbacks & {
@@ -82,14 +83,30 @@ function resolveFriendParams(event: BlueBubblesNormalizedEvent): FriendResolverP
 }
 
 function buildInboundText(event: BlueBubblesNormalizedEvent): string {
+  const metadataPrefix = buildConversationScopePrefix(event)
   const baseText = event.repairNotice?.trim()
     ? `${event.textForAgent}\n[${event.repairNotice.trim()}]`
     : event.textForAgent
-  if (!event.chat.isGroup) return baseText
-  if (event.kind === "mutation") {
-    return `${event.sender.displayName} ${baseText}`
+  if (!event.chat.isGroup) {
+    return metadataPrefix ? `${metadataPrefix}\n${baseText}` : baseText
   }
-  return `${event.sender.displayName}: ${baseText}`
+  const scopedText = metadataPrefix ? `${metadataPrefix}\n${baseText}` : baseText
+  if (event.kind === "mutation") {
+    return `${event.sender.displayName} ${scopedText}`
+  }
+  return `${event.sender.displayName}: ${scopedText}`
+}
+
+function buildConversationScopePrefix(event: BlueBubblesNormalizedEvent): string {
+  if (event.kind !== "message") {
+    return ""
+  }
+
+  if (event.threadOriginatorGuid?.trim()) {
+    return `[conversation scope: existing chat trunk | current turn: thread reply | thread id: ${event.threadOriginatorGuid.trim()}]`
+  }
+
+  return "[conversation scope: existing chat trunk | current turn: top-level]"
 }
 
 function buildInboundContent(event: BlueBubblesNormalizedEvent): OpenAI.ChatCompletionUserMessageParam["content"] {
@@ -324,6 +341,20 @@ export async function handleBlueBubblesEvent(
 
   const friendId = context.friend.id
   const sessPath = resolvedDeps.sessionPath(friendId, "bluebubbles", event.chat.sessionKey)
+  try {
+    cleanupObsoleteBlueBubblesThreadSessions(sessPath)
+  } catch (error) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.bluebubbles_thread_lane_cleanup_error",
+      message: "failed to clean up obsolete bluebubbles thread-lane sessions",
+      meta: {
+        sessionPath: sessPath,
+        reason: error instanceof Error ? error.message : String(error),
+      },
+    })
+  }
   const existing = resolvedDeps.loadSession(sessPath)
   const messages: OpenAI.ChatCompletionMessageParam[] =
     existing?.messages && existing.messages.length > 0

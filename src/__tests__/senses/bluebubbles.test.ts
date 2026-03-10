@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
 import { Readable } from "node:stream"
 
 const mocks = vi.hoisted(() => ({
@@ -32,6 +35,19 @@ const mocks = vi.hoisted(() => ({
   createServer: vi.fn(),
   listen: vi.fn((_: number, cb?: () => void) => cb?.()),
 }))
+
+const tempDirs: string[] = []
+
+function makeTempDir(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bb-runtime-cleanup-"))
+  tempDirs.push(dir)
+  return dir
+}
+
+function writeFile(filePath: string): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true })
+  fs.writeFileSync(filePath, "{}")
+}
 
 vi.mock("../../heart/core", () => ({
   runAgent: (...args: any[]) => mocks.runAgent(...args),
@@ -124,6 +140,30 @@ const dmThreadPayload = {
     dateCreated: 1772946888623,
     isFromMe: false,
     threadOriginatorGuid: "54D4109C-7170-41A1-8161-F6F8C863CC0D",
+    chats: [
+      {
+        guid: "any;-;ari@mendelow.me",
+        style: 45,
+        chatIdentifier: "ari@mendelow.me",
+        displayName: "",
+      },
+    ],
+  },
+}
+
+const dmTopLevelPayload = {
+  type: "new-message",
+  data: {
+    guid: "B20D4E2B-2E6E-48B5-95CD-6E24A368E4A7",
+    text: "top-level follow-up",
+    handle: {
+      address: "ari@mendelow.me",
+      service: "iMessage",
+    },
+    attachments: [],
+    dateCreated: 1772946889999,
+    isFromMe: false,
+    threadOriginatorGuid: null,
     chats: [
       {
         guid: "any;-;ari@mendelow.me",
@@ -455,16 +495,19 @@ describe("BlueBubbles sense runtime", () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
+    for (const dir of tempDirs.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   })
 
-  it("handles DM threaded messages with stable session routing and a threaded send target", async () => {
+  it("handles DM threaded messages on the shared chat trunk and preserves the threaded send target", async () => {
     const bluebubbles = await import("../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
 
     expect(mocks.sessionPath).toHaveBeenCalledWith(
       "friend-uuid",
       "bluebubbles",
-      "chat:any;-;ari@mendelow.me:thread:54D4109C-7170-41A1-8161-F6F8C863CC0D",
+      "chat:any;-;ari@mendelow.me",
     )
     expect(mocks.buildSystem).toHaveBeenCalledWith(
       "bluebubbles",
@@ -477,7 +520,11 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.runAgent).toHaveBeenCalledWith(
       expect.arrayContaining([
         expect.objectContaining({ role: "system", content: "system prompt" }),
-        expect.objectContaining({ role: "user", content: "threaded reply" }),
+        expect.objectContaining({
+          role: "user",
+          content:
+            "[conversation scope: existing chat trunk | current turn: thread reply | thread id: 54D4109C-7170-41A1-8161-F6F8C863CC0D]\nthreaded reply",
+        }),
       ]),
       expect.any(Object),
       "bluebubbles",
@@ -502,6 +549,137 @@ describe("BlueBubbles sense runtime", () => {
       expect.anything(),
       "friend-uuid",
       expect.objectContaining({ total_tokens: 15 }),
+    )
+  })
+
+  it("routes top-level and threaded DM turns into the same persisted chat trunk", async () => {
+    const bluebubbles = await import("../../senses/bluebubbles")
+
+    await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    expect(mocks.sessionPath).toHaveBeenNthCalledWith(
+      1,
+      "friend-uuid",
+      "bluebubbles",
+      "chat:any;-;ari@mendelow.me",
+    )
+    expect(mocks.sessionPath).toHaveBeenNthCalledWith(
+      2,
+      "friend-uuid",
+      "bluebubbles",
+      "chat:any;-;ari@mendelow.me",
+    )
+  })
+
+  it("prefixes threaded inbound turns with chat-trunk metadata", async () => {
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    expect(mocks.runAgent).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "user",
+          content:
+            "[conversation scope: existing chat trunk | current turn: thread reply | thread id: 54D4109C-7170-41A1-8161-F6F8C863CC0D]\nthreaded reply",
+        }),
+      ]),
+      expect.any(Object),
+      "bluebubbles",
+      expect.any(AbortSignal),
+      expect.any(Object),
+    )
+  })
+
+  it("prefixes top-level inbound turns with chat-trunk metadata", async () => {
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    expect(mocks.runAgent).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "user",
+          content:
+            "[conversation scope: existing chat trunk | current turn: top-level]\ntop-level follow-up",
+        }),
+      ]),
+      expect.any(Object),
+      "bluebubbles",
+      expect.any(AbortSignal),
+      expect.any(Object),
+    )
+  })
+
+  it("removes obsolete sibling thread lanes before loading the shared chat trunk", async () => {
+    const dir = makeTempDir()
+    const trunk = path.join(dir, "chat_any;-;ari@mendelow.me.json")
+    const staleThread = path.join(dir, "chat_any;-;ari@mendelow.me_thread_123.json")
+    const unrelatedThread = path.join(dir, "chat_any;-;someoneelse_thread_999.json")
+    writeFile(trunk)
+    writeFile(staleThread)
+    writeFile(unrelatedThread)
+    mocks.sessionPath.mockReturnValueOnce(trunk)
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    expect(mocks.loadSession).toHaveBeenCalledWith(trunk)
+    expect(fs.existsSync(trunk)).toBe(true)
+    expect(fs.existsSync(staleThread)).toBe(false)
+    expect(fs.existsSync(unrelatedThread)).toBe(true)
+  })
+
+  it("logs cleanup errors but still handles the turn on the shared chat trunk", async () => {
+    const dir = makeTempDir()
+    const trunk = path.join(dir, "chat_any;-;ari@mendelow.me.json")
+    writeFile(trunk)
+    mocks.sessionPath.mockReturnValueOnce(trunk)
+    const cleanupModule = await import("../../senses/bluebubbles-session-cleanup")
+    vi.spyOn(cleanupModule, "cleanupObsoleteBlueBubblesThreadSessions").mockImplementation(() => {
+      throw new Error("cleanup boom")
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    expect(mocks.loadSession).toHaveBeenCalledWith(trunk)
+    expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: "warn",
+        event: "senses.bluebubbles_thread_lane_cleanup_error",
+        meta: expect.objectContaining({
+          sessionPath: trunk,
+          reason: "cleanup boom",
+        }),
+      }),
+    )
+  })
+
+  it("captures string-thrown cleanup failures explicitly too", async () => {
+    const dir = makeTempDir()
+    const trunk = path.join(dir, "chat_any;-;ari@mendelow.me.json")
+    writeFile(trunk)
+    mocks.sessionPath.mockReturnValueOnce(trunk)
+    const cleanupModule = await import("../../senses/bluebubbles-session-cleanup")
+    vi.spyOn(cleanupModule, "cleanupObsoleteBlueBubblesThreadSessions").mockImplementation(() => {
+      throw "cleanup string"
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    expect(mocks.loadSession).toHaveBeenCalledWith(trunk)
+    expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: "warn",
+        event: "senses.bluebubbles_thread_lane_cleanup_error",
+        meta: expect.objectContaining({
+          sessionPath: trunk,
+          reason: "cleanup string",
+        }),
+      }),
     )
   })
 
@@ -721,11 +899,15 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.sessionPath).toHaveBeenCalledWith(
       "group-uuid",
       "bluebubbles",
-      "chat:any;+;35820e69c97c459992d29a334f412979:thread:3E02B90F-D374-4381-BDD2-3572D3EB1195",
+      "chat:any;+;35820e69c97c459992d29a334f412979",
     )
     expect(mocks.runAgent.mock.calls[0]?.[0]).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ role: "user", content: "ari@mendelow.me: yay!" }),
+        expect.objectContaining({
+          role: "user",
+          content:
+            "ari@mendelow.me: [conversation scope: existing chat trunk | current turn: thread reply | thread id: 3E02B90F-D374-4381-BDD2-3572D3EB1195]\nyay!",
+        }),
       ]),
     )
     expect(mocks.sendText).toHaveBeenCalledWith(
@@ -1086,7 +1268,11 @@ describe("BlueBubbles sense runtime", () => {
         expect.objectContaining({
           role: "user",
           content: [
-            { type: "text", text: "[image attachment: IMG_5045.heic.jpeg (600x800)]" },
+            {
+              type: "text",
+              text:
+                "[conversation scope: existing chat trunk | current turn: top-level]\n[image attachment: IMG_5045.heic.jpeg (600x800)]",
+            },
             {
               type: "image_url",
               image_url: {

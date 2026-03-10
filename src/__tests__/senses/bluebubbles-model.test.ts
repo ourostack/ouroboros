@@ -135,6 +135,31 @@ const dmThreadPayload = {
   },
 }
 
+const dmTopLevelPayload = {
+  type: "new-message",
+  data: {
+    guid: "B20D4E2B-2E6E-48B5-95CD-6E24A368E4A7",
+    text: "top-level follow-up",
+    handle: {
+      address: "ari@mendelow.me",
+      service: "iMessage",
+      country: "US",
+    },
+    attachments: [],
+    dateCreated: 1772946889999,
+    isFromMe: false,
+    threadOriginatorGuid: null,
+    chats: [
+      {
+        guid: "any;-;ari@mendelow.me",
+        style: 45,
+        chatIdentifier: "ari@mendelow.me",
+        displayName: "",
+      },
+    ],
+  },
+}
+
 const groupThreadPayload = {
   type: "new-message",
   data: {
@@ -478,27 +503,34 @@ describe("normalizeBlueBubblesEvent", () => {
     expect(result.textForAgent).toContain("Audio Message.mp3.mp3")
   })
 
-  it("uses threadOriginatorGuid to derive a DM thread session", async () => {
+  it("keeps DM threaded replies on the chat trunk session", async () => {
     const { normalizeBlueBubblesEvent } = await import("../../senses/bluebubbles-model")
     const result = normalizeBlueBubblesEvent(dmThreadPayload)
 
     expect(result.kind).toBe("message")
-    expect(result.chat.sessionKey).toBe(
-      "chat:any;-;ari@mendelow.me:thread:54D4109C-7170-41A1-8161-F6F8C863CC0D",
-    )
+    expect(result.chat.sessionKey).toBe("chat:any;-;ari@mendelow.me")
     expect(result.replyToGuid).toBe("54D4109C-7170-41A1-8161-F6F8C863CC0D")
   })
 
-  it("uses group chat identity plus threadOriginatorGuid for group thread sessions", async () => {
+  it("keeps group threaded replies on the group chat trunk session", async () => {
     const { normalizeBlueBubblesEvent } = await import("../../senses/bluebubbles-model")
     const result = normalizeBlueBubblesEvent(groupThreadPayload)
 
     expect(result.kind).toBe("message")
     expect(result.chat.isGroup).toBe(true)
     expect(result.chat.displayName).toBe("Consciousness TBD")
-    expect(result.chat.sessionKey).toBe(
-      "chat:any;+;35820e69c97c459992d29a334f412979:thread:3E02B90F-D374-4381-BDD2-3572D3EB1195",
-    )
+    expect(result.chat.sessionKey).toBe("chat:any;+;35820e69c97c459992d29a334f412979")
+  })
+
+  it("uses the same DM chat trunk for top-level and threaded replies", async () => {
+    const { normalizeBlueBubblesEvent } = await import("../../senses/bluebubbles-model")
+    const topLevel = normalizeBlueBubblesEvent(dmTopLevelPayload)
+    const threaded = normalizeBlueBubblesEvent(dmThreadPayload)
+
+    expect(topLevel.kind).toBe("message")
+    expect(threaded.kind).toBe("message")
+    expect(topLevel.chat.sessionKey).toBe("chat:any;-;ari@mendelow.me")
+    expect(threaded.chat.sessionKey).toBe(topLevel.chat.sessionKey)
   })
 
   it("normalizes associated-message reactions as first-class mutations", async () => {

@@ -112,6 +112,7 @@ function extractChatIdentifierFromGuid(chatGuid?: string): string | undefined {
 }
 
 function buildChatRef(data: JsonRecord, threadOriginatorGuid?: string): BlueBubblesChatRef {
+  void threadOriginatorGuid
   const chats = Array.isArray(data.chats) ? data.chats : []
   const chat = asRecord(chats[0]) ?? null
   const chatGuid = readString(chat, "guid")
@@ -122,12 +123,9 @@ function buildChatRef(data: JsonRecord, threadOriginatorGuid?: string): BlueBubb
   const displayName = readString(chat, "displayName")?.trim() || undefined
   const style = readNumber(chat, "style")
   const isGroup = style === 43 || (chatGuid?.includes(";+;") ?? false) || Boolean(displayName)
-  const baseKey = chatGuid?.trim()
+  const sessionKey = chatGuid?.trim()
     ? `chat:${chatGuid.trim()}`
     : `chat_identifier:${(chatIdentifier ?? "unknown").trim()}`
-  const sessionKey = threadOriginatorGuid?.trim()
-    ? `${baseKey}:thread:${threadOriginatorGuid.trim()}`
-    : baseKey
 
   return {
     chatGuid: chatGuid?.trim() || undefined,

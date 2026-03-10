@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.30",
+      "changes": [
+        "BlueBubbles reply threads now stay inside one shared chat trunk instead of creating separate persisted mini-sessions, so Slugger keeps parent-chat awareness and active work when you switch between threaded and top-level replies.",
+        "BlueBubbles now injects explicit current-turn thread scope metadata into inbound messages and automatically removes obsolete per-thread session artifacts that used to cause mid-task resets like 'hiya, what do ya need help with?'"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.29",
       "changes": [
         "Running `ouro up` now force-syncs the global `ouro.bot` wrapper so bare `npx ouro.bot` stops getting hijacked by stale global CLI bins and lands back on the intended latest runtime.",
