@@ -33,13 +33,25 @@ const completeAdoptionTool: OpenAI.ChatCompletionFunctionTool = {
 
 const readFileTool = baseToolDefinitions.find((d) => d.tool.function.name === "read_file")!
 const writeFileTool = baseToolDefinitions.find((d) => d.tool.function.name === "write_file")!
-const listDirTool = baseToolDefinitions.find((d) => d.tool.function.name === "list_directory")!
+
+const listDirToolSchema: OpenAI.ChatCompletionFunctionTool = {
+  type: "function",
+  function: {
+    name: "list_directory",
+    description: "list directory contents",
+    parameters: {
+      type: "object",
+      properties: { path: { type: "string" } },
+      required: ["path"],
+    },
+  },
+}
 
 /**
  * Returns the specialist's tool schema array.
  */
 export function getSpecialistTools(): OpenAI.ChatCompletionFunctionTool[] {
-  return [completeAdoptionTool, finalAnswerTool, readFileTool.tool, writeFileTool.tool, listDirTool.tool]
+  return [completeAdoptionTool, finalAnswerTool, readFileTool.tool, writeFileTool.tool, listDirToolSchema]
 }
 
 export interface SpecialistExecToolDeps {

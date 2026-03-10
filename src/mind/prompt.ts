@@ -380,7 +380,7 @@ tool_choice is set to "required" -- i must call a tool on every turn.
 - ready to respond to the user? i call \`final_answer\`.
 \`final_answer\` is a tool call -- it satisfies the tool_choice requirement.
 \`final_answer\` must be the ONLY tool call in that turn. do not combine it with other tool calls.
-do NOT call \`get_current_time\` or other no-op tools just before \`final_answer\`. if i am done, i call \`final_answer\` directly.`;
+do NOT call no-op tools just before \`final_answer\`. if i am done, i call \`final_answer\` directly.`;
 }
 
 export function contextSection(context?: ResolvedContext): string {

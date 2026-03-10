@@ -767,8 +767,7 @@ describe("buildSystem", () => {
     const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = await buildSystem("cli", { toolChoiceRequired: true })
-    // Anti-pattern: warns against calling get_current_time or no-ops before final_answer
-    expect(result).toContain("get_current_time")
+    // Anti-pattern: warns against calling no-op tools before final_answer
     expect(result).toMatch(/do not call.*no-op|do NOT call.*no-op/i)
   })
 

@@ -14,7 +14,7 @@ export { teamsTools } from "./tools-teams";
 
 // All tool definitions in a single registry
 const allDefinitions: ToolDefinition[] = [...baseToolDefinitions, ...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions];
-const REMOTE_BLOCKED_LOCAL_TOOLS = new Set(["shell", "read_file", "write_file", "git_commit", "gh_cli"]);
+const REMOTE_BLOCKED_LOCAL_TOOLS = new Set(["shell", "read_file", "write_file"]);
 
 function isRemoteChannel(capabilities?: ChannelCapabilities): boolean {
   return capabilities?.channel === "teams" || capabilities?.channel === "bluebubbles";
@@ -197,9 +197,6 @@ export function summarizeArgs(name: string, args: Record<string, string>): strin
   // Base tools
   if (name === "read_file" || name === "write_file") return summarizeKeyValues(args, ["path"]);
   if (name === "shell") return summarizeKeyValues(args, ["command"]);
-  if (name === "list_directory") return summarizeKeyValues(args, ["path"]);
-  if (name === "git_commit") return summarizeKeyValues(args, ["message"]);
-  if (name === "gh_cli") return summarizeKeyValues(args, ["command"]);
   if (name === "load_skill") return summarizeKeyValues(args, ["name"]);
   if (name === "task_create") return summarizeKeyValues(args, ["title", "type", "category", "scheduledAt", "cadence"]);
   if (name === "schedule_reminder") return summarizeKeyValues(args, ["title", "scheduledAt", "cadence"]);

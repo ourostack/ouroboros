@@ -45,8 +45,6 @@ export interface ToolDefinition {
   confirmationRequired?: boolean;
 }
 
-const postIt = (msg: string) => `post-it from past you:\n${msg}`;
-
 function normalizeOptionalText(value: unknown): string | null {
   if (typeof value !== "string") return null
   const trimmed = value.trim()
@@ -121,86 +119,6 @@ export const baseToolDefinitions: ToolDefinition[] = [
     tool: {
       type: "function",
       function: {
-        name: "list_directory",
-        description: "list directory contents",
-        parameters: {
-          type: "object",
-          properties: { path: { type: "string" } },
-          required: ["path"],
-        },
-      },
-    },
-    handler: (a) =>
-      fs
-        .readdirSync(a.path, { withFileTypes: true })
-        .map((e) => `${e.isDirectory() ? "d" : "-"}  ${e.name}`)
-        .join("\n"),
-  },
-  {
-    tool: {
-      type: "function",
-      function: {
-        name: "git_commit",
-        description: "commit changes to git with explicit paths",
-        parameters: {
-          type: "object",
-          properties: {
-            message: { type: "string" },
-            paths: { type: "array", items: { type: "string" } },
-          },
-          required: ["message", "paths"],
-        },
-      },
-    },
-    handler: (a) => {
-      try {
-        if (!a.paths || !Array.isArray(a.paths) || a.paths.length === 0) {
-          return postIt("paths are required. specify explicit files to commit.");
-        }
-        for (const p of a.paths) {
-          if (!fs.existsSync(p)) {
-            return postIt(`path does not exist: ${p}`);
-          }
-          execSync(`git add ${p}`, { encoding: "utf-8" });
-        }
-        const diff = execSync("git diff --cached --stat", { encoding: "utf-8" });
-        if (!diff || diff.trim().length === 0) {
-          return postIt("nothing was staged. check your changes or paths.");
-        }
-        execSync(`git commit -m \"${a.message}\"`, { encoding: "utf-8" });
-        return `${diff}\ncommitted`;
-      } catch (e: unknown) {
-        return `failed: ${e}`;
-      }
-    },
-  },
-  {
-    tool: {
-      type: "function",
-      function: {
-        name: "gh_cli",
-        description: "execute a GitHub CLI (gh) command. use carefully.",
-        parameters: {
-          type: "object",
-          properties: {
-            command: { type: "string" },
-          },
-          required: ["command"],
-        },
-      },
-    },
-    handler: (a) => {
-      try {
-        return execSync(`gh ${a.command}`, { encoding: "utf-8", timeout: 60000 });
-      } catch (e: unknown) {
-        return `error: ${e}`;
-      }
-    },
-  },
-  {
-    tool: {
-      type: "function",
-      function: {
         name: "list_skills",
         description: "list all available skills",
         parameters: { type: "object", properties: {} },
@@ -228,21 +146,6 @@ export const baseToolDefinitions: ToolDefinition[] = [
         return `error: ${e}`;
       }
     },
-  },
-  {
-    tool: {
-      type: "function",
-      function: {
-        name: "get_current_time",
-        description: "get the current date and time in America/Los_Angeles (Pacific Time)",
-        parameters: { type: "object", properties: {} },
-      },
-    },
-    handler: () =>
-      new Date().toLocaleString("en-US", {
-        timeZone: "America/Los_Angeles",
-        hour12: false,
-      }),
   },
   {
     tool: {
