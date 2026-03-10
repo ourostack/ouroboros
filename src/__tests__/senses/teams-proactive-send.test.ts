@@ -509,6 +509,245 @@ describe("drainAndSendPendingTeams", () => {
     expect(botApi._mocks.conversationsCreate).not.toHaveBeenCalled()
   })
 
+  it("uses default pending root from getAgentRoot when not provided", async () => {
+    const friendStore = {
+      get: vi.fn(),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+    const botApi = makeBotApi()
+
+    const teams = await import("../../senses/teams")
+    // Call without pendingRoot -- should use default from getAgentRoot
+    const result = await teams.drainAndSendPendingTeams(friendStore as any, botApi)
+
+    expect(result.sent).toBe(0)
+    expect(result.skipped).toBe(0)
+    expect(result.failed).toBe(0)
+  })
+
+  it("skips unreadable key directories gracefully", async () => {
+    const friendStore = {
+      get: vi.fn(),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+    const botApi = makeBotApi()
+
+    // Create a file where a directory is expected (key path)
+    const teamsDir = path.join(pendingRoot, "friend-uuid-1", "teams")
+    fs.mkdirSync(teamsDir, { recursive: true })
+    fs.writeFileSync(path.join(teamsDir, "not-a-directory"), "oops")
+
+    const teams = await import("../../senses/teams")
+    const result = await teams.drainAndSendPendingTeams(friendStore as any, botApi, pendingRoot)
+
+    expect(result.sent).toBe(0)
+    expect(result.failed).toBe(0)
+  })
+
+  it("handles invalid JSON in pending file gracefully", async () => {
+    const friendStore = {
+      get: vi.fn(),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+    const botApi = makeBotApi()
+
+    const dir = path.join(pendingRoot, "friend-uuid-1", "teams", "session")
+    fs.mkdirSync(dir, { recursive: true })
+    const filePath = path.join(dir, `${Date.now()}-bad.json`)
+    fs.writeFileSync(filePath, "not valid json {{{")
+
+    const teams = await import("../../senses/teams")
+    const result = await teams.drainAndSendPendingTeams(friendStore as any, botApi, pendingRoot)
+
+    expect(result.failed).toBe(1)
+    expect(fs.existsSync(filePath)).toBe(false)
+  })
+
+  it("skips pending messages with empty content", async () => {
+    const friend = makeFriend()
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(friend),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+    const botApi = makeBotApi()
+
+    writePendingFile(pendingRoot, "friend-uuid-1", "session", {
+      from: "testagent",
+      friendId: "friend-uuid-1",
+      channel: "teams",
+      content: "   ",
+      timestamp: Date.now(),
+    })
+
+    const teams = await import("../../senses/teams")
+    const result = await teams.drainAndSendPendingTeams(friendStore as any, botApi, pendingRoot)
+
+    expect(result.skipped).toBe(1)
+    expect(botApi._mocks.conversationsCreate).not.toHaveBeenCalled()
+  })
+
+  it("skips pending messages with non-string content field", async () => {
+    const friendStore = {
+      get: vi.fn(),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+    const botApi = makeBotApi()
+
+    writePendingFile(pendingRoot, "friend-uuid-1", "session", {
+      from: "testagent",
+      friendId: "friend-uuid-1",
+      channel: "teams",
+      content: 12345,
+      timestamp: Date.now(),
+    })
+
+    const teams = await import("../../senses/teams")
+    const result = await teams.drainAndSendPendingTeams(friendStore as any, botApi, pendingRoot)
+
+    expect(result.skipped).toBe(1)
+  })
+
+  it("handles friend store get() throwing an error", async () => {
+    const friendStore = {
+      get: vi.fn().mockRejectedValue(new Error("disk read error")),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+    const botApi = makeBotApi()
+
+    writePendingFile(pendingRoot, "friend-uuid-1", "session", {
+      from: "testagent",
+      friendId: "friend-uuid-1",
+      channel: "teams",
+      content: "store will throw",
+      timestamp: Date.now(),
+    })
+
+    const teams = await import("../../senses/teams")
+    const result = await teams.drainAndSendPendingTeams(friendStore as any, botApi, pendingRoot)
+
+    expect(result.skipped).toBe(1)
+    expect(botApi._mocks.conversationsCreate).not.toHaveBeenCalled()
+  })
+
+  it("treats undefined trustLevel as disallowed", async () => {
+    const friend = makeFriend({ trustLevel: undefined as any })
+    delete (friend as any).trustLevel
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(friend),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+    const botApi = makeBotApi()
+
+    writePendingFile(pendingRoot, "friend-uuid-1", "session", {
+      from: "testagent",
+      friendId: "friend-uuid-1",
+      channel: "teams",
+      content: "trust undefined",
+      timestamp: Date.now(),
+    })
+
+    const teams = await import("../../senses/teams")
+    const result = await teams.drainAndSendPendingTeams(friendStore as any, botApi, pendingRoot)
+
+    expect(result.skipped).toBe(1)
+    expect(botApi._mocks.conversationsCreate).not.toHaveBeenCalled()
+  })
+
+  it("handles non-Error thrown from Bot Framework API", async () => {
+    const friend = makeFriend()
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(friend),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+    const botApi = makeBotApi()
+    botApi._mocks.conversationsCreate.mockRejectedValueOnce("string error thrown")
+
+    writePendingFile(pendingRoot, "friend-uuid-1", "session", {
+      from: "testagent",
+      friendId: "friend-uuid-1",
+      channel: "teams",
+      content: "this will fail with string throw",
+      timestamp: Date.now(),
+    })
+
+    const teams = await import("../../senses/teams")
+    const result = await teams.drainAndSendPendingTeams(friendStore as any, botApi, pendingRoot)
+
+    expect(result.failed).toBe(1)
+    expect(emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "senses.teams_proactive_send_error",
+        meta: expect.objectContaining({
+          reason: "string error thrown",
+        }),
+      }),
+    )
+  })
+
+  it("falls back to aadObjectId when friend has no name", async () => {
+    const friend = makeFriend({ name: "" })
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(friend),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+    const botApi = makeBotApi()
+
+    writePendingFile(pendingRoot, "friend-uuid-1", "session", {
+      from: "testagent",
+      friendId: "friend-uuid-1",
+      channel: "teams",
+      content: "nameless friend",
+      timestamp: Date.now(),
+    })
+
+    const teams = await import("../../senses/teams")
+    await teams.drainAndSendPendingTeams(friendStore as any, botApi, pendingRoot)
+
+    expect(botApi._mocks.conversationsCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        members: [expect.objectContaining({
+          name: "aad-object-id-alice",
+        })],
+      }),
+    )
+  })
+
   it("includes tenantId from the friend's AAD external ID in the conversation", async () => {
     const friend = makeFriend({
       externalIds: [

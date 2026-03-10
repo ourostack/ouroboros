@@ -2507,6 +2507,284 @@ describe("drainAndSendPendingBlueBubbles", () => {
     expect(mocks.sendText).not.toHaveBeenCalled()
   })
 
+  it("uses default pending root from getAgentRoot when not provided", async () => {
+    const friendStore = {
+      get: vi.fn(),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    // Call without pendingRoot -- should use default from getAgentRoot (which is mocked to /mock/agent/root)
+    // The default path /mock/agent/root/state/pending won't exist, so should return zeros
+    const result = await bluebubbles.drainAndSendPendingBlueBubbles({
+      createClient: () => ({
+        sendText: mocks.sendText,
+        editMessage: mocks.editMessage,
+        setTyping: mocks.setTyping,
+        markChatRead: mocks.markChatRead,
+        repairEvent: mocks.repairEvent,
+      }),
+      createFriendStore: () => friendStore as any,
+    })
+
+    expect(result.sent).toBe(0)
+    expect(result.skipped).toBe(0)
+    expect(result.failed).toBe(0)
+  })
+
+  it("skips unreadable key directories gracefully", async () => {
+    const friendStore = {
+      get: vi.fn(),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+
+    // Create a file where a directory is expected (key path)
+    const bbDir = path.join(pendingRoot, "friend-uuid-1", "bluebubbles")
+    fs.mkdirSync(bbDir, { recursive: true })
+    fs.writeFileSync(path.join(bbDir, "not-a-directory"), "oops")
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.drainAndSendPendingBlueBubbles({
+      createClient: () => ({
+        sendText: mocks.sendText,
+        editMessage: mocks.editMessage,
+        setTyping: mocks.setTyping,
+        markChatRead: mocks.markChatRead,
+        repairEvent: mocks.repairEvent,
+      }),
+      createFriendStore: () => friendStore as any,
+    }, pendingRoot)
+
+    expect(result.sent).toBe(0)
+    expect(result.failed).toBe(0)
+  })
+
+  it("handles invalid JSON in pending file gracefully", async () => {
+    const friendStore = {
+      get: vi.fn(),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+
+    // Write an invalid JSON file
+    const dir = path.join(pendingRoot, "friend-uuid-1", "bluebubbles", "session")
+    fs.mkdirSync(dir, { recursive: true })
+    const filePath = path.join(dir, `${Date.now()}-bad.json`)
+    fs.writeFileSync(filePath, "not valid json {{{")
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.drainAndSendPendingBlueBubbles({
+      createClient: () => ({
+        sendText: mocks.sendText,
+        editMessage: mocks.editMessage,
+        setTyping: mocks.setTyping,
+        markChatRead: mocks.markChatRead,
+        repairEvent: mocks.repairEvent,
+      }),
+      createFriendStore: () => friendStore as any,
+    }, pendingRoot)
+
+    expect(result.failed).toBe(1)
+    expect(fs.existsSync(filePath)).toBe(false)
+  })
+
+  it("skips pending messages with non-string content field", async () => {
+    const friend = makeFriend()
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(friend),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+
+    writePendingFile("friend-uuid-1", "session", {
+      from: "testagent",
+      friendId: "friend-uuid-1",
+      channel: "bluebubbles",
+      content: 12345,
+      timestamp: Date.now(),
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.drainAndSendPendingBlueBubbles({
+      createClient: () => ({
+        sendText: mocks.sendText,
+        editMessage: mocks.editMessage,
+        setTyping: mocks.setTyping,
+        markChatRead: mocks.markChatRead,
+        repairEvent: mocks.repairEvent,
+      }),
+      createFriendStore: () => friendStore as any,
+    }, pendingRoot)
+
+    expect(result.skipped).toBe(1)
+    expect(mocks.sendText).not.toHaveBeenCalled()
+  })
+
+  it("treats undefined trustLevel as disallowed", async () => {
+    const friend = makeFriend({ trustLevel: undefined as any })
+    // Ensure trustLevel is genuinely undefined
+    delete (friend as any).trustLevel
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(friend),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+
+    writePendingFile("friend-uuid-1", "session", {
+      from: "testagent",
+      friendId: "friend-uuid-1",
+      channel: "bluebubbles",
+      content: "trust undefined",
+      timestamp: Date.now(),
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.drainAndSendPendingBlueBubbles({
+      createClient: () => ({
+        sendText: mocks.sendText,
+        editMessage: mocks.editMessage,
+        setTyping: mocks.setTyping,
+        markChatRead: mocks.markChatRead,
+        repairEvent: mocks.repairEvent,
+      }),
+      createFriendStore: () => friendStore as any,
+    }, pendingRoot)
+
+    expect(result.skipped).toBe(1)
+    expect(mocks.sendText).not.toHaveBeenCalled()
+  })
+
+  it("handles non-Error thrown from sendText", async () => {
+    const friend = makeFriend()
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(friend),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+
+    mocks.sendText.mockRejectedValueOnce("string error thrown")
+
+    writePendingFile("friend-uuid-1", "session", {
+      from: "testagent",
+      friendId: "friend-uuid-1",
+      channel: "bluebubbles",
+      content: "this will fail with string throw",
+      timestamp: Date.now(),
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.drainAndSendPendingBlueBubbles({
+      createClient: () => ({
+        sendText: mocks.sendText,
+        editMessage: mocks.editMessage,
+        setTyping: mocks.setTyping,
+        markChatRead: mocks.markChatRead,
+        repairEvent: mocks.repairEvent,
+      }),
+      createFriendStore: () => friendStore as any,
+    }, pendingRoot)
+
+    expect(result.failed).toBe(1)
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "senses.bluebubbles_proactive_send_error",
+        meta: expect.objectContaining({
+          reason: "string error thrown",
+        }),
+      }),
+    )
+  })
+
+  it("skips pending messages with empty content", async () => {
+    const friend = makeFriend()
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(friend),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+
+    const filePath = writePendingFile("friend-uuid-1", "session", {
+      from: "testagent",
+      friendId: "friend-uuid-1",
+      channel: "bluebubbles",
+      content: "   ",
+      timestamp: Date.now(),
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.drainAndSendPendingBlueBubbles({
+      createClient: () => ({
+        sendText: mocks.sendText,
+        editMessage: mocks.editMessage,
+        setTyping: mocks.setTyping,
+        markChatRead: mocks.markChatRead,
+        repairEvent: mocks.repairEvent,
+      }),
+      createFriendStore: () => friendStore as any,
+    }, pendingRoot)
+
+    expect(result.skipped).toBe(1)
+    expect(mocks.sendText).not.toHaveBeenCalled()
+    expect(fs.existsSync(filePath)).toBe(false)
+  })
+
+  it("handles friend store get() throwing an error", async () => {
+    const friendStore = {
+      get: vi.fn().mockRejectedValue(new Error("disk read error")),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+
+    writePendingFile("friend-uuid-1", "session", {
+      from: "testagent",
+      friendId: "friend-uuid-1",
+      channel: "bluebubbles",
+      content: "store will throw",
+      timestamp: Date.now(),
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.drainAndSendPendingBlueBubbles({
+      createClient: () => ({
+        sendText: mocks.sendText,
+        editMessage: mocks.editMessage,
+        setTyping: mocks.setTyping,
+        markChatRead: mocks.markChatRead,
+        repairEvent: mocks.repairEvent,
+      }),
+      createFriendStore: () => friendStore as any,
+    }, pendingRoot)
+
+    expect(result.skipped).toBe(1)
+    expect(mocks.sendText).not.toHaveBeenCalled()
+  })
+
   it("picks the first non-group iMessage handle when friend has multiple externalIds", async () => {
     const friend = makeFriend({
       externalIds: [
