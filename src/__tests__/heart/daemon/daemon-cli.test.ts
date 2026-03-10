@@ -269,6 +269,22 @@ describe("ouro CLI parsing", () => {
     expect(() => parseOuroCommand(["reminder", "unknown"])).toThrow("Usage")
   })
 
+  it("parses whoami and session subcommands", () => {
+    // ouro whoami
+    expect(parseOuroCommand(["whoami"])).toEqual({ kind: "whoami" })
+
+    // ouro session list
+    expect(parseOuroCommand(["session", "list"])).toEqual({ kind: "session.list" })
+  })
+
+  it("rejects malformed session subcommands", () => {
+    // bare "session" with no subcommand
+    expect(() => parseOuroCommand(["session"])).toThrow("Usage")
+
+    // unknown session subcommand
+    expect(() => parseOuroCommand(["session", "unknown"])).toThrow("Usage")
+  })
+
   it("parses friend subcommands", () => {
     // ouro friend list
     expect(parseOuroCommand(["friend", "list"])).toEqual({ kind: "friend.list" })
@@ -3479,5 +3495,63 @@ describe("ouro friend CLI execution", () => {
 
     expect(result).toContain("not found")
     expect(mockFriendStore.get).toHaveBeenCalledWith("nonexistent")
+  })
+})
+
+describe("ouro whoami and session list CLI execution", () => {
+  function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
+    return {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+      ...overrides,
+    }
+  }
+
+  it("ouro whoami returns agent identity info", async () => {
+    const deps = makeDeps({
+      whoamiInfo: vi.fn(() => ({
+        agentName: "slugger",
+        homePath: "/Users/ari/AgentBundles/slugger.ouro",
+        bonesVersion: "0.1.0-alpha.31",
+      })),
+    })
+    const result = await runOuroCli(["whoami"], deps)
+
+    expect(result).toContain("slugger")
+    expect(result).toContain("/Users/ari/AgentBundles/slugger.ouro")
+    expect(result).toContain("0.1.0-alpha.31")
+    expect(deps.sendCommand).not.toHaveBeenCalled()
+  })
+
+  it("ouro session list returns sessions from scanner", async () => {
+    const deps = makeDeps({
+      scanSessions: vi.fn(async () => [
+        { friendId: "friend-1", friendName: "Ari", channel: "cli", lastActivity: "2026-03-09T12:00:00.000Z" },
+        { friendId: "self", friendName: "self", channel: "inner", lastActivity: "2026-03-09T11:00:00.000Z" },
+      ]),
+    })
+    const result = await runOuroCli(["session", "list"], deps)
+
+    expect(result).toContain("friend-1")
+    expect(result).toContain("Ari")
+    expect(result).toContain("cli")
+    expect(result).toContain("self")
+    expect(result).toContain("inner")
+    expect(deps.sendCommand).not.toHaveBeenCalled()
+  })
+
+  it("ouro session list returns empty message when no sessions", async () => {
+    const deps = makeDeps({
+      scanSessions: vi.fn(async () => []),
+    })
+    const result = await runOuroCli(["session", "list"], deps)
+
+    expect(result).toContain("no active sessions")
   })
 })
