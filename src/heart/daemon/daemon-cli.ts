@@ -6,6 +6,7 @@ import * as path from "path"
 import { getAgentBundlesRoot, getRepoRoot, type AgentProvider } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { FileFriendStore } from "../../mind/friends/store-file"
+import type { FriendStore } from "../../mind/friends/store"
 import { isIdentityProvider, type IdentityProvider } from "../../mind/friends/types"
 import type { DaemonCommand, DaemonResponse } from "./daemon"
 import { registerOuroBundleUti as defaultRegisterOuroBundleUti } from "./ouro-uti"
@@ -50,6 +51,8 @@ export type OuroCliCommand =
   | { kind: "task.deps" }
   | { kind: "task.sessions" }
   | { kind: "reminder.create"; title: string; body: string; scheduledAt?: string; cadence?: string; category?: string }
+  | { kind: "friend.list" }
+  | { kind: "friend.show"; friendId: string }
   | { kind: "friend.link"; agent: string; friendId: string; provider: IdentityProvider; externalId: string }
   | { kind: "hatch.start"; agentName?: string; humanName?: string; provider?: AgentProvider; credentials?: HatchCredentialsInput; migrationPath?: string }
 
@@ -73,6 +76,7 @@ export interface OuroCliDeps {
   startChat?: (agentName: string) => Promise<void>
   tailLogs?: (options?: { follow?: boolean; lines?: number; agentFilter?: string }) => () => void
   taskModule?: TaskModule
+  friendStore?: FriendStore
 }
 
 export interface EnsureDaemonResult {
@@ -297,6 +301,8 @@ function usage(): string {
     "  ouro task show <id>",
     "  ouro task actionable|deps|sessions",
     "  ouro reminder create <title> --body <body> [--at <iso>] [--cadence <interval>] [--category <category>]",
+    "  ouro friend list",
+    "  ouro friend show <id>",
   ].join("\n")
 }
 
@@ -599,6 +605,21 @@ function parseReminderCommand(args: string[]): OuroCliCommand {
   throw new Error(`Usage\n${usage()}`)
 }
 
+function parseFriendCommand(args: string[]): OuroCliCommand {
+  const [sub, ...rest] = args
+  if (!sub) throw new Error(`Usage\n${usage()}`)
+
+  if (sub === "list") return { kind: "friend.list" }
+
+  if (sub === "show") {
+    const friendId = rest[0]
+    if (!friendId) throw new Error(`Usage\n${usage()}`)
+    return { kind: "friend.show", friendId }
+  }
+
+  throw new Error(`Usage\n${usage()}`)
+}
+
 export function parseOuroCommand(args: string[]): OuroCliCommand {
   const [head, second] = args
   if (!head) return { kind: "daemon.up" }
@@ -610,6 +631,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "hatch") return parseHatchCommand(args.slice(1))
   if (head === "task") return parseTaskCommand(args.slice(1))
   if (head === "reminder") return parseReminderCommand(args.slice(1))
+  if (head === "friend") return parseFriendCommand(args.slice(1))
   if (head === "chat") {
     if (!second) throw new Error(`Usage\n${usage()}`)
     return { kind: "chat.connect", agent: second }
@@ -1085,7 +1107,7 @@ export function createDefaultOuroCliDeps(socketPath = "/tmp/ouroboros-daemon.soc
   }
 }
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "friend.link" } | { kind: "hatch.start" } | TaskCliCommand | ReminderCliCommand>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "friend.link" } | { kind: "hatch.start" } | TaskCliCommand | ReminderCliCommand | FriendCliCommand>): DaemonCommand {
   return command
 }
 
@@ -1198,6 +1220,7 @@ type TaskCliCommand = Extract<OuroCliCommand,
 >
 
 type ReminderCliCommand = Extract<OuroCliCommand, { kind: "reminder.create" }>
+type FriendCliCommand = Extract<OuroCliCommand, { kind: "friend.list" } | { kind: "friend.show" }>
 
 function executeTaskCommand(command: TaskCliCommand, taskMod: TaskModule): string {
   if (command.kind === "task.board") {
@@ -1262,6 +1285,26 @@ function executeTaskCommand(command: TaskCliCommand, taskMod: TaskModule): strin
   // command.kind === "task.sessions"
   const lines = taskMod.boardSessions()
   return lines.length > 0 ? lines.join("\n") : "no active sessions"
+}
+
+async function executeFriendCommand(command: FriendCliCommand, store: FriendStore): Promise<string> {
+  if (command.kind === "friend.list") {
+    const listAll = store.listAll
+    if (!listAll) return "friend store does not support listing"
+    const friends = await listAll.call(store)
+    if (friends.length === 0) return "no friends found"
+
+    const lines = friends.map((f) => {
+      const trust = f.trustLevel ?? "unknown"
+      return `${f.id}  ${f.name}  ${trust}`
+    })
+    return lines.join("\n")
+  }
+
+  // command.kind === "friend.show"
+  const record = await store.get(command.friendId)
+  if (!record) return `friend not found: ${command.friendId}`
+  return JSON.stringify(record, null, 2)
 }
 
 function executeReminderCommand(command: ReminderCliCommand, taskMod: TaskModule): string {
@@ -1417,6 +1460,16 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     const taskMod = deps.taskModule ?? getTaskModule()
     /* v8 ignore stop */
     const message = executeReminderCommand(command, taskMod)
+    deps.writeStdout(message)
+    return message
+  }
+
+  // ── friend subcommands (local, no daemon socket needed) ──
+  if (command.kind === "friend.list" || command.kind === "friend.show") {
+    /* v8 ignore start -- production default: requires full identity setup @preserve */
+    const store = deps.friendStore ?? new FileFriendStore(path.join(getAgentBundlesRoot(), "friends"))
+    /* v8 ignore stop */
+    const message = await executeFriendCommand(command, store)
     deps.writeStdout(message)
     return message
   }
