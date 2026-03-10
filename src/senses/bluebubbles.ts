@@ -18,6 +18,7 @@ import {
 } from "./bluebubbles-model"
 import { createBlueBubblesClient, type BlueBubblesClient } from "./bluebubbles-client"
 import { recordBlueBubblesMutation } from "./bluebubbles-mutation-log"
+import { cleanupObsoleteBlueBubblesThreadSessions } from "./bluebubbles-session-cleanup"
 import { createDebugActivityController } from "./debug-activity"
 
 type BlueBubblesCallbacks = ChannelCallbacks & {
@@ -340,6 +341,20 @@ export async function handleBlueBubblesEvent(
 
   const friendId = context.friend.id
   const sessPath = resolvedDeps.sessionPath(friendId, "bluebubbles", event.chat.sessionKey)
+  try {
+    cleanupObsoleteBlueBubblesThreadSessions(sessPath)
+  } catch (error) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.bluebubbles_thread_lane_cleanup_error",
+      message: "failed to clean up obsolete bluebubbles thread-lane sessions",
+      meta: {
+        sessionPath: sessPath,
+        reason: error instanceof Error ? error.message : String(error),
+      },
+    })
+  }
   const existing = resolvedDeps.loadSession(sessPath)
   const messages: OpenAI.ChatCompletionMessageParam[] =
     existing?.messages && existing.messages.length > 0
