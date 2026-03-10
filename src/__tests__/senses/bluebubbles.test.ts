@@ -1146,9 +1146,7 @@ describe("BlueBubbles sense runtime", () => {
 
   it("surfaces string-thrown activity transport failures explicitly", async () => {
     mocks.sendText
-      .mockResolvedValueOnce({ messageGuid: "status-guid" })
       .mockRejectedValueOnce("status send failure")
-      .mockResolvedValueOnce({ messageGuid: "final-guid" })
     mocks.runAgent.mockImplementationOnce(async (_messages, callbacks) => {
       callbacks.onModelStart()
       callbacks.onToolStart("read_file", { path: "notes.txt" })
@@ -1177,9 +1175,7 @@ describe("BlueBubbles sense runtime", () => {
 
   it("surfaces Error-thrown activity transport failures explicitly too", async () => {
     mocks.sendText
-      .mockResolvedValueOnce({ messageGuid: "status-guid" })
       .mockRejectedValueOnce(new Error("status send error object"))
-      .mockResolvedValueOnce({ messageGuid: "final-guid" })
     mocks.runAgent.mockImplementationOnce(async (_messages, callbacks) => {
       callbacks.onModelStart()
       callbacks.onToolStart("read_file", { path: "notes.txt" })
@@ -1461,11 +1457,6 @@ describe("BlueBubbles sense runtime", () => {
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
 
     expect(mocks.buildSystem).not.toHaveBeenCalled()
-    expect(mocks.sendText).toHaveBeenCalledWith(
-      expect.objectContaining({
-        text: "thinking...",
-      }),
-    )
     expect(mocks.sendText).toHaveBeenCalledWith(
       expect.objectContaining({
         text: "running query_session...",

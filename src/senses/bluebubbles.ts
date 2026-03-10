@@ -243,6 +243,8 @@ function createBlueBubblesCallbacks(
   const activity = createDebugActivityController({
     thinkingPhrases: phrases.thinking,
     followupPhrases: phrases.followup,
+    startTypingOnModelStart: true,
+    suppressInitialModelStatus: true,
     transport: {
       sendStatus: async (text: string) => {
         const sent = await client.sendText({

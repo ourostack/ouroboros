@@ -13,6 +13,7 @@ export interface DebugActivityOptions {
   followupPhrases: readonly string[]
   transport: DebugActivityTransport
   startTypingOnModelStart?: boolean
+  suppressInitialModelStatus?: boolean
   onTransportError?: (operation: string, error: unknown) => void
 }
 
@@ -103,6 +104,10 @@ export function createDebugActivityController(options: DebugActivityOptions): De
       const pool = hadToolRun ? options.followupPhrases : options.thinkingPhrases
       if (options.startTypingOnModelStart) {
         startTypingNow()
+      }
+      if (options.suppressInitialModelStatus && !statusMessageGuid && !hadToolRun) {
+        nextPhrase(pool)
+        return
       }
       setStatus(`${nextPhrase(pool)}...`)
     },
