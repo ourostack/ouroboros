@@ -678,14 +678,20 @@ export const baseToolDefinitions: ToolDefinition[] = [
       const key = args.key || "session"
       const content = args.content
       const now = Date.now()
+      const agentName = getAgentName()
 
-      const pendingDir = getPendingDir(getAgentName(), friendId, channel, key)
+      // Self-routing: messages to "self" always go to inner dialog pending dir,
+      // regardless of the channel or key the agent specified.
+      const isSelf = friendId === "self"
+      const pendingDir = isSelf
+        ? getPendingDir(agentName, "self", "inner", "dialog")
+        : getPendingDir(agentName, friendId, channel, key)
       fs.mkdirSync(pendingDir, { recursive: true })
 
       const fileName = `${now}-${Math.random().toString(36).slice(2, 10)}.json`
       const filePath = path.join(pendingDir, fileName)
       const envelope = {
-        from: getAgentName(),
+        from: agentName,
         friendId,
         channel,
         key,
@@ -694,7 +700,8 @@ export const baseToolDefinitions: ToolDefinition[] = [
       }
       fs.writeFileSync(filePath, JSON.stringify(envelope, null, 2))
       const preview = content.length > 80 ? content.slice(0, 80) + "…" : content
-      return `message queued for delivery to ${friendId} on ${channel}/${key}. preview: "${preview}". it will be delivered when their session is next active.`
+      const target = isSelf ? "inner/dialog" : `${channel}/${key}`
+      return `message queued for delivery to ${friendId} on ${target}. preview: "${preview}". it will be delivered when their session is next active.`
     },
   },
   ...codingToolDefinitions,
