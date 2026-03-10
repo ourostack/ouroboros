@@ -765,7 +765,7 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.sessionPath).toHaveBeenCalledWith(
       "group-uuid",
       "bluebubbles",
-      "chat:any;+;35820e69c97c459992d29a334f412979:thread:3E02B90F-D374-4381-BDD2-3572D3EB1195",
+      "chat:any;+;35820e69c97c459992d29a334f412979",
     )
     expect(mocks.runAgent.mock.calls[0]?.[0]).toEqual(
       expect.arrayContaining([
