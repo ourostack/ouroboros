@@ -1,69 +1,87 @@
-# Cross-Agent Testing Conventions
+# Testing Conventions
 
-This document defines mandatory testing conventions shared by all agents working in this repository.
+These are the shared testing rules for code changes in this repo.
 
-## 1. Coverage Policy (Mandatory)
+## Coverage Policy
 
-- Coverage thresholds are enforced at `100` for `lines`, `branches`, `functions`, and `statements` in `vitest.config.ts`.
-- Do not lower thresholds.
-- New and modified code must maintain 100% coverage.
-- If threshold enforcement surfaces uncovered legacy paths, backfill tests in the same workstream before completion.
+Coverage is enforced at `100%` for:
 
-## 2. Required Commands
+- statements
+- branches
+- functions
+- lines
 
-Run these before marking implementation work complete:
+Do not lower thresholds. If a change touches code, the changed behavior needs complete coverage.
+
+## Required Commands
+
+For runtime code changes, keep these green:
 
 ```bash
 npm test
+npx tsc --noEmit
 npm run test:coverage
-npm run build
 ```
 
-All three must pass with no warnings.
+Treat warnings as problems to fix, not background noise.
 
-## 3. TDD Flow (Strict)
+## TDD Rule
+
+Use strict red -> green -> refactor.
 
 1. Write or update tests first.
-2. Run tests and confirm failure when introducing new behavior (red).
-3. Implement the smallest change to pass tests (green).
-4. Refactor while keeping tests green.
-5. Re-run coverage and build checks.
+2. Run them and confirm the new behavior is not already passing by accident.
+3. Implement the smallest change that makes them pass.
+4. Refactor while staying green.
+5. Re-run the full required commands.
 
-Do not bypass red/green validation by writing implementation first.
+## Mocking Rule
 
-## 4. Mocking Conventions
+- Mock network boundaries and external SDK behavior.
+- Keep tests deterministic.
+- Prefer the existing local test patterns in `src/__tests__/`.
+- Reset cached config/runtime state between tests when the code under test depends on it.
 
-- Mock external systems (network, SDK boundaries, filesystem side effects where appropriate).
-- Keep tests deterministic; no real network calls.
-- Prefer module-level mocks consistent with existing test patterns.
-- For configuration-sensitive modules, isolate state between tests.
+## Runtime Observability Rule
 
-## 5. CI Coverage Gate Contract
+Testing here is not only about return values. New production paths must also participate correctly in the nerves audit model.
 
-- CI must execute `npm run test:coverage` for pull requests and main-branch integration.
-- A coverage threshold failure must fail the CI job.
-- Workflow definition lives in `.github/workflows/coverage.yml` unless explicitly replaced by an equivalent single-source workflow.
+That means:
 
-## 6. Artifact Expectations for Doing Units
+- production code emits nerves events
+- tests observe those events
+- source coverage and start/end pairing stay valid
 
-Each unit should leave auditable evidence in its task artifacts directory:
+## Doing-Doc Evidence
 
-- Red/green logs (`*.log`) for test and coverage runs.
-- Notes describing decisions, gap analysis, and verification outcomes.
-- Final verification checklist mapping completion criteria to evidence.
+When working through a doing doc, keep auditable evidence in the task’s adjacent artifacts directory under the owning bundle.
 
-## 7. Completion Verification Checklist
+Typical evidence:
 
-Before declaring a task complete:
+- failing-test logs
+- green-test logs
+- coverage logs
+- notes that explain validation decisions
 
-- [ ] All planned units are marked complete in the doing doc.
-- [ ] `npm test` passes.
-- [ ] `npm run test:coverage` passes.
-- [ ] `npm run build` passes.
-- [ ] CI workflow gating coverage is present and valid.
-- [ ] `CONTRIBUTING.md` links to this document as the detailed testing reference.
+## Completion Checklist
 
-## 8. Ownership and Applicability
+Before calling runtime work complete:
 
-- This is a shared policy for all agents.
-- Agent-specific process details can extend this, but cannot relax these requirements.
+- [ ] approved doing doc units are complete
+- [ ] `npm test` passes
+- [ ] `npx tsc --noEmit` passes
+- [ ] `npm run test:coverage` passes
+- [ ] new or changed code is fully covered
+- [ ] runtime observability contracts remain valid
+
+## Documentation-Only Changes
+
+For docs-only work, the main requirement is truthfulness.
+
+That usually means:
+
+- fix or remove stale claims
+- run targeted stale-reference searches over touched docs
+- make sure the docs match the current code and workflow
+
+If you changed runtime code and docs together, follow the full runtime test rules above.

@@ -1,118 +1,95 @@
-# Cross-Agent Sync-and-Merge Conventions
+# Sync And Merge Conventions
 
-This document defines mandatory sync-and-merge conventions shared by all agents working in this repository.
+This document describes the shared merge behavior expected in this repo.
 
-## 1. Branch Naming (Mandatory)
+## Branch Naming
 
-All agents use the `<agent>/<slug>` branch naming convention:
+Use the `<agent>/<slug>` convention:
 
-- `ouroboros/context-kernel` -- ouroboros working on context kernel
-- `slugger/api-client` -- slugger working on API client
-- `ouroboros` -- ouroboros general work (no slug)
+- `ouroboros/runtime-metadata`
+- `slugger/bluebubbles-ax`
 
-The first path segment is always the agent name. Do not hardcode agent names -- derive the agent from the branch at runtime.
+Do not create new `codex/<agent>` branches.
 
-The old `codex/<agent>` prefix convention is deprecated. Do not use it for new branches.
+## Merge Strategy
 
-## 2. Merge Strategy
+- Merge to `main` through pull requests.
+- Use merge commits, not squash or rebase, unless project policy explicitly changes.
+- Do not push directly to `main`.
 
-- Use **merge commits** (not rebase, not squash). This preserves branch history and makes it clear what came from which branch.
-- All merges to main happen through pull requests. Never push directly to main.
-- The `work-merger` sub-agent handles the merge workflow after `work-doer` completes.
+## Task-Doc Truth
 
-## 3. PR-Based Merge Flow
+Task docs are bundle-owned now. Do not assume they live in this repo.
 
-The merge workflow is:
+The project-defined location is:
 
-1. `work-doer` finishes all units on the feature branch
-2. `work-merger` runs:
-   - Fetches `origin/main`
-   - Merges `origin/main` into the feature branch
-   - Resolves conflicts using task doc context
-   - Runs tests locally (`npm test`)
-   - Pushes the branch
-   - Creates a PR via `gh pr create`
-3. CI runs on the PR
-4. If CI passes, `work-merger` merges the PR via `gh pr merge --merge`
-5. Feature branch is deleted (local and remote)
+`~/AgentBundles/<agent>.ouro/tasks/one-shots/`
 
-## 4. Conflict Resolution Using Task Docs
+Planner/doer/merger should read `AGENTS.md` to discover that location rather than hardcoding it.
 
-When merge conflicts occur, the agent resolves them by understanding both intents:
+## Conflict Resolution
 
-1. **Read own doing doc**: Understand what this branch implemented
-2. **Git-informed discovery**: Use `git log origin/main --not HEAD -- '*/tasks/*-doing-*.md'` to find doing docs that landed on main since the branch point
-3. **Read discovered docs**: Understand what the other agent changed and why
-4. **Resolve preserving both intents**: Both agents' work must be present in the final result
+When main has moved since the feature branch split:
 
-Do not use filename timestamps to discover task docs. Use git history -- it is deterministic and correct.
+1. Read your own doing doc to understand your branch’s intent.
+2. Use git history and diffs to understand what landed on `main`.
+3. Optionally read other local task docs only if they materially clarify a conflict.
+4. Resolve conflicts by preserving both intents whenever possible.
 
-## 5. Race Condition Retry
+Primary git inputs:
 
-If main moves while the merge is in progress (the other agent merged first):
+```bash
+git fetch origin main
+git log origin/main --not HEAD --oneline
+git diff --name-only HEAD...origin/main
+```
 
-- **Exponential backoff**: Start at 30 seconds, double each time (30s, 1m, 2m, 4m, ...). No retry limit.
-- **On each retry**: Re-fetch `origin/main`, re-merge, re-resolve conflicts using task docs, run tests, force-push (`--force-with-lease`).
-- **User communication required**: On every retry, clearly report the retry number, wait duration, and reason (e.g., "Main moved again. Retry #3, waiting 2 minutes before re-fetching. Other agent is active.").
-- **Never retry silently**. The user wants visibility even when no intervention is needed.
+Do not rely on repo-local task-doc globbing. That old model is gone.
 
-## 6. CI Failure Self-Repair
+## PR Workflow
 
-When CI fails on the PR:
+After the branch is synced and tests pass:
 
-- The agent attempts to fix the failure itself first. It wrote the code (or resolved the merge) and has full task context.
-- Common fixable issues: test failures, lint errors, type-check errors, coverage drops, build failures.
-- After fixing, push and let CI re-run.
-- Escalate to the user only after **two consecutive failed self-repair attempts** on the same failure.
+1. push the feature branch
+2. create a PR
+3. wait for CI
+4. self-repair fixable CI failures
+5. merge to `main`
+6. clean up the feature branch
 
-## 7. Post-Merge Cleanup
+PR descriptions should summarize the actual shipped change, not just paste work-unit names.
 
-After the PR is merged to main:
+## CI Failure Handling
 
-1. Switch to main and pull: `git checkout main && git pull origin main`
-2. Delete local branch: `git branch -d <branch>`
-3. Delete remote branch: `git push origin --delete <branch>` (if not already deleted by `--delete-branch`)
+The merge agent should attempt self-repair first for:
 
-## 8. Escalation Rules
+- test failures
+- type-check failures
+- coverage failures
+- merge-break regressions
 
-**Agent fixes (do not escalate):**
-- Test, lint, build, coverage failures
-- Merge conflicts resolvable from task docs
-- `gh repo set-default` not configured
-- Race conditions (retry with backoff)
+Escalate only when:
 
-**Escalate to user (STOP and ask):**
-- Genuinely ambiguous conflicts where task docs do not clarify intent
-- Repeated CI failures after two self-repair attempts
-- `gh` not installed or not authenticated
-- No GitHub remote configured
+- the intent is genuinely ambiguous
+- `gh` is unavailable or unauthenticated
+- there is no GitHub remote
+- repeated repair attempts still do not converge
 
-## 9. `gh` CLI Preflight
+## Post-Merge Cleanup
 
-Before any PR operations, verify:
+After merge:
 
-1. `gh` is installed (`which gh`)
-2. `gh auth status` passes
-3. A GitHub remote exists (`git remote -v`)
-4. `gh repo set-default` is configured (self-fix if not)
+```bash
+git checkout main
+git pull origin main
+git branch -d <branch>
+git push origin --delete <branch>
+```
 
-Self-fixable issues (agent handles): repo default not set. Human-required issues (escalate): `gh` not installed, not authenticated, no GitHub remote.
+## Source Of Truth
 
-## 10. Branch Protection
+The detailed executable workflow lives in:
 
-GitHub branch protection is enabled on `main` with the following rules:
+- `subagents/work-merger.md`
 
-- **Require pull request before merging** (no direct pushes)
-- **Require status checks to pass** (specifically the `coverage` check, with `strict: true` — branch must be up to date)
-- **Block force pushes** to main
-- **Block branch deletion** of main
-- **Enforce on admins: on** — rules apply to everyone, including repo admins (coding agents push as the owner)
-
-Formal GitHub approval is not required (all agents authenticate as the same user, and GitHub prevents self-approval). Instead, work-merger performs a pre-merge sanity check against the doing doc and posts findings as a PR comment before merging.
-
-## 11. Ownership and Applicability
-
-- This is a shared policy for all agents.
-- Agent-specific process details can extend this, but cannot relax these requirements.
-- The authoritative implementation is in `subagents/work-merger.md`.
-- `CONTRIBUTING.md` and `AGENTS.md` reference this document for the detailed policy.
+This doc exists to keep the repo-level policy discoverable, concise, and current.
