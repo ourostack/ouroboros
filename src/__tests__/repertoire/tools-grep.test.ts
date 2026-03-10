@@ -244,4 +244,54 @@ describe("grep tool", () => {
       expect(ml.startsWith("-")).toBe(false)
     }
   })
+
+  it("handles unreadable files gracefully (searchFile catch branch)", async () => {
+    const filePath = path.join(tmpDir, "unreadable.txt")
+    fs.writeFileSync(filePath, "content", "utf-8")
+    fs.chmodSync(filePath, 0o000)
+
+    const handler = getGrepHandler()
+    const result = await handler({ pattern: "content", path: filePath })
+
+    // Should return empty (catch branch returns []), not throw
+    expect(result.trim()).toBe("")
+
+    // Restore permissions for cleanup
+    fs.chmodSync(filePath, 0o644)
+  })
+
+  it("handles unreadable subdirectories gracefully (walk catch branch)", async () => {
+    const subDir = path.join(tmpDir, "unreadable-dir")
+    fs.mkdirSync(subDir)
+    fs.writeFileSync(path.join(tmpDir, "readable.txt"), "findme\n", "utf-8")
+    fs.chmodSync(subDir, 0o000)
+
+    const handler = getGrepHandler()
+    const result = await handler({ pattern: "findme", path: tmpDir })
+
+    // Should find the readable file and skip the unreadable dir
+    expect(result).toContain("readable.txt")
+
+    // Restore permissions for cleanup
+    fs.chmodSync(subDir, 0o755)
+  })
+
+  it("returns empty string when path does not exist (statSync returns null)", async () => {
+    const handler = getGrepHandler()
+    const result = await handler({ pattern: "anything", path: path.join(tmpDir, "nonexistent") })
+
+    expect(result).toBe("")
+  })
+
+  it("skips entries that are neither files nor directories (e.g. symlinks to nonexistent targets)", async () => {
+    fs.writeFileSync(path.join(tmpDir, "real.txt"), "findme\n", "utf-8")
+    // Create a symlink to a non-existent target -- it will report isFile()=false, isDirectory()=false
+    fs.symlinkSync(path.join(tmpDir, "nonexistent-target"), path.join(tmpDir, "broken-link"))
+
+    const handler = getGrepHandler()
+    const result = await handler({ pattern: "findme", path: tmpDir })
+
+    // Should find the real file and skip the broken symlink
+    expect(result).toContain("real.txt")
+  })
 })

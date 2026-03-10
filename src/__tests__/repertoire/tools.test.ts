@@ -697,6 +697,10 @@ describe("summarizeArgs", () => {
     expect(summarizeArgs("edit_file", { path: "/tmp/edit.txt", old_string: "x", new_string: "y" })).toBe("path=/tmp/edit.txt")
   })
 
+  it("returns pattern and path for grep", () => {
+    expect(summarizeArgs("grep", { pattern: "log.*Error", path: "/src", include: "*.ts" })).toBe("pattern=log.*Error path=/src include=*.ts")
+  })
+
   it("returns short command for shell", () => {
     expect(summarizeArgs("shell", { command: "echo hi" })).toBe("command=echo hi")
   })
