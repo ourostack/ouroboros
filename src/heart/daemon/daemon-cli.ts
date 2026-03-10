@@ -1337,7 +1337,9 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   if (command.kind === "task.board" || command.kind === "task.create" || command.kind === "task.update" ||
       command.kind === "task.show" || command.kind === "task.actionable" || command.kind === "task.deps" ||
       command.kind === "task.sessions") {
+    /* v8 ignore start -- production default: requires full identity setup @preserve */
     const taskMod = deps.taskModule ?? getTaskModule()
+    /* v8 ignore stop */
     const message = executeTaskCommand(command, taskMod)
     deps.writeStdout(message)
     return message

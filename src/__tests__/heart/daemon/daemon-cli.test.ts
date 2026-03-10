@@ -154,6 +154,12 @@ describe("ouro CLI parsing", () => {
       title: "Quick Task",
     })
 
+    // ouro task create <title> --type without value (ignores incomplete flag)
+    expect(parseOuroCommand(["task", "create", "Quick Task", "--type"])).toEqual({
+      kind: "task.create",
+      title: "Quick Task",
+    })
+
     // ouro task update <id> <status>
     expect(parseOuroCommand(["task", "update", "task-123", "in-progress"])).toEqual({
       kind: "task.update",
@@ -3010,6 +3016,17 @@ describe("ouro task CLI execution", () => {
     expect(result).toContain("error: invalid transition")
   })
 
+  it("ouro task update uses default failure reason when module omits one", async () => {
+    mockTaskModule.updateStatus.mockReturnValueOnce({
+      ok: false,
+      from: "drafting",
+      to: "done",
+    })
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "update", "my-task", "done"], deps)
+    expect(result).toContain("error: status update failed")
+  })
+
   it("ouro task update includes archive details", async () => {
     mockTaskModule.updateStatus.mockReturnValueOnce({
       ok: true,
@@ -3044,6 +3061,29 @@ describe("ouro task CLI execution", () => {
     expect(result).toContain("processing")
     expect(result).toContain("one-shot")
     expect(mockTaskModule.getTask).toHaveBeenCalledWith("my-task")
+  })
+
+  it("ouro task show formats task with empty body (no trailing body section)", async () => {
+    mockTaskModule.getTask.mockReturnValueOnce({
+      path: "/mock/tasks/one-shots/2026-03-09-my-task.md",
+      name: "2026-03-09-my-task.md",
+      stem: "2026-03-09-my-task",
+      type: "one-shot",
+      collection: "one-shots",
+      category: "infrastructure",
+      title: "My Task",
+      status: "drafting",
+      created: "2026-03-09",
+      updated: "2026-03-09",
+      frontmatter: {},
+      body: "",
+    })
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "show", "my-task"], deps)
+    expect(result).toContain("My Task")
+    expect(result).toContain("drafting")
+    // Empty body should not produce a trailing newline section
+    expect(result).not.toContain("\n\n")
   })
 
   it("ouro task show returns not-found when task does not exist", async () => {
