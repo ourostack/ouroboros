@@ -233,7 +233,7 @@ describe("buildSystem", () => {
     const result = await buildSystem("cli")
     expect(result).toContain("i introduce myself on boot")
     expect(result).toContain("testagent") // agent name from identity mock
-    expect(result).toContain("i can read and modify my own source code")
+    expect(result).toContain("## my body") // body map replaces old one-liner
   })
 
   it("includes runtime info section for teams channel", async () => {
@@ -868,7 +868,7 @@ describe("runtimeInfoSection", () => {
     expect(result).toContain(process.cwd())
   })
 
-  it("includes note about self-modification", async () => {
+  it("no longer includes old self-modification one-liner (replaced by body map)", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
@@ -876,7 +876,7 @@ describe("runtimeInfoSection", () => {
     const { runtimeInfoSection, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = runtimeInfoSection("cli")
-    expect(result).toContain("i can read and modify my own source code")
+    expect(result).not.toContain("i can read and modify my own source code")
   })
 
   it("cli channel includes boot greeting", async () => {
@@ -2146,5 +2146,92 @@ describe("buildSystem with context", () => {
     resetPsycheCache()
     const result = await buildSystem("cli")
     expect(result).not.toContain("this is my inner dialog. there is no one else here.")
+  })
+
+  // --- A: Body map + self-evolution orientation ---
+
+  it("buildSystem includes 'my home is fully mine' and bundle directory path", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("cli")
+    expect(result).toContain("my home is fully mine")
+    expect(result).toContain("~/AgentBundles/testagent.ouro/")
+  })
+
+  it("buildSystem includes 'my bones are the framework' and @ouro.bot/cli", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("cli")
+    expect(result).toContain("my bones are the framework")
+    expect(result).toContain("@ouro.bot/cli")
+  })
+
+  it("buildSystem includes ouro CLI command reference in body map", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("cli")
+    expect(result).toContain("ouro whoami")
+    expect(result).toContain("ouro task board")
+    expect(result).toContain("ouro friend list")
+    expect(result).toContain("ouro --help")
+  })
+
+  it("buildSystem no longer contains the old one-liner about source code modification", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("cli")
+    expect(result).not.toContain("i can read and modify my own source code")
+  })
+
+  it("buildSystem includes self-evolution orientation ('mine to explore and evolve')", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("cli")
+    expect(result).toContain("mine to explore and evolve")
+  })
+
+  it("buildSystem('inner') includes body map (foundational anatomy for all channels)", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("inner")
+    expect(result).toContain("## my body")
+    expect(result).toContain("my home is fully mine")
+    expect(result).toContain("my bones are the framework")
+  })
+
+  it("body map interpolates agent name (not literal '{name}')", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("cli")
+    expect(result).toContain("~/AgentBundles/testagent.ouro/")
+    expect(result).not.toContain("{name}")
   })
 })
