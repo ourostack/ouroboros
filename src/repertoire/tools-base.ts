@@ -209,6 +209,118 @@ export const baseToolDefinitions: ToolDefinition[] = [
     tool: {
       type: "function",
       function: {
+        name: "grep",
+        description:
+          "search file contents for lines matching a regex pattern. searches recursively when given a directory. returns matching lines with file path and line numbers.",
+        parameters: {
+          type: "object",
+          properties: {
+            pattern: { type: "string", description: "regex pattern to search for" },
+            path: { type: "string", description: "file or directory to search" },
+            context_lines: { type: "number", description: "number of surrounding context lines (default 0)" },
+            include: { type: "string", description: "glob filter to limit searched files (e.g. *.ts)" },
+          },
+          required: ["pattern", "path"],
+        },
+      },
+    },
+    handler: (a) => {
+      const targetPath = a.path
+      const regex = new RegExp(a.pattern)
+      const contextLines = parseInt(a.context_lines || "0", 10)
+      const includeGlob = a.include || undefined
+
+      function searchFile(filePath: string): string[] {
+        let content: string
+        try {
+          content = fs.readFileSync(filePath, "utf-8")
+        } catch {
+          return []
+        }
+        const lines = content.split("\n")
+        const matchIndices = new Set<number>()
+        for (let i = 0; i < lines.length; i++) {
+          if (regex.test(lines[i])) {
+            matchIndices.add(i)
+          }
+        }
+        if (matchIndices.size === 0) return []
+
+        const outputIndices = new Set<number>()
+        for (const idx of matchIndices) {
+          const start = Math.max(0, idx - contextLines)
+          const end = Math.min(lines.length - 1, idx + contextLines)
+          for (let i = start; i <= end; i++) {
+            outputIndices.add(i)
+          }
+        }
+
+        const sortedIndices = [...outputIndices].sort((a, b) => a - b)
+        const results: string[] = []
+        for (const idx of sortedIndices) {
+          const lineNum = idx + 1
+          if (matchIndices.has(idx)) {
+            results.push(`${filePath}:${lineNum}: ${lines[idx]}`)
+          } else {
+            results.push(`-${filePath}:${lineNum}: ${lines[idx]}`)
+          }
+        }
+        return results
+      }
+
+      function collectFiles(dirPath: string): string[] {
+        const files: string[] = []
+        function walk(dir: string) {
+          let entries: fs.Dirent[]
+          try {
+            entries = fs.readdirSync(dir, { withFileTypes: true })
+          } catch {
+            return
+          }
+          for (const entry of entries) {
+            const fullPath = path.join(dir, entry.name)
+            if (entry.isDirectory()) {
+              walk(fullPath)
+            } else if (entry.isFile()) {
+              files.push(fullPath)
+            }
+          }
+        }
+        walk(dirPath)
+        return files.sort()
+      }
+
+      function matchesGlob(filePath: string, glob: string): boolean {
+        const escaped = glob
+          .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+          .replace(/\*/g, ".*")
+          .replace(/\?/g, ".")
+        return new RegExp(`(^|/)${escaped}$`).test(filePath)
+      }
+
+      const stat = fs.statSync(targetPath, { throwIfNoEntry: false })
+      if (!stat) return ""
+
+      if (stat.isFile()) {
+        return searchFile(targetPath).join("\n")
+      }
+
+      let files = collectFiles(targetPath)
+      if (includeGlob) {
+        files = files.filter((f) => matchesGlob(f, includeGlob))
+      }
+
+      const allResults: string[] = []
+      for (const file of files) {
+        allResults.push(...searchFile(file))
+      }
+      return allResults.join("\n")
+    },
+  },
+  {
+    tool: {
+      type: "function",
+      function: {
         name: "shell",
         description: "run shell command",
         parameters: {
