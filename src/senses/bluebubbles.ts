@@ -248,6 +248,7 @@ function createBlueBubblesCallbacks(
     followupPhrases: phrases.followup,
     startTypingOnModelStart: true,
     suppressInitialModelStatus: true,
+    suppressFollowupPhraseStatus: true,
     transport: {
       sendStatus: async (text: string) => {
         const sent = await client.sendText({

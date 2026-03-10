@@ -1025,11 +1025,10 @@ describe("BlueBubbles sense runtime", () => {
     )
   })
 
-  it("surfaces debug activity as visible status messages for a tool-heavy turn", async () => {
+  it("surfaces only concrete tool activity messages for a tool-heavy turn", async () => {
     mocks.sendText
       .mockResolvedValueOnce({ messageGuid: "tool-guid" })
       .mockResolvedValueOnce({ messageGuid: "tool-done-guid" })
-      .mockResolvedValueOnce({ messageGuid: "followup-guid" })
       .mockResolvedValueOnce({ messageGuid: "final-guid" })
     mocks.runAgent.mockImplementationOnce(async (_messages, callbacks) => {
       callbacks.onModelStart()
@@ -1070,20 +1069,12 @@ describe("BlueBubbles sense runtime", () => {
       expect.objectContaining({
         chat: expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }),
         replyToMessageGuid: "C4B2E437-A373-43F6-9740-9CD84E5893A0",
-        text: "followup...",
-      }),
-    )
-    expect(mocks.sendText).toHaveBeenNthCalledWith(
-      4,
-      expect.objectContaining({
-        chat: expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }),
-        replyToMessageGuid: "C4B2E437-A373-43F6-9740-9CD84E5893A0",
         text: "got it",
       }),
     )
     expect(mocks.editMessage).not.toHaveBeenCalled()
     expect(mocks.setTyping).toHaveBeenNthCalledWith(2, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), false)
-    expect(mocks.setTyping.mock.invocationCallOrder[1]).toBeLessThan(mocks.sendText.mock.invocationCallOrder[3])
+    expect(mocks.setTyping.mock.invocationCallOrder[1]).toBeLessThan(mocks.sendText.mock.invocationCallOrder[2])
   })
 
   it("uses typing only for the first phase of a short turn and sends only the final reply visibly", async () => {
