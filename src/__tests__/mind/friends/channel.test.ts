@@ -71,4 +71,22 @@ describe("getChannelCapabilities", () => {
       expect(typeof caps.maxMessageLength).toBe("number")
     }
   })
+
+  it("returns inner dialog capabilities with no markdown, streaming enabled, no rich cards, no integrations", () => {
+    const caps = getChannelCapabilities("inner")
+    expect(caps.channel).toBe("inner")
+    expect(caps.availableIntegrations).toEqual([])
+    expect(caps.supportsMarkdown).toBe(false)
+    expect(caps.supportsStreaming).toBe(true)
+    expect(caps.supportsRichCards).toBe(false)
+    expect(caps.maxMessageLength).toBe(Infinity)
+  })
+
+  it("inner channel is a registered channel, not a fallback", () => {
+    const innerCaps = getChannelCapabilities("inner")
+    const unknownCaps = getChannelCapabilities("slack" as any)
+    // inner should have its own channel name, not fallback to "cli"
+    expect(innerCaps.channel).toBe("inner")
+    expect(unknownCaps.channel).toBe("cli") // fallback
+  })
 })

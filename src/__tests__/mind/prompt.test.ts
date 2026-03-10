@@ -2040,4 +2040,111 @@ describe("buildSystem with context", () => {
     const result = buildSystem("cli")
     expect(result).toBeInstanceOf(Promise)
   })
+
+  // --- B1: buildSystem("inner") channel routing ---
+
+  it("buildSystem('inner') returns a system prompt string", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("inner")
+    expect(typeof result).toBe("string")
+    expect(result.length).toBeGreaterThan(0)
+  })
+
+  it("buildSystem('inner') includes psyche sections", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("inner")
+    // soulSection
+    expect(result).toContain("chaos monkey coding assistant")
+    // identitySection
+    expect(result).toContain("i am Ouroboros")
+    // loreSection
+    expect(result).toContain("## my lore")
+    // tacitKnowledgeSection
+    expect(result).toContain("## tacit knowledge")
+    // aspirationsSection
+    expect(result).toContain("## my aspirations")
+  })
+
+  it("buildSystem('inner') includes runtimeInfoSection, toolsSection, taskBoardSection, skillsSection, memoryFriendToolContractSection", async () => {
+    setupReadFileSync()
+    vi.mocked(listSkills).mockReturnValue(["code-review"])
+    mockGetBoard.mockReturnValueOnce({
+      compact: "[Tasks] processing:1",
+      full: "full",
+      byStatus: { drafting: [], processing: ["t"], "validating": [], collaborating: [], paused: [], blocked: [], done: [] },
+      actionRequired: [],
+      unresolvedDependencies: [],
+      activeSessions: [],
+    })
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("inner")
+    expect(result).toContain("## runtime")
+    expect(result).toContain("## my tools")
+    expect(result).toContain("## task board")
+    expect(result).toContain("## my skills")
+    expect(result).toContain("## memory and friend tool contracts")
+  })
+
+  it("buildSystem('inner') does NOT include contextSection output (no friend context, no onboarding)", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("inner")
+    expect(result).not.toContain("## friend context")
+    expect(result).not.toContain("first-impressions")
+    expect(result).not.toContain("i introduce myself on boot")
+  })
+
+  it("buildSystem('inner') includes metacognitive framing text", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("inner")
+    expect(result).toContain("this is my inner dialog. there is no one else here.")
+    expect(result).toContain("the messages that appear here are my own awareness surfacing")
+    expect(result).toContain("i can think freely here")
+  })
+
+  it("buildSystem('inner') includes inner dialog loop orientation", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("inner")
+    expect(result).toContain("thoughts worth sharing can go outward")
+    expect(result).toContain("think. share. think some more.")
+  })
+
+  it("buildSystem('cli') does NOT include metacognitive framing", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("cli")
+    expect(result).not.toContain("this is my inner dialog. there is no one else here.")
+  })
 })
