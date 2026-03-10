@@ -554,6 +554,13 @@ to process arrive here, in my thinking space.
 think. share. think some more.`
 }
 
+export function loopOrientationSection(channel: Channel): string {
+  if (channel === "inner") return ""
+  return `sometimes a thought of mine surfaces alongside what someone is saying — marked as [inner thought: ...]. that's me, bringing up something i was thinking about. i can weave it into the conversation naturally, or let it go. my call.
+
+when something deserves more thought than the moment allows, i can note it to myself and come back later with a considered answer.`
+}
+
 export async function buildSystem(channel: Channel = "cli", options?: BuildSystemOptions, context?: ResolvedContext): Promise<string> {
   emitNervesEvent({
     event: "mind.step_start",
@@ -573,6 +580,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     aspirationsSection(),
     bodyMapSection(getAgentName()),
     metacognitiveFramingSection(channel),
+    loopOrientationSection(channel),
     runtimeInfoSection(channel),
     providerSection(),
     dateSection(),

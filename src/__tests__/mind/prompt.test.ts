@@ -2449,3 +2449,59 @@ describe("toolRestrictionSection", () => {
     expect(result).toMatch(/\bi\b/i)
   })
 })
+
+describe("loopOrientationSection", () => {
+  beforeEach(() => {
+    vi.resetModules()
+    setAgentProvider("minimax")
+  })
+
+  it("inner dialog returns empty string (already has loop text in metacognitive framing)", async () => {
+    const { loopOrientationSection } = await import("../../mind/prompt")
+    expect(loopOrientationSection("inner")).toBe("")
+  })
+
+  it("CLI includes inner thought syntax reference", async () => {
+    const { loopOrientationSection } = await import("../../mind/prompt")
+    const result = loopOrientationSection("cli")
+    expect(result).toContain("[inner thought:")
+  })
+
+  it("external channels mention deferring thought", async () => {
+    const { loopOrientationSection } = await import("../../mind/prompt")
+    const result = loopOrientationSection("teams")
+    expect(result).toContain("more thought")
+    expect(result).toContain("note it to myself")
+  })
+
+  it("uses 'my call' language", async () => {
+    const { loopOrientationSection } = await import("../../mind/prompt")
+    const result = loopOrientationSection("bluebubbles")
+    expect(result).toContain("my call")
+  })
+
+  it("buildSystem('cli') includes loop orientation", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("cli")
+    expect(result).toContain("sometimes a thought of mine surfaces")
+  })
+
+  it("buildSystem('inner') does NOT include external loop orientation", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("inner")
+    // Inner dialog has metacognitive framing with its own loop text
+    expect(result).toContain("think. share. think some more.")
+    // But not the external channel version
+    expect(result).not.toContain("sometimes a thought of mine surfaces")
+  })
+})
