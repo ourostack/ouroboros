@@ -266,4 +266,40 @@ describe("debug activity controller", () => {
 
     expect(operations).toEqual([])
   })
+
+  it("can suppress generic followup phrase status while keeping concrete tool updates", async () => {
+    const operations: string[] = []
+    const { createDebugActivityController } = await import("../../senses/debug-activity")
+    const controller = createDebugActivityController({
+      thinkingPhrases: ["thinking"],
+      followupPhrases: ["followup"],
+      transport: {
+        sendStatus: vi.fn(async (text: string) => {
+          operations.push(`send:${text}`)
+          return "status-guid"
+        }),
+        editStatus: vi.fn(async (messageGuid: string, text: string) => {
+          operations.push(`edit:${messageGuid}:${text}`)
+        }),
+        setTyping: vi.fn(async (active: boolean) => {
+          operations.push(`typing:${active}`)
+        }),
+      },
+      suppressFollowupPhraseStatus: true,
+    })
+
+    controller.onModelStart()
+    controller.onToolStart("read_file", { path: "notes.txt" })
+    controller.onToolEnd("read_file", "ok", true)
+    controller.onTextChunk("final answer incoming")
+    await controller.finish()
+
+    expect(operations).toEqual([
+      "send:thinking...",
+      "typing:true",
+      "edit:status-guid:running read_file (notes.txt)...",
+      "edit:status-guid:\u2713 read_file (ok)",
+      "typing:false",
+    ])
+  })
 })

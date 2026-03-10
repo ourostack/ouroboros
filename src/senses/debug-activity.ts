@@ -14,6 +14,7 @@ export interface DebugActivityOptions {
   transport: DebugActivityTransport
   startTypingOnModelStart?: boolean
   suppressInitialModelStatus?: boolean
+  suppressFollowupPhraseStatus?: boolean
   onTransportError?: (operation: string, error: unknown) => void
 }
 
@@ -131,6 +132,9 @@ export function createDebugActivityController(options: DebugActivityOptions): De
         return
       }
       followupShown = true
+      if (options.suppressFollowupPhraseStatus) {
+        return
+      }
       setStatus(`${nextPhrase(options.followupPhrases)}...`)
     },
 
