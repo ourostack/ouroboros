@@ -248,6 +248,27 @@ function readBundleMeta(): BundleMeta | null {
   }
 }
 
+const PROCESS_TYPE_LABELS: Record<Channel, string> = {
+  cli: "cli session",
+  inner: "inner dialog",
+  teams: "teams handler",
+  bluebubbles: "bluebubbles handler",
+}
+
+function processTypeLabel(channel: Channel): string {
+  return PROCESS_TYPE_LABELS[channel]
+}
+
+const DAEMON_SOCKET_PATH = "/tmp/ouroboros-daemon.sock"
+
+function daemonStatus(): string {
+  try {
+    return fs.existsSync(DAEMON_SOCKET_PATH) ? "running" : "not running"
+  } catch {
+    return "unknown"
+  }
+}
+
 export function runtimeInfoSection(channel: Channel): string {
   const lines: string[] = [];
   const agentName = getAgentName();
@@ -266,6 +287,8 @@ export function runtimeInfoSection(channel: Channel): string {
   lines.push(`cwd: ${process.cwd()}`);
   lines.push(`channel: ${channel}`);
   lines.push(`current sense: ${channel}`);
+  lines.push(`process type: ${processTypeLabel(channel)}`);
+  lines.push(`daemon: ${daemonStatus()}`);
 
   if (channel === "cli") {
     lines.push("i introduce myself on boot with a fun random greeting.");
