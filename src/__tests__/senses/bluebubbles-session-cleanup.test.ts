@@ -24,8 +24,8 @@ afterEach(() => {
 })
 
 describe("bluebubbles thread lane cleanup", () => {
-  it("removes only sibling thread lane files for a live chat trunk", async () => {
-    const { cleanupObsoleteBlueBubblesThreadSessions } = await import("../../senses/bluebubbles-session-cleanup")
+  it("finds only sibling thread lane files for a live chat trunk", async () => {
+    const { findObsoleteBlueBubblesThreadSessions } = await import("../../senses/bluebubbles-session-cleanup")
 
     const dir = makeTempDir()
     const trunk = path.join(dir, "chat_any;-;ari@mendelow.me.json")
@@ -40,18 +40,18 @@ describe("bluebubbles thread lane cleanup", () => {
     writeFile(unrelatedChat)
     writeFile(unrelatedThread)
 
-    const removed = cleanupObsoleteBlueBubblesThreadSessions(trunk)
+    const detected = findObsoleteBlueBubblesThreadSessions(trunk)
 
-    expect(removed.sort()).toEqual([threadA, threadB].sort())
+    expect(detected.sort()).toEqual([threadA, threadB].sort())
     expect(fs.existsSync(trunk)).toBe(true)
-    expect(fs.existsSync(threadA)).toBe(false)
-    expect(fs.existsSync(threadB)).toBe(false)
+    expect(fs.existsSync(threadA)).toBe(true)
+    expect(fs.existsSync(threadB)).toBe(true)
     expect(fs.existsSync(unrelatedChat)).toBe(true)
     expect(fs.existsSync(unrelatedThread)).toBe(true)
   })
 
   it("does nothing when the provided path is not a live chat trunk", async () => {
-    const { cleanupObsoleteBlueBubblesThreadSessions } = await import("../../senses/bluebubbles-session-cleanup")
+    const { findObsoleteBlueBubblesThreadSessions } = await import("../../senses/bluebubbles-session-cleanup")
 
     const dir = makeTempDir()
     const missingTrunk = path.join(dir, "chat_any;-;ari@mendelow.me.json")
@@ -62,11 +62,11 @@ describe("bluebubbles thread lane cleanup", () => {
     writeFile(liveTrunk)
     writeFile(textSibling)
 
-    expect(cleanupObsoleteBlueBubblesThreadSessions("  ")).toEqual([])
-    expect(cleanupObsoleteBlueBubblesThreadSessions(path.join(dir, "notes.txt"))).toEqual([])
-    expect(cleanupObsoleteBlueBubblesThreadSessions(missingTrunk)).toEqual([])
-    expect(cleanupObsoleteBlueBubblesThreadSessions(nestedThread)).toEqual([])
-    expect(cleanupObsoleteBlueBubblesThreadSessions(liveTrunk)).toEqual([])
+    expect(findObsoleteBlueBubblesThreadSessions("  ")).toEqual([])
+    expect(findObsoleteBlueBubblesThreadSessions(path.join(dir, "notes.txt"))).toEqual([])
+    expect(findObsoleteBlueBubblesThreadSessions(missingTrunk)).toEqual([])
+    expect(findObsoleteBlueBubblesThreadSessions(nestedThread)).toEqual([])
+    expect(findObsoleteBlueBubblesThreadSessions(liveTrunk)).toEqual([])
     expect(fs.existsSync(nestedThread)).toBe(true)
     expect(fs.existsSync(liveTrunk)).toBe(true)
     expect(fs.existsSync(textSibling)).toBe(true)
