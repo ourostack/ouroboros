@@ -131,6 +131,72 @@ describe("ouro CLI parsing", () => {
     })
   })
 
+  it("parses task subcommands", () => {
+    // ouro task board (no status filter)
+    expect(parseOuroCommand(["task", "board"])).toEqual({ kind: "task.board" })
+
+    // ouro task board <status> (positional status filter -- maps from task_board_status)
+    expect(parseOuroCommand(["task", "board", "processing"])).toEqual({
+      kind: "task.board",
+      status: "processing",
+    })
+
+    // ouro task create <title> --type <type>
+    expect(parseOuroCommand(["task", "create", "My Task", "--type", "feature"])).toEqual({
+      kind: "task.create",
+      title: "My Task",
+      type: "feature",
+    })
+
+    // ouro task create <title> with defaults (type defaults to one-shot)
+    expect(parseOuroCommand(["task", "create", "Quick Task"])).toEqual({
+      kind: "task.create",
+      title: "Quick Task",
+    })
+
+    // ouro task update <id> <status>
+    expect(parseOuroCommand(["task", "update", "task-123", "in-progress"])).toEqual({
+      kind: "task.update",
+      id: "task-123",
+      status: "in-progress",
+    })
+
+    // ouro task show <id> (NEW -- read and format a task file)
+    expect(parseOuroCommand(["task", "show", "task-123"])).toEqual({
+      kind: "task.show",
+      id: "task-123",
+    })
+
+    // ouro task actionable
+    expect(parseOuroCommand(["task", "actionable"])).toEqual({ kind: "task.actionable" })
+
+    // ouro task deps
+    expect(parseOuroCommand(["task", "deps"])).toEqual({ kind: "task.deps" })
+
+    // ouro task sessions
+    expect(parseOuroCommand(["task", "sessions"])).toEqual({ kind: "task.sessions" })
+  })
+
+  it("rejects malformed task subcommands", () => {
+    // bare "task" with no subcommand
+    expect(() => parseOuroCommand(["task"])).toThrow("Usage")
+
+    // task create with no title
+    expect(() => parseOuroCommand(["task", "create"])).toThrow("Usage")
+
+    // task update with no id
+    expect(() => parseOuroCommand(["task", "update"])).toThrow("Usage")
+
+    // task update with no status
+    expect(() => parseOuroCommand(["task", "update", "task-123"])).toThrow("Usage")
+
+    // task show with no id
+    expect(() => parseOuroCommand(["task", "show"])).toThrow("Usage")
+
+    // unknown task subcommand
+    expect(() => parseOuroCommand(["task", "unknown"])).toThrow("Usage")
+  })
+
   it("rejects deprecated command families", () => {
     expect(() => parseOuroCommand(["agent", "start", "slugger"])).toThrow("Unknown command")
     expect(() => parseOuroCommand(["cron", "list"])).toThrow("Unknown command")
@@ -2816,5 +2882,216 @@ describe("discoverExistingCredentials", () => {
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true })
     }
+  })
+})
+
+describe("ouro task CLI execution", () => {
+  const mockTaskModule = {
+    getBoard: vi.fn(),
+    createTask: vi.fn(),
+    updateStatus: vi.fn(),
+    getTask: vi.fn(),
+    boardStatus: vi.fn(),
+    boardAction: vi.fn(),
+    boardDeps: vi.fn(),
+    boardSessions: vi.fn(),
+  }
+
+  function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
+    return {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+      taskModule: mockTaskModule as any,
+      ...overrides,
+    }
+  }
+
+  it("ouro task board returns full board output", async () => {
+    mockTaskModule.getBoard.mockReturnValueOnce({
+      compact: "[Tasks] processing:1",
+      full: "## processing\n- sample-task",
+      byStatus: { drafting: [], processing: ["sample-task"], validating: [], collaborating: [], paused: [], blocked: [], done: [] },
+      actionRequired: [],
+      unresolvedDependencies: [],
+      activeSessions: [],
+    })
+
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "board"], deps)
+    expect(result).toContain("## processing")
+    expect(result).toContain("sample-task")
+    // Should NOT send to daemon
+    expect(deps.sendCommand).not.toHaveBeenCalled()
+  })
+
+  it("ouro task board returns no-tasks fallback when board is empty", async () => {
+    mockTaskModule.getBoard.mockReturnValueOnce({
+      compact: "",
+      full: "",
+      byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [] },
+      actionRequired: [],
+      unresolvedDependencies: [],
+      activeSessions: [],
+    })
+
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "board"], deps)
+    expect(result).toBe("no tasks found")
+  })
+
+  it("ouro task board <status> returns status-filtered board", async () => {
+    mockTaskModule.boardStatus.mockReturnValueOnce(["task-a", "task-b"])
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "board", "processing"], deps)
+    expect(result).toBe("task-a\ntask-b")
+    expect(mockTaskModule.boardStatus).toHaveBeenCalledWith("processing")
+  })
+
+  it("ouro task board <status> returns fallback when no tasks in status", async () => {
+    mockTaskModule.boardStatus.mockReturnValueOnce([])
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "board", "blocked"], deps)
+    expect(result).toBe("no tasks in that status")
+  })
+
+  it("ouro task create returns file path and initial content", async () => {
+    mockTaskModule.createTask.mockReturnValueOnce("/mock/tasks/one-shots/2026-03-09-my-task.md")
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "create", "My Task", "--type", "one-shot"], deps)
+    expect(result).toContain("created:")
+    expect(result).toContain("/mock/tasks/one-shots/2026-03-09-my-task.md")
+    expect(mockTaskModule.createTask).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "My Task", type: "one-shot" }),
+    )
+  })
+
+  it("ouro task create defaults type when --type not specified", async () => {
+    mockTaskModule.createTask.mockReturnValueOnce("/mock/tasks/one-shots/2026-03-09-quick-task.md")
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "create", "Quick Task"], deps)
+    expect(result).toContain("created:")
+    expect(mockTaskModule.createTask).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Quick Task", type: "one-shot" }),
+    )
+  })
+
+  it("ouro task create surfaces module exceptions", async () => {
+    mockTaskModule.createTask.mockImplementationOnce(() => {
+      throw new Error("create failed")
+    })
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "create", "Bad Task", "--type", "one-shot"], deps)
+    expect(result).toContain("error: create failed")
+  })
+
+  it("ouro task update delegates to updateStatus", async () => {
+    mockTaskModule.updateStatus.mockReturnValueOnce({ ok: true, from: "drafting", to: "processing" })
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "update", "my-task", "processing"], deps)
+    expect(result).toContain("updated: my-task -> processing")
+    expect(mockTaskModule.updateStatus).toHaveBeenCalledWith("my-task", "processing")
+  })
+
+  it("ouro task update surfaces module errors", async () => {
+    mockTaskModule.updateStatus.mockReturnValueOnce({
+      ok: false,
+      from: "drafting",
+      to: "done",
+      reason: "invalid transition",
+    })
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "update", "my-task", "done"], deps)
+    expect(result).toContain("error: invalid transition")
+  })
+
+  it("ouro task update includes archive details", async () => {
+    mockTaskModule.updateStatus.mockReturnValueOnce({
+      ok: true,
+      from: "validating",
+      to: "done",
+      archived: ["/mock/archive/task.md"],
+    })
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "update", "my-task", "done"], deps)
+    expect(result).toContain("updated: my-task -> done")
+    expect(result).toContain("archived:")
+  })
+
+  it("ouro task show reads and formats a task file", async () => {
+    mockTaskModule.getTask.mockReturnValueOnce({
+      path: "/mock/tasks/one-shots/2026-03-09-my-task.md",
+      name: "2026-03-09-my-task.md",
+      stem: "2026-03-09-my-task",
+      type: "one-shot",
+      collection: "one-shots",
+      category: "infrastructure",
+      title: "My Task",
+      status: "processing",
+      created: "2026-03-09",
+      updated: "2026-03-09",
+      frontmatter: { type: "one-shot", title: "My Task", status: "processing" },
+      body: "## scope\ndo the thing",
+    })
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "show", "my-task"], deps)
+    expect(result).toContain("My Task")
+    expect(result).toContain("processing")
+    expect(result).toContain("one-shot")
+    expect(mockTaskModule.getTask).toHaveBeenCalledWith("my-task")
+  })
+
+  it("ouro task show returns not-found when task does not exist", async () => {
+    mockTaskModule.getTask.mockReturnValueOnce(null)
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "show", "nonexistent"], deps)
+    expect(result).toContain("not found")
+  })
+
+  it("ouro task actionable returns actionable items", async () => {
+    mockTaskModule.boardAction.mockReturnValueOnce(["blocked tasks: task-a"])
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "actionable"], deps)
+    expect(result).toBe("blocked tasks: task-a")
+  })
+
+  it("ouro task actionable returns fallback when no action required", async () => {
+    mockTaskModule.boardAction.mockReturnValueOnce([])
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "actionable"], deps)
+    expect(result).toBe("no action required")
+  })
+
+  it("ouro task deps returns dependency info", async () => {
+    mockTaskModule.boardDeps.mockReturnValueOnce(["task-a -> missing task-z"])
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "deps"], deps)
+    expect(result).toBe("task-a -> missing task-z")
+  })
+
+  it("ouro task deps returns fallback when no dependencies", async () => {
+    mockTaskModule.boardDeps.mockReturnValueOnce([])
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "deps"], deps)
+    expect(result).toBe("no unresolved dependencies")
+  })
+
+  it("ouro task sessions returns active sessions", async () => {
+    mockTaskModule.boardSessions.mockReturnValueOnce(["task-a"])
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "sessions"], deps)
+    expect(result).toBe("task-a")
+  })
+
+  it("ouro task sessions returns fallback when no sessions", async () => {
+    mockTaskModule.boardSessions.mockReturnValueOnce([])
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "sessions"], deps)
+    expect(result).toBe("no active sessions")
   })
 })
