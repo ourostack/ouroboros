@@ -70,7 +70,7 @@ Provider/storage contract:
 - `agent.json` must declare `provider` and `configPath`.
 - `configPath` points to `~/.agentsecrets/<agent>/secrets.json`.
 - `secrets.json` stores secrets and provider/team settings; `context` stays in `agent.json`.
-- Runtime/session/log/PII/test-run artifacts live under `~/.agentstate/...`.
+- Agent-owned runtime/session/log/PII artifacts live under `~/AgentBundles/<agent>.ouro/state/...`; machine-scoped test-run artifacts stay under `~/.agentstate/...`.
 - If the selected provider config is incomplete, runtime must fail fast with explicit re-auth/setup guidance (no provider fallback).
 
 ## Documentation
