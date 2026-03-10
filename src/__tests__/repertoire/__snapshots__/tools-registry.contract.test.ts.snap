@@ -10,6 +10,7 @@ exports[`tool registry contract > tool surface area snapshot 1`] = `
   "coding_tail",
   "edit_file",
   "get_friend_note",
+  "glob",
   "list_skills",
   "load_skill",
   "memory_save",

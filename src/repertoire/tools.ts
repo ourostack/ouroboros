@@ -14,7 +14,7 @@ export { teamsTools } from "./tools-teams";
 
 // All tool definitions in a single registry
 const allDefinitions: ToolDefinition[] = [...baseToolDefinitions, ...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions];
-const REMOTE_BLOCKED_LOCAL_TOOLS = new Set(["shell", "read_file", "write_file", "edit_file"]);
+const REMOTE_BLOCKED_LOCAL_TOOLS = new Set(["shell", "read_file", "write_file", "edit_file", "glob"]);
 
 function isRemoteChannel(capabilities?: ChannelCapabilities): boolean {
   return capabilities?.channel === "teams" || capabilities?.channel === "bluebubbles";
@@ -197,6 +197,7 @@ export function summarizeArgs(name: string, args: Record<string, string>): strin
   // Base tools
   if (name === "read_file" || name === "write_file") return summarizeKeyValues(args, ["path"]);
   if (name === "edit_file") return summarizeKeyValues(args, ["path"]);
+  if (name === "glob") return summarizeKeyValues(args, ["pattern", "cwd"]);
   if (name === "shell") return summarizeKeyValues(args, ["command"]);
   if (name === "load_skill") return summarizeKeyValues(args, ["name"]);
   if (name === "task_create") return summarizeKeyValues(args, ["title", "type", "category", "scheduledAt", "cadence"]);

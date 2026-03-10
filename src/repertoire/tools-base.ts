@@ -187,6 +187,28 @@ export const baseToolDefinitions: ToolDefinition[] = [
     tool: {
       type: "function",
       function: {
+        name: "glob",
+        description: "find files matching a glob pattern. returns matching paths sorted alphabetically, one per line.",
+        parameters: {
+          type: "object",
+          properties: {
+            pattern: { type: "string", description: "glob pattern (e.g. **/*.ts)" },
+            cwd: { type: "string", description: "directory to search from (defaults to process.cwd())" },
+          },
+          required: ["pattern"],
+        },
+      },
+    },
+    handler: (a) => {
+      const cwd = a.cwd || process.cwd()
+      const matches = fs.globSync(a.pattern, { cwd })
+      return [...matches].sort().join("\n")
+    },
+  },
+  {
+    tool: {
+      type: "function",
+      function: {
         name: "shell",
         description: "run shell command",
         parameters: {
