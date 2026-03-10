@@ -523,7 +523,7 @@ describe("BlueBubbles sense runtime", () => {
         expect.objectContaining({
           role: "user",
           content:
-            "[conversation scope: existing chat trunk | current turn: thread reply | thread id: 54D4109C-7170-41A1-8161-F6F8C863CC0D]\nthreaded reply",
+            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: 54D4109C-7170-41A1-8161-F6F8C863CC0D | default outbound target: current_lane]\n[routing control: use bluebubbles_set_reply_target with target=top_level to widen back out, or target=thread plus a listed thread id to route into a specific active thread]\nthreaded reply",
         }),
       ]),
       expect.any(Object),
@@ -581,7 +581,7 @@ describe("BlueBubbles sense runtime", () => {
         expect.objectContaining({
           role: "user",
           content:
-            "[conversation scope: existing chat trunk | current turn: thread reply | thread id: 54D4109C-7170-41A1-8161-F6F8C863CC0D]\nthreaded reply",
+            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: 54D4109C-7170-41A1-8161-F6F8C863CC0D | default outbound target: current_lane]\n[routing control: use bluebubbles_set_reply_target with target=top_level to widen back out, or target=thread plus a listed thread id to route into a specific active thread]\nthreaded reply",
         }),
       ]),
       expect.any(Object),
@@ -600,7 +600,7 @@ describe("BlueBubbles sense runtime", () => {
         expect.objectContaining({
           role: "user",
           content:
-            "[conversation scope: existing chat trunk | current turn: top-level]\ntop-level follow-up",
+            "[conversation scope: existing chat trunk | current inbound lane: top_level | default outbound target: top_level]\ntop-level follow-up",
         }),
       ]),
       expect.any(Object),
@@ -635,6 +635,332 @@ describe("BlueBubbles sense runtime", () => {
           sessionPath: trunk,
           artifactCount: 1,
         }),
+      }),
+    )
+  })
+
+  it("defaults top-level inbound turns to top-level outbound replies", async () => {
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    expect(mocks.sendText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chat: expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }),
+        replyToMessageGuid: undefined,
+        text: "got it",
+      }),
+    )
+  })
+
+  it("lets the turn widen a threaded inbound reply back to top-level", async () => {
+    mocks.runAgent.mockImplementationOnce(async (_messages, callbacks, _channel, _signal, options) => {
+      options.toolContext.bluebubblesReplyTarget.setSelection({ target: "top_level" })
+      callbacks.onModelStart()
+      callbacks.onTextChunk("got it")
+      return {
+        usage: { input_tokens: 1, output_tokens: 1, reasoning_tokens: 0, total_tokens: 2 },
+      }
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    expect(mocks.sendText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chat: expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }),
+        replyToMessageGuid: undefined,
+        text: "got it",
+      }),
+    )
+  })
+
+  it("surfaces recent active lanes so the agent can target another thread explicitly", async () => {
+    mocks.loadSession.mockReturnValueOnce({
+      messages: [
+        { role: "system", content: "system prompt" },
+        {
+          role: "user",
+          content:
+            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: THREAD-OLD | default outbound target: current_lane]\nold thread topic",
+        },
+        {
+          role: "user",
+          content:
+            "[conversation scope: existing chat trunk | current inbound lane: top_level | default outbound target: top_level]\nrecent top-level topic",
+        },
+      ],
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    expect(mocks.runAgent).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "user",
+          content:
+            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: 54D4109C-7170-41A1-8161-F6F8C863CC0D | default outbound target: current_lane]\n[recent active lanes]\n- top_level: recent top-level topic\n- thread:THREAD-OLD: old thread topic\n[routing control: use bluebubbles_set_reply_target with target=top_level to widen back out, or target=thread plus a listed thread id to route into a specific active thread]\nthreaded reply",
+        }),
+      ]),
+      expect.any(Object),
+      "bluebubbles",
+      expect.any(AbortSignal),
+      expect.any(Object),
+    )
+  })
+
+  it("extracts recent active lanes from multimodal trunk history too", async () => {
+    mocks.loadSession.mockReturnValueOnce({
+      messages: [
+        { role: "system", content: "system prompt" },
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text:
+                "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: THREAD-MEDIA | default outbound target: current_lane]\nmedia thread topic",
+            },
+            {
+              type: "image_url",
+              image_url: { url: "data:image/png;base64,AAAA" },
+            },
+          ],
+        },
+      ],
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    expect(mocks.runAgent).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "user",
+          content:
+            "[conversation scope: existing chat trunk | current inbound lane: top_level | default outbound target: top_level]\n[recent active lanes]\n- thread:THREAD-MEDIA: media thread topic\n[routing control: use bluebubbles_set_reply_target with target=top_level to widen back out, or target=thread plus a listed thread id to route into a specific active thread]\ntop-level follow-up",
+        }),
+      ]),
+      expect.any(Object),
+      "bluebubbles",
+      expect.any(AbortSignal),
+      expect.any(Object),
+    )
+  })
+
+  it("ignores empty or irrelevant historical user entries and falls back when a lane has no body text", async () => {
+    mocks.loadSession.mockReturnValueOnce({
+      messages: [
+        { role: "system", content: "system prompt" },
+        {
+          role: "user",
+          content: [
+            {
+              type: "image_url",
+              image_url: { url: "data:image/png;base64,BBBB" },
+            },
+          ],
+        },
+        { role: "user", content: "plain text without lane metadata" },
+        {
+          role: "user",
+          content:
+            "[conversation scope: existing chat trunk | current inbound lane: top_level | default outbound target: top_level]",
+        },
+      ],
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    expect(mocks.runAgent).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "user",
+          content:
+            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: 54D4109C-7170-41A1-8161-F6F8C863CC0D | default outbound target: current_lane]\n[recent active lanes]\n- top_level: (no recent text)\n[routing control: use bluebubbles_set_reply_target with target=top_level to widen back out, or target=thread plus a listed thread id to route into a specific active thread]\nthreaded reply",
+        }),
+      ]),
+      expect.any(Object),
+      "bluebubbles",
+      expect.any(AbortSignal),
+      expect.any(Object),
+    )
+  })
+
+  it("ignores historical entries with unsupported content payloads", async () => {
+    mocks.loadSession.mockReturnValueOnce({
+      messages: [
+        { role: "system", content: "system prompt" },
+        {
+          role: "user",
+          content: {
+            type: "input_file",
+            file_id: "file-123",
+          } as unknown as OpenAI.ChatCompletionMessageParam["content"],
+        },
+      ],
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    expect(mocks.runAgent).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "user",
+          content:
+            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: 54D4109C-7170-41A1-8161-F6F8C863CC0D | default outbound target: current_lane]\n[routing control: use bluebubbles_set_reply_target with target=top_level to widen back out, or target=thread plus a listed thread id to route into a specific active thread]\nthreaded reply",
+        }),
+      ]),
+      expect.any(Object),
+      "bluebubbles",
+      expect.any(AbortSignal),
+      expect.any(Object),
+    )
+  })
+
+  it("lets the turn explicitly stay in the current inbound lane", async () => {
+    mocks.runAgent.mockImplementationOnce(async (_messages, callbacks, _channel, _signal, options) => {
+      options.toolContext.bluebubblesReplyTarget.setSelection({ target: "current_lane" })
+      callbacks.onModelStart()
+      callbacks.onTextChunk("staying here")
+      return {
+        usage: { input_tokens: 1, output_tokens: 1, reasoning_tokens: 0, total_tokens: 2 },
+      }
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    expect(mocks.sendText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        replyToMessageGuid: "C4B2E437-A373-43F6-9740-9CD84E5893A0",
+        text: "staying here",
+      }),
+    )
+  })
+
+  it("treats current_lane on a top-level inbound turn as top-level", async () => {
+    mocks.runAgent.mockImplementationOnce(async (_messages, callbacks, _channel, _signal, options) => {
+      options.toolContext.bluebubblesReplyTarget.setSelection({ target: "current_lane" })
+      callbacks.onModelStart()
+      callbacks.onTextChunk("still top-level")
+      return {
+        usage: { input_tokens: 1, output_tokens: 1, reasoning_tokens: 0, total_tokens: 2 },
+      }
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    expect(mocks.sendText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        replyToMessageGuid: undefined,
+        text: "still top-level",
+      }),
+    )
+  })
+
+  it("limits surfaced active lanes to the five most recent unique lanes", async () => {
+    mocks.loadSession.mockReturnValueOnce({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "user", content: "plain text without lane metadata" },
+        {
+          role: "user",
+          content:
+            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: THREAD-OLD-1 | default outbound target: current_lane]\nfirst thread",
+        },
+        {
+          role: "user",
+          content:
+            "[conversation scope: existing chat trunk | current inbound lane: top_level | default outbound target: top_level]\nnewest top-level",
+        },
+        {
+          role: "user",
+          content:
+            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: THREAD-OLD-2 | default outbound target: current_lane]\nsecond thread",
+        },
+        {
+          role: "user",
+          content:
+            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: THREAD-OLD-3 | default outbound target: current_lane]\nthird thread",
+        },
+        {
+          role: "user",
+          content:
+            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: THREAD-OLD-4 | default outbound target: current_lane]\nfourth thread",
+        },
+        {
+          role: "user",
+          content:
+            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: THREAD-OLD-5 | default outbound target: current_lane]\nfifth thread",
+        },
+        {
+          role: "user",
+          content:
+            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: THREAD-OLD-5 | default outbound target: current_lane]\nduplicate fifth thread",
+        },
+      ],
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    expect(mocks.runAgent).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "user",
+          content:
+            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: 54D4109C-7170-41A1-8161-F6F8C863CC0D | default outbound target: current_lane]\n[recent active lanes]\n- thread:THREAD-OLD-5: duplicate fifth thread\n- thread:THREAD-OLD-4: fourth thread\n- thread:THREAD-OLD-3: third thread\n- thread:THREAD-OLD-2: second thread\n- top_level: newest top-level\n[routing control: use bluebubbles_set_reply_target with target=top_level to widen back out, or target=thread plus a listed thread id to route into a specific active thread]\nthreaded reply",
+        }),
+      ]),
+      expect.any(Object),
+      "bluebubbles",
+      expect.any(AbortSignal),
+      expect.any(Object),
+    )
+  })
+
+  it("lets the turn route coding feedback and the final reply into a specific active thread", async () => {
+    mocks.loadSession.mockReturnValueOnce({
+      messages: [
+        { role: "system", content: "system prompt" },
+        {
+          role: "user",
+          content:
+            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: THREAD-OLD | default outbound target: current_lane]\nold thread topic",
+        },
+      ],
+    })
+    mocks.runAgent.mockImplementationOnce(async (_messages, callbacks, _channel, _signal, options) => {
+      options.toolContext.bluebubblesReplyTarget.setSelection({
+        target: "thread",
+        threadOriginatorGuid: "THREAD-OLD",
+      })
+      await options.toolContext.codingFeedback.send("codex update for old thread")
+      callbacks.onModelStart()
+      callbacks.onTextChunk("done")
+      return {
+        usage: { input_tokens: 1, output_tokens: 1, reasoning_tokens: 0, total_tokens: 2 },
+      }
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    expect(mocks.sendText).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        replyToMessageGuid: "THREAD-OLD",
+        text: "codex update for old thread",
+      }),
+    )
+    expect(mocks.sendText).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        replyToMessageGuid: "THREAD-OLD",
+        text: "done",
       }),
     )
   })
@@ -916,7 +1242,7 @@ describe("BlueBubbles sense runtime", () => {
         expect.objectContaining({
           role: "user",
           content:
-            "ari@mendelow.me: [conversation scope: existing chat trunk | current turn: thread reply | thread id: 3E02B90F-D374-4381-BDD2-3572D3EB1195]\nyay!",
+            "ari@mendelow.me: [conversation scope: existing chat trunk | current inbound lane: thread | current thread id: 3E02B90F-D374-4381-BDD2-3572D3EB1195 | default outbound target: current_lane]\n[routing control: use bluebubbles_set_reply_target with target=top_level to widen back out, or target=thread plus a listed thread id to route into a specific active thread]\nyay!",
         }),
       ]),
     )
@@ -1281,7 +1607,7 @@ describe("BlueBubbles sense runtime", () => {
             {
               type: "text",
               text:
-                "[conversation scope: existing chat trunk | current turn: top-level]\n[image attachment: IMG_5045.heic.jpeg (600x800)]",
+                "[conversation scope: existing chat trunk | current inbound lane: top_level | default outbound target: top_level]\n[image attachment: IMG_5045.heic.jpeg (600x800)]",
             },
             {
               type: "image_url",

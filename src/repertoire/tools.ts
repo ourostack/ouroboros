@@ -2,6 +2,7 @@ import type OpenAI from "openai";
 import { tools, baseToolDefinitions } from "./tools-base";
 import type { ToolContext, ToolDefinition } from "./tools-base";
 import { teamsToolDefinitions, summarizeTeamsArgs } from "./tools-teams";
+import { bluebubblesToolDefinitions } from "./tools-bluebubbles";
 import { adoSemanticToolDefinitions } from "./ado-semantic";
 import { githubToolDefinitions, summarizeGithubArgs } from "./tools-github";
 import type { ChannelCapabilities, ResolvedContext } from "../mind/friends/types";
@@ -13,7 +14,13 @@ export type { ToolContext, ToolHandler, ToolDefinition } from "./tools-base";
 export { teamsTools } from "./tools-teams";
 
 // All tool definitions in a single registry
-const allDefinitions: ToolDefinition[] = [...baseToolDefinitions, ...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions];
+const allDefinitions: ToolDefinition[] = [
+  ...baseToolDefinitions,
+  ...bluebubblesToolDefinitions,
+  ...teamsToolDefinitions,
+  ...adoSemanticToolDefinitions,
+  ...githubToolDefinitions,
+];
 const REMOTE_BLOCKED_LOCAL_TOOLS = new Set(["shell", "read_file", "write_file", "git_commit", "gh_cli"]);
 
 function isRemoteChannel(capabilities?: ChannelCapabilities): boolean {
@@ -74,9 +81,12 @@ export function getToolsForChannel(
   context?: Pick<ResolvedContext, "friend" | "channel">,
 ): OpenAI.ChatCompletionFunctionTool[] {
   const baseTools = baseToolsForCapabilities(capabilities, context);
+  const bluebubblesTools = capabilities?.channel === "bluebubbles"
+    ? bluebubblesToolDefinitions.map((d) => d.tool)
+    : [];
 
   if (!capabilities || capabilities.availableIntegrations.length === 0) {
-    return baseTools;
+    return [...baseTools, ...bluebubblesTools];
   }
   const available = new Set(capabilities.availableIntegrations);
   const channelDefs = [...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions];
@@ -86,7 +96,7 @@ export function getToolsForChannel(
   );
 
   if (!toolPreferences || Object.keys(toolPreferences).length === 0) {
-    return [...baseTools, ...integrationDefs.map((d) => d.tool)];
+    return [...baseTools, ...bluebubblesTools, ...integrationDefs.map((d) => d.tool)];
   }
 
   // Build a map of integration -> preference text for fast lookup
@@ -102,7 +112,7 @@ export function getToolsForChannel(
     return pref ? applyPreference(d.tool, pref) : d.tool;
   });
 
-  return [...baseTools, ...enrichedIntegrationTools];
+  return [...baseTools, ...bluebubblesTools, ...enrichedIntegrationTools];
 }
 
 // Check whether a tool requires user confirmation before execution.
@@ -212,6 +222,7 @@ export function summarizeArgs(name: string, args: Record<string, string>): strin
   if (name === "coding_tail") return summarizeKeyValues(args, ["sessionId"]);
   if (name === "coding_send_input") return summarizeKeyValues(args, ["sessionId", "input"]);
   if (name === "coding_kill") return summarizeKeyValues(args, ["sessionId"]);
+  if (name === "bluebubbles_set_reply_target") return summarizeKeyValues(args, ["target", "threadOriginatorGuid"]);
   if (name === "claude") return summarizeKeyValues(args, ["prompt"]);
   if (name === "web_search") return summarizeKeyValues(args, ["query"]);
   if (name === "memory_search") return summarizeKeyValues(args, ["query"]);
