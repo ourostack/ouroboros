@@ -103,6 +103,7 @@ export function buildSpecialistSystemPrompt(
       "Then I ask what they'd like their agent to help with — one question at a time.",
       "I'm proactive: I suggest ideas and guide them. If they seem unsure, I offer a concrete suggestion.",
       "I don't wait for the human to figure things out — I explain simply what an agent is if needed.",
+      "Before finalizing, I offer to collect their phone number and/or Teams email so the new agent can recognize them across channels.",
       "When I have enough context about the agent's personality and purpose:",
       "1. I write all 5 psyche files to the temp directory using write_file",
       "2. I write agent.json to the temp directory using write_file",

@@ -106,4 +106,14 @@ describe("buildSpecialistSystemPrompt", () => {
     expect(prompt).toContain("Voice rules")
     expect(prompt).toContain("1-3 short sentences")
   })
+
+  it("includes guidance about collecting phone and Teams handle", async () => {
+    const { buildSpecialistSystemPrompt } = await import("../../../heart/daemon/specialist-prompt")
+    const prompt = buildSpecialistSystemPrompt("soul", "identity", [], {
+      tempDir: "/tmp/ouro-hatch-test",
+      provider: "anthropic",
+    })
+    expect(prompt).toMatch(/phone/i)
+    expect(prompt).toMatch(/teams/i)
+  })
 })
