@@ -280,4 +280,54 @@ describe("FileFriendStore", () => {
       expect(r2!.name).toBe("Friend2")
     })
   })
+
+  describe("listAll", () => {
+    it("returns all friend records from disk", async () => {
+      const store = new FileFriendStore(friendsPath)
+      const f1 = makeFriend({ id: "uuid-1", name: "Alice" })
+      const f2 = makeFriend({ id: "uuid-2", name: "Bob" })
+
+      await store.put("uuid-1", f1)
+      await store.put("uuid-2", f2)
+
+      const all = await store.listAll()
+      expect(all).toHaveLength(2)
+      const names = all.map((r) => r.name).sort()
+      expect(names).toEqual(["Alice", "Bob"])
+    })
+
+    it("returns empty array when no friends exist", async () => {
+      const store = new FileFriendStore(friendsPath)
+
+      const all = await store.listAll()
+      expect(all).toEqual([])
+    })
+
+    it("returns empty array when friends directory does not exist", async () => {
+      const nonExistent = path.join(tmpDir, "nonexistent-dir", "friends")
+      // Use a path that won't be auto-created (we need readdir to fail)
+      const store = new FileFriendStore(friendsPath)
+      // Remove the auto-created directory
+      await fs.rm(friendsPath, { recursive: true, force: true })
+
+      const all = await store.listAll()
+      expect(all).toEqual([])
+    })
+
+    it("skips non-JSON files and malformed JSON", async () => {
+      const store = new FileFriendStore(friendsPath)
+      const f1 = makeFriend({ id: "uuid-1", name: "Alice" })
+      await store.put("uuid-1", f1)
+
+      // Write non-JSON file
+      await fs.writeFile(path.join(friendsPath, "readme.txt"), "not a friend record")
+
+      // Write malformed JSON
+      await fs.writeFile(path.join(friendsPath, "bad.json"), "not valid json{{{")
+
+      const all = await store.listAll()
+      expect(all).toHaveLength(1)
+      expect(all[0].name).toBe("Alice")
+    })
+  })
 })

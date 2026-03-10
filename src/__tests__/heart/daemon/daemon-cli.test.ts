@@ -3425,6 +3425,47 @@ describe("ouro friend CLI execution", () => {
     expect(mockFriendStore.get).toHaveBeenCalledWith("friend-1")
   })
 
+  it("ouro friend list handles store without listAll method", async () => {
+    const mockFriendStore = {
+      get: vi.fn(),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      // No listAll method
+    }
+    const deps = makeDeps({ friendStore: mockFriendStore as any })
+    const result = await runOuroCli(["friend", "list"], deps)
+    expect(result).toContain("does not support listing")
+  })
+
+  it("ouro friend list handles friend records without trustLevel", async () => {
+    const mockFriendStore = {
+      get: vi.fn(),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      listAll: vi.fn(async () => [
+        {
+          id: "friend-1",
+          name: "NoTrust",
+          // trustLevel intentionally missing
+          externalIds: [],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          totalTokens: 0,
+          createdAt: "2026-03-01T00:00:00.000Z",
+          updatedAt: "2026-03-01T00:00:00.000Z",
+          schemaVersion: 1,
+        },
+      ]),
+    }
+    const deps = makeDeps({ friendStore: mockFriendStore as any })
+    const result = await runOuroCli(["friend", "list"], deps)
+    expect(result).toContain("unknown")
+    expect(result).toContain("NoTrust")
+  })
+
   it("ouro friend show returns not-found when friend does not exist", async () => {
     const mockFriendStore = {
       get: vi.fn(async () => null),
