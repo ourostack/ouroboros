@@ -269,6 +269,28 @@ describe("ouro CLI parsing", () => {
     expect(() => parseOuroCommand(["reminder", "unknown"])).toThrow("Usage")
   })
 
+  it("parses friend subcommands", () => {
+    // ouro friend list
+    expect(parseOuroCommand(["friend", "list"])).toEqual({ kind: "friend.list" })
+
+    // ouro friend show <id>
+    expect(parseOuroCommand(["friend", "show", "abc-123"])).toEqual({
+      kind: "friend.show",
+      friendId: "abc-123",
+    })
+  })
+
+  it("rejects malformed friend subcommands", () => {
+    // bare "friend" with no subcommand
+    expect(() => parseOuroCommand(["friend"])).toThrow("Usage")
+
+    // friend show with no id
+    expect(() => parseOuroCommand(["friend", "show"])).toThrow("Usage")
+
+    // unknown friend subcommand
+    expect(() => parseOuroCommand(["friend", "unknown"])).toThrow("Usage")
+  })
+
   it("rejects deprecated command families", () => {
     expect(() => parseOuroCommand(["agent", "start", "slugger"])).toThrow("Unknown command")
     expect(() => parseOuroCommand(["cron", "list"])).toThrow("Unknown command")
@@ -3292,5 +3314,129 @@ describe("ouro reminder CLI execution", () => {
     const deps = makeDeps()
     const result = await runOuroCli(["reminder", "create", "Broken", "--body", "This will fail", "--at", "2026-03-10T17:00:00.000Z"], deps)
     expect(result).toContain("error: scheduler exploded string")
+  })
+})
+
+describe("ouro friend CLI execution", () => {
+  function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
+    return {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+      ...overrides,
+    }
+  }
+
+  it("ouro friend list returns all friends with summary info", async () => {
+    const mockFriendStore = {
+      get: vi.fn(),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      listAll: vi.fn(async () => [
+        {
+          id: "friend-1",
+          name: "Ari",
+          trustLevel: "family",
+          externalIds: [{ provider: "local", externalId: "ari", linkedAt: "2026-03-01T00:00:00.000Z" }],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          totalTokens: 1000,
+          createdAt: "2026-03-01T00:00:00.000Z",
+          updatedAt: "2026-03-09T12:00:00.000Z",
+          schemaVersion: 1,
+        },
+        {
+          id: "friend-2",
+          name: "Bob",
+          trustLevel: "friend",
+          externalIds: [],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          totalTokens: 500,
+          createdAt: "2026-03-02T00:00:00.000Z",
+          updatedAt: "2026-03-08T12:00:00.000Z",
+          schemaVersion: 1,
+        },
+      ]),
+    }
+    const deps = makeDeps({ friendStore: mockFriendStore as any })
+    const result = await runOuroCli(["friend", "list"], deps)
+
+    expect(result).toContain("Ari")
+    expect(result).toContain("friend-1")
+    expect(result).toContain("family")
+    expect(result).toContain("Bob")
+    expect(result).toContain("friend-2")
+    expect(result).toContain("friend")
+    expect(mockFriendStore.listAll).toHaveBeenCalled()
+    expect(deps.sendCommand).not.toHaveBeenCalled()
+  })
+
+  it("ouro friend list returns empty message when no friends", async () => {
+    const mockFriendStore = {
+      get: vi.fn(),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      listAll: vi.fn(async () => []),
+    }
+    const deps = makeDeps({ friendStore: mockFriendStore as any })
+    const result = await runOuroCli(["friend", "list"], deps)
+
+    expect(result).toContain("no friends")
+    expect(mockFriendStore.listAll).toHaveBeenCalled()
+  })
+
+  it("ouro friend show returns full friend record", async () => {
+    const friendRecord = {
+      id: "friend-1",
+      name: "Ari",
+      trustLevel: "family",
+      externalIds: [{ provider: "local", externalId: "ari", linkedAt: "2026-03-01T00:00:00.000Z" }],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: { role: { value: "engineer", savedAt: "2026-03-01T00:00:00.000Z" } },
+      totalTokens: 1000,
+      createdAt: "2026-03-01T00:00:00.000Z",
+      updatedAt: "2026-03-09T12:00:00.000Z",
+      schemaVersion: 1,
+    }
+    const mockFriendStore = {
+      get: vi.fn(async () => friendRecord),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      listAll: vi.fn(),
+    }
+    const deps = makeDeps({ friendStore: mockFriendStore as any })
+    const result = await runOuroCli(["friend", "show", "friend-1"], deps)
+
+    expect(result).toContain("Ari")
+    expect(result).toContain("family")
+    expect(result).toContain("friend-1")
+    expect(mockFriendStore.get).toHaveBeenCalledWith("friend-1")
+  })
+
+  it("ouro friend show returns not-found when friend does not exist", async () => {
+    const mockFriendStore = {
+      get: vi.fn(async () => null),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      listAll: vi.fn(),
+    }
+    const deps = makeDeps({ friendStore: mockFriendStore as any })
+    const result = await runOuroCli(["friend", "show", "nonexistent"], deps)
+
+    expect(result).toContain("not found")
+    expect(mockFriendStore.get).toHaveBeenCalledWith("nonexistent")
   })
 })
