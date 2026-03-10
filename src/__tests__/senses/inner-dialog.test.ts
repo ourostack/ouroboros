@@ -455,6 +455,61 @@ describe("inner dialog runtime", () => {
     expect(content).toContain("**ari-cli**: Don't forget about the tests.")
   })
 
+  // --- B2: Channel fix + message reframing ---
+
+  it("calls buildSystem('inner', ...) not buildSystem('cli', ...)", async () => {
+    await runInnerDialogTurn({
+      reason: "boot",
+      instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
+      now: () => new Date("2026-03-10T01:00:00.000Z"),
+    })
+
+    expect(mockBuildSystem).toHaveBeenCalledTimes(1)
+    expect(mockBuildSystem.mock.calls[0][0]).toBe("inner")
+  })
+
+  it("calls runAgent with 'inner' channel not 'cli'", async () => {
+    await runInnerDialogTurn({
+      reason: "boot",
+      instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
+      now: () => new Date("2026-03-10T01:01:00.000Z"),
+    })
+
+    expect(mockRunAgent).toHaveBeenCalledTimes(1)
+    const [_messages, _callbacks, channel] = mockRunAgent.mock.calls[0]
+    expect(channel).toBe("inner")
+  })
+
+  it("bootstrap message is exactly 'waking up. settling in.\\n\\nwhat needs my attention?'", () => {
+    const message = buildInnerDialogBootstrapMessage("any aspirations", "any state")
+    expect(message).toBe("waking up. settling in.\n\nwhat needs my attention?")
+  })
+
+  it("default instinct message uses first-person awareness language", () => {
+    const instincts = loadInnerDialogInstincts()
+    const text = buildInstinctUserMessage(
+      instincts,
+      "heartbeat",
+      { cycleCount: 2, resting: false },
+    )
+    // Should NOT contain command-style language
+    expect(text).not.toContain("Heartbeat instinct:")
+    expect(text).not.toContain("check what changed")
+    expect(text).not.toContain("Orient yourself")
+    // Should contain first-person awareness
+    expect(text).toContain("stirring")
+  })
+
+  it("instinct message for heartbeat reason uses awareness framing", () => {
+    const text = buildInstinctUserMessage(
+      [{ id: "heartbeat_checkin", prompt: "...time passing. anything stirring?", enabled: true }],
+      "heartbeat",
+      { cycleCount: 3, resting: true },
+    )
+    expect(text).toContain("stirring")
+    expect(text).not.toContain("Instinct:")
+  })
+
   it("pending messages appear before inbox messages in the user message", async () => {
     mockDrainPending.mockReturnValue([
       { from: "self-note", content: "Review my aspirations.", timestamp: 1000 },
