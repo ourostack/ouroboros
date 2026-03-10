@@ -1045,7 +1045,7 @@ describe("getToolsForChannel with ChannelCapabilities", () => {
     }
     const result = getToolsForChannel(teamsCaps)
     const names = result.map((t: any) => t.function.name)
-    const blockedLocalTools = new Set(["read_file", "write_file", "shell"])
+    const blockedLocalTools = new Set(["read_file", "write_file", "shell", "edit_file"])
     const remoteBaseCount = tools.filter((t: any) => !blockedLocalTools.has(t.function.name)).length
     // Teams channel should exclude blocked local tools
     expect(names).not.toContain("read_file")
@@ -1092,7 +1092,7 @@ describe("getToolsForChannel with ChannelCapabilities", () => {
     }
     const result = getToolsForChannel(caps)
     const names = result.map((t: any) => t.function.name)
-    const blockedLocalTools = new Set(["read_file", "write_file", "shell"])
+    const blockedLocalTools = new Set(["read_file", "write_file", "shell", "edit_file"])
     const remoteBaseCount = tools.filter((t: any) => !blockedLocalTools.has(t.function.name)).length
     // Should have graph tools
     expect(names).toContain("graph_query")
@@ -1121,7 +1121,7 @@ describe("getToolsForChannel with ChannelCapabilities", () => {
     }
     const result = getToolsForChannel(caps)
     const names = result.map((t: any) => t.function.name)
-    const blockedLocalTools = new Set(["read_file", "write_file", "shell"])
+    const blockedLocalTools = new Set(["read_file", "write_file", "shell", "edit_file"])
     const remoteBaseCount = tools.filter((t: any) => !blockedLocalTools.has(t.function.name)).length
     // Should have ado tools
     expect(names).toContain("ado_query")
@@ -2034,7 +2034,7 @@ describe("getToolsForChannel includes docs tools", () => {
     }
     const teamsTools = getToolsForChannel(teamsCaps)
     const names = teamsTools.map((t: any) => t.function.name)
-    const blockedLocalTools = new Set(["read_file", "write_file", "shell"])
+    const blockedLocalTools = new Set(["read_file", "write_file", "shell", "edit_file"])
     const remoteBaseCount = tools.filter((t: any) => !blockedLocalTools.has(t.function.name)).length
     expect(names).toContain("graph_docs")
     expect(names).toContain("ado_docs")

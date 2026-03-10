@@ -65,6 +65,22 @@ function buildTaskCreateInput(args: Record<string, string>) {
   }
 }
 
+// Tracks which file paths have been read via read_file in this session.
+// edit_file requires a file to be read first (must-read-first guard).
+export const editFileReadTracker = new Set<string>();
+
+function buildContextDiff(lines: string[], changeStart: number, changeEnd: number, contextSize = 3): string {
+  const start = Math.max(0, changeStart - contextSize)
+  const end = Math.min(lines.length, changeEnd + contextSize)
+  const result: string[] = []
+  for (let i = start; i < end; i++) {
+    const lineNum = i + 1
+    const prefix = (i >= changeStart && i < changeEnd) ? ">" : " "
+    result.push(`${prefix} ${lineNum} | ${lines[i]}`)
+  }
+  return result.join("\n")
+}
+
 export const baseToolDefinitions: ToolDefinition[] = [
   {
     tool: {
@@ -79,7 +95,11 @@ export const baseToolDefinitions: ToolDefinition[] = [
         },
       },
     },
-    handler: (a) => fs.readFileSync(a.path, "utf-8"),
+    handler: (a) => {
+      const content = fs.readFileSync(a.path, "utf-8")
+      editFileReadTracker.add(a.path)
+      return content
+    },
   },
   {
     tool: {
@@ -98,6 +118,69 @@ export const baseToolDefinitions: ToolDefinition[] = [
       fs.mkdirSync(path.dirname(a.path), { recursive: true })
       fs.writeFileSync(a.path, a.content, "utf-8")
       return "ok"
+    },
+  },
+  {
+    tool: {
+      type: "function",
+      function: {
+        name: "edit_file",
+        description:
+          "surgically edit a file by replacing an exact string. the file must have been read via read_file first. old_string must match exactly one location in the file.",
+        parameters: {
+          type: "object",
+          properties: {
+            path: { type: "string" },
+            old_string: { type: "string" },
+            new_string: { type: "string" },
+          },
+          required: ["path", "old_string", "new_string"],
+        },
+      },
+    },
+    handler: (a) => {
+      if (!editFileReadTracker.has(a.path)) {
+        return `error: you must read the file with read_file before editing it. call read_file on ${a.path} first.`
+      }
+
+      let content: string
+      try {
+        content = fs.readFileSync(a.path, "utf-8")
+      } catch (e) {
+        return `error: could not read file: ${e instanceof Error ? e.message : String(e)}`
+      }
+
+      // Count occurrences
+      const occurrences: number[] = []
+      let searchFrom = 0
+      while (true) {
+        const idx = content.indexOf(a.old_string, searchFrom)
+        if (idx === -1) break
+        occurrences.push(idx)
+        searchFrom = idx + 1
+      }
+
+      if (occurrences.length === 0) {
+        return `error: old_string not found in ${a.path}`
+      }
+
+      if (occurrences.length > 1) {
+        return `error: old_string is ambiguous -- found ${occurrences.length} matches in ${a.path}. provide more context to make the match unique.`
+      }
+
+      // Single unique match -- replace
+      const idx = occurrences[0]
+      const updated = content.slice(0, idx) + a.new_string + content.slice(idx + a.old_string.length)
+      fs.writeFileSync(a.path, updated, "utf-8")
+
+      // Build contextual diff
+      const lines = updated.split("\n")
+      const prefixLines = content.slice(0, idx).split("\n")
+      const changeStartLine = prefixLines.length - 1
+      const newStringLines = a.new_string.split("\n")
+      const changeEndLine = changeStartLine + newStringLines.length
+
+      return buildContextDiff(lines, changeStartLine, changeEndLine)
     },
   },
   {

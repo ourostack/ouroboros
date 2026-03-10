@@ -2,8 +2,9 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import { baseToolDefinitions } from "../../repertoire/tools-base"
-import { editFileReadTracker } from "../../repertoire/tools-base"
+import { baseToolDefinitions, editFileReadTracker } from "../../repertoire/tools-base"
+import { getToolsForChannel } from "../../repertoire/tools"
+import { getChannelCapabilities } from "../../mind/friends/channel"
 
 describe("edit_file tool", () => {
   let tmpDir: string
@@ -180,13 +181,9 @@ describe("edit_file tool", () => {
   // --- REMOTE_BLOCKED_LOCAL_TOOLS ---
 
   it("is in REMOTE_BLOCKED_LOCAL_TOOLS", () => {
-    // We verify this by checking that edit_file is filtered from remote channels
-    // Import the relevant function
-    const { getToolsForChannel } = require("../../repertoire/tools")
-    const { getChannelCapabilities } = require("../../mind/friends/channel")
-
+    // Verify that edit_file is filtered from remote channel tool lists
     const tools = getToolsForChannel(getChannelCapabilities("teams"))
-    const names = tools.map((t: any) => t.function.name)
+    const names = tools.map((t) => t.function.name)
 
     expect(names).not.toContain("edit_file")
   })
