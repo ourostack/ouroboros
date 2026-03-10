@@ -3,7 +3,7 @@ import * as fs from "fs"
 import * as net from "net"
 import * as os from "os"
 import * as path from "path"
-import { getAgentBundlesRoot, getRepoRoot, type AgentProvider } from "../identity"
+import { getAgentBundlesRoot, getAgentName, getRepoRoot, type AgentProvider } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { FileFriendStore } from "../../mind/friends/store-file"
 import type { FriendStore } from "../../mind/friends/store"
@@ -50,6 +50,8 @@ export type OuroCliCommand =
   | { kind: "task.actionable" }
   | { kind: "task.deps" }
   | { kind: "task.sessions" }
+  | { kind: "whoami" }
+  | { kind: "session.list" }
   | { kind: "reminder.create"; title: string; body: string; scheduledAt?: string; cadence?: string; category?: string }
   | { kind: "friend.list" }
   | { kind: "friend.show"; friendId: string }
@@ -77,6 +79,15 @@ export interface OuroCliDeps {
   tailLogs?: (options?: { follow?: boolean; lines?: number; agentFilter?: string }) => () => void
   taskModule?: TaskModule
   friendStore?: FriendStore
+  whoamiInfo?: () => { agentName: string; homePath: string; bonesVersion: string }
+  scanSessions?: () => Promise<SessionEntry[]>
+}
+
+export interface SessionEntry {
+  friendId: string
+  friendName: string
+  channel: string
+  lastActivity: string
 }
 
 export interface EnsureDaemonResult {
@@ -303,6 +314,8 @@ function usage(): string {
     "  ouro reminder create <title> --body <body> [--at <iso>] [--cadence <interval>] [--category <category>]",
     "  ouro friend list",
     "  ouro friend show <id>",
+    "  ouro whoami",
+    "  ouro session list",
   ].join("\n")
 }
 
@@ -605,6 +618,15 @@ function parseReminderCommand(args: string[]): OuroCliCommand {
   throw new Error(`Usage\n${usage()}`)
 }
 
+function parseSessionCommand(args: string[]): OuroCliCommand {
+  const [sub] = args
+  if (!sub) throw new Error(`Usage\n${usage()}`)
+
+  if (sub === "list") return { kind: "session.list" }
+
+  throw new Error(`Usage\n${usage()}`)
+}
+
 function parseFriendCommand(args: string[]): OuroCliCommand {
   const [sub, ...rest] = args
   if (!sub) throw new Error(`Usage\n${usage()}`)
@@ -632,6 +654,8 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "task") return parseTaskCommand(args.slice(1))
   if (head === "reminder") return parseReminderCommand(args.slice(1))
   if (head === "friend") return parseFriendCommand(args.slice(1))
+  if (head === "whoami") return { kind: "whoami" }
+  if (head === "session") return parseSessionCommand(args.slice(1))
   if (head === "chat") {
     if (!second) throw new Error(`Usage\n${usage()}`)
     return { kind: "chat.connect", agent: second }
@@ -1107,7 +1131,7 @@ export function createDefaultOuroCliDeps(socketPath = "/tmp/ouroboros-daemon.soc
   }
 }
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "friend.link" } | { kind: "hatch.start" } | TaskCliCommand | ReminderCliCommand | FriendCliCommand>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "friend.link" } | { kind: "hatch.start" } | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand>): DaemonCommand {
   return command
 }
 
@@ -1221,6 +1245,8 @@ type TaskCliCommand = Extract<OuroCliCommand,
 
 type ReminderCliCommand = Extract<OuroCliCommand, { kind: "reminder.create" }>
 type FriendCliCommand = Extract<OuroCliCommand, { kind: "friend.list" } | { kind: "friend.show" }>
+type WhoamiCliCommand = Extract<OuroCliCommand, { kind: "whoami" }>
+type SessionCliCommand = Extract<OuroCliCommand, { kind: "session.list" }>
 
 function executeTaskCommand(command: TaskCliCommand, taskMod: TaskModule): string {
   if (command.kind === "task.board") {
@@ -1470,6 +1496,45 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     const store = deps.friendStore ?? new FileFriendStore(path.join(getAgentBundlesRoot(), "friends"))
     /* v8 ignore stop */
     const message = await executeFriendCommand(command, store)
+    deps.writeStdout(message)
+    return message
+  }
+
+  // ── whoami (local, no daemon socket needed) ──
+  if (command.kind === "whoami") {
+    /* v8 ignore start -- production default: requires full identity setup @preserve */
+    const info = deps.whoamiInfo
+      ? deps.whoamiInfo()
+      : {
+          agentName: getAgentName(),
+          homePath: path.join(getAgentBundlesRoot(), `${getAgentName()}.ouro`),
+          bonesVersion: getRuntimeMetadata().version,
+        }
+    /* v8 ignore stop */
+    const message = [
+      `agent: ${info.agentName}`,
+      `home: ${info.homePath}`,
+      `bones: ${info.bonesVersion}`,
+    ].join("\n")
+    deps.writeStdout(message)
+    return message
+  }
+
+  // ── session list (local, no daemon socket needed) ──
+  if (command.kind === "session.list") {
+    /* v8 ignore start -- production default: requires full identity setup @preserve */
+    const scanner = deps.scanSessions ?? (async () => [] as SessionEntry[])
+    /* v8 ignore stop */
+    const sessions = await scanner()
+    if (sessions.length === 0) {
+      const message = "no active sessions"
+      deps.writeStdout(message)
+      return message
+    }
+    const lines = sessions.map((s) =>
+      `${s.friendId}  ${s.friendName}  ${s.channel}  ${s.lastActivity}`,
+    )
+    const message = lines.join("\n")
     deps.writeStdout(message)
     return message
   }
