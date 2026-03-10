@@ -10,6 +10,9 @@ const mockSessionPath = vi.fn()
 const mockLoadSession = vi.fn()
 const mockPostTurn = vi.fn()
 const mockGetAgentRoot = vi.fn()
+const mockGetAgentName = vi.fn()
+const mockDrainPending = vi.fn()
+const mockGetPendingDir = vi.fn()
 
 vi.mock("../../mind/prompt", () => ({
   buildSystem: (...args: any[]) => mockBuildSystem(...args),
@@ -30,6 +33,12 @@ vi.mock("../../mind/context", () => ({
 
 vi.mock("../../heart/identity", () => ({
   getAgentRoot: (...args: any[]) => mockGetAgentRoot(...args),
+  getAgentName: (...args: any[]) => mockGetAgentName(...args),
+}))
+
+vi.mock("../../mind/pending", () => ({
+  drainPending: (...args: any[]) => mockDrainPending(...args),
+  getPendingDir: (...args: any[]) => mockGetPendingDir(...args),
 }))
 
 vi.mock("../../nerves/runtime", () => ({
@@ -72,6 +81,9 @@ describe("inner dialog runtime", () => {
     mockLoadSession.mockReset().mockReturnValue(null)
     mockPostTurn.mockReset().mockImplementation(() => {})
     mockGetAgentRoot.mockReset().mockReturnValue(agentRoot)
+    mockGetAgentName.mockReset().mockReturnValue("test-agent")
+    mockDrainPending.mockReset().mockReturnValue([])
+    mockGetPendingDir.mockReset().mockReturnValue("/tmp/fake-pending-dir")
   })
 
   it("builds bootstrap message with aspirations and current state", () => {
@@ -360,5 +372,112 @@ describe("inner dialog runtime", () => {
     expect(content).toContain("Instinct: check in.")
     expect(content).toContain("## incoming messages")
     expect(content).toContain("**ouro-poke**: poke habit-heartbeat")
+  })
+
+  // --- C1: Inner dialog drains pending dir ---
+
+  it("calls drainPending with getPendingDir(agentName, 'self', 'inner', 'dialog') on boot", async () => {
+    mockGetPendingDir.mockReturnValue("/tmp/pending/test-agent/self/inner/dialog")
+    mockDrainPending.mockReturnValue([])
+
+    await runInnerDialogTurn({
+      reason: "boot",
+      instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
+      now: () => new Date("2026-03-09T10:00:00.000Z"),
+    })
+
+    expect(mockGetPendingDir).toHaveBeenCalledWith("test-agent", "self", "inner", "dialog")
+    expect(mockDrainPending).toHaveBeenCalledWith("/tmp/pending/test-agent/self/inner/dialog")
+  })
+
+  it("proceeds normally when drainPending returns no messages (boot)", async () => {
+    mockDrainPending.mockReturnValue([])
+
+    await runInnerDialogTurn({
+      reason: "boot",
+      instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
+      now: () => new Date("2026-03-09T10:01:00.000Z"),
+    })
+
+    expect(mockDrainPending).toHaveBeenCalledTimes(1)
+    const [messages] = mockRunAgent.mock.calls[0]
+    const lastUser = [...messages].reverse().find((m: OpenAI.ChatCompletionMessageParam) => m.role === "user")
+    const content = String(lastUser!.content)
+    expect(content).not.toContain("## pending messages")
+    expect(content).toContain("Keep improving the harness")
+  })
+
+  it("appends pending messages to user message when drainPending returns messages (boot)", async () => {
+    mockDrainPending.mockReturnValue([
+      { from: "cli-session", content: "Think about what I said about refactoring.", timestamp: 1000 },
+      { from: "ouroboros", content: "Hey, can you review my PR?", timestamp: 2000 },
+    ])
+
+    await runInnerDialogTurn({
+      reason: "boot",
+      instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
+      now: () => new Date("2026-03-09T10:02:00.000Z"),
+    })
+
+    const [messages] = mockRunAgent.mock.calls[0]
+    const lastUser = [...messages].reverse().find((m: OpenAI.ChatCompletionMessageParam) => m.role === "user")
+    const content = String(lastUser!.content)
+    expect(content).toContain("## pending messages")
+    expect(content).toContain("**cli-session**: Think about what I said about refactoring.")
+    expect(content).toContain("**ouroboros**: Hey, can you review my PR?")
+  })
+
+  it("appends pending messages to instinct message on resumed session", async () => {
+    mockLoadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "assistant", content: "checkpoint: working on task board" },
+      ],
+    })
+
+    mockDrainPending.mockReturnValue([
+      { from: "ari-cli", content: "Don't forget about the tests.", timestamp: 3000 },
+    ])
+
+    await runInnerDialogTurn({
+      reason: "heartbeat",
+      instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
+      now: () => new Date("2026-03-09T10:03:00.000Z"),
+    })
+
+    expect(mockGetPendingDir).toHaveBeenCalledWith("test-agent", "self", "inner", "dialog")
+    expect(mockDrainPending).toHaveBeenCalledTimes(1)
+    const [messages] = mockRunAgent.mock.calls[0]
+    const lastUser = [...messages].reverse().find((m: OpenAI.ChatCompletionMessageParam) => m.role === "user")
+    const content = String(lastUser!.content)
+    expect(content).toContain("Instinct: check in.")
+    expect(content).toContain("## pending messages")
+    expect(content).toContain("**ari-cli**: Don't forget about the tests.")
+  })
+
+  it("pending messages appear before inbox messages in the user message", async () => {
+    mockDrainPending.mockReturnValue([
+      { from: "self-note", content: "Review my aspirations.", timestamp: 1000 },
+    ])
+
+    const drainInbox = vi.fn(() => [
+      { from: "ouroboros", content: "inbox message" },
+    ])
+
+    await runInnerDialogTurn({
+      reason: "boot",
+      instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
+      now: () => new Date("2026-03-09T10:04:00.000Z"),
+      drainInbox,
+    })
+
+    const [messages] = mockRunAgent.mock.calls[0]
+    const lastUser = [...messages].reverse().find((m: OpenAI.ChatCompletionMessageParam) => m.role === "user")
+    const content = String(lastUser!.content)
+    const pendingIdx = content.indexOf("## pending messages")
+    const inboxIdx = content.indexOf("## incoming messages")
+    expect(pendingIdx).toBeGreaterThan(-1)
+    expect(inboxIdx).toBeGreaterThan(-1)
+    expect(pendingIdx).toBeLessThan(inboxIdx)
   })
 })
