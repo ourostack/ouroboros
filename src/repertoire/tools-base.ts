@@ -51,20 +51,6 @@ function normalizeOptionalText(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null
 }
 
-function buildTaskCreateInput(args: Record<string, string>) {
-  return {
-    title: args.title,
-    type: args.type,
-    category: args.category,
-    body: args.body,
-    status: normalizeOptionalText(args.status) ?? undefined,
-    validator: normalizeOptionalText(args.validator),
-    requester: normalizeOptionalText(args.requester),
-    cadence: normalizeOptionalText(args.cadence),
-    scheduledAt: normalizeOptionalText(args.scheduledAt),
-  }
-}
-
 // Tracks which file paths have been read via read_file in this session.
 // edit_file requires a file to be read first (must-read-first guard).
 export const editFileReadTracker = new Set<string>();
@@ -533,53 +519,6 @@ export const baseToolDefinitions: ToolDefinition[] = [
     tool: {
       type: "function",
       function: {
-        name: "task_board",
-        description: "show the task board grouped by status",
-        parameters: { type: "object", properties: {} },
-      },
-    },
-    handler: () => {
-      const board = getTaskModule().getBoard();
-      return board.full || board.compact || "no tasks found";
-    },
-  },
-  {
-    tool: {
-      type: "function",
-      function: {
-        name: "task_create",
-        description:
-          "create a new task in the bundle task system. optionally set `scheduledAt` for a one-time reminder or `cadence` for recurring daemon-scheduled work.",
-        parameters: {
-          type: "object",
-          properties: {
-            title: { type: "string" },
-            type: { type: "string", enum: ["one-shot", "ongoing", "habit"] },
-            category: { type: "string" },
-            body: { type: "string" },
-            status: { type: "string" },
-            validator: { type: "string" },
-            requester: { type: "string" },
-            scheduledAt: { type: "string", description: "ISO timestamp for a one-time scheduled run/reminder" },
-            cadence: { type: "string", description: "recurrence like 30m, 1h, 1d, or cron" },
-          },
-          required: ["title", "type", "category", "body"],
-        },
-      },
-    },
-    handler: (a) => {
-      try {
-        const created = getTaskModule().createTask(buildTaskCreateInput(a));
-        return `created: ${created}`;
-      } catch (error) {
-        return `error: ${error instanceof Error ? error.message : String(error)}`;
-      }
-    },
-  },
-  {
-    tool: {
-      type: "function",
-      function: {
         name: "schedule_reminder",
         description:
           "create a scheduled reminder or recurring daemon job. use `scheduledAt` for one-time reminders and `cadence` for recurring reminders. this writes canonical task fields that the daemon reconciles into OS-level jobs.",
@@ -616,104 +555,6 @@ export const baseToolDefinitions: ToolDefinition[] = [
       } catch (error) {
         return `error: ${error instanceof Error ? error.message : String(error)}`
       }
-    },
-  },
-  {
-    tool: {
-      type: "function",
-      function: {
-        name: "task_update_status",
-        description: "update a task status using validated transitions",
-        parameters: {
-          type: "object",
-          properties: {
-            name: { type: "string" },
-            status: { type: "string" },
-          },
-          required: ["name", "status"],
-        },
-      },
-    },
-    handler: (a) => {
-      const result = getTaskModule().updateStatus(a.name, a.status);
-      if (!result.ok) {
-        return `error: ${result.reason ?? "status update failed"}`;
-      }
-      const archivedSuffix = result.archived && result.archived.length > 0
-        ? ` | archived: ${result.archived.join(", ")}`
-        : "";
-      return `updated: ${a.name} -> ${result.to}${archivedSuffix}`;
-    },
-  },
-  {
-    tool: {
-      type: "function",
-      function: {
-        name: "task_board_status",
-        description: "show board detail for a specific status",
-        parameters: {
-          type: "object",
-          properties: {
-            status: { type: "string" },
-          },
-          required: ["status"],
-        },
-      },
-    },
-    handler: (a) => {
-      const lines = getTaskModule().boardStatus(a.status);
-      return lines.length > 0 ? lines.join("\n") : "no tasks in that status";
-    },
-  },
-  {
-    tool: {
-      type: "function",
-      function: {
-        name: "task_board_action",
-        description: "show tasks or validation issues that require action",
-        parameters: {
-          type: "object",
-          properties: {
-            scope: { type: "string" },
-          },
-        },
-      },
-    },
-    handler: (a) => {
-      const lines = getTaskModule().boardAction();
-      if (!a.scope) {
-        return lines.length > 0 ? lines.join("\n") : "no action required";
-      }
-      const filtered = lines.filter((line) => line.includes(a.scope));
-      return filtered.length > 0 ? filtered.join("\n") : "no matching action items";
-    },
-  },
-  {
-    tool: {
-      type: "function",
-      function: {
-        name: "task_board_deps",
-        description: "show unresolved task dependencies",
-        parameters: { type: "object", properties: {} },
-      },
-    },
-    handler: () => {
-      const lines = getTaskModule().boardDeps();
-      return lines.length > 0 ? lines.join("\n") : "no unresolved dependencies";
-    },
-  },
-  {
-    tool: {
-      type: "function",
-      function: {
-        name: "task_board_sessions",
-        description: "show tasks with active coding or sub-agent sessions",
-        parameters: { type: "object", properties: {} },
-      },
-    },
-    handler: () => {
-      const lines = getTaskModule().boardSessions();
-      return lines.length > 0 ? lines.join("\n") : "no active sessions";
     },
   },
   {

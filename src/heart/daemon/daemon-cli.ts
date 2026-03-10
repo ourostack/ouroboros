@@ -30,6 +30,8 @@ import { listEnabledBundleAgents } from "./agent-discovery"
 import { applyPendingUpdates, registerUpdateHook } from "./update-hooks"
 import { bundleMetaHook } from "./hooks/bundle-meta"
 import { getPackageVersion } from "../../mind/bundle-manifest"
+import { getTaskModule } from "../../repertoire/tasks"
+import type { TaskModule } from "../../repertoire/tasks/types"
 import { syncGlobalOuroBotWrapper as defaultSyncGlobalOuroBotWrapper } from "./ouro-bot-global-installer"
 
 export type OuroCliCommand =
@@ -40,6 +42,13 @@ export type OuroCliCommand =
   | { kind: "chat.connect"; agent: string }
   | { kind: "message.send"; from: string; to: string; content: string; sessionId?: string; taskRef?: string }
   | { kind: "task.poke"; agent: string; taskId: string }
+  | { kind: "task.board"; status?: string }
+  | { kind: "task.create"; title: string; type?: string }
+  | { kind: "task.update"; id: string; status: string }
+  | { kind: "task.show"; id: string }
+  | { kind: "task.actionable" }
+  | { kind: "task.deps" }
+  | { kind: "task.sessions" }
   | { kind: "friend.link"; agent: string; friendId: string; provider: IdentityProvider; externalId: string }
   | { kind: "hatch.start"; agentName?: string; humanName?: string; provider?: AgentProvider; credentials?: HatchCredentialsInput; migrationPath?: string }
 
@@ -62,6 +71,7 @@ export interface OuroCliDeps {
   syncGlobalOuroBotWrapper?: () => Promise<unknown> | unknown
   startChat?: (agentName: string) => Promise<void>
   tailLogs?: (options?: { follow?: boolean; lines?: number; agentFilter?: string }) => () => void
+  taskModule?: TaskModule
 }
 
 export interface EnsureDaemonResult {
@@ -280,6 +290,11 @@ function usage(): string {
     "  ouro msg --to <agent> [--session <id>] [--task <ref>] <message>",
     "  ouro poke <agent> --task <task-id>",
     "  ouro link <agent> --friend <id> --provider <provider> --external-id <external-id>",
+    "  ouro task board [<status>]",
+    "  ouro task create <title> [--type <type>]",
+    "  ouro task update <id> <status>",
+    "  ouro task show <id>",
+    "  ouro task actionable|deps|sessions",
   ].join("\n")
 }
 
@@ -495,6 +510,48 @@ function parseHatchCommand(args: string[]): OuroCliCommand {
   }
 }
 
+function parseTaskCommand(args: string[]): OuroCliCommand {
+  const [sub, ...rest] = args
+  if (!sub) throw new Error(`Usage\n${usage()}`)
+
+  if (sub === "board") {
+    const status = rest[0]
+    return status ? { kind: "task.board", status } : { kind: "task.board" }
+  }
+
+  if (sub === "create") {
+    const title = rest[0]
+    if (!title) throw new Error(`Usage\n${usage()}`)
+    let type: string | undefined
+    for (let i = 1; i < rest.length; i++) {
+      if (rest[i] === "--type" && rest[i + 1]) {
+        type = rest[i + 1]
+        i += 1
+      }
+    }
+    return type ? { kind: "task.create", title, type } : { kind: "task.create", title }
+  }
+
+  if (sub === "update") {
+    const id = rest[0]
+    const status = rest[1]
+    if (!id || !status) throw new Error(`Usage\n${usage()}`)
+    return { kind: "task.update", id, status }
+  }
+
+  if (sub === "show") {
+    const id = rest[0]
+    if (!id) throw new Error(`Usage\n${usage()}`)
+    return { kind: "task.show", id }
+  }
+
+  if (sub === "actionable") return { kind: "task.actionable" }
+  if (sub === "deps") return { kind: "task.deps" }
+  if (sub === "sessions") return { kind: "task.sessions" }
+
+  throw new Error(`Usage\n${usage()}`)
+}
+
 export function parseOuroCommand(args: string[]): OuroCliCommand {
   const [head, second] = args
   if (!head) return { kind: "daemon.up" }
@@ -504,6 +561,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "status") return { kind: "daemon.status" }
   if (head === "logs") return { kind: "daemon.logs" }
   if (head === "hatch") return parseHatchCommand(args.slice(1))
+  if (head === "task") return parseTaskCommand(args.slice(1))
   if (head === "chat") {
     if (!second) throw new Error(`Usage\n${usage()}`)
     return { kind: "chat.connect", agent: second }
@@ -979,7 +1037,7 @@ export function createDefaultOuroCliDeps(socketPath = "/tmp/ouroboros-daemon.soc
   }
 }
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "friend.link" } | { kind: "hatch.start" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "friend.link" } | { kind: "hatch.start" } | TaskCliCommand>): DaemonCommand {
   return command
 }
 
@@ -1079,6 +1137,81 @@ async function performSystemSetup(deps: OuroCliDeps): Promise<void> {
 
   // Register .ouro bundle type (UTI on macOS)
   await registerOuroBundleTypeNonBlocking(deps)
+}
+
+type TaskCliCommand = Extract<OuroCliCommand,
+  | { kind: "task.board" }
+  | { kind: "task.create" }
+  | { kind: "task.update" }
+  | { kind: "task.show" }
+  | { kind: "task.actionable" }
+  | { kind: "task.deps" }
+  | { kind: "task.sessions" }
+>
+
+function executeTaskCommand(command: TaskCliCommand, taskMod: TaskModule): string {
+  if (command.kind === "task.board") {
+    if (command.status) {
+      const lines = taskMod.boardStatus(command.status)
+      return lines.length > 0 ? lines.join("\n") : "no tasks in that status"
+    }
+    const board = taskMod.getBoard()
+    return board.full || board.compact || "no tasks found"
+  }
+
+  if (command.kind === "task.create") {
+    try {
+      const created = taskMod.createTask({
+        title: command.title,
+        type: command.type ?? "one-shot",
+        category: "general",
+        body: "",
+      })
+      return `created: ${created}`
+    } catch (error) {
+      return `error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(error)}`
+    }
+  }
+
+  if (command.kind === "task.update") {
+    const result = taskMod.updateStatus(command.id, command.status)
+    if (!result.ok) {
+      return `error: ${result.reason ?? "status update failed"}`
+    }
+    const archivedSuffix = result.archived && result.archived.length > 0
+      ? ` | archived: ${result.archived.join(", ")}`
+      : ""
+    return `updated: ${command.id} -> ${result.to}${archivedSuffix}`
+  }
+
+  if (command.kind === "task.show") {
+    const task = taskMod.getTask(command.id)
+    if (!task) return `task not found: ${command.id}`
+    return [
+      `title: ${task.title}`,
+      `type: ${task.type}`,
+      `status: ${task.status}`,
+      `category: ${task.category}`,
+      `created: ${task.created}`,
+      `updated: ${task.updated}`,
+      `path: ${task.path}`,
+      task.body ? `\n${task.body}` : "",
+    ].filter(Boolean).join("\n")
+  }
+
+  if (command.kind === "task.actionable") {
+    const lines = taskMod.boardAction()
+    return lines.length > 0 ? lines.join("\n") : "no action required"
+  }
+
+  if (command.kind === "task.deps") {
+    const lines = taskMod.boardDeps()
+    return lines.length > 0 ? lines.join("\n") : "no unresolved dependencies"
+  }
+
+  // command.kind === "task.sessions"
+  const lines = taskMod.boardSessions()
+  return lines.length > 0 ? lines.join("\n") : "no active sessions"
 }
 
 export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefaultOuroCliDeps()): Promise<string> {
@@ -1196,6 +1329,16 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   if (command.kind === "friend.link") {
     const linker = deps.linkFriendIdentity ?? defaultLinkFriendIdentity
     const message = await linker(command)
+    deps.writeStdout(message)
+    return message
+  }
+
+  // ── task subcommands (local, no daemon socket needed) ──
+  if (command.kind === "task.board" || command.kind === "task.create" || command.kind === "task.update" ||
+      command.kind === "task.show" || command.kind === "task.actionable" || command.kind === "task.deps" ||
+      command.kind === "task.sessions") {
+    const taskMod = deps.taskModule ?? getTaskModule()
+    const message = executeTaskCommand(command, taskMod)
     deps.writeStdout(message)
     return message
   }
