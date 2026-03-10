@@ -7,7 +7,7 @@ import { getAgentBundlesRoot, getAgentName, getRepoRoot, type AgentProvider } fr
 import { emitNervesEvent } from "../../nerves/runtime"
 import { FileFriendStore } from "../../mind/friends/store-file"
 import type { FriendStore } from "../../mind/friends/store"
-import { isIdentityProvider, type IdentityProvider } from "../../mind/friends/types"
+import { isIdentityProvider, type IdentityProvider, type TrustLevel } from "../../mind/friends/types"
 import type { DaemonCommand, DaemonResponse } from "./daemon"
 import { registerOuroBundleUti as defaultRegisterOuroBundleUti } from "./ouro-uti"
 import { installOuroCommand as defaultInstallOuroCommand, type OuroPathInstallResult } from "./ouro-path-installer"
@@ -56,6 +56,7 @@ export type OuroCliCommand =
   | { kind: "friend.list" }
   | { kind: "friend.show"; friendId: string }
   | { kind: "friend.link"; agent: string; friendId: string; provider: IdentityProvider; externalId: string }
+  | { kind: "friend.unlink"; agent: string; friendId: string; provider: IdentityProvider; externalId: string }
   | { kind: "hatch.start"; agentName?: string; humanName?: string; provider?: AgentProvider; credentials?: HatchCredentialsInput; migrationPath?: string }
 
 export interface OuroCliDeps {
@@ -67,7 +68,6 @@ export interface OuroCliDeps {
   cleanupStaleSocket: (socketPath: string) => void
   fallbackPendingMessage: (command: Extract<DaemonCommand, { kind: "message.send" }>) => string
   installSubagents: () => Promise<SubagentInstallResult>
-  linkFriendIdentity?: (command: Extract<OuroCliCommand, { kind: "friend.link" }>) => Promise<string>
   listDiscoveredAgents?: () => Promise<string[]> | string[]
   runHatchFlow?: (input: HatchFlowInput) => Promise<HatchFlowResult>
   runAdoptionSpecialist?: () => Promise<string | null>
@@ -314,6 +314,8 @@ function usage(): string {
     "  ouro reminder create <title> --body <body> [--at <iso>] [--cadence <interval>] [--category <category>]",
     "  ouro friend list",
     "  ouro friend show <id>",
+    "  ouro friend link <agent> --friend <id> --provider <p> --external-id <eid>",
+    "  ouro friend unlink <agent> --friend <id> --provider <p> --external-id <eid>",
     "  ouro whoami",
     "  ouro session list",
   ].join("\n")
@@ -414,7 +416,7 @@ function parsePokeCommand(args: string[]): OuroCliCommand {
   return { kind: "task.poke", agent, taskId }
 }
 
-function parseLinkCommand(args: string[]): OuroCliCommand {
+function parseLinkCommand(args: string[], kind: "friend.link" | "friend.unlink" = "friend.link"): OuroCliCommand {
   const agent = args[0]
   if (!agent) throw new Error(`Usage\n${usage()}`)
 
@@ -448,12 +450,12 @@ function parseLinkCommand(args: string[]): OuroCliCommand {
   }
 
   return {
-    kind: "friend.link",
+    kind,
     agent,
     friendId,
     provider: providerRaw,
     externalId,
-  }
+  } as OuroCliCommand
 }
 
 function isAgentProvider(value: unknown): value is AgentProvider {
@@ -639,6 +641,9 @@ function parseFriendCommand(args: string[]): OuroCliCommand {
     return { kind: "friend.show", friendId }
   }
 
+  if (sub === "link") return parseLinkCommand(rest, "friend.link")
+  if (sub === "unlink") return parseLinkCommand(rest, "friend.unlink")
+
   throw new Error(`Usage\n${usage()}`)
 }
 
@@ -821,37 +826,7 @@ function defaultListDiscoveredAgents(): string[] {
   })
 }
 
-async function defaultLinkFriendIdentity(command: Extract<OuroCliCommand, { kind: "friend.link" }>): Promise<string> {
-  const fp = path.join(getAgentBundlesRoot(), `${command.agent}.ouro`, "friends")
-  const friendStore = new FileFriendStore(fp)
-  const current = await friendStore.get(command.friendId)
-  if (!current) {
-    return `friend not found: ${command.friendId}`
-  }
 
-  const alreadyLinked = current.externalIds.some(
-    (ext) => ext.provider === command.provider && ext.externalId === command.externalId,
-  )
-  if (alreadyLinked) {
-    return `identity already linked: ${command.provider}:${command.externalId}`
-  }
-
-  const now = new Date().toISOString()
-  await friendStore.put(command.friendId, {
-    ...current,
-    externalIds: [
-      ...current.externalIds,
-      {
-        provider: command.provider,
-        externalId: command.externalId,
-        linkedAt: now,
-      },
-    ],
-    updatedAt: now,
-  })
-
-  return `linked ${command.provider}:${command.externalId} to ${command.friendId}`
-}
 
 export interface DiscoveredCredential {
   agentName: string
@@ -1115,7 +1090,6 @@ export function createDefaultOuroCliDeps(socketPath = "/tmp/ouroboros-daemon.soc
     cleanupStaleSocket: defaultCleanupStaleSocket,
     fallbackPendingMessage: defaultFallbackPendingMessage,
     installSubagents: defaultInstallSubagents,
-    linkFriendIdentity: defaultLinkFriendIdentity,
     listDiscoveredAgents: defaultListDiscoveredAgents,
     runHatchFlow: defaultRunHatchFlow,
     promptInput: defaultPromptInput,
@@ -1131,7 +1105,7 @@ export function createDefaultOuroCliDeps(socketPath = "/tmp/ouroboros-daemon.soc
   }
 }
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "friend.link" } | { kind: "hatch.start" } | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "hatch.start" } | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand>): DaemonCommand {
   return command
 }
 
@@ -1244,7 +1218,7 @@ type TaskCliCommand = Extract<OuroCliCommand,
 >
 
 type ReminderCliCommand = Extract<OuroCliCommand, { kind: "reminder.create" }>
-type FriendCliCommand = Extract<OuroCliCommand, { kind: "friend.list" } | { kind: "friend.show" }>
+type FriendCliCommand = Extract<OuroCliCommand, { kind: "friend.list" } | { kind: "friend.show" } | { kind: "friend.link" } | { kind: "friend.unlink" }>
 type WhoamiCliCommand = Extract<OuroCliCommand, { kind: "whoami" }>
 type SessionCliCommand = Extract<OuroCliCommand, { kind: "session.list" }>
 
@@ -1313,6 +1287,14 @@ function executeTaskCommand(command: TaskCliCommand, taskMod: TaskModule): strin
   return lines.length > 0 ? lines.join("\n") : "no active sessions"
 }
 
+const TRUST_RANK: Record<string, number> = { family: 4, friend: 3, acquaintance: 2, stranger: 1 }
+
+function higherTrust(a?: TrustLevel, b?: TrustLevel): TrustLevel {
+  const rankA = TRUST_RANK[a ?? "stranger"] ?? 1
+  const rankB = TRUST_RANK[b ?? "stranger"] ?? 1
+  return rankA >= rankB ? (a ?? "stranger") : (b ?? "stranger")
+}
+
 async function executeFriendCommand(command: FriendCliCommand, store: FriendStore): Promise<string> {
   if (command.kind === "friend.list") {
     const listAll = store.listAll
@@ -1327,10 +1309,71 @@ async function executeFriendCommand(command: FriendCliCommand, store: FriendStor
     return lines.join("\n")
   }
 
-  // command.kind === "friend.show"
-  const record = await store.get(command.friendId)
-  if (!record) return `friend not found: ${command.friendId}`
-  return JSON.stringify(record, null, 2)
+  if (command.kind === "friend.show") {
+    const record = await store.get(command.friendId)
+    if (!record) return `friend not found: ${command.friendId}`
+    return JSON.stringify(record, null, 2)
+  }
+
+  if (command.kind === "friend.link") {
+    const current = await store.get(command.friendId)
+    if (!current) return `friend not found: ${command.friendId}`
+
+    const alreadyLinked = current.externalIds.some(
+      (ext) => ext.provider === command.provider && ext.externalId === command.externalId,
+    )
+    if (alreadyLinked) return `identity already linked: ${command.provider}:${command.externalId}`
+
+    const now = new Date().toISOString()
+    const newExternalIds = [
+      ...current.externalIds,
+      { provider: command.provider, externalId: command.externalId, linkedAt: now },
+    ]
+
+    // Orphan cleanup: check if another friend has this externalId
+    const orphan = await store.findByExternalId(command.provider, command.externalId)
+    let mergeMessage = ""
+    let mergedNotes = { ...current.notes }
+    let mergedTrust = current.trustLevel
+    let orphanExternalIds: typeof current.externalIds = []
+
+    if (orphan && orphan.id !== command.friendId) {
+      // Merge orphan's notes (target's notes take priority)
+      mergedNotes = { ...orphan.notes, ...current.notes }
+      // Keep higher trust level
+      mergedTrust = higherTrust(current.trustLevel, orphan.trustLevel)
+      // Collect orphan's other externalIds (excluding the one being linked)
+      orphanExternalIds = orphan.externalIds.filter(
+        (ext) => !(ext.provider === command.provider && ext.externalId === command.externalId),
+      )
+      await store.delete(orphan.id)
+      mergeMessage = ` (merged orphan ${orphan.id})`
+    }
+
+    await store.put(command.friendId, {
+      ...current,
+      externalIds: [...newExternalIds, ...orphanExternalIds],
+      notes: mergedNotes,
+      trustLevel: mergedTrust,
+      updatedAt: now,
+    })
+
+    return `linked ${command.provider}:${command.externalId} to ${command.friendId}${mergeMessage}`
+  }
+
+  // command.kind === "friend.unlink"
+  const current = await store.get(command.friendId)
+  if (!current) return `friend not found: ${command.friendId}`
+
+  const idx = current.externalIds.findIndex(
+    (ext) => ext.provider === command.provider && ext.externalId === command.externalId,
+  )
+  if (idx === -1) return `identity not linked: ${command.provider}:${command.externalId}`
+
+  const now = new Date().toISOString()
+  const filtered = current.externalIds.filter((_, i) => i !== idx)
+  await store.put(command.friendId, { ...current, externalIds: filtered, updatedAt: now })
+  return `unlinked ${command.provider}:${command.externalId} from ${command.friendId}`
 }
 
 function executeReminderCommand(command: ReminderCliCommand, taskMod: TaskModule): string {
@@ -1461,13 +1504,6 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     return ""
   }
 
-  if (command.kind === "friend.link") {
-    const linker = deps.linkFriendIdentity ?? defaultLinkFriendIdentity
-    const message = await linker(command)
-    deps.writeStdout(message)
-    return message
-  }
-
   // ── task subcommands (local, no daemon socket needed) ──
   if (command.kind === "task.board" || command.kind === "task.create" || command.kind === "task.update" ||
       command.kind === "task.show" || command.kind === "task.actionable" || command.kind === "task.deps" ||
@@ -1491,9 +1527,16 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   }
 
   // ── friend subcommands (local, no daemon socket needed) ──
-  if (command.kind === "friend.list" || command.kind === "friend.show") {
+  if (command.kind === "friend.list" || command.kind === "friend.show" || command.kind === "friend.link" || command.kind === "friend.unlink") {
     /* v8 ignore start -- production default: requires full identity setup @preserve */
-    const store = deps.friendStore ?? new FileFriendStore(path.join(getAgentBundlesRoot(), "friends"))
+    let store = deps.friendStore
+    if (!store) {
+      // link/unlink operate on a specific agent's friend store
+      const friendsDir = (command.kind === "friend.link" || command.kind === "friend.unlink")
+        ? path.join(getAgentBundlesRoot(), `${command.agent}.ouro`, "friends")
+        : path.join(getAgentBundlesRoot(), "friends")
+      store = new FileFriendStore(friendsDir)
+    }
     /* v8 ignore stop */
     const message = await executeFriendCommand(command, store)
     deps.writeStdout(message)

@@ -671,7 +671,6 @@ describe("daemon CLI default dependency branches", () => {
       writeStdout: vi.fn(),
     })
 
-    expect(typeof deps.linkFriendIdentity).toBe("function")
     expect(result).toBe("friend not found: missing-friend")
   })
 
@@ -736,7 +735,7 @@ describe("daemon CLI default dependency branches", () => {
     expect(saved.externalIds).toHaveLength(1)
   })
 
-  it("uses built-in friend linker when deps.linkFriendIdentity is undefined", async () => {
+  it("links friend identity using default friend store when no friendStore dep", async () => {
     vi.resetModules()
 
     const tmpBundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-link-fallback-linker-"))
@@ -787,7 +786,6 @@ describe("daemon CLI default dependency branches", () => {
       "aad-user-222",
     ], {
       ...deps,
-      linkFriendIdentity: undefined,
       writeStdout: vi.fn(),
     })
 

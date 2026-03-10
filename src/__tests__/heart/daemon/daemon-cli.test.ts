@@ -296,6 +296,51 @@ describe("ouro CLI parsing", () => {
     })
   })
 
+  it("parses friend link subcommand", () => {
+    expect(parseOuroCommand([
+      "friend", "link", "slugger",
+      "--friend", "friend-1",
+      "--provider", "aad",
+      "--external-id", "aad-user-123",
+    ])).toEqual({
+      kind: "friend.link",
+      agent: "slugger",
+      friendId: "friend-1",
+      provider: "aad",
+      externalId: "aad-user-123",
+    })
+  })
+
+  it("parses friend unlink subcommand", () => {
+    expect(parseOuroCommand([
+      "friend", "unlink", "slugger",
+      "--friend", "friend-1",
+      "--provider", "aad",
+      "--external-id", "aad-user-123",
+    ])).toEqual({
+      kind: "friend.unlink",
+      agent: "slugger",
+      friendId: "friend-1",
+      provider: "aad",
+      externalId: "aad-user-123",
+    })
+  })
+
+  it("ouro link still works as backward compat alias", () => {
+    expect(parseOuroCommand([
+      "link", "slugger",
+      "--friend", "friend-1",
+      "--provider", "aad",
+      "--external-id", "ext-1",
+    ])).toEqual({
+      kind: "friend.link",
+      agent: "slugger",
+      friendId: "friend-1",
+      provider: "aad",
+      externalId: "ext-1",
+    })
+  })
+
   it("rejects malformed friend subcommands", () => {
     // bare "friend" with no subcommand
     expect(() => parseOuroCommand(["friend"])).toThrow("Usage")
@@ -305,6 +350,12 @@ describe("ouro CLI parsing", () => {
 
     // unknown friend subcommand
     expect(() => parseOuroCommand(["friend", "unknown"])).toThrow("Usage")
+
+    // friend link with no agent
+    expect(() => parseOuroCommand(["friend", "link"])).toThrow("Usage")
+
+    // friend unlink with no agent
+    expect(() => parseOuroCommand(["friend", "unlink"])).toThrow("Usage")
   })
 
   it("rejects deprecated command families", () => {
@@ -1041,7 +1092,26 @@ describe("ouro CLI execution", () => {
     )
   })
 
-  it("routes link command through local friend linker instead of daemon socket", async () => {
+  it("routes link command through friend store instead of daemon socket", async () => {
+    const friendRecord = {
+      id: "friend-1",
+      name: "Ari",
+      trustLevel: "family" as const,
+      externalIds: [{ provider: "local" as const, externalId: "ari", linkedAt: "2026-01-01T00:00:00.000Z" }],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: {},
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      schemaVersion: 1,
+    }
+    const mockFriendStore = {
+      get: vi.fn(async () => friendRecord),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(async () => null),
+      listAll: vi.fn(),
+    }
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
       sendCommand: vi.fn(async () => ({ ok: true, message: "unexpected daemon call" })),
@@ -1051,7 +1121,7 @@ describe("ouro CLI execution", () => {
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
       installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
-      linkFriendIdentity: vi.fn(async () => "linked aad:aad-user-123 to friend-1"),
+      friendStore: mockFriendStore as any,
     }
 
     const result = await runOuroCli([
@@ -1066,13 +1136,7 @@ describe("ouro CLI execution", () => {
     ], deps)
 
     expect(result).toContain("linked aad:aad-user-123 to friend-1")
-    expect(deps.linkFriendIdentity).toHaveBeenCalledWith({
-      kind: "friend.link",
-      agent: "slugger",
-      friendId: "friend-1",
-      provider: "aad",
-      externalId: "aad-user-123",
-    })
+    expect(mockFriendStore.put).toHaveBeenCalled()
     expect(deps.sendCommand).not.toHaveBeenCalled()
   })
 
@@ -3570,6 +3634,195 @@ describe("ouro friend CLI execution", () => {
 
     expect(result).toContain("not found")
     expect(mockFriendStore.get).toHaveBeenCalledWith("nonexistent")
+  })
+
+  it("ouro friend link adds externalId and checks for orphans", async () => {
+    const targetFriend = {
+      id: "friend-1",
+      name: "Ari",
+      trustLevel: "family",
+      externalIds: [{ provider: "local", externalId: "ari", linkedAt: "2026-01-01T00:00:00.000Z" }],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: {},
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      schemaVersion: 1,
+    }
+    const mockFriendStore = {
+      get: vi.fn(async (id: string) => id === "friend-1" ? targetFriend : null),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(async () => null),
+      listAll: vi.fn(),
+    }
+    const deps = makeDeps({ friendStore: mockFriendStore as any })
+    const result = await runOuroCli([
+      "friend", "link", "slugger",
+      "--friend", "friend-1",
+      "--provider", "imessage-handle",
+      "--external-id", "+1234567890",
+    ], deps)
+
+    expect(result).toContain("linked")
+    expect(mockFriendStore.put).toHaveBeenCalledWith("friend-1", expect.objectContaining({
+      externalIds: expect.arrayContaining([
+        expect.objectContaining({ provider: "imessage-handle", externalId: "+1234567890" }),
+      ]),
+    }))
+    expect(mockFriendStore.findByExternalId).toHaveBeenCalledWith("imessage-handle", "+1234567890")
+  })
+
+  it("ouro friend link merges orphan friend when externalId found on another record", async () => {
+    const targetFriend = {
+      id: "friend-1",
+      name: "Ari",
+      trustLevel: "family",
+      externalIds: [{ provider: "local", externalId: "ari", linkedAt: "2026-01-01T00:00:00.000Z" }],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: { role: { value: "engineer", savedAt: "2026-01-01T00:00:00.000Z" } },
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      schemaVersion: 1,
+    }
+    const orphanFriend = {
+      id: "orphan-1",
+      name: "Unknown +1234567890",
+      trustLevel: "stranger",
+      externalIds: [
+        { provider: "imessage-handle", externalId: "+1234567890", linkedAt: "2026-02-01T00:00:00.000Z" },
+        { provider: "imessage-handle", externalId: "+0987654321", linkedAt: "2026-02-01T00:00:00.000Z" },
+      ],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: { phone: { value: "+1234567890", savedAt: "2026-02-01T00:00:00.000Z" } },
+      createdAt: "2026-02-01T00:00:00.000Z",
+      updatedAt: "2026-02-01T00:00:00.000Z",
+      schemaVersion: 1,
+    }
+    const mockFriendStore = {
+      get: vi.fn(async (id: string) => id === "friend-1" ? targetFriend : null),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(async () => orphanFriend),
+      listAll: vi.fn(),
+    }
+    const deps = makeDeps({ friendStore: mockFriendStore as any })
+    const result = await runOuroCli([
+      "friend", "link", "slugger",
+      "--friend", "friend-1",
+      "--provider", "imessage-handle",
+      "--external-id", "+1234567890",
+    ], deps)
+
+    expect(result).toContain("linked")
+    expect(result).toContain("merged")
+    // Orphan should be deleted
+    expect(mockFriendStore.delete).toHaveBeenCalledWith("orphan-1")
+    // Target should get orphan's extra externalIds and notes merged
+    const putCall = mockFriendStore.put.mock.calls[0]
+    const savedRecord = putCall[1]
+    // Should have original + new + orphan's other externalId
+    expect(savedRecord.externalIds).toEqual(expect.arrayContaining([
+      expect.objectContaining({ provider: "imessage-handle", externalId: "+0987654321" }),
+      expect.objectContaining({ provider: "imessage-handle", externalId: "+1234567890" }),
+    ]))
+    // Notes should be merged
+    expect(savedRecord.notes.phone).toBeDefined()
+    expect(savedRecord.notes.role).toBeDefined()
+    // Trust level should keep the higher one (family > stranger)
+    expect(savedRecord.trustLevel).toBe("family")
+  })
+
+  it("ouro friend unlink removes matching externalId", async () => {
+    const targetFriend = {
+      id: "friend-1",
+      name: "Ari",
+      trustLevel: "family",
+      externalIds: [
+        { provider: "local", externalId: "ari", linkedAt: "2026-01-01T00:00:00.000Z" },
+        { provider: "imessage-handle", externalId: "+1234567890", linkedAt: "2026-02-01T00:00:00.000Z" },
+      ],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: {},
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      schemaVersion: 1,
+    }
+    const mockFriendStore = {
+      get: vi.fn(async () => targetFriend),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      listAll: vi.fn(),
+    }
+    const deps = makeDeps({ friendStore: mockFriendStore as any })
+    const result = await runOuroCli([
+      "friend", "unlink", "slugger",
+      "--friend", "friend-1",
+      "--provider", "imessage-handle",
+      "--external-id", "+1234567890",
+    ], deps)
+
+    expect(result).toContain("unlinked")
+    expect(mockFriendStore.put).toHaveBeenCalledWith("friend-1", expect.objectContaining({
+      externalIds: [
+        expect.objectContaining({ provider: "local", externalId: "ari" }),
+      ],
+    }))
+  })
+
+  it("ouro friend unlink returns not-found when friend does not exist", async () => {
+    const mockFriendStore = {
+      get: vi.fn(async () => null),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      listAll: vi.fn(),
+    }
+    const deps = makeDeps({ friendStore: mockFriendStore as any })
+    const result = await runOuroCli([
+      "friend", "unlink", "slugger",
+      "--friend", "friend-1",
+      "--provider", "imessage-handle",
+      "--external-id", "+1234567890",
+    ], deps)
+
+    expect(result).toContain("not found")
+  })
+
+  it("ouro friend unlink returns message when externalId not found on friend", async () => {
+    const targetFriend = {
+      id: "friend-1",
+      name: "Ari",
+      trustLevel: "family",
+      externalIds: [{ provider: "local", externalId: "ari", linkedAt: "2026-01-01T00:00:00.000Z" }],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: {},
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      schemaVersion: 1,
+    }
+    const mockFriendStore = {
+      get: vi.fn(async () => targetFriend),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      listAll: vi.fn(),
+    }
+    const deps = makeDeps({ friendStore: mockFriendStore as any })
+    const result = await runOuroCli([
+      "friend", "unlink", "slugger",
+      "--friend", "friend-1",
+      "--provider", "imessage-handle",
+      "--external-id", "+1234567890",
+    ], deps)
+
+    expect(result).toContain("not linked")
+    expect(mockFriendStore.put).not.toHaveBeenCalled()
   })
 })
 
