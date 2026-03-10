@@ -4,7 +4,6 @@ import { getProviderDisplayLabel } from "../heart/core";
 import { finalAnswerTool, getToolsForChannel } from "../repertoire/tools";
 import { listSkills } from "../repertoire/skills";
 import { getAgentRoot, getAgentName, getAgentSecretsPath, loadAgentConfig, type SenseName } from "../heart/identity";
-import * as os from "os";
 import type { Channel, ResolvedContext } from "./friends/types";
 import { getChannelCapabilities } from "./friends/channel";
 import { emitNervesEvent } from "../nerves/runtime";
@@ -463,7 +462,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     skillsSection(),
     taskBoardSection(),
     buildSessionSummary({
-      sessionsDir: path.join(os.homedir(), ".agentstate", getAgentName(), "sessions"),
+      sessionsDir: path.join(getAgentRoot(), "state", "sessions"),
       friendsDir: path.join(getAgentRoot(), "friends"),
       agentName: getAgentName(),
       currentFriendId: context?.friend?.id,

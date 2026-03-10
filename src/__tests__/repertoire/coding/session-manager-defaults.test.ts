@@ -27,6 +27,49 @@ const noPersistence = {
 }
 
 describe("coding session manager defaults", () => {
+  it("persists to bundle-local state by default", async () => {
+    vi.resetModules()
+
+    vi.doMock("../../../heart/identity", () => ({
+      getAgentName: vi.fn(() => "slugger"),
+      getAgentRoot: vi.fn((agentName = "slugger") => `/mock/AgentBundles/${agentName}.ouro`),
+    }))
+    vi.doMock("../../../repertoire/coding/spawner", () => ({
+      spawnCodingProcess: vi.fn(() => ({
+        process: new FakeProcess(321),
+        command: "claude",
+        args: ["-p"],
+        prompt: "hello",
+      })),
+    }))
+
+    const writeFileSync = vi.fn()
+    const mkdirSync = vi.fn()
+
+    const { CodingSessionManager } = await import("../../../repertoire/coding/manager")
+    const manager = new CodingSessionManager({
+      existsSync: () => false,
+      readFileSync: () => "",
+      writeFileSync,
+      mkdirSync,
+      nowIso: () => "2026-03-05T23:49:00.000Z",
+    })
+
+    await manager.spawnSession({
+      runner: "claude",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      prompt: "do it",
+      taskRef: "task-do-it",
+    })
+
+    expect(mkdirSync).toHaveBeenCalledWith("/mock/AgentBundles/slugger.ouro/state/coding", { recursive: true })
+    expect(writeFileSync).toHaveBeenCalledWith(
+      "/mock/AgentBundles/slugger.ouro/state/coding/sessions.json",
+      expect.any(String),
+      "utf-8",
+    )
+  })
+
   it("uses default spawnCodingProcess wiring when spawnProcess override is omitted", async () => {
     vi.resetModules()
 

@@ -76,11 +76,11 @@ describe("send_message tool", () => {
     })
 
     expect(fs.mkdirSync).toHaveBeenCalledWith(
-      expect.stringContaining("pending/friend-uuid-1/cli/session"),
+      "/mock/agent-root/state/pending/friend-uuid-1/cli/session",
       { recursive: true },
     )
     expect(fs.writeFileSync).toHaveBeenCalledWith(
-      expect.stringMatching(/pending\/friend-uuid-1\/cli\/session\/\d+-.+\.json$/),
+      expect.stringMatching(/^\/mock\/agent-root\/state\/pending\/friend-uuid-1\/cli\/session\/\d+-.+\.json$/),
       expect.any(String),
     )
     // Verify the written content
@@ -103,7 +103,7 @@ describe("send_message tool", () => {
     })
 
     expect(fs.mkdirSync).toHaveBeenCalledWith(
-      expect.stringContaining("pending/friend-uuid-1/teams/thread-42"),
+      "/mock/agent-root/state/pending/friend-uuid-1/teams/thread-42",
       { recursive: true },
     )
   })
@@ -119,7 +119,7 @@ describe("send_message tool", () => {
     })
 
     expect(fs.mkdirSync).toHaveBeenCalledWith(
-      expect.stringContaining("pending/friend-uuid-1/cli/session"),
+      "/mock/agent-root/state/pending/friend-uuid-1/cli/session",
       { recursive: true },
     )
   })
