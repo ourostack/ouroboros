@@ -3,15 +3,15 @@ import * as fs from "fs";
 import { execSync, spawnSync } from "child_process";
 import * as path from "path";
 import { listSkills, loadSkill } from "./skills";
-import { getIntegrationsConfig } from "../heart/config";
+import { getIntegrationsConfig, resolveSessionPath } from "../heart/config";
 import type { Integration, ResolvedContext, FriendRecord } from "../mind/friends/types";
 import type { FriendStore } from "../mind/friends/store";
 import { emitNervesEvent } from "../nerves/runtime";
 import { getAgentRoot, getAgentName } from "../heart/identity";
-import * as os from "os";
 import { getTaskModule } from "./tasks";
 import { codingToolDefinitions } from "./coding/tools";
 import { readMemoryFacts, saveMemoryFact, searchMemoryFacts } from "../mind/memory";
+import { getPendingDir } from "../mind/pending";
 
 export interface CodingFeedbackTarget {
   send: (message: string) => Promise<void>;
@@ -706,10 +706,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
         const key = args.key || "session"
         const count = parseInt(args.messageCount || "20", 10)
 
-        const sessFile = path.join(
-          os.homedir(), ".agentstate", getAgentName(), "sessions",
-          friendId, channel, `${key}.json`,
-        )
+        const sessFile = resolveSessionPath(friendId, channel, key)
         const raw = fs.readFileSync(sessFile, "utf-8")
         const data = JSON.parse(raw)
         const messages: { role: string; content: string }[] = (data.messages || [])
@@ -760,10 +757,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
       const content = args.content
       const now = Date.now()
 
-      const pendingDir = path.join(
-        os.homedir(), ".agentstate", getAgentName(), "pending",
-        friendId, channel, key,
-      )
+      const pendingDir = getPendingDir(getAgentName(), friendId, channel, key)
       fs.mkdirSync(pendingDir, { recursive: true })
 
       const fileName = `${now}-${Math.random().toString(36).slice(2, 10)}.json`

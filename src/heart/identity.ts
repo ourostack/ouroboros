@@ -179,14 +179,22 @@ export function getRepoRoot(): string {
  * Returns the shared bundle root directory: `~/AgentBundles/`
  */
 export function getAgentBundlesRoot(): string {
-  return path.join(os.homedir(), "AgentBundles")
+  const homeBase = process.env.WEBSITE_SITE_NAME ? "/home" : os.homedir()
+  return path.join(homeBase, "AgentBundles")
 }
 
 /**
  * Returns the agent-specific bundle directory: `~/AgentBundles/<agentName>.ouro/`
  */
-export function getAgentRoot(): string {
-  return path.join(getAgentBundlesRoot(), `${getAgentName()}.ouro`)
+export function getAgentRoot(agentName: string = getAgentName()): string {
+  return path.join(getAgentBundlesRoot(), `${agentName}.ouro`)
+}
+
+/**
+ * Returns the bundle-local runtime state directory: `~/AgentBundles/<agentName>.ouro/state/`
+ */
+export function getAgentStateRoot(agentName: string = getAgentName()): string {
+  return path.join(getAgentRoot(agentName), "state")
 }
 
 /**

@@ -18,7 +18,7 @@ import { FileFriendStore } from "../mind/friends/store-file"
 import { FriendResolver } from "../mind/friends/resolver"
 import { accumulateFriendTokens } from "../mind/friends/tokens"
 import { createTurnCoordinator } from "../heart/turn-coordinator"
-import { getAgentRoot, getAgentName } from "../heart/identity"
+import { getAgentRoot } from "../heart/identity"
 import * as http from "http"
 import * as path from "path"
 import { enforceTrustGate } from "./trust-gate"
@@ -403,12 +403,7 @@ export async function withConversationLock(convId: string, fn: () => Promise<voi
 // Create a fresh friend store per request so mkdirSync re-runs if directories
 // are deleted while the process is alive.
 function getFriendStore(): InstanceType<typeof FileFriendStore> {
-  // On Azure App Service, os.homedir() returns /root which is ephemeral.
-  // Use /home/.agentstate/ (persistent) when WEBSITE_SITE_NAME is set.
-  /* v8 ignore next 3 -- Azure vs local path branch; environment-specific @preserve */
-  const friendsPath = process.env.WEBSITE_SITE_NAME
-    ? path.join("/home", ".agentstate", getAgentName(), "friends")
-    : path.join(getAgentRoot(), "friends")
+  const friendsPath = path.join(getAgentRoot(), "friends")
   return new FileFriendStore(friendsPath)
 }
 

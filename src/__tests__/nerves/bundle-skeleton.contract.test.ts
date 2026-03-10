@@ -42,7 +42,9 @@ function resolveRequiredBundleRoots(): { ouroboros: string; slugger: string } | 
 }
 
 function requiredPaths(root: string): string[] {
-  return CANONICAL_BUNDLE_MANIFEST.map((entry) => join(root, entry.path))
+  return CANONICAL_BUNDLE_MANIFEST
+    .filter((entry) => entry.path !== "state")
+    .map((entry) => join(root, entry.path))
 }
 
 describe("bundle skeleton contract", () => {

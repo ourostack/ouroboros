@@ -200,7 +200,7 @@ describe("query_session tool", () => {
 
     expect(result).toContain("hello")
     expect(fs.readFileSync).toHaveBeenCalledWith(
-      expect.stringContaining("session.json"),
+      "/mock/agent-root/state/sessions/friend-1/cli/session.json",
       "utf-8",
     )
   })

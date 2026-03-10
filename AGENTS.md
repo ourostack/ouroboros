@@ -80,7 +80,7 @@ Do not create agent-specific task directories inside this repo.
 
 - `agent.json` is the source of truth for agent identity, selected provider, `configPath`, phrases, and context settings.
 - `configPath` must target `~/.agentsecrets/<agent>/secrets.json`.
-- `secrets.json` stores provider/team credentials and related secret config; keep runtime/session/log/PII/test-run artifacts under `~/.agentstate/...`.
+- `secrets.json` stores provider/team credentials and related secret config; keep agent-owned runtime/session/log/PII artifacts under `~/AgentBundles/<agent>.ouro/state/...` and machine-scoped test-run artifacts under `~/.agentstate/...`.
 - Selected provider config must be complete; runtime must fail fast with explicit guidance. Do not implement silent provider fallback behavior.
 
 ### Git Discipline

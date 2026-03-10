@@ -24,8 +24,9 @@ describe("BlueBubbles mutation log", () => {
     expect(pathToLog).toBe(
       path.join(
         tmpRoot,
-        ".agentstate",
-        "slugger",
+        "AgentBundles",
+        "slugger.ouro",
+        "state",
         "senses",
         "bluebubbles",
         "mutations",
