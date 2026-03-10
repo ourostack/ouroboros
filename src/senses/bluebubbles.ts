@@ -155,10 +155,12 @@ function buildConversationScopePrefix(
   const lines: string[] = []
   if (event.threadOriginatorGuid?.trim()) {
     lines.push(
-      `[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: ${event.threadOriginatorGuid.trim()} | default outbound target: current_lane]`,
+      `[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: ${event.threadOriginatorGuid.trim()} | default outbound target for this turn: current_lane]`,
     )
   } else {
-    lines.push("[conversation scope: existing chat trunk | current inbound lane: top_level | default outbound target: top_level]")
+    lines.push(
+      "[conversation scope: existing chat trunk | current inbound lane: top_level | default outbound target for this turn: top_level]",
+    )
   }
   if (summaries.length > 0) {
     lines.push("[recent active lanes]")
@@ -208,6 +210,7 @@ function buildInboundContent(
 }
 
 function createReplyTargetController(event: BlueBubblesNormalizedEvent): BlueBubblesReplyTargetController {
+  const defaultTargetLabel = event.kind === "message" && event.threadOriginatorGuid?.trim() ? "current_lane" : "top_level"
   let selection: BlueBubblesReplyTargetSelection =
     event.kind === "message" && event.threadOriginatorGuid?.trim()
       ? { target: "current_lane" }
@@ -223,12 +226,12 @@ function createReplyTargetController(event: BlueBubblesNormalizedEvent): BlueBub
     setSelection(next: BlueBubblesReplyTargetSelection): string {
       selection = next
       if (next.target === "top_level") {
-        return "bluebubbles reply target set to top_level"
+        return "bluebubbles reply target override: top_level"
       }
       if (next.target === "thread") {
-        return `bluebubbles reply target set to thread:${next.threadOriginatorGuid}`
+        return `bluebubbles reply target override: thread:${next.threadOriginatorGuid}`
       }
-      return "bluebubbles reply target set to current_lane"
+      return `bluebubbles reply target: using default for this turn (${defaultTargetLabel})`
     },
   }
 }
