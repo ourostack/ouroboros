@@ -693,6 +693,10 @@ describe("summarizeArgs", () => {
     expect(summarizeArgs("write_file", { path: "/tmp/out.txt", content: "x" })).toBe("path=/tmp/out.txt")
   })
 
+  it("returns path for edit_file", () => {
+    expect(summarizeArgs("edit_file", { path: "/tmp/edit.txt", old_string: "x", new_string: "y" })).toBe("path=/tmp/edit.txt")
+  })
+
   it("returns short command for shell", () => {
     expect(summarizeArgs("shell", { command: "echo hi" })).toBe("command=echo hi")
   })

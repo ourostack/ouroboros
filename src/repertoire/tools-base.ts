@@ -147,7 +147,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
       try {
         content = fs.readFileSync(a.path, "utf-8")
       } catch (e) {
-        return `error: could not read file: ${e instanceof Error ? e.message : String(e)}`
+        return `error: could not read file: ${e instanceof Error ? e.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(e)}`
       }
 
       // Count occurrences
