@@ -3,10 +3,11 @@ import * as fs from "fs"
 import * as path from "path"
 import { sessionPath } from "../heart/config"
 import { runAgent, type ChannelCallbacks } from "../heart/core"
-import { getAgentRoot } from "../heart/identity"
+import { getAgentName, getAgentRoot } from "../heart/identity"
 import { loadSession, postTurn, type UsageData } from "../mind/context"
 import { buildSystem } from "../mind/prompt"
 import { findNonCanonicalBundlePaths } from "../mind/bundle-manifest"
+import { drainPending, getPendingDir } from "../mind/pending"
 import { createTraceId } from "../nerves"
 import { emitNervesEvent } from "../nerves/runtime"
 
@@ -187,6 +188,22 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
     state.checkpoint = deriveResumeCheckpoint(messages)
     const instinctPrompt = buildInstinctUserMessage(instincts, reason, state)
     messages.push({ role: "user", content: instinctPrompt })
+  }
+
+  const pendingMessages = drainPending(getPendingDir(getAgentName(), "self", "inner", "dialog"))
+  if (pendingMessages.length > 0) {
+    const lastUserIdx = messages.length - 1
+    const lastUser = messages[lastUserIdx]
+    /* v8 ignore next -- defensive: all code paths push a user message before here @preserve */
+    if (lastUser?.role === "user" && typeof lastUser.content === "string") {
+      const section = pendingMessages
+        .map((msg) => `- **${msg.from}**: ${msg.content}`)
+        .join("\n")
+      messages[lastUserIdx] = {
+        ...lastUser,
+        content: `${lastUser.content}\n\n## pending messages\n${section}`,
+      }
+    }
   }
 
   const inboxMessages = options?.drainInbox?.() ?? []
