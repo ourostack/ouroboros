@@ -3735,6 +3735,96 @@ describe("ouro friend CLI execution", () => {
     expect(savedRecord.trustLevel).toBe("family")
   })
 
+  it("ouro friend link handles undefined trust levels when merging", async () => {
+    const targetFriend = {
+      id: "friend-1",
+      name: "Ari",
+      // trustLevel intentionally omitted
+      externalIds: [{ provider: "local" as const, externalId: "ari", linkedAt: "2026-01-01T00:00:00.000Z" }],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: {},
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      schemaVersion: 1,
+    }
+    const orphanFriend = {
+      id: "orphan-1",
+      name: "Unknown",
+      // trustLevel intentionally omitted
+      externalIds: [{ provider: "imessage-handle" as const, externalId: "+111", linkedAt: "2026-02-01T00:00:00.000Z" }],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: {},
+      createdAt: "2026-02-01T00:00:00.000Z",
+      updatedAt: "2026-02-01T00:00:00.000Z",
+      schemaVersion: 1,
+    }
+    const mockFriendStore = {
+      get: vi.fn(async (id: string) => id === "friend-1" ? targetFriend : null),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(async () => orphanFriend),
+      listAll: vi.fn(),
+    }
+    const deps = makeDeps({ friendStore: mockFriendStore as any })
+    await runOuroCli([
+      "friend", "link", "slugger",
+      "--friend", "friend-1",
+      "--provider", "imessage-handle",
+      "--external-id", "+111",
+    ], deps)
+
+    const putCall = mockFriendStore.put.mock.calls[0]
+    expect(putCall[1].trustLevel).toBe("stranger")
+  })
+
+  it("ouro friend link keeps orphan's higher trust when merging", async () => {
+    const targetFriend = {
+      id: "friend-1",
+      name: "Ari",
+      trustLevel: "acquaintance" as const,
+      externalIds: [{ provider: "local" as const, externalId: "ari", linkedAt: "2026-01-01T00:00:00.000Z" }],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: {},
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      schemaVersion: 1,
+    }
+    const orphanFriend = {
+      id: "orphan-1",
+      name: "Unknown",
+      trustLevel: "family" as const,
+      externalIds: [{ provider: "imessage-handle" as const, externalId: "+1234567890", linkedAt: "2026-02-01T00:00:00.000Z" }],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: {},
+      createdAt: "2026-02-01T00:00:00.000Z",
+      updatedAt: "2026-02-01T00:00:00.000Z",
+      schemaVersion: 1,
+    }
+    const mockFriendStore = {
+      get: vi.fn(async (id: string) => id === "friend-1" ? targetFriend : null),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(async () => orphanFriend),
+      listAll: vi.fn(),
+    }
+    const deps = makeDeps({ friendStore: mockFriendStore as any })
+    await runOuroCli([
+      "friend", "link", "slugger",
+      "--friend", "friend-1",
+      "--provider", "imessage-handle",
+      "--external-id", "+1234567890",
+    ], deps)
+
+    const putCall = mockFriendStore.put.mock.calls[0]
+    const savedRecord = putCall[1]
+    // Orphan had family (higher than acquaintance), so merged record should be family
+    expect(savedRecord.trustLevel).toBe("family")
+  })
+
   it("ouro friend unlink removes matching externalId", async () => {
     const targetFriend = {
       id: "friend-1",

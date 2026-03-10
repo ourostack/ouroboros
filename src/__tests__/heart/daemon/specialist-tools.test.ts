@@ -553,6 +553,38 @@ describe("complete_adoption via createSpecialistExecTool", () => {
     ]))
   }, 10000)
 
+  it("uses 'primary' as friend name when humanName not provided", async () => {
+    const tmpDir = setupTempDir()
+    const bundlesRoot = makeTempDir("spec-tools-noname-bundles")
+    const secretsRoot = makeTempDir("spec-tools-noname-secrets")
+    cleanup.push(bundlesRoot, secretsRoot)
+
+    const { createSpecialistExecTool } = await import("../../../heart/daemon/specialist-tools")
+    const execTool = createSpecialistExecTool({
+      tempDir: tmpDir,
+      credentials: { setupToken: `sk-ant-oat01-${"a".repeat(80)}` },
+      provider: "anthropic",
+      bundlesRoot,
+      secretsRoot,
+      animationWriter: () => {},
+      // humanName intentionally omitted
+    })
+
+    const result = await execTool("complete_adoption", {
+      name: "NoNameAgent",
+      handoff_message: "Hello!",
+      phone: "+1234567890",
+    })
+
+    expect(result).toContain("success")
+    const finalBundle = path.join(bundlesRoot, "NoNameAgent.ouro")
+    const friendsDir = path.join(finalBundle, "friends")
+    const friendFiles = fs.readdirSync(friendsDir).filter((f) => f.endsWith(".json"))
+    expect(friendFiles.length).toBe(1)
+    const friend = JSON.parse(fs.readFileSync(path.join(friendsDir, friendFiles[0]), "utf-8"))
+    expect(friend.name).toBe("primary")
+  }, 10000)
+
   it("does not create friend record when no contact info provided", async () => {
     const tmpDir = setupTempDir()
     const bundlesRoot = makeTempDir("spec-tools-nocontact-bundles")

@@ -2439,6 +2439,18 @@ describe("toolRestrictionSection", () => {
     expect(toolRestrictionSection(undefined)).toBe("")
   })
 
+  it("handles friend with no externalIds (undefined fallback)", async () => {
+    const { toolRestrictionSection } = await import("../../mind/prompt")
+    const friend = makeFriend({ trustLevel: "stranger" })
+    // Force externalIds to undefined to trigger ?? [] branch
+    ;(friend as any).externalIds = undefined
+    const ctx = { friend, channel: makeChannel("teams") }
+    const result = toolRestrictionSection(ctx as any)
+    // Should still work (trust gate triggers, group gate doesn't since no externalIds)
+    expect(result).toMatch(/trust|know.*well/i)
+    expect(result).not.toMatch(/group|shared/i)
+  })
+
   it("uses first-person voice", async () => {
     const { toolRestrictionSection } = await import("../../mind/prompt")
     const ctx = {

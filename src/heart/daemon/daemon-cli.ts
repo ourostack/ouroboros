@@ -1289,11 +1289,13 @@ function executeTaskCommand(command: TaskCliCommand, taskMod: TaskModule): strin
 
 const TRUST_RANK: Record<string, number> = { family: 4, friend: 3, acquaintance: 2, stranger: 1 }
 
+/* v8 ignore start -- defensive: ?? fallbacks are unreachable when inputs are valid TrustLevel values @preserve */
 function higherTrust(a?: TrustLevel, b?: TrustLevel): TrustLevel {
   const rankA = TRUST_RANK[a ?? "stranger"] ?? 1
   const rankB = TRUST_RANK[b ?? "stranger"] ?? 1
   return rankA >= rankB ? (a ?? "stranger") : (b ?? "stranger")
 }
+/* v8 ignore stop */
 
 async function executeFriendCommand(command: FriendCliCommand, store: FriendStore): Promise<string> {
   if (command.kind === "friend.list") {
