@@ -762,8 +762,7 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
   const drainToPrefix = () => {
     const pending = drainPending(pendingDir)
     if (pending.length === 0) return 0
-    const formatted = formatPendingPrefix(pending, getAgentName())
-    pendingPrefix = pendingPrefix ? `${pendingPrefix}\n${formatted}` : formatted
+    pendingPrefix = formatPendingPrefix(pending, getAgentName())
     return pending.length
   }
 

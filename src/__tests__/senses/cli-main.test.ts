@@ -974,6 +974,24 @@ describe("agent.ts main() - onKick and toolChoiceRequired", () => {
     expect(savedMessages[0].role).toBe("system")
   })
 
+  it("drains pending messages in onTurnEnd for next user message", async () => {
+    const { drainPending } = await import("../../mind/pending")
+    vi.mocked(drainPending).mockReset().mockReturnValue([])
+    // Startup: no pending. Post-turn (after "hello" turn): one message arrives
+    vi.mocked(drainPending)
+      .mockReturnValueOnce([])
+      .mockReturnValueOnce([
+        { from: "friend-agent", content: "post-turn msg", channel: "cli", timestamp: Date.now() },
+      ])
+
+    setupBasic({ inputSequence: ["hello", "/exit"] })
+
+    await main(undefined, { pasteDebounceMs: 0 })
+
+    // drainPending called at startup (empty) and in onTurnEnd (1 message)
+    expect(drainPending).toHaveBeenCalledTimes(2)
+  })
+
   it("blocks stranger traffic before runAgent and emits one-time auto reply", async () => {
     setupBasic({ inputSequence: ["hello", "/exit"] })
     mocks.enforceTrustGate.mockReturnValueOnce({
