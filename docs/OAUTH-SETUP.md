@@ -119,7 +119,7 @@ Unlike Graph and ADO, GitHub uses its own OAuth provider (not AAD v2). You need 
 Via Azure Portal:
 1. Go to **Azure Bot** resource > **Configuration** > **OAuth Connection Settings** > **Add Setting**.
 2. Fill in:
-   - **Name**: `github` (must match `githubConnectionName` in config.json)
+   - **Name**: `github` (must match `oauth.githubConnectionName` in `~/.agentsecrets/<agent>/secrets.json`)
    - **Service Provider**: GitHub
    - **Client ID**: from the GitHub OAuth App
    - **Client Secret**: from the GitHub OAuth App
@@ -137,7 +137,7 @@ az bot authsetting create \
   --service "github"
 ```
 
-#### 2.3.3 Update config.json
+#### 2.3.3 Update secrets.json
 
 Add the connection name to the `oauth` section:
 ```json
@@ -227,7 +227,7 @@ After completing the setup:
    - After signin, the bot should create the issue and return its URL.
 
 If signin fails, check:
-- OAuth connection names match between Azure Bot config and env vars
+- OAuth connection names match between Azure Bot config and `~/.agentsecrets/<agent>/secrets.json`
 - Client secret is valid and not expired
 - Scopes are correctly configured
 - Admin consent has been granted

@@ -1,78 +1,118 @@
 # Contributing
 
-This document is for agents. If you are an AI agent working in this repo, read this first, then follow the linked docs.
+This repo is shared infrastructure for multiple agents. Please leave it clearer, safer, and easier to inhabit than you found it.
 
-## Workflow
+## Start Here
 
-The gate flow (plan → review → convert → implement → merge) lives in [AGENTS.md](AGENTS.md). That is the authoritative workflow spec. Sub-agent behavior is defined in [subagents/](subagents/README.md).
+`AGENTS.md` is the canonical workflow spec for this repo.
+
+Read it first for:
+
+- branch rules
+- planning and doing gates
+- task-doc locations
+- configuration policy
+- logging policy
+- merge discipline
+
+This file is the practical companion, not the source of truth.
 
 ## Branches
 
-Work on a branch named `<agent>/<slug>`. `main` is the integration branch — never commit directly to main. All changes land on main through PRs created by `work-merger`.
+Use an agent-specific branch:
+
+- `ouroboros/<slug>`
+- `slugger/<slug>`
+- `<agent>/<slug>`
+
+Do not work directly on `main`.
+
+## Task Docs
+
+Planning and doing docs live in the owning bundle, not in this repo:
+
+`~/AgentBundles/<agent>.ouro/tasks/one-shots/`
+
+Do not create new repo-local task directories like `slugger/tasks/`.
 
 ## Commits
 
-Format: `type(scope): description` or `type(scope): feature - description`
+Keep commits atomic and descriptive.
 
-Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`
+Common shapes:
 
-Scope is the area of change: `config`, `teams`, `cli`, `heart`, `mind`, `repertoire`, `senses`, `wardrobe`, `readme`, `planning`, etc. When working on a specific feature or task, include its name after the colon.
+- `feat(scope): description`
+- `fix(scope): description`
+- `refactor(scope): description`
+- `test(scope): description`
+- `docs(scope): description`
+- `chore(scope): description`
 
-Keep the description lowercase, imperative, concise. No "Co-Authored-By" lines.
+Useful scopes in the current codebase include:
 
-```
-feat(config): load config path from agent.json
-fix(senses): oauth - prevent confirmation deadlock
-test(mind): context kernel - cover all branches for identity resolution
-docs(planning): approved multi-agent harness plan
-```
+- `daemon`
+- `heart`
+- `mind`
+- `repertoire`
+- `senses`
+- `nerves`
+- `docs`
+
+Avoid stale scopes from removed layouts like `wardrobe`.
 
 ## Testing
 
-100% coverage is mandatory on all code in `src/`. Run `npm test` before every commit.
+For runtime code changes, keep these green:
 
-For the full testing policy (TDD flow, CI gate, mocking conventions, verification checklist), see [cross-agent-docs/testing-conventions.md](cross-agent-docs/testing-conventions.md).
+```bash
+npm test
+npx tsc --noEmit
+npm run test:coverage
+```
 
-## Sync and merge
+Detailed policy lives in:
 
-For merge strategy, conflict resolution, retry, and escalation policy, see [cross-agent-docs/sync-and-merge-conventions.md](cross-agent-docs/sync-and-merge-conventions.md).
+- `docs/testing-conventions.md`
 
-## P0: Never Lose User-Facing Content
+Operator smoke coverage lives in:
 
-Any text generated for the end user MUST reach them. Truncation, silent drops, and size-limit failures are all content loss. When output exceeds a channel's message size limit, **split and send in chunks** — never truncate. This applies everywhere: final_answer delivery, tool result summaries, error messages. If content was meant for the user to see, they see all of it.
+- `docs/testing-guide.md`
 
-## Code
+## Merge Workflow
 
-- `src/` is shared harness infrastructure — test thoroughly, keep 100% coverage, no agent-specific logic
-- `{agent}/` is your directory — modify freely (`agent.json`, `psyche/`, `tasks/`, `skills/`, `manifest/`)
-- Always use a coding agent (Claude Code or equivalent) for code work
-- TypeScript: strict mode, named exports, no unused locals/params, no `any` without justification
-- Logging: use `emitNervesEvent()` for all runtime observability, never raw `console.*`. See the Logging Policy section in [AGENTS.md](AGENTS.md) for details.
+PR-based merge policy, conflict resolution, and retry rules live in:
 
-## Tool Descriptions
+- `docs/sync-and-merge-conventions.md`
 
-Tool definitions (`function.description`) and system prompt instructions follow different voice conventions:
+The implemented workflow helpers live in:
 
-- **Tool descriptions**: imperative/descriptive voice -- "respond to the user with a message", "search the web for information", "read file contents". This matches what models are trained on for function-calling schemas.
-- **System prompt instructions**: first person to match the bot's voice -- "when i'm ready to respond, i call final_answer", "i save what i learn immediately".
+- `subagents/work-planner.md`
+- `subagents/work-doer.md`
+- `subagents/work-merger.md`
 
-When writing tool descriptions, describe the tool as you would to a new team member: make implicit context explicit, keep it concise, avoid jargon.
+## Code Expectations
 
-## Psyche
+- `src/` is shared harness code. Changes here affect every agent.
+- Keep runtime behavior truthful, testable, and reversible.
+- Do not hide failing checks or add silent fallback behavior where the repo explicitly forbids it.
+- Use `emitNervesEvent()` for runtime observability. Do not add raw `console.*` to production code.
+- Prefer the smallest change that satisfies the approved scope.
 
-Small corrections to psyche files can be made immediately. Significant identity or lore shifts should be deliberated across multiple turns. Psyche files are durable self-knowledge, not scratchpads.
+## Config Expectations
 
-## Config
+- `agent.json` is the agent-facing source of truth.
+- `configPath` must point to `~/.agentsecrets/<agent>/secrets.json`.
+- Secrets do not belong in the repo.
+- Agent-owned state belongs under `~/AgentBundles/<agent>.ouro/state/...`.
+- Machine-scoped temporary/test artifacts belong under `~/.agentstate/...`.
 
-All configuration comes from files, never environment variables. Your `agent.json` points to your secrets file via `configPath`.
+If selected provider config is incomplete, fail fast with explicit guidance. Do not silently fall back to another provider.
 
-Provider/storage contract:
-- `agent.json` must declare `provider` and `configPath`.
-- `configPath` points to `~/.agentsecrets/<agent>/secrets.json`.
-- `secrets.json` stores secrets and provider/team settings; `context` stays in `agent.json`.
-- Agent-owned runtime/session/log/PII artifacts live under `~/AgentBundles/<agent>.ouro/state/...`; machine-scoped test-run artifacts stay under `~/.agentstate/...`.
-- If the selected provider config is incomplete, runtime must fail fast with explicit re-auth/setup guidance (no provider fallback).
+## Docs Expectations
 
-## Documentation
+Docs are part of the runtime surface for both humans and agents.
 
-Keep docs up to date. If you find something out of date, inaccurate, or missing — fix it. The code is the source of truth; docs track it.
+- If a doc is stale, fix it or remove it.
+- Prefer one accurate page over three contradictory ones.
+- Git history is the archive; the current repo should tell the truth.
+- Write so the next agent can feel oriented, safe, and a little more at home.

@@ -1,149 +1,183 @@
 # Testing Guide
 
-This guide validates the full first-run and runtime loop:
-`ouro up` -> `ouro hatch` -> first chat -> coding session spawn -> `ouro msg` round-trip -> heartbeat observation -> `ouro stop`.
+This is the operator smoke guide for the current runtime. It focuses on the real user path:
 
-## Prerequisites
+`npx ouro.bot` -> `ouro up` -> `ouro status` -> `ouro chat` / daemon senses -> `ouro stop`
 
-- Repository builds and tests clean locally.
-- `ouro` CLI is available in your shell (or use `node dist/daemon/ouro-entry.js` during development).
-- A provider credential is ready:
-  - Anthropic: setup token
-  - OpenAI Codex: OAuth access token
-  - Azure: API key + endpoint + deployment
-  - MiniMax: API key
+## 1. Bootstrap And Launcher Truth
 
-## 1. Start Runtime (`ouro up`)
+Run this from outside the repo so you exercise the published bootstrap path rather than a local workspace binary:
 
 ```bash
-ouro up
-```
-
-Expected output:
-- Daemon starts (or reports it is already running).
-- Subagent install notes may appear.
-- On first run, startup output includes actionable setup guidance.
-
-Quick sanity checks:
-
-```bash
+cd ~
+npx ouro.bot -v
+npx ouro.bot up
+ouro -v
 ouro status
 ```
 
-Expected output:
-- A discovered-agent summary (enabled/disabled + running/stopped).
+Expected:
 
-## 2. Hatch First Agent (`ouro hatch`)
+- `npx ouro.bot -v` and `ouro -v` report the same version.
+- `ouro status` shows:
+  - daemon overview
+  - version
+  - last updated
+  - discovered agents
+  - senses
+  - workers
 
-```bash
-ouro hatch --agent Hatchling --human Ari --provider anthropic --setup-token <your_setup_token>
-```
+If the launcher was stale, `ouro up` should repair it instead of leaving you split across different runtime paths.
 
-Expected output:
-- Credentials are validated for the selected provider.
-- Adoption Specialist interview flow runs.
-- A canonical `Hatchling.ouro` bundle is created and path is printed.
-- Hatch result includes family imprint + heartbeat habit creation.
+## 2. Existing-Agent Chat Smoke
 
-Validation checks:
-- Bundle exists under `~/AgentBundles/Hatchling.ouro/`.
-- `agent.json` includes `enabled: true`.
-- `tasks/habits/` contains a heartbeat task file.
-
-## 3. First Chat (`ouro chat <agent>`)
+Open a chat with an existing bundle:
 
 ```bash
-ouro chat Hatchling
+ouro chat <agent>
 ```
 
-In chat, send a simple probe, for example:
-- `What are you currently working on?`
+Expected:
 
-Expected output:
-- Agent responds in the active chat session.
-- Response reflects current runtime context rather than empty cold-start behavior.
+- the agent starts from the current runtime
+- prompt/runtime info is available
+- the agent responds without cold-start confusion
 
-## 4. Coding Session Spawn (via chat request)
+Good probes:
 
-From the same chat, ask the agent to delegate a coding task, for example:
-- `Please spawn a coding session for task heartbeat-smoke and tell me the session id.`
+- `what senses do you have?`
+- `what version are you on?`
+- `what does interactive mean?`
 
-Expected output:
-- Agent reports coding session launch/assignment details.
-- Session metadata includes a task reference.
-- Agent remains responsive while delegated work runs.
+## 3. First-Run / Hatch Smoke
 
-## 5. `ouro msg` Round-Trip
-
-From another terminal, send a message into the parent agent inbox:
+To exercise agent creation:
 
 ```bash
-ouro msg --to Hatchling --session gate7-smoke --task heartbeat-smoke "status ping from gate7"
+ouro hatch
 ```
 
-Expected output:
-- CLI prints a queued/sent receipt.
-- In chat, asking `did you receive my status ping?` results in acknowledgment.
-
-Optional direct poke trigger:
+Or explicitly:
 
 ```bash
-ouro poke Hatchling --task heartbeat-smoke
+ouro hatch --agent Hatchling --human Ari --provider anthropic --setup-token <token>
 ```
 
-Expected output:
-- A poke receipt is returned.
+Expected:
 
-## 6. Heartbeat Observation
+- system setup happens first
+- Adoption Specialist runs
+- a canonical bundle is created under `~/AgentBundles/Hatchling.ouro/`
+- secrets are written under `~/.agentsecrets/Hatchling/secrets.json`
 
-Open logs:
+Verify:
+
+- `~/AgentBundles/Hatchling.ouro/agent.json`
+- `~/AgentBundles/Hatchling.ouro/bundle-meta.json`
+- canonical psyche/task/skill/state directories exist
+
+## 4. Daemon Messaging Smoke
+
+From another terminal:
+
+```bash
+ouro msg --to <agent> --session smoke --task smoke-task "status ping"
+ouro poke <agent> --task smoke-task
+```
+
+Expected:
+
+- `ouro msg` queues or delivers through the daemon cleanly
+- `ouro poke` triggers task work for that agent
+
+## 5. Sense Smoke
+
+### CLI
+
+CLI is `interactive`, so it should appear in `ouro status` without pretending the daemon hosts it.
+
+### BlueBubbles
+
+If BlueBubbles is enabled and configured:
+
+- `ouro status` should show `BlueBubbles` as `ready` or `running`
+- inbound iMessages should create or continue the correct chat trunk
+- typing and read behavior should feel immediate
+
+### Teams
+
+If Teams is enabled and configured:
+
+- `ouro status` should show `Teams` as `ready` or `running`
+- the adapter should respond without boot-introducing itself
+
+## 6. Logs And Shutdown
 
 ```bash
 ouro logs
+ouro stop
+ouro status
 ```
 
-Expected output:
-- Periodic scheduling / inner-dialog activity appears over time.
-- Heartbeat-style cycles can be observed as recurring work checks.
-- Message/poke events show up when triggered.
+Expected:
 
-Tip: If you need immediate activity, use `ouro poke <agent> --task <heartbeat_task_id>` and watch logs refresh.
+- `ouro logs` tails daemon/runtime logs
+- `ouro stop` shuts down cleanly
+- `ouro status` shows the stopped state clearly instead of raw socket errors
 
-## 7. Clean Shutdown (`ouro stop`)
+## 7. Repo-Code Validation
+
+For runtime code changes inside the repo:
 
 ```bash
-ouro stop
+npm test
+npx tsc --noEmit
+npm run test:coverage
 ```
 
-Expected output:
-- Deterministic shutdown success output.
-- `ouro status` now shows daemon/agent processes stopped.
+All three should pass before merge.
 
 ## Troubleshooting
 
-- `ouro: command not found`
-  - Use the dev entrypoint: `node dist/daemon/ouro-entry.js <command>`.
-  - Confirm local/global install path is on `PATH`.
+### `ouro` and `npx ouro.bot` disagree on version
 
-- `Unknown provider` or credential validation errors during hatch
-  - Re-run with a supported provider (`azure|anthropic|minimax|openai-codex`).
-  - Verify required provider fields are set and non-empty.
+Run:
 
-- `ouro up` reports daemon issues or stale socket behavior
-  - Run `ouro stop`, then retry `ouro up`.
-  - If status is inconsistent, re-run `ouro status` after restart.
+```bash
+cd ~
+npx ouro.bot up
+ouro -v
+```
 
-- `ouro msg` cannot reach daemon
-  - Ensure daemon is running (`ouro status`).
-  - Re-send message after `ouro up`; fallback queue delivery is processed when daemon is healthy.
+`ouro up` should repair the local launcher and current daemon state.
 
-- No visible heartbeat activity in logs
-  - Confirm a heartbeat habit task exists in `tasks/habits/`.
-  - Trigger with `ouro poke` and re-check `ouro logs`.
+### `ouro status` cannot reach the daemon
 
-- Final verification mismatch
-  - Re-run:
-    - `npm run lint`
-    - `npm run build`
-    - `npm test --silent`
-    - `npm run test:coverage -- --runInBand`
+Run:
+
+```bash
+ouro up
+ouro status
+```
+
+If the daemon is not running, status should describe that plainly rather than surfacing raw socket noise.
+
+### A sense shows `needs_config`
+
+Check:
+
+- `~/AgentBundles/<agent>.ouro/agent.json`
+- `~/.agentsecrets/<agent>/secrets.json`
+
+Sense enablement lives in `agent.json`; secret material lives in `secrets.json`.
+
+### BlueBubbles or Teams behavior feels wrong
+
+Use:
+
+```bash
+ouro status
+ouro logs
+```
+
+Then verify the sense-specific config block is complete in `secrets.json` and that the sense is actually enabled in `agent.json`.
