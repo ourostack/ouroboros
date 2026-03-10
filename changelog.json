@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.31",
+      "changes": [
+        "BlueBubbles no longer silently deletes old per-thread session files when loading a chat trunk. It now only detects and warns about those obsolete artifacts so local state is never mutated without an explicit human choice.",
+        "The cross-thread-awareness fix still keeps one chat trunk per conversation and preserves threaded reply targeting, but stale `_thread_*.json` files are now left in place until a person removes them."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.30",
       "changes": [
         "BlueBubbles reply threads now stay inside one shared chat trunk instead of creating separate persisted mini-sessions, so Slugger keeps parent-chat awareness and active work when you switch between threaded and top-level replies.",

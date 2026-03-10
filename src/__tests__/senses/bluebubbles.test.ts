@@ -610,7 +610,7 @@ describe("BlueBubbles sense runtime", () => {
     )
   })
 
-  it("removes obsolete sibling thread lanes before loading the shared chat trunk", async () => {
+  it("detects obsolete sibling thread lanes without deleting them before loading the shared chat trunk", async () => {
     const dir = makeTempDir()
     const trunk = path.join(dir, "chat_any;-;ari@mendelow.me.json")
     const staleThread = path.join(dir, "chat_any;-;ari@mendelow.me_thread_123.json")
@@ -625,8 +625,18 @@ describe("BlueBubbles sense runtime", () => {
 
     expect(mocks.loadSession).toHaveBeenCalledWith(trunk)
     expect(fs.existsSync(trunk)).toBe(true)
-    expect(fs.existsSync(staleThread)).toBe(false)
+    expect(fs.existsSync(staleThread)).toBe(true)
     expect(fs.existsSync(unrelatedThread)).toBe(true)
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: "warn",
+        event: "senses.bluebubbles_thread_lane_artifacts_detected",
+        meta: expect.objectContaining({
+          sessionPath: trunk,
+          artifactCount: 1,
+        }),
+      }),
+    )
   })
 
   it("logs cleanup errors but still handles the turn on the shared chat trunk", async () => {
@@ -635,7 +645,7 @@ describe("BlueBubbles sense runtime", () => {
     writeFile(trunk)
     mocks.sessionPath.mockReturnValueOnce(trunk)
     const cleanupModule = await import("../../senses/bluebubbles-session-cleanup")
-    vi.spyOn(cleanupModule, "cleanupObsoleteBlueBubblesThreadSessions").mockImplementation(() => {
+    vi.spyOn(cleanupModule, "findObsoleteBlueBubblesThreadSessions").mockImplementation(() => {
       throw new Error("cleanup boom")
     })
 
@@ -662,7 +672,7 @@ describe("BlueBubbles sense runtime", () => {
     writeFile(trunk)
     mocks.sessionPath.mockReturnValueOnce(trunk)
     const cleanupModule = await import("../../senses/bluebubbles-session-cleanup")
-    vi.spyOn(cleanupModule, "cleanupObsoleteBlueBubblesThreadSessions").mockImplementation(() => {
+    vi.spyOn(cleanupModule, "findObsoleteBlueBubblesThreadSessions").mockImplementation(() => {
       throw "cleanup string"
     })
 

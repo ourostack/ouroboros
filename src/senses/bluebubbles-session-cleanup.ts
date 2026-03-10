@@ -2,7 +2,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { emitNervesEvent } from "../nerves/runtime"
 
-export function cleanupObsoleteBlueBubblesThreadSessions(trunkSessionPath: string): string[] {
+export function findObsoleteBlueBubblesThreadSessions(trunkSessionPath: string): string[] {
   const normalized = trunkSessionPath.trim()
   if (!normalized.endsWith(".json")) return []
 
@@ -12,27 +12,26 @@ export function cleanupObsoleteBlueBubblesThreadSessions(trunkSessionPath: strin
 
   const dir = path.dirname(normalized)
   const prefix = trunkName.slice(0, -".json".length)
-  const removed: string[] = []
+  const threadLaneFiles: string[] = []
 
   for (const entry of fs.readdirSync(dir)) {
     if (!entry.endsWith(".json")) continue
     if (!entry.startsWith(`${prefix}_thread_`)) continue
-    const target = path.join(dir, entry)
-    fs.rmSync(target, { force: true })
-    removed.push(target)
+    threadLaneFiles.push(path.join(dir, entry))
   }
 
-  if (removed.length > 0) {
+  if (threadLaneFiles.length > 0) {
     emitNervesEvent({
+      level: "warn",
       component: "senses",
-      event: "senses.bluebubbles_thread_lane_cleanup",
-      message: "removed obsolete bluebubbles thread-lane sessions",
+      event: "senses.bluebubbles_thread_lane_artifacts_detected",
+      message: "detected obsolete bluebubbles thread-lane sessions",
       meta: {
-        trunkSessionPath: normalized,
-        removedCount: removed.length,
+        sessionPath: normalized,
+        artifactCount: threadLaneFiles.length,
       },
     })
   }
 
-  return removed
+  return threadLaneFiles
 }
