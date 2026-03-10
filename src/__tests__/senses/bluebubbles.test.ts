@@ -135,6 +135,30 @@ const dmThreadPayload = {
   },
 }
 
+const dmTopLevelPayload = {
+  type: "new-message",
+  data: {
+    guid: "B20D4E2B-2E6E-48B5-95CD-6E24A368E4A7",
+    text: "top-level follow-up",
+    handle: {
+      address: "ari@mendelow.me",
+      service: "iMessage",
+    },
+    attachments: [],
+    dateCreated: 1772946889999,
+    isFromMe: false,
+    threadOriginatorGuid: null,
+    chats: [
+      {
+        guid: "any;-;ari@mendelow.me",
+        style: 45,
+        chatIdentifier: "ari@mendelow.me",
+        displayName: "",
+      },
+    ],
+  },
+}
+
 const groupThreadPayload = {
   type: "new-message",
   data: {
@@ -457,14 +481,14 @@ describe("BlueBubbles sense runtime", () => {
     vi.restoreAllMocks()
   })
 
-  it("handles DM threaded messages with stable session routing and a threaded send target", async () => {
+  it("handles DM threaded messages on the shared chat trunk and preserves the threaded send target", async () => {
     const bluebubbles = await import("../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
 
     expect(mocks.sessionPath).toHaveBeenCalledWith(
       "friend-uuid",
       "bluebubbles",
-      "chat:any;-;ari@mendelow.me:thread:54D4109C-7170-41A1-8161-F6F8C863CC0D",
+      "chat:any;-;ari@mendelow.me",
     )
     expect(mocks.buildSystem).toHaveBeenCalledWith(
       "bluebubbles",
@@ -502,6 +526,26 @@ describe("BlueBubbles sense runtime", () => {
       expect.anything(),
       "friend-uuid",
       expect.objectContaining({ total_tokens: 15 }),
+    )
+  })
+
+  it("routes top-level and threaded DM turns into the same persisted chat trunk", async () => {
+    const bluebubbles = await import("../../senses/bluebubbles")
+
+    await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    expect(mocks.sessionPath).toHaveBeenNthCalledWith(
+      1,
+      "friend-uuid",
+      "bluebubbles",
+      "chat:any;-;ari@mendelow.me",
+    )
+    expect(mocks.sessionPath).toHaveBeenNthCalledWith(
+      2,
+      "friend-uuid",
+      "bluebubbles",
+      "chat:any;-;ari@mendelow.me",
     )
   })
 
