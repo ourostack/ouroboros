@@ -8,7 +8,7 @@ import { pickPhrase, getPhrases } from "../mind/phrases"
 import { formatToolResult, formatKick, formatError } from "../mind/format"
 import { sessionPath } from "../heart/config"
 import { loadSession, deleteSession, postTurn, saveSession } from "../mind/context"
-import { getPendingDir, drainPending } from "../mind/pending"
+import { getPendingDir, drainPending, type PendingMessage } from "../mind/pending"
 import { refreshSystemPrompt } from "../mind/prompt-refresh"
 import type { UsageData } from "../mind/context"
 import { createCommandRegistry, registerDefaultCommands, parseSlashCommand, getToolChoiceRequired } from "./commands"
@@ -25,6 +25,22 @@ import { acquireSessionLock, SessionLockError } from "./session-lock"
 import { applyPendingUpdates, registerUpdateHook } from "../heart/daemon/update-hooks"
 import { bundleMetaHook } from "../heart/daemon/hooks/bundle-meta"
 import { getPackageVersion } from "../mind/bundle-manifest"
+
+/**
+ * Format pending messages as content-prefix strings for injection into
+ * the next user message. Self-messages (from === agentName) become
+ * `[inner thought: {content}]`, inter-agent messages become
+ * `[message from {name}: {content}]`.
+ */
+export function formatPendingPrefix(messages: PendingMessage[], agentName: string): string {
+  return messages
+    .map((msg) =>
+      msg.from === agentName
+        ? `[inner thought: ${msg.content}]`
+        : `[message from ${msg.from}: ${msg.content}]`,
+    )
+    .join("\n")
+}
 
 // readline.Interface exposes undocumented mutable line/cursor for in-progress input
 type ReadlineInternals = readline.Interface & { line: string; cursor: number }
@@ -432,6 +448,8 @@ export interface RunCliSessionOptions {
   disableCommands?: boolean;
   /** If true, skip system prompt refresh in runAgent (use provided messages[0] as-is). */
   skipSystemPromptRefresh?: boolean;
+  /** Returns and clears pending content prefix to prepend to the next user message. */
+  getContentPrefix?: () => string | undefined;
 }
 
 export interface RunCliSessionResult {
@@ -617,7 +635,8 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
       }
       process.stdout.write(`\x1b[${echoRows}A\x1b[K` + `\x1b[1m> ${inputLines[0]}${inputLines.length > 1 ? ` (+${inputLines.length - 1} lines)` : ""}\x1b[0m\n\n`)
 
-      messages.push({ role: "user", content: input })
+      const prefix = options.getContentPrefix?.()
+      messages.push({ role: "user", content: prefix ? `${prefix}\n\n${input}` : input })
       addHistory(history, input)
 
       currentAbort = new AbortController()
@@ -737,20 +756,19 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
     ? existing.messages
     : [{ role: "system", content: await buildSystem("cli", undefined, resolvedContext) }]
 
-  // Pending queue drain: inject pending messages as harness-context + assistant-content pairs
+  // Pending queue drain: format as content-prefix for next user message
   const pendingDir = getPendingDir(getAgentName(), friendId, "cli", "session")
-  const drainToMessages = () => {
+  let pendingPrefix: string | undefined
+  const drainToPrefix = () => {
     const pending = drainPending(pendingDir)
     if (pending.length === 0) return 0
-    for (const msg of pending) {
-      sessionMessages.push({ role: "user", name: "harness", content: `[proactive message from ${msg.from}]` })
-      sessionMessages.push({ role: "assistant", content: msg.content })
-    }
+    const formatted = formatPendingPrefix(pending, getAgentName())
+    pendingPrefix = pendingPrefix ? `${pendingPrefix}\n${formatted}` : formatted
     return pending.length
   }
 
-  // Startup drain: deliver offline messages
-  const startupCount = drainToMessages()
+  // Startup drain: collect offline messages as prefix for next user message
+  const startupCount = drainToPrefix()
   if (startupCount > 0) {
     saveSession(sessPath, sessionMessages)
   }
@@ -776,10 +794,15 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
         }
         return { allowed: true }
       },
+      getContentPrefix: () => {
+        const prefix = pendingPrefix
+        pendingPrefix = undefined
+        return prefix
+      },
       onTurnEnd: async (msgs, result) => {
         postTurn(msgs, sessPath, result.usage)
         await accumulateFriendTokens(friendStore, resolvedContext.friend.id, result.usage)
-        drainToMessages()
+        drainToPrefix()
         await refreshSystemPrompt(msgs, "cli", undefined, resolvedContext)
       },
       onNewSession: () => {
