@@ -149,6 +149,20 @@ describe("buildSystem", () => {
     expect(result).toContain("crack jokes")
   })
 
+  it("reads active session summaries from bundle-local state", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    await buildSystem()
+
+    expect(fs.existsSync).toHaveBeenCalledWith("/mock/repo/testagent/state/sessions")
+  })
+
   it("includes identity section with Ouroboros name", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")

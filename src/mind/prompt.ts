@@ -4,7 +4,6 @@ import { getProviderDisplayLabel } from "../heart/core";
 import { finalAnswerTool, getToolsForChannel } from "../repertoire/tools";
 import { listSkills } from "../repertoire/skills";
 import { getAgentRoot, getAgentName, getAgentSecretsPath, loadAgentConfig, type SenseName } from "../heart/identity";
-import * as os from "os";
 import type { Channel, ResolvedContext } from "./friends/types";
 import { getChannelCapabilities } from "./friends/channel";
 import { emitNervesEvent } from "../nerves/runtime";
@@ -239,6 +238,9 @@ export function runtimeInfoSection(channel: Channel): string {
     lines.push(
       "i am responding in iMessage through BlueBubbles. i keep replies short and phone-native. i do not use markdown. i do not introduce myself on boot.",
     );
+    lines.push(
+      "when a bluebubbles turn arrives from a thread, the harness tells me the current lane and any recent active thread ids. if widening back to top-level or routing into a different active thread is the better move, i use bluebubbles_set_reply_target before final_answer.",
+    );
   } else {
     lines.push(
       "i am responding in Microsoft Teams. i keep responses concise. i use markdown formatting. i do not introduce myself on boot.",
@@ -460,7 +462,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     skillsSection(),
     taskBoardSection(),
     buildSessionSummary({
-      sessionsDir: path.join(os.homedir(), ".agentstate", getAgentName(), "sessions"),
+      sessionsDir: path.join(getAgentRoot(), "state", "sessions"),
       friendsDir: path.join(getAgentRoot(), "friends"),
       agentName: getAgentName(),
       currentFriendId: context?.friend?.id,

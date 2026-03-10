@@ -1801,6 +1801,22 @@ describe("getToolsForChannel includes docs tools", () => {
     expect(names).not.toContain("graph_docs")
     expect(names).not.toContain("ado_docs")
   })
+
+  it("bluebubbles channel includes the reply-target tool", async () => {
+    vi.resetModules()
+    const { getToolsForChannel } = await import("../../repertoire/tools")
+    const bluebubblesCaps = {
+      channel: "bluebubbles" as const,
+      availableIntegrations: [],
+      supportsMarkdown: false,
+      supportsStreaming: false,
+      supportsRichCards: false,
+      maxMessageLength: Infinity,
+    }
+    const result = getToolsForChannel(bluebubblesCaps)
+    const names = result.map((t: any) => t.function.name)
+    expect(names).toContain("bluebubbles_set_reply_target")
+  })
 })
 
 describe("summarizeArgs for docs tools", () => {
@@ -1840,6 +1856,11 @@ describe("summarizeArgs for docs tools", () => {
     expect(summarizeArgs("save_friend_note", { type: "tool_preference", key: "ado", content: "flat backlog" })).toBe("type=tool_preference key=ado content=flat backlog")
   })
 
+  it("returns target summary for bluebubbles_set_reply_target", () => {
+    expect(summarizeArgs("bluebubbles_set_reply_target", { target: "thread", threadOriginatorGuid: "THREAD-1" }))
+      .toBe("target=thread threadOriginatorGuid=THREAD-1")
+  })
+
   it("returns type for save_friend_note name type (no key)", () => {
     expect(summarizeArgs("save_friend_note", { type: "name", content: "Jordan" })).toBe("type=name content=Jordan")
   })
@@ -1850,6 +1871,105 @@ describe("summarizeArgs for docs tools", () => {
 
   it("returns empty string for ado_backlog_list with no org/project", () => {
     expect(summarizeArgs("ado_backlog_list", {})).toBe("")
+  })
+})
+
+describe("bluebubbles reply target tool", () => {
+  it("returns a friendly message when reply targeting is unavailable", async () => {
+    vi.resetModules()
+    const { execTool } = await import("../../repertoire/tools")
+    const result = await execTool("bluebubbles_set_reply_target", { target: "top_level" }, { signin: async () => undefined })
+    expect(result).toBe("bluebubbles reply targeting is not available in this context.")
+  })
+
+  it("updates the toolContext lane controller", async () => {
+    vi.resetModules()
+    const { execTool } = await import("../../repertoire/tools")
+    const setSelection = vi.fn().mockReturnValue("bluebubbles reply target set to top_level")
+    const result = await execTool(
+      "bluebubbles_set_reply_target",
+      { target: "top_level" },
+      {
+        signin: async () => undefined,
+        bluebubblesReplyTarget: { setSelection },
+      },
+    )
+    expect(setSelection).toHaveBeenCalledWith({ target: "top_level" })
+    expect(result).toBe("bluebubbles reply target set to top_level")
+  })
+
+  it("supports selecting the current inbound lane explicitly", async () => {
+    vi.resetModules()
+    const { execTool } = await import("../../repertoire/tools")
+    const setSelection = vi.fn().mockReturnValue("bluebubbles reply target set to current_lane")
+    const result = await execTool(
+      "bluebubbles_set_reply_target",
+      { target: "current_lane" },
+      {
+        signin: async () => undefined,
+        bluebubblesReplyTarget: { setSelection },
+      },
+    )
+    expect(setSelection).toHaveBeenCalledWith({ target: "current_lane" })
+    expect(result).toBe("bluebubbles reply target set to current_lane")
+  })
+
+  it("requires threadOriginatorGuid when targeting a specific thread", async () => {
+    vi.resetModules()
+    const { execTool } = await import("../../repertoire/tools")
+    const result = await execTool(
+      "bluebubbles_set_reply_target",
+      { target: "thread" },
+      {
+        signin: async () => undefined,
+        bluebubblesReplyTarget: { setSelection: vi.fn() },
+      },
+    )
+    expect(result).toBe("threadOriginatorGuid is required when target=thread.")
+  })
+
+  it("supports selecting a specific active thread", async () => {
+    vi.resetModules()
+    const { execTool } = await import("../../repertoire/tools")
+    const setSelection = vi.fn().mockReturnValue("bluebubbles reply target set to thread:THREAD-1")
+    const result = await execTool(
+      "bluebubbles_set_reply_target",
+      { target: "thread", threadOriginatorGuid: "THREAD-1" },
+      {
+        signin: async () => undefined,
+        bluebubblesReplyTarget: { setSelection },
+      },
+    )
+    expect(setSelection).toHaveBeenCalledWith({ target: "thread", threadOriginatorGuid: "THREAD-1" })
+    expect(result).toBe("bluebubbles reply target set to thread:THREAD-1")
+  })
+
+  it("rejects unknown target values", async () => {
+    vi.resetModules()
+    const { execTool } = await import("../../repertoire/tools")
+    const result = await execTool(
+      "bluebubbles_set_reply_target",
+      { target: "sideways" },
+      {
+        signin: async () => undefined,
+        bluebubblesReplyTarget: { setSelection: vi.fn() },
+      },
+    )
+    expect(result).toBe("target must be one of: current_lane, top_level, thread.")
+  })
+
+  it("rejects non-string target values", async () => {
+    vi.resetModules()
+    const { execTool } = await import("../../repertoire/tools")
+    const result = await execTool(
+      "bluebubbles_set_reply_target",
+      { target: 42 as unknown as string },
+      {
+        signin: async () => undefined,
+        bluebubblesReplyTarget: { setSelection: vi.fn() },
+      },
+    )
+    expect(result).toBe("target must be one of: current_lane, top_level, thread.")
   })
 })
 

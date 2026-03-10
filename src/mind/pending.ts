@@ -1,6 +1,6 @@
 import * as fs from "fs"
 import * as path from "path"
-import * as os from "os"
+import { getAgentRoot } from "../heart/identity"
 import { emitNervesEvent } from "../nerves/runtime"
 
 export interface PendingMessage {
@@ -13,7 +13,7 @@ export interface PendingMessage {
 }
 
 export function getPendingDir(agentName: string, friendId: string, channel: string, key: string): string {
-  return path.join(os.homedir(), ".agentstate", agentName, "pending", friendId, channel, key)
+  return path.join(getAgentRoot(agentName), "state", "pending", friendId, channel, key)
 }
 
 export function drainPending(pendingDir: string): PendingMessage[] {

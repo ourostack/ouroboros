@@ -1,8 +1,7 @@
 import * as fs from "fs"
-import * as os from "os"
 import * as path from "path"
 
-import { getAgentName } from "../../heart/identity"
+import { getAgentName, getAgentRoot } from "../../heart/identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { spawnCodingProcess, type CodingProcess, type SpawnCodingResult } from "./spawner"
 import type {
@@ -62,7 +61,7 @@ function safeAgentName(): string {
 }
 
 function defaultStateFilePath(agentName: string): string {
-  return path.join(os.homedir(), ".agentstate", agentName, "coding", "sessions.json")
+  return path.join(getAgentRoot(agentName), "state", "coding", "sessions.json")
 }
 
 function isPidAlive(pid: number): boolean {

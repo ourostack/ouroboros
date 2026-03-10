@@ -24,6 +24,7 @@ export const CANONICAL_BUNDLE_MANIFEST: readonly BundleManifestEntry[] = [
   { path: "psyche/ASPIRATIONS.md", kind: "file" },
   { path: "psyche/memory", kind: "dir" },
   { path: "friends", kind: "dir" },
+  { path: "state", kind: "dir" },
   { path: "tasks", kind: "dir" },
   { path: "skills", kind: "dir" },
   { path: "senses", kind: "dir" },

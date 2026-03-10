@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
+import * as os from "os"
 import * as path from "path"
 
 vi.mock("../../nerves/runtime", () => ({
@@ -30,10 +31,18 @@ describe("getPendingDir", () => {
   it("returns correct path", async () => {
     const { getPendingDir } = await import("../../mind/pending")
     const result = getPendingDir("testagent", "friend-1", "cli", "session")
-    expect(result).toContain("pending")
-    expect(result).toContain("friend-1")
-    expect(result).toContain("cli")
-    expect(result).toContain("session")
+    expect(result).toBe(
+      path.join(
+        os.homedir(),
+        "AgentBundles",
+        "testagent.ouro",
+        "state",
+        "pending",
+        "friend-1",
+        "cli",
+        "session",
+      ),
+    )
   })
 })
 

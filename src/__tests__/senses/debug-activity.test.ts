@@ -141,4 +141,165 @@ describe("debug activity controller", () => {
 
     expect(onTransportError).toHaveBeenCalledWith("status_update", "send failed")
   })
+
+  it("can start typing before the initial visible status when configured", async () => {
+    const operations: string[] = []
+    const { createDebugActivityController } = await import("../../senses/debug-activity")
+    const controller = createDebugActivityController({
+      thinkingPhrases: ["thinking"],
+      followupPhrases: ["followup"],
+      transport: {
+        sendStatus: vi.fn(async (text: string) => {
+          operations.push(`send:${text}`)
+          return "status-guid"
+        }),
+        editStatus: vi.fn(async (messageGuid: string, text: string) => {
+          operations.push(`edit:${messageGuid}:${text}`)
+        }),
+        setTyping: vi.fn(async (active: boolean) => {
+          operations.push(`typing:${active}`)
+        }),
+      },
+      startTypingOnModelStart: true,
+    } as any)
+
+    controller.onModelStart()
+    controller.onToolStart("read_file", { path: "notes.txt" })
+    await controller.finish()
+
+    expect(operations).toEqual([
+      "typing:true",
+      "send:thinking...",
+      "edit:status-guid:running read_file (notes.txt)...",
+      "typing:false",
+    ])
+  })
+
+  it("can start and stop typing on a short turn without waiting for a visible status to begin", async () => {
+    const operations: string[] = []
+    const { createDebugActivityController } = await import("../../senses/debug-activity")
+    const controller = createDebugActivityController({
+      thinkingPhrases: ["thinking"],
+      followupPhrases: ["followup"],
+      transport: {
+        sendStatus: vi.fn(async (text: string) => {
+          operations.push(`send:${text}`)
+          return "status-guid"
+        }),
+        editStatus: vi.fn(async (messageGuid: string, text: string) => {
+          operations.push(`edit:${messageGuid}:${text}`)
+        }),
+        setTyping: vi.fn(async (active: boolean) => {
+          operations.push(`typing:${active}`)
+        }),
+      },
+      startTypingOnModelStart: true,
+    } as any)
+
+    controller.onModelStart()
+    await controller.finish()
+
+    expect(operations).toEqual([
+      "typing:true",
+      "send:thinking...",
+      "typing:false",
+    ])
+  })
+
+  it("does not start typing twice when model start is called again while typing is already active", async () => {
+    const operations: string[] = []
+    const { createDebugActivityController } = await import("../../senses/debug-activity")
+    const controller = createDebugActivityController({
+      thinkingPhrases: ["thinking"],
+      followupPhrases: ["followup"],
+      transport: {
+        sendStatus: vi.fn(async (text: string) => {
+          operations.push(`send:${text}`)
+          return "status-guid"
+        }),
+        editStatus: vi.fn(async (messageGuid: string, text: string) => {
+          operations.push(`edit:${messageGuid}:${text}`)
+        }),
+        setTyping: vi.fn(async (active: boolean) => {
+          operations.push(`typing:${active}`)
+        }),
+      },
+      startTypingOnModelStart: true,
+    } as any)
+
+    controller.onModelStart()
+    controller.onModelStart()
+    await controller.finish()
+
+    expect(operations).toEqual([
+      "typing:true",
+      "send:thinking...",
+      "edit:status-guid:thinking...",
+      "typing:false",
+    ])
+  })
+
+  it("lets idle drains and ignored text chunks remain no-ops", async () => {
+    const operations: string[] = []
+    const { createDebugActivityController } = await import("../../senses/debug-activity")
+    const controller = createDebugActivityController({
+      thinkingPhrases: ["thinking"],
+      followupPhrases: ["followup"],
+      transport: {
+        sendStatus: vi.fn(async (text: string) => {
+          operations.push(`send:${text}`)
+          return "status-guid"
+        }),
+        editStatus: vi.fn(async (messageGuid: string, text: string) => {
+          operations.push(`edit:${messageGuid}:${text}`)
+        }),
+        setTyping: vi.fn(async (active: boolean) => {
+          operations.push(`typing:${active}`)
+        }),
+      },
+    })
+
+    controller.onTextChunk("")
+    controller.onTextChunk("ignored before any tool run")
+    await controller.drain()
+    await controller.finish()
+
+    expect(operations).toEqual([])
+  })
+
+  it("can suppress generic followup phrase status while keeping concrete tool updates", async () => {
+    const operations: string[] = []
+    const { createDebugActivityController } = await import("../../senses/debug-activity")
+    const controller = createDebugActivityController({
+      thinkingPhrases: ["thinking"],
+      followupPhrases: ["followup"],
+      transport: {
+        sendStatus: vi.fn(async (text: string) => {
+          operations.push(`send:${text}`)
+          return "status-guid"
+        }),
+        editStatus: vi.fn(async (messageGuid: string, text: string) => {
+          operations.push(`edit:${messageGuid}:${text}`)
+        }),
+        setTyping: vi.fn(async (active: boolean) => {
+          operations.push(`typing:${active}`)
+        }),
+      },
+      suppressFollowupPhraseStatus: true,
+    })
+
+    controller.onModelStart()
+    controller.onToolStart("read_file", { path: "notes.txt" })
+    controller.onToolEnd("read_file", "ok", true)
+    controller.onTextChunk("final answer incoming")
+    await controller.finish()
+
+    expect(operations).toEqual([
+      "send:thinking...",
+      "typing:true",
+      "edit:status-guid:running read_file (notes.txt)...",
+      "edit:status-guid:\u2713 read_file (ok)",
+      "typing:false",
+    ])
+  })
 })

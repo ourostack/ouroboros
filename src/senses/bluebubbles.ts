@@ -11,6 +11,7 @@ import { FileFriendStore } from "../mind/friends/store-file"
 import { buildSystem } from "../mind/prompt"
 import { getPhrases } from "../mind/phrases"
 import { emitNervesEvent } from "../nerves/runtime"
+import type { BlueBubblesReplyTargetSelection } from "../repertoire/tools-base"
 import {
   normalizeBlueBubblesEvent,
   type BlueBubblesChatRef,
@@ -48,6 +49,11 @@ interface RuntimeDeps {
   createServer: typeof http.createServer
 }
 
+interface BlueBubblesReplyTargetController {
+  getReplyToMessageGuid(): string | undefined
+  setSelection(selection: BlueBubblesReplyTargetSelection): string
+}
+
 const defaultDeps: RuntimeDeps = {
   getAgentName,
   buildSystem,
@@ -82,8 +88,99 @@ function resolveFriendParams(event: BlueBubblesNormalizedEvent): FriendResolverP
   }
 }
 
-function buildInboundText(event: BlueBubblesNormalizedEvent): string {
-  const metadataPrefix = buildConversationScopePrefix(event)
+function extractMessageText(content: OpenAI.ChatCompletionMessageParam["content"] | undefined): string {
+  if (typeof content === "string") return content
+  if (!Array.isArray(content)) return ""
+  return content
+    .map((part) => {
+      if (part && typeof part === "object" && "type" in part && part.type === "text" && typeof part.text === "string") {
+        return part.text
+      }
+      return ""
+    })
+    .filter(Boolean)
+    .join("\n")
+}
+
+type HistoricalLaneSummary = {
+  label: string
+  key: string
+  snippet: string
+}
+
+function extractHistoricalLaneSummary(
+  messages: OpenAI.ChatCompletionMessageParam[],
+): HistoricalLaneSummary[] {
+  const seen = new Set<string>()
+  const summaries: HistoricalLaneSummary[] = []
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]
+    if (message.role !== "user") continue
+    const text = extractMessageText(message.content)
+    if (!text) continue
+    const firstLine = text.split("\n")[0].trim()
+    const threadMatch = firstLine.match(/thread id: ([^\]|]+)/i)
+    const laneKey = threadMatch
+      ? `thread:${threadMatch[1].trim()}`
+      : /top[-_]level/i.test(firstLine)
+        ? "top_level"
+        : null
+    if (!laneKey || seen.has(laneKey)) continue
+    seen.add(laneKey)
+    const snippet = text
+      .split("\n")
+      .slice(1)
+      .map((line) => line.trim())
+      .find(Boolean)
+      ?.slice(0, 80) ?? "(no recent text)"
+    summaries.push({
+      key: laneKey,
+      label: laneKey === "top_level" ? "top_level" : laneKey,
+      snippet,
+    })
+    if (summaries.length >= 5) break
+  }
+  return summaries
+}
+
+function buildConversationScopePrefix(
+  event: BlueBubblesNormalizedEvent,
+  existingMessages: OpenAI.ChatCompletionMessageParam[],
+): string {
+  if (event.kind !== "message") {
+    return ""
+  }
+
+  const summaries = extractHistoricalLaneSummary(existingMessages)
+  const lines: string[] = []
+  if (event.threadOriginatorGuid?.trim()) {
+    lines.push(
+      `[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: ${event.threadOriginatorGuid.trim()} | default outbound target for this turn: current_lane]`,
+    )
+  } else {
+    lines.push(
+      "[conversation scope: existing chat trunk | current inbound lane: top_level | default outbound target for this turn: top_level]",
+    )
+  }
+  if (summaries.length > 0) {
+    lines.push("[recent active lanes]")
+    for (const summary of summaries) {
+      lines.push(`- ${summary.label}: ${summary.snippet}`)
+    }
+  }
+  if (event.threadOriginatorGuid?.trim() || summaries.some((summary) => summary.key.startsWith("thread:"))) {
+    lines.push(
+      "[routing control: use bluebubbles_set_reply_target with target=top_level to widen back out, or target=thread plus a listed thread id to route into a specific active thread]",
+    )
+  }
+  return lines.join("\n")
+}
+
+function buildInboundText(
+  event: BlueBubblesNormalizedEvent,
+  existingMessages: OpenAI.ChatCompletionMessageParam[],
+): string {
+  const metadataPrefix = buildConversationScopePrefix(event, existingMessages)
   const baseText = event.repairNotice?.trim()
     ? `${event.textForAgent}\n[${event.repairNotice.trim()}]`
     : event.textForAgent
@@ -97,20 +194,11 @@ function buildInboundText(event: BlueBubblesNormalizedEvent): string {
   return `${event.sender.displayName}: ${scopedText}`
 }
 
-function buildConversationScopePrefix(event: BlueBubblesNormalizedEvent): string {
-  if (event.kind !== "message") {
-    return ""
-  }
-
-  if (event.threadOriginatorGuid?.trim()) {
-    return `[conversation scope: existing chat trunk | current turn: thread reply | thread id: ${event.threadOriginatorGuid.trim()}]`
-  }
-
-  return "[conversation scope: existing chat trunk | current turn: top-level]"
-}
-
-function buildInboundContent(event: BlueBubblesNormalizedEvent): OpenAI.ChatCompletionUserMessageParam["content"] {
-  const text = buildInboundText(event)
+function buildInboundContent(
+  event: BlueBubblesNormalizedEvent,
+  existingMessages: OpenAI.ChatCompletionMessageParam[],
+): OpenAI.ChatCompletionUserMessageParam["content"] {
+  const text = buildInboundText(event, existingMessages)
   if (event.kind !== "message" || !event.inputPartsForAgent || event.inputPartsForAgent.length === 0) {
     return text
   }
@@ -121,22 +209,65 @@ function buildInboundContent(event: BlueBubblesNormalizedEvent): OpenAI.ChatComp
   ]
 }
 
+function createReplyTargetController(event: BlueBubblesNormalizedEvent): BlueBubblesReplyTargetController {
+  const defaultTargetLabel = event.kind === "message" && event.threadOriginatorGuid?.trim() ? "current_lane" : "top_level"
+  let selection: BlueBubblesReplyTargetSelection =
+    event.kind === "message" && event.threadOriginatorGuid?.trim()
+      ? { target: "current_lane" }
+      : { target: "top_level" }
+
+  return {
+    getReplyToMessageGuid(): string | undefined {
+      if (event.kind !== "message") return undefined
+      if (selection.target === "top_level") return undefined
+      if (selection.target === "thread") return selection.threadOriginatorGuid.trim()
+      return event.threadOriginatorGuid?.trim() ? event.messageGuid : undefined
+    },
+    setSelection(next: BlueBubblesReplyTargetSelection): string {
+      selection = next
+      if (next.target === "top_level") {
+        return "bluebubbles reply target override: top_level"
+      }
+      if (next.target === "thread") {
+        return `bluebubbles reply target override: thread:${next.threadOriginatorGuid}`
+      }
+      return `bluebubbles reply target: using default for this turn (${defaultTargetLabel})`
+    },
+  }
+}
+
+function emitBlueBubblesMarkReadWarning(chat: BlueBubblesChatRef, error: unknown): void {
+  emitNervesEvent({
+    level: "warn",
+    component: "senses",
+    event: "senses.bluebubbles_mark_read_error",
+    message: "failed to mark bluebubbles chat as read",
+    meta: {
+      chatGuid: chat.chatGuid ?? null,
+      reason: error instanceof Error ? error.message : String(error),
+    },
+  })
+}
+
 function createBlueBubblesCallbacks(
   client: BlueBubblesClient,
   chat: BlueBubblesChatRef,
-  replyToMessageGuid?: string,
+  replyTarget: BlueBubblesReplyTargetController,
 ): BlueBubblesCallbacks {
   let textBuffer = ""
   const phrases = getPhrases()
   const activity = createDebugActivityController({
     thinkingPhrases: phrases.thinking,
     followupPhrases: phrases.followup,
+    startTypingOnModelStart: true,
+    suppressInitialModelStatus: true,
+    suppressFollowupPhraseStatus: true,
     transport: {
       sendStatus: async (text: string) => {
         const sent = await client.sendText({
           chat,
           text,
-          replyToMessageGuid,
+          replyToMessageGuid: replyTarget.getReplyToMessageGuid(),
         })
         return sent.messageGuid
       },
@@ -144,11 +275,27 @@ function createBlueBubblesCallbacks(
         await client.sendText({
           chat,
           text,
-          replyToMessageGuid,
+          replyToMessageGuid: replyTarget.getReplyToMessageGuid(),
         })
       },
       setTyping: async (active: boolean) => {
-        await client.setTyping(chat, active)
+        if (!active) {
+          await client.setTyping(chat, false)
+          return
+        }
+
+        const [markReadResult, typingResult] = await Promise.allSettled([
+          client.markChatRead(chat),
+          client.setTyping(chat, true),
+        ])
+
+        if (markReadResult.status === "rejected") {
+          emitBlueBubblesMarkReadWarning(chat, markReadResult.reason)
+        }
+
+        if (typingResult.status === "rejected") {
+          throw typingResult.reason
+        }
       },
     },
     onTransportError: (operation, error) => {
@@ -239,7 +386,7 @@ function createBlueBubblesCallbacks(
       await client.sendText({
         chat,
         text: trimmed,
-        replyToMessageGuid,
+        replyToMessageGuid: replyTarget.getReplyToMessageGuid(),
       })
     },
 
@@ -323,17 +470,21 @@ export async function handleBlueBubblesEvent(
   const store = resolvedDeps.createFriendStore()
   const resolver = resolvedDeps.createFriendResolver(store, resolveFriendParams(event))
   const context = await resolver.resolve()
+  const replyTarget = createReplyTargetController(event)
   const toolContext = {
     signin: async () => undefined,
     friendStore: store,
     summarize: createSummarize(),
     context,
+    bluebubblesReplyTarget: {
+      setSelection: (selection: BlueBubblesReplyTargetSelection) => replyTarget.setSelection(selection),
+    },
     codingFeedback: {
       send: async (message: string) => {
         await client.sendText({
           chat: event.chat,
           text: message,
-          replyToMessageGuid: event.kind === "message" ? event.messageGuid : undefined,
+          replyToMessageGuid: replyTarget.getReplyToMessageGuid(),
         })
       },
     },
@@ -361,12 +512,12 @@ export async function handleBlueBubblesEvent(
       ? existing.messages
       : [{ role: "system", content: await resolvedDeps.buildSystem("bluebubbles", undefined, context) }]
 
-  messages.push({ role: "user", content: buildInboundContent(event) })
+  messages.push({ role: "user", content: buildInboundContent(event, existing?.messages ?? messages) })
 
   const callbacks = createBlueBubblesCallbacks(
     client,
     event.chat,
-    event.kind === "message" ? event.messageGuid : undefined,
+    replyTarget,
   )
   const controller = new AbortController()
   const agentOptions: RunAgentOptions = {
@@ -378,20 +529,6 @@ export async function handleBlueBubblesEvent(
     await callbacks.flush()
     resolvedDeps.postTurn(messages, sessPath, result.usage)
     await resolvedDeps.accumulateFriendTokens(store, friendId, result.usage)
-    try {
-      await client.markChatRead(event.chat)
-    } catch (error) {
-      emitNervesEvent({
-        level: "warn",
-        component: "senses",
-        event: "senses.bluebubbles_mark_read_error",
-        message: "failed to mark bluebubbles chat as read",
-        meta: {
-          chatGuid: event.chat.chatGuid ?? null,
-          reason: error instanceof Error ? error.message : String(error),
-        },
-      })
-    }
 
     emitNervesEvent({
       component: "senses",
