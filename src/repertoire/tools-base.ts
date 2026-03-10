@@ -1,5 +1,6 @@
 import type OpenAI from "openai";
 import * as fs from "fs";
+import * as fg from "fast-glob";
 import { execSync, spawnSync } from "child_process";
 import * as path from "path";
 import { listSkills, loadSkill } from "./skills";
@@ -200,8 +201,8 @@ export const baseToolDefinitions: ToolDefinition[] = [
     },
     handler: (a) => {
       const cwd = a.cwd || process.cwd()
-      const matches = fs.globSync(a.pattern, { cwd })
-      return [...matches].sort().join("\n")
+      const matches = fg.globSync(a.pattern, { cwd, dot: true })
+      return matches.sort().join("\n")
     },
   },
   {
