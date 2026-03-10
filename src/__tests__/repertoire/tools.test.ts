@@ -421,6 +421,14 @@ describe("summarizeArgs", () => {
     expect(summarizeArgs("edit_file", { path: "/tmp/edit.txt", old_string: "x", new_string: "y" })).toBe("path=/tmp/edit.txt")
   })
 
+  it("returns pattern and cwd for glob", () => {
+    expect(summarizeArgs("glob", { pattern: "**/*.ts", cwd: "/src" })).toBe("pattern=**/*.ts cwd=/src")
+  })
+
+  it("returns pattern only for glob with no cwd", () => {
+    expect(summarizeArgs("glob", { pattern: "*.json" })).toBe("pattern=*.json")
+  })
+
   it("returns pattern and path for grep", () => {
     expect(summarizeArgs("grep", { pattern: "log.*Error", path: "/src", include: "*.ts" })).toBe("pattern=log.*Error path=/src include=*.ts")
   })
