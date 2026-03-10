@@ -1,77 +1,54 @@
-# ARCHITECTURE
+# Architecture
 
-This document describes the post-fix-round architecture for the Ouroboros agent harness.
+This document describes the current runtime shape of the Ouroboros harness.
 
-## Core Model
+## Core Runtime Model
 
-The harness runs as a daemon-centered, event-driven system:
+The harness is daemon-centered.
 
-- One daemon process manages discovery, lifecycle, routing, and scheduling.
-- Each enabled agent bundle maps to one runtime agent process.
-- Agents process work from chat, `ouro msg`, task board changes, and heartbeat-style task events.
-- Work is task-driven; scheduling is derived from task frontmatter and delivered as `ouro poke` triggers.
+- `npx ouro.bot` is the bootstrap entrypoint.
+- `ouro` is the installed launcher used after bootstrap.
+- `ouro up` ensures the local launcher is current, repairs stale wrapper state, installs workflow helpers, and starts or replaces the daemon if needed.
+- The daemon discovers bundles from `~/AgentBundles/*.ouro`.
+- Enabled bundles become managed runtime participants.
+
+The important design goal is one coherent runtime truth:
+
+- launcher truth
+- daemon truth
+- bundle truth
+- sense truth
 
 ## Runtime Topology
 
-1. `ouro up` ensures the daemon is running (idempotent startup + stale socket cleanup).
-2. Daemon discovers bundles under `~/AgentBundles/*.ouro`.
-3. Enabled bundles become managed agent processes.
-4. Chat (`ouro chat`), coder/agent messages (`ouro msg`), and pokes (`ouro poke`) are routed to running agents.
-5. Daemon and agents emit structured nerves events for observability and coverage audit.
+1. Human enters through `npx ouro.bot` or `ouro`.
+2. CLI setup verifies launcher, bundle registration, and helper installs.
+3. `ouro up` ensures the daemon is running the current runtime version.
+4. Daemon discovers bundles under `~/AgentBundles`.
+5. Daemon reports:
+   - discovered agents
+   - senses
+   - workers
+   - runtime version
+   - last updated time
+6. Agent work arrives through:
+   - `ouro chat`
+   - `ouro msg`
+   - `ouro poke`
+   - daemon-managed senses like Teams and BlueBubbles
 
-Supervisor layering is removed; daemon is the runtime entrypoint.
+## External State Layout
 
-## Body-Metaphor Subsystems
+### Agent bundles
 
-- `heart/`: core model loop, provider integration, streaming, tool execution, bootstrap identity/config loading.
-- `mind/`: prompt assembly, memory, friend store, bundle canonical-manifest enforcement.
-- `senses/`: interaction adapters and inner-dialog worker/turn orchestration.
-- `nerves/`: runtime logging/event schema and deterministic coverage audits.
-- `repertoire/`: tools, coding orchestration, and task board/state machinery.
-- `daemon/`: process manager, command plane, message router, task scheduler, hatch flow, first-run UX.
+`~/AgentBundles/<agent>.ouro/`
 
-## Primary CLI Surface
+Bundle contents are enforced by `src/mind/bundle-manifest.ts`.
 
-Public operator commands:
-
-- `ouro` / `ouro up`
-- `ouro status`
-- `ouro logs`
-- `ouro stop`
-- `ouro hatch`
-- `ouro chat <agent>`
-- `ouro msg --to <agent> [--session <id>] [--task <ref>] <message>`
-- `ouro poke <agent> --task <task-id>`
-- `ouro link <agent> --friend <id> --provider <provider> --external-id <external-id>`
-
-`npx ouro.bot` is the first-run wrapper that delegates to the canonical CLI runtime.
-
-## Scheduling + Messaging
-
-- Scheduler reads task markdown (`cadence` / `scheduledAt`) and reconciles jobs into `ouro poke` commands.
-- Triggered work updates task `lastRun` metadata.
-- `ouro msg` uses daemon routing for coder<->parent and inter-agent communication.
-- Message fallback persistence exists so messages survive temporary daemon outages.
-
-## Bundle Contract
-
-Agent bundle root: `~/AgentBundles/<Agent>.ouro/`
-
-`agent.json` is the runtime source of truth and includes:
-
-- `version` (integer schema)
-- `enabled` (daemon autostart flag)
-- `provider`
-- `context`
-- `phrases`
-
-Secrets are not stored in bundles:
-
-- Provider credentials: `~/.agentsecrets/<agent>/secrets.json`
-
-Canonical bundle manifest is enforced (`mind/bundle-manifest.ts`), including:
+Canonical paths:
 
 - `agent.json`
+- `bundle-meta.json`
 - `psyche/SOUL.md`
 - `psyche/IDENTITY.md`
 - `psyche/LORE.md`
@@ -79,40 +56,136 @@ Canonical bundle manifest is enforced (`mind/bundle-manifest.ts`), including:
 - `psyche/ASPIRATIONS.md`
 - `psyche/memory/`
 - `friends/`
+- `state/`
 - `tasks/`
 - `skills/`
-- `senses/teams/` (under `senses/`)
+- `senses/`
+- `senses/teams/`
 
-Non-canonical bundle paths are detected and surfaced for cleanup/distillation.
+### Secrets
+
+`~/.agentsecrets/<agent>/secrets.json`
+
+Secrets stay out of bundles and out of the repo.
+
+### Machine-scoped runtime/test spillover
+
+`~/.agentstate/...`
+
+This is for machine-level artifacts, not bundle-owned identity.
+
+## Bundle Truth
+
+`agent.json` is the runtime-facing contract for:
+
+- provider selection
+- phrases
+- context settings
+- sense enablement
+- `configPath`
+
+`bundle-meta.json` tracks the runtime version that last touched the bundle and supports version-aware behavior on startup.
+
+## Senses
+
+Current senses:
+
+- `cli`
+- `teams`
+- `bluebubbles`
+
+Sense status model:
+
+- `interactive`
+- `disabled`
+- `needs_config`
+- `ready`
+- `running`
+- `error`
+
+The daemon manages daemon-hosted senses and reports them in `ouro status`. CLI remains `interactive` rather than daemon-hosted.
+
+### BlueBubbles-specific behavior
+
+BlueBubbles now uses:
+
+- one persisted chat trunk per chat
+- current-turn lane metadata for thread awareness
+- agent-chosen outbound lane targeting
+- typing/read behavior coordinated through the sense transport
+
+Threads are treated as routing/context metadata, not as separate long-lived memory worlds.
+
+## Subsystems
+
+- `src/heart/`
+  Core engine, provider runtimes, identity/config loading, daemon, bootstrap, and entrypoints.
+- `src/mind/`
+  Prompt assembly, sessions, bundle manifest, memory, phrases, formatting, and friend identity.
+- `src/repertoire/`
+  Tool registry, coding orchestration, task tooling, and integration clients.
+- `src/senses/`
+  CLI, Teams, BlueBubbles, activity transport, trust gating, and inner-dialog worker logic.
+- `src/nerves/`
+  Structured runtime events and deterministic audit coverage.
+
+## Tools
+
+Tool access is channel-aware and trust-aware.
+
+- CLI gets the full local harness surface.
+- Trusted one-to-one remote contexts can use the feasible local tool surface.
+- Shared or untrusted remote contexts stay more constrained.
+
+Important recent additions include:
+
+- `schedule_reminder`
+- coding session tooling with inspectable output tails
+- BlueBubbles reply-target selection as explicit tool state
+
+## Scheduling And Messaging
+
+- Task markdown supports `scheduledAt` and `cadence`.
+- The daemon scheduler reconciles those tasks into OS jobs that call `ouro poke`.
+- `ouro msg` routes messages through the daemon and falls back to pending delivery when needed.
+
+## Version And Update Model
+
+- Package version comes from `package.json`.
+- Runtime metadata exposes `version` and `lastUpdated`.
+- `ouro up` replaces stale daemons rather than preserving split-brain launcher/runtime behavior.
+- Update hooks run against bundles using `bundle-meta.json`.
+- The bootstrap wrapper and installed launcher are designed to converge on the same runtime channel.
+
+## Adoption Specialist
+
+`AdoptionSpecialist.ouro/` is shipped with the package and used by `ouro hatch`.
+
+The specialist:
+
+- interviews the human
+- helps define the new agent
+- scaffolds a canonical bundle
+- writes secrets to `~/.agentsecrets/<agent>/secrets.json`
+- hands the new agent off into the normal bundle/runtime model
 
 ## Repository Layout
 
-Top-level source layout:
+Top-level repo layout:
 
-- `src/heart` (core engine, providers, daemon, config, identity, agent entrypoint)
-  - `src/heart/daemon` (daemon process, CLI, hatch flow, scheduling, process management)
-- `src/mind` (prompts, memory, sessions, friends, formatting)
-- `src/senses` (CLI, Teams, inner dialog)
-- `src/nerves` (observability, logging, coverage audit)
-- `src/repertoire` (tools, skills, coding orchestration, tasks)
-- `src/__tests__` mirroring runtime domains
+- `src/`
+- `subagents/`
+- `AdoptionSpecialist.ouro/`
+- `docs/`
+- `scripts/teams-sense/`
+- `packages/ouro.bot/`
 
-## Removed / Cut Systems
-
-The fix round removed legacy or duplicate systems, including:
-
-- standalone supervisor runtime
-- cron scheduler dependency as primary scheduler model
-- governance subsystem directory and other stale pipeline/workspace wiring
-- non-canonical bundle-era assumptions (for example repo-root bundle ownership)
+Task docs are intentionally not part of this repo’s long-lived architecture. They live with the owning agent bundle.
 
 ## Quality Gates
 
-- ESLint and TypeScript must pass.
-- Test suite and coverage gate must pass.
-- New code requires full branch/line/function coverage.
-- Nerves coverage audits enforce logging structure and runtime observability contracts.
+- `npm test`
+- `npx tsc --noEmit`
+- `npm run test:coverage`
 
-## Ownership
-
-This document is shared architecture guidance for maintainers and coding agents. Update it whenever runtime contracts or subsystem boundaries materially change.
+Production runtime logging must go through `emitNervesEvent()`, and nerves audit rules enforce structural coverage over those events.

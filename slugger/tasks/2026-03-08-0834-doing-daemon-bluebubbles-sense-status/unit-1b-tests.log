@@ -1,8 +1,0 @@
-Command: `npx vitest run src/__tests__/heart/identity.test.ts src/__tests__/heart/sense-truth.test.ts`
-
-Result: PASS
-
-Summary:
-- `src/__tests__/heart/identity.test.ts`: 33 passed
-- `src/__tests__/heart/sense-truth.test.ts`: 3 passed
-- Total: 36 passed

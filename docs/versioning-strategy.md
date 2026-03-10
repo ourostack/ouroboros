@@ -1,53 +1,145 @@
 # Versioning Strategy
 
-How the various version fields in the ouro runtime relate to each other.
+This repo has a few different kinds of "version", and they answer different questions.
 
-## Version Fields
+## 1. Runtime Package Version
 
-### `AgentConfig.version` (agent.json)
-- **Location**: `~/AgentBundles/<name>.ouro/agent.json`
-- **Type**: `number`
-- **Current value**: `1`
-- **Purpose**: Schema version of the agent configuration file format.
-- **Status**: No migrations exist. All agents are at v1.
+Source:
 
-### `FriendRecord.schemaVersion` (friends/*.json)
-- **Location**: `~/AgentBundles/<name>.ouro/friends/<uuid>.json`
-- **Type**: `number`
-- **Current value**: `1`
-- **Purpose**: Schema version of the friend profile format.
-- **Status**: No migrations exist. All records are at v1.
+- `package.json`
 
-### Session envelope `version` (context.ts)
-- **Location**: Session files (serialized conversations)
-- **Type**: `number`
-- **Current value**: `1`
-- **Purpose**: Format version for saved conversation state (messages + usage).
-- **Status**: No migrations exist. Sessions at other versions are treated as corrupt and discarded.
+Example:
 
-### `BundleMeta` (bundle-meta.json)
-- **Location**: `~/AgentBundles/<name>.ouro/bundle-meta.json`
-- **Type**: Object with `runtimeVersion`, `bundleSchemaVersion`, `lastUpdated`, `previousRuntimeVersion`
-- **Current `bundleSchemaVersion`**: `1`
-- **Purpose**: Tracks which runtime version last touched this bundle, enabling version-aware behavior on startup.
+- `0.1.0-alpha.36`
 
-## How They Relate
+This is the version reported by:
 
-The three schema version fields (`AgentConfig.version`, `FriendRecord.schemaVersion`, session `version`) are all at v1 with no migrations. They are independent format markers.
+- `npx ouro.bot -v`
+- `ouro -v`
+- `ouro status`
 
-`bundle-meta.json` is the unified tracking layer that sits above all of these. It answers a different question: "which runtime version last ran this agent?" rather than "what format is this file in?"
+It is the main answer to "what runtime am I running?"
 
-When the runtime version changes (detected via `runtimeVersion` mismatch in bundle-meta.json), the update hooks system runs. This is where future bundle migrations would live -- if agent.json ever needs a v2, a hook would handle the migration and bump `AgentConfig.version`.
+## 2. Runtime Metadata
 
-## Update Flow
+Source:
 
-1. Runtime starts (daemon or CLI)
-2. `applyPendingUpdates()` iterates all `.ouro` bundles
-3. For each bundle, compares `bundle-meta.json.runtimeVersion` with current package version
-4. On mismatch, runs registered update hooks (currently: `bundleMetaHook`)
-5. `bundleMetaHook` saves old version as `previousRuntimeVersion`, updates `runtimeVersion` and `lastUpdated`
-6. Agent's system prompt shows "runtime version: X.Y.Z" and "previously: A.B.C" when applicable
+- `src/heart/daemon/runtime-metadata.ts`
 
-## No Changes Needed
+Runtime metadata exposes:
 
-The existing version fields stay as-is. No migrations are planned. `bundle-meta.json` provides the infrastructure for future migrations without requiring any changes to the existing versioning scheme.
+- `version`
+- `lastUpdated`
+
+`lastUpdated` prefers the latest git commit timestamp when available and falls back to `package.json` mtime when git metadata is unavailable.
+
+## 3. Installed Launcher Version
+
+The installed `ouro` command is a tiny launcher written to:
+
+- `~/.local/bin/ouro`
+
+It currently delegates to:
+
+- `npx --yes @ouro.bot/cli@alpha "$@"`
+
+The launcher should always converge on the same runtime channel as the bootstrap path. `ouro up` repairs stale launcher contents if needed.
+
+## 4. Bootstrap Wrapper
+
+`ouro.bot` is the bootstrap wrapper package.
+
+Its job is simple:
+
+- get the human into the current CLI runtime
+- stay boring
+- never become a second source of truth
+
+The harness includes logic to reclaim the global `ouro.bot` binary when a stale global CLI install has hijacked it.
+
+## 5. Daemon Runtime Version
+
+The daemon is version-aware.
+
+If:
+
+- the local launcher/runtime is newer
+- and the running daemon reports an older version
+
+then `ouro up` replaces the stale daemon instead of leaving launcher and daemon on different versions.
+
+That keeps:
+
+- `npx ouro.bot`
+- `ouro`
+- daemon behavior
+
+in sync.
+
+## 6. Bundle Meta
+
+Each bundle has:
+
+- `~/AgentBundles/<agent>.ouro/bundle-meta.json`
+
+Fields:
+
+- `runtimeVersion`
+- `bundleSchemaVersion`
+- `lastUpdated`
+- `previousRuntimeVersion` (when applicable)
+
+This answers:
+
+- which runtime last touched this bundle?
+- did this bundle just cross a runtime boundary?
+
+It is not the same thing as the package version, but it tracks that package version per bundle.
+
+## 7. Schema Version Fields
+
+There are additional format-version fields that are narrower in scope:
+
+### `agent.json.version`
+
+- bundle config schema version
+
+### `FriendRecord.schemaVersion`
+
+- friend-record schema version
+
+### session envelope `version`
+
+- saved conversation/session file format version
+
+These are file-format markers, not "what runtime am I on?" markers.
+
+## 8. How They Relate
+
+Use this mental model:
+
+- package version -> the runtime release itself
+- runtime metadata -> what this running checkout believes it is
+- launcher/bootstrap version -> whether the human enters through the right runtime
+- daemon version -> whether the long-lived process matches the current runtime
+- bundle-meta -> what runtime last touched a specific bundle
+- schema versions -> whether individual file formats changed
+
+## 9. Practical Update Story
+
+For humans, the desired update path is:
+
+```bash
+cd ~
+npx ouro.bot up
+ouro status
+```
+
+What should happen:
+
+- bootstrap reaches the current runtime
+- launcher repairs if stale
+- daemon repairs if stale
+- bundle update hooks run as needed
+
+The user should not have to reason about wrapper/package drift just to get current.
