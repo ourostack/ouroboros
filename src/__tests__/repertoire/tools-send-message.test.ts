@@ -153,4 +153,127 @@ describe("send_message tool", () => {
     expect(result).toContain("…")
     expect(result).not.toContain("a".repeat(100))
   })
+
+  describe("self-routing special case", () => {
+    it("routes friendId='self' to inner dialog pending dir regardless of channel", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      await tool.handler({
+        friendId: "self",
+        channel: "teams",
+        content: "note to self",
+      })
+
+      // Self always routes to inner dialog pending dir, NOT to the specified channel
+      expect(fs.mkdirSync).toHaveBeenCalledWith(
+        "/mock/agent-root/state/pending/self/inner/dialog",
+        { recursive: true },
+      )
+      expect(fs.writeFileSync).toHaveBeenCalledWith(
+        expect.stringMatching(/^\/mock\/agent-root\/state\/pending\/self\/inner\/dialog\/\d+-.+\.json$/),
+        expect.any(String),
+      )
+    })
+
+    it("routes friendId='self' with channel='cli' to inner dialog pending dir", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      await tool.handler({
+        friendId: "self",
+        channel: "cli",
+        content: "remember this for later",
+      })
+
+      // Even when channel is 'cli', self goes to inner dialog
+      expect(fs.mkdirSync).toHaveBeenCalledWith(
+        "/mock/agent-root/state/pending/self/inner/dialog",
+        { recursive: true },
+      )
+    })
+
+    it("routes friendId='self' with channel='bluebubbles' to inner dialog pending dir", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      await tool.handler({
+        friendId: "self",
+        channel: "bluebubbles",
+        content: "a thought for myself",
+      })
+
+      expect(fs.mkdirSync).toHaveBeenCalledWith(
+        "/mock/agent-root/state/pending/self/inner/dialog",
+        { recursive: true },
+      )
+    })
+
+    it("preserves original friendId and channel in the written envelope even when self-routed", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      await tool.handler({
+        friendId: "self",
+        channel: "teams",
+        content: "note to self",
+      })
+
+      const written = JSON.parse(vi.mocked(fs.writeFileSync).mock.calls[0][1] as string)
+      expect(written.from).toBe("testagent")
+      expect(written.friendId).toBe("self")
+      expect(written.channel).toBe("teams")
+      expect(written.content).toBe("note to self")
+    })
+
+    it("does NOT self-route when friendId is a regular UUID", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      await tool.handler({
+        friendId: "friend-uuid-1",
+        channel: "bluebubbles",
+        content: "hey friend",
+      })
+
+      // Regular friend routes to the specified channel, NOT inner dialog
+      expect(fs.mkdirSync).toHaveBeenCalledWith(
+        "/mock/agent-root/state/pending/friend-uuid-1/bluebubbles/session",
+        { recursive: true },
+      )
+    })
+
+    it("self-routing ignores custom key and always uses 'dialog'", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      await tool.handler({
+        friendId: "self",
+        channel: "cli",
+        key: "custom-key",
+        content: "internal thought",
+      })
+
+      // Self always routes to inner/dialog, ignoring the custom key
+      expect(fs.mkdirSync).toHaveBeenCalledWith(
+        "/mock/agent-root/state/pending/self/inner/dialog",
+        { recursive: true },
+      )
+    })
+
+    it("confirmation message mentions self routing", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      const result = await tool.handler({
+        friendId: "self",
+        channel: "teams",
+        content: "remember this",
+      })
+
+      // Should indicate inner dialog routing, not the original channel
+      expect(result).toContain("inner")
+      expect(result).toContain("dialog")
+    })
+  })
 })
