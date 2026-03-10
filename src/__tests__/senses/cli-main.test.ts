@@ -918,7 +918,27 @@ describe("agent.ts main() - onKick and toolChoiceRequired", () => {
     expect(mocks.sessionPath).toHaveBeenCalledWith("mock-uuid", "cli", "session")
   })
 
-  it("drains pending messages on startup and saves session", async () => {
+  it("drains pending self-messages as [inner thought: ...] prefix (no fake turns)", async () => {
+    const { drainPending } = await import("../../mind/pending")
+    vi.mocked(drainPending).mockReturnValueOnce([
+      { from: "testagent", content: "i should check on that task", channel: "cli", timestamp: Date.now() },
+    ])
+    setupBasic({ inputSequence: ["/exit"] })
+
+    await main(undefined, { pasteDebounceMs: 0 })
+
+    // Startup drain should save session
+    expect(mocks.saveSession).toHaveBeenCalled()
+    const savedMessages = mocks.saveSession.mock.calls[0][1]
+    // Must NOT contain fake assistant turns
+    const assistantMsgs = savedMessages.filter((m: any) => m.role === "assistant")
+    expect(assistantMsgs).toHaveLength(0)
+    // Must NOT contain messages with name field
+    const withName = savedMessages.filter((m: any) => "name" in m)
+    expect(withName).toHaveLength(0)
+  })
+
+  it("drains pending inter-agent messages as [message from {name}: ...] prefix (no fake turns)", async () => {
     const { drainPending } = await import("../../mind/pending")
     vi.mocked(drainPending).mockReturnValueOnce([
       { from: "friend-agent", content: "hey, build succeeded!", channel: "cli", timestamp: Date.now() },
@@ -927,13 +947,31 @@ describe("agent.ts main() - onKick and toolChoiceRequired", () => {
 
     await main(undefined, { pasteDebounceMs: 0 })
 
-    // The drain should inject harness-context + assistant pairs and save
     expect(mocks.saveSession).toHaveBeenCalled()
     const savedMessages = mocks.saveSession.mock.calls[0][1]
-    expect(savedMessages).toEqual(expect.arrayContaining([
-      expect.objectContaining({ role: "user", name: "harness", content: expect.stringContaining("friend-agent") }),
-      expect.objectContaining({ role: "assistant", content: "hey, build succeeded!" }),
-    ]))
+    // Must NOT contain fake assistant turns
+    const assistantMsgs = savedMessages.filter((m: any) => m.role === "assistant")
+    expect(assistantMsgs).toHaveLength(0)
+    // Must NOT contain messages with name field
+    const withName = savedMessages.filter((m: any) => "name" in m)
+    expect(withName).toHaveLength(0)
+  })
+
+  it("does not create fake user+assistant pairs from pending messages", async () => {
+    const { drainPending } = await import("../../mind/pending")
+    vi.mocked(drainPending).mockReturnValueOnce([
+      { from: "friend-agent", content: "hey there!", channel: "cli", timestamp: Date.now() },
+      { from: "testagent", content: "noted", channel: "cli", timestamp: Date.now() },
+    ])
+    setupBasic({ inputSequence: ["/exit"] })
+
+    await main(undefined, { pasteDebounceMs: 0 })
+
+    expect(mocks.saveSession).toHaveBeenCalled()
+    const savedMessages = mocks.saveSession.mock.calls[0][1]
+    // Should only have the system message -- no injected pairs
+    expect(savedMessages).toHaveLength(1)
+    expect(savedMessages[0].role).toBe("system")
   })
 
   it("blocks stranger traffic before runAgent and emits one-time auto reply", async () => {
@@ -1229,5 +1267,56 @@ describe("runCliSession", () => {
       expect.any(Array),
       { usage: undefined },
     )
+  })
+})
+
+// ── formatPendingPrefix tests ──
+import { formatPendingPrefix } from "../../senses/cli"
+
+describe("formatPendingPrefix", () => {
+  it("formats self-messages as [inner thought: {content}]", () => {
+    const result = formatPendingPrefix(
+      [{ from: "testagent", content: "i should check on that task", timestamp: Date.now() }],
+      "testagent",
+    )
+    expect(result).toBe("[inner thought: i should check on that task]")
+  })
+
+  it("formats inter-agent messages as [message from {name}: {content}]", () => {
+    const result = formatPendingPrefix(
+      [{ from: "friend-agent", content: "hey, build succeeded!", timestamp: Date.now() }],
+      "testagent",
+    )
+    expect(result).toBe("[message from friend-agent: hey, build succeeded!]")
+  })
+
+  it("concatenates multiple pending messages with newlines", () => {
+    const result = formatPendingPrefix(
+      [
+        { from: "testagent", content: "noted something", timestamp: Date.now() },
+        { from: "friend-agent", content: "build done", timestamp: Date.now() },
+        { from: "testagent", content: "another thought", timestamp: Date.now() },
+      ],
+      "testagent",
+    )
+    expect(result).toBe(
+      "[inner thought: noted something]\n[message from friend-agent: build done]\n[inner thought: another thought]",
+    )
+  })
+
+  it("returns empty string for no messages", () => {
+    const result = formatPendingPrefix([], "testagent")
+    expect(result).toBe("")
+  })
+
+  it("does not include a name field in the formatted output", () => {
+    // The function returns a string prefix, not message objects.
+    // Verify the output is a plain string with no JSON name field.
+    const result = formatPendingPrefix(
+      [{ from: "friend-agent", content: "hello", timestamp: Date.now() }],
+      "testagent",
+    )
+    expect(result).not.toContain('"name"')
+    expect(result).toBe("[message from friend-agent: hello]")
   })
 })
