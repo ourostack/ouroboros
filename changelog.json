@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.33",
+      "changes": [
+        "Agent-owned runtime state now lives inside each bundle's `state/` directory instead of under `~/.agentstate/<agent>/...`, so sessions, logs, pending messages, coding session persistence, and BlueBubbles mutation logs stay co-located with the rest of the bundle.",
+        "Bundle-local state paths now stay durable on Azure too, and `state/` is treated as canonical bundle content while secrets continue to live in `~/.agentsecrets/<agent>/secrets.json`."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.32",
       "changes": [
         "BlueBubbles now treats thread-vs-top-level placement as an agent choice instead of a hard harness mirror. Slugger can deliberately stay in the current reply lane, widen back to top-level, or target another active thread when that makes the conversation flow better.",
