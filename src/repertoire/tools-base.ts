@@ -90,7 +90,11 @@ export const baseToolDefinitions: ToolDefinition[] = [
         description: "read file contents",
         parameters: {
           type: "object",
-          properties: { path: { type: "string" } },
+          properties: {
+            path: { type: "string" },
+            offset: { type: "number", description: "1-based line number to start reading from" },
+            limit: { type: "number", description: "maximum number of lines to return" },
+          },
           required: ["path"],
         },
       },
@@ -98,7 +102,13 @@ export const baseToolDefinitions: ToolDefinition[] = [
     handler: (a) => {
       const content = fs.readFileSync(a.path, "utf-8")
       editFileReadTracker.add(a.path)
-      return content
+      const offset = a.offset ? parseInt(a.offset, 10) : undefined
+      const limit = a.limit ? parseInt(a.limit, 10) : undefined
+      if (offset === undefined && limit === undefined) return content
+      const lines = content.split("\n")
+      const start = offset ? offset - 1 : 0
+      const end = limit !== undefined ? start + limit : lines.length
+      return lines.slice(start, end).join("\n")
     },
   },
   {
