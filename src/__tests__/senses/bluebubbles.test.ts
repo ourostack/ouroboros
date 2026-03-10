@@ -523,7 +523,7 @@ describe("BlueBubbles sense runtime", () => {
         expect.objectContaining({
           role: "user",
           content:
-            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: 54D4109C-7170-41A1-8161-F6F8C863CC0D | default outbound target: current_lane]\n[routing control: use bluebubbles_set_reply_target with target=top_level to widen back out, or target=thread plus a listed thread id to route into a specific active thread]\nthreaded reply",
+            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: 54D4109C-7170-41A1-8161-F6F8C863CC0D | default outbound target for this turn: current_lane]\n[routing control: use bluebubbles_set_reply_target with target=top_level to widen back out, or target=thread plus a listed thread id to route into a specific active thread]\nthreaded reply",
         }),
       ]),
       expect.any(Object),
@@ -581,7 +581,7 @@ describe("BlueBubbles sense runtime", () => {
         expect.objectContaining({
           role: "user",
           content:
-            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: 54D4109C-7170-41A1-8161-F6F8C863CC0D | default outbound target: current_lane]\n[routing control: use bluebubbles_set_reply_target with target=top_level to widen back out, or target=thread plus a listed thread id to route into a specific active thread]\nthreaded reply",
+            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: 54D4109C-7170-41A1-8161-F6F8C863CC0D | default outbound target for this turn: current_lane]\n[routing control: use bluebubbles_set_reply_target with target=top_level to widen back out, or target=thread plus a listed thread id to route into a specific active thread]\nthreaded reply",
         }),
       ]),
       expect.any(Object),
@@ -600,7 +600,7 @@ describe("BlueBubbles sense runtime", () => {
         expect.objectContaining({
           role: "user",
           content:
-            "[conversation scope: existing chat trunk | current inbound lane: top_level | default outbound target: top_level]\ntop-level follow-up",
+            "[conversation scope: existing chat trunk | current inbound lane: top_level | default outbound target for this turn: top_level]\ntop-level follow-up",
         }),
       ]),
       expect.any(Object),
@@ -653,8 +653,9 @@ describe("BlueBubbles sense runtime", () => {
   })
 
   it("lets the turn widen a threaded inbound reply back to top-level", async () => {
+    let selectionMessage = ""
     mocks.runAgent.mockImplementationOnce(async (_messages, callbacks, _channel, _signal, options) => {
-      options.toolContext.bluebubblesReplyTarget.setSelection({ target: "top_level" })
+      selectionMessage = options.toolContext.bluebubblesReplyTarget.setSelection({ target: "top_level" })
       callbacks.onModelStart()
       callbacks.onTextChunk("got it")
       return {
@@ -672,6 +673,7 @@ describe("BlueBubbles sense runtime", () => {
         text: "got it",
       }),
     )
+    expect(selectionMessage).toBe("bluebubbles reply target override: top_level")
   })
 
   it("surfaces recent active lanes so the agent can target another thread explicitly", async () => {
@@ -681,12 +683,12 @@ describe("BlueBubbles sense runtime", () => {
         {
           role: "user",
           content:
-            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: THREAD-OLD | default outbound target: current_lane]\nold thread topic",
+            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: THREAD-OLD | default outbound target for this turn: current_lane]\nold thread topic",
         },
         {
           role: "user",
           content:
-            "[conversation scope: existing chat trunk | current inbound lane: top_level | default outbound target: top_level]\nrecent top-level topic",
+            "[conversation scope: existing chat trunk | current inbound lane: top_level | default outbound target for this turn: top_level]\nrecent top-level topic",
         },
       ],
     })
@@ -699,7 +701,7 @@ describe("BlueBubbles sense runtime", () => {
         expect.objectContaining({
           role: "user",
           content:
-            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: 54D4109C-7170-41A1-8161-F6F8C863CC0D | default outbound target: current_lane]\n[recent active lanes]\n- top_level: recent top-level topic\n- thread:THREAD-OLD: old thread topic\n[routing control: use bluebubbles_set_reply_target with target=top_level to widen back out, or target=thread plus a listed thread id to route into a specific active thread]\nthreaded reply",
+            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: 54D4109C-7170-41A1-8161-F6F8C863CC0D | default outbound target for this turn: current_lane]\n[recent active lanes]\n- top_level: recent top-level topic\n- thread:THREAD-OLD: old thread topic\n[routing control: use bluebubbles_set_reply_target with target=top_level to widen back out, or target=thread plus a listed thread id to route into a specific active thread]\nthreaded reply",
         }),
       ]),
       expect.any(Object),
@@ -719,7 +721,7 @@ describe("BlueBubbles sense runtime", () => {
             {
               type: "text",
               text:
-                "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: THREAD-MEDIA | default outbound target: current_lane]\nmedia thread topic",
+                "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: THREAD-MEDIA | default outbound target for this turn: current_lane]\nmedia thread topic",
             },
             {
               type: "image_url",
@@ -738,7 +740,7 @@ describe("BlueBubbles sense runtime", () => {
         expect.objectContaining({
           role: "user",
           content:
-            "[conversation scope: existing chat trunk | current inbound lane: top_level | default outbound target: top_level]\n[recent active lanes]\n- thread:THREAD-MEDIA: media thread topic\n[routing control: use bluebubbles_set_reply_target with target=top_level to widen back out, or target=thread plus a listed thread id to route into a specific active thread]\ntop-level follow-up",
+            "[conversation scope: existing chat trunk | current inbound lane: top_level | default outbound target for this turn: top_level]\n[recent active lanes]\n- thread:THREAD-MEDIA: media thread topic\n[routing control: use bluebubbles_set_reply_target with target=top_level to widen back out, or target=thread plus a listed thread id to route into a specific active thread]\ntop-level follow-up",
         }),
       ]),
       expect.any(Object),
@@ -765,7 +767,7 @@ describe("BlueBubbles sense runtime", () => {
         {
           role: "user",
           content:
-            "[conversation scope: existing chat trunk | current inbound lane: top_level | default outbound target: top_level]",
+            "[conversation scope: existing chat trunk | current inbound lane: top_level | default outbound target for this turn: top_level]",
         },
       ],
     })
@@ -778,7 +780,7 @@ describe("BlueBubbles sense runtime", () => {
         expect.objectContaining({
           role: "user",
           content:
-            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: 54D4109C-7170-41A1-8161-F6F8C863CC0D | default outbound target: current_lane]\n[recent active lanes]\n- top_level: (no recent text)\n[routing control: use bluebubbles_set_reply_target with target=top_level to widen back out, or target=thread plus a listed thread id to route into a specific active thread]\nthreaded reply",
+            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: 54D4109C-7170-41A1-8161-F6F8C863CC0D | default outbound target for this turn: current_lane]\n[recent active lanes]\n- top_level: (no recent text)\n[routing control: use bluebubbles_set_reply_target with target=top_level to widen back out, or target=thread plus a listed thread id to route into a specific active thread]\nthreaded reply",
         }),
       ]),
       expect.any(Object),
@@ -810,7 +812,7 @@ describe("BlueBubbles sense runtime", () => {
         expect.objectContaining({
           role: "user",
           content:
-            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: 54D4109C-7170-41A1-8161-F6F8C863CC0D | default outbound target: current_lane]\n[routing control: use bluebubbles_set_reply_target with target=top_level to widen back out, or target=thread plus a listed thread id to route into a specific active thread]\nthreaded reply",
+            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: 54D4109C-7170-41A1-8161-F6F8C863CC0D | default outbound target for this turn: current_lane]\n[routing control: use bluebubbles_set_reply_target with target=top_level to widen back out, or target=thread plus a listed thread id to route into a specific active thread]\nthreaded reply",
         }),
       ]),
       expect.any(Object),
@@ -821,8 +823,9 @@ describe("BlueBubbles sense runtime", () => {
   })
 
   it("lets the turn explicitly stay in the current inbound lane", async () => {
+    let selectionMessage = ""
     mocks.runAgent.mockImplementationOnce(async (_messages, callbacks, _channel, _signal, options) => {
-      options.toolContext.bluebubblesReplyTarget.setSelection({ target: "current_lane" })
+      selectionMessage = options.toolContext.bluebubblesReplyTarget.setSelection({ target: "current_lane" })
       callbacks.onModelStart()
       callbacks.onTextChunk("staying here")
       return {
@@ -839,6 +842,7 @@ describe("BlueBubbles sense runtime", () => {
         text: "staying here",
       }),
     )
+    expect(selectionMessage).toBe("bluebubbles reply target: using default for this turn (current_lane)")
   })
 
   it("treats current_lane on a top-level inbound turn as top-level", async () => {
@@ -870,37 +874,37 @@ describe("BlueBubbles sense runtime", () => {
         {
           role: "user",
           content:
-            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: THREAD-OLD-1 | default outbound target: current_lane]\nfirst thread",
+            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: THREAD-OLD-1 | default outbound target for this turn: current_lane]\nfirst thread",
         },
         {
           role: "user",
           content:
-            "[conversation scope: existing chat trunk | current inbound lane: top_level | default outbound target: top_level]\nnewest top-level",
+            "[conversation scope: existing chat trunk | current inbound lane: top_level | default outbound target for this turn: top_level]\nnewest top-level",
         },
         {
           role: "user",
           content:
-            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: THREAD-OLD-2 | default outbound target: current_lane]\nsecond thread",
+            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: THREAD-OLD-2 | default outbound target for this turn: current_lane]\nsecond thread",
         },
         {
           role: "user",
           content:
-            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: THREAD-OLD-3 | default outbound target: current_lane]\nthird thread",
+            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: THREAD-OLD-3 | default outbound target for this turn: current_lane]\nthird thread",
         },
         {
           role: "user",
           content:
-            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: THREAD-OLD-4 | default outbound target: current_lane]\nfourth thread",
+            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: THREAD-OLD-4 | default outbound target for this turn: current_lane]\nfourth thread",
         },
         {
           role: "user",
           content:
-            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: THREAD-OLD-5 | default outbound target: current_lane]\nfifth thread",
+            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: THREAD-OLD-5 | default outbound target for this turn: current_lane]\nfifth thread",
         },
         {
           role: "user",
           content:
-            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: THREAD-OLD-5 | default outbound target: current_lane]\nduplicate fifth thread",
+            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: THREAD-OLD-5 | default outbound target for this turn: current_lane]\nduplicate fifth thread",
         },
       ],
     })
@@ -913,7 +917,7 @@ describe("BlueBubbles sense runtime", () => {
         expect.objectContaining({
           role: "user",
           content:
-            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: 54D4109C-7170-41A1-8161-F6F8C863CC0D | default outbound target: current_lane]\n[recent active lanes]\n- thread:THREAD-OLD-5: duplicate fifth thread\n- thread:THREAD-OLD-4: fourth thread\n- thread:THREAD-OLD-3: third thread\n- thread:THREAD-OLD-2: second thread\n- top_level: newest top-level\n[routing control: use bluebubbles_set_reply_target with target=top_level to widen back out, or target=thread plus a listed thread id to route into a specific active thread]\nthreaded reply",
+            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: 54D4109C-7170-41A1-8161-F6F8C863CC0D | default outbound target for this turn: current_lane]\n[recent active lanes]\n- thread:THREAD-OLD-5: duplicate fifth thread\n- thread:THREAD-OLD-4: fourth thread\n- thread:THREAD-OLD-3: third thread\n- thread:THREAD-OLD-2: second thread\n- top_level: newest top-level\n[routing control: use bluebubbles_set_reply_target with target=top_level to widen back out, or target=thread plus a listed thread id to route into a specific active thread]\nthreaded reply",
         }),
       ]),
       expect.any(Object),
@@ -930,12 +934,13 @@ describe("BlueBubbles sense runtime", () => {
         {
           role: "user",
           content:
-            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: THREAD-OLD | default outbound target: current_lane]\nold thread topic",
+            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: THREAD-OLD | default outbound target for this turn: current_lane]\nold thread topic",
         },
       ],
     })
+    let selectionMessage = ""
     mocks.runAgent.mockImplementationOnce(async (_messages, callbacks, _channel, _signal, options) => {
-      options.toolContext.bluebubblesReplyTarget.setSelection({
+      selectionMessage = options.toolContext.bluebubblesReplyTarget.setSelection({
         target: "thread",
         threadOriginatorGuid: "THREAD-OLD",
       })
@@ -963,6 +968,7 @@ describe("BlueBubbles sense runtime", () => {
         text: "done",
       }),
     )
+    expect(selectionMessage).toBe("bluebubbles reply target override: thread:THREAD-OLD")
   })
 
   it("logs cleanup errors but still handles the turn on the shared chat trunk", async () => {
@@ -1247,7 +1253,7 @@ describe("BlueBubbles sense runtime", () => {
         expect.objectContaining({
           role: "user",
           content:
-            "ari@mendelow.me: [conversation scope: existing chat trunk | current inbound lane: thread | current thread id: 3E02B90F-D374-4381-BDD2-3572D3EB1195 | default outbound target: current_lane]\n[routing control: use bluebubbles_set_reply_target with target=top_level to widen back out, or target=thread plus a listed thread id to route into a specific active thread]\nyay!",
+            "ari@mendelow.me: [conversation scope: existing chat trunk | current inbound lane: thread | current thread id: 3E02B90F-D374-4381-BDD2-3572D3EB1195 | default outbound target for this turn: current_lane]\n[routing control: use bluebubbles_set_reply_target with target=top_level to widen back out, or target=thread plus a listed thread id to route into a specific active thread]\nyay!",
         }),
       ]),
     )
@@ -1607,7 +1613,7 @@ describe("BlueBubbles sense runtime", () => {
             {
               type: "text",
               text:
-                "[conversation scope: existing chat trunk | current inbound lane: top_level | default outbound target: top_level]\n[image attachment: IMG_5045.heic.jpeg (600x800)]",
+                "[conversation scope: existing chat trunk | current inbound lane: top_level | default outbound target for this turn: top_level]\n[image attachment: IMG_5045.heic.jpeg (600x800)]",
             },
             {
               type: "image_url",
