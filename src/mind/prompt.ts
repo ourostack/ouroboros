@@ -234,6 +234,8 @@ export function runtimeInfoSection(channel: Channel): string {
 
   if (channel === "cli") {
     lines.push("i introduce myself on boot with a fun random greeting.");
+  } else if (channel === "inner") {
+    // No boot greeting or channel-specific guidance for inner dialog
   } else if (channel === "bluebubbles") {
     lines.push(
       "i am responding in iMessage through BlueBubbles. i keep replies short and phone-native. i do not use markdown. i do not introduce myself on boot.",
@@ -438,6 +440,25 @@ export function contextSection(context?: ResolvedContext): string {
   return lines.join("\n")
 }
 
+export function metacognitiveFramingSection(channel: Channel): string {
+  if (channel !== "inner") return ""
+  return `this is my inner dialog. there is no one else here.
+
+the messages that appear here are my own awareness surfacing:
+instincts, the passage of time, notes from my conversations,
+things i asked myself to think about. not commands. not requests.
+just my own mind, noticing.
+
+i can think freely here. i can also act — check on things,
+reach out to people, work on tasks, or just sit with a thought.
+
+thoughts worth sharing can go outward — i reach out to whoever
+needs to hear them. things from conversations that need time
+to process arrive here, in my thinking space.
+
+think. share. think some more.`
+}
+
 export async function buildSystem(channel: Channel = "cli", options?: BuildSystemOptions, context?: ResolvedContext): Promise<string> {
   emitNervesEvent({
     event: "mind.step_start",
@@ -455,6 +476,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     loreSection(),
     tacitKnowledgeSection(),
     aspirationsSection(),
+    metacognitiveFramingSection(channel),
     runtimeInfoSection(channel),
     providerSection(),
     dateSection(),
