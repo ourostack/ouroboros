@@ -7,13 +7,14 @@ import type { ToolContext } from "../../repertoire/tools"
 import { getChannelCapabilities } from "../../mind/friends/channel"
 
 describe("remote channel tool safety", () => {
-  it("does not expose local cli/file/git/gh tools to remote channel tool lists", () => {
+  it("does not expose local cli/file tools to remote channel tool lists", () => {
     const tools = getToolsForChannel(getChannelCapabilities("teams"))
     const names = tools.map((t) => t.function.name)
 
     expect(names).not.toContain("shell")
     expect(names).not.toContain("read_file")
     expect(names).not.toContain("write_file")
+    // git_commit and gh_cli have been fully removed from base tools, not just blocked
     expect(names).not.toContain("git_commit")
     expect(names).not.toContain("gh_cli")
   })
@@ -25,13 +26,14 @@ describe("remote channel tool safety", () => {
     expect(names).toContain("file_ouroboros_bug")
   })
 
-  it("does not expose local cli/file/git/gh tools to bluebubbles tool lists", () => {
+  it("does not expose local cli/file tools to bluebubbles tool lists", () => {
     const tools = getToolsForChannel(getChannelCapabilities("bluebubbles"))
     const names = tools.map((t) => t.function.name)
 
     expect(names).not.toContain("shell")
     expect(names).not.toContain("read_file")
     expect(names).not.toContain("write_file")
+    // git_commit and gh_cli have been fully removed from base tools
     expect(names).not.toContain("git_commit")
     expect(names).not.toContain("gh_cli")
   })
@@ -61,8 +63,9 @@ describe("remote channel tool safety", () => {
     expect(names).toContain("shell")
     expect(names).toContain("read_file")
     expect(names).toContain("write_file")
-    expect(names).toContain("git_commit")
-    expect(names).toContain("gh_cli")
+    // git_commit and gh_cli have been fully removed from base tools
+    expect(names).not.toContain("git_commit")
+    expect(names).not.toContain("gh_cli")
   })
 
   it("keeps local tools blocked for shared bluebubbles group contexts even when trusted", () => {

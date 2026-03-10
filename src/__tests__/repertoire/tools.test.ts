@@ -144,77 +144,20 @@ describe("execTool", () => {
     expect(execSync).toHaveBeenCalledWith("echo hello", { encoding: "utf-8", timeout: 30000 })
   })
 
-  // ── gh_cli ──
-  it("gh_cli runs gh command and returns output", async () => {
-    vi.mocked(execSync).mockReturnValue("pr list output")
+  // ── removed tools: gh_cli, list_directory, git_commit, get_current_time ──
+  it("gh_cli is no longer a registered tool", async () => {
     const result = await execTool("gh_cli", { command: "pr list" })
-    expect(result).toBe("pr list output")
-    expect(execSync).toHaveBeenCalledWith("gh pr list", { encoding: "utf-8", timeout: 60000 })
+    expect(result).toBe("unknown: gh_cli")
   })
 
-  it("gh_cli returns error on exception", async () => {
-    vi.mocked(execSync).mockImplementation(() => { throw new Error("gh not found") })
-    const result = await execTool("gh_cli", { command: "pr list" })
-    expect(result).toContain("error:")
-  })
-
-  // ── list_directory ──
-  it("list_directory lists directory contents", async () => {
-    vi.mocked(fs.readdirSync).mockReturnValue([
-      { name: "file.txt", isDirectory: () => false },
-      { name: "subdir", isDirectory: () => true },
-    ] as unknown as ReturnType<typeof fs.readdirSync>)
+  it("list_directory is no longer a registered tool", async () => {
     const result = await execTool("list_directory", { path: "/tmp" })
-    expect(result).toContain("file.txt")
-    expect(result).toContain("subdir")
-    expect(result).toContain("d  subdir")
-    expect(result).toContain("-  file.txt")
+    expect(result).toBe("unknown: list_directory")
   })
 
-  // ── git_commit ──
-  it("git_commit commits with valid paths", async () => {
-    vi.mocked(fs.existsSync).mockReturnValue(true)
-    vi.mocked(execSync)
-      .mockReturnValueOnce("") // git add
-      .mockReturnValueOnce("1 file changed\n") // git diff --cached --stat
-      .mockReturnValueOnce("") // git commit
-    const result = await execTool("git_commit", { message: "test commit", paths: ["/tmp/test.txt"] })
-    expect(result).toContain("committed")
-  })
-
-  it("git_commit returns error when paths missing", async () => {
-    const result = await execTool("git_commit", { message: "test" })
-    expect(result).toContain("paths are required")
-  })
-
-  it("git_commit returns error when paths is empty array", async () => {
-    const result = await execTool("git_commit", { message: "test", paths: [] })
-    expect(result).toContain("paths are required")
-  })
-
-  it("git_commit returns error when path does not exist", async () => {
-    vi.mocked(fs.existsSync).mockReturnValue(false)
-    const result = await execTool("git_commit", { message: "test", paths: ["/nonexistent"] })
-    expect(result).toContain("path does not exist")
-  })
-
-  it("git_commit returns error when nothing staged", async () => {
-    vi.mocked(fs.existsSync).mockReturnValue(true)
-    vi.mocked(execSync)
-      .mockReturnValueOnce("") // git add
-      .mockReturnValueOnce("") // empty diff
+  it("git_commit is no longer a registered tool", async () => {
     const result = await execTool("git_commit", { message: "test", paths: ["/tmp/test.txt"] })
-    expect(result).toContain("nothing was staged")
-  })
-
-  it("git_commit handles exception", async () => {
-    vi.mocked(fs.existsSync).mockReturnValue(true)
-    vi.mocked(execSync)
-      .mockReturnValueOnce("") // git add
-      .mockReturnValueOnce("1 file changed\n") // diff
-      .mockImplementationOnce(() => { throw new Error("commit failed") }) // commit
-    const result = await execTool("git_commit", { message: "test", paths: ["/tmp/test.txt"] })
-    expect(result).toContain("failed")
+    expect(result).toBe("unknown: git_commit")
   })
 
   // ── list_skills ──
@@ -237,11 +180,9 @@ describe("execTool", () => {
     expect(result).toContain("error:")
   })
 
-  // ── get_current_time ──
-  it("get_current_time returns date string", async () => {
+  it("get_current_time is no longer a registered tool", async () => {
     const result = await execTool("get_current_time", {})
-    expect(typeof result).toBe("string")
-    expect(result.length).toBeGreaterThan(5)
+    expect(result).toBe("unknown: get_current_time")
   })
 
   // ── claude ──
@@ -765,30 +706,11 @@ describe("summarizeArgs", () => {
     expect(summarizeArgs("shell", {})).toBe("")
   })
 
-  it("returns path for list_directory", () => {
+  it("falls through to unknown handler for removed tools (list_directory, git_commit, gh_cli)", () => {
+    // These tools have been removed, so summarizeArgs should treat them as unknown
     expect(summarizeArgs("list_directory", { path: "/tmp" })).toBe("path=/tmp")
-  })
-
-  it("returns empty string for list_directory with no path", () => {
-    expect(summarizeArgs("list_directory", {})).toBe("")
-  })
-
-  it("returns truncated message for git_commit", () => {
-    const msg = "a".repeat(70)
-    expect(summarizeArgs("git_commit", { message: msg })).toBe("message=" + "a".repeat(60) + "...")
-  })
-
-  it("returns empty string for git_commit with no message", () => {
-    expect(summarizeArgs("git_commit", {})).toBe("")
-  })
-
-  it("returns truncated command for gh_cli", () => {
-    const cmd = "a".repeat(70)
-    expect(summarizeArgs("gh_cli", { command: cmd })).toBe("command=" + "a".repeat(60) + "...")
-  })
-
-  it("returns empty string for gh_cli with no command", () => {
-    expect(summarizeArgs("gh_cli", {})).toBe("")
+    expect(summarizeArgs("git_commit", { message: "test" })).toBe("message=test")
+    expect(summarizeArgs("gh_cli", { command: "pr list" })).toBe("command=pr list")
   })
 
   it("returns name for load_skill", () => {
@@ -991,14 +913,20 @@ describe("ToolDefinition type and registry", () => {
     expect(names).toContain("read_file")
     expect(names).toContain("write_file")
     expect(names).toContain("shell")
-    expect(names).toContain("list_directory")
-    expect(names).toContain("git_commit")
     expect(names).toContain("list_skills")
     expect(names).toContain("load_skill")
-    expect(names).toContain("get_current_time")
     expect(names).toContain("claude")
     expect(names).toContain("web_search")
-    expect(names).toContain("gh_cli")
+  })
+
+  it("base tool definitions do NOT include removed tools", async () => {
+    vi.resetModules()
+    const toolsBase = await import("../../repertoire/tools-base")
+    const names = toolsBase.baseToolDefinitions.map((d: any) => d.tool.function.name)
+    expect(names).not.toContain("list_directory")
+    expect(names).not.toContain("git_commit")
+    expect(names).not.toContain("get_current_time")
+    expect(names).not.toContain("gh_cli")
   })
 
   it("teams tool definitions include expected tool names", async () => {
@@ -1040,13 +968,15 @@ describe("tools array export (backward compat)", () => {
     expect(names).toContain("read_file")
     expect(names).toContain("write_file")
     expect(names).toContain("shell")
-    expect(names).toContain("list_directory")
-    expect(names).toContain("git_commit")
     expect(names).toContain("list_skills")
     expect(names).toContain("load_skill")
-    expect(names).toContain("get_current_time")
     expect(names).toContain("claude")
     expect(names).toContain("web_search")
+    // Removed tools should not be present
+    expect(names).not.toContain("list_directory")
+    expect(names).not.toContain("git_commit")
+    expect(names).not.toContain("get_current_time")
+    expect(names).not.toContain("gh_cli")
   })
 })
 
@@ -1115,18 +1045,18 @@ describe("getToolsForChannel with ChannelCapabilities", () => {
     }
     const result = getToolsForChannel(teamsCaps)
     const names = result.map((t: any) => t.function.name)
-    const blockedLocalTools = new Set(["read_file", "write_file", "shell", "git_commit", "gh_cli"])
+    const blockedLocalTools = new Set(["read_file", "write_file", "shell"])
     const remoteBaseCount = tools.filter((t: any) => !blockedLocalTools.has(t.function.name)).length
     // Teams channel should exclude blocked local tools
     expect(names).not.toContain("read_file")
     expect(names).not.toContain("write_file")
     expect(names).not.toContain("shell")
+    // Removed tools should not be present at all
     expect(names).not.toContain("git_commit")
     expect(names).not.toContain("gh_cli")
+    expect(names).not.toContain("list_directory")
+    expect(names).not.toContain("get_current_time")
     // But still include safe base tools
-    expect(names).toContain("list_directory")
-    expect(names).toContain("get_current_time")
-    // Should have graph tools
     expect(names).toContain("graph_query")
     expect(names).toContain("graph_mutate")
     expect(names).toContain("graph_profile")
@@ -1162,7 +1092,7 @@ describe("getToolsForChannel with ChannelCapabilities", () => {
     }
     const result = getToolsForChannel(caps)
     const names = result.map((t: any) => t.function.name)
-    const blockedLocalTools = new Set(["read_file", "write_file", "shell", "git_commit", "gh_cli"])
+    const blockedLocalTools = new Set(["read_file", "write_file", "shell"])
     const remoteBaseCount = tools.filter((t: any) => !blockedLocalTools.has(t.function.name)).length
     // Should have graph tools
     expect(names).toContain("graph_query")
@@ -1191,7 +1121,7 @@ describe("getToolsForChannel with ChannelCapabilities", () => {
     }
     const result = getToolsForChannel(caps)
     const names = result.map((t: any) => t.function.name)
-    const blockedLocalTools = new Set(["read_file", "write_file", "shell", "git_commit", "gh_cli"])
+    const blockedLocalTools = new Set(["read_file", "write_file", "shell"])
     const remoteBaseCount = tools.filter((t: any) => !blockedLocalTools.has(t.function.name)).length
     // Should have ado tools
     expect(names).toContain("ado_query")
@@ -2104,7 +2034,7 @@ describe("getToolsForChannel includes docs tools", () => {
     }
     const teamsTools = getToolsForChannel(teamsCaps)
     const names = teamsTools.map((t: any) => t.function.name)
-    const blockedLocalTools = new Set(["read_file", "write_file", "shell", "git_commit", "gh_cli"])
+    const blockedLocalTools = new Set(["read_file", "write_file", "shell"])
     const remoteBaseCount = tools.filter((t: any) => !blockedLocalTools.has(t.function.name)).length
     expect(names).toContain("graph_docs")
     expect(names).toContain("ado_docs")
