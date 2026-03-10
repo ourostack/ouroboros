@@ -42,6 +42,7 @@ describe("bundle-manifest", () => {
     expect(isCanonicalBundlePath("tasks/backlog/task-1.md")).toBe(true)
     expect(isCanonicalBundlePath("skills/custom/review.md")).toBe(true)
     expect(isCanonicalBundlePath("psyche/memory/daily/2026-03-07.md")).toBe(true)
+    expect(isCanonicalBundlePath("state/sessions/self/inner/dialog.json")).toBe(true)
   })
 
   it("rejects non-canonical psyche and legacy bundle paths", () => {
