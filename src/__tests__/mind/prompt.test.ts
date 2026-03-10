@@ -1112,6 +1112,21 @@ describe("runtimeInfoSection", () => {
     const result = runtimeInfoSection("cli")
     expect(result).toContain("daemon: not running")
   })
+
+  it("daemon status shows 'unknown' when existsSync throws", async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p: any) => {
+      if (String(p).includes("ouroboros-daemon.sock")) throw new Error("permission denied")
+      return false
+    })
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { runtimeInfoSection, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = runtimeInfoSection("cli")
+    expect(result).toContain("daemon: unknown")
+  })
 })
 
 describe("psyche loading", () => {
