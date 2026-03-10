@@ -41,7 +41,7 @@ export interface InnerDialogTurnResult {
 const DEFAULT_INNER_DIALOG_INSTINCTS: InnerDialogInstinct[] = [
   {
     id: "heartbeat_checkin",
-    prompt: "Heartbeat instinct: check what changed, review priorities, and decide whether to keep resting or act.",
+    prompt: "...time passing. anything stirring?",
     enabled: true,
   },
 ]
@@ -58,19 +58,8 @@ export function loadInnerDialogInstincts(): InnerDialogInstinct[] {
   return [...DEFAULT_INNER_DIALOG_INSTINCTS]
 }
 
-export function buildInnerDialogBootstrapMessage(aspirations: string, stateSummary: string): string {
-  const aspirationText = aspirations || "No explicit aspirations file found. Reflect and define what matters next."
-  return [
-    "Inner dialog boot.",
-    "",
-    "## aspirations",
-    aspirationText,
-    "",
-    "## current state",
-    stateSummary,
-    "",
-    "Orient yourself, decide what to do next, and make meaningful progress.",
-  ].join("\n")
+export function buildInnerDialogBootstrapMessage(_aspirations: string, _stateSummary: string): string {
+  return "waking up. settling in.\n\nwhat needs my attention?"
 }
 
 export function buildNonCanonicalCleanupNudge(nonCanonicalPaths: string[]): string {
@@ -88,19 +77,16 @@ export function buildNonCanonicalCleanupNudge(nonCanonicalPaths: string[]): stri
 
 export function buildInstinctUserMessage(
   instincts: InnerDialogInstinct[],
-  reason: "boot" | "heartbeat" | "instinct",
+  _reason: "boot" | "heartbeat" | "instinct",
   state: InnerDialogState,
 ): string {
   const active = instincts.find((instinct) => instinct.enabled !== false) ?? DEFAULT_INNER_DIALOG_INSTINCTS[0]
-  const checkpoint = state.checkpoint?.trim() || "no prior checkpoint recorded"
-  return [
-    active.prompt,
-    `reason: ${reason}`,
-    `cycle: ${state.cycleCount}`,
-    `resting: ${state.resting ? "yes" : "no"}`,
-    `checkpoint: ${checkpoint}`,
-    "resume_instruction: continue from the checkpoint if still valid; otherwise revise and proceed.",
-  ].join("\n")
+  const checkpoint = state.checkpoint?.trim()
+  const lines = [active.prompt]
+  if (checkpoint) {
+    lines.push(`\nlast i remember: ${checkpoint}`)
+  }
+  return lines.join("\n")
 }
 
 function contentToText(content: unknown): string {
@@ -172,7 +158,7 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
   }
 
   if (messages.length === 0) {
-    const systemPrompt = await buildSystem("cli", { toolChoiceRequired: true })
+    const systemPrompt = await buildSystem("inner", { toolChoiceRequired: true })
     messages.push({ role: "system", content: systemPrompt })
     const aspirations = readAspirations(getAgentRoot())
     const nonCanonical = findNonCanonicalBundlePaths(getAgentRoot())
@@ -224,7 +210,7 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
 
   const callbacks = createInnerDialogCallbacks()
   const traceId = createTraceId()
-  const result = await runAgent(messages, callbacks, "cli", options?.signal, {
+  const result = await runAgent(messages, callbacks, "inner", options?.signal, {
     traceId,
     toolChoiceRequired: true,
     skipConfirmation: true,
