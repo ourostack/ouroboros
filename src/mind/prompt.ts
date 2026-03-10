@@ -400,6 +400,43 @@ function toolsSection(channel: Channel, options?: BuildSystemOptions, context?: 
   return `## my tools\n${list}`;
 }
 
+const RESTRICTED_TOOLS = ["shell", "read_file", "write_file", "edit_file", "glob", "grep"]
+
+function isRemoteChannel(channel?: string): boolean {
+  return channel === "teams" || channel === "bluebubbles"
+}
+
+function isSharedContext(friend: ResolvedContext["friend"]): boolean {
+  const externalIds = friend.externalIds ?? []
+  return externalIds.some((eid) =>
+    eid.externalId.startsWith("group:") || eid.provider === "teams-conversation",
+  )
+}
+
+export function toolRestrictionSection(context?: ResolvedContext): string {
+  if (!context?.friend || !isRemoteChannel(context.channel?.channel)) return ""
+
+  const trustLevel = context.friend.trustLevel ?? "stranger"
+  const lowTrust = trustLevel === "stranger" || trustLevel === "acquaintance"
+  const shared = isSharedContext(context.friend)
+
+  if (!lowTrust && !shared) return ""
+
+  const reasons: string[] = []
+  if (lowTrust) {
+    reasons.push("i don't know this person well enough yet to run local operations on their behalf")
+  }
+  if (shared) {
+    reasons.push("this is a shared channel — local operations could let conversations interfere with each other")
+  }
+
+  const toolList = RESTRICTED_TOOLS.join(", ")
+  return `## restricted tools
+some of my tools are unavailable right now: ${toolList}
+
+${reasons.join(". ")}. i can suggest remote-safe alternatives or ask them to run it from CLI.`
+}
+
 function skillsSection(): string {
   const names = listSkills() || [];
   if (!names.length) return "";
@@ -540,6 +577,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     providerSection(),
     dateSection(),
     toolsSection(channel, options, context),
+    toolRestrictionSection(context),
     skillsSection(),
     taskBoardSection(),
     buildSessionSummary({

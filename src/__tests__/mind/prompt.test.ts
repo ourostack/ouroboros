@@ -2334,3 +2334,118 @@ describe("buildSystem with context", () => {
     expect(result).not.toContain("{name}")
   })
 })
+
+describe("toolRestrictionSection", () => {
+  beforeEach(() => {
+    vi.resetModules()
+    setAgentProvider("minimax")
+  })
+
+  function makeFriend(overrides: Partial<{ trustLevel: string; externalIds: any[] }> = {}) {
+    return {
+      id: "uuid-1",
+      name: "TestFriend",
+      externalIds: overrides.externalIds ?? [{ provider: "local" as const, externalId: "test", linkedAt: "2026-01-01T00:00:00.000Z" }],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: {},
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      schemaVersion: 1,
+      trustLevel: overrides.trustLevel ?? "friend",
+    }
+  }
+
+  function makeChannel(channel: string) {
+    return {
+      channel,
+      availableIntegrations: [] as any[],
+      supportsMarkdown: false,
+      supportsStreaming: true,
+      supportsRichCards: false,
+      maxMessageLength: Infinity,
+    }
+  }
+
+  it("low-trust friend in 1:1 remote channel includes trust reason and tool list", async () => {
+    const { toolRestrictionSection } = await import("../../mind/prompt")
+    const ctx = {
+      friend: makeFriend({ trustLevel: "stranger" }),
+      channel: makeChannel("teams"),
+    }
+    const result = toolRestrictionSection(ctx as any)
+    expect(result).toContain("shell")
+    expect(result).toContain("read_file")
+    expect(result).toContain("write_file")
+    expect(result).toContain("edit_file")
+    expect(result).toContain("glob")
+    expect(result).toContain("grep")
+    // Trust reason
+    expect(result).toMatch(/trust|know.*well/i)
+  })
+
+  it("trusted friend in group chat includes group reason", async () => {
+    const { toolRestrictionSection } = await import("../../mind/prompt")
+    const ctx = {
+      friend: makeFriend({
+        trustLevel: "friend",
+        externalIds: [{ provider: "teams-conversation" as any, externalId: "group:abc", linkedAt: "2026-01-01T00:00:00.000Z" }],
+      }),
+      channel: makeChannel("teams"),
+    }
+    const result = toolRestrictionSection(ctx as any)
+    expect(result).toContain("shell")
+    // Group reason
+    expect(result).toMatch(/group|shared/i)
+  })
+
+  it("low-trust friend in group chat includes both reasons", async () => {
+    const { toolRestrictionSection } = await import("../../mind/prompt")
+    const ctx = {
+      friend: makeFriend({
+        trustLevel: "stranger",
+        externalIds: [{ provider: "teams-conversation" as any, externalId: "group:abc", linkedAt: "2026-01-01T00:00:00.000Z" }],
+      }),
+      channel: makeChannel("teams"),
+    }
+    const result = toolRestrictionSection(ctx as any)
+    // Both reasons present
+    expect(result).toMatch(/trust|know.*well/i)
+    expect(result).toMatch(/group|shared/i)
+  })
+
+  it("trusted friend in 1:1 returns empty string", async () => {
+    const { toolRestrictionSection } = await import("../../mind/prompt")
+    const ctx = {
+      friend: makeFriend({ trustLevel: "friend" }),
+      channel: makeChannel("teams"),
+    }
+    const result = toolRestrictionSection(ctx as any)
+    expect(result).toBe("")
+  })
+
+  it("returns empty string for CLI channel regardless of trust", async () => {
+    const { toolRestrictionSection } = await import("../../mind/prompt")
+    const ctx = {
+      friend: makeFriend({ trustLevel: "stranger" }),
+      channel: makeChannel("cli"),
+    }
+    const result = toolRestrictionSection(ctx as any)
+    expect(result).toBe("")
+  })
+
+  it("returns empty string when context is undefined", async () => {
+    const { toolRestrictionSection } = await import("../../mind/prompt")
+    expect(toolRestrictionSection(undefined)).toBe("")
+  })
+
+  it("uses first-person voice", async () => {
+    const { toolRestrictionSection } = await import("../../mind/prompt")
+    const ctx = {
+      friend: makeFriend({ trustLevel: "stranger" }),
+      channel: makeChannel("bluebubbles"),
+    }
+    const result = toolRestrictionSection(ctx as any)
+    expect(result).toMatch(/\bi\b/i)
+  })
+})
