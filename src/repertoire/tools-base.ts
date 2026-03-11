@@ -724,7 +724,10 @@ export const finalAnswerTool: OpenAI.ChatCompletionFunctionTool = {
       "respond to the user with your message. call this tool when you are ready to deliver your response.",
     parameters: {
       type: "object",
-      properties: { answer: { type: "string" } },
+      properties: {
+        answer: { type: "string" },
+        intent: { type: "string", enum: ["complete", "blocked", "direct_reply"] },
+      },
       required: ["answer"],
     },
   },
