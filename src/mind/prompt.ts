@@ -460,7 +460,7 @@ tool_choice is set to "required" -- i must call a tool on every turn.
 do NOT call no-op tools just before \`final_answer\`. if i am done, i call \`final_answer\` directly.`;
 }
 
-export function contextSection(context?: ResolvedContext): string {
+export function contextSection(context?: ResolvedContext, options?: BuildSystemOptions): string {
   if (!context) return ""
 
   const lines: string[] = ["## friend context"]
@@ -496,7 +496,7 @@ export function contextSection(context?: ResolvedContext): string {
   lines.push("i save ANYTHING i learn about my friend immediately with save_friend_note -- names, preferences, what they do, what they care about. when in doubt, save it. saving comes BEFORE responding: i call save_friend_note first, then final_answer on the next turn.")
 
   // Onboarding instructions (only below token threshold -- drop once exceeded)
-  const impressions = getFirstImpressions(friend)
+  const impressions = getFirstImpressions(friend, options)
   if (impressions) {
     lines.push(impressions)
   }
@@ -594,7 +594,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     }),
     memoryFriendToolContractSection(),
     toolBehaviorSection(options),
-    contextSection(context),
+    contextSection(context, options),
   ]
     .filter(Boolean)
     .join("\n\n");
