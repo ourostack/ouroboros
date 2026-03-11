@@ -5509,6 +5509,64 @@ describe("tool_choice required and final_answer", () => {
     expect(textChunks).toEqual(["finished the audit"])
   })
 
+  it("clears no-handoff state and exits when a superseding steering follow-up is drained", async () => {
+    const setMustResolveBeforeHandoff = vi.fn()
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+    }
+
+    const result = await runAgent([{ role: "system", content: "test" }], callbacks, undefined, undefined, {
+      toolChoiceRequired: true,
+      mustResolveBeforeHandoff: true,
+      setMustResolveBeforeHandoff,
+      drainSteeringFollowUps: () => [{ text: "stop working on that", effect: "clear_and_supersede" }],
+    })
+
+    expect(result.outcome).toBe("superseded")
+    expect(setMustResolveBeforeHandoff).toHaveBeenCalledWith(false)
+    expect(mockCreate).not.toHaveBeenCalled()
+  })
+
+  it("promotes no-handoff state when a steering follow-up requests it", async () => {
+    mockCreate.mockReturnValue(
+      makeStream([
+        makeChunk(undefined, [
+          {
+            index: 0,
+            id: "call_1",
+            function: { name: "final_answer", arguments: '{"answer":"done","intent":"complete"}' },
+          },
+        ]),
+      ])
+    )
+
+    const setMustResolveBeforeHandoff = vi.fn()
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+    }
+
+    const result = await runAgent([{ role: "system", content: "test" }], callbacks, undefined, undefined, {
+      toolChoiceRequired: true,
+      setMustResolveBeforeHandoff,
+      drainSteeringFollowUps: () => [{ text: "work autonomously on this", effect: "set_no_handoff" }],
+    })
+
+    expect(result.outcome).toBe("complete")
+    expect(setMustResolveBeforeHandoff).toHaveBeenCalledWith(true)
+  })
+
   it("final_answer mixed with other tool calls: other tools execute, final_answer rejected, loop continues", async () => {
     vi.mocked(fs.readFileSync).mockReturnValue("file data")
 

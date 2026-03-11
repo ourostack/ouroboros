@@ -1323,6 +1323,483 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
     vi.restoreAllMocks()
   })
 
+  it("active-turn /commands emits its response instead of buffering ordinary steering", async () => {
+    vi.resetModules()
+
+    let capturedHandler: ((args: any) => Promise<void>) | null = null
+    vi.doMock("@microsoft/teams.apps", () => ({
+      App: class MockApp {
+        constructor(_opts: any) {}
+        on = vi.fn().mockImplementation((_event: string, handler: any) => {
+          capturedHandler = handler
+        })
+        event = vi.fn()
+        start = vi.fn()
+      },
+    }))
+    vi.doMock("@microsoft/teams.dev", () => ({
+      DevtoolsPlugin: class MockDevtoolsPlugin {},
+    }))
+
+    let releaseFirst: (() => void) | undefined
+    const firstTurn = new Promise<void>((resolve) => { releaseFirst = resolve })
+    let drainedFollowUps: Array<{ text: string; effect?: string }> = []
+    const runAgentFn = vi.fn()
+      .mockImplementationOnce(async (_messages: any, _callbacks: any, _channel: any, _signal: any, options: any) => {
+        await firstTurn
+        drainedFollowUps = options?.drainSteeringFollowUps?.() ?? []
+        return { usage: undefined, outcome: "complete" }
+      })
+      .mockResolvedValue({ usage: undefined, outcome: "complete" })
+
+    vi.doMock("../../heart/core", () => ({
+      createSummarize: vi.fn(() => vi.fn()),
+      runAgent: runAgentFn,
+      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      summarizeArgs: vi.fn().mockReturnValue(""),
+      repairOrphanedToolCalls: vi.fn(),
+    }))
+    vi.doMock("../../heart/config", () => ({
+      sessionPath: vi.fn().mockReturnValue("/tmp/teams-session.json"),
+      getContextConfig: vi.fn().mockReturnValue({ maxTokens: 80000, contextMargin: 20 }),
+      getTeamsConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "" }),
+      getTeamsSecondaryConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "", managedIdentityClientId: "" }),
+      getOAuthConfig: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado" }),
+      resolveOAuthForTenant: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado", githubConnectionName: "" }),
+      getTeamsChannelConfig: vi.fn().mockReturnValue({ skipConfirmation: false, port: 3978 }),
+    }))
+    vi.doMock("../../senses/commands", () => ({
+      createCommandRegistry: vi.fn().mockReturnValue({
+        register: vi.fn(),
+        get: vi.fn(),
+        list: vi.fn().mockReturnValue([]),
+        dispatch: vi.fn().mockImplementation((name: string) => {
+          if (name === "commands") return { handled: true, result: { action: "response", message: "/new - start new" } }
+          return { handled: false }
+        }),
+      }),
+      registerDefaultCommands: vi.fn(),
+      parseSlashCommand: vi.fn().mockImplementation((input: string) =>
+        input.startsWith("/") ? { command: input.slice(1).toLowerCase(), args: "" } : null
+      ),
+    }))
+    vi.doMock("../../mind/prompt", () => ({
+      buildSystem: vi.fn().mockResolvedValue("system prompt"),
+      contextSection: vi.fn().mockReturnValue(""),
+    }))
+    vi.doMock("../../mind/context", () => ({
+      loadSession: vi.fn().mockReturnValue(null),
+      saveSession: vi.fn(),
+      deleteSession: vi.fn(),
+      trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
+      postTurn: vi.fn(),
+    }))
+
+    vi.spyOn(console, "log").mockImplementation(() => {})
+
+    const teams = await import("../../senses/teams")
+    teams.startTeamsApp()
+
+    const stream1 = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+    const stream2 = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+    const api = {
+      users: {
+        token: {
+          get: vi.fn().mockResolvedValue({ token: undefined }),
+        },
+      },
+    }
+
+    const firstMessage = capturedHandler!({
+      stream: stream1,
+      activity: { text: "first", conversation: { id: "conv-command" }, from: { id: "user-1" }, channelId: "msteams" },
+      api,
+      signin: vi.fn(),
+      send: vi.fn(),
+    })
+
+    for (let i = 0; i < 20 && runAgentFn.mock.calls.length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 1))
+    }
+
+    await capturedHandler!({
+      stream: stream2,
+      activity: { text: "/commands", conversation: { id: "conv-command" }, from: { id: "user-1" }, channelId: "msteams" },
+      api,
+      signin: vi.fn(),
+      send: vi.fn(),
+    })
+
+    expect(stream2.emit).toHaveBeenCalledWith("/new - start new")
+    expect(runAgentFn).toHaveBeenCalledTimes(1)
+
+    releaseFirst?.()
+    await firstMessage
+
+    expect(drainedFollowUps).toEqual([])
+
+    vi.restoreAllMocks()
+  })
+
+  it("slash commands without a dispatch result fall through to normal turn handling", async () => {
+    vi.resetModules()
+
+    let capturedHandler: ((args: any) => Promise<void>) | null = null
+    vi.doMock("@microsoft/teams.apps", () => ({
+      App: class MockApp {
+        constructor(_opts: any) {}
+        on = vi.fn().mockImplementation((_event: string, handler: any) => {
+          capturedHandler = handler
+        })
+        event = vi.fn()
+        start = vi.fn()
+      },
+    }))
+    vi.doMock("@microsoft/teams.dev", () => ({
+      DevtoolsPlugin: class MockDevtoolsPlugin {},
+    }))
+
+    const runAgentFn = vi.fn().mockResolvedValue({ usage: undefined, outcome: "complete" })
+    vi.doMock("../../heart/core", () => ({
+      createSummarize: vi.fn(() => vi.fn()),
+      runAgent: runAgentFn,
+      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      summarizeArgs: vi.fn().mockReturnValue(""),
+      repairOrphanedToolCalls: vi.fn(),
+    }))
+    vi.doMock("../../heart/config", () => ({
+      sessionPath: vi.fn().mockReturnValue("/tmp/teams-session.json"),
+      getContextConfig: vi.fn().mockReturnValue({ maxTokens: 80000, contextMargin: 20 }),
+      getTeamsConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "" }),
+      getTeamsSecondaryConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "", managedIdentityClientId: "" }),
+      getOAuthConfig: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado" }),
+      resolveOAuthForTenant: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado", githubConnectionName: "" }),
+      getTeamsChannelConfig: vi.fn().mockReturnValue({ skipConfirmation: false, port: 3978 }),
+    }))
+    vi.doMock("../../senses/commands", () => ({
+      createCommandRegistry: vi.fn().mockReturnValue({
+        register: vi.fn(),
+        get: vi.fn(),
+        list: vi.fn().mockReturnValue([]),
+        dispatch: vi.fn().mockReturnValue({ handled: false }),
+      }),
+      registerDefaultCommands: vi.fn(),
+      parseSlashCommand: vi.fn().mockImplementation((input: string) =>
+        input.startsWith("/") ? { command: input.slice(1).toLowerCase(), args: "" } : null
+      ),
+    }))
+    vi.doMock("../../mind/prompt", () => ({
+      buildSystem: vi.fn().mockResolvedValue("system prompt"),
+      contextSection: vi.fn().mockReturnValue(""),
+    }))
+    vi.doMock("../../mind/context", () => ({
+      loadSession: vi.fn().mockReturnValue(null),
+      saveSession: vi.fn(),
+      deleteSession: vi.fn(),
+      trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
+      postTurn: vi.fn(),
+    }))
+
+    vi.spyOn(console, "log").mockImplementation(() => {})
+
+    const teams = await import("../../senses/teams")
+    teams.startTeamsApp()
+
+    const stream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+    const api = {
+      users: {
+        token: {
+          get: vi.fn().mockResolvedValue({ token: undefined }),
+        },
+      },
+    }
+
+    await capturedHandler!({
+      stream,
+      activity: { text: "/unknown", conversation: { id: "conv-fallthrough" }, from: { id: "user-1" }, channelId: "msteams" },
+      api,
+      signin: vi.fn(),
+      send: vi.fn(),
+    })
+
+    expect(runAgentFn).toHaveBeenCalledTimes(1)
+
+    vi.restoreAllMocks()
+  })
+
+  it("slash commands with unsupported actions fall through to normal turn handling", async () => {
+    vi.resetModules()
+
+    let capturedHandler: ((args: any) => Promise<void>) | null = null
+    vi.doMock("@microsoft/teams.apps", () => ({
+      App: class MockApp {
+        constructor(_opts: any) {}
+        on = vi.fn().mockImplementation((_event: string, handler: any) => {
+          capturedHandler = handler
+        })
+        event = vi.fn()
+        start = vi.fn()
+      },
+    }))
+    vi.doMock("@microsoft/teams.dev", () => ({
+      DevtoolsPlugin: class MockDevtoolsPlugin {},
+    }))
+
+    const runAgentFn = vi.fn().mockResolvedValue({ usage: undefined, outcome: "complete" })
+    vi.doMock("../../heart/core", () => ({
+      createSummarize: vi.fn(() => vi.fn()),
+      runAgent: runAgentFn,
+      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      summarizeArgs: vi.fn().mockReturnValue(""),
+      repairOrphanedToolCalls: vi.fn(),
+    }))
+    vi.doMock("../../heart/config", () => ({
+      sessionPath: vi.fn().mockReturnValue("/tmp/teams-session.json"),
+      getContextConfig: vi.fn().mockReturnValue({ maxTokens: 80000, contextMargin: 20 }),
+      getTeamsConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "" }),
+      getTeamsSecondaryConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "", managedIdentityClientId: "" }),
+      getOAuthConfig: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado" }),
+      resolveOAuthForTenant: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado", githubConnectionName: "" }),
+      getTeamsChannelConfig: vi.fn().mockReturnValue({ skipConfirmation: false, port: 3978 }),
+    }))
+    vi.doMock("../../senses/commands", () => ({
+      createCommandRegistry: vi.fn().mockReturnValue({
+        register: vi.fn(),
+        get: vi.fn(),
+        list: vi.fn().mockReturnValue([]),
+        dispatch: vi.fn().mockReturnValue({ handled: true, result: { action: "exit" } }),
+      }),
+      registerDefaultCommands: vi.fn(),
+      parseSlashCommand: vi.fn().mockImplementation((input: string) =>
+        input.startsWith("/") ? { command: input.slice(1).toLowerCase(), args: "" } : null
+      ),
+    }))
+    vi.doMock("../../mind/prompt", () => ({
+      buildSystem: vi.fn().mockResolvedValue("system prompt"),
+      contextSection: vi.fn().mockReturnValue(""),
+    }))
+    vi.doMock("../../mind/context", () => ({
+      loadSession: vi.fn().mockReturnValue(null),
+      saveSession: vi.fn(),
+      deleteSession: vi.fn(),
+      trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
+      postTurn: vi.fn(),
+    }))
+
+    vi.spyOn(console, "log").mockImplementation(() => {})
+
+    const teams = await import("../../senses/teams")
+    teams.startTeamsApp()
+
+    const stream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+    const api = {
+      users: {
+        token: {
+          get: vi.fn().mockResolvedValue({ token: undefined }),
+        },
+      },
+    }
+
+    await capturedHandler!({
+      stream,
+      activity: { text: "/unsupported", conversation: { id: "conv-unsupported" }, from: { id: "user-1" }, channelId: "msteams" },
+      api,
+      signin: vi.fn(),
+      send: vi.fn(),
+    })
+
+    expect(runAgentFn).toHaveBeenCalledTimes(1)
+
+    vi.restoreAllMocks()
+  })
+
+  it("slash command responses can emit an empty string before turn startup", async () => {
+    vi.resetModules()
+
+    let capturedHandler: ((args: any) => Promise<void>) | null = null
+    vi.doMock("@microsoft/teams.apps", () => ({
+      App: class MockApp {
+        constructor(_opts: any) {}
+        on = vi.fn().mockImplementation((_event: string, handler: any) => {
+          capturedHandler = handler
+        })
+        event = vi.fn()
+        start = vi.fn()
+      },
+    }))
+    vi.doMock("@microsoft/teams.dev", () => ({
+      DevtoolsPlugin: class MockDevtoolsPlugin {},
+    }))
+
+    const runAgentFn = vi.fn().mockResolvedValue({ usage: undefined, outcome: "complete" })
+    vi.doMock("../../heart/core", () => ({
+      createSummarize: vi.fn(() => vi.fn()),
+      runAgent: runAgentFn,
+      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      summarizeArgs: vi.fn().mockReturnValue(""),
+      repairOrphanedToolCalls: vi.fn(),
+    }))
+    vi.doMock("../../heart/config", () => ({
+      sessionPath: vi.fn().mockReturnValue("/tmp/teams-session.json"),
+      getContextConfig: vi.fn().mockReturnValue({ maxTokens: 80000, contextMargin: 20 }),
+      getTeamsConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "" }),
+      getTeamsSecondaryConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "", managedIdentityClientId: "" }),
+      getOAuthConfig: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado" }),
+      resolveOAuthForTenant: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado", githubConnectionName: "" }),
+      getTeamsChannelConfig: vi.fn().mockReturnValue({ skipConfirmation: false, port: 3978 }),
+    }))
+    vi.doMock("../../senses/commands", () => ({
+      createCommandRegistry: vi.fn().mockReturnValue({
+        register: vi.fn(),
+        get: vi.fn(),
+        list: vi.fn().mockReturnValue([]),
+        dispatch: vi.fn().mockImplementation((name: string) => {
+          if (name === "commands") return { handled: true, result: { action: "response", message: undefined } }
+          return { handled: false }
+        }),
+      }),
+      registerDefaultCommands: vi.fn(),
+      parseSlashCommand: vi.fn().mockImplementation((input: string) =>
+        input.startsWith("/") ? { command: input.slice(1).toLowerCase(), args: "" } : null
+      ),
+    }))
+    vi.doMock("../../mind/prompt", () => ({
+      buildSystem: vi.fn().mockResolvedValue("system prompt"),
+      contextSection: vi.fn().mockReturnValue(""),
+    }))
+    vi.doMock("../../mind/context", () => ({
+      loadSession: vi.fn().mockReturnValue(null),
+      saveSession: vi.fn(),
+      deleteSession: vi.fn(),
+      trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
+      postTurn: vi.fn(),
+    }))
+
+    vi.spyOn(console, "log").mockImplementation(() => {})
+
+    const teams = await import("../../senses/teams")
+    teams.startTeamsApp()
+
+    const stream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+    const api = {
+      users: {
+        token: {
+          get: vi.fn().mockResolvedValue({ token: undefined }),
+        },
+      },
+    }
+
+    await capturedHandler!({
+      stream,
+      activity: { text: "/commands", conversation: { id: "conv-command-empty" }, from: { id: "user-1" }, channelId: "msteams" },
+      api,
+      signin: vi.fn(),
+      send: vi.fn(),
+    })
+
+    expect(stream.emit).toHaveBeenCalledWith("")
+    expect(runAgentFn).not.toHaveBeenCalled()
+
+    vi.restoreAllMocks()
+  })
+
+  it("/new resolves the aad sender and clears immediately when no turn is active", async () => {
+    vi.resetModules()
+
+    let capturedHandler: ((args: any) => Promise<void>) | null = null
+    vi.doMock("@microsoft/teams.apps", () => ({
+      App: class MockApp {
+        constructor(_opts: any) {}
+        on = vi.fn().mockImplementation((_event: string, handler: any) => {
+          capturedHandler = handler
+        })
+        event = vi.fn()
+        start = vi.fn()
+      },
+    }))
+    vi.doMock("@microsoft/teams.dev", () => ({
+      DevtoolsPlugin: class MockDevtoolsPlugin {},
+    }))
+
+    const deleteSessionCalls: string[] = []
+    const runAgentFn = vi.fn().mockResolvedValue({ usage: undefined, outcome: "complete" })
+    vi.doMock("../../heart/core", () => ({
+      createSummarize: vi.fn(() => vi.fn()),
+      runAgent: runAgentFn,
+      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      summarizeArgs: vi.fn().mockReturnValue(""),
+      repairOrphanedToolCalls: vi.fn(),
+    }))
+    vi.doMock("../../heart/config", () => ({
+      sessionPath: vi.fn().mockReturnValue("/tmp/teams-session.json"),
+      getContextConfig: vi.fn().mockReturnValue({ maxTokens: 80000, contextMargin: 20 }),
+      getTeamsConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "" }),
+      getTeamsSecondaryConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "", managedIdentityClientId: "" }),
+      getOAuthConfig: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado" }),
+      resolveOAuthForTenant: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado", githubConnectionName: "" }),
+      getTeamsChannelConfig: vi.fn().mockReturnValue({ skipConfirmation: false, port: 3978 }),
+    }))
+    vi.doMock("../../senses/commands", () => ({
+      createCommandRegistry: vi.fn().mockReturnValue({
+        register: vi.fn(),
+        get: vi.fn(),
+        list: vi.fn().mockReturnValue([]),
+        dispatch: vi.fn().mockImplementation((name: string) => {
+          if (name === "new") return { handled: true, result: { action: "new" } }
+          return { handled: false }
+        }),
+      }),
+      registerDefaultCommands: vi.fn(),
+      parseSlashCommand: vi.fn().mockImplementation((input: string) =>
+        input.startsWith("/") ? { command: input.slice(1).toLowerCase(), args: "" } : null
+      ),
+    }))
+    vi.doMock("../../mind/prompt", () => ({
+      buildSystem: vi.fn().mockResolvedValue("system prompt"),
+      contextSection: vi.fn().mockReturnValue(""),
+    }))
+    vi.doMock("../../mind/context", () => ({
+      loadSession: vi.fn().mockReturnValue(null),
+      saveSession: vi.fn(),
+      deleteSession: vi.fn().mockImplementation((path: string) => { deleteSessionCalls.push(path) }),
+      trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
+      postTurn: vi.fn(),
+    }))
+
+    vi.spyOn(console, "log").mockImplementation(() => {})
+
+    const teams = await import("../../senses/teams")
+    teams.startTeamsApp()
+
+    const stream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+    const api = {
+      users: {
+        token: {
+          get: vi.fn().mockResolvedValue({ token: undefined }),
+        },
+      },
+    }
+
+    await capturedHandler!({
+      stream,
+      activity: {
+        text: "/new",
+        conversation: { id: "conv-reset-direct", tenantId: "tenant-abc" },
+        from: { id: "user-1", aadObjectId: "aad-user-123", name: "AAD User" },
+        channelId: "msteams",
+      },
+      api,
+      signin: vi.fn(),
+      send: vi.fn(),
+    })
+
+    expect(deleteSessionCalls).toContain("/tmp/teams-session.json")
+    expect(stream.emit).toHaveBeenCalledWith("session cleared")
+    expect(runAgentFn).not.toHaveBeenCalled()
+
+    vi.restoreAllMocks()
+  })
+
   it("replays a superseding follow-up as the next turn opener after a superseded turn", async () => {
     vi.resetModules()
 
@@ -5755,6 +6232,50 @@ describe("Teams adapter - pipeline integration (U7)", () => {
     })
 
     expect(mockHandleInboundTurn).toHaveBeenCalledTimes(1)
+  })
+
+  it("does not emit a slash-command response when a superseded replay handles it silently", async () => {
+    vi.resetModules()
+    vi.doMock("../../heart/turn-coordinator", () => ({
+      createTurnCoordinator: vi.fn(() => ({
+        drainFollowUps: vi.fn().mockReturnValue([{ text: "/commands", effect: "clear_and_supersede" }]),
+        withTurnLock: vi.fn(),
+        isTurnActive: vi.fn().mockReturnValue(false),
+        enqueueFollowUp: vi.fn(),
+        tryBeginTurn: vi.fn().mockReturnValue(true),
+        endTurn: vi.fn(),
+      })),
+    }))
+    const { mockHandleInboundTurn } = mockPipelineDeps({
+      parseSlashCommandFn: (input: string) => input.startsWith("/") ? { command: input.slice(1).toLowerCase(), args: "" } : null,
+      dispatchFn: (name: string) => {
+        if (name === "commands") return { handled: true, result: { action: "response", message: "/new - start new" } }
+        return { handled: false }
+      },
+    })
+    mockHandleInboundTurn.mockImplementationOnce(async (input: any) => {
+      input.runAgentOptions?.drainSteeringFollowUps?.()
+      return {
+        resolvedContext: await input.friendResolver.resolve(),
+        gateResult: { allowed: true },
+        usage: undefined,
+        sessionPath: "/tmp/teams-session.json",
+        messages: [],
+        turnOutcome: "superseded",
+      }
+    })
+    const teams = await import("../../senses/teams")
+    const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+
+    await teams.handleTeamsMessage("hello", mockStream as any, "conv-123", {
+      signin: vi.fn(),
+      aadObjectId: "aad-user-123",
+      tenantId: "tenant-abc",
+      displayName: "Test User",
+    })
+
+    expect(mockHandleInboundTurn).toHaveBeenCalledTimes(1)
+    expect(mockStream.emit).not.toHaveBeenCalledWith("/new - start new")
   })
 
   it("passes pendingDir to pipeline", async () => {
