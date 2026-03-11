@@ -1417,6 +1417,8 @@ describe("BlueBubbles sense runtime", () => {
       }),
     )
     expect(runAgentCallCount).toBe(1)
+    const reactionInput = mocks.handleInboundTurn.mock.calls[0][0]
+    expect(reactionInput.continuityIngressTexts).toEqual([])
     expect(readResult).toEqual(
       expect.objectContaining({
         handled: true,
@@ -2110,6 +2112,7 @@ describe("BlueBubbles sense runtime", () => {
         content: expect.stringContaining("top-level follow-up"),
       }),
     ])
+    expect(input.continuityIngressTexts).toEqual(["top-level follow-up"])
   })
 
   it("passes isGroupChat=true and group-level friend params for group messages", async () => {

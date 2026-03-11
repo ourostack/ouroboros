@@ -937,7 +937,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
 
     let releaseFirst: (() => void) | undefined
     const firstTurn = new Promise<void>((resolve) => { releaseFirst = resolve })
-    let drainedFollowUps: Array<{ text: string }> = []
+    let drainedFollowUps: Array<{ text: string; effect?: string }> = []
     const runAgentFn = vi.fn()
       .mockImplementationOnce(async (_messages: any, _callbacks: any, _channel: any, _signal: any, options: any) => {
         await firstTurn
@@ -1008,7 +1008,187 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
     releaseFirst?.()
     await firstMessage
     expect(runAgentFn).toHaveBeenCalledTimes(1)
-    expect(drainedFollowUps.map((m) => m.text)).toEqual(["follow-up"])
+    expect(drainedFollowUps).toEqual([{ text: "follow-up", effect: "none" }])
+
+    vi.restoreAllMocks()
+  })
+
+  it("same-conversation no-handoff follow-up is classified before steering into the active turn", async () => {
+    vi.resetModules()
+
+    let capturedHandler: ((args: any) => Promise<void>) | null = null
+    vi.doMock("@microsoft/teams.apps", () => ({
+      App: class MockApp {
+        constructor(_opts: any) {}
+        on = vi.fn().mockImplementation((_event: string, handler: any) => {
+          capturedHandler = handler
+        })
+        event = vi.fn()
+        start = vi.fn()
+      },
+    }))
+    vi.doMock("@microsoft/teams.dev", () => ({
+      DevtoolsPlugin: class MockDevtoolsPlugin {},
+    }))
+
+    let releaseFirst: (() => void) | undefined
+    const firstTurn = new Promise<void>((resolve) => { releaseFirst = resolve })
+    let drainedFollowUps: Array<{ text: string; effect?: string }> = []
+    const runAgentFn = vi.fn()
+      .mockImplementationOnce(async (_messages: any, _callbacks: any, _channel: any, _signal: any, options: any) => {
+        await firstTurn
+        drainedFollowUps = options?.drainSteeringFollowUps?.() ?? []
+        return { usage: undefined }
+      })
+      .mockResolvedValue({ usage: undefined })
+
+    vi.doMock("../../heart/core", () => ({
+      createSummarize: vi.fn(() => vi.fn()),
+      runAgent: runAgentFn,
+      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      summarizeArgs: vi.fn().mockReturnValue(""),
+      repairOrphanedToolCalls: vi.fn(),
+    }))
+    vi.doMock("../../mind/prompt", () => ({
+      buildSystem: vi.fn().mockResolvedValue("system prompt"),
+      contextSection: vi.fn().mockReturnValue(""),
+    }))
+    vi.doMock("../../mind/context", () => ({
+      loadSession: vi.fn().mockReturnValue(null),
+      saveSession: vi.fn(),
+      deleteSession: vi.fn(),
+      trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
+      postTurn: vi.fn(),
+    }))
+
+    vi.spyOn(console, "log").mockImplementation(() => {})
+
+    const teams = await import("../../senses/teams")
+    teams.startTeamsApp()
+
+    const stream1 = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+    const stream2 = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+    const api = {
+      users: {
+        token: {
+          get: vi.fn().mockResolvedValue({ token: undefined }),
+        },
+      },
+    }
+
+    const firstMessage = capturedHandler!({
+      stream: stream1,
+      activity: { text: "first", conversation: { id: "conv-no-handoff" }, from: { id: "user-1" }, channelId: "msteams" },
+      api,
+      signin: vi.fn(),
+      send: vi.fn(),
+    })
+
+    for (let i = 0; i < 20 && runAgentFn.mock.calls.length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 1))
+    }
+
+    await capturedHandler!({
+      stream: stream2,
+      activity: { text: "work autonomously on this", conversation: { id: "conv-no-handoff" }, from: { id: "user-1" }, channelId: "msteams" },
+      api,
+      signin: vi.fn(),
+      send: vi.fn(),
+    })
+
+    releaseFirst?.()
+    await firstMessage
+    expect(drainedFollowUps).toEqual([{ text: "work autonomously on this", effect: "set_no_handoff" }])
+
+    vi.restoreAllMocks()
+  })
+
+  it("same-conversation cancel follow-up is classified as clear_and_supersede", async () => {
+    vi.resetModules()
+
+    let capturedHandler: ((args: any) => Promise<void>) | null = null
+    vi.doMock("@microsoft/teams.apps", () => ({
+      App: class MockApp {
+        constructor(_opts: any) {}
+        on = vi.fn().mockImplementation((_event: string, handler: any) => {
+          capturedHandler = handler
+        })
+        event = vi.fn()
+        start = vi.fn()
+      },
+    }))
+    vi.doMock("@microsoft/teams.dev", () => ({
+      DevtoolsPlugin: class MockDevtoolsPlugin {},
+    }))
+
+    let releaseFirst: (() => void) | undefined
+    const firstTurn = new Promise<void>((resolve) => { releaseFirst = resolve })
+    let drainedFollowUps: Array<{ text: string; effect?: string }> = []
+    const runAgentFn = vi.fn()
+      .mockImplementationOnce(async (_messages: any, _callbacks: any, _channel: any, _signal: any, options: any) => {
+        await firstTurn
+        drainedFollowUps = options?.drainSteeringFollowUps?.() ?? []
+        return { usage: undefined }
+      })
+      .mockResolvedValue({ usage: undefined })
+
+    vi.doMock("../../heart/core", () => ({
+      createSummarize: vi.fn(() => vi.fn()),
+      runAgent: runAgentFn,
+      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      summarizeArgs: vi.fn().mockReturnValue(""),
+      repairOrphanedToolCalls: vi.fn(),
+    }))
+    vi.doMock("../../mind/prompt", () => ({
+      buildSystem: vi.fn().mockResolvedValue("system prompt"),
+      contextSection: vi.fn().mockReturnValue(""),
+    }))
+    vi.doMock("../../mind/context", () => ({
+      loadSession: vi.fn().mockReturnValue(null),
+      saveSession: vi.fn(),
+      deleteSession: vi.fn(),
+      trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
+      postTurn: vi.fn(),
+    }))
+
+    vi.spyOn(console, "log").mockImplementation(() => {})
+
+    const teams = await import("../../senses/teams")
+    teams.startTeamsApp()
+
+    const stream1 = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+    const stream2 = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+    const api = {
+      users: {
+        token: {
+          get: vi.fn().mockResolvedValue({ token: undefined }),
+        },
+      },
+    }
+
+    const firstMessage = capturedHandler!({
+      stream: stream1,
+      activity: { text: "first", conversation: { id: "conv-cancel" }, from: { id: "user-1" }, channelId: "msteams" },
+      api,
+      signin: vi.fn(),
+      send: vi.fn(),
+    })
+
+    for (let i = 0; i < 20 && runAgentFn.mock.calls.length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 1))
+    }
+
+    await capturedHandler!({
+      stream: stream2,
+      activity: { text: "stop working on that", conversation: { id: "conv-cancel" }, from: { id: "user-1" }, channelId: "msteams" },
+      api,
+      signin: vi.fn(),
+      send: vi.fn(),
+    })
+
+    releaseFirst?.()
+    await firstMessage
+    expect(drainedFollowUps).toEqual([{ text: "stop working on that", effect: "clear_and_supersede" }])
 
     vi.restoreAllMocks()
   })
@@ -5182,6 +5362,46 @@ describe("Teams adapter - pipeline integration (U7)", () => {
     expect(input.messages).toEqual([
       expect.objectContaining({ role: "user", content: "hello world" }),
     ])
+  })
+
+  it("passes raw continuity ingress text to the shared pipeline", async () => {
+    vi.resetModules()
+    const { mockHandleInboundTurn } = mockPipelineDeps()
+    const teams = await import("../../senses/teams")
+    const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+
+    await teams.handleTeamsMessage("keep going until you're done", mockStream as any, "conv-123", {
+      signin: vi.fn(),
+      aadObjectId: "aad-user-123",
+      tenantId: "tenant-abc",
+      displayName: "Test User",
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    expect(input.continuityIngressTexts).toEqual(["keep going until you're done"])
+  })
+
+  it("passes persisted continuity state through the sessionLoader boundary", async () => {
+    vi.resetModules()
+    const { mockHandleInboundTurn } = mockPipelineDeps({
+      loadSessionReturn: {
+        messages: [{ role: "system", content: "system prompt" }],
+        state: { mustResolveBeforeHandoff: true },
+      },
+    })
+    const teams = await import("../../senses/teams")
+    const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+
+    await teams.handleTeamsMessage("hello", mockStream as any, "conv-123", {
+      signin: vi.fn(),
+      aadObjectId: "aad-user-123",
+      tenantId: "tenant-abc",
+      displayName: "Test User",
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    const session = await input.sessionLoader.loadOrCreate()
+    expect(session.state).toEqual({ mustResolveBeforeHandoff: true })
   })
 
   it("passes pendingDir to pipeline", async () => {

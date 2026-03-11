@@ -681,6 +681,53 @@ describe("handleInboundTurn", () => {
       const options = runAgentCall[4] as RunAgentOptions
       expect((options as any).currentObligation).toBe("latest ask")
     })
+
+    it("sets mustResolveBeforeHandoff from exact turn-start no-handoff language", async () => {
+      const input = makeInput({
+        continuityIngressTexts: ["keep going until you're done"],
+        runAgent: vi.fn().mockResolvedValue({ usage: usageData, outcome: "errored" }),
+      })
+
+      await handleInboundTurn(input)
+
+      const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
+      const options = runAgentCall[4] as RunAgentOptions
+      expect((options as any).mustResolveBeforeHandoff).toBe(true)
+      expect(input.postTurn).toHaveBeenCalledWith(
+        expect.any(Array),
+        "/tmp/test-session.json",
+        usageData,
+        undefined,
+        { mustResolveBeforeHandoff: true },
+      )
+    })
+
+    it("clears persisted mustResolveBeforeHandoff from exact turn-start cancel language", async () => {
+      const input = makeInput({
+        continuityIngressTexts: ["never mind"],
+        sessionLoader: {
+          loadOrCreate: vi.fn().mockResolvedValue({
+            messages: [{ role: "system", content: "You are helpful." }],
+            sessionPath: "/tmp/test-session.json",
+            state: { mustResolveBeforeHandoff: true },
+          }),
+        },
+        runAgent: vi.fn().mockResolvedValue({ usage: usageData, outcome: "errored" }),
+      })
+
+      await handleInboundTurn(input)
+
+      const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
+      const options = runAgentCall[4] as RunAgentOptions
+      expect((options as any).mustResolveBeforeHandoff).toBe(false)
+      expect(input.postTurn).toHaveBeenCalledWith(
+        expect.any(Array),
+        "/tmp/test-session.json",
+        usageData,
+        undefined,
+        undefined,
+      )
+    })
   })
 
   // Messages assembly
@@ -717,5 +764,31 @@ describe("handleInboundTurn", () => {
       const result = await handleInboundTurn(input)
       expect((result as any).turnOutcome).toBe("blocked")
     })
+
+    it.each(["complete", "blocked", "superseded"] as const)(
+      "clears mustResolveBeforeHandoff after terminal %s outcome",
+      async (outcome) => {
+        const input = makeInput({
+          sessionLoader: {
+            loadOrCreate: vi.fn().mockResolvedValue({
+              messages: [{ role: "system", content: "You are helpful." }],
+              sessionPath: "/tmp/test-session.json",
+              state: { mustResolveBeforeHandoff: true },
+            }),
+          },
+          runAgent: vi.fn().mockResolvedValue({ usage: usageData, outcome }),
+        })
+
+        await handleInboundTurn(input)
+
+        expect(input.postTurn).toHaveBeenCalledWith(
+          expect.any(Array),
+          "/tmp/test-session.json",
+          usageData,
+          undefined,
+          undefined,
+        )
+      },
+    )
   })
 })
