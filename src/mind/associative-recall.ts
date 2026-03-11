@@ -80,7 +80,17 @@ function readFacts(memoryRoot: string): MemoryFactRecord[] {
   if (!fs.existsSync(factsPath)) return []
   const raw = fs.readFileSync(factsPath, "utf8").trim()
   if (!raw) return []
-  return raw.split("\n").map((line) => JSON.parse(line) as MemoryFactRecord)
+  const facts: MemoryFactRecord[] = []
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    try {
+      facts.push(JSON.parse(trimmed) as MemoryFactRecord)
+    } catch {
+      // Skip corrupt lines (e.g. partial write from a crash).
+    }
+  }
+  return facts
 }
 
 function getLatestUserText(messages: OpenAI.ChatCompletionMessageParam[]): string {
@@ -188,7 +198,7 @@ export async function injectAssociativeRecall(
       event: "mind.associative_recall_error",
       message: "associative recall failed",
       meta: {
-        reason: error instanceof Error ? error.message : String(error),
+        reason: error instanceof Error ? error.message : /* v8 ignore start -- defensive: non-Error catch branch @preserve */ String(error) /* v8 ignore stop */,
       },
     })
   }

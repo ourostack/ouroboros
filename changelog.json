@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.42",
+      "changes": [
+        "Associative recall now skips corrupt JSONL lines instead of crashing — matches the resilient pattern already used in memory.ts."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.41",
       "changes": [
         "JSONL readers (memory facts, inter-agent inbox) now skip corrupt lines instead of crashing — partial writes from crashes no longer lose all data.",
