@@ -161,6 +161,11 @@ type HistoricalLaneSummary = {
   snippet: string
 }
 
+function isHistoricalLaneMetadataLine(line: string): boolean {
+  return /^\[(conversation scope|recent active lanes|routing control):?/i.test(line)
+    || /^- (top_level|thread:[^:]+):/i.test(line)
+}
+
 function extractHistoricalLaneSummary(
   messages: OpenAI.ChatCompletionMessageParam[],
 ): HistoricalLaneSummary[] {
@@ -184,7 +189,7 @@ function extractHistoricalLaneSummary(
       .split("\n")
       .slice(1)
       .map((line) => line.trim())
-      .find(Boolean)
+      .find((line) => line.length > 0 && !isHistoricalLaneMetadataLine(line))
       ?.slice(0, 80) ?? "(no recent text)"
     summaries.push({
       key: laneKey,
