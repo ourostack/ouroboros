@@ -12,6 +12,12 @@ export interface LaunchdDeps {
   homeDir: string
 }
 
+export interface LaunchdWriteDeps {
+  writeFile: (filePath: string, content: string) => void
+  mkdirp: (dir: string) => void
+  homeDir: string
+}
+
 export interface DaemonPlistOptions {
   nodePath: string
   entryPath: string
@@ -65,7 +71,7 @@ export function generateDaemonPlist(options: DaemonPlistOptions): string {
   return lines.join("\n")
 }
 
-export function writeLaunchAgentPlist(deps: LaunchdDeps, options: DaemonPlistOptions): string {
+export function writeLaunchAgentPlist(deps: LaunchdWriteDeps, options: DaemonPlistOptions): string {
   const launchAgentsDir = path.join(deps.homeDir, "Library", "LaunchAgents")
   deps.mkdirp(launchAgentsDir)
 

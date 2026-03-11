@@ -35,7 +35,7 @@ import { getPackageVersion } from "../../mind/bundle-manifest"
 import { getTaskModule } from "../../repertoire/tasks"
 import type { TaskModule } from "../../repertoire/tasks/types"
 import { syncGlobalOuroBotWrapper as defaultSyncGlobalOuroBotWrapper } from "./ouro-bot-global-installer"
-import { writeLaunchAgentPlist, type LaunchdDeps } from "./launchd"
+import { writeLaunchAgentPlist, type LaunchdWriteDeps } from "./launchd"
 
 export type OuroCliCommand =
   | { kind: "daemon.up" }
@@ -854,11 +854,8 @@ function defaultEnsureDaemonBootPersistence(socketPath: string): void {
   }
 
   const homeDir = os.homedir()
-  const launchdDeps: LaunchdDeps = {
-    exec: () => undefined,
+  const launchdDeps: LaunchdWriteDeps = {
     writeFile: (filePath, content) => fs.writeFileSync(filePath, content, "utf-8"),
-    removeFile: (filePath) => fs.rmSync(filePath, { force: true }),
-    existsFile: (filePath) => fs.existsSync(filePath),
     mkdirp: (dir) => fs.mkdirSync(dir, { recursive: true }),
     homeDir,
   }

@@ -4,7 +4,97 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 
+function withProcessPlatform(platform: NodeJS.Platform): () => void {
+  const original = Object.getOwnPropertyDescriptor(process, "platform")
+  Object.defineProperty(process, "platform", { value: platform, configurable: true })
+  return () => {
+    if (original) {
+      Object.defineProperty(process, "platform", original)
+    }
+  }
+}
+
 describe("daemon CLI default dependency branches", () => {
+  it("persists a launch agent plist on darwin via default boot persistence", async () => {
+    vi.resetModules()
+
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-boot-persist-"))
+    const restorePlatform = withProcessPlatform("darwin")
+
+    try {
+      vi.doMock("net", () => ({ createConnection: vi.fn() }))
+      vi.doMock("child_process", () => ({ spawn: vi.fn() }))
+      vi.doMock("os", async () => {
+        const actual = await vi.importActual<typeof import("os")>("os")
+        return { ...actual, homedir: () => tempHome }
+      })
+      vi.doMock("../../../heart/identity", () => ({
+        getRepoRoot: () => "/mock/repo",
+        getAgentBundlesRoot: () => "/mock/AgentBundles",
+      }))
+      vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+
+      const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+      deps.ensureDaemonBootPersistence?.("/tmp/daemon.sock")
+
+      const plistPath = path.join(tempHome, "Library", "LaunchAgents", "bot.ouro.daemon.plist")
+      const logDir = path.join(tempHome, ".agentstate", "daemon", "logs")
+      expect(fs.existsSync(plistPath)).toBe(true)
+      expect(fs.existsSync(logDir)).toBe(true)
+
+      const plist = fs.readFileSync(plistPath, "utf-8")
+      expect(plist).toContain(process.execPath)
+      expect(plist).toContain("/mock/repo/dist/heart/daemon/daemon-entry.js")
+      expect(plist).toContain("<key>RunAtLoad</key>")
+      expect(plist).toContain(path.join(logDir, "ouro-daemon-stdout.log"))
+    } finally {
+      restorePlatform()
+      fs.rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
+  it("skips default boot persistence outside darwin", async () => {
+    vi.resetModules()
+
+    const restorePlatform = withProcessPlatform("linux")
+    const writeFileSync = vi.fn()
+    const mkdirSync = vi.fn()
+
+    try {
+      vi.doMock("net", () => ({ createConnection: vi.fn() }))
+      vi.doMock("child_process", () => ({ spawn: vi.fn() }))
+      vi.doMock("fs", async () => {
+        const actual = await vi.importActual<typeof import("fs")>("fs")
+        return { ...actual, writeFileSync, mkdirSync }
+      })
+      vi.doMock("os", async () => {
+        const actual = await vi.importActual<typeof import("os")>("os")
+        return {
+          ...actual,
+          homedir: () => {
+            throw new Error("homedir should not be consulted on linux")
+          },
+        }
+      })
+      vi.doMock("../../../heart/identity", () => ({
+        getRepoRoot: () => "/mock/repo",
+        getAgentBundlesRoot: () => "/mock/AgentBundles",
+      }))
+      vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+
+      const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+      expect(() => deps.ensureDaemonBootPersistence?.("/tmp/daemon.sock")).not.toThrow()
+      expect(writeFileSync).not.toHaveBeenCalled()
+      expect(mkdirSync).not.toHaveBeenCalled()
+    } finally {
+      restorePlatform()
+    }
+  })
+
   it("uses default sendCommand transport and parses JSON responses", async () => {
     vi.resetModules()
 
