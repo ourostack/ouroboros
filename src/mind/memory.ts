@@ -126,9 +126,15 @@ function readExistingFacts(factsPath: string): MemoryFact[] {
   if (!fs.existsSync(factsPath)) return [];
   const raw = fs.readFileSync(factsPath, "utf8").trim();
   if (!raw) return [];
-  return raw
-    .split("\n")
-    .map((line) => JSON.parse(line) as MemoryFact);
+  const facts: MemoryFact[] = [];
+  for (const line of raw.split("\n")) {
+    try {
+      facts.push(JSON.parse(line) as MemoryFact);
+    } catch {
+      // Skip corrupt lines (e.g. partial write from a crash).
+    }
+  }
+  return facts;
 }
 
 function readEntityIndex(entitiesPath: string): EntityIndex {

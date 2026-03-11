@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.41",
+      "changes": [
+        "JSONL readers (memory facts, inter-agent inbox) now skip corrupt lines instead of crashing — partial writes from crashes no longer lose all data.",
+        "Inter-agent message router now parses before clearing the inbox file, and preserves unparsed lines so corrupt messages are not silently lost.",
+        "Inner-dialog checkpoint derivation no longer crashes on all-whitespace assistant content — returns fallback checkpoint instead.",
+        "Update checker interval now catches and logs errors from the onUpdate callback instead of silently swallowing them."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.40",
       "changes": [
         "Removed dead backward-compat re-exports from core.ts (tools, streaming, prompt, kicks) — consumers already import from the canonical modules.",
