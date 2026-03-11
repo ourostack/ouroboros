@@ -45,6 +45,8 @@ export function generateDaemonPlist(options: DaemonPlistOptions): string {
     `    <string>--socket</string>`,
     `    <string>${options.socketPath}</string>`,
     `  </array>`,
+    `  <key>RunAtLoad</key>`,
+    `  <true/>`,
     `  <key>KeepAlive</key>`,
     `  <true/>`,
   ]
@@ -63,6 +65,28 @@ export function generateDaemonPlist(options: DaemonPlistOptions): string {
   return lines.join("\n")
 }
 
+export function writeLaunchAgentPlist(deps: LaunchdDeps, options: DaemonPlistOptions): string {
+  const launchAgentsDir = path.join(deps.homeDir, "Library", "LaunchAgents")
+  deps.mkdirp(launchAgentsDir)
+
+  if (options.logDir) {
+    deps.mkdirp(options.logDir)
+  }
+
+  const fullPath = plistFilePath(deps.homeDir)
+  const xml = generateDaemonPlist(options)
+  deps.writeFile(fullPath, xml)
+
+  emitNervesEvent({
+    component: "daemon",
+    event: "daemon.launchd_plist_written",
+    message: "daemon launch agent plist written",
+    meta: { plistPath: fullPath, entryPath: options.entryPath, socketPath: options.socketPath },
+  })
+
+  return fullPath
+}
+
 export function installLaunchAgent(deps: LaunchdDeps, options: DaemonPlistOptions): void {
   emitNervesEvent({
     component: "daemon",
@@ -71,9 +95,6 @@ export function installLaunchAgent(deps: LaunchdDeps, options: DaemonPlistOption
     meta: { entryPath: options.entryPath, socketPath: options.socketPath },
   })
 
-  const launchAgentsDir = path.join(deps.homeDir, "Library", "LaunchAgents")
-  deps.mkdirp(launchAgentsDir)
-
   const fullPath = plistFilePath(deps.homeDir)
 
   // Unload existing (best effort) for idempotent re-install
@@ -81,8 +102,7 @@ export function installLaunchAgent(deps: LaunchdDeps, options: DaemonPlistOption
     try { deps.exec(`launchctl unload "${fullPath}"`) } catch { /* best effort */ }
   }
 
-  const xml = generateDaemonPlist(options)
-  deps.writeFile(fullPath, xml)
+  writeLaunchAgentPlist(deps, options)
 
   deps.exec(`launchctl load "${fullPath}"`)
 
