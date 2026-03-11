@@ -207,4 +207,28 @@ describe("daemon runtime logging", () => {
 
     expect(stderrChunks.join("")).toContain("INFO [daemon] default homedir used")
   })
+
+  it("supports BlueBubbles runtime logging defaults and writes to a dedicated process log", async () => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-logging-"))
+
+    const stderrChunks: string[] = []
+    vi.spyOn(process.stderr, "write").mockImplementation((chunk: any) => {
+      stderrChunks.push(String(chunk))
+      return true
+    })
+
+    configureDaemonRuntimeLogger("bluebubbles", { homeDir: tmpRoot })
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.bluebubbles_runtime_default",
+      message: "bluebubbles logger default",
+      meta: {},
+    })
+
+    const logFile = path.join(tmpRoot, ".agentstate", "daemon", "logs", "bluebubbles.ndjson")
+    await waitFor(() => fs.existsSync(logFile))
+    expect(fs.readFileSync(logFile, "utf-8")).toContain("\"event\":\"daemon.bluebubbles_runtime_default\"")
+    expect(stderrChunks.join("")).toContain("WARN [daemon] bluebubbles logger default")
+  })
 })

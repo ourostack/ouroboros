@@ -19,6 +19,8 @@ const mocks = vi.hoisted(() => ({
     webhookPath: "/bluebubbles-webhook",
     requestTimeoutMs: 30000,
   }),
+  getAgentName: vi.fn().mockReturnValue("testagent"),
+  getAgentRoot: vi.fn().mockReturnValue("/mock/agent/root"),
   loadSession: vi.fn().mockReturnValue(null),
   postTurn: vi.fn(),
   accumulateFriendTokens: vi.fn(),
@@ -30,6 +32,7 @@ const mocks = vi.hoisted(() => ({
   editMessage: vi.fn().mockResolvedValue(undefined),
   setTyping: vi.fn().mockResolvedValue(undefined),
   markChatRead: vi.fn().mockResolvedValue(undefined),
+  checkHealth: vi.fn().mockResolvedValue(undefined),
   repairEvent: vi.fn(async (event: unknown) => event),
   recordMutation: vi.fn(),
   createServer: vi.fn(),
@@ -51,6 +54,37 @@ function makeTempDir(): string {
   return dir
 }
 
+async function flushAsyncWork(): Promise<void> {
+  await Promise.resolve()
+  await Promise.resolve()
+  await Promise.resolve()
+}
+
+async function waitFor(predicate: () => boolean, attempts = 40): Promise<void> {
+  for (let index = 0; index < attempts; index++) {
+    if (predicate()) return
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  }
+  throw new Error("timed out waiting for predicate")
+}
+
+function createClosableServer(): { server: any; close: () => void } {
+  let closeHandler: (() => void) | undefined
+  const server = {
+    listen: vi.fn((_: number, cb?: () => void) => cb?.()),
+    on: vi.fn((event: string, cb: () => void) => {
+      if (event === "close") closeHandler = cb
+      return server
+    }),
+    close: vi.fn(),
+  }
+
+  return {
+    server,
+    close: () => closeHandler?.(),
+  }
+}
+
 function writeFile(filePath: string): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
   fs.writeFileSync(filePath, "{}")
@@ -69,6 +103,7 @@ vi.mock("../../heart/config", () => ({
   sessionPath: (...args: any[]) => mocks.sessionPath(...args),
   getBlueBubblesConfig: (...args: any[]) => mocks.getBlueBubblesConfig(...args),
   getBlueBubblesChannelConfig: (...args: any[]) => mocks.getBlueBubblesChannelConfig(...args),
+  sanitizeKey: (value: string) => value.replace(/[^a-zA-Z0-9;+.-]+/g, "_"),
 }))
 
 vi.mock("../../mind/context", () => ({
@@ -104,8 +139,8 @@ vi.mock("../../mind/friends/resolver", () => ({
 }))
 
 vi.mock("../../heart/identity", () => ({
-  getAgentName: vi.fn(() => "testagent"),
-  getAgentRoot: vi.fn(() => "/mock/agent/root"),
+  getAgentName: mocks.getAgentName,
+  getAgentRoot: mocks.getAgentRoot,
   getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/testagent/secrets.json"),
   resetAgentConfigCache: vi.fn(),
   loadAgentConfig: vi.fn(() => ({
@@ -130,6 +165,7 @@ vi.mock("../../senses/bluebubbles-client", () => ({
     editMessage: (...args: any[]) => mocks.editMessage(...args),
     setTyping: (...args: any[]) => mocks.setTyping(...args),
     markChatRead: (...args: any[]) => mocks.markChatRead(...args),
+    checkHealth: (...args: any[]) => mocks.checkHealth(...args),
     repairEvent: (...args: any[]) => mocks.repairEvent(...args),
   })),
 }))
@@ -465,6 +501,8 @@ function resetMocks(): void {
     webhookPath: "/bluebubbles-webhook",
     requestTimeoutMs: 30000,
   })
+  mocks.getAgentName.mockReset().mockReturnValue("testagent")
+  mocks.getAgentRoot.mockReset().mockReturnValue("/mock/agent/root")
   mocks.loadSession.mockReset().mockReturnValue(null)
   mocks.postTurn.mockReset()
   mocks.accumulateFriendTokens.mockReset()
@@ -521,6 +559,7 @@ function resetMocks(): void {
   mocks.editMessage.mockReset().mockResolvedValue(undefined)
   mocks.setTyping.mockReset().mockResolvedValue(undefined)
   mocks.markChatRead.mockReset().mockResolvedValue(undefined)
+  mocks.checkHealth.mockReset().mockResolvedValue(undefined)
   mocks.repairEvent.mockReset().mockImplementation(async (event: unknown) => event)
   mocks.recordMutation.mockReset()
   mocks.listen.mockReset().mockImplementation((_: number, cb?: () => void) => cb?.())
@@ -598,6 +637,7 @@ describe("BlueBubbles sense runtime", () => {
   })
 
   afterEach(() => {
+    vi.useRealTimers()
     vi.restoreAllMocks()
     for (const dir of tempDirs.splice(0)) {
       fs.rmSync(dir, { recursive: true, force: true })
@@ -2144,6 +2184,851 @@ describe("BlueBubbles sense runtime", () => {
 
     expect(mocks.createServer).toHaveBeenCalledTimes(1)
     expect(mocks.listen).toHaveBeenCalledWith(18790, expect.any(Function))
+  })
+
+  it("replays unrecovered state-only mutations through the agent once the full message can be repaired", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+
+    const { recordBlueBubblesMutation } = await import("../../senses/bluebubbles-mutation-log")
+    recordBlueBubblesMutation("testagent", {
+      kind: "mutation",
+      eventType: "updated-message",
+      mutationType: "delivery",
+      messageGuid: "missed-message-guid",
+      timestamp: Date.parse("2026-03-11T18:15:00.000Z"),
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        rawId: "ari@mendelow.me",
+        displayName: "ari@mendelow.me",
+      },
+      chat: {
+        chatGuid: "any;-;ari@mendelow.me",
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat:any;-;ari@mendelow.me",
+        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        participantHandles: [],
+      },
+      shouldNotifyAgent: false,
+      textForAgent: "message marked as delivered",
+      requiresRepair: false,
+    })
+    mocks.repairEvent.mockResolvedValueOnce({
+      kind: "message",
+      eventType: "new-message",
+      messageGuid: "missed-message-guid",
+      timestamp: Date.parse("2026-03-11T18:14:00.000Z"),
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        rawId: "ari@mendelow.me",
+        displayName: "ari@mendelow.me",
+      },
+      chat: {
+        chatGuid: "any;-;ari@mendelow.me",
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat:any;-;ari@mendelow.me",
+        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        participantHandles: [],
+      },
+      text: "you there?",
+      textForAgent: "you there?",
+      attachments: [],
+      hasPayloadData: false,
+      requiresRepair: false,
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const first = await bluebubbles.recoverMissedBlueBubblesMessages()
+    const second = await bluebubbles.recoverMissedBlueBubblesMessages()
+
+    expect(first).toEqual(expect.objectContaining({ recovered: 1, pending: 0, failed: 0 }))
+    expect(second).toEqual(expect.objectContaining({ recovered: 0, skipped: 1 }))
+    expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+    expect(mocks.runAgent).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "user",
+          content: expect.stringContaining("you there?"),
+        }),
+      ]),
+      expect.any(Object),
+      "bluebubbles",
+      expect.any(AbortSignal),
+      expect.any(Object),
+    )
+  })
+
+  it("keeps unrepaired backlog mutations pending until BlueBubbles can hydrate a real message", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+
+    const { recordBlueBubblesMutation } = await import("../../senses/bluebubbles-mutation-log")
+    recordBlueBubblesMutation("testagent", {
+      kind: "mutation",
+      eventType: "updated-message",
+      mutationType: "delivery",
+      messageGuid: "pending-message-guid",
+      timestamp: Date.parse("2026-03-11T18:16:00.000Z"),
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        rawId: "ari@mendelow.me",
+        displayName: "ari@mendelow.me",
+      },
+      chat: {
+        chatGuid: "any;-;ari@mendelow.me",
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat:any;-;ari@mendelow.me",
+        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        participantHandles: [],
+      },
+      shouldNotifyAgent: false,
+      textForAgent: "message marked as delivered",
+      requiresRepair: false,
+    })
+    mocks.repairEvent.mockResolvedValueOnce({
+      kind: "mutation",
+      eventType: "updated-message",
+      mutationType: "delivery",
+      messageGuid: "pending-message-guid",
+      timestamp: Date.parse("2026-03-11T18:16:00.000Z"),
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        rawId: "ari@mendelow.me",
+        displayName: "ari@mendelow.me",
+      },
+      chat: {
+        chatGuid: "any;-;ari@mendelow.me",
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat:any;-;ari@mendelow.me",
+        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        participantHandles: [],
+      },
+      shouldNotifyAgent: false,
+      textForAgent: "message marked as delivered",
+      requiresRepair: false,
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.recoverMissedBlueBubblesMessages()
+
+    expect(result).toEqual(expect.objectContaining({ recovered: 0, skipped: 0, pending: 1, failed: 0 }))
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "senses.bluebubbles_recovery_complete",
+        meta: expect.objectContaining({ pending: 1 }),
+      }),
+    )
+  })
+
+  it("records backlog recovery failures without crashing the recovery pass", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+
+    const { recordBlueBubblesMutation } = await import("../../senses/bluebubbles-mutation-log")
+    recordBlueBubblesMutation("testagent", {
+      kind: "mutation",
+      eventType: "updated-message",
+      mutationType: "read",
+      messageGuid: "broken-message-guid",
+      timestamp: Date.parse("2026-03-11T18:17:00.000Z"),
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        rawId: "ari@mendelow.me",
+        displayName: "ari@mendelow.me",
+      },
+      chat: {
+        chatGuid: "any;-;ari@mendelow.me",
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat:any;-;ari@mendelow.me",
+        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        participantHandles: [],
+      },
+      shouldNotifyAgent: false,
+      textForAgent: "message marked as read",
+      requiresRepair: false,
+    })
+    mocks.repairEvent.mockRejectedValueOnce(new Error("repair exploded"))
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.recoverMissedBlueBubblesMessages()
+
+    expect(result).toEqual(expect.objectContaining({ recovered: 0, skipped: 0, pending: 0, failed: 1 }))
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "senses.bluebubbles_recovery_error",
+        meta: expect.objectContaining({
+          messageGuid: "broken-message-guid",
+          reason: "repair exploded",
+        }),
+      }),
+    )
+  })
+
+  it("recovers identifier-only backlog candidates by falling back to unknown routing metadata", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+
+    const { getBlueBubblesMutationLogPath } = await import("../../senses/bluebubbles-mutation-log")
+    const mutationLogPath = getBlueBubblesMutationLogPath("testagent", "chat_identifier:missing-target")
+    fs.mkdirSync(path.dirname(mutationLogPath), { recursive: true })
+    fs.writeFileSync(
+      mutationLogPath,
+      JSON.stringify({
+        recordedAt: "not-a-date",
+        eventType: "updated-message",
+        mutationType: "delivery",
+        messageGuid: "fallback-routing-guid",
+        targetMessageGuid: null,
+        chatGuid: null,
+        chatIdentifier: null,
+        sessionKey: "chat_identifier:missing-target",
+        shouldNotifyAgent: false,
+        textForAgent: "message marked as delivered",
+        fromMe: false,
+      }) + "\n",
+      "utf-8",
+    )
+
+    const beforeRecovery = Date.now()
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.recoverMissedBlueBubblesMessages()
+    const repairedEvent = mocks.repairEvent.mock.calls[0]?.[0]
+
+    expect(result).toEqual(expect.objectContaining({ recovered: 0, skipped: 0, pending: 1, failed: 0 }))
+    expect(repairedEvent).toEqual(
+      expect.objectContaining({
+        kind: "mutation",
+        messageGuid: "fallback-routing-guid",
+        timestamp: expect.any(Number),
+        sender: expect.objectContaining({
+          externalId: "unknown",
+          rawId: "unknown",
+          displayName: "Unknown",
+        }),
+        chat: expect.objectContaining({
+          chatGuid: undefined,
+          chatIdentifier: undefined,
+          sessionKey: "chat_identifier:missing-target",
+          sendTarget: { kind: "chat_identifier", value: "unknown" },
+        }),
+      }),
+    )
+    expect(repairedEvent?.timestamp).toBeGreaterThanOrEqual(beforeRecovery)
+  })
+
+  it("still recovers messages when the repaired agent text is empty and the session cannot dedupe by content", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+
+    const { recordBlueBubblesMutation } = await import("../../senses/bluebubbles-mutation-log")
+    recordBlueBubblesMutation("testagent", {
+      kind: "mutation",
+      eventType: "updated-message",
+      mutationType: "delivery",
+      messageGuid: "empty-fragment-guid",
+      timestamp: Date.parse("2026-03-11T18:17:30.000Z"),
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        rawId: "ari@mendelow.me",
+        displayName: "ari@mendelow.me",
+      },
+      chat: {
+        chatGuid: "any;-;ari@mendelow.me",
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat:any;-;ari@mendelow.me",
+        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        participantHandles: [],
+      },
+      shouldNotifyAgent: false,
+      textForAgent: "message marked as delivered",
+      requiresRepair: false,
+    })
+    mocks.repairEvent.mockResolvedValueOnce({
+      kind: "message",
+      eventType: "new-message",
+      messageGuid: "empty-fragment-guid",
+      timestamp: Date.parse("2026-03-11T18:17:29.000Z"),
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        rawId: "ari@mendelow.me",
+        displayName: "ari@mendelow.me",
+      },
+      chat: {
+        chatGuid: "any;-;ari@mendelow.me",
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat:any;-;ari@mendelow.me",
+        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        participantHandles: [],
+      },
+      text: "",
+      textForAgent: "",
+      attachments: [],
+      hasPayloadData: false,
+      requiresRepair: false,
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.recoverMissedBlueBubblesMessages()
+
+    expect(result).toEqual(expect.objectContaining({ recovered: 1, skipped: 0, pending: 0, failed: 0 }))
+    expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+  })
+
+  it("syncs BlueBubbles runtime state immediately, repeats on the interval, and stops after server close", async () => {
+    vi.useFakeTimers()
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp()
+    await flushAsyncWork()
+
+    const runtimePath = path.join(tempAgentRoot, "state", "senses", "bluebubbles", "runtime.json")
+    expect(mocks.checkHealth).toHaveBeenCalledTimes(1)
+    expect(JSON.parse(fs.readFileSync(runtimePath, "utf-8"))).toEqual(
+      expect.objectContaining({
+        upstreamStatus: "ok",
+        detail: "upstream reachable",
+        pendingRecoveryCount: 0,
+      }),
+    )
+
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(mocks.checkHealth).toHaveBeenCalledTimes(2)
+
+    closableServer.close()
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(mocks.checkHealth).toHaveBeenCalledTimes(2)
+  })
+
+  it("writes runtime error state when the BlueBubbles upstream health probe fails before backlog recovery", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+
+    const { recordBlueBubblesMutation } = await import("../../senses/bluebubbles-mutation-log")
+    recordBlueBubblesMutation("testagent", {
+      kind: "mutation",
+      eventType: "updated-message",
+      mutationType: "delivery",
+      messageGuid: "unhealthy-message-guid",
+      timestamp: Date.parse("2026-03-11T18:18:00.000Z"),
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        rawId: "ari@mendelow.me",
+        displayName: "ari@mendelow.me",
+      },
+      chat: {
+        chatGuid: "any;-;ari@mendelow.me",
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat:any;-;ari@mendelow.me",
+        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        participantHandles: [],
+      },
+      shouldNotifyAgent: false,
+      textForAgent: "message marked as delivered",
+      requiresRepair: false,
+    })
+    mocks.checkHealth.mockRejectedValueOnce(new Error("upstream unreachable"))
+
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp()
+    await flushAsyncWork()
+    closableServer.close()
+
+    const runtimePath = path.join(tempAgentRoot, "state", "senses", "bluebubbles", "runtime.json")
+    await waitFor(() => fs.existsSync(runtimePath))
+    expect(JSON.parse(fs.readFileSync(runtimePath, "utf-8"))).toEqual(
+      expect.objectContaining({
+        upstreamStatus: "error",
+        detail: "upstream unreachable",
+        pendingRecoveryCount: 1,
+      }),
+    )
+  })
+
+  it("records inbound sidecars when trust-gated message events are auto-replied instead of reaching the agent", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+
+    mocks.handleInboundTurn.mockResolvedValueOnce({
+      gateResult: {
+        allowed: false,
+        autoReply: "Please reach me in our group chat instead.",
+      },
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    expect(result).toEqual({
+      handled: true,
+      notifiedAgent: false,
+      kind: "message",
+    })
+
+    const { hasRecordedBlueBubblesInbound } = await import("../../senses/bluebubbles-inbound-log")
+    expect(hasRecordedBlueBubblesInbound("testagent", "chat:any;-;ari@mendelow.me", "B20D4E2B-2E6E-48B5-95CD-6E24A368E4A7")).toBe(true)
+  })
+
+  it("handles trust-gated mutation events without trying to record a message inbound sidecar", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+
+    mocks.handleInboundTurn.mockResolvedValueOnce({
+      gateResult: {
+        allowed: false,
+      },
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.handleBlueBubblesEvent(editPayload)
+
+    expect(result).toEqual({
+      handled: true,
+      notifiedAgent: false,
+      kind: "mutation",
+    })
+
+    const { hasRecordedBlueBubblesInbound } = await import("../../senses/bluebubbles-inbound-log")
+    expect(hasRecordedBlueBubblesInbound("testagent", "chat:any;-;ari@mendelow.me", "4A4F2A85-21AD-4AC6-98A8-34B8F4D07AA9")).toBe(false)
+  })
+
+  it("skips webhook delivery when the inbound sidecar already recorded the message guid", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+
+    const { recordBlueBubblesInbound } = await import("../../senses/bluebubbles-inbound-log")
+    recordBlueBubblesInbound("testagent", {
+      kind: "message",
+      eventType: "new-message",
+      messageGuid: "B20D4E2B-2E6E-48B5-95CD-6E24A368E4A7",
+      timestamp: Date.parse("2026-03-11T18:19:00.000Z"),
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        rawId: "ari@mendelow.me",
+        displayName: "ari@mendelow.me",
+      },
+      chat: {
+        chatGuid: "any;-;ari@mendelow.me",
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat:any;-;ari@mendelow.me",
+        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        participantHandles: [],
+      },
+      text: "top-level follow-up",
+      textForAgent: "top-level follow-up",
+      attachments: [],
+      hasPayloadData: false,
+      requiresRepair: false,
+    }, "webhook")
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    expect(result).toEqual({
+      handled: true,
+      notifiedAgent: false,
+      kind: "message",
+      reason: "already_processed",
+    })
+    expect(mocks.handleInboundTurn).not.toHaveBeenCalled()
+  })
+
+  it("bootstraps skipped recovery candidates into the inbound sidecar when the session already has the message text", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+
+    mocks.loadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "user", content: "you already saw this" },
+      ],
+    })
+
+    const { recordBlueBubblesMutation } = await import("../../senses/bluebubbles-mutation-log")
+    recordBlueBubblesMutation("testagent", {
+      kind: "mutation",
+      eventType: "updated-message",
+      mutationType: "delivery",
+      messageGuid: "session-already-has-message",
+      timestamp: Date.parse("2026-03-11T18:20:00.000Z"),
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        rawId: "ari@mendelow.me",
+        displayName: "ari@mendelow.me",
+      },
+      chat: {
+        chatGuid: "any;-;ari@mendelow.me",
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat:any;-;ari@mendelow.me",
+        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        participantHandles: [],
+      },
+      shouldNotifyAgent: false,
+      textForAgent: "message marked as delivered",
+      requiresRepair: false,
+    })
+    mocks.repairEvent.mockResolvedValueOnce({
+      kind: "message",
+      eventType: "new-message",
+      messageGuid: "session-already-has-message",
+      timestamp: Date.parse("2026-03-11T18:19:59.000Z"),
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        rawId: "ari@mendelow.me",
+        displayName: "ari@mendelow.me",
+      },
+      chat: {
+        chatGuid: "any;-;ari@mendelow.me",
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat:any;-;ari@mendelow.me",
+        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        participantHandles: [],
+      },
+      text: "you already saw this",
+      textForAgent: "you already saw this",
+      attachments: [],
+      hasPayloadData: false,
+      requiresRepair: false,
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.recoverMissedBlueBubblesMessages()
+
+    expect(result).toEqual(expect.objectContaining({ recovered: 0, skipped: 1, pending: 0, failed: 0 }))
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+
+    const { hasRecordedBlueBubblesInbound } = await import("../../senses/bluebubbles-inbound-log")
+    expect(hasRecordedBlueBubblesInbound("testagent", "chat:any;-;ari@mendelow.me", "session-already-has-message")).toBe(true)
+  })
+
+  it("marks runtime state as error when recovery still has pending backlog after a healthy probe", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+
+    const { recordBlueBubblesMutation } = await import("../../senses/bluebubbles-mutation-log")
+    recordBlueBubblesMutation("testagent", {
+      kind: "mutation",
+      eventType: "updated-message",
+      mutationType: "delivery",
+      messageGuid: "pending-runtime-sync",
+      timestamp: Date.parse("2026-03-11T18:21:00.000Z"),
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        rawId: "ari@mendelow.me",
+        displayName: "ari@mendelow.me",
+      },
+      chat: {
+        chatGuid: "any;-;ari@mendelow.me",
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat:any;-;ari@mendelow.me",
+        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        participantHandles: [],
+      },
+      shouldNotifyAgent: false,
+      textForAgent: "message marked as delivered",
+      requiresRepair: false,
+    })
+    mocks.repairEvent.mockResolvedValueOnce({
+      kind: "mutation",
+      eventType: "updated-message",
+      mutationType: "delivery",
+      messageGuid: "pending-runtime-sync",
+      timestamp: Date.parse("2026-03-11T18:21:00.000Z"),
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        rawId: "ari@mendelow.me",
+        displayName: "ari@mendelow.me",
+      },
+      chat: {
+        chatGuid: "any;-;ari@mendelow.me",
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat:any;-;ari@mendelow.me",
+        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        participantHandles: [],
+      },
+      shouldNotifyAgent: false,
+      textForAgent: "message marked as delivered",
+      requiresRepair: false,
+    })
+
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp()
+    await flushAsyncWork()
+    closableServer.close()
+
+    const runtimePath = path.join(tempAgentRoot, "state", "senses", "bluebubbles", "runtime.json")
+    await waitFor(() => fs.existsSync(runtimePath))
+    expect(JSON.parse(fs.readFileSync(runtimePath, "utf-8"))).toEqual(
+      expect.objectContaining({
+        upstreamStatus: "error",
+        detail: "pending recovery: 1",
+        pendingRecoveryCount: 1,
+      }),
+    )
+  })
+
+  it("records recovery failures in runtime state when a healthy upstream still cannot hydrate backlog messages", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+
+    const { recordBlueBubblesMutation } = await import("../../senses/bluebubbles-mutation-log")
+    recordBlueBubblesMutation("testagent", {
+      kind: "mutation",
+      eventType: "updated-message",
+      mutationType: "read",
+      messageGuid: "failed-runtime-sync",
+      timestamp: Date.parse("2026-03-11T18:22:00.000Z"),
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        rawId: "ari@mendelow.me",
+        displayName: "ari@mendelow.me",
+      },
+      chat: {
+        chatGuid: "any;-;ari@mendelow.me",
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat:any;-;ari@mendelow.me",
+        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        participantHandles: [],
+      },
+      shouldNotifyAgent: false,
+      textForAgent: "message marked as read",
+      requiresRepair: false,
+    })
+    mocks.repairEvent.mockRejectedValueOnce(new Error("still broken"))
+
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp()
+    await flushAsyncWork()
+    closableServer.close()
+
+    const runtimePath = path.join(tempAgentRoot, "state", "senses", "bluebubbles", "runtime.json")
+    await waitFor(() => fs.existsSync(runtimePath))
+    expect(JSON.parse(fs.readFileSync(runtimePath, "utf-8"))).toEqual(
+      expect.objectContaining({
+        upstreamStatus: "error",
+        detail: "recovery failures: 1",
+        pendingRecoveryCount: 0,
+      }),
+    )
+  })
+
+  it("records recovered backlog progress in runtime state after a healthy repair pass", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+
+    const { recordBlueBubblesMutation } = await import("../../senses/bluebubbles-mutation-log")
+    recordBlueBubblesMutation("testagent", {
+      kind: "mutation",
+      eventType: "updated-message",
+      mutationType: "delivery",
+      messageGuid: "recovered-runtime-sync",
+      timestamp: Date.parse("2026-03-11T18:23:00.000Z"),
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        rawId: "ari@mendelow.me",
+        displayName: "ari@mendelow.me",
+      },
+      chat: {
+        chatGuid: "any;-;ari@mendelow.me",
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat:any;-;ari@mendelow.me",
+        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        participantHandles: [],
+      },
+      shouldNotifyAgent: false,
+      textForAgent: "message marked as delivered",
+      requiresRepair: false,
+    })
+    mocks.repairEvent.mockResolvedValueOnce({
+      kind: "message",
+      eventType: "new-message",
+      messageGuid: "recovered-runtime-sync",
+      timestamp: Date.parse("2026-03-11T18:22:59.000Z"),
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        rawId: "ari@mendelow.me",
+        displayName: "ari@mendelow.me",
+      },
+      chat: {
+        chatGuid: "any;-;ari@mendelow.me",
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat:any;-;ari@mendelow.me",
+        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        participantHandles: [],
+      },
+      text: "recovered backlog text",
+      textForAgent: "recovered backlog text",
+      attachments: [],
+      hasPayloadData: false,
+      requiresRepair: false,
+    })
+
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp()
+    await flushAsyncWork()
+    closableServer.close()
+
+    const runtimePath = path.join(tempAgentRoot, "state", "senses", "bluebubbles", "runtime.json")
+    await waitFor(() => fs.existsSync(runtimePath))
+    expect(JSON.parse(fs.readFileSync(runtimePath, "utf-8"))).toEqual(
+      expect.objectContaining({
+        upstreamStatus: "ok",
+        detail: "upstream reachable",
+        pendingRecoveryCount: 0,
+        lastRecoveredAt: expect.any(String),
+      }),
+    )
+  })
+
+  it("stringifies non-Error runtime sync failures when the upstream health probe rejects with a bare value", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    mocks.checkHealth.mockRejectedValueOnce("bare upstream failure")
+
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp()
+    await flushAsyncWork()
+    closableServer.close()
+
+    const runtimePath = path.join(tempAgentRoot, "state", "senses", "bluebubbles", "runtime.json")
+    await waitFor(() => fs.existsSync(runtimePath))
+    expect(JSON.parse(fs.readFileSync(runtimePath, "utf-8"))).toEqual(
+      expect.objectContaining({
+        upstreamStatus: "error",
+        detail: "bare upstream failure",
+      }),
+    )
+  })
+
+  it("stringifies non-Error backlog recovery failures in nerves metadata", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+
+    const { recordBlueBubblesMutation } = await import("../../senses/bluebubbles-mutation-log")
+    recordBlueBubblesMutation("testagent", {
+      kind: "mutation",
+      eventType: "updated-message",
+      mutationType: "read",
+      messageGuid: "string-recovery-failure",
+      timestamp: Date.parse("2026-03-11T18:24:00.000Z"),
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        rawId: "ari@mendelow.me",
+        displayName: "ari@mendelow.me",
+      },
+      chat: {
+        chatGuid: "any;-;ari@mendelow.me",
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat:any;-;ari@mendelow.me",
+        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        participantHandles: [],
+      },
+      shouldNotifyAgent: false,
+      textForAgent: "message marked as read",
+      requiresRepair: false,
+    })
+    mocks.repairEvent.mockRejectedValueOnce("string repair failure")
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.recoverMissedBlueBubblesMessages()
+
+    expect(result).toEqual(expect.objectContaining({ failed: 1 }))
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "senses.bluebubbles_recovery_error",
+        meta: expect.objectContaining({
+          messageGuid: "string-recovery-failure",
+          reason: "string repair failure",
+        }),
+      }),
+    )
   })
 
   // ── Pipeline integration tests ───────────────────────────────────

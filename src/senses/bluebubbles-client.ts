@@ -27,6 +27,7 @@ export interface BlueBubblesClient {
   editMessage(params: BlueBubblesEditMessageParams): Promise<void>
   setTyping(chat: BlueBubblesChatRef, typing: boolean): Promise<void>
   markChatRead(chat: BlueBubblesChatRef): Promise<void>
+  checkHealth(): Promise<void>
   repairEvent(event: BlueBubblesNormalizedEvent): Promise<BlueBubblesNormalizedEvent>
 }
 
@@ -209,6 +210,15 @@ function applyRepairNotice(event: BlueBubblesNormalizedEvent, notice: string): B
     requiresRepair: false,
     repairNotice: notice,
   }
+}
+
+function hasRecoverableMessageContent(event: BlueBubblesNormalizedEvent): event is Extract<BlueBubblesNormalizedEvent, { kind: "message" }> {
+  return event.kind === "message"
+    && (
+      event.textForAgent.trim().length > 0
+      || event.attachments.length > 0
+      || event.hasPayloadData
+    )
 }
 
 function hydrateTextForAgent(event: BlueBubblesNormalizedEvent, rawData: JsonRecord): BlueBubblesNormalizedEvent {
@@ -402,6 +412,41 @@ export function createBlueBubblesClient(
       }
     },
 
+    async checkHealth(): Promise<void> {
+      const url = buildBlueBubblesApiUrl(config.serverUrl, "/api/v1/message/count", config.password)
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.bluebubbles_healthcheck_start",
+        message: "probing bluebubbles upstream health",
+        meta: { serverUrl: config.serverUrl },
+      })
+      const response = await fetch(url, {
+        method: "GET",
+        signal: AbortSignal.timeout(channelConfig.requestTimeoutMs),
+      })
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => "")
+        emitNervesEvent({
+          level: "warn",
+          component: "senses",
+          event: "senses.bluebubbles_healthcheck_error",
+          message: "bluebubbles upstream health probe failed",
+          meta: {
+            serverUrl: config.serverUrl,
+            status: response.status,
+            reason: errorText || "unknown",
+          },
+        })
+        throw new Error(`BlueBubbles upstream health check failed (${response.status}): ${errorText || "unknown"}`)
+      }
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.bluebubbles_healthcheck_end",
+        message: "bluebubbles upstream health probe succeeded",
+        meta: { serverUrl: config.serverUrl },
+      })
+    },
+
     async repairEvent(event: BlueBubblesNormalizedEvent): Promise<BlueBubblesNormalizedEvent> {
       if (!event.requiresRepair) {
         emitNervesEvent({
@@ -475,7 +520,16 @@ export function createBlueBubblesClient(
           type: event.eventType,
           data,
         })
-        let hydrated = hydrateTextForAgent(normalized, data)
+        const recoveredMessage = event.kind === "mutation"
+          && !event.shouldNotifyAgent
+          ? normalizeBlueBubblesEvent({
+              type: "new-message",
+              data,
+            })
+          : null
+        let hydrated = recoveredMessage && hasRecoverableMessageContent(recoveredMessage)
+          ? hydrateTextForAgent(recoveredMessage, data)
+          : hydrateTextForAgent(normalized, data)
         if (
           hydrated.kind === "message" &&
           hydrated.balloonBundleId !== "com.apple.messages.URLBalloonProvider" &&
@@ -506,6 +560,7 @@ export function createBlueBubblesClient(
             kind: hydrated.kind,
             messageGuid: hydrated.messageGuid,
             repairedFrom: event.kind,
+            promotedFromMutation: event.kind === "mutation" && hydrated.kind === "message",
           },
         })
         return hydrated

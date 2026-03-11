@@ -779,6 +779,221 @@ describe("BlueBubbles client", () => {
     await expect(client.repairEvent(event)).resolves.toBe(event)
   })
 
+  it("probes upstream availability through the BlueBubbles message count endpoint", async () => {
+    global.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: { total: 42 } }), { status: 200 })) as typeof fetch
+
+    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+
+    await expect(client.checkHealth()).resolves.toBeUndefined()
+    expect(global.fetch).toHaveBeenCalledWith(
+      "http://bluebubbles.local/api/v1/message/count?password=secret-token",
+      expect.objectContaining({
+        method: "GET",
+        signal: expect.any(AbortSignal),
+      }),
+    )
+  })
+
+  it("surfaces upstream health probe failures with the response body when BlueBubbles is unreachable", async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response("connection refused", { status: 503 }),
+    ) as typeof fetch
+
+    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+
+    await expect(client.checkHealth()).rejects.toThrow(
+      "BlueBubbles upstream health check failed (503): connection refused",
+    )
+  })
+
+  it("falls back to an unknown reason when BlueBubbles health probe responses cannot be read", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 502,
+      text: vi.fn().mockRejectedValue(new Error("socket closed")),
+    }) as unknown as typeof fetch
+
+    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+
+    await expect(client.checkHealth()).rejects.toThrow(
+      "BlueBubbles upstream health check failed (502): unknown",
+    )
+  })
+
+  it("promotes repaired state-only delivery mutations into inbound message events when the full message exists", async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: {
+            guid: "delivery-guid",
+            text: "you missed this while the webhook path was sick",
+            handle: {
+              address: "ari@mendelow.me",
+              service: "iMessage",
+            },
+            isDelivered: true,
+            dateDelivered: 1772949155000,
+            chats: [
+              {
+                guid: "any;-;ari@mendelow.me",
+                style: 45,
+                chatIdentifier: "ari@mendelow.me",
+                displayName: "",
+              },
+            ],
+          },
+        }),
+        { status: 200 },
+      ),
+    ) as typeof fetch
+
+    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+
+    const result = await client.repairEvent({
+      kind: "mutation",
+      eventType: "updated-message",
+      mutationType: "delivery",
+      messageGuid: "delivery-guid",
+      timestamp: 1,
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        rawId: "ari@mendelow.me",
+        displayName: "ari@mendelow.me",
+      },
+      chat: dmChat,
+      shouldNotifyAgent: false,
+      textForAgent: "message marked as delivered",
+      requiresRepair: true,
+    })
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        kind: "message",
+        messageGuid: "delivery-guid",
+        textForAgent: "you missed this while the webhook path was sick",
+        requiresRepair: false,
+      }),
+    )
+  })
+
+  it("keeps repaired state-only mutations as mutations when the fetched record still has no recoverable content", async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: {
+            guid: "delivery-guid",
+            text: "",
+            handle: {
+              address: "ari@mendelow.me",
+              service: "iMessage",
+            },
+            chats: [
+              {
+                guid: "any;-;ari@mendelow.me",
+                style: 45,
+                chatIdentifier: "ari@mendelow.me",
+                displayName: "",
+              },
+            ],
+          },
+        }),
+        { status: 200 },
+      ),
+    ) as typeof fetch
+
+    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+
+    const result = await client.repairEvent({
+      kind: "mutation",
+      eventType: "updated-message",
+      mutationType: "delivery",
+      messageGuid: "delivery-guid",
+      timestamp: 1,
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        rawId: "ari@mendelow.me",
+        displayName: "ari@mendelow.me",
+      },
+      chat: dmChat,
+      shouldNotifyAgent: false,
+      textForAgent: "message marked as delivered",
+      requiresRepair: true,
+    })
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        kind: "message",
+        eventType: "updated-message",
+        textForAgent: "",
+        requiresRepair: false,
+      }),
+    )
+  })
+
   it("hydrates repairable OG-card messages by fetching the full BlueBubbles message record", async () => {
     global.fetch = vi.fn().mockResolvedValue(
       new Response(

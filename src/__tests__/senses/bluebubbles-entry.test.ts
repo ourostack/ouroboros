@@ -9,7 +9,9 @@ describe("bluebubbles entrypoint", () => {
     vi.resetModules()
 
     const startBlueBubblesApp = vi.fn()
+    const configureDaemonRuntimeLogger = vi.fn()
     vi.doMock("../../senses/bluebubbles", () => ({ startBlueBubblesApp }))
+    vi.doMock("../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
 
     const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue([
       "node",
@@ -21,6 +23,7 @@ describe("bluebubbles entrypoint", () => {
     await import("../../senses/bluebubbles-entry")
     await Promise.resolve()
 
+    expect(configureDaemonRuntimeLogger).toHaveBeenCalledWith("bluebubbles")
     expect(startBlueBubblesApp).toHaveBeenCalledTimes(1)
     argvSpy.mockRestore()
   })

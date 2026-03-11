@@ -2,6 +2,7 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { readBlueBubblesRuntimeState } from "../../senses/bluebubbles-runtime-state"
 import { DEFAULT_AGENT_SENSES, type AgentSensesConfig, type SenseName } from "../identity"
 import { getSenseInventory, type SenseRuntimeInfo, type SenseStatus } from "../sense-truth"
 import { DaemonProcessManager } from "./process-manager"
@@ -35,6 +36,11 @@ export interface DaemonSenseManagerOptions {
 interface SenseConfigFacts {
   configured: boolean
   detail: string
+}
+
+interface SenseRuntimeFacts {
+  runtime?: "running" | "error"
+  detail?: string
 }
 
 interface AgentSenseContext {
@@ -191,13 +197,37 @@ function runtimeInfoFor(status: string): SenseRuntimeInfo {
   return { runtime: "error" }
 }
 
+function readBlueBubblesRuntimeFacts(
+  agent: string,
+  bundlesRoot: string,
+  snapshot?: SenseRuntimeInfo,
+): SenseRuntimeFacts {
+  const agentRoot = path.join(bundlesRoot, `${agent}.ouro`)
+  const runtimePath = path.join(agentRoot, "state", "senses", "bluebubbles", "runtime.json")
+  if (snapshot?.runtime !== "running" || !fs.existsSync(runtimePath)) {
+    return { runtime: snapshot?.runtime }
+  }
+
+  const state = readBlueBubblesRuntimeState(agent, agentRoot)
+  if (state.upstreamStatus === "error") {
+    return {
+      runtime: "error",
+      detail: state.detail,
+    }
+  }
+
+  return { runtime: snapshot.runtime }
+}
+
 export class DaemonSenseManager implements DaemonSenseManagerLike {
   private readonly processManager: NonNullable<DaemonSenseManagerOptions["processManager"]>
   private readonly contexts: Map<string, AgentSenseContext>
+  private readonly bundlesRoot: string
 
   constructor(options: DaemonSenseManagerOptions) {
     const bundlesRoot = options.bundlesRoot ?? path.join(os.homedir(), "AgentBundles")
     const secretsRoot = options.secretsRoot ?? path.join(os.homedir(), ".agentsecrets")
+    this.bundlesRoot = bundlesRoot
     this.contexts = new Map(
       options.agents.map((agent) => {
         const senses = readAgentSenses(path.join(bundlesRoot, `${agent}.ouro`, "agent.json"))
@@ -252,6 +282,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
     }
 
     const rows = [...this.contexts.entries()].flatMap(([agent, context]) => {
+      const blueBubblesRuntimeFacts = readBlueBubblesRuntimeFacts(agent, this.bundlesRoot, runtime.get(agent)?.bluebubbles)
       const runtimeInfo: Partial<Record<SenseName, SenseRuntimeInfo>> = {
         cli: { configured: true },
         teams: {
@@ -260,7 +291,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
         },
         bluebubbles: {
           configured: context.facts.bluebubbles.configured,
-          ...(runtime.get(agent)?.bluebubbles ?? {}),
+          ...blueBubblesRuntimeFacts,
         },
       }
       const inventory = getSenseInventory({ senses: context.senses }, runtimeInfo)
@@ -270,7 +301,12 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
         label: entry.label,
         enabled: entry.enabled,
         status: entry.status,
-        detail: entry.enabled ? context.facts[entry.sense].detail : "not enabled in agent.json",
+        detail: entry.enabled
+          ? entry.sense === "bluebubbles"
+            ? blueBubblesRuntimeFacts.detail
+              ?? context.facts[entry.sense].detail
+            : context.facts[entry.sense].detail
+          : "not enabled in agent.json",
       }))
     })
 
