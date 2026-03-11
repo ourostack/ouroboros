@@ -292,6 +292,22 @@ describe("RunAgentOptions trace propagation contract", () => {
   })
 })
 
+describe("getProviderDisplayLabel", () => {
+  it("formats the anthropic provider label", async () => {
+    await setupConfig({ providers: { anthropic: { model: "claude-sonnet", setupToken: makeAnthropicSetupToken() } } })
+    const { getProviderDisplayLabel, resetProviderRuntime } = await import("../../heart/core")
+    resetProviderRuntime()
+    expect(getProviderDisplayLabel()).toBe("anthropic (claude-sonnet)")
+  })
+
+  it("formats the openai-codex provider label", async () => {
+    await setupConfig({ providers: { "openai-codex": { model: "gpt-5-codex", oauthAccessToken: makeOpenAICodexAccessToken() } } })
+    const { getProviderDisplayLabel, resetProviderRuntime } = await import("../../heart/core")
+    resetProviderRuntime()
+    expect(getProviderDisplayLabel()).toBe("openai codex (gpt-5-codex)")
+  })
+})
+
 describe("runAgent", () => {
   let runAgent: (messages: any[], callbacks: ChannelCallbacks, channel?: string, signal?: AbortSignal, options?: { toolChoiceRequired?: boolean }) => Promise<{ usage?: any }>
 
