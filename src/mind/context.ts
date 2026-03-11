@@ -26,20 +26,20 @@ function buildTrimmableBlocks(messages: OpenAI.ChatCompletionMessageParam[]): Me
 
   let i = 0
   while (i < messages.length) {
-    const msg: any = messages[i]
+    const msg = messages[i]
 
-    if (msg?.role === "system") {
+    if (msg.role === "system") {
       i++
       continue
     }
 
     // Tool coherence block: assistant message with tool_calls + immediately following tool results
-    if (msg?.role === "assistant" && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+    if (msg.role === "assistant" && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
       const indices = [i]
       i++
       while (i < messages.length) {
-        const next: any = messages[i]
-        if (next?.role !== "tool") break
+        const next = messages[i]
+        if (next.role !== "tool") break
         indices.push(i)
         i++
       }
@@ -60,13 +60,13 @@ function buildTrimmableBlocks(messages: OpenAI.ChatCompletionMessageParam[]): Me
 function getSystemMessageIndices(messages: OpenAI.ChatCompletionMessageParam[]): number[] {
   const indices: number[] = []
   for (let i = 0; i < messages.length; i++) {
-    if ((messages[i] as any)?.role === "system") indices.push(i)
+    if (messages[i].role === "system") indices.push(i)
   }
   return indices
 }
 
 function buildTrimmedMessages(messages: OpenAI.ChatCompletionMessageParam[], kept: Set<number>): OpenAI.ChatCompletionMessageParam[] {
-  return messages.filter((m: any, idx) => m?.role === "system" || kept.has(idx))
+  return messages.filter((m, idx) => m.role === "system" || kept.has(idx))
 }
 
 export function trimMessages(
@@ -127,7 +127,7 @@ export function trimMessages(
 
   const kept = new Set<number>()
   for (let i = 0; i < messages.length; i++) {
-    if ((messages[i] as any)?.role !== "system") kept.add(i)
+    if (messages[i].role !== "system") kept.add(i)
   }
 
   // Drop oldest blocks until we fall under target.
@@ -143,7 +143,7 @@ export function trimMessages(
 
   // If we're still above budget after dropping everything trimmable, preserve system only.
   if (remaining > targetTokens) {
-    trimmed = messages.filter((m: any) => m?.role === "system")
+    trimmed = messages.filter((m) => m.role === "system")
   }
 
   const estimatedAfter = estimateTokensForMessages(trimmed)
@@ -197,7 +197,7 @@ export function validateSessionMessages(messages: OpenAI.ChatCompletionMessagePa
       }
     }
 
-    prevAssistantHadToolCalls = msg.role === "assistant" && Array.isArray((msg as any).tool_calls) && (msg as any).tool_calls.length > 0
+    prevAssistantHadToolCalls = msg.role === "assistant" && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0
     sawToolResultSincePrevAssistant = false
     prevNonToolRole = msg.role
   }
@@ -217,9 +217,9 @@ export function repairSessionMessages(messages: OpenAI.ChatCompletionMessagePara
     if (msg.role === "assistant" && result.length > 0) {
       const prev = result[result.length - 1]
       if (prev.role === "assistant" && !("tool_calls" in prev)) {
-        const prevContent = typeof (prev as any).content === "string" ? (prev as any).content : ""
-        const curContent = typeof (msg as any).content === "string" ? (msg as any).content : ""
-        ;(prev as any).content = `${prevContent}\n\n${curContent}`
+        const prevContent = typeof prev.content === "string" ? prev.content : ""
+        const curContent = typeof msg.content === "string" ? msg.content : ""
+        ;(prev as OpenAI.ChatCompletionAssistantMessageParam).content = `${prevContent}\n\n${curContent}`
         continue
       }
     }

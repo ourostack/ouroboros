@@ -3,10 +3,7 @@ import * as path from "node:path"
 import type { BlueBubblesNormalizedMutation } from "./bluebubbles-model"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getAgentRoot } from "../heart/identity"
-
-function sanitizeKey(key: string): string {
-  return key.replace(/[/:]/g, "_")
-}
+import { sanitizeKey } from "../heart/config"
 
 export function getBlueBubblesMutationLogPath(agentName: string, sessionKey: string): string {
   return path.join(

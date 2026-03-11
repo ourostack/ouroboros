@@ -708,13 +708,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
   ...codingToolDefinitions,
 ];
 
-// Backward-compat: extract just the OpenAI tool schemas
 export const tools: OpenAI.ChatCompletionFunctionTool[] = baseToolDefinitions.map((d) => d.tool);
-
-// Backward-compat: extract just the handlers by name
-export const baseToolHandlers: Record<string, ToolHandler> = Object.fromEntries(
-  baseToolDefinitions.map((d) => [d.tool.function.name, d.handler]),
-);
 
 export const finalAnswerTool: OpenAI.ChatCompletionFunctionTool = {
   type: "function",

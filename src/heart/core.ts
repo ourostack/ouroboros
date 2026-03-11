@@ -8,9 +8,6 @@ import { execTool, summarizeArgs, finalAnswerTool, getToolsForChannel, isConfirm
 import type { ToolContext } from "../repertoire/tools";
 import { getChannelCapabilities } from "../mind/friends/channel";
 import type { AssistantMessageWithReasoning, ResponseItem } from "./streaming";
-// Kick detection preserved but disabled — see comment in agent loop below.
-// import { detectKick } from "./kicks";
-// import type { KickReason } from "./kicks";
 import { emitNervesEvent } from "../nerves/runtime";
 import type { TurnResult } from "./streaming";
 import type { UsageData } from "../mind/context";
@@ -142,17 +139,6 @@ export function getProviderDisplayLabel(): string {
   return providerLabelBuilders[getProvider()]();
 }
 
-// Re-export tools, execTool, summarizeArgs from ./tools for backward compat
-export { tools, execTool, summarizeArgs, getToolsForChannel } from "../repertoire/tools";
-export type { ToolContext } from "../repertoire/tools";
-// Re-export streaming functions for backward compat
-export { streamChatCompletion, streamResponsesApi, toResponsesInput, toResponsesTools } from "./streaming";
-export type { TurnResult } from "./streaming";
-
-// Re-export prompt functions for backward compat
-export { buildSystem } from "../mind/prompt";
-export type { Channel } from "../mind/prompt";
-
 export interface ChannelCallbacks {
   onModelStart(): void;
   onModelStreamStart(): void;
@@ -177,9 +163,6 @@ export interface RunAgentOptions {
   tools?: OpenAI.ChatCompletionFunctionTool[];
   execTool?: (name: string, args: Record<string, string>, ctx?: ToolContext) => Promise<string>;
 }
-
-// Re-export kick utilities for backward compat
-export { hasToolIntent } from "./kicks";
 
 
 function upsertSystemPrompt(
@@ -387,9 +370,6 @@ export async function runAgent(
 
   await injectAssociativeRecall(messages);
 
-  // kickCount and lastKickReason preserved but unused while kick detection is disabled.
-  // let kickCount = 0;
-  // let lastKickReason: KickReason | null = null;
   let done = false;
   let lastUsage: UsageData | undefined;
   let overflowRetried = false;
@@ -458,24 +438,9 @@ export async function runAgent(
         (msg as AssistantMessageWithReasoning)._reasoning_items = reasoningItems;
       }
       if (!result.toolCalls.length) {
-        // Kick detection is disabled while tool_choice: required + final_answer
-        // is the primary loop control mechanism. The model should never reach
-        // this path (tool_choice: required forces a tool call), but if it does,
-        // accept the response as-is rather than risk false-positive kicks.
-        //
-        // Preserved for future use — re-enable by uncommenting:
-        // const kick = detectKick(result.content, options);
-        // if (kick) {
-        //   kickCount++;
-        //   lastKickReason = kick.reason;
-        //   callbacks.onKick?.();
-        //   const kickContent = result.content
-        //     ? result.content + "\n\n" + kick.message
-        //     : kick.message;
-        //   messages.push({ role: "assistant", content: kickContent });
-        //   providerRuntime.resetTurnState(messages);
-        //   continue;
-        // }
+        // No tool calls — accept response as-is.
+        // (Kick detection disabled; tool_choice: required + final_answer
+        // is the primary loop control. See src/heart/kicks.ts to re-enable.)
         messages.push(msg);
         done = true;
       } else {

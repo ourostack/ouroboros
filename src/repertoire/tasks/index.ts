@@ -1,5 +1,6 @@
 import * as fs from "fs"
 import * as path from "path"
+import { slugify } from "../../heart/config"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { boardAction, boardDeps, boardSessions, boardStatus, buildTaskBoard } from "./board"
 import { archiveCompletedTasks, detectStaleTasks } from "./lifecycle"
@@ -35,15 +36,6 @@ function formatStemTimestamp(now = new Date()): string {
   const hours = String(now.getHours()).padStart(2, "0")
   const minutes = String(now.getMinutes()).padStart(2, "0")
   return `${year}-${month}-${day}-${hours}${minutes}`
-}
-
-function slugify(input: string): string {
-  return input
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+/, "")
-    .replace(/-+$/, "")
-    .slice(0, 64)
 }
 
 function findTask(index: TaskIndex, nameOrStem: string): TaskFile | null {
@@ -91,7 +83,7 @@ class FileTaskModule implements TaskModule {
     }
 
     const collection = canonicalCollectionForTaskType(type)
-    const stem = `${formatStemTimestamp()}-${slugify(input.title) || "task"}`
+    const stem = `${formatStemTimestamp()}-${slugify(input.title).slice(0, 64) || "task"}`
     const filename = `${stem}.md`
     const root = getTaskRoot()
     const filePath = path.join(root, collection, filename)

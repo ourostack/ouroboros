@@ -2,6 +2,7 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import { buildDefaultAgentTemplate, type AgentProvider } from "../identity"
+import { slugify } from "../config"
 import { emitNervesEvent } from "../../nerves/runtime"
 import {
   getRepoSpecialistIdentitiesDir,
@@ -152,15 +153,6 @@ function writeReadme(dir: string, purpose: string): void {
   }
 }
 
-function slugify(value: string): string {
-  const trimmed = value.trim().toLowerCase()
-  const slug = trimmed
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+/, "")
-    .replace(/-+$/, "")
-  return slug || "friend"
-}
-
 function pad(value: number): string {
   return String(value).padStart(2, "0")
 }
@@ -200,7 +192,7 @@ function writeFriendImprint(bundleRoot: string, humanName: string, now: Date): v
   const friendsDir = path.join(bundleRoot, "friends")
   fs.mkdirSync(friendsDir, { recursive: true })
   const nowIso = now.toISOString()
-  const id = `friend-${slugify(humanName)}`
+  const id = `friend-${slugify(humanName) || "friend"}`
   const localExternalId = `${os.userInfo().username}@${os.hostname()}`
   const record = {
     id,

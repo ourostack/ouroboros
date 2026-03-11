@@ -5,8 +5,7 @@ import { emitNervesEvent } from "../nerves/runtime"
 import { isTrustedLevel, type Channel, type FriendRecord, type IdentityProvider, type SenseType } from "../mind/friends/types"
 import { INNER_DIALOG_PENDING } from "../mind/pending"
 
-// TODO: agent should pre-configure auto-reply voice
-// This is a canned reply; in future the agent should compose their own first-contact message
+// Canned reply; eventually agents should compose their own first-contact message
 export const STRANGER_AUTO_REPLY = "I'm sorry, I'm not allowed to talk to strangers"
 
 interface StrangerRepliesState {
