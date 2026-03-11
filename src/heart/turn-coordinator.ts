@@ -1,9 +1,11 @@
+import type { SteeringFollowUpEffect } from "../senses/continuity"
 import { emitNervesEvent } from "../nerves/runtime"
 
 export interface SteeringFollowUp {
   conversationId: string
   text: string
   receivedAt: number
+  effect: SteeringFollowUpEffect
 }
 
 export interface TurnCoordinator {

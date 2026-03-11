@@ -262,6 +262,25 @@ function buildInboundContent(
   ]
 }
 
+function getBlueBubblesContinuityIngressTexts(event: BlueBubblesNormalizedEvent): string[] {
+  if (event.kind !== "message") return []
+
+  const text = event.textForAgent.trim()
+  if (text.length > 0) return [text]
+
+  const fallbackText = (event.inputPartsForAgent ?? [])
+    .map((part) => {
+      if (part.type === "text" && typeof part.text === "string") {
+        return part.text.trim()
+      }
+      return ""
+    })
+    .filter(Boolean)
+    .join("\n")
+
+  return fallbackText ? [fallbackText] : []
+}
+
 function createReplyTargetController(event: BlueBubblesNormalizedEvent): BlueBubblesReplyTargetController {
   const defaultTargetLabel = event.kind === "message" && event.threadOriginatorGuid?.trim() ? "current_lane" : "top_level"
   let selection: BlueBubblesReplyTargetSelection =
@@ -584,9 +603,10 @@ export async function handleBlueBubblesEvent(
       channel: "bluebubbles",
       capabilities: bbCapabilities,
       messages: [userMessage],
+      continuityIngressTexts: getBlueBubblesContinuityIngressTexts(event),
       callbacks,
       friendResolver: { resolve: () => Promise.resolve(context) },
-      sessionLoader: { loadOrCreate: () => Promise.resolve({ messages: sessionMessages, sessionPath: sessPath }) },
+      sessionLoader: { loadOrCreate: () => Promise.resolve({ messages: sessionMessages, sessionPath: sessPath, state: existing?.state }) },
       pendingDir,
       friendStore: store,
       provider: "imessage-handle",

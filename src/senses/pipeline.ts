@@ -12,6 +12,7 @@ import type { FriendStore } from "../mind/friends/store"
 import type { TrustGateInput, TrustGateResult } from "./trust-gate"
 import type { PendingMessage } from "../mind/pending"
 import { emitNervesEvent } from "../nerves/runtime"
+import { resolveMustResolveBeforeHandoff } from "./continuity"
 
 // ── Input / Output types ──────────────────────────────────────────
 
@@ -146,6 +147,10 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   // Step 3: Load/create session
   const session = await input.sessionLoader.loadOrCreate()
   const sessionMessages = session.messages
+  let mustResolveBeforeHandoff = resolveMustResolveBeforeHandoff(
+    session.state?.mustResolveBeforeHandoff === true,
+    input.continuityIngressTexts,
+  )
   const currentObligation = input.continuityIngressTexts
     ?.map((text) => text.trim())
     .filter((text) => text.length > 0)
@@ -193,7 +198,10 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   const runAgentOptions: RunAgentOptions = {
     ...input.runAgentOptions,
     currentObligation,
-    mustResolveBeforeHandoff: session.state?.mustResolveBeforeHandoff === true,
+    mustResolveBeforeHandoff,
+    setMustResolveBeforeHandoff: (value) => {
+      mustResolveBeforeHandoff = value
+    },
     toolContext: {
       /* v8 ignore next -- default no-op signin satisfies interface; real signin injected by sense adapter @preserve */
       signin: async () => undefined,
@@ -212,7 +220,12 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   )
 
   // Step 6: postTurn
-  input.postTurn(sessionMessages, session.sessionPath, result.usage, undefined, session.state)
+  const nextState = result.outcome === "complete" || result.outcome === "blocked" || result.outcome === "superseded"
+    ? undefined
+    : mustResolveBeforeHandoff
+      ? { mustResolveBeforeHandoff: true }
+      : undefined
+  input.postTurn(sessionMessages, session.sessionPath, result.usage, undefined, nextState)
 
   // Step 7: Token accumulation
   await input.accumulateFriendTokens(input.friendStore, resolvedContext.friend.id, result.usage)

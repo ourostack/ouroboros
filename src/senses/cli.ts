@@ -768,6 +768,7 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
 
   // Load existing session or start fresh
   const existing = loadSession(sessPath)
+  let sessionState = existing?.state
   const sessionMessages: OpenAI.ChatCompletionMessageParam[] = existing?.messages && existing.messages.length > 0
     ? existing.messages
     : [{ role: "system", content: await buildSystem("cli", undefined, resolvedContext) }]
@@ -792,7 +793,7 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
           continuityIngressTexts: getCliContinuityIngressTexts(userInput),
           callbacks,
           friendResolver: { resolve: () => Promise.resolve(resolvedContext) },
-          sessionLoader: { loadOrCreate: () => Promise.resolve({ messages, sessionPath: sessPath }) },
+          sessionLoader: { loadOrCreate: () => Promise.resolve({ messages, sessionPath: sessPath, state: sessionState }) },
           pendingDir,
           friendStore,
           provider: "local",
@@ -808,7 +809,10 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
               summarize,
             },
           }),
-          postTurn,
+          postTurn: (turnMessages, sessionPathArg, usage, hooks, state) => {
+            postTurn(turnMessages, sessionPathArg, usage, hooks, state)
+            sessionState = state
+          },
           accumulateFriendTokens,
           signal,
           runAgentOptions: {

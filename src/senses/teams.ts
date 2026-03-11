@@ -27,6 +27,7 @@ import * as path from "path"
 import { enforceTrustGate } from "./trust-gate"
 import { handleInboundTurn } from "./pipeline"
 import { drainPending, getPendingDir } from "../mind/pending"
+import { classifySteeringFollowUpEffect, type SteeringFollowUpEffect } from "./continuity"
 
 // Stream interface matching IStreamer from @microsoft/teams.apps
 interface TeamsStream {
@@ -500,77 +501,98 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
     botApi: teamsContext.botApi,
   } : {}
 
-  // Build runAgentOptions with Teams-specific fields
-  const agentOptions: RunAgentOptions = {
-    traceId,
-    toolContext: teamsToolContext as ToolContext,
-    drainSteeringFollowUps: () => _turnCoordinator.drainFollowUps(turnKey).map((m) => ({ text: m.text })),
-  }
-  if (channelConfig.skipConfirmation) agentOptions.skipConfirmation = true
+  let currentText = text
 
-  // ── Call shared pipeline ──────────────────────────────────────────
-  const result = await handleInboundTurn({
-    channel: "teams",
-    capabilities: teamsCapabilities,
-    messages: [{ role: "user" as const, content: text }],
-    callbacks,
-    friendResolver: { resolve: () => Promise.resolve(resolvedContext) },
-    sessionLoader: {
-      loadOrCreate: async () => {
-        const existing = loadSession(sessPath)
-        const messages: OpenAI.ChatCompletionMessageParam[] = existing?.messages && existing.messages.length > 0
-          ? existing.messages
-          : [{ role: "system", content: await buildSystem("teams", undefined, resolvedContext) }]
-        repairOrphanedToolCalls(messages)
-        return { messages, sessionPath: sessPath }
-      },
-    },
-    pendingDir,
-    friendStore: store,
-    provider,
-    externalId,
-    tenantId: teamsContext?.tenantId,
-    isGroupChat: false,
-    groupHasFamilyMember: false,
-    hasExistingGroupWithFamily: false,
-    enforceTrustGate,
-    drainPending,
-    runAgent: (msgs, cb, channel, sig, opts) => runAgent(msgs, cb, channel, sig, {
-      ...opts,
-      toolContext: {
-        /* v8 ignore next -- default no-op signin; pipeline provides the real one @preserve */
-        signin: async () => undefined,
-        ...opts?.toolContext,
-        summarize: teamsToolContext.summarize,
-      },
-    }),
-    postTurn,
-    accumulateFriendTokens,
-    signal: controller.signal,
-    runAgentOptions: agentOptions,
-  })
+  while (true) {
+    let drainedSteeringFollowUps: Array<{ text: string; effect?: SteeringFollowUpEffect }> = []
 
-  // ── Handle gate result ────────────────────────────────────────
-  if (!result.gateResult.allowed) {
-    if ("autoReply" in result.gateResult && result.gateResult.autoReply) {
-      stream.emit(result.gateResult.autoReply)
+    // Build runAgentOptions with Teams-specific fields
+    const agentOptions: RunAgentOptions = {
+      traceId,
+      toolContext: teamsToolContext as ToolContext,
+      drainSteeringFollowUps: () => {
+        drainedSteeringFollowUps = _turnCoordinator.drainFollowUps(turnKey)
+          .map(({ text: followUpText, effect }) => ({ text: followUpText, effect }))
+        return drainedSteeringFollowUps
+      },
     }
-    return
+    if (channelConfig.skipConfirmation) agentOptions.skipConfirmation = true
+
+    // ── Call shared pipeline ──────────────────────────────────────────
+    const result = await handleInboundTurn({
+      channel: "teams",
+      capabilities: teamsCapabilities,
+      messages: [{ role: "user" as const, content: currentText }],
+      continuityIngressTexts: [currentText],
+      callbacks,
+      friendResolver: { resolve: () => Promise.resolve(resolvedContext) },
+      sessionLoader: {
+        loadOrCreate: async () => {
+          const existing = loadSession(sessPath)
+          const messages: OpenAI.ChatCompletionMessageParam[] = existing?.messages && existing.messages.length > 0
+            ? existing.messages
+            : [{ role: "system", content: await buildSystem("teams", undefined, resolvedContext) }]
+          repairOrphanedToolCalls(messages)
+          return { messages, sessionPath: sessPath, state: existing?.state }
+        },
+      },
+      pendingDir,
+      friendStore: store,
+      provider,
+      externalId,
+      tenantId: teamsContext?.tenantId,
+      isGroupChat: false,
+      groupHasFamilyMember: false,
+      hasExistingGroupWithFamily: false,
+      enforceTrustGate,
+      drainPending,
+      runAgent: (msgs, cb, channel, sig, opts) => runAgent(msgs, cb, channel, sig, {
+        ...opts,
+        toolContext: {
+          /* v8 ignore next -- default no-op signin; pipeline provides the real one @preserve */
+          signin: async () => undefined,
+          ...opts?.toolContext,
+          summarize: teamsToolContext.summarize,
+        },
+      }),
+      postTurn,
+      accumulateFriendTokens,
+      signal: controller.signal,
+      runAgentOptions: agentOptions,
+    })
+
+    // ── Handle gate result ────────────────────────────────────────
+    if (!result.gateResult.allowed) {
+      if ("autoReply" in result.gateResult && result.gateResult.autoReply) {
+        stream.emit(result.gateResult.autoReply)
+      }
+      return
+    }
+
+    // Flush any remaining accumulated text at end of turn
+    await callbacks.flush()
+
+    // After the agent loop, check if any tool returned AUTH_REQUIRED and trigger signin.
+    // This must happen after the stream is done so the OAuth card renders properly.
+    if (teamsContext && result.messages) {
+      const allContent = result.messages.map(m => typeof m.content === "string" ? m.content : "").join("\n")
+      if (allContent.includes("AUTH_REQUIRED:graph") && teamsContext.graphConnectionName) await teamsContext.signin(teamsContext.graphConnectionName)
+      if (allContent.includes("AUTH_REQUIRED:ado") && teamsContext.adoConnectionName) await teamsContext.signin(teamsContext.adoConnectionName)
+      if (allContent.includes("AUTH_REQUIRED:github") && teamsContext.githubConnectionName) await teamsContext.signin(teamsContext.githubConnectionName)
+    }
+
+    if (result.turnOutcome !== "superseded") {
+      return
+    }
+
+    const supersedingFollowUp = [...drainedSteeringFollowUps]
+      .reverse()
+      .find((followUp) => followUp.effect === "clear_and_supersede")
+    if (!supersedingFollowUp) {
+      return
+    }
+    currentText = supersedingFollowUp.text
   }
-
-  // Flush any remaining accumulated text at end of turn
-  await callbacks.flush()
-
-  // After the agent loop, check if any tool returned AUTH_REQUIRED and trigger signin.
-  // This must happen after the stream is done so the OAuth card renders properly.
-  if (teamsContext && result.messages) {
-    const allContent = result.messages.map(m => typeof m.content === "string" ? m.content : "").join("\n")
-    if (allContent.includes("AUTH_REQUIRED:graph") && teamsContext.graphConnectionName) await teamsContext.signin(teamsContext.graphConnectionName)
-    if (allContent.includes("AUTH_REQUIRED:ado") && teamsContext.adoConnectionName) await teamsContext.signin(teamsContext.adoConnectionName)
-    if (allContent.includes("AUTH_REQUIRED:github") && teamsContext.githubConnectionName) await teamsContext.signin(teamsContext.githubConnectionName)
-  }
-
-  // SDK auto-closes the stream after our handler returns (app.process.js)
 }
 
 // Internal port for the secondary bot App (not exposed externally).
@@ -688,6 +710,7 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
         conversationId: convId,
         text,
         receivedAt: Date.now(),
+        effect: classifySteeringFollowUpEffect(text),
       })
       return
     }

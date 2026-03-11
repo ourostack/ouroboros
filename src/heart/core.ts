@@ -22,6 +22,7 @@ import { createAnthropicProviderRuntime } from "./providers/anthropic";
 import { createAzureProviderRuntime } from "./providers/azure";
 import { createMinimaxProviderRuntime } from "./providers/minimax";
 import { createOpenAICodexProviderRuntime } from "./providers/openai-codex";
+import type { SteeringFollowUpEffect } from "../senses/continuity";
 
 export type ProviderId = "azure" | "anthropic" | "minimax" | "openai-codex";
 
@@ -176,7 +177,8 @@ export interface RunAgentOptions {
   currentObligation?: string;
   mustResolveBeforeHandoff?: boolean;
   hasQueuedFollowUp?: boolean;
-  drainSteeringFollowUps?: () => Array<{ text: string }>;
+  drainSteeringFollowUps?: () => Array<{ text: string; effect?: SteeringFollowUpEffect }>;
+  setMustResolveBeforeHandoff?: (value: boolean) => void;
   tools?: OpenAI.ChatCompletionFunctionTool[];
   execTool?: (name: string, args: Record<string, string>, ctx?: ToolContext) => Promise<string>;
 }
@@ -443,6 +445,7 @@ export async function runAgent(
   let retryCount = 0;
   let outcome: RunAgentOutcome = "complete";
   let sawSteeringFollowUp = false;
+  let mustResolveBeforeHandoffActive = options?.mustResolveBeforeHandoff === true;
 
   // Prevent MaxListenersExceeded warning — each iteration adds a listener
   try { require("events").setMaxListeners(50, signal); } catch { /* unsupported */ }
@@ -465,6 +468,17 @@ export async function runAgent(
     const activeTools = toolChoiceRequired ? [...baseTools, finalAnswerTool] : baseTools;
     const steeringFollowUps = options?.drainSteeringFollowUps?.() ?? [];
     if (steeringFollowUps.length > 0) {
+      const hasSupersedingFollowUp = steeringFollowUps.some((followUp) => followUp.effect === "clear_and_supersede");
+      if (hasSupersedingFollowUp) {
+        mustResolveBeforeHandoffActive = false;
+        options?.setMustResolveBeforeHandoff?.(false);
+        outcome = "superseded";
+        break;
+      }
+      if (steeringFollowUps.some((followUp) => followUp.effect === "set_no_handoff")) {
+        mustResolveBeforeHandoffActive = true;
+        options?.setMustResolveBeforeHandoff?.(true);
+      }
       sawSteeringFollowUp = true;
       for (const followUp of steeringFollowUps) {
         messages.push({ role: "user", content: followUp.text });
@@ -538,11 +552,10 @@ export async function runAgent(
           // Extract answer from the tool call arguments.
           // Supports: {"answer":"text","intent":"..."} or "text" (JSON string).
           const { answer, intent } = parseFinalAnswerPayload(result.toolCalls[0].arguments);
-          const mustResolveBeforeHandoff = options?.mustResolveBeforeHandoff === true;
-          const validDirectReply = mustResolveBeforeHandoff && intent === "direct_reply" && sawSteeringFollowUp;
+          const validDirectReply = mustResolveBeforeHandoffActive && intent === "direct_reply" && sawSteeringFollowUp;
           const validTerminalIntent = intent === "complete" || intent === "blocked";
           const validClosure = answer != null
-            && (!mustResolveBeforeHandoff || validDirectReply || validTerminalIntent);
+            && (!mustResolveBeforeHandoffActive || validDirectReply || validTerminalIntent);
 
           if (validClosure) {
             if (result.finalAnswerStreamed) {
@@ -573,7 +586,7 @@ export async function runAgent(
             // malformed. Clear any partial streamed text or noise, then push the
             // assistant msg + error tool result and let the model try again.
             callbacks.onClearText?.();
-            const retryError = getFinalAnswerRetryError(mustResolveBeforeHandoff, intent, sawSteeringFollowUp);
+            const retryError = getFinalAnswerRetryError(mustResolveBeforeHandoffActive, intent, sawSteeringFollowUp);
             messages.push(msg);
             messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: retryError });
             providerRuntime.appendToolOutput(result.toolCalls[0].id, retryError);
