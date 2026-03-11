@@ -71,6 +71,13 @@ describe("launchd daemon management", () => {
       expect(xml).toMatch(/<key>KeepAlive<\/key>\s*<true\/>/)
     })
 
+    it("includes RunAtLoad true for boot startup", () => {
+      const xml = generateDaemonPlist(defaultPlistOptions)
+
+      expect(xml).toContain("<key>RunAtLoad</key>")
+      expect(xml).toMatch(/<key>RunAtLoad<\/key>\s*<true\/>/)
+    })
+
     it("includes StandardOutPath and StandardErrorPath when logDir provided", () => {
       const xml = generateDaemonPlist({
         ...defaultPlistOptions,

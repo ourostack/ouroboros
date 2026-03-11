@@ -512,6 +512,7 @@ describe("ouro CLI execution", () => {
 
   it("attempts .ouro UTI registration during `up` setup", async () => {
     const registerOuroBundleType = vi.fn(async () => ({ attempted: true, registered: true }))
+    const ensureDaemonBootPersistence = vi.fn(async () => undefined)
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
       sendCommand: vi.fn(),
@@ -522,11 +523,13 @@ describe("ouro CLI execution", () => {
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
       installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
       registerOuroBundleType,
+      ensureDaemonBootPersistence,
     }
 
     await runOuroCli(["up"], deps)
 
     expect(registerOuroBundleType).toHaveBeenCalledTimes(1)
+    expect(ensureDaemonBootPersistence).toHaveBeenCalledTimes(1)
   })
 
   it("continues `up` flow when .ouro UTI registration throws", async () => {
