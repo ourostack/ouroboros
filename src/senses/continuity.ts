@@ -1,3 +1,5 @@
+import { emitNervesEvent } from "../nerves/runtime"
+
 export type SteeringFollowUpEffect = "none" | "set_no_handoff" | "clear_and_supersede"
 
 const NO_HANDOFF_CLAUSES = new Set([
@@ -64,16 +66,39 @@ export function resolveMustResolveBeforeHandoff(
     }
   }
 
+  emitNervesEvent({
+    component: "senses",
+    event: "senses.continuity_state_resolved",
+    message: "resolved continuity handoff state from ingress text",
+    meta: {
+      initialValue,
+      finalValue: current,
+      ingressCount: ingressTexts?.length ?? 0,
+    },
+  })
+
   return current
 }
 
 export function classifySteeringFollowUpEffect(text: string): SteeringFollowUpEffect {
   const clauses = normalizeContinuityClauses(text)
+  let effect: SteeringFollowUpEffect = "none"
+
   if (clauses.some((clause) => CANCEL_SUPERSEDE_CLAUSES.has(clause))) {
-    return "clear_and_supersede"
+    effect = "clear_and_supersede"
+  } else if (clauses.some((clause) => NO_HANDOFF_CLAUSES.has(clause))) {
+    effect = "set_no_handoff"
   }
-  if (clauses.some((clause) => NO_HANDOFF_CLAUSES.has(clause))) {
-    return "set_no_handoff"
-  }
-  return "none"
+
+  emitNervesEvent({
+    component: "senses",
+    event: "senses.continuity_follow_up_classified",
+    message: "classified steering follow-up continuity effect",
+    meta: {
+      effect,
+      clauseCount: clauses.length,
+    },
+  })
+
+  return effect
 }
