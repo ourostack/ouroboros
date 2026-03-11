@@ -728,6 +728,25 @@ describe("handleInboundTurn", () => {
         undefined,
       )
     })
+
+    it("persists mid-turn mustResolveBeforeHandoff mutations made by runAgent", async () => {
+      const input = makeInput({
+        runAgent: vi.fn().mockImplementation(async (_msgs, _callbacks, _channel, _signal, options: RunAgentOptions) => {
+          options.setMustResolveBeforeHandoff?.(true)
+          return { usage: usageData, outcome: "errored" }
+        }),
+      })
+
+      await handleInboundTurn(input)
+
+      expect(input.postTurn).toHaveBeenCalledWith(
+        expect.any(Array),
+        "/tmp/test-session.json",
+        usageData,
+        undefined,
+        { mustResolveBeforeHandoff: true },
+      )
+    })
   })
 
   // Messages assembly

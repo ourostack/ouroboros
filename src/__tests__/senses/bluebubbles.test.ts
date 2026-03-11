@@ -2115,6 +2115,116 @@ describe("BlueBubbles sense runtime", () => {
     expect(input.continuityIngressTexts).toEqual(["top-level follow-up"])
   })
 
+  it("derives continuity ingress text from text input parts when textForAgent is empty", async () => {
+    mocks.repairEvent.mockResolvedValueOnce({
+      kind: "message",
+      eventType: "new-message",
+      messageGuid: "text-parts-msg",
+      timestamp: 11,
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        rawId: "ari@mendelow.me",
+        displayName: "ari@mendelow.me",
+      },
+      chat: {
+        chatGuid: "any;-;ari@mendelow.me",
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat:any;-;ari@mendelow.me",
+        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+      },
+      text: "",
+      textForAgent: "",
+      attachments: [],
+      hasPayloadData: false,
+      requiresRepair: false,
+      inputPartsForAgent: [
+        { type: "text", text: "first line" },
+        { type: "image_url", image_url: { url: "data:image/png;base64,aGVsbG8=", detail: "auto" } },
+        { type: "text", text: "second line" },
+      ],
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    const input = mocks.handleInboundTurn.mock.calls.at(-1)?.[0]
+    expect(input.continuityIngressTexts).toEqual(["first line\nsecond line"])
+  })
+
+  it("passes no continuity ingress text when textForAgent and text parts are both empty", async () => {
+    mocks.repairEvent.mockResolvedValueOnce({
+      kind: "message",
+      eventType: "new-message",
+      messageGuid: "empty-text-parts-msg",
+      timestamp: 12,
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        rawId: "ari@mendelow.me",
+        displayName: "ari@mendelow.me",
+      },
+      chat: {
+        chatGuid: "any;-;ari@mendelow.me",
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat:any;-;ari@mendelow.me",
+        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+      },
+      text: "",
+      textForAgent: "   ",
+      attachments: [],
+      hasPayloadData: false,
+      requiresRepair: false,
+      inputPartsForAgent: [
+        { type: "image_url", image_url: { url: "data:image/png;base64,aGVsbG8=", detail: "auto" } },
+      ],
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    const input = mocks.handleInboundTurn.mock.calls.at(-1)?.[0]
+    expect(input.continuityIngressTexts).toEqual([])
+  })
+
+  it("passes no continuity ingress text when textForAgent is empty and input parts are absent", async () => {
+    mocks.repairEvent.mockResolvedValueOnce({
+      kind: "message",
+      eventType: "new-message",
+      messageGuid: "missing-text-parts-msg",
+      timestamp: 13,
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        rawId: "ari@mendelow.me",
+        displayName: "ari@mendelow.me",
+      },
+      chat: {
+        chatGuid: "any;-;ari@mendelow.me",
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat:any;-;ari@mendelow.me",
+        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+      },
+      text: "",
+      textForAgent: "",
+      attachments: [],
+      hasPayloadData: false,
+      requiresRepair: false,
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    const input = mocks.handleInboundTurn.mock.calls.at(-1)?.[0]
+    expect(input.continuityIngressTexts).toEqual([])
+  })
+
   it("passes isGroupChat=true and group-level friend params for group messages", async () => {
     mocks.resolveContext.mockResolvedValueOnce({
       friend: {
