@@ -5064,7 +5064,13 @@ describe("kick mechanism", () => {
 })
 
 describe("tool_choice required and final_answer", () => {
-  let runAgent: (messages: any[], callbacks: ChannelCallbacks, channel?: string, signal?: AbortSignal, options?: { toolChoiceRequired?: boolean }) => Promise<{ usage?: any }>
+  let runAgent: (
+    messages: any[],
+    callbacks: ChannelCallbacks,
+    channel?: string,
+    signal?: AbortSignal,
+    options?: Record<string, unknown>,
+  ) => Promise<{ usage?: any; outcome: string }>
 
   function makeStream(chunks: any[]) {
     return {
@@ -5329,6 +5335,154 @@ describe("tool_choice required and final_answer", () => {
     expect(toolResults[0].content).toBe("(delivered)")
     // Only 1 API call (no loop continuation)
     expect(mockCreate).toHaveBeenCalledTimes(1)
+  })
+
+  it("requires intent before closing when mustResolveBeforeHandoff is true", async () => {
+    let callCount = 0
+    mockCreate.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        return makeStream([
+          makeChunk(undefined, [
+            { index: 0, id: "call_1", function: { name: "final_answer", arguments: '{"answer":"still working"}' } },
+          ]),
+        ])
+      }
+      return makeStream([
+        makeChunk(undefined, [
+          {
+            index: 0,
+            id: "call_2",
+            function: { name: "final_answer", arguments: '{"answer":"blocked on credentials","intent":"blocked"}' },
+          },
+        ]),
+      ])
+    })
+
+    const textChunks: string[] = []
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: (text) => textChunks.push(text),
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+      onClearText: () => { textChunks.length = 0 },
+    }
+
+    const messages: any[] = [{ role: "system", content: "test" }]
+    const result = await runAgent(messages, callbacks, undefined, undefined, {
+      toolChoiceRequired: true,
+      mustResolveBeforeHandoff: true,
+    })
+
+    expect(callCount).toBe(2)
+    expect(result.outcome).toBe("blocked")
+    expect(textChunks).toEqual(["blocked on credentials"])
+  })
+
+  it("treats direct_reply as non-terminal when a newer steering follow-up exists", async () => {
+    let callCount = 0
+    let drainCount = 0
+    mockCreate.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        return makeStream([
+          makeChunk(undefined, [
+            {
+              index: 0,
+              id: "call_1",
+              function: { name: "final_answer", arguments: '{"answer":"youre right, fixing that","intent":"direct_reply"}' },
+            },
+          ]),
+        ])
+      }
+      return makeStream([
+        makeChunk(undefined, [
+          {
+            index: 0,
+            id: "call_2",
+            function: { name: "final_answer", arguments: '{"answer":"fixed now","intent":"complete"}' },
+          },
+        ]),
+      ])
+    })
+
+    const textChunks: string[] = []
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: (text) => textChunks.push(text),
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+    }
+
+    const messages: any[] = [{ role: "system", content: "test" }]
+    const result = await runAgent(messages, callbacks, undefined, undefined, {
+      toolChoiceRequired: true,
+      mustResolveBeforeHandoff: true,
+      drainSteeringFollowUps: () => {
+        drainCount++
+        return drainCount === 1 ? [{ text: "hey wait a sec youre doing that wrong" }] : []
+      },
+    })
+
+    expect(callCount).toBe(2)
+    expect(result.outcome).toBe("complete")
+    expect(textChunks).toEqual(["youre right, fixing that", "fixed now"])
+  })
+
+  it("rejects direct_reply as closure when no newer steering follow-up exists", async () => {
+    let callCount = 0
+    mockCreate.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        return makeStream([
+          makeChunk(undefined, [
+            {
+              index: 0,
+              id: "call_1",
+              function: { name: "final_answer", arguments: '{"answer":"quick status update","intent":"direct_reply"}' },
+            },
+          ]),
+        ])
+      }
+      return makeStream([
+        makeChunk(undefined, [
+          {
+            index: 0,
+            id: "call_2",
+            function: { name: "final_answer", arguments: '{"answer":"finished the audit","intent":"complete"}' },
+          },
+        ]),
+      ])
+    })
+
+    const textChunks: string[] = []
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: (text) => textChunks.push(text),
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+      onClearText: () => { textChunks.length = 0 },
+    }
+
+    const messages: any[] = [{ role: "system", content: "test" }]
+    const result = await runAgent(messages, callbacks, undefined, undefined, {
+      toolChoiceRequired: true,
+      mustResolveBeforeHandoff: true,
+      drainSteeringFollowUps: () => [],
+    })
+
+    expect(callCount).toBe(2)
+    expect(result.outcome).toBe("complete")
+    expect(textChunks).toEqual(["finished the audit"])
   })
 
   it("final_answer mixed with other tool calls: other tools execute, final_answer rejected, loop continues", async () => {

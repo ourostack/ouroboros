@@ -730,7 +730,10 @@ describe("finalAnswerTool", () => {
     expect(finalAnswerTool.function.description).not.toContain("instead of calling another tool")
     expect(finalAnswerTool.function.parameters).toEqual({
       type: "object",
-      properties: { answer: { type: "string" } },
+      properties: {
+        answer: { type: "string" },
+        intent: { type: "string", enum: ["complete", "blocked", "direct_reply"] },
+      },
       required: ["answer"],
     })
   })

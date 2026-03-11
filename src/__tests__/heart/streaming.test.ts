@@ -1197,6 +1197,16 @@ describe("FinalAnswerParser", () => {
     expect(parser.complete).toBe(true)
   })
 
+  it("still extracts answer when intent appears before answer in the same payload", () => {
+    const parser = new FinalAnswerParser()
+    let out = ""
+    out += parser.process('{"intent":"blocked","ans')
+    out += parser.process('wer":"need a credential"}')
+    expect(out).toBe("need a credential")
+    expect(parser.active).toBe(true)
+    expect(parser.complete).toBe(true)
+  })
+
   it("handles escape sequence split across deltas (e.g. \\ in one delta, n in next)", () => {
     const parser = new FinalAnswerParser()
     let out = ""
