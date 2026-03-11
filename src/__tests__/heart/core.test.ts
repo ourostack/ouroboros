@@ -293,11 +293,35 @@ describe("RunAgentOptions trace propagation contract", () => {
 })
 
 describe("getProviderDisplayLabel", () => {
+  it("formats the azure provider label", async () => {
+    await setupConfig({
+      provider: "azure",
+      providers: {
+        azure: {
+          deployment: "gpt-4.1",
+          modelName: "gpt-4.1",
+          apiKey: "azure-key",
+          endpoint: "https://example.openai.azure.com",
+        },
+      },
+    })
+    const { getProviderDisplayLabel, resetProviderRuntime } = await import("../../heart/core")
+    resetProviderRuntime()
+    expect(getProviderDisplayLabel()).toBe("azure openai (gpt-4.1, model: gpt-4.1)")
+  })
+
   it("formats the anthropic provider label", async () => {
     await setupConfig({ providers: { anthropic: { model: "claude-sonnet", setupToken: makeAnthropicSetupToken() } } })
     const { getProviderDisplayLabel, resetProviderRuntime } = await import("../../heart/core")
     resetProviderRuntime()
     expect(getProviderDisplayLabel()).toBe("anthropic (claude-sonnet)")
+  })
+
+  it("formats the minimax provider label", async () => {
+    await setupConfig({ provider: "minimax", providers: { minimax: { model: "mini-max", apiKey: "minimax-key" } } })
+    const { getProviderDisplayLabel, resetProviderRuntime } = await import("../../heart/core")
+    resetProviderRuntime()
+    expect(getProviderDisplayLabel()).toBe("minimax (mini-max)")
   })
 
   it("formats the openai-codex provider label", async () => {
@@ -5852,6 +5876,45 @@ describe("tool_choice required and final_answer", () => {
     expect(toolMsgs[0].content).toContain("incomplete or malformed")
     // Recovered answer from retry
     expect(textChunks).toEqual(["recovered"])
+  })
+
+  it("final_answer with valid non-object JSON: retries", async () => {
+    let callCount = 0
+    mockCreate.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        return makeStream([
+          makeChunk(undefined, [
+            { index: 0, id: "call_1", function: { name: "final_answer", arguments: "123" } },
+          ]),
+        ])
+      }
+      return makeStream([
+        makeChunk(undefined, [
+          { index: 0, id: "call_2", function: { name: "final_answer", arguments: '{"answer":"recovered from scalar"}' } },
+        ]),
+      ])
+    })
+
+    const textChunks: string[] = []
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: (text) => textChunks.push(text),
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+    }
+
+    const messages: any[] = [{ role: "system", content: "test" }]
+    await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
+
+    expect(callCount).toBe(2)
+    const toolMsgs = messages.filter((m: any) => m.role === "tool")
+    expect(toolMsgs[0].tool_call_id).toBe("call_1")
+    expect(toolMsgs[0].content).toContain("incomplete or malformed")
+    expect(textChunks).toEqual(["recovered from scalar"])
   })
 
   it("final_answer with valid JSON, no answer field, and no content: retries", async () => {
