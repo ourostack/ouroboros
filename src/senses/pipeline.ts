@@ -1,0 +1,225 @@
+// Shared per-turn pipeline for all senses.
+// Senses are thin transport adapters; this module owns the common lifecycle:
+//   resolve friend -> trust gate -> load session -> drain pending -> runAgent -> postTurn -> token accumulation.
+//
+// Transport-level concerns (BB API calls, Teams cards, readline) stay in sense adapters.
+
+import type { ChatCompletionMessageParam } from "openai/resources/chat/completions"
+import type { ChannelCallbacks, RunAgentOptions } from "../heart/core"
+import type { UsageData } from "../mind/context"
+import type { Channel, ChannelCapabilities, IdentityProvider, ResolvedContext } from "../mind/friends/types"
+import type { FriendStore } from "../mind/friends/store"
+import type { TrustGateInput, TrustGateResult } from "./trust-gate"
+import type { PendingMessage } from "../mind/pending"
+import { emitNervesEvent } from "../nerves/runtime"
+
+// ── Input / Output types ──────────────────────────────────────────
+
+export interface InboundTurnInput {
+  /** Which channel this turn arrives on (used for runAgent channel param). */
+  channel: Channel
+  /** Capabilities of the channel (carries senseType). */
+  capabilities: ChannelCapabilities
+  /** The inbound user message(s) to append to the session. */
+  messages: ChatCompletionMessageParam[]
+  /** Streaming / display callbacks for the channel adapter. */
+  callbacks: ChannelCallbacks
+  /** Resolves external identity into a FriendRecord + channel capabilities. */
+  friendResolver: { resolve(): Promise<ResolvedContext> }
+  /** Loads an existing session or creates a fresh one. */
+  sessionLoader: { loadOrCreate(): Promise<{ messages: ChatCompletionMessageParam[]; sessionPath: string }> }
+  /** Directory to drain pending messages from. */
+  pendingDir: string
+  /** Friend store used for token accumulation. */
+  friendStore: FriendStore
+  /** Optional abort signal forwarded to runAgent. */
+  signal?: AbortSignal
+  /** Optional runAgent options (traceId, toolContext overrides, etc). */
+  runAgentOptions?: RunAgentOptions
+
+  // ── Trust gate context (optional, defaults to safe values) ──
+  /** Identity provider for trust gate. Defaults to "local". */
+  provider?: IdentityProvider
+  /** External ID for trust gate. Defaults to "". */
+  externalId?: string
+  /** Tenant ID for trust gate. */
+  tenantId?: string
+  /** Whether this message is from a group chat. Defaults to false. */
+  isGroupChat?: boolean
+  /** Whether a family member is present in the group. Defaults to false. */
+  groupHasFamilyMember?: boolean
+  /** Whether the sender has an existing group with family. Defaults to false. */
+  hasExistingGroupWithFamily?: boolean
+
+  // ── Dependency injection for testability ──
+  enforceTrustGate: (input: TrustGateInput) => TrustGateResult
+  drainPending: (pendingDir: string) => PendingMessage[]
+  runAgent: (
+    messages: ChatCompletionMessageParam[],
+    callbacks: ChannelCallbacks,
+    channel?: Channel,
+    signal?: AbortSignal,
+    options?: RunAgentOptions,
+  ) => Promise<{ usage?: UsageData }>
+  postTurn: (
+    messages: ChatCompletionMessageParam[],
+    sessPath: string,
+    usage?: UsageData,
+  ) => void
+  accumulateFriendTokens: (
+    store: FriendStore,
+    friendId: string,
+    usage?: UsageData,
+  ) => Promise<void>
+}
+
+export interface InboundTurnResult {
+  /** The resolved context (friend + channel capabilities). Always present. */
+  resolvedContext: ResolvedContext
+  /** Trust gate result. Always present. */
+  gateResult: TrustGateResult
+  /** Usage data from runAgent. Undefined when gate rejects. */
+  usage?: UsageData
+  /** Session file path. Undefined when gate rejects. */
+  sessionPath?: string
+  /** The final messages array after the turn. Undefined when gate rejects. */
+  messages?: ChatCompletionMessageParam[]
+}
+
+// ── Pipeline ──────────────────────────────────────────────────────
+
+export async function handleInboundTurn(input: InboundTurnInput): Promise<InboundTurnResult> {
+  // Step 1: Resolve friend
+  const resolvedContext = await input.friendResolver.resolve()
+
+  emitNervesEvent({
+    component: "senses",
+    event: "senses.pipeline_start",
+    message: "inbound turn pipeline started",
+    meta: {
+      channel: input.channel,
+      friendId: resolvedContext.friend.id,
+      senseType: input.capabilities.senseType,
+    },
+  })
+
+  // Step 2: Trust gate
+  const gateInput: TrustGateInput = {
+    friend: resolvedContext.friend,
+    provider: input.provider ?? "local",
+    externalId: input.externalId ?? "",
+    tenantId: input.tenantId,
+    channel: input.channel,
+    senseType: input.capabilities.senseType,
+    isGroupChat: input.isGroupChat ?? false,
+    groupHasFamilyMember: input.groupHasFamilyMember ?? false,
+    hasExistingGroupWithFamily: input.hasExistingGroupWithFamily ?? false,
+  }
+
+  const gateResult = input.enforceTrustGate(gateInput)
+
+  // Gate rejection: return early, no agent turn
+  if (!gateResult.allowed) {
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.pipeline_gate_reject",
+      message: "trust gate rejected inbound turn",
+      meta: {
+        channel: input.channel,
+        friendId: resolvedContext.friend.id,
+        reason: gateResult.reason,
+      },
+    })
+
+    return {
+      resolvedContext,
+      gateResult,
+    }
+  }
+
+  // Step 3: Load/create session
+  const session = await input.sessionLoader.loadOrCreate()
+  const sessionMessages = session.messages
+
+  // Step 4: Drain pending messages
+  const pending = input.drainPending(input.pendingDir)
+
+  // Assemble messages: session messages + pending (formatted) + inbound user messages
+  if (pending.length > 0) {
+    // Format pending messages and prepend to the user content
+    const pendingSection = pending
+      .map((msg) => `[pending from ${msg.from}]: ${msg.content}`)
+      .join("\n")
+
+    // If there are inbound user messages, prepend pending to the first one
+    if (input.messages.length > 0) {
+      const firstMsg = input.messages[0]
+      if (firstMsg.role === "user") {
+        if (typeof firstMsg.content === "string") {
+          input.messages[0] = {
+            ...firstMsg,
+            content: `## pending messages\n${pendingSection}\n\n${firstMsg.content}`,
+          }
+        } else {
+          input.messages[0] = {
+            ...firstMsg,
+            content: [
+              { type: "text" as const, text: `## pending messages\n${pendingSection}\n\n` },
+              ...firstMsg.content,
+            ],
+          }
+        }
+      }
+    }
+  }
+
+  // Append user messages from the inbound turn
+  for (const msg of input.messages) {
+    sessionMessages.push(msg)
+  }
+
+  // Step 5: runAgent
+  const existingToolContext = input.runAgentOptions?.toolContext
+  const runAgentOptions: RunAgentOptions = {
+    ...input.runAgentOptions,
+    toolContext: {
+      /* v8 ignore next -- default no-op signin satisfies interface; real signin injected by sense adapter @preserve */
+      signin: async () => undefined,
+      ...existingToolContext,
+      context: resolvedContext,
+      friendStore: input.friendStore,
+    },
+  }
+
+  const result = await input.runAgent(
+    sessionMessages,
+    input.callbacks,
+    input.channel,
+    input.signal,
+    runAgentOptions,
+  )
+
+  // Step 6: postTurn
+  input.postTurn(sessionMessages, session.sessionPath, result.usage)
+
+  // Step 7: Token accumulation
+  await input.accumulateFriendTokens(input.friendStore, resolvedContext.friend.id, result.usage)
+
+  emitNervesEvent({
+    component: "senses",
+    event: "senses.pipeline_end",
+    message: "inbound turn pipeline completed",
+    meta: {
+      channel: input.channel,
+      friendId: resolvedContext.friend.id,
+    },
+  })
+
+  return {
+    resolvedContext,
+    gateResult,
+    usage: result.usage,
+    sessionPath: session.sessionPath,
+    messages: sessionMessages,
+  }
+}

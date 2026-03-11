@@ -4868,3 +4868,545 @@ describe("Teams adapter - GitHub token handling", () => {
     expect(ctx.githubToken).toBe("gh")
   })
 })
+
+// ── U7a: Pipeline integration tests ─────────────────────────────────────────
+// Teams should call handleInboundTurn from the shared pipeline instead of
+// inline lifecycle (friend resolution, trust gate, session load, runAgent,
+// postTurn, accumulateFriendTokens).
+
+describe("Teams adapter - pipeline integration (U7)", () => {
+  function mockPipelineDeps(overrides: {
+    runAgentFn?: any
+    loadSessionReturn?: any
+    postTurnCalls?: any[][]
+    deleteSessionCalls?: string[]
+    parseSlashCommandFn?: any
+    dispatchFn?: any
+    teamsChannelConfig?: any
+  } = {}) {
+    const {
+      runAgentFn = vi.fn().mockResolvedValue({ usage: undefined }),
+      loadSessionReturn = null,
+      postTurnCalls = [],
+      deleteSessionCalls = [],
+      parseSlashCommandFn = (() => null),
+      dispatchFn = (() => ({ handled: false })),
+      teamsChannelConfig = { skipConfirmation: false, port: 3978 },
+    } = overrides
+
+    // Mock handleInboundTurn from pipeline module
+    const mockHandleInboundTurn = vi.fn().mockImplementation(async (input: any) => {
+      const resolvedContext = await input.friendResolver.resolve()
+      const session = await input.sessionLoader.loadOrCreate()
+      const msgs = session.messages
+      for (const m of input.messages) msgs.push(m)
+      const existingToolContext = input.runAgentOptions?.toolContext
+      const pipelineOpts = {
+        ...input.runAgentOptions,
+        toolContext: {
+          signin: async () => undefined,
+          ...existingToolContext,
+          context: resolvedContext,
+          friendStore: input.friendStore,
+        },
+      }
+      const result = await input.runAgent(msgs, input.callbacks, input.channel, input.signal, pipelineOpts)
+      input.postTurn(msgs, session.sessionPath, result.usage)
+      await input.accumulateFriendTokens(input.friendStore, resolvedContext.friend.id, result.usage)
+      return {
+        resolvedContext,
+        gateResult: { allowed: true },
+        usage: result.usage,
+        sessionPath: session.sessionPath,
+        messages: msgs,
+      }
+    })
+
+    vi.doMock("../../senses/pipeline", () => ({
+      handleInboundTurn: mockHandleInboundTurn,
+    }))
+
+    vi.doMock("../../heart/core", () => ({
+      createSummarize: vi.fn(() => vi.fn()),
+      runAgent: runAgentFn,
+      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      repairOrphanedToolCalls: vi.fn(),
+    }))
+    vi.doMock("../../heart/config", () => ({
+      sessionPath: vi.fn().mockReturnValue("/tmp/teams-session.json"),
+      getContextConfig: vi.fn().mockReturnValue({ maxTokens: 80000, contextMargin: 20 }),
+      getTeamsConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "" }),
+      getTeamsSecondaryConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "", managedIdentityClientId: "" }),
+      getOAuthConfig: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado" }),
+      resolveOAuthForTenant: vi.fn().mockReturnValue({ graphConnectionName: "graph", adoConnectionName: "ado", githubConnectionName: "" }),
+      getTeamsChannelConfig: vi.fn().mockReturnValue(teamsChannelConfig),
+    }))
+    vi.doMock("../../mind/prompt", () => ({
+      buildSystem: vi.fn().mockResolvedValue("system prompt"),
+      contextSection: vi.fn().mockReturnValue(""),
+    }))
+    vi.doMock("../../mind/context", () => ({
+      loadSession: vi.fn().mockReturnValue(loadSessionReturn),
+      saveSession: vi.fn(),
+      deleteSession: vi.fn().mockImplementation((...args: any[]) => { deleteSessionCalls.push(args[0]) }),
+      trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
+      postTurn: vi.fn().mockImplementation((...args: any[]) => { postTurnCalls.push(args) }),
+    }))
+    vi.doMock("../../senses/commands", () => ({
+      createCommandRegistry: vi.fn().mockReturnValue({
+        register: vi.fn(),
+        get: vi.fn(),
+        list: vi.fn().mockReturnValue([]),
+        dispatch: vi.fn().mockImplementation(dispatchFn),
+      }),
+      registerDefaultCommands: vi.fn(),
+      parseSlashCommand: vi.fn().mockImplementation(parseSlashCommandFn),
+    }))
+    const MockFileFriendStore = vi.fn(function (this: any) {
+      this.get = vi.fn()
+      this.put = vi.fn()
+      this.delete = vi.fn()
+      this.findByExternalId = vi.fn()
+    })
+    vi.doMock("../../mind/friends/store-file", () => ({
+      FileFriendStore: MockFileFriendStore,
+    }))
+    const mockResolve = vi.fn().mockResolvedValue({
+      friend: {
+        id: "mock-uuid",
+        name: "Test User",
+        externalIds: [{ provider: "aad", externalId: "aad-user-123", tenantId: "tenant-abc", linkedAt: "2026-01-01" }],
+        tenantMemberships: ["tenant-abc"],
+        toolPreferences: {},
+        notes: {},
+        createdAt: "2026-01-01",
+        updatedAt: "2026-01-01",
+        schemaVersion: 1,
+      },
+      channel: {
+        channel: "teams",
+        availableIntegrations: ["graph", "ado"],
+        supportsMarkdown: true,
+        supportsStreaming: true,
+        supportsRichCards: true,
+        maxMessageLength: 28000,
+      },
+    })
+    const MockFriendResolver = vi.fn(function (this: any) {
+      this.resolve = mockResolve
+    })
+    vi.doMock("../../mind/friends/resolver", () => ({
+      FriendResolver: MockFriendResolver,
+    }))
+
+    return { mockHandleInboundTurn, runAgentFn, mockResolve }
+  }
+
+  it("calls handleInboundTurn instead of inline lifecycle", async () => {
+    vi.resetModules()
+    const runAgentFn = vi.fn().mockResolvedValue({ usage: undefined })
+    const { mockHandleInboundTurn } = mockPipelineDeps({ runAgentFn })
+    const teams = await import("../../senses/teams")
+    const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+
+    const teamsContext = {
+      graphToken: "g-token",
+      adoToken: "a-token",
+      signin: vi.fn(),
+      aadObjectId: "aad-user-123",
+      tenantId: "tenant-abc",
+      displayName: "Test User",
+    }
+
+    await teams.handleTeamsMessage("hello", mockStream as any, "conv-123", teamsContext)
+    expect(mockHandleInboundTurn).toHaveBeenCalledTimes(1)
+  })
+
+  it("passes correct channel and capabilities to pipeline", async () => {
+    vi.resetModules()
+    const { mockHandleInboundTurn } = mockPipelineDeps()
+    const teams = await import("../../senses/teams")
+    const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+
+    await teams.handleTeamsMessage("hello", mockStream as any, "conv-123", {
+      signin: vi.fn(),
+      aadObjectId: "aad-user-123",
+      tenantId: "tenant-abc",
+      displayName: "Test User",
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    expect(input.channel).toBe("teams")
+    expect(input.capabilities).toEqual(expect.objectContaining({ senseType: "closed", channel: "teams" }))
+  })
+
+  it("passes AAD provider and external ID to pipeline for trust gate", async () => {
+    vi.resetModules()
+    const { mockHandleInboundTurn } = mockPipelineDeps()
+    const teams = await import("../../senses/teams")
+    const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+
+    await teams.handleTeamsMessage("hello", mockStream as any, "conv-123", {
+      signin: vi.fn(),
+      aadObjectId: "aad-user-456",
+      tenantId: "tenant-xyz",
+      displayName: "Jane Doe",
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    expect(input.provider).toBe("aad")
+    expect(input.externalId).toBe("aad-user-456")
+    expect(input.tenantId).toBe("tenant-xyz")
+  })
+
+  it("uses teams-conversation fallback when no AAD object ID", async () => {
+    vi.resetModules()
+    const { mockHandleInboundTurn } = mockPipelineDeps()
+    const teams = await import("../../senses/teams")
+    const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+
+    await teams.handleTeamsMessage("hello", mockStream as any, "conv-789", {
+      signin: vi.fn(),
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    expect(input.provider).toBe("teams-conversation")
+    expect(input.externalId).toBe("conv-789")
+  })
+
+  it("does not call enforceTrustGate directly -- pipeline handles it", async () => {
+    vi.resetModules()
+    const mockEnforceTrustGate = vi.fn()
+    vi.doMock("../../senses/trust-gate", () => ({
+      enforceTrustGate: mockEnforceTrustGate,
+    }))
+    mockPipelineDeps()
+    const teams = await import("../../senses/teams")
+    const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+
+    await teams.handleTeamsMessage("hello", mockStream as any, "conv-123", {
+      signin: vi.fn(),
+      aadObjectId: "aad-user-123",
+      tenantId: "tenant-abc",
+      displayName: "Test User",
+    })
+
+    // Teams should NOT call enforceTrustGate directly -- pipeline does it
+    expect(mockEnforceTrustGate).not.toHaveBeenCalled()
+  })
+
+  it("passes enforceTrustGate as injected dependency to pipeline", async () => {
+    vi.resetModules()
+    const { mockHandleInboundTurn } = mockPipelineDeps()
+    const teams = await import("../../senses/teams")
+    const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+
+    await teams.handleTeamsMessage("hello", mockStream as any, "conv-123", {
+      signin: vi.fn(),
+      aadObjectId: "aad-user-123",
+      tenantId: "tenant-abc",
+      displayName: "Test User",
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    expect(typeof input.enforceTrustGate).toBe("function")
+  })
+
+  it("passes drainPending as injected dependency to pipeline", async () => {
+    vi.resetModules()
+    const { mockHandleInboundTurn } = mockPipelineDeps()
+    const teams = await import("../../senses/teams")
+    const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+
+    await teams.handleTeamsMessage("hello", mockStream as any, "conv-123", {
+      signin: vi.fn(),
+      aadObjectId: "aad-user-123",
+      tenantId: "tenant-abc",
+      displayName: "Test User",
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    expect(typeof input.drainPending).toBe("function")
+  })
+
+  it("passes runAgent, postTurn, and accumulateFriendTokens as injected deps", async () => {
+    vi.resetModules()
+    const { mockHandleInboundTurn } = mockPipelineDeps()
+    const teams = await import("../../senses/teams")
+    const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+
+    await teams.handleTeamsMessage("hello", mockStream as any, "conv-123", {
+      signin: vi.fn(),
+      aadObjectId: "aad-user-123",
+      tenantId: "tenant-abc",
+      displayName: "Test User",
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    expect(typeof input.runAgent).toBe("function")
+    expect(typeof input.postTurn).toBe("function")
+    expect(typeof input.accumulateFriendTokens).toBe("function")
+  })
+
+  it("passes friendStore to pipeline", async () => {
+    vi.resetModules()
+    const { mockHandleInboundTurn } = mockPipelineDeps()
+    const teams = await import("../../senses/teams")
+    const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+
+    await teams.handleTeamsMessage("hello", mockStream as any, "conv-123", {
+      signin: vi.fn(),
+      aadObjectId: "aad-user-123",
+      tenantId: "tenant-abc",
+      displayName: "Test User",
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    expect(input.friendStore).toBeDefined()
+  })
+
+  it("passes user message in messages array to pipeline", async () => {
+    vi.resetModules()
+    const { mockHandleInboundTurn } = mockPipelineDeps()
+    const teams = await import("../../senses/teams")
+    const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+
+    await teams.handleTeamsMessage("hello world", mockStream as any, "conv-123", {
+      signin: vi.fn(),
+      aadObjectId: "aad-user-123",
+      tenantId: "tenant-abc",
+      displayName: "Test User",
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    expect(input.messages).toEqual([
+      expect.objectContaining({ role: "user", content: "hello world" }),
+    ])
+  })
+
+  it("passes pendingDir to pipeline", async () => {
+    vi.resetModules()
+    const { mockHandleInboundTurn } = mockPipelineDeps()
+    const teams = await import("../../senses/teams")
+    const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+
+    await teams.handleTeamsMessage("hello", mockStream as any, "conv-123", {
+      signin: vi.fn(),
+      aadObjectId: "aad-user-123",
+      tenantId: "tenant-abc",
+      displayName: "Test User",
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    expect(typeof input.pendingDir).toBe("string")
+    expect(input.pendingDir.length).toBeGreaterThan(0)
+  })
+
+  it("gate rejection from pipeline prevents flush and agent loop", async () => {
+    vi.resetModules()
+    const runAgentFn = vi.fn().mockResolvedValue({ usage: undefined })
+    const { mockHandleInboundTurn } = mockPipelineDeps({ runAgentFn })
+    // Override to simulate gate rejection
+    mockHandleInboundTurn.mockResolvedValueOnce({
+      resolvedContext: {
+        friend: { id: "mock-uuid", name: "Test User", externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, createdAt: "2026-01-01", updatedAt: "2026-01-01", schemaVersion: 1 },
+        channel: { channel: "teams", availableIntegrations: [], supportsMarkdown: true, supportsStreaming: true, supportsRichCards: true, maxMessageLength: 28000 },
+      },
+      gateResult: {
+        allowed: false,
+        reason: "stranger_first_reply",
+        autoReply: "I don't talk to strangers",
+      },
+    })
+
+    const teams = await import("../../senses/teams")
+    const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+
+    await teams.handleTeamsMessage("hello", mockStream as any, "conv-123", {
+      signin: vi.fn(),
+      aadObjectId: "aad-user-123",
+      tenantId: "tenant-abc",
+      displayName: "Stranger",
+    })
+
+    // Gate rejection auto-reply sent via stream
+    expect(mockStream.emit).toHaveBeenCalledWith("I don't talk to strangers")
+  })
+
+  it("gate rejection with no autoReply returns silently", async () => {
+    vi.resetModules()
+    const { mockHandleInboundTurn } = mockPipelineDeps()
+    mockHandleInboundTurn.mockResolvedValueOnce({
+      resolvedContext: {
+        friend: { id: "mock-uuid", name: "Unknown", externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, createdAt: "2026-01-01", updatedAt: "2026-01-01", schemaVersion: 1 },
+        channel: { channel: "teams", availableIntegrations: [], supportsMarkdown: true, supportsStreaming: true, supportsRichCards: true, maxMessageLength: 28000 },
+      },
+      gateResult: {
+        allowed: false,
+        reason: "stranger_silent_drop",
+      },
+    })
+
+    const teams = await import("../../senses/teams")
+    const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+
+    await teams.handleTeamsMessage("hello again", mockStream as any, "conv-123", {
+      signin: vi.fn(),
+      aadObjectId: "aad-user-123",
+      tenantId: "tenant-abc",
+      displayName: "Stranger",
+    })
+
+    // No emit for silent drop
+    expect(mockStream.emit).not.toHaveBeenCalled()
+  })
+
+  it("slash commands still work before pipeline call", async () => {
+    vi.resetModules()
+    const { mockHandleInboundTurn } = mockPipelineDeps({
+      parseSlashCommandFn: (input: string) => input.startsWith("/") ? { command: input.slice(1).toLowerCase(), args: "" } : null,
+      dispatchFn: (name: string) => {
+        if (name === "new") return { handled: true, result: { action: "new" } }
+        return { handled: false }
+      },
+    })
+    const teams = await import("../../senses/teams")
+    const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+
+    await teams.handleTeamsMessage("/new", mockStream as any, "conv-123", {
+      signin: vi.fn(),
+      aadObjectId: "aad-user-123",
+      tenantId: "tenant-abc",
+      displayName: "Test User",
+    })
+
+    // Slash commands bypass pipeline entirely
+    expect(mockHandleInboundTurn).not.toHaveBeenCalled()
+    expect(mockStream.emit).toHaveBeenCalledWith(expect.stringContaining("session cleared"))
+  })
+
+  it("flushes callbacks after successful pipeline turn", async () => {
+    vi.resetModules()
+    const runAgentFn = vi.fn().mockImplementation(async (_msgs: any, callbacks: any) => {
+      callbacks.onTextChunk("response text")
+      return { usage: undefined }
+    })
+    mockPipelineDeps({ runAgentFn })
+    const teams = await import("../../senses/teams")
+    const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+
+    await teams.handleTeamsMessage("hello", mockStream as any, "conv-123", {
+      signin: vi.fn(),
+      aadObjectId: "aad-user-123",
+      tenantId: "tenant-abc",
+      displayName: "Test User",
+    })
+
+    // Text should be flushed at end of turn
+    expect(mockStream.emit).toHaveBeenCalledWith("response text")
+  })
+
+  it("AUTH_REQUIRED signin still works after pipeline refactor", async () => {
+    vi.resetModules()
+    const runAgentFn = vi.fn().mockImplementation(async (msgs: any[]) => {
+      msgs.push({ role: "assistant", content: "AUTH_REQUIRED:graph" })
+      return { usage: undefined }
+    })
+    mockPipelineDeps({ runAgentFn })
+    const teams = await import("../../senses/teams")
+    const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+    const signinFn = vi.fn()
+
+    await teams.handleTeamsMessage("hello", mockStream as any, "conv-123", {
+      graphToken: undefined,
+      adoToken: undefined,
+      signin: signinFn,
+      aadObjectId: "aad-user-123",
+      tenantId: "tenant-abc",
+      displayName: "Test User",
+      graphConnectionName: "graph",
+      adoConnectionName: "ado",
+    })
+
+    expect(signinFn).toHaveBeenCalledWith("graph")
+  })
+
+  it("passes Teams-specific toolContext fields (graphToken, adoToken, signin) through pipeline", async () => {
+    vi.resetModules()
+    const runAgentFn = vi.fn().mockResolvedValue({ usage: undefined })
+    const { mockHandleInboundTurn } = mockPipelineDeps({ runAgentFn })
+    const teams = await import("../../senses/teams")
+    const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+    const signinFn = vi.fn()
+
+    await teams.handleTeamsMessage("hello", mockStream as any, "conv-123", {
+      graphToken: "g-token",
+      adoToken: "a-token",
+      githubToken: "gh-token",
+      signin: signinFn,
+      aadObjectId: "aad-user-123",
+      tenantId: "tenant-abc",
+      displayName: "Test User",
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    // Teams-specific tool context should be passed via runAgentOptions.toolContext
+    expect(input.runAgentOptions?.toolContext?.graphToken).toBe("g-token")
+    expect(input.runAgentOptions?.toolContext?.adoToken).toBe("a-token")
+    expect(input.runAgentOptions?.toolContext?.githubToken).toBe("gh-token")
+    expect(typeof input.runAgentOptions?.toolContext?.signin).toBe("function")
+  })
+
+  it("passes traceId in runAgentOptions", async () => {
+    vi.resetModules()
+    const { mockHandleInboundTurn } = mockPipelineDeps()
+    const teams = await import("../../senses/teams")
+    const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+
+    await teams.handleTeamsMessage("hello", mockStream as any, "conv-123", {
+      signin: vi.fn(),
+      aadObjectId: "aad-user-123",
+      tenantId: "tenant-abc",
+      displayName: "Test User",
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    expect(input.runAgentOptions?.traceId).toBeDefined()
+  })
+
+  it("passes skipConfirmation in runAgentOptions when configured", async () => {
+    vi.resetModules()
+    const { mockHandleInboundTurn } = mockPipelineDeps({
+      teamsChannelConfig: { skipConfirmation: true, port: 3978 },
+    })
+    const teams = await import("../../senses/teams")
+    const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+
+    await teams.handleTeamsMessage("hello", mockStream as any, "conv-123", {
+      signin: vi.fn(),
+      aadObjectId: "aad-user-123",
+      tenantId: "tenant-abc",
+      displayName: "Test User",
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    expect(input.runAgentOptions?.skipConfirmation).toBe(true)
+  })
+
+  it("passes AbortSignal to pipeline", async () => {
+    vi.resetModules()
+    const { mockHandleInboundTurn } = mockPipelineDeps()
+    const teams = await import("../../senses/teams")
+    const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+
+    await teams.handleTeamsMessage("hello", mockStream as any, "conv-123", {
+      signin: vi.fn(),
+      aadObjectId: "aad-user-123",
+      tenantId: "tenant-abc",
+      displayName: "Test User",
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    expect(input.signal).toBeInstanceOf(AbortSignal)
+  })
+})

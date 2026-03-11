@@ -89,4 +89,34 @@ describe("getChannelCapabilities", () => {
     expect(innerCaps.channel).toBe("inner")
     expect(unknownCaps.channel).toBe("cli") // fallback
   })
+
+  describe("senseType", () => {
+    it("bluebubbles has senseType 'open'", () => {
+      const caps = getChannelCapabilities("bluebubbles")
+      expect(caps.senseType).toBe("open")
+    })
+
+    it("teams has senseType 'closed'", () => {
+      const caps = getChannelCapabilities("teams")
+      expect(caps.senseType).toBe("closed")
+    })
+
+    it("cli has senseType 'local'", () => {
+      const caps = getChannelCapabilities("cli")
+      expect(caps.senseType).toBe("local")
+    })
+
+    it("inner has senseType 'internal'", () => {
+      const caps = getChannelCapabilities("inner")
+      expect(caps.senseType).toBe("internal")
+    })
+
+    it("all channels have a senseType defined", () => {
+      for (const channel of ["cli", "teams", "bluebubbles", "inner"] as const) {
+        const caps = getChannelCapabilities(channel)
+        expect(caps.senseType).toBeDefined()
+        expect(["open", "closed", "local", "internal"]).toContain(caps.senseType)
+      }
+    })
+  })
 })

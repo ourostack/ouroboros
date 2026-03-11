@@ -34,6 +34,13 @@ const mocks = vi.hoisted(() => ({
   recordMutation: vi.fn(),
   createServer: vi.fn(),
   listen: vi.fn((_: number, cb?: () => void) => cb?.()),
+  handleInboundTurn: vi.fn(),
+  getChannelCapabilities: vi.fn(),
+  getPendingDir: vi.fn(),
+  drainPending: vi.fn(),
+  enforceTrustGate: vi.fn(),
+  findByExternalId: vi.fn().mockResolvedValue(null),
+  listAll: vi.fn().mockResolvedValue([]),
 }))
 
 const tempDirs: string[] = []
@@ -80,8 +87,12 @@ vi.mock("../../mind/friends/store-file", () => ({
     this.get = vi.fn()
     this.put = vi.fn()
     this.delete = vi.fn()
-    this.findByExternalId = vi.fn()
+    this.findByExternalId = (...args: any[]) => mocks.findByExternalId(...args)
     this.hasAnyFriends = vi.fn().mockResolvedValue(true)
+    Object.defineProperty(this, "listAll", {
+      get: () => mocks.listAll ? (...args: any[]) => mocks.listAll(...args) : undefined,
+      configurable: true,
+    })
   }),
 }))
 
@@ -125,6 +136,23 @@ vi.mock("../../senses/bluebubbles-client", () => ({
 
 vi.mock("node:http", () => ({
   createServer: (...args: any[]) => mocks.createServer(...args),
+}))
+
+vi.mock("../../senses/pipeline", () => ({
+  handleInboundTurn: (...args: any[]) => mocks.handleInboundTurn(...args),
+}))
+
+vi.mock("../../mind/friends/channel", () => ({
+  getChannelCapabilities: (...args: any[]) => mocks.getChannelCapabilities(...args),
+}))
+
+vi.mock("../../mind/pending", () => ({
+  getPendingDir: (...args: any[]) => mocks.getPendingDir(...args),
+  drainPending: (...args: any[]) => mocks.drainPending(...args),
+}))
+
+vi.mock("../../senses/trust-gate", () => ({
+  enforceTrustGate: (...args: any[]) => mocks.enforceTrustGate(...args),
 }))
 
 const dmThreadPayload = {
@@ -361,6 +389,57 @@ const identifierOnlyPayload = {
   },
 }
 
+const groupWithParticipantsPayload = {
+  type: "new-message",
+  data: {
+    guid: "F39A15DA-FC59-412A-BACC-B5EEDBA414EB",
+    text: "hello from group",
+    handle: {
+      address: "acquaintance@example.com",
+      service: "iMessage",
+    },
+    attachments: [],
+    dateCreated: 1772947700000,
+    isFromMe: false,
+    chats: [
+      {
+        guid: "any;+;groupchat123",
+        style: 43,
+        chatIdentifier: "groupchat123",
+        displayName: "Family Group",
+        participants: [
+          { address: "acquaintance@example.com" },
+          { address: "familymember@example.com" },
+          { address: "other@example.com" },
+        ],
+      },
+    ],
+  },
+}
+
+const defaultFriendContext = {
+  friend: {
+    id: "friend-uuid",
+    name: "Ari",
+    externalIds: [],
+    tenantMemberships: [],
+    toolPreferences: {},
+    notes: {},
+    createdAt: "2026-01-01",
+    updatedAt: "2026-01-01",
+    schemaVersion: 1,
+  },
+  channel: {
+    channel: "bluebubbles",
+    senseType: "open",
+    availableIntegrations: [],
+    supportsMarkdown: false,
+    supportsStreaming: false,
+    supportsRichCards: false,
+    maxMessageLength: Infinity,
+  },
+}
+
 function resetMocks(): void {
   mocks.runAgent.mockReset().mockImplementation(async (_messages: any, callbacks: any) => {
     callbacks.onModelStart()
@@ -389,26 +468,51 @@ function resetMocks(): void {
   mocks.loadSession.mockReset().mockReturnValue(null)
   mocks.postTurn.mockReset()
   mocks.accumulateFriendTokens.mockReset()
-  mocks.resolveContext.mockReset().mockResolvedValue({
-    friend: {
-      id: "friend-uuid",
-      name: "Ari",
-      externalIds: [],
-      tenantMemberships: [],
-      toolPreferences: {},
-      notes: {},
-      createdAt: "2026-01-01",
-      updatedAt: "2026-01-01",
-      schemaVersion: 1,
-    },
-    channel: {
-      channel: "bluebubbles",
-      availableIntegrations: [],
-      supportsMarkdown: false,
-      supportsStreaming: false,
-      supportsRichCards: false,
-      maxMessageLength: Infinity,
-    },
+  mocks.resolveContext.mockReset().mockResolvedValue(defaultFriendContext)
+  mocks.getChannelCapabilities.mockReset().mockReturnValue({
+    channel: "bluebubbles",
+    senseType: "open",
+    availableIntegrations: [],
+    supportsMarkdown: false,
+    supportsStreaming: false,
+    supportsRichCards: false,
+    maxMessageLength: Infinity,
+  })
+  mocks.getPendingDir.mockReset().mockReturnValue("/tmp/pending/friend-uuid/bluebubbles/session")
+  mocks.drainPending.mockReset().mockReturnValue([])
+  mocks.enforceTrustGate.mockReset().mockReturnValue({ allowed: true })
+  mocks.findByExternalId.mockReset().mockResolvedValue(null)
+  mocks.listAll.mockReset().mockResolvedValue([])
+  // handleInboundTurn: by default, simulate a successful pipeline run that calls
+  // the injected runAgent (which triggers BB callbacks for text buffering/flush).
+  // Mirrors the real pipeline: resolves friend, builds toolContext with context/friendStore,
+  // calls injected runAgent, postTurn, and accumulateFriendTokens.
+  mocks.handleInboundTurn.mockReset().mockImplementation(async (input: any) => {
+    const resolvedContext = await input.friendResolver.resolve()
+    const sessionMessages = await input.sessionLoader.loadOrCreate()
+    const msgs = sessionMessages.messages
+    for (const m of input.messages) msgs.push(m)
+    // Mirror pipeline: merge context and friendStore into runAgentOptions.toolContext
+    const existingToolContext = input.runAgentOptions?.toolContext
+    const pipelineOpts = {
+      ...input.runAgentOptions,
+      toolContext: {
+        signin: async () => undefined,
+        ...existingToolContext,
+        context: resolvedContext,
+        friendStore: input.friendStore,
+      },
+    }
+    const result = await input.runAgent(msgs, input.callbacks, input.channel, input.signal, pipelineOpts)
+    input.postTurn(msgs, sessionMessages.sessionPath, result.usage)
+    await input.accumulateFriendTokens(input.friendStore, resolvedContext.friend.id, result.usage)
+    return {
+      resolvedContext,
+      gateResult: { allowed: true },
+      usage: result.usage,
+      sessionPath: sessionMessages.sessionPath,
+      messages: msgs,
+    }
   })
   mocks.resolverCtor.mockReset()
   mocks.storeCtor.mockReset()
@@ -1978,6 +2082,591 @@ describe("BlueBubbles sense runtime", () => {
 
     expect(mocks.createServer).toHaveBeenCalledTimes(1)
     expect(mocks.listen).toHaveBeenCalledWith(18790, expect.any(Function))
+  })
+
+  // ── Pipeline integration tests ───────────────────────────────────
+
+  it("calls handleInboundTurn instead of inline lifecycle for DM messages", async () => {
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
+    const input = mocks.handleInboundTurn.mock.calls[0][0]
+    expect(input.channel).toBe("bluebubbles")
+    expect(input.capabilities).toEqual(expect.objectContaining({ senseType: "open", channel: "bluebubbles" }))
+    expect(input.provider).toBe("imessage-handle")
+    expect(input.externalId).toBe("ari@mendelow.me")
+    expect(input.isGroupChat).toBe(false)
+    expect(input.groupHasFamilyMember).toBe(false)
+    expect(input.hasExistingGroupWithFamily).toBe(false)
+    expect(typeof input.enforceTrustGate).toBe("function")
+    expect(typeof input.drainPending).toBe("function")
+    expect(typeof input.runAgent).toBe("function")
+    expect(typeof input.postTurn).toBe("function")
+    expect(typeof input.accumulateFriendTokens).toBe("function")
+    expect(input.messages).toEqual([
+      expect.objectContaining({
+        role: "user",
+        content: expect.stringContaining("top-level follow-up"),
+      }),
+    ])
+  })
+
+  it("passes isGroupChat=true and group-level friend params for group messages", async () => {
+    mocks.resolveContext.mockResolvedValueOnce({
+      friend: {
+        id: "group-uuid",
+        name: "Consciousness TBD",
+        externalIds: [],
+        tenantMemberships: [],
+        toolPreferences: {},
+        notes: {},
+        createdAt: "2026-01-01",
+        updatedAt: "2026-01-01",
+        schemaVersion: 1,
+      },
+      channel: defaultFriendContext.channel,
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(groupThreadPayload)
+
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
+    const input = mocks.handleInboundTurn.mock.calls[0][0]
+    expect(input.isGroupChat).toBe(true)
+    expect(input.externalId).toBe("ari@mendelow.me")
+    expect(input.provider).toBe("imessage-handle")
+  })
+
+  it("sets groupHasFamilyMember=true when a group participant is a known family member", async () => {
+    // Configure friend store to return a family member for one of the participants
+    mocks.findByExternalId.mockImplementation(async (provider: string, externalId: string) => {
+      if (provider === "imessage-handle" && externalId === "familymember@example.com") {
+        return {
+          id: "family-uuid",
+          name: "FamilyMember",
+          trustLevel: "family",
+          externalIds: [{ provider: "imessage-handle", externalId: "familymember@example.com", linkedAt: "2026-01-01" }],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          totalTokens: 0,
+          createdAt: "2026-01-01",
+          updatedAt: "2026-01-01",
+          schemaVersion: 1,
+        }
+      }
+      return null
+    })
+
+    mocks.resolveContext.mockResolvedValueOnce({
+      friend: {
+        id: "group-uuid",
+        name: "Family Group",
+        externalIds: [],
+        tenantMemberships: [],
+        toolPreferences: {},
+        notes: {},
+        createdAt: "2026-01-01",
+        updatedAt: "2026-01-01",
+        schemaVersion: 1,
+      },
+      channel: defaultFriendContext.channel,
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(groupWithParticipantsPayload)
+
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
+    const input = mocks.handleInboundTurn.mock.calls[0][0]
+    expect(input.isGroupChat).toBe(true)
+    expect(input.groupHasFamilyMember).toBe(true)
+  })
+
+  it("sets groupHasFamilyMember=false when no group participant is family", async () => {
+    // findByExternalId returns non-family or null for all participants
+    mocks.findByExternalId.mockResolvedValue(null)
+
+    mocks.resolveContext.mockResolvedValueOnce({
+      friend: {
+        id: "group-uuid",
+        name: "Non-Family Group",
+        externalIds: [],
+        tenantMemberships: [],
+        toolPreferences: {},
+        notes: {},
+        createdAt: "2026-01-01",
+        updatedAt: "2026-01-01",
+        schemaVersion: 1,
+      },
+      channel: defaultFriendContext.channel,
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(groupWithParticipantsPayload)
+
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
+    const input = mocks.handleInboundTurn.mock.calls[0][0]
+    expect(input.isGroupChat).toBe(true)
+    expect(input.groupHasFamilyMember).toBe(false)
+  })
+
+  it("sets hasExistingGroupWithFamily=true for acquaintance 1:1 when they share a group with family", async () => {
+    // The sender is an acquaintance with a group externalId
+    const acquaintanceFriend = {
+      id: "acq-uuid",
+      name: "SomeAcquaintance",
+      trustLevel: "acquaintance" as const,
+      externalIds: [
+        { provider: "imessage-handle" as const, externalId: "ari@mendelow.me", linkedAt: "2026-01-01" },
+        { provider: "imessage-handle" as const, externalId: "group:shared-group-123", linkedAt: "2026-01-01" },
+      ],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: {},
+      totalTokens: 0,
+      createdAt: "2026-01-01",
+      updatedAt: "2026-01-01",
+      schemaVersion: 1,
+    }
+
+    mocks.resolveContext.mockResolvedValueOnce({
+      friend: acquaintanceFriend,
+      channel: defaultFriendContext.channel,
+    })
+
+    // listAll returns friends including a family member that shares the same group externalId
+    mocks.listAll.mockResolvedValueOnce([
+      acquaintanceFriend,
+      {
+        id: "family-uuid",
+        name: "FamilyMember",
+        trustLevel: "family",
+        externalIds: [
+          { provider: "imessage-handle", externalId: "familymember@example.com", linkedAt: "2026-01-01" },
+          { provider: "imessage-handle", externalId: "group:shared-group-123", linkedAt: "2026-01-01" },
+        ],
+        tenantMemberships: [],
+        toolPreferences: {},
+        notes: {},
+        totalTokens: 0,
+        createdAt: "2026-01-01",
+        updatedAt: "2026-01-01",
+        schemaVersion: 1,
+      },
+    ])
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
+    const input = mocks.handleInboundTurn.mock.calls[0][0]
+    expect(input.isGroupChat).toBe(false)
+    expect(input.hasExistingGroupWithFamily).toBe(true)
+  })
+
+  it("sets hasExistingGroupWithFamily=false for acquaintance 1:1 when no shared group with family", async () => {
+    const acquaintanceFriend = {
+      id: "acq-uuid",
+      name: "LonelyAcquaintance",
+      trustLevel: "acquaintance" as const,
+      externalIds: [
+        { provider: "imessage-handle" as const, externalId: "ari@mendelow.me", linkedAt: "2026-01-01" },
+        { provider: "imessage-handle" as const, externalId: "group:acq-only-group", linkedAt: "2026-01-01" },
+      ],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: {},
+      totalTokens: 0,
+      createdAt: "2026-01-01",
+      updatedAt: "2026-01-01",
+      schemaVersion: 1,
+    }
+
+    mocks.resolveContext.mockResolvedValueOnce({
+      friend: acquaintanceFriend,
+      channel: defaultFriendContext.channel,
+    })
+
+    // Family member exists but NOT in the same group
+    mocks.listAll.mockResolvedValueOnce([
+      acquaintanceFriend,
+      {
+        id: "family-uuid",
+        name: "FamilyMember",
+        trustLevel: "family",
+        externalIds: [
+          { provider: "imessage-handle", externalId: "familymember@example.com", linkedAt: "2026-01-01" },
+          { provider: "imessage-handle", externalId: "group:different-group", linkedAt: "2026-01-01" },
+        ],
+        tenantMemberships: [],
+        toolPreferences: {},
+        notes: {},
+        totalTokens: 0,
+        createdAt: "2026-01-01",
+        updatedAt: "2026-01-01",
+        schemaVersion: 1,
+      },
+    ])
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
+    const input = mocks.handleInboundTurn.mock.calls[0][0]
+    expect(input.isGroupChat).toBe(false)
+    expect(input.hasExistingGroupWithFamily).toBe(false)
+  })
+
+  it("sets hasExistingGroupWithFamily=false for acquaintance with no group externalIds", async () => {
+    const acquaintanceFriend = {
+      id: "acq-no-groups",
+      name: "NoGroupAcq",
+      trustLevel: "acquaintance" as const,
+      externalIds: [
+        { provider: "imessage-handle" as const, externalId: "ari@mendelow.me", linkedAt: "2026-01-01" },
+      ],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: {},
+      totalTokens: 0,
+      createdAt: "2026-01-01",
+      updatedAt: "2026-01-01",
+      schemaVersion: 1,
+    }
+
+    mocks.resolveContext.mockResolvedValueOnce({
+      friend: acquaintanceFriend,
+      channel: defaultFriendContext.channel,
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
+    const input = mocks.handleInboundTurn.mock.calls[0][0]
+    expect(input.hasExistingGroupWithFamily).toBe(false)
+    // listAll should NOT be called when acquaintance has no group externalIds
+    expect(mocks.listAll).not.toHaveBeenCalled()
+  })
+
+  it("sets hasExistingGroupWithFamily=false for acquaintance with undefined externalIds", async () => {
+    const acquaintanceFriend = {
+      id: "acq-undef-eids",
+      name: "NoExternalIds",
+      trustLevel: "acquaintance" as const,
+      externalIds: undefined as any,
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: {},
+      totalTokens: 0,
+      createdAt: "2026-01-01",
+      updatedAt: "2026-01-01",
+      schemaVersion: 1,
+    }
+
+    mocks.resolveContext.mockResolvedValueOnce({
+      friend: acquaintanceFriend,
+      channel: defaultFriendContext.channel,
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
+    const input = mocks.handleInboundTurn.mock.calls[0][0]
+    expect(input.hasExistingGroupWithFamily).toBe(false)
+  })
+
+  it("sets hasExistingGroupWithFamily=false when family member has undefined externalIds", async () => {
+    const acquaintanceFriend = {
+      id: "acq-uuid",
+      name: "SomeAcquaintance",
+      trustLevel: "acquaintance" as const,
+      externalIds: [
+        { provider: "imessage-handle" as const, externalId: "ari@mendelow.me", linkedAt: "2026-01-01" },
+        { provider: "imessage-handle" as const, externalId: "group:shared-group", linkedAt: "2026-01-01" },
+      ],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: {},
+      totalTokens: 0,
+      createdAt: "2026-01-01",
+      updatedAt: "2026-01-01",
+      schemaVersion: 1,
+    }
+
+    mocks.resolveContext.mockResolvedValueOnce({
+      friend: acquaintanceFriend,
+      channel: defaultFriendContext.channel,
+    })
+
+    // Family member has undefined externalIds
+    mocks.listAll.mockResolvedValueOnce([
+      acquaintanceFriend,
+      {
+        id: "family-uuid",
+        name: "FamilyMember",
+        trustLevel: "family",
+        externalIds: undefined as any,
+        tenantMemberships: [],
+        toolPreferences: {},
+        notes: {},
+        totalTokens: 0,
+        createdAt: "2026-01-01",
+        updatedAt: "2026-01-01",
+        schemaVersion: 1,
+      },
+    ])
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
+    const input = mocks.handleInboundTurn.mock.calls[0][0]
+    expect(input.hasExistingGroupWithFamily).toBe(false)
+  })
+
+  it("sets hasExistingGroupWithFamily=false when store has no listAll method", async () => {
+    const acquaintanceFriend = {
+      id: "acq-no-listall",
+      name: "AcqNoListAll",
+      trustLevel: "acquaintance" as const,
+      externalIds: [
+        { provider: "imessage-handle" as const, externalId: "ari@mendelow.me", linkedAt: "2026-01-01" },
+        { provider: "imessage-handle" as const, externalId: "group:some-group", linkedAt: "2026-01-01" },
+      ],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: {},
+      totalTokens: 0,
+      createdAt: "2026-01-01",
+      updatedAt: "2026-01-01",
+      schemaVersion: 1,
+    }
+
+    mocks.resolveContext.mockResolvedValueOnce({
+      friend: acquaintanceFriend,
+      channel: defaultFriendContext.channel,
+    })
+
+    // Temporarily remove listAll from the mock to simulate a store without it
+    const originalListAll = mocks.listAll
+    mocks.listAll = undefined as any
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    mocks.listAll = originalListAll
+
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
+    const input = mocks.handleInboundTurn.mock.calls[0][0]
+    expect(input.hasExistingGroupWithFamily).toBe(false)
+  })
+
+  it("sets hasExistingGroupWithFamily=false for non-acquaintance (friend trust level)", async () => {
+    // Friend trust level should skip the check entirely
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
+    const input = mocks.handleInboundTurn.mock.calls[0][0]
+    expect(input.hasExistingGroupWithFamily).toBe(false)
+    // listAll should NOT have been called for non-acquaintance
+    expect(mocks.listAll).not.toHaveBeenCalled()
+  })
+
+  it("sets groupHasFamilyMember=false for DM (not a group chat)", async () => {
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
+    const input = mocks.handleInboundTurn.mock.calls[0][0]
+    expect(input.isGroupChat).toBe(false)
+    expect(input.groupHasFamilyMember).toBe(false)
+    // findByExternalId should NOT be called for DMs
+    expect(mocks.findByExternalId).not.toHaveBeenCalled()
+  })
+
+  it("sends auto-reply via BB API when trust gate rejects with autoReply (stranger first contact)", async () => {
+    mocks.handleInboundTurn.mockResolvedValueOnce({
+      resolvedContext: defaultFriendContext,
+      gateResult: {
+        allowed: false,
+        reason: "stranger_first_reply",
+        autoReply: "I'm sorry, I'm not allowed to talk to strangers",
+      },
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    expect(result.handled).toBe(true)
+    expect(result.notifiedAgent).toBe(false)
+    expect(mocks.sendText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "I'm sorry, I'm not allowed to talk to strangers",
+      }),
+    )
+  })
+
+  it("does not send reply when trust gate silently drops (stranger subsequent contact)", async () => {
+    mocks.handleInboundTurn.mockResolvedValueOnce({
+      resolvedContext: defaultFriendContext,
+      gateResult: {
+        allowed: false,
+        reason: "stranger_silent_drop",
+      },
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    expect(result.handled).toBe(true)
+    expect(result.notifiedAgent).toBe(false)
+    expect(mocks.sendText).not.toHaveBeenCalled()
+  })
+
+  it("sends auto-reply via BB API when acquaintance is blocked in 1:1", async () => {
+    mocks.handleInboundTurn.mockResolvedValueOnce({
+      resolvedContext: defaultFriendContext,
+      gateResult: {
+        allowed: false,
+        reason: "acquaintance_1on1_no_group",
+        autoReply: "Hey! Reach me in a group chat instead.",
+      },
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    expect(result.handled).toBe(true)
+    expect(result.notifiedAgent).toBe(false)
+    expect(mocks.sendText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "Hey! Reach me in a group chat instead.",
+      }),
+    )
+  })
+
+  it("sends contextual auto-reply when acquaintance has existing group with family", async () => {
+    mocks.handleInboundTurn.mockResolvedValueOnce({
+      resolvedContext: defaultFriendContext,
+      gateResult: {
+        allowed: false,
+        reason: "acquaintance_1on1_has_group",
+        autoReply: "Hey! Reach me in our group chat instead.",
+      },
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    expect(result.handled).toBe(true)
+    expect(result.notifiedAgent).toBe(false)
+    expect(mocks.sendText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "Hey! Reach me in our group chat instead.",
+      }),
+    )
+  })
+
+  it("silently drops acquaintance group message without family present (no auto-reply)", async () => {
+    mocks.handleInboundTurn.mockResolvedValueOnce({
+      resolvedContext: defaultFriendContext,
+      gateResult: {
+        allowed: false,
+        reason: "acquaintance_group_no_family",
+      },
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.handleBlueBubblesEvent(groupThreadPayload)
+
+    expect(result.handled).toBe(true)
+    expect(result.notifiedAgent).toBe(false)
+    expect(mocks.sendText).not.toHaveBeenCalled()
+  })
+
+  it("does not call runAgent when trust gate rejects", async () => {
+    mocks.handleInboundTurn.mockResolvedValueOnce({
+      resolvedContext: defaultFriendContext,
+      gateResult: {
+        allowed: false,
+        reason: "stranger_silent_drop",
+      },
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    // runAgent should NOT have been called since handleInboundTurn mock returns rejection
+    // (the mock doesn't call runAgent when we override it)
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+  })
+
+  it("passes pendingDir to pipeline for per-turn pending drain", async () => {
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    const input = mocks.handleInboundTurn.mock.calls[0][0]
+    expect(input.pendingDir).toEqual(expect.stringContaining("pending"))
+    expect(typeof input.drainPending).toBe("function")
+  })
+
+  it("passes BB-specific toolContext (bluebubblesReplyTarget, codingFeedback) via runAgent wrapper", async () => {
+    let capturedOptions: any = null
+    mocks.runAgent.mockImplementationOnce(async (_messages: any, callbacks: any, _channel: any, _signal: any, options: any) => {
+      capturedOptions = options
+      callbacks.onModelStart()
+      callbacks.onTextChunk("got it")
+      return {
+        usage: { input_tokens: 1, output_tokens: 1, reasoning_tokens: 0, total_tokens: 2 },
+      }
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    expect(capturedOptions).not.toBeNull()
+    expect(capturedOptions.toolContext).toBeDefined()
+    expect(typeof capturedOptions.toolContext.bluebubblesReplyTarget?.setSelection).toBe("function")
+    expect(typeof capturedOptions.toolContext.codingFeedback?.send).toBe("function")
+    expect(typeof capturedOptions.toolContext.summarize).toBe("function")
+    expect(typeof capturedOptions.toolContext.signin).toBe("function")
+  })
+
+  it("flushes callbacks after successful pipeline run and calls finish in finally block", async () => {
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    // Verify flush sent the reply text
+    expect(mocks.sendText).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "got it" }),
+    )
+    // Verify typing was stopped (finish called)
+    expect(mocks.setTyping).toHaveBeenCalledWith(
+      expect.anything(),
+      false,
+    )
+  })
+
+  it("calls finish but not flush when gate rejects", async () => {
+    mocks.handleInboundTurn.mockResolvedValueOnce({
+      resolvedContext: defaultFriendContext,
+      gateResult: {
+        allowed: false,
+        reason: "stranger_silent_drop",
+      },
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    // No sendText for agent reply (gate rejected, no agent turn)
+    expect(mocks.sendText).not.toHaveBeenCalled()
+    // runAgent not called
+    expect(mocks.runAgent).not.toHaveBeenCalled()
   })
 })
 

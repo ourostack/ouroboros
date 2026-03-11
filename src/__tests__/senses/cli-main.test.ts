@@ -23,6 +23,16 @@ const mocks = vi.hoisted(() => ({
   parseSlashCommand: vi.fn().mockReturnValue(null),
   getToolChoiceRequired: vi.fn().mockReturnValue(false),
   enforceTrustGate: vi.fn().mockReturnValue({ allowed: true }),
+  handleInboundTurn: vi.fn().mockResolvedValue({
+    resolvedContext: {
+      friend: { id: "mock-uuid", name: "testuser" },
+      channel: { channel: "cli", senseType: "local" },
+    },
+    gateResult: { allowed: true },
+    usage: undefined,
+    sessionPath: "/tmp/test-session.json",
+    messages: [],
+  }),
   createInterface: vi.fn(),
   resolveContext: vi.fn().mockResolvedValue({
     friend: {
@@ -43,6 +53,7 @@ const mocks = vi.hoisted(() => ({
       supportsStreaming: true,
       supportsRichCards: false,
       maxMessageLength: Infinity,
+      senseType: "local",
     },
   }),
   // per-test registry (rebuilt in beforeEach)
@@ -125,6 +136,12 @@ vi.mock("../../mind/friends/resolver", () => {
 })
 vi.mock("../../senses/trust-gate", () => ({
   enforceTrustGate: (...a: any[]) => mocks.enforceTrustGate(...a),
+}))
+vi.mock("../../senses/pipeline", () => ({
+  handleInboundTurn: (...a: any[]) => mocks.handleInboundTurn(...a),
+}))
+vi.mock("../../mind/friends/tokens", () => ({
+  accumulateFriendTokens: vi.fn(),
 }))
 vi.mock("../../mind/bundle-manifest", () => ({
   getPackageVersion: vi.fn(() => "0.1.0-alpha.20"),
@@ -233,6 +250,46 @@ function resetMocks() {
   mocks.parseSlashCommand.mockReset().mockReturnValue(null)
   mocks.getToolChoiceRequired.mockReset().mockReturnValue(false)
   mocks.enforceTrustGate.mockReset().mockReturnValue({ allowed: true })
+  mocks.handleInboundTurn.mockReset().mockImplementation(async (input: any) => {
+    // Default: mirror real pipeline behavior:
+    // 1. Resolve friend
+    const resolvedContext = await input.friendResolver.resolve()
+    // 2. Gate always allows for CLI
+    // 3. Load session
+    const session = await input.sessionLoader.loadOrCreate()
+    const sessionMsgs = session.messages
+    // 4. Drain pending (skip in mock)
+    // 5. Append user messages to session
+    for (const msg of (input.messages ?? [])) {
+      sessionMsgs.push(msg)
+    }
+    // 6. Call runAgent with assembled messages and pipeline-built toolContext
+    const existingToolContext = input.runAgentOptions?.toolContext
+    const runAgentOpts = {
+      ...input.runAgentOptions,
+      toolContext: {
+        signin: async () => undefined,
+        ...existingToolContext,
+        context: resolvedContext,
+        friendStore: input.friendStore,
+      },
+    }
+    const result = await input.runAgent(
+      sessionMsgs,
+      input.callbacks,
+      input.channel,
+      input.signal,
+      runAgentOpts,
+    )
+    // 7. postTurn + token accumulation (skip in mock)
+    return {
+      resolvedContext,
+      gateResult: { allowed: true },
+      usage: result?.usage,
+      sessionPath: session.sessionPath,
+      messages: sessionMsgs,
+    }
+  })
 
   // Fresh registry each test
   mocks.registry = {
@@ -553,21 +610,17 @@ describe("agent.ts main() - session persistence", () => {
     expect(output).not.toContain("**bold**")
   })
 
-  it("calls postTurn after runAgent with usage", async () => {
-    const postTurnCalls: any[][] = []
+  it("delegates postTurn to pipeline (main does not call postTurn directly)", async () => {
     const usageData = { input_tokens: 100, output_tokens: 50, reasoning_tokens: 10, total_tokens: 160 }
     setupBasic({ inputSequence: ["hello", "/exit"] })
     mocks.runAgent.mockImplementation(async () => ({ usage: usageData }))
-    mocks.postTurn.mockImplementation((...args: any[]) => { postTurnCalls.push(args) })
 
     await main(undefined, { pasteDebounceMs: 0 })
 
-    expect(postTurnCalls.length).toBe(1)
-    expect(postTurnCalls[0][0]).toEqual(expect.arrayContaining([
-      expect.objectContaining({ role: "system" }),
-    ]))
-    expect(postTurnCalls[0][1]).toBe("/tmp/test-session.json")
-    expect(postTurnCalls[0][2]).toEqual(usageData)
+    // postTurn should NOT be called directly by main() -- pipeline handles it
+    expect(mocks.postTurn).not.toHaveBeenCalled()
+    // But handleInboundTurn should have been called
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
   })
 
   it("does not call trimMessages directly (postTurn handles it)", async () => {
@@ -624,19 +677,16 @@ describe("agent.ts main() - session persistence", () => {
     expect(runAgentCalls.length).toBe(0) // no boot greeting, /commands handled without runAgent
   })
 
-  it("calls postTurn after each user turn (not before runAgent)", async () => {
-    const postTurnCalls: any[][] = []
+  it("delegates per-turn lifecycle to pipeline for each user turn", async () => {
     setupBasic({ inputSequence: ["msg1", "msg2", "/exit"] })
     mocks.runAgent.mockImplementation(async () => ({ usage: undefined }))
-    mocks.postTurn.mockImplementation((...args: any[]) => { postTurnCalls.push(args) })
 
     await main(undefined, { pasteDebounceMs: 0 })
 
-    // postTurn called once per user message (msg1, msg2)
-    expect(postTurnCalls.length).toBe(2)
-    // Each postTurn call gets (messages, sessPath, usage)
-    expect(postTurnCalls[0][1]).toBe("/tmp/test-session.json")
-    expect(postTurnCalls[1][1]).toBe("/tmp/test-session.json")
+    // handleInboundTurn called once per user message (msg1, msg2)
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(2)
+    // postTurn not called directly by main()
+    expect(mocks.postTurn).not.toHaveBeenCalled()
   })
 
   it("passes 'cli' channel to runAgent for system prompt refresh", async () => {
@@ -918,122 +968,58 @@ describe("agent.ts main() - onKick and toolChoiceRequired", () => {
     expect(mocks.sessionPath).toHaveBeenCalledWith("mock-uuid", "cli", "session")
   })
 
-  it("drains pending self-messages as [inner thought: ...] prefix (no fake turns)", async () => {
+  it("pending drain is delegated to pipeline (main does not call drainPending directly)", async () => {
     const { drainPending } = await import("../../mind/pending")
-    vi.mocked(drainPending).mockReturnValueOnce([
-      { from: "testagent", content: "i should check on that task", channel: "cli", timestamp: Date.now() },
-    ])
-    setupBasic({ inputSequence: ["/exit"] })
-
-    await main(undefined, { pasteDebounceMs: 0 })
-
-    // Startup drain should save session
-    expect(mocks.saveSession).toHaveBeenCalled()
-    const savedMessages = mocks.saveSession.mock.calls[0][1]
-    // Must NOT contain fake assistant turns
-    const assistantMsgs = savedMessages.filter((m: any) => m.role === "assistant")
-    expect(assistantMsgs).toHaveLength(0)
-    // Must NOT contain messages with name field
-    const withName = savedMessages.filter((m: any) => "name" in m)
-    expect(withName).toHaveLength(0)
-  })
-
-  it("drains pending inter-agent messages as [message from {name}: ...] prefix (no fake turns)", async () => {
-    const { drainPending } = await import("../../mind/pending")
-    vi.mocked(drainPending).mockReturnValueOnce([
-      { from: "friend-agent", content: "hey, build succeeded!", channel: "cli", timestamp: Date.now() },
-    ])
-    setupBasic({ inputSequence: ["/exit"] })
-
-    await main(undefined, { pasteDebounceMs: 0 })
-
-    expect(mocks.saveSession).toHaveBeenCalled()
-    const savedMessages = mocks.saveSession.mock.calls[0][1]
-    // Must NOT contain fake assistant turns
-    const assistantMsgs = savedMessages.filter((m: any) => m.role === "assistant")
-    expect(assistantMsgs).toHaveLength(0)
-    // Must NOT contain messages with name field
-    const withName = savedMessages.filter((m: any) => "name" in m)
-    expect(withName).toHaveLength(0)
-  })
-
-  it("does not create fake user+assistant pairs from pending messages", async () => {
-    const { drainPending } = await import("../../mind/pending")
-    vi.mocked(drainPending).mockReturnValueOnce([
-      { from: "friend-agent", content: "hey there!", channel: "cli", timestamp: Date.now() },
-      { from: "testagent", content: "noted", channel: "cli", timestamp: Date.now() },
-    ])
-    setupBasic({ inputSequence: ["/exit"] })
-
-    await main(undefined, { pasteDebounceMs: 0 })
-
-    expect(mocks.saveSession).toHaveBeenCalled()
-    const savedMessages = mocks.saveSession.mock.calls[0][1]
-    // Should only have the system message -- no injected pairs
-    expect(savedMessages).toHaveLength(1)
-    expect(savedMessages[0].role).toBe("system")
-  })
-
-  it("drains pending messages in onTurnEnd for next user message", async () => {
-    const { drainPending } = await import("../../mind/pending")
-    vi.mocked(drainPending).mockReset().mockReturnValue([])
-    // Startup: no pending. Post-turn (after "hello" turn): one message arrives
-    vi.mocked(drainPending)
-      .mockReturnValueOnce([])
-      .mockReturnValueOnce([
-        { from: "friend-agent", content: "post-turn msg", channel: "cli", timestamp: Date.now() },
-      ])
-
+    vi.mocked(drainPending).mockClear()
     setupBasic({ inputSequence: ["hello", "/exit"] })
 
     await main(undefined, { pasteDebounceMs: 0 })
 
-    // drainPending called at startup (empty) and in onTurnEnd (1 message)
-    expect(drainPending).toHaveBeenCalledTimes(2)
+    // main() should NOT call drainPending directly -- pipeline handles pending drain
+    expect(drainPending).not.toHaveBeenCalled()
+    // But handleInboundTurn should have been called (which internally drains pending)
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
   })
 
-  it("blocks stranger traffic before runAgent and emits one-time auto reply", async () => {
+  it("gate rejection via pipeline returns auto reply and skips runAgent", async () => {
     setupBasic({ inputSequence: ["hello", "/exit"] })
-    mocks.enforceTrustGate.mockReturnValueOnce({
-      allowed: false,
-      reason: "stranger_first_reply",
-      autoReply: "I'm sorry, I'm not allowed to talk to strangers",
-    }).mockReturnValue({ allowed: true })
-
-    await main(undefined, { pasteDebounceMs: 0 })
-
-    expect(mocks.runAgent).not.toHaveBeenCalled()
-    expect(stdoutChunks.join("")).toContain("I'm sorry, I'm not allowed to talk to strangers")
-  })
-
-  it("silently drops stranger input before runAgent", async () => {
-    setupBasic({ inputSequence: ["hello", "/exit"] })
-    mocks.enforceTrustGate.mockReturnValue({
-      allowed: false,
-      reason: "stranger_silent_drop",
-    })
-
-    await main(undefined, { pasteDebounceMs: 0 })
-
-    expect(mocks.runAgent).not.toHaveBeenCalled()
-    expect(stdoutChunks.join("")).not.toContain("I'm sorry, I'm not allowed to talk to strangers")
-  })
-
-  it("breaks the input loop when closed flag is raised during stranger block handling", async () => {
-    const setup = setupBasic({ inputSequence: ["hello", "/exit"] })
-    mocks.enforceTrustGate.mockImplementation(() => {
-      setup.getCloseHandler()?.()
-      return {
+    mocks.handleInboundTurn.mockResolvedValueOnce({
+      resolvedContext: {
+        friend: { id: "mock-uuid", name: "testuser" },
+        channel: { channel: "cli", senseType: "local" },
+      },
+      gateResult: {
         allowed: false,
         reason: "stranger_first_reply",
         autoReply: "I'm sorry, I'm not allowed to talk to strangers",
-      }
+      },
+      usage: undefined,
     })
 
     await main(undefined, { pasteDebounceMs: 0 })
 
-    expect(mocks.runAgent).not.toHaveBeenCalled()
+    // runAgent should not be called directly by main() -- pipeline returned rejection
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
     expect(stdoutChunks.join("")).toContain("I'm sorry, I'm not allowed to talk to strangers")
+  })
+
+  it("gate rejection via pipeline with silent drop shows no reply", async () => {
+    setupBasic({ inputSequence: ["hello", "/exit"] })
+    mocks.handleInboundTurn.mockResolvedValue({
+      resolvedContext: {
+        friend: { id: "mock-uuid", name: "testuser" },
+        channel: { channel: "cli", senseType: "local" },
+      },
+      gateResult: {
+        allowed: false,
+        reason: "stranger_silent_drop",
+      },
+      usage: undefined,
+    })
+
+    await main(undefined, { pasteDebounceMs: 0 })
+
+    expect(stdoutChunks.join("")).not.toContain("I'm sorry")
   })
 })
 
@@ -1285,6 +1271,118 @@ describe("runCliSession", () => {
       expect.any(Array),
       { usage: undefined },
     )
+  })
+})
+
+// ── pipeline integration tests ──
+
+describe("agent.ts main() - pipeline integration", () => {
+  beforeEach(() => {
+    resetMocks()
+    setupSpies()
+  })
+
+  afterEach(() => {
+    restoreSpies()
+    vi.restoreAllMocks()
+  })
+
+  it("calls handleInboundTurn from pipeline for each user turn", async () => {
+    setupBasic({ inputSequence: ["hello", "/exit"] })
+
+    await main(undefined, { pasteDebounceMs: 0 })
+
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
+  })
+
+  it("does NOT directly call enforceTrustGate (pipeline handles gate)", async () => {
+    setupBasic({ inputSequence: ["hello", "/exit"] })
+
+    await main(undefined, { pasteDebounceMs: 0 })
+
+    expect(mocks.enforceTrustGate).not.toHaveBeenCalled()
+  })
+
+  it("does NOT directly call postTurn (pipeline handles it)", async () => {
+    setupBasic({ inputSequence: ["hello", "/exit"] })
+    mocks.runAgent.mockResolvedValue({ usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } })
+
+    await main(undefined, { pasteDebounceMs: 0 })
+
+    // postTurn should NOT be called directly by main() -- pipeline handles it
+    expect(mocks.postTurn).not.toHaveBeenCalled()
+  })
+
+  it("does NOT directly call accumulateFriendTokens (pipeline handles it)", async () => {
+    const { accumulateFriendTokens } = await import("../../mind/friends/tokens")
+    vi.mocked(accumulateFriendTokens).mockClear()
+
+    setupBasic({ inputSequence: ["hello", "/exit"] })
+
+    await main(undefined, { pasteDebounceMs: 0 })
+
+    expect(accumulateFriendTokens).not.toHaveBeenCalled()
+  })
+
+  it("does NOT directly call drainPending (pipeline handles it)", async () => {
+    const { drainPending } = await import("../../mind/pending")
+    vi.mocked(drainPending).mockClear()
+
+    setupBasic({ inputSequence: ["hello", "/exit"] })
+
+    await main(undefined, { pasteDebounceMs: 0 })
+
+    // drainPending should not be called directly -- pipeline handles it
+    expect(drainPending).not.toHaveBeenCalled()
+  })
+
+  it("does NOT call refreshSystemPrompt in onTurnEnd (redundant with runAgent)", async () => {
+    const { refreshSystemPrompt } = await import("../../mind/prompt-refresh")
+    vi.mocked(refreshSystemPrompt).mockClear()
+
+    setupBasic({ inputSequence: ["hello", "/exit"] })
+
+    await main(undefined, { pasteDebounceMs: 0 })
+
+    expect(refreshSystemPrompt).not.toHaveBeenCalled()
+  })
+
+  it("passes pipeline result usage through handleInboundTurn", async () => {
+    const usageData = { input_tokens: 100, output_tokens: 50, reasoning_tokens: 10, total_tokens: 160 }
+    setupBasic({ inputSequence: ["hello", "/exit"] })
+    mocks.handleInboundTurn.mockResolvedValue({
+      resolvedContext: {
+        friend: { id: "mock-uuid", name: "testuser" },
+        channel: { channel: "cli", senseType: "local" },
+      },
+      gateResult: { allowed: true },
+      usage: usageData,
+      sessionPath: "/tmp/test-session.json",
+      messages: [],
+    })
+
+    await main(undefined, { pasteDebounceMs: 0 })
+
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
+  })
+
+  it("calls handleInboundTurn once per user turn (multiple turns)", async () => {
+    setupBasic({ inputSequence: ["msg1", "msg2", "/exit"] })
+
+    await main(undefined, { pasteDebounceMs: 0 })
+
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(2)
+  })
+
+  it("pipeline input includes channel='cli' and senseType='local'", async () => {
+    setupBasic({ inputSequence: ["hello", "/exit"] })
+
+    await main(undefined, { pasteDebounceMs: 0 })
+
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
+    const pipelineInput = mocks.handleInboundTurn.mock.calls[0][0]
+    expect(pipelineInput.channel).toBe("cli")
+    expect(pipelineInput.capabilities.senseType).toBe("local")
   })
 })
 

@@ -1,11 +1,11 @@
 import * as fs from "fs";
 import * as path from "path";
 import { getProviderDisplayLabel } from "../heart/core";
-import { finalAnswerTool, getToolsForChannel } from "../repertoire/tools";
+import { finalAnswerTool, getToolsForChannel, REMOTE_BLOCKED_LOCAL_TOOLS } from "../repertoire/tools";
 import { listSkills } from "../repertoire/skills";
 import { getAgentRoot, getAgentName, getAgentSecretsPath, loadAgentConfig, type SenseName } from "../heart/identity";
-import type { Channel, ResolvedContext } from "./friends/types";
-import { getChannelCapabilities } from "./friends/channel";
+import { isTrustedLevel, type Channel, type ChannelCapabilities, type ResolvedContext } from "./friends/types";
+import { getChannelCapabilities, isRemoteChannel } from "./friends/channel";
 import { emitNervesEvent } from "../nerves/runtime";
 import { backfillBundleMeta, getPackageVersion, getChangelogPath } from "./bundle-manifest";
 import type { BundleMeta } from "./bundle-manifest";
@@ -400,41 +400,16 @@ function toolsSection(channel: Channel, options?: BuildSystemOptions, context?: 
   return `## my tools\n${list}`;
 }
 
-const RESTRICTED_TOOLS = ["shell", "read_file", "write_file", "edit_file", "glob", "grep"]
-
-function isRemoteChannel(channel?: string): boolean {
-  return channel === "teams" || channel === "bluebubbles"
-}
-
-function isSharedContext(friend: ResolvedContext["friend"]): boolean {
-  const externalIds = friend.externalIds ?? []
-  return externalIds.some((eid) =>
-    eid.externalId.startsWith("group:") || eid.provider === "teams-conversation",
-  )
-}
-
 export function toolRestrictionSection(context?: ResolvedContext): string {
-  if (!context?.friend || !isRemoteChannel(context.channel?.channel)) return ""
+  if (!context?.friend || !isRemoteChannel(context.channel)) return ""
 
-  const trustLevel = context.friend.trustLevel ?? "stranger"
-  const lowTrust = trustLevel === "stranger" || trustLevel === "acquaintance"
-  const shared = isSharedContext(context.friend)
+  if (isTrustedLevel(context.friend.trustLevel)) return ""
 
-  if (!lowTrust && !shared) return ""
-
-  const reasons: string[] = []
-  if (lowTrust) {
-    reasons.push("i don't know this person well enough yet to run local operations on their behalf")
-  }
-  if (shared) {
-    reasons.push("this is a shared channel — local operations could let conversations interfere with each other")
-  }
-
-  const toolList = RESTRICTED_TOOLS.join(", ")
+  const toolList = [...REMOTE_BLOCKED_LOCAL_TOOLS].join(", ")
   return `## restricted tools
 some of my tools are unavailable right now: ${toolList}
 
-${reasons.join(". ")}. i can suggest remote-safe alternatives or ask them to run it from CLI.`
+i don't know this person well enough yet to run local operations on their behalf. i can suggest remote-safe alternatives or ask them to run it from CLI.`
 }
 
 function skillsSection(): string {
@@ -561,6 +536,22 @@ export function loopOrientationSection(channel: Channel): string {
 when something deserves more thought than the moment allows, i can note it to myself and come back later with a considered answer.`
 }
 
+export function channelNatureSection(capabilities: ChannelCapabilities): string {
+  const { senseType } = capabilities
+  if (senseType === "local" || senseType === "internal") return ""
+  if (senseType === "open") {
+    return "## channel nature\nthis is an open channel — anyone with my number can reach me here. i may hear from people i don't know."
+  }
+  // closed
+  return "## channel nature\nthis is an org-gated channel — i know everyone here is already part of the organization."
+}
+
+export function mixedTrustGroupSection(context?: ResolvedContext): string {
+  if (!context?.friend || !isRemoteChannel(context.channel)) return ""
+  if (!context.isGroupChat) return ""
+  return "## mixed trust group\nin this group chat, my capabilities depend on who's talking. some people here have full trust, others don't — i adjust what i can do based on who's asking."
+}
+
 export async function buildSystem(channel: Channel = "cli", options?: BuildSystemOptions, context?: ResolvedContext): Promise<string> {
   emitNervesEvent({
     event: "mind.step_start",
@@ -582,10 +573,12 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     metacognitiveFramingSection(channel),
     loopOrientationSection(channel),
     runtimeInfoSection(channel),
+    channelNatureSection(getChannelCapabilities(channel)),
     providerSection(),
     dateSection(),
     toolsSection(channel, options, context),
     toolRestrictionSection(context),
+    mixedTrustGroupSection(context),
     skillsSection(),
     taskBoardSection(),
     buildSessionSummary({

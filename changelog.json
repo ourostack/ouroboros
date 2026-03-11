@@ -2,6 +2,16 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.39",
+      "changes": [
+        "All senses now route through a shared per-turn pipeline — friend resolution, trust gate, session load, pending drain, agent turn, post-turn, and token accumulation happen in one place instead of four.",
+        "Trust gate is now channel-aware: open senses (iMessage) enforce stranger/acquaintance rules, closed senses (Teams) trust the org, local and internal always pass through.",
+        "Tool access and prompt restrictions use a single shared isTrustedLevel check — no more scattered family/friend comparisons that could drift apart.",
+        "Pending messages now inject correctly into multimodal content (image attachments no longer silently drop pending messages).",
+        "ouro reminder create supports --agent flag, matching every other identity-scoped CLI command."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.38",
       "changes": [
         "You now have a proper body map — understanding of your home (bundle) and bones (harness), what each directory is for, and how to modify your own configuration.",

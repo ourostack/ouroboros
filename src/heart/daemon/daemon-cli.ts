@@ -1,4 +1,5 @@
 import { spawn } from "child_process"
+import { randomUUID } from "crypto"
 import * as fs from "fs"
 import * as net from "net"
 import * as os from "os"
@@ -43,18 +44,19 @@ export type OuroCliCommand =
   | { kind: "chat.connect"; agent: string }
   | { kind: "message.send"; from: string; to: string; content: string; sessionId?: string; taskRef?: string }
   | { kind: "task.poke"; agent: string; taskId: string }
-  | { kind: "task.board"; status?: string }
-  | { kind: "task.create"; title: string; type?: string }
-  | { kind: "task.update"; id: string; status: string }
-  | { kind: "task.show"; id: string }
-  | { kind: "task.actionable" }
-  | { kind: "task.deps" }
-  | { kind: "task.sessions" }
-  | { kind: "whoami" }
-  | { kind: "session.list" }
-  | { kind: "reminder.create"; title: string; body: string; scheduledAt?: string; cadence?: string; category?: string }
-  | { kind: "friend.list" }
-  | { kind: "friend.show"; friendId: string }
+  | { kind: "task.board"; status?: string; agent?: string }
+  | { kind: "task.create"; title: string; type?: string; agent?: string }
+  | { kind: "task.update"; id: string; status: string; agent?: string }
+  | { kind: "task.show"; id: string; agent?: string }
+  | { kind: "task.actionable"; agent?: string }
+  | { kind: "task.deps"; agent?: string }
+  | { kind: "task.sessions"; agent?: string }
+  | { kind: "whoami"; agent?: string }
+  | { kind: "session.list"; agent?: string }
+  | { kind: "reminder.create"; title: string; body: string; scheduledAt?: string; cadence?: string; category?: string; agent?: string }
+  | { kind: "friend.list"; agent?: string }
+  | { kind: "friend.show"; friendId: string; agent?: string }
+  | { kind: "friend.create"; name: string; trustLevel?: string; agent?: string }
   | { kind: "friend.link"; agent: string; friendId: string; provider: IdentityProvider; externalId: string }
   | { kind: "friend.unlink"; agent: string; friendId: string; provider: IdentityProvider; externalId: string }
   | { kind: "hatch.start"; agentName?: string; humanName?: string; provider?: AgentProvider; credentials?: HatchCredentialsInput; migrationPath?: string }
@@ -296,6 +298,18 @@ export async function ensureDaemonRunning(deps: OuroCliDeps): Promise<EnsureDaem
   }
 }
 
+/**
+ * Extract `--agent <name>` from an args array, returning the agent name and
+ * the remaining args with the flag pair removed.
+ */
+function extractAgentFlag(args: string[]): { agent?: string; rest: string[] } {
+  const idx = args.indexOf("--agent")
+  if (idx === -1 || idx + 1 >= args.length) return { rest: args }
+  const agent = args[idx + 1]
+  const rest = [...args.slice(0, idx), ...args.slice(idx + 2)]
+  return { agent, rest }
+}
+
 function usage(): string {
   return [
     "Usage:",
@@ -306,18 +320,19 @@ function usage(): string {
     "  ouro msg --to <agent> [--session <id>] [--task <ref>] <message>",
     "  ouro poke <agent> --task <task-id>",
     "  ouro link <agent> --friend <id> --provider <provider> --external-id <external-id>",
-    "  ouro task board [<status>]",
-    "  ouro task create <title> [--type <type>]",
-    "  ouro task update <id> <status>",
-    "  ouro task show <id>",
-    "  ouro task actionable|deps|sessions",
-    "  ouro reminder create <title> --body <body> [--at <iso>] [--cadence <interval>] [--category <category>]",
-    "  ouro friend list",
-    "  ouro friend show <id>",
+    "  ouro task board [<status>] [--agent <name>]",
+    "  ouro task create <title> [--type <type>] [--agent <name>]",
+    "  ouro task update <id> <status> [--agent <name>]",
+    "  ouro task show <id> [--agent <name>]",
+    "  ouro task actionable|deps|sessions [--agent <name>]",
+    "  ouro reminder create <title> --body <body> [--at <iso>] [--cadence <interval>] [--category <category>] [--agent <name>]",
+    "  ouro friend list [--agent <name>]",
+    "  ouro friend show <id> [--agent <name>]",
+    "  ouro friend create --name <name> [--trust <level>] [--agent <name>]",
     "  ouro friend link <agent> --friend <id> --provider <p> --external-id <eid>",
     "  ouro friend unlink <agent> --friend <id> --provider <p> --external-id <eid>",
-    "  ouro whoami",
-    "  ouro session list",
+    "  ouro whoami [--agent <name>]",
+    "  ouro session list [--agent <name>]",
   ].join("\n")
 }
 
@@ -534,12 +549,15 @@ function parseHatchCommand(args: string[]): OuroCliCommand {
 }
 
 function parseTaskCommand(args: string[]): OuroCliCommand {
-  const [sub, ...rest] = args
+  const { agent, rest: cleaned } = extractAgentFlag(args)
+  const [sub, ...rest] = cleaned
   if (!sub) throw new Error(`Usage\n${usage()}`)
 
   if (sub === "board") {
     const status = rest[0]
-    return status ? { kind: "task.board", status } : { kind: "task.board" }
+    return status
+      ? { kind: "task.board", status, ...(agent ? { agent } : {}) }
+      : { kind: "task.board", ...(agent ? { agent } : {}) }
   }
 
   if (sub === "create") {
@@ -552,31 +570,34 @@ function parseTaskCommand(args: string[]): OuroCliCommand {
         i += 1
       }
     }
-    return type ? { kind: "task.create", title, type } : { kind: "task.create", title }
+    return type
+      ? { kind: "task.create", title, type, ...(agent ? { agent } : {}) }
+      : { kind: "task.create", title, ...(agent ? { agent } : {}) }
   }
 
   if (sub === "update") {
     const id = rest[0]
     const status = rest[1]
     if (!id || !status) throw new Error(`Usage\n${usage()}`)
-    return { kind: "task.update", id, status }
+    return { kind: "task.update", id, status, ...(agent ? { agent } : {}) }
   }
 
   if (sub === "show") {
     const id = rest[0]
     if (!id) throw new Error(`Usage\n${usage()}`)
-    return { kind: "task.show", id }
+    return { kind: "task.show", id, ...(agent ? { agent } : {}) }
   }
 
-  if (sub === "actionable") return { kind: "task.actionable" }
-  if (sub === "deps") return { kind: "task.deps" }
-  if (sub === "sessions") return { kind: "task.sessions" }
+  if (sub === "actionable") return { kind: "task.actionable", ...(agent ? { agent } : {}) }
+  if (sub === "deps") return { kind: "task.deps", ...(agent ? { agent } : {}) }
+  if (sub === "sessions") return { kind: "task.sessions", ...(agent ? { agent } : {}) }
 
   throw new Error(`Usage\n${usage()}`)
 }
 
 function parseReminderCommand(args: string[]): OuroCliCommand {
-  const [sub, ...rest] = args
+  const { agent, rest: cleaned } = extractAgentFlag(args)
+  const [sub, ...rest] = cleaned
   if (!sub) throw new Error(`Usage\n${usage()}`)
 
   if (sub === "create") {
@@ -614,6 +635,7 @@ function parseReminderCommand(args: string[]): OuroCliCommand {
       ...(scheduledAt ? { scheduledAt } : {}),
       ...(cadence ? { cadence } : {}),
       ...(category ? { category } : {}),
+      ...(agent ? { agent } : {}),
     }
   }
 
@@ -621,24 +643,47 @@ function parseReminderCommand(args: string[]): OuroCliCommand {
 }
 
 function parseSessionCommand(args: string[]): OuroCliCommand {
-  const [sub] = args
+  const { agent, rest: cleaned } = extractAgentFlag(args)
+  const [sub] = cleaned
   if (!sub) throw new Error(`Usage\n${usage()}`)
 
-  if (sub === "list") return { kind: "session.list" }
+  if (sub === "list") return { kind: "session.list", ...(agent ? { agent } : {}) }
 
   throw new Error(`Usage\n${usage()}`)
 }
 
 function parseFriendCommand(args: string[]): OuroCliCommand {
-  const [sub, ...rest] = args
+  const { agent, rest: cleaned } = extractAgentFlag(args)
+  const [sub, ...rest] = cleaned
   if (!sub) throw new Error(`Usage\n${usage()}`)
 
-  if (sub === "list") return { kind: "friend.list" }
+  if (sub === "list") return { kind: "friend.list", ...(agent ? { agent } : {}) }
 
   if (sub === "show") {
     const friendId = rest[0]
     if (!friendId) throw new Error(`Usage\n${usage()}`)
-    return { kind: "friend.show", friendId }
+    return { kind: "friend.show", friendId, ...(agent ? { agent } : {}) }
+  }
+
+  if (sub === "create") {
+    let name: string | undefined
+    let trustLevel: string | undefined
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === "--name" && rest[i + 1]) {
+        name = rest[i + 1]
+        i += 1
+      } else if (rest[i] === "--trust" && rest[i + 1]) {
+        trustLevel = rest[i + 1]
+        i += 1
+      }
+    }
+    if (!name) throw new Error(`Usage\n${usage()}`)
+    return {
+      kind: "friend.create",
+      name,
+      ...(trustLevel ? { trustLevel } : {}),
+      ...(agent ? { agent } : {}),
+    }
   }
 
   if (sub === "link") return parseLinkCommand(rest, "friend.link")
@@ -659,7 +704,10 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "task") return parseTaskCommand(args.slice(1))
   if (head === "reminder") return parseReminderCommand(args.slice(1))
   if (head === "friend") return parseFriendCommand(args.slice(1))
-  if (head === "whoami") return { kind: "whoami" }
+  if (head === "whoami") {
+    const { agent } = extractAgentFlag(args.slice(1))
+    return { kind: "whoami", ...(agent ? { agent } : {}) }
+  }
   if (head === "session") return parseSessionCommand(args.slice(1))
   if (head === "chat") {
     if (!second) throw new Error(`Usage\n${usage()}`)
@@ -1218,7 +1266,7 @@ type TaskCliCommand = Extract<OuroCliCommand,
 >
 
 type ReminderCliCommand = Extract<OuroCliCommand, { kind: "reminder.create" }>
-type FriendCliCommand = Extract<OuroCliCommand, { kind: "friend.list" } | { kind: "friend.show" } | { kind: "friend.link" } | { kind: "friend.unlink" }>
+type FriendCliCommand = Extract<OuroCliCommand, { kind: "friend.list" } | { kind: "friend.show" } | { kind: "friend.create" } | { kind: "friend.link" } | { kind: "friend.unlink" }>
 type WhoamiCliCommand = Extract<OuroCliCommand, { kind: "whoami" }>
 type SessionCliCommand = Extract<OuroCliCommand, { kind: "session.list" }>
 
@@ -1315,6 +1363,26 @@ async function executeFriendCommand(command: FriendCliCommand, store: FriendStor
     const record = await store.get(command.friendId)
     if (!record) return `friend not found: ${command.friendId}`
     return JSON.stringify(record, null, 2)
+  }
+
+  if (command.kind === "friend.create") {
+    const now = new Date().toISOString()
+    const id = randomUUID()
+    const trustLevel = (command.trustLevel ?? "acquaintance") as TrustLevel
+    await store.put(id, {
+      id,
+      name: command.name,
+      trustLevel,
+      externalIds: [],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: {},
+      totalTokens: 0,
+      createdAt: now,
+      updatedAt: now,
+      schemaVersion: 1,
+    })
+    return `created: ${id} (${command.name}, ${trustLevel})`
   }
 
   if (command.kind === "friend.link") {
@@ -1529,13 +1597,15 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   }
 
   // ── friend subcommands (local, no daemon socket needed) ──
-  if (command.kind === "friend.list" || command.kind === "friend.show" || command.kind === "friend.link" || command.kind === "friend.unlink") {
+  if (command.kind === "friend.list" || command.kind === "friend.show" || command.kind === "friend.create" ||
+      command.kind === "friend.link" || command.kind === "friend.unlink") {
     /* v8 ignore start -- production default: requires full identity setup @preserve */
     let store = deps.friendStore
     if (!store) {
-      // link/unlink operate on a specific agent's friend store
-      const friendsDir = (command.kind === "friend.link" || command.kind === "friend.unlink")
-        ? path.join(getAgentBundlesRoot(), `${command.agent}.ouro`, "friends")
+      // Derive agent-scoped friends dir from --agent flag or link/unlink's agent field
+      const agentName = ("agent" in command && command.agent) ? command.agent : undefined
+      const friendsDir = agentName
+        ? path.join(getAgentBundlesRoot(), `${agentName}.ouro`, "friends")
         : path.join(getAgentBundlesRoot(), "friends")
       store = new FileFriendStore(friendsDir)
     }
@@ -1547,22 +1617,38 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
   // ── whoami (local, no daemon socket needed) ──
   if (command.kind === "whoami") {
+    if (command.agent) {
+      const agentRoot = path.join(getAgentBundlesRoot(), `${command.agent}.ouro`)
+      const message = [
+        `agent: ${command.agent}`,
+        `home: ${agentRoot}`,
+        `bones: ${getRuntimeMetadata().version}`,
+      ].join("\n")
+      deps.writeStdout(message)
+      return message
+    }
     /* v8 ignore start -- production default: requires full identity setup @preserve */
-    const info = deps.whoamiInfo
-      ? deps.whoamiInfo()
-      : {
-          agentName: getAgentName(),
-          homePath: path.join(getAgentBundlesRoot(), `${getAgentName()}.ouro`),
-          bonesVersion: getRuntimeMetadata().version,
-        }
+    try {
+      const info = deps.whoamiInfo
+        ? deps.whoamiInfo()
+        : {
+            agentName: getAgentName(),
+            homePath: path.join(getAgentBundlesRoot(), `${getAgentName()}.ouro`),
+            bonesVersion: getRuntimeMetadata().version,
+          }
+      const message = [
+        `agent: ${info.agentName}`,
+        `home: ${info.homePath}`,
+        `bones: ${info.bonesVersion}`,
+      ].join("\n")
+      deps.writeStdout(message)
+      return message
+    } catch {
+      const message = "error: no agent context — use --agent <name> to specify"
+      deps.writeStdout(message)
+      return message
+    }
     /* v8 ignore stop */
-    const message = [
-      `agent: ${info.agentName}`,
-      `home: ${info.homePath}`,
-      `bones: ${info.bonesVersion}`,
-    ].join("\n")
-    deps.writeStdout(message)
-    return message
   }
 
   // ── session list (local, no daemon socket needed) ──

@@ -11,6 +11,8 @@ import { getPackageVersion } from "../../mind/bundle-manifest"
 import { startUpdateChecker, stopUpdateChecker } from "./update-checker"
 import { performStagedRestart } from "./staged-restart"
 import { execSync, spawnSync } from "child_process"
+import { drainPending } from "../../mind/pending"
+import { getAlwaysOnSenseNames } from "../../mind/friends/channel"
 
 export interface DaemonCronJobSummary {
   id: string
@@ -253,6 +255,7 @@ export class OuroDaemon {
     this.scheduler.start?.()
     await this.scheduler.reconcile?.()
     await this.drainPendingBundleMessages()
+    await this.drainPendingSenseMessages()
 
     if (fs.existsSync(this.socketPath)) {
       fs.unlinkSync(this.socketPath)
@@ -340,6 +343,95 @@ export class OuroDaemon {
 
       const next = retained.length > 0 ? `${retained.join("\n")}\n` : ""
       fs.writeFileSync(pendingPath, next, "utf-8")
+    }
+  }
+
+  /** Drains per-sense pending dirs for always-on senses across all agents. */
+  private static readonly ALWAYS_ON_SENSES = new Set(getAlwaysOnSenseNames())
+
+  private async drainPendingSenseMessages(): Promise<void> {
+    if (!fs.existsSync(this.bundlesRoot)) return
+
+    let bundleDirs: fs.Dirent[]
+    try {
+      bundleDirs = fs.readdirSync(this.bundlesRoot, { withFileTypes: true })
+    } catch {
+      return
+    }
+
+    for (const bundleDir of bundleDirs) {
+      if (!bundleDir.isDirectory() || !bundleDir.name.endsWith(".ouro")) continue
+
+      const agentName = bundleDir.name.replace(/\.ouro$/, "")
+      const pendingRoot = path.join(this.bundlesRoot, bundleDir.name, "state", "pending")
+      if (!fs.existsSync(pendingRoot)) continue
+
+      let friendDirs: fs.Dirent[]
+      try {
+        friendDirs = fs.readdirSync(pendingRoot, { withFileTypes: true })
+      } catch {
+        continue
+      }
+
+      for (const friendDir of friendDirs) {
+        if (!friendDir.isDirectory()) continue
+        const friendPath = path.join(pendingRoot, friendDir.name)
+
+        let channelDirs: fs.Dirent[]
+        try {
+          channelDirs = fs.readdirSync(friendPath, { withFileTypes: true })
+        } catch {
+          continue
+        }
+
+        for (const channelDir of channelDirs) {
+          if (!channelDir.isDirectory()) continue
+          if (!OuroDaemon.ALWAYS_ON_SENSES.has(channelDir.name)) continue
+
+          const channelPath = path.join(friendPath, channelDir.name)
+
+          let keyDirs: fs.Dirent[]
+          try {
+            keyDirs = fs.readdirSync(channelPath, { withFileTypes: true })
+          } catch {
+            continue
+          }
+
+          for (const keyDir of keyDirs) {
+            if (!keyDir.isDirectory()) continue
+            const leafDir = path.join(channelPath, keyDir.name)
+            const messages = drainPending(leafDir)
+
+            for (const msg of messages) {
+              try {
+                await this.router.send({
+                  from: msg.from,
+                  to: agentName,
+                  content: msg.content,
+                  priority: "normal",
+                })
+              } catch {
+                // Best-effort delivery — log and continue
+              }
+            }
+
+            if (messages.length > 0) {
+              emitNervesEvent({
+                component: "daemon",
+                event: "daemon.startup_sense_drain",
+                message: "drained pending sense messages on startup",
+                meta: {
+                  agent: agentName,
+                  channel: channelDir.name,
+                  friendId: friendDir.name,
+                  key: keyDir.name,
+                  count: messages.length,
+                },
+              })
+            }
+          }
+        }
+      }
     }
   }
 

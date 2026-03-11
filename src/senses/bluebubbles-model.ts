@@ -30,6 +30,8 @@ export type BlueBubblesChatRef = {
   isGroup: boolean
   sessionKey: string
   sendTarget: BlueBubblesSendTarget
+  /** Normalized participant handles (addresses) from the chat, if available. */
+  participantHandles: string[]
 }
 
 export type BlueBubblesNormalizedMessage = {
@@ -127,6 +129,16 @@ function buildChatRef(data: JsonRecord, threadOriginatorGuid?: string): BlueBubb
     ? `chat:${chatGuid.trim()}`
     : `chat_identifier:${(chatIdentifier ?? "unknown").trim()}`
 
+  // Extract participant handles from chat.participants (when available from BB API)
+  const rawParticipants = Array.isArray(chat?.participants) ? chat.participants : []
+  const participantHandles = rawParticipants
+    .map((p) => {
+      const rec = asRecord(p)
+      const addr = readString(rec, "address") ?? readString(rec, "id")
+      return addr ? normalizeHandle(addr) : ""
+    })
+    .filter(Boolean)
+
   return {
     chatGuid: chatGuid?.trim() || undefined,
     chatIdentifier: chatIdentifier?.trim() || undefined,
@@ -136,6 +148,7 @@ function buildChatRef(data: JsonRecord, threadOriginatorGuid?: string): BlueBubb
     sendTarget: chatGuid?.trim()
       ? { kind: "chat_guid", value: chatGuid.trim() }
       : { kind: "chat_identifier", value: (chatIdentifier ?? "unknown").trim() },
+    participantHandles,
   }
 }
 

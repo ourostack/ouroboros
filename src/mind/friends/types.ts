@@ -45,6 +45,14 @@ export interface ExternalId {
 
 export type TrustLevel = "family" | "friend" | "acquaintance" | "stranger"
 
+/** Trust levels that grant full tool access and proactive send capability. */
+export const TRUSTED_LEVELS: ReadonlySet<TrustLevel> = new Set(["family", "friend"])
+
+/** Whether a trust level grants full access (family or friend). Defaults to "friend" for legacy records. */
+export function isTrustedLevel(trustLevel?: TrustLevel): boolean {
+  return TRUSTED_LEVELS.has(trustLevel ?? "friend")
+}
+
 export interface FriendConnection {
   name: string
   relationship: string
@@ -70,10 +78,19 @@ export interface FriendRecord {
   schemaVersion: number
 }
 
+// -- Sense Type --
+// Classifies how a channel is exposed to the outside world.
+// "open" = anyone can reach the agent (e.g. iMessage/BlueBubbles)
+// "closed" = org-gated, only authenticated users (e.g. Teams)
+// "local" = direct terminal access (CLI)
+// "internal" = agent-internal (inner dialog)
+export type SenseType = "open" | "closed" | "local" | "internal"
+
 // -- Channel Capabilities --
 // What a channel supports: integrations, formatting, streaming, message limits
 export interface ChannelCapabilities {
   channel: Channel
+  senseType: SenseType
   availableIntegrations: Integration[]
   supportsMarkdown: boolean
   supportsStreaming: boolean
@@ -86,4 +103,6 @@ export interface ChannelCapabilities {
 export interface ResolvedContext {
   readonly friend: FriendRecord
   readonly channel: ChannelCapabilities
+  /** Whether the current conversation is a group chat (vs 1:1). Default false. */
+  readonly isGroupChat?: boolean
 }

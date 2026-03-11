@@ -2105,6 +2105,7 @@ describe("buildSystem with context", () => {
       },
       channel: {
         channel: "bluebubbles" as const,
+        senseType: "open" as const,
         availableIntegrations: [],
         supportsMarkdown: false,
         supportsStreaming: false,
@@ -2357,8 +2358,10 @@ describe("toolRestrictionSection", () => {
   }
 
   function makeChannel(channel: string) {
+    const senseTypes: Record<string, string> = { cli: "local", teams: "closed", bluebubbles: "open", inner: "internal" }
     return {
       channel,
+      senseType: senseTypes[channel] ?? "local",
       availableIntegrations: [] as any[],
       supportsMarkdown: false,
       supportsStreaming: true,
@@ -2384,7 +2387,7 @@ describe("toolRestrictionSection", () => {
     expect(result).toMatch(/trust|know.*well/i)
   })
 
-  it("trusted friend in group chat includes group reason", async () => {
+  it("trusted friend in group chat returns empty — tool access is trust-level only", async () => {
     const { toolRestrictionSection } = await import("../../mind/prompt")
     const ctx = {
       friend: makeFriend({
@@ -2394,12 +2397,10 @@ describe("toolRestrictionSection", () => {
       channel: makeChannel("teams"),
     }
     const result = toolRestrictionSection(ctx as any)
-    expect(result).toContain("shell")
-    // Group reason
-    expect(result).toMatch(/group|shared/i)
+    expect(result).toBe("")
   })
 
-  it("low-trust friend in group chat includes both reasons", async () => {
+  it("low-trust friend in group chat includes trust reason only", async () => {
     const { toolRestrictionSection } = await import("../../mind/prompt")
     const ctx = {
       friend: makeFriend({
@@ -2409,9 +2410,8 @@ describe("toolRestrictionSection", () => {
       channel: makeChannel("teams"),
     }
     const result = toolRestrictionSection(ctx as any)
-    // Both reasons present
     expect(result).toMatch(/trust|know.*well/i)
-    expect(result).toMatch(/group|shared/i)
+    expect(result).not.toMatch(/group|shared/i)
   })
 
   it("trusted friend in 1:1 returns empty string", async () => {
@@ -2439,16 +2439,27 @@ describe("toolRestrictionSection", () => {
     expect(toolRestrictionSection(undefined)).toBe("")
   })
 
-  it("handles friend with no externalIds (undefined fallback)", async () => {
+  it("returns empty string when context.channel is undefined", async () => {
+    const { toolRestrictionSection } = await import("../../mind/prompt")
+    const ctx = { friend: makeFriend({ trustLevel: "stranger" }), channel: undefined }
+    expect(toolRestrictionSection(ctx as any)).toBe("")
+  })
+
+  it("treats undefined trustLevel as friend (backward compat — no restriction)", async () => {
+    const { toolRestrictionSection } = await import("../../mind/prompt")
+    const friend = makeFriend({})
+    delete (friend as any).trustLevel
+    const ctx = { friend, channel: makeChannel("teams") }
+    expect(toolRestrictionSection(ctx as any)).toBe("")
+  })
+
+  it("low-trust friend with no externalIds still gets restriction", async () => {
     const { toolRestrictionSection } = await import("../../mind/prompt")
     const friend = makeFriend({ trustLevel: "stranger" })
-    // Force externalIds to undefined to trigger ?? [] branch
     ;(friend as any).externalIds = undefined
     const ctx = { friend, channel: makeChannel("teams") }
     const result = toolRestrictionSection(ctx as any)
-    // Should still work (trust gate triggers, group gate doesn't since no externalIds)
     expect(result).toMatch(/trust|know.*well/i)
-    expect(result).not.toMatch(/group|shared/i)
   })
 
   it("uses first-person voice", async () => {
@@ -2515,5 +2526,266 @@ describe("loopOrientationSection", () => {
     expect(result).toContain("think. share. think some more.")
     // But not the external channel version
     expect(result).not.toContain("sometimes a thought of mine surfaces")
+  })
+})
+
+describe("channelNatureSection", () => {
+  beforeEach(() => {
+    vi.resetModules()
+    setAgentProvider("minimax")
+  })
+
+  it("returns open channel orientation for bluebubbles (senseType open)", async () => {
+    const { channelNatureSection } = await import("../../mind/prompt")
+    const caps = {
+      channel: "bluebubbles" as const,
+      senseType: "open" as const,
+      availableIntegrations: [] as any[],
+      supportsMarkdown: false,
+      supportsStreaming: false,
+      supportsRichCards: false,
+      maxMessageLength: Infinity,
+    }
+    const result = channelNatureSection(caps)
+    expect(result).toContain("open")
+    expect(result).toMatch(/anyone|don't know/i)
+    // First-person voice
+    expect(result).toMatch(/\bi\b/)
+  })
+
+  it("returns closed channel orientation for teams (senseType closed)", async () => {
+    const { channelNatureSection } = await import("../../mind/prompt")
+    const caps = {
+      channel: "teams" as const,
+      senseType: "closed" as const,
+      availableIntegrations: ["ado" as const, "graph" as const],
+      supportsMarkdown: true,
+      supportsStreaming: true,
+      supportsRichCards: true,
+      maxMessageLength: Infinity,
+    }
+    const result = channelNatureSection(caps)
+    expect(result).toMatch(/org|organization/i)
+    // First-person voice
+    expect(result).toMatch(/\bi\b/)
+  })
+
+  it("returns empty string for CLI (senseType local)", async () => {
+    const { channelNatureSection } = await import("../../mind/prompt")
+    const caps = {
+      channel: "cli" as const,
+      senseType: "local" as const,
+      availableIntegrations: [] as any[],
+      supportsMarkdown: false,
+      supportsStreaming: true,
+      supportsRichCards: false,
+      maxMessageLength: Infinity,
+    }
+    expect(channelNatureSection(caps)).toBe("")
+  })
+
+  it("returns empty string for inner dialog (senseType internal)", async () => {
+    const { channelNatureSection } = await import("../../mind/prompt")
+    const caps = {
+      channel: "inner" as const,
+      senseType: "internal" as const,
+      availableIntegrations: [] as any[],
+      supportsMarkdown: false,
+      supportsStreaming: true,
+      supportsRichCards: false,
+      maxMessageLength: Infinity,
+    }
+    expect(channelNatureSection(caps)).toBe("")
+  })
+
+  it("buildSystem includes channel nature for bluebubbles", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const ctx = {
+      friend: {
+        id: "uuid-bb-1",
+        name: "Ari",
+        trustLevel: "family" as const,
+        externalIds: [{ provider: "imessage-handle" as const, externalId: "ari@test.com", linkedAt: "2026-01-01T00:00:00.000Z" }],
+        tenantMemberships: [],
+        toolPreferences: {},
+        notes: {},
+        totalTokens: 0,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        schemaVersion: 1,
+      },
+      channel: {
+        channel: "bluebubbles" as const,
+        senseType: "open" as const,
+        availableIntegrations: [] as any[],
+        supportsMarkdown: false,
+        supportsStreaming: false,
+        supportsRichCards: false,
+        maxMessageLength: Infinity,
+      },
+    }
+    const result = await buildSystem("bluebubbles", undefined, ctx as any)
+    expect(result).toMatch(/open/)
+    expect(result).toMatch(/anyone|don't know/i)
+  })
+
+  it("buildSystem includes channel nature for teams", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const ctx = {
+      friend: {
+        id: "uuid-t-1",
+        name: "Jordan",
+        trustLevel: "acquaintance" as const,
+        externalIds: [{ provider: "aad" as const, externalId: "jordan@contoso.com", tenantId: "t1", linkedAt: "2026-01-01T00:00:00.000Z" }],
+        tenantMemberships: ["t1"],
+        toolPreferences: {},
+        notes: {},
+        totalTokens: 0,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        schemaVersion: 1,
+      },
+      channel: {
+        channel: "teams" as const,
+        senseType: "closed" as const,
+        availableIntegrations: ["ado" as const, "graph" as const],
+        supportsMarkdown: true,
+        supportsStreaming: true,
+        supportsRichCards: true,
+        maxMessageLength: Infinity,
+      },
+    }
+    const result = await buildSystem("teams", undefined, ctx as any)
+    expect(result).toMatch(/org|organization/i)
+  })
+
+  it("buildSystem does NOT include channel nature for CLI", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("cli")
+    // CLI should not have channel nature text
+    expect(result).not.toMatch(/this is an open channel/)
+    expect(result).not.toMatch(/org-gated/)
+  })
+})
+
+describe("mixedTrustGroupSection", () => {
+  beforeEach(() => {
+    vi.resetModules()
+    setAgentProvider("minimax")
+  })
+
+  function makeFriendForGroup(overrides: Partial<{ trustLevel: string; externalIds: any[] }> = {}) {
+    return {
+      id: "uuid-1",
+      name: "TestFriend",
+      externalIds: overrides.externalIds ?? [{ provider: "local" as const, externalId: "test", linkedAt: "2026-01-01T00:00:00.000Z" }],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: {},
+      totalTokens: 0,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      schemaVersion: 1,
+      trustLevel: overrides.trustLevel ?? "friend",
+    }
+  }
+
+  function makeChannelCaps(channel: string, senseType: string) {
+    return {
+      channel,
+      senseType,
+      availableIntegrations: [] as any[],
+      supportsMarkdown: false,
+      supportsStreaming: true,
+      supportsRichCards: false,
+      maxMessageLength: Infinity,
+    }
+  }
+
+  it("returns mixed trust text when isGroupChat is true on remote channel", async () => {
+    const { mixedTrustGroupSection } = await import("../../mind/prompt")
+    const ctx = {
+      friend: makeFriendForGroup({ trustLevel: "acquaintance" }),
+      channel: makeChannelCaps("bluebubbles", "open"),
+      isGroupChat: true,
+    }
+    const result = mixedTrustGroupSection(ctx as any)
+    expect(result).not.toBe("")
+    expect(result).toMatch(/group/i)
+    expect(result).toMatch(/who.*talking|who.*asking|depend/i)
+    // First-person voice
+    expect(result).toMatch(/\bi\b/)
+  })
+
+  it("returns empty for 1:1 context even when friend has group externalIds", async () => {
+    const { mixedTrustGroupSection } = await import("../../mind/prompt")
+    const ctx = {
+      friend: makeFriendForGroup({
+        trustLevel: "acquaintance",
+        externalIds: [{ provider: "imessage-handle" as const, externalId: "group:abc", linkedAt: "2026-01-01T00:00:00.000Z" }],
+      }),
+      channel: makeChannelCaps("bluebubbles", "open"),
+      isGroupChat: false,
+    }
+    const result = mixedTrustGroupSection(ctx as any)
+    expect(result).toBe("")
+  })
+
+  it("returns empty for 1:1 context (isGroupChat not set)", async () => {
+    const { mixedTrustGroupSection } = await import("../../mind/prompt")
+    const ctx = {
+      friend: makeFriendForGroup({ trustLevel: "acquaintance" }),
+      channel: makeChannelCaps("bluebubbles", "open"),
+    }
+    const result = mixedTrustGroupSection(ctx as any)
+    expect(result).toBe("")
+  })
+
+  it("returns empty for CLI context even when isGroupChat is true", async () => {
+    const { mixedTrustGroupSection } = await import("../../mind/prompt")
+    const ctx = {
+      friend: makeFriendForGroup({ trustLevel: "acquaintance" }),
+      channel: makeChannelCaps("cli", "local"),
+      isGroupChat: true,
+    }
+    const result = mixedTrustGroupSection(ctx as any)
+    expect(result).toBe("")
+  })
+
+  it("returns empty when context is undefined", async () => {
+    const { mixedTrustGroupSection } = await import("../../mind/prompt")
+    expect(mixedTrustGroupSection(undefined)).toBe("")
+  })
+
+  it("buildSystem includes mixed trust section for group chat on remote channel", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const ctx = {
+      friend: makeFriendForGroup({ trustLevel: "acquaintance" }),
+      channel: makeChannelCaps("bluebubbles", "open"),
+      isGroupChat: true,
+    }
+    const result = await buildSystem("bluebubbles", undefined, ctx as any)
+    expect(result).toMatch(/group/i)
+    expect(result).toMatch(/who.*talking|who.*asking|depend/i)
   })
 })

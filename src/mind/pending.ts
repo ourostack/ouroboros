@@ -16,6 +16,14 @@ export function getPendingDir(agentName: string, friendId: string, channel: stri
   return path.join(getAgentRoot(agentName), "state", "pending", friendId, channel, key)
 }
 
+/** Canonical inner-dialog pending path segments. */
+export const INNER_DIALOG_PENDING = { friendId: "self", channel: "inner", key: "dialog" } as const
+
+/** Returns the pending dir for this agent's inner dialog. */
+export function getInnerDialogPendingDir(agentName: string): string {
+  return getPendingDir(agentName, INNER_DIALOG_PENDING.friendId, INNER_DIALOG_PENDING.channel, INNER_DIALOG_PENDING.key)
+}
+
 export function drainPending(pendingDir: string): PendingMessage[] {
   if (!fs.existsSync(pendingDir)) return []
 

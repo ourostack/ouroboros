@@ -7,6 +7,7 @@ import type { ChannelCapabilities } from "./types"
 const CHANNEL_CAPABILITIES: Record<string, ChannelCapabilities> = {
   cli: {
     channel: "cli",
+    senseType: "local",
     availableIntegrations: [],
     supportsMarkdown: false,
     supportsStreaming: true,
@@ -15,6 +16,7 @@ const CHANNEL_CAPABILITIES: Record<string, ChannelCapabilities> = {
   },
   teams: {
     channel: "teams",
+    senseType: "closed",
     availableIntegrations: ["ado", "graph", "github"],
     supportsMarkdown: true,
     supportsStreaming: true,
@@ -23,6 +25,7 @@ const CHANNEL_CAPABILITIES: Record<string, ChannelCapabilities> = {
   },
   bluebubbles: {
     channel: "bluebubbles",
+    senseType: "open",
     availableIntegrations: [],
     supportsMarkdown: false,
     supportsStreaming: false,
@@ -31,6 +34,7 @@ const CHANNEL_CAPABILITIES: Record<string, ChannelCapabilities> = {
   },
   inner: {
     channel: "inner",
+    senseType: "internal",
     availableIntegrations: [],
     supportsMarkdown: false,
     supportsStreaming: true,
@@ -41,6 +45,7 @@ const CHANNEL_CAPABILITIES: Record<string, ChannelCapabilities> = {
 
 const DEFAULT_CAPABILITIES: ChannelCapabilities = {
   channel: "cli",
+  senseType: "local",
   availableIntegrations: [],
   supportsMarkdown: false,
   supportsStreaming: false,
@@ -56,4 +61,26 @@ export function getChannelCapabilities(channel: string): ChannelCapabilities {
     meta: { channel },
   })
   return CHANNEL_CAPABILITIES[channel] ?? DEFAULT_CAPABILITIES
+}
+
+/** Whether the channel is remote (open or closed) vs local/internal. */
+export function isRemoteChannel(capabilities?: ChannelCapabilities): boolean {
+  const senseType = capabilities?.senseType
+  return senseType !== undefined && senseType !== "local" && senseType !== "internal"
+}
+
+/**
+ * Returns channel names whose senseType is "open" or "closed" -- i.e. channels
+ * that are always-on (daemon-managed) rather than interactive or internal.
+ */
+export function getAlwaysOnSenseNames(): string[] {
+  emitNervesEvent({
+    component: "channels",
+    event: "channel.always_on_lookup",
+    message: "always-on sense names lookup",
+    meta: {},
+  })
+  return Object.entries(CHANNEL_CAPABILITIES)
+    .filter(([, cap]) => cap.senseType === "open" || cap.senseType === "closed")
+    .map(([channel]) => channel)
 }

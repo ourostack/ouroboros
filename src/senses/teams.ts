@@ -16,15 +16,17 @@ import { createCommandRegistry, registerDefaultCommands, parseSlashCommand } fro
 import { createTraceId } from "../nerves"
 import { emitNervesEvent } from "../nerves/runtime"
 import { FileFriendStore } from "../mind/friends/store-file"
-import type { FriendRecord } from "../mind/friends/types"
+import { TRUSTED_LEVELS, type FriendRecord } from "../mind/friends/types"
 import type { FriendStore } from "../mind/friends/store"
 import { FriendResolver } from "../mind/friends/resolver"
 import { accumulateFriendTokens } from "../mind/friends/tokens"
 import { createTurnCoordinator } from "../heart/turn-coordinator"
-import { getAgentRoot } from "../heart/identity"
+import { getAgentRoot, getAgentName } from "../heart/identity"
 import * as http from "http"
 import * as path from "path"
 import { enforceTrustGate } from "./trust-gate"
+import { handleInboundTurn } from "./pipeline"
+import { drainPending, getPendingDir } from "../mind/pending"
 
 // Stream interface matching IStreamer from @microsoft/teams.apps
 interface TeamsStream {
@@ -440,54 +442,28 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
   stream.update(pickPhrase(getPhrases().thinking) + "...")
   await new Promise(r => setImmediate(r))
 
-  // Resolve context kernel (identity + channel) early so we can use the friend UUID for session path
+  // Resolve identity provider early for friend resolution + slash command session path
   const store = getFriendStore()
   const provider = teamsContext?.aadObjectId ? "aad" as const : "teams-conversation" as const
   const externalId = teamsContext?.aadObjectId || conversationId
-  const toolContext: ToolContext | undefined = teamsContext ? {
-    graphToken: teamsContext.graphToken,
-    adoToken: teamsContext.adoToken,
-    githubToken: teamsContext.githubToken,
-    signin: teamsContext.signin,
-    friendStore: store,
-    summarize: createSummarize(),
-    tenantId: teamsContext.tenantId,
-    botApi: teamsContext.botApi,
-  } : undefined
 
-  if (toolContext) {
-    const resolver = new FriendResolver(store, {
-      provider,
-      externalId,
-      tenantId: teamsContext?.tenantId,
-      displayName: teamsContext?.displayName || "Unknown",
-      channel: "teams",
-    })
-    toolContext.context = await resolver.resolve()
-  }
+  // Build FriendResolver for the pipeline
+  const resolver = new FriendResolver(store, {
+    provider,
+    externalId,
+    tenantId: teamsContext?.tenantId,
+    displayName: teamsContext?.displayName || "Unknown",
+    channel: "teams",
+  })
 
-  const friendId = toolContext?.context?.friend?.id || "default"
-
-  if (toolContext?.context?.friend) {
-    const trustGate = enforceTrustGate({
-      friend: toolContext.context.friend,
-      provider,
-      externalId,
-      tenantId: teamsContext?.tenantId,
-      channel: "teams",
-    })
-    if (!trustGate.allowed) {
-      if (trustGate.reason === "stranger_first_reply") {
-        stream.emit(trustGate.autoReply)
-      }
-      return
-    }
-  }
+  // Pre-resolve friend for session path + slash commands (pipeline will re-use the cached result)
+  const resolvedContext = await resolver.resolve()
+  const friendId = resolvedContext.friend.id
 
   const registry = createCommandRegistry()
   registerDefaultCommands(registry)
 
-  // Check for slash commands
+  // Check for slash commands (before pipeline -- these are transport-level concerns)
   const parsed = parseSlashCommand(text)
   if (parsed) {
     const dispatchResult = registry.dispatch(parsed.command, { channel: "teams" })
@@ -504,51 +480,96 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
     }
   }
 
-  // Load or create session
-  const sessPath = sessionPath(friendId, "teams", conversationId)
-  const existing = loadSession(sessPath)
-  const messages: OpenAI.ChatCompletionMessageParam[] = existing?.messages && existing.messages.length > 0
-    ? existing.messages
-    : [{ role: "system", content: await buildSystem("teams", undefined, toolContext?.context) }]
-
-  // Repair any orphaned tool calls from a previous aborted turn
-  repairOrphanedToolCalls(messages)
-
-  // Push user message
-  messages.push({ role: "user", content: text })
-
-  // Run agent
+  // ── Teams adapter concerns: controller, callbacks, session path ──────────
   const controller = new AbortController()
   const channelConfig = getTeamsChannelConfig()
   const callbacks = createTeamsCallbacks(stream, controller, sendMessage, { conversationId, flushIntervalMs: channelConfig.flushIntervalMs })
   const traceId = createTraceId()
+  const sessPath = sessionPath(friendId, "teams", conversationId)
+  const teamsCapabilities = getChannelCapabilities("teams")
+  const pendingDir = getPendingDir(getAgentName(), friendId, "teams", conversationId)
 
-  const agentOptions: RunAgentOptions = {}
-  agentOptions.traceId = traceId
-  if (toolContext) agentOptions.toolContext = toolContext
+  // Build Teams-specific toolContext fields for injection into the pipeline
+  const teamsToolContext: Partial<ToolContext> = teamsContext ? {
+    graphToken: teamsContext.graphToken,
+    adoToken: teamsContext.adoToken,
+    githubToken: teamsContext.githubToken,
+    signin: teamsContext.signin,
+    summarize: createSummarize(),
+    tenantId: teamsContext.tenantId,
+    botApi: teamsContext.botApi,
+  } : {}
+
+  // Build runAgentOptions with Teams-specific fields
+  const agentOptions: RunAgentOptions = {
+    traceId,
+    toolContext: teamsToolContext as ToolContext,
+    drainSteeringFollowUps: () => _turnCoordinator.drainFollowUps(turnKey).map((m) => ({ text: m.text })),
+  }
   if (channelConfig.skipConfirmation) agentOptions.skipConfirmation = true
-  agentOptions.drainSteeringFollowUps = () => _turnCoordinator.drainFollowUps(turnKey).map((m) => ({ text: m.text }))
-  const result = await runAgent(messages, callbacks, "teams", controller.signal, agentOptions)
+
+  // ── Call shared pipeline ──────────────────────────────────────────
+  const result = await handleInboundTurn({
+    channel: "teams",
+    capabilities: teamsCapabilities,
+    messages: [{ role: "user" as const, content: text }],
+    callbacks,
+    friendResolver: { resolve: () => Promise.resolve(resolvedContext) },
+    sessionLoader: {
+      loadOrCreate: async () => {
+        const existing = loadSession(sessPath)
+        const messages: OpenAI.ChatCompletionMessageParam[] = existing?.messages && existing.messages.length > 0
+          ? existing.messages
+          : [{ role: "system", content: await buildSystem("teams", undefined, resolvedContext) }]
+        repairOrphanedToolCalls(messages)
+        return { messages, sessionPath: sessPath }
+      },
+    },
+    pendingDir,
+    friendStore: store,
+    provider,
+    externalId,
+    tenantId: teamsContext?.tenantId,
+    isGroupChat: false,
+    groupHasFamilyMember: false,
+    hasExistingGroupWithFamily: false,
+    enforceTrustGate,
+    drainPending,
+    runAgent: (msgs, cb, channel, sig, opts) => runAgent(msgs, cb, channel, sig, {
+      ...opts,
+      toolContext: {
+        /* v8 ignore next -- default no-op signin; pipeline provides the real one @preserve */
+        signin: async () => undefined,
+        ...opts?.toolContext,
+        summarize: teamsToolContext.summarize,
+      },
+    }),
+    postTurn,
+    accumulateFriendTokens,
+    signal: controller.signal,
+    runAgentOptions: agentOptions,
+  })
+
+  // ── Handle gate result ────────────────────────────────────────
+  if (!result.gateResult.allowed) {
+    if ("autoReply" in result.gateResult && result.gateResult.autoReply) {
+      stream.emit(result.gateResult.autoReply)
+    }
+    return
+  }
 
   // Flush any remaining accumulated text at end of turn
   await callbacks.flush()
 
   // After the agent loop, check if any tool returned AUTH_REQUIRED and trigger signin.
   // This must happen after the stream is done so the OAuth card renders properly.
-  if (teamsContext) {
-    const allContent = messages.map(m => typeof m.content === "string" ? m.content : "").join("\n")
+  if (teamsContext && result.messages) {
+    const allContent = result.messages.map(m => typeof m.content === "string" ? m.content : "").join("\n")
     if (allContent.includes("AUTH_REQUIRED:graph") && teamsContext.graphConnectionName) await teamsContext.signin(teamsContext.graphConnectionName)
     if (allContent.includes("AUTH_REQUIRED:ado") && teamsContext.adoConnectionName) await teamsContext.signin(teamsContext.adoConnectionName)
     if (allContent.includes("AUTH_REQUIRED:github") && teamsContext.githubConnectionName) await teamsContext.signin(teamsContext.githubConnectionName)
   }
 
-  // Trim context and save session
-  postTurn(messages, sessPath, result.usage)
-
-  // Accumulate token usage on friend record
-  if (toolContext?.context?.friend?.id) {
-    await accumulateFriendTokens(store, toolContext.context.friend.id, result.usage)
-  }
   // SDK auto-closes the stream after our handler returns (app.process.js)
 }
 
@@ -752,7 +773,6 @@ export interface TeamsBotApi {
   conversations: unknown
 }
 
-const TEAMS_PROACTIVE_ALLOWED_TRUST: ReadonlySet<string> = new Set(["family", "friend"])
 
 function findAadObjectId(friend: FriendRecord): { aadObjectId: string; tenantId?: string } | undefined {
   for (const ext of friend.externalIds) {
@@ -863,7 +883,7 @@ export async function drainAndSendPendingTeams(
       continue
     }
 
-    if (!TEAMS_PROACTIVE_ALLOWED_TRUST.has(friend.trustLevel ?? "stranger")) {
+    if (!TRUSTED_LEVELS.has(friend.trustLevel ?? "stranger")) {
       result.skipped++
       try { fs.unlinkSync(filePath) } catch { /* ignore */ }
       emitNervesEvent({

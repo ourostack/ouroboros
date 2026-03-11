@@ -7,9 +7,9 @@ import { buildSystem } from "../mind/prompt"
 import { pickPhrase, getPhrases } from "../mind/phrases"
 import { formatToolResult, formatKick, formatError } from "../mind/format"
 import { sessionPath } from "../heart/config"
-import { loadSession, deleteSession, postTurn, saveSession } from "../mind/context"
+import { loadSession, deleteSession, postTurn } from "../mind/context"
 import { getPendingDir, drainPending, type PendingMessage } from "../mind/pending"
-import { refreshSystemPrompt } from "../mind/prompt-refresh"
+// refreshSystemPrompt removed: runAgent already handles prompt refresh per-turn
 import type { UsageData } from "../mind/context"
 import { createCommandRegistry, registerDefaultCommands, parseSlashCommand, getToolChoiceRequired } from "./commands"
 import { getAgentName, setAgentName, getAgentRoot, getAgentBundlesRoot, loadAgentConfig } from "../heart/identity"
@@ -21,6 +21,8 @@ import type { ToolContext } from "../repertoire/tools"
 import { configureCliRuntimeLogger } from "../nerves/cli-logging"
 import { emitNervesEvent } from "../nerves/runtime"
 import { enforceTrustGate } from "./trust-gate"
+import { handleInboundTurn } from "./pipeline"
+import { getChannelCapabilities } from "../mind/friends/channel"
 import { acquireSessionLock, SessionLockError } from "./session-lock"
 import { applyPendingUpdates, registerUpdateHook } from "../heart/daemon/update-hooks"
 import { bundleMetaHook } from "../heart/daemon/hooks/bundle-meta"
@@ -450,6 +452,15 @@ export interface RunCliSessionOptions {
   skipSystemPromptRefresh?: boolean;
   /** Returns and clears pending content prefix to prepend to the next user message. */
   getContentPrefix?: () => string | undefined;
+  /** Custom turn handler. When provided, replaces the internal runAgent call.
+   *  The handler receives the messages array (by reference), user input, callbacks,
+   *  signal, and options. It is responsible for calling runAgent (or pipeline). */
+  runTurn?: (
+    messages: OpenAI.ChatCompletionMessageParam[],
+    userInput: string,
+    callbacks: ChannelCallbacks & { flushMarkdown(): void },
+    signal?: AbortSignal,
+  ) => Promise<{ usage?: UsageData }>;
 }
 
 export interface RunCliSessionResult {
@@ -635,22 +646,29 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
       }
       process.stdout.write(`\x1b[${echoRows}A\x1b[K` + `\x1b[1m> ${inputLines[0]}${inputLines.length > 1 ? ` (+${inputLines.length - 1} lines)` : ""}\x1b[0m\n\n`)
 
-      const prefix = options.getContentPrefix?.()
-      messages.push({ role: "user", content: prefix ? `${prefix}\n\n${input}` : input })
       addHistory(history, input)
 
       currentAbort = new AbortController()
-      const traceId = createTraceId()
       ctrl.suppress(() => currentAbort!.abort())
       let result: { usage?: UsageData } | undefined
       try {
-        result = await runAgent(messages, cliCallbacks, options.skipSystemPromptRefresh ? undefined : "cli", currentAbort.signal, {
-          toolChoiceRequired: getEffectiveToolChoiceRequired(),
-          traceId,
-          tools: options.tools,
-          execTool: wrappedExecTool,
-          toolContext: options.toolContext,
-        })
+        if (options.runTurn) {
+          // Pipeline-based turn: the runTurn callback handles user message assembly,
+          // pending drain, trust gate, runAgent, postTurn, and token accumulation.
+          result = await options.runTurn(messages, input, cliCallbacks, currentAbort.signal)
+        } else {
+          // Legacy path: inline runAgent (used by adoption specialist and tests)
+          const prefix = options.getContentPrefix?.()
+          messages.push({ role: "user", content: prefix ? `${prefix}\n\n${input}` : input })
+          const traceId = createTraceId()
+          result = await runAgent(messages, cliCallbacks, options.skipSystemPromptRefresh ? undefined : "cli", currentAbort.signal, {
+            toolChoiceRequired: getEffectiveToolChoiceRequired(),
+            traceId,
+            tools: options.tools,
+            execTool: wrappedExecTool,
+            toolContext: options.toolContext,
+          })
+        }
       } catch (err) {
         // AbortError (Ctrl-C) -- silently return to prompt
         // All other errors: show the user what happened
@@ -721,13 +739,6 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
     channel: "cli",
   })
   const resolvedContext = await resolver.resolve()
-  const cliToolContext: ToolContext = {
-    /* v8 ignore next -- CLI has no OAuth sign-in; this no-op satisfies the interface @preserve */
-    signin: async () => undefined,
-    context: resolvedContext,
-    friendStore,
-    summarize: createSummarize(),
-  }
 
   const friendId = resolvedContext.friend.id
   const agentConfig = loadAgentConfig()
@@ -756,53 +767,58 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
     ? existing.messages
     : [{ role: "system", content: await buildSystem("cli", undefined, resolvedContext) }]
 
-  // Pending queue drain: format as content-prefix for next user message
+  // Per-turn pipeline input: CLI capabilities and pending dir
+  const cliCapabilities = getChannelCapabilities("cli")
   const pendingDir = getPendingDir(getAgentName(), friendId, "cli", "session")
-  let pendingPrefix: string | undefined
-  const drainToPrefix = () => {
-    const pending = drainPending(pendingDir)
-    if (pending.length === 0) return 0
-    pendingPrefix = formatPendingPrefix(pending, getAgentName())
-    return pending.length
-  }
-
-  // Startup drain: collect offline messages as prefix for next user message
-  const startupCount = drainToPrefix()
-  if (startupCount > 0) {
-    saveSession(sessPath, sessionMessages)
-  }
+  const summarize = createSummarize()
 
   try {
     await runCliSession({
       agentName: getAgentName(),
       pasteDebounceMs,
       messages: sessionMessages,
-      toolContext: cliToolContext,
-      onInput: () => {
-        const trustGate = enforceTrustGate({
-          friend: resolvedContext.friend,
+      runTurn: async (messages, userInput, callbacks, signal) => {
+        // Run the full per-turn pipeline: resolve -> gate -> session -> drain -> runAgent -> postTurn -> tokens
+        // User message passed via input.messages so the pipeline can prepend pending messages to it.
+        const result = await handleInboundTurn({
+          channel: "cli",
+          capabilities: cliCapabilities,
+          messages: [{ role: "user", content: userInput }],
+          callbacks,
+          friendResolver: { resolve: () => Promise.resolve(resolvedContext) },
+          sessionLoader: { loadOrCreate: () => Promise.resolve({ messages, sessionPath: sessPath }) },
+          pendingDir,
+          friendStore,
           provider: "local",
           externalId: localExternalId,
-          channel: "cli",
+          enforceTrustGate,
+          drainPending,
+          runAgent: (msgs, cb, channel, sig, opts) => runAgent(msgs, cb, channel, sig, {
+            ...opts,
+            toolContext: {
+              /* v8 ignore next -- default no-op signin; pipeline provides the real one @preserve */
+              signin: async () => undefined,
+              ...opts?.toolContext,
+              summarize,
+            },
+          }),
+          postTurn,
+          accumulateFriendTokens,
+          signal,
+          runAgentOptions: {
+            toolChoiceRequired: getToolChoiceRequired(),
+            traceId: createTraceId(),
+          },
         })
-        if (!trustGate.allowed) {
-          return {
-            allowed: false,
-            reply: trustGate.reason === "stranger_first_reply" ? trustGate.autoReply : undefined,
+
+        // Handle gate rejection: display auto-reply if present
+        if (!result.gateResult.allowed) {
+          if ("autoReply" in result.gateResult && result.gateResult.autoReply) {
+            process.stdout.write(`${result.gateResult.autoReply}\n`)
           }
         }
-        return { allowed: true }
-      },
-      getContentPrefix: () => {
-        const prefix = pendingPrefix
-        pendingPrefix = undefined
-        return prefix
-      },
-      onTurnEnd: async (msgs, result) => {
-        postTurn(msgs, sessPath, result.usage)
-        await accumulateFriendTokens(friendStore, resolvedContext.friend.id, result.usage)
-        drainToPrefix()
-        await refreshSystemPrompt(msgs, "cli", undefined, resolvedContext)
+
+        return { usage: result.usage }
       },
       onNewSession: () => {
         deleteSession(sessPath)

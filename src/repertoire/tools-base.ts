@@ -11,7 +11,7 @@ import { emitNervesEvent } from "../nerves/runtime";
 import { getAgentRoot, getAgentName } from "../heart/identity";
 import { codingToolDefinitions } from "./coding/tools";
 import { readMemoryFacts, saveMemoryFact, searchMemoryFacts } from "../mind/memory";
-import { getPendingDir } from "../mind/pending";
+import { getPendingDir, getInnerDialogPendingDir } from "../mind/pending";
 
 export interface CodingFeedbackTarget {
   send: (message: string) => Promise<void>;
@@ -685,7 +685,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
       // regardless of the channel or key the agent specified.
       const isSelf = friendId === "self"
       const pendingDir = isSelf
-        ? getPendingDir(agentName, "self", "inner", "dialog")
+        ? getInnerDialogPendingDir(agentName)
         : getPendingDir(agentName, friendId, channel, key)
       fs.mkdirSync(pendingDir, { recursive: true })
 

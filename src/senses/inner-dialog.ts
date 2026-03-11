@@ -7,9 +7,15 @@ import { getAgentName, getAgentRoot } from "../heart/identity"
 import { loadSession, postTurn, type UsageData } from "../mind/context"
 import { buildSystem } from "../mind/prompt"
 import { findNonCanonicalBundlePaths } from "../mind/bundle-manifest"
-import { drainPending, getPendingDir } from "../mind/pending"
+import { drainPending, getInnerDialogPendingDir, INNER_DIALOG_PENDING } from "../mind/pending"
+import { getChannelCapabilities } from "../mind/friends/channel"
+import { enforceTrustGate } from "./trust-gate"
+import { accumulateFriendTokens } from "../mind/friends/tokens"
+import { handleInboundTurn } from "./pipeline"
 import { createTraceId } from "../nerves"
 import { emitNervesEvent } from "../nerves/runtime"
+import type { FriendRecord, ResolvedContext } from "../mind/friends/types"
+import type { FriendStore } from "../mind/friends/store"
 
 export interface InnerDialogInstinct {
   id: string
@@ -141,7 +147,35 @@ function createInnerDialogCallbacks(): ChannelCallbacks {
 }
 
 export function innerDialogSessionPath(): string {
-  return sessionPath("self", "inner", "dialog")
+  return sessionPath(INNER_DIALOG_PENDING.friendId, INNER_DIALOG_PENDING.channel, INNER_DIALOG_PENDING.key)
+}
+
+// Self-referencing friend record for inner dialog (agent talking to itself).
+// No real friend to resolve -- this satisfies the pipeline's friend resolver contract.
+function createSelfFriend(agentName: string): FriendRecord {
+  return {
+    id: "self",
+    name: agentName,
+    trustLevel: "family",
+    externalIds: [],
+    tenantMemberships: [],
+    toolPreferences: {},
+    notes: {},
+    totalTokens: 0,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    schemaVersion: 1,
+  }
+}
+
+// No-op friend store for inner dialog. Inner dialog doesn't track token usage per-friend.
+function createNoOpFriendStore(): FriendStore {
+  return {
+    get: async () => null,
+    put: async () => {},
+    delete: async () => {},
+    findByExternalId: async () => null,
+  }
 }
 
 export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): Promise<InnerDialogTurnResult> {
@@ -149,7 +183,7 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
   const reason = options?.reason ?? "heartbeat"
   const sessionFilePath = innerDialogSessionPath()
   const loaded = loadSession(sessionFilePath)
-  const messages = loaded?.messages ? [...loaded.messages] : []
+  const existingMessages = loaded?.messages ? [...loaded.messages] : []
   const instincts = options?.instincts ?? loadInnerDialogInstincts()
   const state: InnerDialogState = {
     cycleCount: 1,
@@ -157,66 +191,82 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
     lastHeartbeatAt: now().toISOString(),
   }
 
-  if (messages.length === 0) {
-    const systemPrompt = await buildSystem("inner", { toolChoiceRequired: true })
-    messages.push({ role: "system", content: systemPrompt })
+  // ── Adapter concern: build user message ──────────────────────────
+  let userContent: string
+
+  if (existingMessages.length === 0) {
+    // Fresh session: bootstrap message with non-canonical cleanup nudge
     const aspirations = readAspirations(getAgentRoot())
     const nonCanonical = findNonCanonicalBundlePaths(getAgentRoot())
     const cleanupNudge = buildNonCanonicalCleanupNudge(nonCanonical)
-    const bootstrapMessage = [
+    userContent = [
       buildInnerDialogBootstrapMessage(aspirations, "No prior inner dialog session found."),
       cleanupNudge,
     ].filter(Boolean).join("\n\n")
-    messages.push({ role: "user", content: bootstrapMessage })
   } else {
-    const assistantTurns = messages.filter((message) => message.role === "assistant").length
+    // Resumed session: instinct message with checkpoint context
+    const assistantTurns = existingMessages.filter((message) => message.role === "assistant").length
     state.cycleCount = assistantTurns + 1
-    state.checkpoint = deriveResumeCheckpoint(messages)
-    const instinctPrompt = buildInstinctUserMessage(instincts, reason, state)
-    messages.push({ role: "user", content: instinctPrompt })
+    state.checkpoint = deriveResumeCheckpoint(existingMessages)
+    userContent = buildInstinctUserMessage(instincts, reason, state)
   }
 
-  const pendingMessages = drainPending(getPendingDir(getAgentName(), "self", "inner", "dialog"))
-  if (pendingMessages.length > 0) {
-    const lastUserIdx = messages.length - 1
-    const lastUser = messages[lastUserIdx]
-    /* v8 ignore next -- defensive: all code paths push a user message before here @preserve */
-    if (lastUser?.role === "user" && typeof lastUser.content === "string") {
-      const section = pendingMessages
-        .map((msg) => `- **${msg.from}**: ${msg.content}`)
-        .join("\n")
-      messages[lastUserIdx] = {
-        ...lastUser,
-        content: `${lastUser.content}\n\n## pending messages\n${section}`,
-      }
-    }
-  }
-
+  // ── Adapter concern: inbox drain (inner-dialog-specific) ─────────
   const inboxMessages = options?.drainInbox?.() ?? []
   if (inboxMessages.length > 0) {
-    const lastUserIdx = messages.length - 1
-    const lastUser = messages[lastUserIdx]
-    /* v8 ignore next -- defensive: all code paths push a user message before here @preserve */
-    if (lastUser?.role === "user" && typeof lastUser.content === "string") {
-      const section = inboxMessages
-        .map((msg) => `- **${msg.from}**: ${msg.content}`)
-        .join("\n")
-      messages[lastUserIdx] = {
-        ...lastUser,
-        content: `${lastUser.content}\n\n## incoming messages\n${section}`,
-      }
-    }
+    const section = inboxMessages
+      .map((msg) => `- **${msg.from}**: ${msg.content}`)
+      .join("\n")
+    userContent = `${userContent}\n\n## incoming messages\n${section}`
   }
 
+  const userMessage: OpenAI.ChatCompletionMessageParam = { role: "user", content: userContent }
+
+  // ── Session loader: wraps existing session logic ──────────────────
+  const innerCapabilities = getChannelCapabilities("inner")
+  const pendingDir = getInnerDialogPendingDir(getAgentName())
+  const selfFriend = createSelfFriend(getAgentName())
+  const selfContext: ResolvedContext = { friend: selfFriend, channel: innerCapabilities }
+
+  const sessionLoader = {
+    loadOrCreate: async () => {
+      if (existingMessages.length > 0) {
+        return { messages: existingMessages, sessionPath: sessionFilePath }
+      }
+      // Fresh session: build system prompt
+      const systemPrompt = await buildSystem("inner", { toolChoiceRequired: true })
+      return {
+        messages: [{ role: "system" as const, content: systemPrompt }],
+        sessionPath: sessionFilePath,
+      }
+    },
+  }
+
+  // ── Call shared pipeline ──────────────────────────────────────────
   const callbacks = createInnerDialogCallbacks()
   const traceId = createTraceId()
-  const result = await runAgent(messages, callbacks, "inner", options?.signal, {
-    traceId,
-    toolChoiceRequired: true,
-    skipConfirmation: true,
-  })
 
-  postTurn(messages, sessionFilePath, result.usage)
+  const result = await handleInboundTurn({
+    channel: "inner",
+    capabilities: innerCapabilities,
+    messages: [userMessage],
+    callbacks,
+    friendResolver: { resolve: () => Promise.resolve(selfContext) },
+    sessionLoader,
+    pendingDir,
+    friendStore: createNoOpFriendStore(),
+    enforceTrustGate,
+    drainPending,
+    runAgent,
+    postTurn,
+    accumulateFriendTokens,
+    signal: options?.signal,
+    runAgentOptions: {
+      traceId,
+      toolChoiceRequired: true,
+      skipConfirmation: true,
+    },
+  })
 
   emitNervesEvent({
     component: "senses",
@@ -226,8 +276,8 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
   })
 
   return {
-    messages,
+    messages: result.messages ?? [],
     usage: result.usage,
-    sessionPath: sessionFilePath,
+    sessionPath: result.sessionPath ?? sessionFilePath,
   }
 }

@@ -68,7 +68,7 @@ describe("remote channel tool safety", () => {
     expect(names).not.toContain("gh_cli")
   })
 
-  it("keeps local tools blocked for shared bluebubbles group contexts even when trusted", () => {
+  it("allows local tools for family in group bluebubbles contexts (trust-level only)", () => {
     const tools = getToolsForChannel(
       getChannelCapabilities("bluebubbles"),
       undefined,
@@ -90,8 +90,8 @@ describe("remote channel tool safety", () => {
     )
     const names = tools.map((t) => t.function.name)
 
-    expect(names).not.toContain("shell")
-    expect(names).not.toContain("read_file")
+    expect(names).toContain("shell")
+    expect(names).toContain("read_file")
   })
 
   it("exposes local tools for trusted one-to-one teams contexts", () => {
@@ -145,7 +145,33 @@ describe("remote channel tool safety", () => {
     expect(names).toContain("read_file")
   })
 
-  it("keeps local tools blocked for shared teams conversations even when trusted", () => {
+  it("treats undefined trustLevel as friend (backward compat — legacy friends keep tool access)", () => {
+    const tools = getToolsForChannel(
+      getChannelCapabilities("bluebubbles"),
+      undefined,
+      {
+        friend: {
+          id: "friend-legacy",
+          name: "Legacy Friend",
+          // trustLevel intentionally omitted — pre-trust-level friend records
+          externalIds: [],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+          schemaVersion: 1,
+        } as any,
+        channel: getChannelCapabilities("bluebubbles"),
+      },
+    )
+    const names = tools.map((t) => t.function.name)
+
+    expect(names).toContain("shell")
+    expect(names).toContain("read_file")
+  })
+
+  it("allows local tools for family in teams conversations (trust-level only)", () => {
     const tools = getToolsForChannel(
       getChannelCapabilities("teams"),
       undefined,
@@ -167,8 +193,8 @@ describe("remote channel tool safety", () => {
     )
     const names = tools.map((t) => t.function.name)
 
-    expect(names).not.toContain("shell")
-    expect(names).not.toContain("read_file")
+    expect(names).toContain("shell")
+    expect(names).toContain("read_file")
   })
 
   it("returns explanatory denial messaging when remote context attempts local shell execution", async () => {
@@ -191,8 +217,8 @@ describe("remote channel tool safety", () => {
 
     const result = await execTool("shell", { command: "echo hello" }, remoteContext)
 
-    expect(result.toLowerCase()).toContain("can't do that from here")
-    expect(result.toLowerCase()).toContain("talking to multiple people")
+    expect(result.toLowerCase()).toContain("can't do that")
+    expect(result.toLowerCase()).toContain("trust")
   })
 
   it("returns explanatory denial messaging when bluebubbles context attempts local shell execution", async () => {
@@ -202,6 +228,7 @@ describe("remote channel tool safety", () => {
         friend: {
           id: "friend-1",
           name: "Test Friend",
+          trustLevel: "stranger",
           externalIds: [],
           tenantMemberships: [],
           toolPreferences: {},
@@ -216,8 +243,8 @@ describe("remote channel tool safety", () => {
 
     const result = await execTool("shell", { command: "echo hello" }, remoteContext)
 
-    expect(result.toLowerCase()).toContain("can't do that from here")
-    expect(result.toLowerCase()).toContain("remote channel")
+    expect(result.toLowerCase()).toContain("can't do that")
+    expect(result.toLowerCase()).toContain("trust")
   })
 
   it("keeps local tools blocked for stranger one-to-one bluebubbles contexts", async () => {
@@ -262,7 +289,8 @@ describe("remote channel tool safety", () => {
       },
     } as unknown as ToolContext)
 
-    expect(result.toLowerCase()).toContain("can't do that from here")
+    expect(result.toLowerCase()).toContain("can't do that")
+    expect(result.toLowerCase()).toContain("trust")
   })
 
   it("allows local file reads for trusted one-to-one bluebubbles contexts", async () => {

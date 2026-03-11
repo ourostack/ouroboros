@@ -5,7 +5,8 @@ import { teamsToolDefinitions, summarizeTeamsArgs } from "./tools-teams";
 import { bluebubblesToolDefinitions } from "./tools-bluebubbles";
 import { adoSemanticToolDefinitions } from "./ado-semantic";
 import { githubToolDefinitions, summarizeGithubArgs } from "./tools-github";
-import type { ChannelCapabilities, ResolvedContext } from "../mind/friends/types";
+import { isTrustedLevel, type ChannelCapabilities, type ResolvedContext } from "../mind/friends/types";
+import { isRemoteChannel } from "../mind/friends/channel";
 import { emitNervesEvent } from "../nerves/runtime";
 
 // Re-export types and constants used by the rest of the codebase
@@ -15,23 +16,12 @@ export { teamsTools } from "./tools-teams";
 
 // All tool definitions in a single registry
 const allDefinitions: ToolDefinition[] = [...baseToolDefinitions, ...bluebubblesToolDefinitions, ...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions];
-const REMOTE_BLOCKED_LOCAL_TOOLS = new Set(["shell", "read_file", "write_file", "edit_file", "glob", "grep"]);
-
-function isRemoteChannel(capabilities?: ChannelCapabilities): boolean {
-  return capabilities?.channel === "teams" || capabilities?.channel === "bluebubbles";
-}
-
-function isSharedRemoteContext(friend: ResolvedContext["friend"]): boolean {
-  const externalIds = friend.externalIds ?? [];
-  return externalIds.some((externalId) =>
-    externalId.externalId.startsWith("group:") || externalId.provider === "teams-conversation",
-  );
-}
+/** Tool names blocked for untrusted remote contexts. Shared with prompt.ts for restriction messaging. */
+export const REMOTE_BLOCKED_LOCAL_TOOLS = new Set(["shell", "read_file", "write_file", "edit_file", "glob", "grep"]);
 
 function isTrustedRemoteContext(context?: Pick<ResolvedContext, "friend" | "channel">): boolean {
   if (!context?.friend || !isRemoteChannel(context.channel)) return false;
-  const trustLevel = context.friend.trustLevel ?? "stranger";
-  return trustLevel !== "stranger" && !isSharedRemoteContext(context.friend);
+  return isTrustedLevel(context.friend.trustLevel);
 }
 
 function shouldBlockLocalTools(
@@ -43,7 +33,7 @@ function shouldBlockLocalTools(
 }
 
 function blockedLocalToolMessage(): string {
-  return "I can't do that from here because I'm talking to multiple people in a shared remote channel, and local shell/file/git/gh operations could let conversations interfere with each other. Ask me for a remote-safe alternative (Graph/ADO/web), or run that operation from CLI.";
+  return "I can't do that because my trust level with you isn't high enough for local shell/file operations. Ask me for a remote-safe alternative (Graph/ADO/web), or run that operation from CLI.";
 }
 
 function baseToolsForCapabilities(

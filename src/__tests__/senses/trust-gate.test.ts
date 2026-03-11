@@ -3,7 +3,8 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import { enforceTrustGate, STRANGER_AUTO_REPLY } from "../../senses/trust-gate"
-import type { FriendRecord } from "../../mind/friends/types"
+import type { FriendRecord, SenseType } from "../../mind/friends/types"
+import type { TrustGateInput, TrustGateResult } from "../../senses/trust-gate"
 
 function makeFriend(overrides: Partial<FriendRecord> = {}): FriendRecord {
   return {
@@ -24,6 +25,22 @@ function makeFriend(overrides: Partial<FriendRecord> = {}): FriendRecord {
   }
 }
 
+function makeInput(overrides: Partial<TrustGateInput> = {}): TrustGateInput {
+  return {
+    friend: makeFriend(),
+    provider: "aad",
+    externalId: "aad-123",
+    channel: "teams",
+    senseType: "closed",
+    isGroupChat: false,
+    groupHasFamilyMember: false,
+    hasExistingGroupWithFamily: false,
+    bundleRoot: "",
+    now: () => new Date("2026-03-07T01:00:00.000Z"),
+    ...overrides,
+  }
+}
+
 describe("trust gate", () => {
   let bundleRoot: string
 
@@ -31,156 +48,467 @@ describe("trust gate", () => {
     bundleRoot = fs.mkdtempSync(path.join(os.tmpdir(), "trust-gate-test-"))
   })
 
-  it("allows non-stranger traffic", () => {
-    const result = enforceTrustGate({
-      bundleRoot,
-      provider: "aad",
-      externalId: "aad-123",
-      channel: "teams",
-      friend: makeFriend({ trustLevel: "family" }),
-      now: () => new Date("2026-03-07T01:00:00.000Z"),
+  // ── CLI (local sense) ─────────────────────────────────────────────
+
+  describe("CLI (local sense type)", () => {
+    it("allows stranger on CLI", () => {
+      const result = enforceTrustGate(makeInput({
+        bundleRoot,
+        senseType: "local",
+        channel: "cli",
+        provider: "local",
+        friend: makeFriend({ trustLevel: "stranger" }),
+      }))
+      expect(result).toEqual({ allowed: true })
     })
 
-    expect(result).toEqual({ allowed: true })
+    it("allows acquaintance on CLI", () => {
+      const result = enforceTrustGate(makeInput({
+        bundleRoot,
+        senseType: "local",
+        channel: "cli",
+        provider: "local",
+        friend: makeFriend({ trustLevel: "acquaintance" }),
+      }))
+      expect(result).toEqual({ allowed: true })
+    })
+
+    it("allows family on CLI", () => {
+      const result = enforceTrustGate(makeInput({
+        bundleRoot,
+        senseType: "local",
+        channel: "cli",
+        provider: "local",
+        friend: makeFriend({ trustLevel: "family" }),
+      }))
+      expect(result).toEqual({ allowed: true })
+    })
   })
 
-  it("returns one-time auto-reply for first stranger contact and persists state", () => {
-    const result = enforceTrustGate({
-      bundleRoot,
-      provider: "aad",
-      externalId: "aad-stranger-1",
-      tenantId: "tenant-1",
-      channel: "teams",
-      friend: makeFriend({ trustLevel: "stranger" }),
-      now: () => new Date("2026-03-07T01:01:00.000Z"),
+  // ── Internal (inner dialog) ───────────────────────────────────────
+
+  describe("internal sense type", () => {
+    it("allows any trust level on internal channel", () => {
+      const result = enforceTrustGate(makeInput({
+        bundleRoot,
+        senseType: "internal",
+        channel: "inner",
+        friend: makeFriend({ trustLevel: "stranger" }),
+      }))
+      expect(result).toEqual({ allowed: true })
     })
-
-    expect(result.allowed).toBe(false)
-    expect(result.autoReply).toBe(STRANGER_AUTO_REPLY)
-    expect(result.reason).toBe("stranger_first_reply")
-
-    const repliesPath = path.join(bundleRoot, "stranger-replies.json")
-    const state = JSON.parse(fs.readFileSync(repliesPath, "utf8")) as Record<string, string>
-    expect(Object.keys(state)).toHaveLength(1)
-
-    const notificationsPath = path.join(bundleRoot, "inbox", "primary-notifications.jsonl")
-    const notificationLines = fs.readFileSync(notificationsPath, "utf8").trim().split("\n")
-    expect(notificationLines.length).toBe(1)
-    expect(notificationLines[0]).toContain("Unknown contact tried to message me")
-    expect(notificationLines[0]).toContain("ouro link")
   })
 
-  it("silently drops subsequent messages from the same stranger identity", () => {
-    const first = enforceTrustGate({
-      bundleRoot,
-      provider: "aad",
-      externalId: "aad-stranger-2",
-      tenantId: "tenant-1",
-      channel: "teams",
-      friend: makeFriend({ trustLevel: "stranger" }),
-      now: () => new Date("2026-03-07T01:02:00.000Z"),
-    })
-    expect(first.reason).toBe("stranger_first_reply")
+  // ── Closed sense (Teams) ──────────────────────────────────────────
 
-    const second = enforceTrustGate({
-      bundleRoot,
-      provider: "aad",
-      externalId: "aad-stranger-2",
-      tenantId: "tenant-1",
-      channel: "teams",
-      friend: makeFriend({ trustLevel: "stranger" }),
-      now: () => new Date("2026-03-07T01:03:00.000Z"),
-    })
-
-    expect(second).toEqual({
-      allowed: false,
-      reason: "stranger_silent_drop",
-    })
-
-    const notificationsPath = path.join(bundleRoot, "inbox", "primary-notifications.jsonl")
-    const notificationLines = fs.readFileSync(notificationsPath, "utf8").trim().split("\n")
-    expect(notificationLines.length).toBe(1)
-  })
-
-  it("recovers from malformed stranger-replies.json", () => {
-    fs.writeFileSync(path.join(bundleRoot, "stranger-replies.json"), "{bad-json", "utf8")
-
-    const result = enforceTrustGate({
-      bundleRoot,
-      provider: "aad",
-      externalId: "aad-stranger-3",
-      channel: "teams",
-      friend: makeFriend({ trustLevel: "stranger" }),
-      now: () => new Date("2026-03-07T01:04:00.000Z"),
-    })
-
-    expect(result.reason).toBe("stranger_first_reply")
-    const state = JSON.parse(fs.readFileSync(path.join(bundleRoot, "stranger-replies.json"), "utf8")) as Record<string, string>
-    expect(Object.keys(state)).toHaveLength(1)
-  })
-
-  it("treats empty stranger-replies.json as an empty state", () => {
-    fs.writeFileSync(path.join(bundleRoot, "stranger-replies.json"), "", "utf8")
-
-    const result = enforceTrustGate({
-      bundleRoot,
-      provider: "aad",
-      externalId: "aad-stranger-empty-state",
-      channel: "teams",
-      friend: makeFriend({ trustLevel: "stranger" }),
-      now: () => new Date("2026-03-07T01:04:30.000Z"),
-    })
-
-    expect(result.reason).toBe("stranger_first_reply")
-    const state = JSON.parse(fs.readFileSync(path.join(bundleRoot, "stranger-replies.json"), "utf8")) as Record<string, string>
-    expect(Object.keys(state)).toHaveLength(1)
-  })
-
-  it("treats array stranger-replies payload as empty and uses default now timestamp", () => {
-    fs.writeFileSync(path.join(bundleRoot, "stranger-replies.json"), "[]", "utf8")
-
-    const result = enforceTrustGate({
-      bundleRoot,
-      provider: "aad",
-      externalId: "aad-stranger-array-state",
-      channel: "teams",
-      friend: makeFriend({ trustLevel: "stranger" }),
-    })
-
-    expect(result.reason).toBe("stranger_first_reply")
-    const state = JSON.parse(fs.readFileSync(path.join(bundleRoot, "stranger-replies.json"), "utf8")) as Record<string, string>
-    const timestamps = Object.values(state)
-    expect(timestamps).toHaveLength(1)
-    expect(timestamps[0]).toMatch(/^20\d\d-/)
-  })
-
-  it("still blocks stranger input when bundleRoot points to an existing file", () => {
-    const invalidBundleRoot = path.join(os.tmpdir(), `trust-gate-invalid-${Date.now()}.txt`)
-    fs.writeFileSync(invalidBundleRoot, "occupied", "utf8")
-
-    try {
-      const result = enforceTrustGate({
-        bundleRoot: invalidBundleRoot,
-        provider: "aad",
-        externalId: "aad-stranger-invalid-root",
+  describe("closed sense (Teams)", () => {
+    it("allows stranger on Teams", () => {
+      const result = enforceTrustGate(makeInput({
+        bundleRoot,
+        senseType: "closed",
         channel: "teams",
         friend: makeFriend({ trustLevel: "stranger" }),
-      })
+      }))
+      expect(result).toEqual({ allowed: true })
+    })
+
+    it("allows acquaintance on Teams", () => {
+      const result = enforceTrustGate(makeInput({
+        bundleRoot,
+        senseType: "closed",
+        channel: "teams",
+        friend: makeFriend({ trustLevel: "acquaintance" }),
+      }))
+      expect(result).toEqual({ allowed: true })
+    })
+
+    it("allows family on Teams", () => {
+      const result = enforceTrustGate(makeInput({
+        bundleRoot,
+        senseType: "closed",
+        channel: "teams",
+        friend: makeFriend({ trustLevel: "family" }),
+      }))
+      expect(result).toEqual({ allowed: true })
+    })
+  })
+
+  // ── Open sense (BB) — friend/family ───────────────────────────────
+
+  describe("open sense — friend/family", () => {
+    it("allows friend on BB", () => {
+      const result = enforceTrustGate(makeInput({
+        bundleRoot,
+        senseType: "open",
+        channel: "bluebubbles",
+        provider: "imessage-handle",
+        friend: makeFriend({ trustLevel: "friend" }),
+      }))
+      expect(result).toEqual({ allowed: true })
+    })
+
+    it("allows family on BB", () => {
+      const result = enforceTrustGate(makeInput({
+        bundleRoot,
+        senseType: "open",
+        channel: "bluebubbles",
+        provider: "imessage-handle",
+        friend: makeFriend({ trustLevel: "family" }),
+      }))
+      expect(result).toEqual({ allowed: true })
+    })
+  })
+
+  // ── Open sense (BB) — stranger ────────────────────────────────────
+
+  describe("open sense — stranger", () => {
+    it("rejects stranger first contact with auto-reply", () => {
+      const result = enforceTrustGate(makeInput({
+        bundleRoot,
+        senseType: "open",
+        channel: "bluebubbles",
+        provider: "imessage-handle",
+        externalId: "stranger-first-1",
+        friend: makeFriend({ trustLevel: "stranger" }),
+      }))
+
+      expect(result.allowed).toBe(false)
+      if (!result.allowed) {
+        expect(result.reason).toBe("stranger_first_reply")
+        expect(result.autoReply).toBe(STRANGER_AUTO_REPLY)
+      }
+    })
+
+    it("rejects stranger subsequent contact silently", () => {
+      // First contact
+      enforceTrustGate(makeInput({
+        bundleRoot,
+        senseType: "open",
+        channel: "bluebubbles",
+        provider: "imessage-handle",
+        externalId: "stranger-subsequent-1",
+        friend: makeFriend({ trustLevel: "stranger" }),
+      }))
+
+      // Second contact — should be silent
+      const result = enforceTrustGate(makeInput({
+        bundleRoot,
+        senseType: "open",
+        channel: "bluebubbles",
+        provider: "imessage-handle",
+        externalId: "stranger-subsequent-1",
+        friend: makeFriend({ trustLevel: "stranger" }),
+      }))
 
       expect(result).toEqual({
         allowed: false,
-        reason: "stranger_first_reply",
-        autoReply: STRANGER_AUTO_REPLY,
+        reason: "stranger_silent_drop",
       })
-    } finally {
-      fs.unlinkSync(invalidBundleRoot)
-    }
+    })
+
+    it("writes pending notice to inner channel on stranger rejection", () => {
+      enforceTrustGate(makeInput({
+        bundleRoot,
+        senseType: "open",
+        channel: "bluebubbles",
+        provider: "imessage-handle",
+        externalId: "stranger-notice-1",
+        friend: makeFriend({ trustLevel: "stranger", name: "Unknown Person" }),
+      }))
+
+      // Check that a pending notice was written to the inner channel dir
+      const innerPendingDir = path.join(bundleRoot, "state", "pending", "self", "inner", "dialog")
+      expect(fs.existsSync(innerPendingDir)).toBe(true)
+      const files = fs.readdirSync(innerPendingDir)
+      expect(files.length).toBeGreaterThanOrEqual(1)
+
+      const content = JSON.parse(fs.readFileSync(path.join(innerPendingDir, files[0]), "utf-8"))
+      expect(content.from).toBe("instinct")
+      expect(content.content).toContain("stranger")
+    })
+
+    it("persists stranger reply state to file", () => {
+      enforceTrustGate(makeInput({
+        bundleRoot,
+        senseType: "open",
+        channel: "bluebubbles",
+        provider: "imessage-handle",
+        externalId: "stranger-persist-1",
+        tenantId: "t1",
+        friend: makeFriend({ trustLevel: "stranger" }),
+      }))
+
+      const repliesPath = path.join(bundleRoot, "stranger-replies.json")
+      const state = JSON.parse(fs.readFileSync(repliesPath, "utf8"))
+      expect(Object.keys(state)).toHaveLength(1)
+    })
+
+    it("appends primary notification on first stranger contact", () => {
+      enforceTrustGate(makeInput({
+        bundleRoot,
+        senseType: "open",
+        channel: "bluebubbles",
+        provider: "imessage-handle",
+        externalId: "stranger-notif-1",
+        friend: makeFriend({ trustLevel: "stranger" }),
+      }))
+
+      const notificationsPath = path.join(bundleRoot, "inbox", "primary-notifications.jsonl")
+      const lines = fs.readFileSync(notificationsPath, "utf8").trim().split("\n")
+      expect(lines.length).toBe(1)
+      expect(lines[0]).toContain("Unknown contact")
+    })
+
+    it("does not append primary notification on subsequent stranger contact", () => {
+      // First contact
+      enforceTrustGate(makeInput({
+        bundleRoot,
+        senseType: "open",
+        channel: "bluebubbles",
+        provider: "imessage-handle",
+        externalId: "stranger-no-second-notif",
+        friend: makeFriend({ trustLevel: "stranger" }),
+      }))
+
+      // Second contact
+      enforceTrustGate(makeInput({
+        bundleRoot,
+        senseType: "open",
+        channel: "bluebubbles",
+        provider: "imessage-handle",
+        externalId: "stranger-no-second-notif",
+        friend: makeFriend({ trustLevel: "stranger" }),
+      }))
+
+      const notificationsPath = path.join(bundleRoot, "inbox", "primary-notifications.jsonl")
+      const lines = fs.readFileSync(notificationsPath, "utf8").trim().split("\n")
+      expect(lines.length).toBe(1)
+    })
   })
 
+  // ── Open sense (BB) — acquaintance ────────────────────────────────
+
+  describe("open sense — acquaintance", () => {
+    it("allows acquaintance in group chat WITH family member present", () => {
+      const result = enforceTrustGate(makeInput({
+        bundleRoot,
+        senseType: "open",
+        channel: "bluebubbles",
+        provider: "imessage-handle",
+        friend: makeFriend({ trustLevel: "acquaintance" }),
+        isGroupChat: true,
+        groupHasFamilyMember: true,
+      }))
+      expect(result).toEqual({ allowed: true })
+    })
+
+    it("rejects acquaintance in group chat WITHOUT family member", () => {
+      const result = enforceTrustGate(makeInput({
+        bundleRoot,
+        senseType: "open",
+        channel: "bluebubbles",
+        provider: "imessage-handle",
+        friend: makeFriend({ trustLevel: "acquaintance" }),
+        isGroupChat: true,
+        groupHasFamilyMember: false,
+      }))
+
+      expect(result.allowed).toBe(false)
+      if (!result.allowed) {
+        expect(result.reason).toBe("acquaintance_group_no_family")
+      }
+    })
+
+    it("rejects acquaintance in 1:1 with existing group that has family — reach me in our group chat", () => {
+      const result = enforceTrustGate(makeInput({
+        bundleRoot,
+        senseType: "open",
+        channel: "bluebubbles",
+        provider: "imessage-handle",
+        friend: makeFriend({ trustLevel: "acquaintance" }),
+        isGroupChat: false,
+        hasExistingGroupWithFamily: true,
+      }))
+
+      expect(result.allowed).toBe(false)
+      if (!result.allowed) {
+        expect(result.reason).toBe("acquaintance_1on1_has_group")
+        expect(result.autoReply).toContain("our group chat")
+      }
+    })
+
+    it("rejects acquaintance in 1:1 without existing group — reach me in a group chat", () => {
+      const result = enforceTrustGate(makeInput({
+        bundleRoot,
+        senseType: "open",
+        channel: "bluebubbles",
+        provider: "imessage-handle",
+        friend: makeFriend({ trustLevel: "acquaintance" }),
+        isGroupChat: false,
+        hasExistingGroupWithFamily: false,
+      }))
+
+      expect(result.allowed).toBe(false)
+      if (!result.allowed) {
+        expect(result.reason).toBe("acquaintance_1on1_no_group")
+        expect(result.autoReply).toContain("a group chat")
+      }
+    })
+
+    it("writes pending notice to inner channel on acquaintance rejection", () => {
+      enforceTrustGate(makeInput({
+        bundleRoot,
+        senseType: "open",
+        channel: "bluebubbles",
+        provider: "imessage-handle",
+        friend: makeFriend({ trustLevel: "acquaintance", name: "SomeAcquaintance" }),
+        isGroupChat: false,
+        hasExistingGroupWithFamily: false,
+      }))
+
+      // Check that a pending notice was written to the inner channel dir
+      const innerPendingDir = path.join(bundleRoot, "state", "pending", "self", "inner", "dialog")
+      expect(fs.existsSync(innerPendingDir)).toBe(true)
+      const files = fs.readdirSync(innerPendingDir)
+      expect(files.length).toBeGreaterThanOrEqual(1)
+
+      const content = JSON.parse(fs.readFileSync(path.join(innerPendingDir, files[0]), "utf-8"))
+      expect(content.from).toBe("instinct")
+      expect(content.content).toContain("acquaintance")
+    })
+  })
+
+  // ── Edge cases ────────────────────────────────────────────────────
+
+  describe("edge cases", () => {
+    it("recovers from malformed stranger-replies.json", () => {
+      fs.writeFileSync(path.join(bundleRoot, "stranger-replies.json"), "{bad-json", "utf8")
+
+      const result = enforceTrustGate(makeInput({
+        bundleRoot,
+        senseType: "open",
+        channel: "bluebubbles",
+        provider: "imessage-handle",
+        externalId: "stranger-malformed",
+        friend: makeFriend({ trustLevel: "stranger" }),
+      }))
+
+      expect(result.allowed).toBe(false)
+      if (!result.allowed) {
+        expect(result.reason).toBe("stranger_first_reply")
+      }
+    })
+
+    it("treats empty stranger-replies.json as empty state", () => {
+      fs.writeFileSync(path.join(bundleRoot, "stranger-replies.json"), "", "utf8")
+
+      const result = enforceTrustGate(makeInput({
+        bundleRoot,
+        senseType: "open",
+        channel: "bluebubbles",
+        provider: "imessage-handle",
+        externalId: "stranger-empty-state",
+        friend: makeFriend({ trustLevel: "stranger" }),
+      }))
+
+      expect(result.allowed).toBe(false)
+      if (!result.allowed) {
+        expect(result.reason).toBe("stranger_first_reply")
+      }
+    })
+
+    it("treats array stranger-replies payload as empty and uses default now timestamp", () => {
+      fs.writeFileSync(path.join(bundleRoot, "stranger-replies.json"), "[]", "utf8")
+
+      // Explicitly omit `now` to exercise the default Date fallback
+      const input = makeInput({
+        bundleRoot,
+        senseType: "open",
+        channel: "bluebubbles",
+        provider: "imessage-handle",
+        externalId: "stranger-array-state",
+        friend: makeFriend({ trustLevel: "stranger" }),
+      })
+      delete (input as any).now
+
+      const result = enforceTrustGate(input)
+
+      expect(result.allowed).toBe(false)
+      if (!result.allowed) {
+        expect(result.reason).toBe("stranger_first_reply")
+      }
+
+      // Verify the timestamp was generated (not from our fixture)
+      const repliesPath = path.join(bundleRoot, "stranger-replies.json")
+      const state = JSON.parse(fs.readFileSync(repliesPath, "utf8"))
+      const timestamps = Object.values(state) as string[]
+      expect(timestamps).toHaveLength(1)
+      expect(timestamps[0]).toMatch(/^20\d\d-/)
+    })
+
+    it("defaults trustLevel to friend when not set", () => {
+      const result = enforceTrustGate(makeInput({
+        bundleRoot,
+        senseType: "open",
+        channel: "bluebubbles",
+        provider: "imessage-handle",
+        friend: makeFriend({ trustLevel: undefined }),
+      }))
+      expect(result).toEqual({ allowed: true })
+    })
+
+    it("still blocks acquaintance when bundleRoot points to an existing file (pending notice fails)", () => {
+      const invalidBundleRoot = path.join(os.tmpdir(), `trust-gate-acq-invalid-${Date.now()}.txt`)
+      fs.writeFileSync(invalidBundleRoot, "occupied", "utf8")
+
+      try {
+        const result = enforceTrustGate(makeInput({
+          bundleRoot: invalidBundleRoot,
+          senseType: "open",
+          channel: "bluebubbles",
+          provider: "imessage-handle",
+          friend: makeFriend({ trustLevel: "acquaintance" }),
+          isGroupChat: false,
+          hasExistingGroupWithFamily: false,
+        }))
+
+        expect(result.allowed).toBe(false)
+        if (!result.allowed) {
+          expect(result.reason).toBe("acquaintance_1on1_no_group")
+        }
+      } finally {
+        fs.unlinkSync(invalidBundleRoot)
+      }
+    })
+
+    it("still blocks stranger when bundleRoot points to an existing file", () => {
+      const invalidBundleRoot = path.join(os.tmpdir(), `trust-gate-invalid-${Date.now()}.txt`)
+      fs.writeFileSync(invalidBundleRoot, "occupied", "utf8")
+
+      try {
+        const result = enforceTrustGate(makeInput({
+          bundleRoot: invalidBundleRoot,
+          senseType: "open",
+          channel: "bluebubbles",
+          provider: "imessage-handle",
+          externalId: "stranger-invalid-root",
+          friend: makeFriend({ trustLevel: "stranger" }),
+        }))
+
+        expect(result.allowed).toBe(false)
+        if (!result.allowed) {
+          expect(result.reason).toBe("stranger_first_reply")
+          expect(result.autoReply).toBe(STRANGER_AUTO_REPLY)
+        }
+      } finally {
+        fs.unlinkSync(invalidBundleRoot)
+      }
+    })
+  })
 })
 
 describe("trust gate error branches (module mocks)", () => {
-  it("still blocks stranger input when reply-state persistence fails", async () => {
+  it("still blocks stranger when reply-state persistence fails", async () => {
     vi.resetModules()
     const emitNervesEvent = vi.fn()
 
@@ -201,6 +529,10 @@ describe("trust gate error branches (module mocks)", () => {
       provider: "aad",
       externalId: "aad-stranger-write-fail",
       channel: "teams",
+      senseType: "open",
+      isGroupChat: false,
+      groupHasFamilyMember: false,
+      hasExistingGroupWithFamily: false,
       friend: makeFriend({ trustLevel: "stranger" }),
       now: () => new Date("2026-03-07T01:05:00.000Z"),
     })
@@ -218,7 +550,7 @@ describe("trust gate error branches (module mocks)", () => {
     }))
   })
 
-  it("still blocks stranger input when primary notification append fails", async () => {
+  it("still blocks stranger when primary notification append fails", async () => {
     vi.resetModules()
     const emitNervesEvent = vi.fn()
 
@@ -239,6 +571,10 @@ describe("trust gate error branches (module mocks)", () => {
       provider: "aad",
       externalId: "aad-stranger-append-fail",
       channel: "teams",
+      senseType: "open",
+      isGroupChat: false,
+      groupHasFamilyMember: false,
+      hasExistingGroupWithFamily: false,
       friend: makeFriend({ trustLevel: "stranger" }),
       now: () => new Date("2026-03-07T01:06:00.000Z"),
     })
@@ -253,6 +589,99 @@ describe("trust gate error branches (module mocks)", () => {
       event: "senses.trust_gate_error",
       message: "failed to persist primary stranger notification",
       component: "senses",
+    }))
+  })
+
+  it("still blocks stranger when inner pending notice write fails", async () => {
+    vi.resetModules()
+    const emitNervesEvent = vi.fn()
+    let mkdirCallCount = 0
+
+    vi.doMock("fs", () => ({
+      existsSync: vi.fn(() => false),
+      readFileSync: vi.fn(() => ""),
+      writeFileSync: vi.fn((p: string) => {
+        // Let stranger-replies.json write succeed, but fail inner pending write
+        if (typeof p === "string" && p.includes("pending")) {
+          throw "pending write failed"
+        }
+      }),
+      mkdirSync: vi.fn(() => { mkdirCallCount++ }),
+      appendFileSync: vi.fn(),
+    }))
+    vi.doMock("../../heart/identity", () => ({ getAgentRoot: () => "/mock/bundle" }))
+    vi.doMock("../../nerves/runtime", () => ({ emitNervesEvent }))
+
+    const { enforceTrustGate: dynamicGate, STRANGER_AUTO_REPLY: dynamicReply } = await import("../../senses/trust-gate")
+    const result = dynamicGate({
+      provider: "aad",
+      externalId: "aad-stranger-pending-fail",
+      channel: "teams",
+      senseType: "open",
+      isGroupChat: false,
+      groupHasFamilyMember: false,
+      hasExistingGroupWithFamily: false,
+      friend: makeFriend({ trustLevel: "stranger" }),
+      now: () => new Date("2026-03-07T01:07:00.000Z"),
+    })
+
+    // Gate should still block even if pending notice write fails
+    expect(result.allowed).toBe(false)
+    if (!result.allowed) {
+      expect(result.reason).toBe("stranger_first_reply")
+      expect(result.autoReply).toBe(dynamicReply)
+    }
+    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "error",
+      event: "senses.trust_gate_error",
+      message: "failed to write inner pending notice",
+      component: "senses",
+    }))
+  })
+
+  it("still blocks acquaintance when inner pending notice write fails with non-Error", async () => {
+    vi.resetModules()
+    const emitNervesEvent = vi.fn()
+
+    vi.doMock("fs", () => ({
+      existsSync: vi.fn(() => false),
+      readFileSync: vi.fn(() => ""),
+      writeFileSync: vi.fn((p: string) => {
+        if (typeof p === "string" && p.includes("pending")) {
+          throw "acquaintance pending write failed"
+        }
+      }),
+      mkdirSync: vi.fn(),
+      appendFileSync: vi.fn(),
+    }))
+    vi.doMock("../../heart/identity", () => ({ getAgentRoot: () => "/mock/bundle" }))
+    vi.doMock("../../nerves/runtime", () => ({ emitNervesEvent }))
+
+    const { enforceTrustGate: dynamicGate } = await import("../../senses/trust-gate")
+    const result = dynamicGate({
+      provider: "imessage-handle",
+      externalId: "acq-pending-fail",
+      channel: "bluebubbles",
+      senseType: "open",
+      isGroupChat: false,
+      groupHasFamilyMember: false,
+      hasExistingGroupWithFamily: false,
+      friend: makeFriend({ trustLevel: "acquaintance" }),
+      now: () => new Date("2026-03-07T01:08:00.000Z"),
+    })
+
+    expect(result.allowed).toBe(false)
+    if (!result.allowed) {
+      expect(result.reason).toBe("acquaintance_1on1_no_group")
+    }
+    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "error",
+      event: "senses.trust_gate_error",
+      message: "failed to write inner pending notice",
+      component: "senses",
+      meta: expect.objectContaining({
+        reason: "acquaintance pending write failed",
+      }),
     }))
   })
 })

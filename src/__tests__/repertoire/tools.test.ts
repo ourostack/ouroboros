@@ -776,6 +776,7 @@ describe("getToolsForChannel with ChannelCapabilities", () => {
     const { getToolsForChannel, tools } = await import("../../repertoire/tools")
     const teamsCaps = {
       channel: "teams" as const,
+      senseType: "closed" as const,
       availableIntegrations: ["ado" as const, "graph" as const],
       supportsMarkdown: true,
       supportsStreaming: true,
@@ -823,6 +824,7 @@ describe("getToolsForChannel with ChannelCapabilities", () => {
     const { getToolsForChannel, tools } = await import("../../repertoire/tools")
     const caps = {
       channel: "teams" as const,
+      senseType: "closed" as const,
       availableIntegrations: ["graph" as const],
       supportsMarkdown: true,
       supportsStreaming: true,
@@ -852,6 +854,7 @@ describe("getToolsForChannel with ChannelCapabilities", () => {
     const { getToolsForChannel, tools } = await import("../../repertoire/tools")
     const caps = {
       channel: "teams" as const,
+      senseType: "closed" as const,
       availableIntegrations: ["ado" as const],
       supportsMarkdown: true,
       supportsStreaming: true,
@@ -882,6 +885,7 @@ describe("getToolsForChannel with ChannelCapabilities", () => {
 describe("getToolsForChannel with toolPreferences", () => {
   const teamsCaps = {
     channel: "teams" as const,
+    senseType: "closed" as const,
     availableIntegrations: ["ado" as const, "graph" as const],
     supportsMarkdown: true,
     supportsStreaming: true,
@@ -1066,6 +1070,197 @@ describe("isConfirmationRequired", () => {
   })
 })
 
+describe("tool access trust-level alignment (D1b Rule 1)", () => {
+  const bbCaps = {
+    channel: "bluebubbles" as const,
+    senseType: "open" as const,
+    availableIntegrations: [] as const,
+    supportsMarkdown: false,
+    supportsStreaming: false,
+    supportsRichCards: false,
+    maxMessageLength: Infinity,
+  }
+  const teamsCaps = {
+    channel: "teams" as const,
+    senseType: "closed" as const,
+    availableIntegrations: ["ado" as const, "graph" as const],
+    supportsMarkdown: true,
+    supportsStreaming: true,
+    supportsRichCards: true,
+    maxMessageLength: Infinity,
+  }
+  const cliCaps = {
+    channel: "cli" as const,
+    senseType: "local" as const,
+    availableIntegrations: [] as const,
+    supportsMarkdown: false,
+    supportsStreaming: true,
+    supportsRichCards: false,
+    maxMessageLength: Infinity,
+  }
+
+  function makeFriend(trustLevel: string, externalIds: any[] = []): any {
+    return {
+      id: "friend-1",
+      name: "Test User",
+      trustLevel,
+      externalIds,
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: {},
+      totalTokens: 0,
+      createdAt: "2026-01-01",
+      updatedAt: "2026-01-01",
+      schemaVersion: 1,
+    }
+  }
+
+  function makeContext(caps: any, friend: any): any {
+    return { friend, channel: caps }
+  }
+
+  const blockedToolNames = ["shell", "read_file", "write_file", "edit_file", "glob", "grep"]
+
+  it("blocks local tools for acquaintance on remote channel", async () => {
+    vi.resetModules()
+    const { getToolsForChannel } = await import("../../repertoire/tools")
+    const friend = makeFriend("acquaintance")
+    const context = makeContext(bbCaps, friend)
+    const result = getToolsForChannel(bbCaps, undefined, context)
+    const names = result.map((t: any) => t.function.name)
+    for (const tool of blockedToolNames) {
+      expect(names).not.toContain(tool)
+    }
+  })
+
+  it("blocks local tools for stranger on remote channel", async () => {
+    vi.resetModules()
+    const { getToolsForChannel } = await import("../../repertoire/tools")
+    const friend = makeFriend("stranger")
+    const context = makeContext(bbCaps, friend)
+    const result = getToolsForChannel(bbCaps, undefined, context)
+    const names = result.map((t: any) => t.function.name)
+    for (const tool of blockedToolNames) {
+      expect(names).not.toContain(tool)
+    }
+  })
+
+  it("allows local tools for family in group chat on remote channel", async () => {
+    vi.resetModules()
+    const { getToolsForChannel } = await import("../../repertoire/tools")
+    const friend = makeFriend("family", [
+      { provider: "imessage-handle", externalId: "group:chat123", linkedAt: "2026-01-01" },
+    ])
+    const context = makeContext(bbCaps, friend)
+    const result = getToolsForChannel(bbCaps, undefined, context)
+    const names = result.map((t: any) => t.function.name)
+    for (const tool of blockedToolNames) {
+      expect(names).toContain(tool)
+    }
+  })
+
+  it("allows local tools for friend in group chat on remote channel", async () => {
+    vi.resetModules()
+    const { getToolsForChannel } = await import("../../repertoire/tools")
+    const friend = makeFriend("friend", [
+      { provider: "imessage-handle", externalId: "group:chat456", linkedAt: "2026-01-01" },
+    ])
+    const context = makeContext(teamsCaps, friend)
+    const result = getToolsForChannel(teamsCaps, undefined, context)
+    const names = result.map((t: any) => t.function.name)
+    for (const tool of blockedToolNames) {
+      expect(names).toContain(tool)
+    }
+  })
+
+  it("allows local tools for family in 1:1 on remote channel", async () => {
+    vi.resetModules()
+    const { getToolsForChannel } = await import("../../repertoire/tools")
+    const friend = makeFriend("family")
+    const context = makeContext(teamsCaps, friend)
+    const result = getToolsForChannel(teamsCaps, undefined, context)
+    const names = result.map((t: any) => t.function.name)
+    for (const tool of blockedToolNames) {
+      expect(names).toContain(tool)
+    }
+  })
+
+  it("allows local tools for friend in 1:1 on remote channel", async () => {
+    vi.resetModules()
+    const { getToolsForChannel } = await import("../../repertoire/tools")
+    const friend = makeFriend("friend")
+    const context = makeContext(bbCaps, friend)
+    const result = getToolsForChannel(bbCaps, undefined, context)
+    const names = result.map((t: any) => t.function.name)
+    for (const tool of blockedToolNames) {
+      expect(names).toContain(tool)
+    }
+  })
+
+  it("never blocks local tools on CLI regardless of trust level", async () => {
+    vi.resetModules()
+    const { getToolsForChannel } = await import("../../repertoire/tools")
+    for (const trustLevel of ["stranger", "acquaintance", "friend", "family"]) {
+      const friend = makeFriend(trustLevel)
+      const context = makeContext(cliCaps, friend)
+      const result = getToolsForChannel(cliCaps, undefined, context)
+      const names = result.map((t: any) => t.function.name)
+      for (const tool of blockedToolNames) {
+        expect(names).toContain(tool)
+      }
+    }
+  })
+
+  it("execTool blocks read_file for acquaintance on remote channel", async () => {
+    vi.resetModules()
+    vi.mocked(fs.readFileSync).mockReturnValue("file content")
+    const { execTool } = await import("../../repertoire/tools")
+    const ctx = {
+      signin: vi.fn(),
+      context: {
+        friend: makeFriend("acquaintance"),
+        channel: bbCaps,
+      },
+    }
+    const result = await execTool("read_file", { path: "/tmp/test.txt" }, ctx)
+    expect(result).toContain("can't")
+  })
+
+  it("execTool allows read_file for family in group chat on remote channel", async () => {
+    vi.resetModules()
+    vi.mocked(fs.readFileSync).mockReturnValue("file content")
+    const { execTool } = await import("../../repertoire/tools")
+    const friend = makeFriend("family", [
+      { provider: "imessage-handle", externalId: "group:chat789", linkedAt: "2026-01-01" },
+    ])
+    const ctx = {
+      signin: vi.fn(),
+      context: {
+        friend,
+        channel: bbCaps,
+      },
+    }
+    const result = await execTool("read_file", { path: "/tmp/test.txt" }, ctx)
+    expect(result).toBe("file content")
+  })
+
+  it("blocked tool message references trust level, not group chat", async () => {
+    vi.resetModules()
+    const { execTool } = await import("../../repertoire/tools")
+    const ctx = {
+      signin: vi.fn(),
+      context: {
+        friend: makeFriend("stranger"),
+        channel: bbCaps,
+      },
+    }
+    const result = await execTool("read_file", { path: "/tmp/test.txt" }, ctx)
+    expect(result).not.toContain("multiple people")
+    expect(result).not.toContain("shared remote channel")
+    expect(result).toContain("trust")
+  })
+})
+
 describe("ToolContext shape", () => {
   it("ToolContext accepts context?: ResolvedContext", async () => {
     vi.resetModules()
@@ -1088,6 +1283,7 @@ describe("ToolContext shape", () => {
         },
         channel: {
           channel: "teams" as const,
+          senseType: "closed" as const,
           availableIntegrations: ["ado" as const, "graph" as const],
           supportsMarkdown: true,
           supportsStreaming: true,
@@ -1098,7 +1294,7 @@ describe("ToolContext shape", () => {
     }
     // Teams context should deny local file operations
     const result = await execTool("read_file", { path: "/tmp/test.txt" }, ctx)
-    expect(result).toContain("I can't do that from here")
+    expect(result).toContain("I can't do that")
   })
 
   it("ToolContext does NOT have adoOrganizations field", async () => {
@@ -1619,7 +1815,7 @@ describe("ado_mutate without authority checks (authority removed)", () => {
       signin: vi.fn(),
       context: {
         friend: { id: "id", name: "test", externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, createdAt: "", updatedAt: "", schemaVersion: 1 },
-        channel: { channel: "teams" as const, availableIntegrations: ["ado" as const, "graph" as const], supportsMarkdown: true, supportsStreaming: true, supportsRichCards: true, maxMessageLength: 28000 },
+        channel: { channel: "teams" as const, senseType: "closed" as const, availableIntegrations: ["ado" as const, "graph" as const], supportsMarkdown: true, supportsStreaming: true, supportsRichCards: true, maxMessageLength: 28000 },
       },
     }
 
@@ -1765,6 +1961,7 @@ describe("getToolsForChannel includes docs tools", () => {
     const { getToolsForChannel, tools } = await import("../../repertoire/tools")
     const teamsCaps = {
       channel: "teams" as const,
+      senseType: "closed" as const,
       availableIntegrations: ["ado" as const, "graph" as const],
       supportsMarkdown: true,
       supportsStreaming: true,
@@ -2378,6 +2575,7 @@ describe("github tool registration", () => {
     const { getToolsForChannel } = await import("../../repertoire/tools")
     const teamsCaps = {
       channel: "teams" as const,
+      senseType: "closed" as const,
       availableIntegrations: ["ado" as const, "graph" as const, "github" as const],
       supportsMarkdown: true,
       supportsStreaming: true,

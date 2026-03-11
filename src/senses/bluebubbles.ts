@@ -2,14 +2,16 @@ import * as fs from "node:fs"
 import * as http from "node:http"
 import * as path from "node:path"
 import OpenAI from "openai"
-import { runAgent, type ChannelCallbacks, type RunAgentOptions, createSummarize } from "../heart/core"
+import { runAgent, type ChannelCallbacks, createSummarize } from "../heart/core"
 import { getBlueBubblesChannelConfig, getBlueBubblesConfig, sessionPath } from "../heart/config"
 import { getAgentName, getAgentRoot } from "../heart/identity"
 import { loadSession, postTurn } from "../mind/context"
 import { accumulateFriendTokens } from "../mind/friends/tokens"
 import { FriendResolver, type FriendResolverParams } from "../mind/friends/resolver"
 import { FileFriendStore } from "../mind/friends/store-file"
-import type { FriendRecord } from "../mind/friends/types"
+import { TRUSTED_LEVELS, type FriendRecord } from "../mind/friends/types"
+import { getChannelCapabilities } from "../mind/friends/channel"
+import { getPendingDir, drainPending } from "../mind/pending"
 import { buildSystem } from "../mind/prompt"
 import { getPhrases } from "../mind/phrases"
 import { emitNervesEvent } from "../nerves/runtime"
@@ -23,6 +25,8 @@ import { createBlueBubblesClient, type BlueBubblesClient } from "./bluebubbles-c
 import { recordBlueBubblesMutation } from "./bluebubbles-mutation-log"
 import { findObsoleteBlueBubblesThreadSessions } from "./bluebubbles-session-cleanup"
 import { createDebugActivityController } from "./debug-activity"
+import { enforceTrustGate } from "./trust-gate"
+import { handleInboundTurn } from "./pipeline"
 
 type BlueBubblesCallbacks = ChannelCallbacks & {
   flush(): Promise<void>
@@ -88,6 +92,53 @@ function resolveFriendParams(event: BlueBubblesNormalizedEvent): FriendResolverP
     displayName: event.sender.displayName || "Unknown",
     channel: "bluebubbles",
   }
+}
+
+/**
+ * Check if any participant in a group chat is a known family member.
+ * Looks up each participant handle in the friend store.
+ */
+async function checkGroupHasFamilyMember(
+  store: FileFriendStore,
+  event: BlueBubblesNormalizedEvent,
+): Promise<boolean> {
+  if (!event.chat.isGroup) return false
+  for (const handle of event.chat.participantHandles ?? []) {
+    const friend = await store.findByExternalId("imessage-handle", handle)
+    if (friend?.trustLevel === "family") return true
+  }
+  return false
+}
+
+/**
+ * Check if an acquaintance shares any group chat with a family member.
+ * Compares group-prefixed externalIds between the acquaintance and all family members.
+ */
+async function checkHasExistingGroupWithFamily(
+  store: FileFriendStore,
+  senderFriend: FriendRecord,
+): Promise<boolean> {
+  const trustLevel = senderFriend.trustLevel ?? "friend"
+  if (trustLevel !== "acquaintance") return false
+
+  const acquaintanceGroups = new Set(
+    (senderFriend.externalIds ?? [])
+      .filter((eid) => eid.externalId.startsWith("group:"))
+      .map((eid) => eid.externalId),
+  )
+  if (acquaintanceGroups.size === 0) return false
+
+  const allFriends = await (store.listAll?.() ?? Promise.resolve([]))
+  for (const friend of allFriends) {
+    if (friend.trustLevel !== "family") continue
+    const friendGroups = (friend.externalIds ?? [])
+      .filter((eid) => eid.externalId.startsWith("group:"))
+      .map((eid) => eid.externalId)
+    for (const group of friendGroups) {
+      if (acquaintanceGroups.has(group)) return true
+    }
+  }
+  return false
 }
 
 function extractMessageText(content: OpenAI.ChatCompletionMessageParam["content"] | undefined): string {
@@ -469,28 +520,13 @@ export async function handleBlueBubblesEvent(
     return { handled: true, notifiedAgent: false, kind: event.kind, reason: "mutation_state_only" }
   }
 
+  // ── Adapter setup: friend, session, content, callbacks ──────────
+
   const store = resolvedDeps.createFriendStore()
   const resolver = resolvedDeps.createFriendResolver(store, resolveFriendParams(event))
-  const context = await resolver.resolve()
+  const baseContext = await resolver.resolve()
+  const context = { ...baseContext, isGroupChat: event.chat.isGroup }
   const replyTarget = createReplyTargetController(event)
-  const toolContext = {
-    signin: async () => undefined,
-    friendStore: store,
-    summarize: createSummarize(),
-    context,
-    bluebubblesReplyTarget: {
-      setSelection: (selection: BlueBubblesReplyTargetSelection) => replyTarget.setSelection(selection),
-    },
-    codingFeedback: {
-      send: async (message: string) => {
-        await client.sendText({
-          chat: event.chat,
-          text: message,
-          replyToMessageGuid: replyTarget.getReplyToMessageGuid(),
-        })
-      },
-    },
-  }
 
   const friendId = context.friend.id
   const sessPath = resolvedDeps.sessionPath(friendId, "bluebubbles", event.chat.sessionKey)
@@ -508,13 +544,19 @@ export async function handleBlueBubblesEvent(
       },
     })
   }
+
+  // Pre-load session (adapter needs existing messages for lane history in content building)
   const existing = resolvedDeps.loadSession(sessPath)
-  const messages: OpenAI.ChatCompletionMessageParam[] =
+  const sessionMessages: OpenAI.ChatCompletionMessageParam[] =
     existing?.messages && existing.messages.length > 0
       ? existing.messages
       : [{ role: "system", content: await resolvedDeps.buildSystem("bluebubbles", undefined, context) }]
 
-  messages.push({ role: "user", content: buildInboundContent(event, existing?.messages ?? messages) })
+  // Build inbound user message (adapter concern: BB-specific content formatting)
+  const userMessage: OpenAI.ChatCompletionMessageParam = {
+    role: "user",
+    content: buildInboundContent(event, existing?.messages ?? sessionMessages),
+  }
 
   const callbacks = createBlueBubblesCallbacks(
     client,
@@ -522,15 +564,84 @@ export async function handleBlueBubblesEvent(
     replyTarget,
   )
   const controller = new AbortController()
-  const agentOptions: RunAgentOptions = {
-    toolContext,
-  }
+
+  // BB-specific tool context wrappers
+  const summarize = createSummarize()
+
+  const bbCapabilities = getChannelCapabilities("bluebubbles")
+  const pendingDir = getPendingDir(resolvedDeps.getAgentName(), friendId, "bluebubbles", event.chat.sessionKey)
+
+  // ── Compute trust gate context for group/acquaintance rules ─────
+  const groupHasFamilyMember = await checkGroupHasFamilyMember(store, event)
+  const hasExistingGroupWithFamily = event.chat.isGroup
+    ? false
+    : await checkHasExistingGroupWithFamily(store, context.friend)
+
+  // ── Call shared pipeline ──────────────────────────────────────────
 
   try {
-    const result = await resolvedDeps.runAgent(messages, callbacks, "bluebubbles", controller.signal, agentOptions)
+    const result = await handleInboundTurn({
+      channel: "bluebubbles",
+      capabilities: bbCapabilities,
+      messages: [userMessage],
+      callbacks,
+      friendResolver: { resolve: () => Promise.resolve(context) },
+      sessionLoader: { loadOrCreate: () => Promise.resolve({ messages: sessionMessages, sessionPath: sessPath }) },
+      pendingDir,
+      friendStore: store,
+      provider: "imessage-handle",
+      externalId: event.sender.externalId || event.sender.rawId,
+      isGroupChat: event.chat.isGroup,
+      groupHasFamilyMember,
+      hasExistingGroupWithFamily,
+      enforceTrustGate,
+      drainPending,
+      runAgent: (msgs, cb, channel, sig, opts) => resolvedDeps.runAgent(msgs, cb, channel, sig, {
+        ...opts,
+        toolContext: {
+          /* v8 ignore next -- default no-op signin; pipeline provides the real one @preserve */
+          signin: async () => undefined,
+          ...opts?.toolContext,
+          summarize,
+          bluebubblesReplyTarget: {
+            setSelection: (selection: BlueBubblesReplyTargetSelection) => replyTarget.setSelection(selection),
+          },
+          codingFeedback: {
+            send: async (message: string) => {
+              await client.sendText({
+                chat: event.chat,
+                text: message,
+                replyToMessageGuid: replyTarget.getReplyToMessageGuid(),
+              })
+            },
+          },
+        },
+      }),
+      postTurn: resolvedDeps.postTurn,
+      accumulateFriendTokens: resolvedDeps.accumulateFriendTokens,
+      signal: controller.signal,
+    })
+
+    // ── Handle gate result ────────────────────────────────────────
+
+    if (!result.gateResult.allowed) {
+      // Send auto-reply via BB API if the gate provides one
+      if ("autoReply" in result.gateResult && result.gateResult.autoReply) {
+        await client.sendText({
+          chat: event.chat,
+          text: result.gateResult.autoReply,
+        })
+      }
+
+      return {
+        handled: true,
+        notifiedAgent: false,
+        kind: event.kind,
+      }
+    }
+
+    // Gate allowed — flush the agent's reply
     await callbacks.flush()
-    resolvedDeps.postTurn(messages, sessPath, result.usage)
-    await resolvedDeps.accumulateFriendTokens(store, friendId, result.usage)
 
     emitNervesEvent({
       component: "senses",
@@ -619,7 +730,6 @@ export interface DrainAndSendPendingResult {
   failed: number
 }
 
-const PROACTIVE_SEND_ALLOWED_TRUST: ReadonlySet<string> = new Set(["family", "friend"])
 
 function findImessageHandle(friend: FriendRecord): string | undefined {
   for (const ext of friend.externalIds) {
@@ -727,7 +837,7 @@ export async function drainAndSendPendingBlueBubbles(
       continue
     }
 
-    if (!PROACTIVE_SEND_ALLOWED_TRUST.has(friend.trustLevel ?? "stranger")) {
+    if (!TRUSTED_LEVELS.has(friend.trustLevel ?? "stranger")) {
       result.skipped++
       try { fs.unlinkSync(filePath) } catch { /* ignore */ }
       emitNervesEvent({
@@ -758,6 +868,7 @@ export async function drainAndSendPendingBlueBubbles(
       isGroup: false,
       sessionKey: friendId,
       sendTarget: { kind: "chat_identifier", value: handle },
+      participantHandles: [],
     }
 
     try {

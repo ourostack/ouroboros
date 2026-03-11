@@ -236,6 +236,15 @@ describe("ouro CLI parsing", () => {
       body: "Morning alarm",
       scheduledAt: "2026-03-11T08:00:00.000Z",
     })
+
+    // ouro reminder create --agent slugger <title> --body <body> --cadence <cadence>
+    expect(parseOuroCommand(["reminder", "create", "--agent", "slugger", "Heartbeat", "--body", "Run heartbeat", "--cadence", "30m"])).toEqual({
+      kind: "reminder.create",
+      title: "Heartbeat",
+      body: "Run heartbeat",
+      cadence: "30m",
+      agent: "slugger",
+    })
   })
 
   it("rejects malformed reminder subcommands", () => {
@@ -3971,5 +3980,313 @@ describe("ouro whoami and session list CLI execution", () => {
     const result = await runOuroCli(["session", "list"], deps)
 
     expect(result).toContain("no active sessions")
+  })
+})
+
+describe("--agent flag parsing for identity-dependent commands", () => {
+  it("parses whoami with --agent flag", () => {
+    expect(parseOuroCommand(["whoami", "--agent", "slugger"])).toEqual({
+      kind: "whoami",
+      agent: "slugger",
+    })
+  })
+
+  it("parses whoami without --agent flag (no agent field)", () => {
+    const result = parseOuroCommand(["whoami"])
+    expect(result).toEqual({ kind: "whoami" })
+    expect((result as any).agent).toBeUndefined()
+  })
+
+  it("parses friend list with --agent flag", () => {
+    expect(parseOuroCommand(["friend", "list", "--agent", "slugger"])).toEqual({
+      kind: "friend.list",
+      agent: "slugger",
+    })
+  })
+
+  it("parses friend show with --agent flag", () => {
+    expect(parseOuroCommand(["friend", "show", "abc-123", "--agent", "slugger"])).toEqual({
+      kind: "friend.show",
+      friendId: "abc-123",
+      agent: "slugger",
+    })
+  })
+
+  it("parses task board with --agent flag", () => {
+    expect(parseOuroCommand(["task", "board", "--agent", "slugger"])).toEqual({
+      kind: "task.board",
+      agent: "slugger",
+    })
+  })
+
+  it("parses task board with status and --agent flag", () => {
+    expect(parseOuroCommand(["task", "board", "processing", "--agent", "slugger"])).toEqual({
+      kind: "task.board",
+      status: "processing",
+      agent: "slugger",
+    })
+  })
+
+  it("parses task create with --agent flag", () => {
+    expect(parseOuroCommand(["task", "create", "My Task", "--agent", "slugger"])).toEqual({
+      kind: "task.create",
+      title: "My Task",
+      agent: "slugger",
+    })
+  })
+
+  it("parses task update with --agent flag", () => {
+    expect(parseOuroCommand(["task", "update", "task-123", "in-progress", "--agent", "slugger"])).toEqual({
+      kind: "task.update",
+      id: "task-123",
+      status: "in-progress",
+      agent: "slugger",
+    })
+  })
+
+  it("parses task show with --agent flag", () => {
+    expect(parseOuroCommand(["task", "show", "task-123", "--agent", "slugger"])).toEqual({
+      kind: "task.show",
+      id: "task-123",
+      agent: "slugger",
+    })
+  })
+
+  it("parses task actionable with --agent flag", () => {
+    expect(parseOuroCommand(["task", "actionable", "--agent", "slugger"])).toEqual({
+      kind: "task.actionable",
+      agent: "slugger",
+    })
+  })
+
+  it("parses task deps with --agent flag", () => {
+    expect(parseOuroCommand(["task", "deps", "--agent", "slugger"])).toEqual({
+      kind: "task.deps",
+      agent: "slugger",
+    })
+  })
+
+  it("parses task sessions with --agent flag", () => {
+    expect(parseOuroCommand(["task", "sessions", "--agent", "slugger"])).toEqual({
+      kind: "task.sessions",
+      agent: "slugger",
+    })
+  })
+
+  it("parses session list with --agent flag", () => {
+    expect(parseOuroCommand(["session", "list", "--agent", "slugger"])).toEqual({
+      kind: "session.list",
+      agent: "slugger",
+    })
+  })
+
+  it("parses friend create with --agent flag", () => {
+    expect(parseOuroCommand(["friend", "create", "--name", "Bob", "--trust", "friend", "--agent", "slugger"])).toEqual({
+      kind: "friend.create",
+      name: "Bob",
+      trustLevel: "friend",
+      agent: "slugger",
+    })
+  })
+
+  it("parses friend create without --trust (defaults to acquaintance)", () => {
+    expect(parseOuroCommand(["friend", "create", "--name", "Charlie", "--agent", "slugger"])).toEqual({
+      kind: "friend.create",
+      name: "Charlie",
+      agent: "slugger",
+    })
+  })
+
+  it("parses task create with both --type and --agent flags", () => {
+    expect(parseOuroCommand(["task", "create", "My Task", "--type", "feature", "--agent", "slugger"])).toEqual({
+      kind: "task.create",
+      title: "My Task",
+      type: "feature",
+      agent: "slugger",
+    })
+  })
+
+  it("parses friend create without --agent flag", () => {
+    expect(parseOuroCommand(["friend", "create", "--name", "Dave"])).toEqual({
+      kind: "friend.create",
+      name: "Dave",
+    })
+  })
+
+  it("parses friend create with --trust but no value (ignores incomplete flag)", () => {
+    expect(parseOuroCommand(["friend", "create", "--name", "Eve", "--trust"])).toEqual({
+      kind: "friend.create",
+      name: "Eve",
+    })
+  })
+
+  it("rejects friend create without --name", () => {
+    expect(() => parseOuroCommand(["friend", "create", "--agent", "slugger"])).toThrow("Usage")
+  })
+})
+
+describe("--agent flag CLI execution", () => {
+  function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
+    return {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+      ...overrides,
+    }
+  }
+
+  it("whoami with --agent uses agent root instead of runtime identity", async () => {
+    const deps = makeDeps()
+    const result = await runOuroCli(["whoami", "--agent", "slugger"], deps)
+
+    expect(result).toContain("agent: slugger")
+    expect(result).toContain("slugger.ouro")
+    expect(deps.sendCommand).not.toHaveBeenCalled()
+  })
+
+  it("whoami without --agent and without runtime context returns error", async () => {
+    // No whoamiInfo dep and no --agent flag; getAgentName() would throw in production
+    // but we test that the command gracefully handles no agent context
+    const deps = makeDeps({
+      whoamiInfo: vi.fn(() => { throw new Error("no agent context") }),
+    })
+    const result = await runOuroCli(["whoami"], deps)
+
+    expect(result).toContain("error")
+    expect(result.toLowerCase()).toMatch(/no agent|--agent/)
+  })
+
+  it("friend list with --agent creates store for correct agent dir", async () => {
+    const mockFriendStore = {
+      get: vi.fn(),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      listAll: vi.fn(async () => [
+        {
+          id: "friend-1",
+          name: "Ari",
+          trustLevel: "family",
+          externalIds: [],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          totalTokens: 1000,
+          createdAt: "2026-03-01T00:00:00.000Z",
+          updatedAt: "2026-03-09T12:00:00.000Z",
+          schemaVersion: 1,
+        },
+      ]),
+    }
+    const deps = makeDeps({ friendStore: mockFriendStore as any })
+    const result = await runOuroCli(["friend", "list", "--agent", "slugger"], deps)
+
+    expect(result).toContain("Ari")
+    expect(result).toContain("friend-1")
+  })
+
+  it("task board with --agent uses agent-scoped task module", async () => {
+    const taskMod = {
+      getBoard: vi.fn(() => ({ full: "task board output", compact: "compact" })),
+      boardStatus: vi.fn(),
+      boardAction: vi.fn(),
+      boardDeps: vi.fn(),
+      boardSessions: vi.fn(),
+      createTask: vi.fn(),
+      updateStatus: vi.fn(),
+      getTask: vi.fn(),
+    }
+    const deps = makeDeps({ taskModule: taskMod as any })
+    const result = await runOuroCli(["task", "board", "--agent", "slugger"], deps)
+
+    expect(result).toContain("task board output")
+  })
+
+  it("session list with --agent uses agent-scoped session scanner", async () => {
+    const deps = makeDeps({
+      scanSessions: vi.fn(async () => [
+        { friendId: "friend-1", friendName: "Ari", channel: "cli", lastActivity: "2026-03-09T12:00:00.000Z" },
+      ]),
+    })
+    const result = await runOuroCli(["session", "list", "--agent", "slugger"], deps)
+
+    expect(result).toContain("friend-1")
+    expect(result).toContain("Ari")
+  })
+
+  it("friend create creates a new friend record", async () => {
+    const mockFriendStore = {
+      get: vi.fn(),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      listAll: vi.fn(),
+    }
+    const deps = makeDeps({ friendStore: mockFriendStore as any })
+    const result = await runOuroCli(["friend", "create", "--name", "Bob", "--trust", "friend", "--agent", "slugger"], deps)
+
+    expect(result).toContain("created")
+    expect(result).toContain("Bob")
+    expect(mockFriendStore.put).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        name: "Bob",
+        trustLevel: "friend",
+      }),
+    )
+  })
+
+  it("friend create defaults trust to acquaintance when --trust omitted", async () => {
+    const mockFriendStore = {
+      get: vi.fn(),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      listAll: vi.fn(),
+    }
+    const deps = makeDeps({ friendStore: mockFriendStore as any })
+    const result = await runOuroCli(["friend", "create", "--name", "Charlie", "--agent", "slugger"], deps)
+
+    expect(result).toContain("created")
+    expect(mockFriendStore.put).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        name: "Charlie",
+        trustLevel: "acquaintance",
+      }),
+    )
+  })
+
+  it("friend show with --agent uses correct agent-scoped store", async () => {
+    const friendRecord = {
+      id: "friend-1",
+      name: "Ari",
+      trustLevel: "family",
+      externalIds: [],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: {},
+      totalTokens: 1000,
+      createdAt: "2026-03-01T00:00:00.000Z",
+      updatedAt: "2026-03-09T12:00:00.000Z",
+      schemaVersion: 1,
+    }
+    const mockFriendStore = {
+      get: vi.fn(async () => friendRecord),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      listAll: vi.fn(),
+    }
+    const deps = makeDeps({ friendStore: mockFriendStore as any })
+    const result = await runOuroCli(["friend", "show", "friend-1", "--agent", "slugger"], deps)
+
+    expect(result).toContain("Ari")
+    expect(mockFriendStore.get).toHaveBeenCalledWith("friend-1")
   })
 })

@@ -522,6 +522,71 @@ describe("normalizeBlueBubblesEvent", () => {
     expect(result.chat.sessionKey).toBe("chat:any;+;35820e69c97c459992d29a334f412979")
   })
 
+  it("extracts participantHandles from group chat participants", async () => {
+    const { normalizeBlueBubblesEvent } = await import("../../senses/bluebubbles-model")
+    const payload = {
+      type: "new-message",
+      data: {
+        guid: "PART-TEST-001",
+        text: "group with participants",
+        handle: { address: "sender@example.com" },
+        attachments: [],
+        dateCreated: 1772947700000,
+        isFromMe: false,
+        chats: [
+          {
+            guid: "any;+;groupchat123",
+            style: 43,
+            chatIdentifier: "groupchat123",
+            displayName: "Test Group",
+            participants: [
+              { address: "alice@example.com" },
+              { address: "+1 (555) 123-4567" },
+              { address: "bob@example.com" },
+            ],
+          },
+        ],
+      },
+    }
+    const result = normalizeBlueBubblesEvent(payload)
+    expect(result.chat.isGroup).toBe(true)
+    expect(result.chat.participantHandles).toEqual([
+      "alice@example.com",
+      "+15551234567",
+      "bob@example.com",
+    ])
+  })
+
+  it("falls back to id field when participant has no address and skips empty entries", async () => {
+    const { normalizeBlueBubblesEvent } = await import("../../senses/bluebubbles-model")
+    const payload = {
+      type: "new-message",
+      data: {
+        guid: "PART-ID-FALLBACK-001",
+        isFromMe: false,
+        dateCreated: 1710000000000,
+        text: "hi",
+        chats: [{
+          guid: "iMessage;+;chat001",
+          style: 43,
+          participants: [
+            { id: "alice@example.com" },
+            { id: "+1 555 999 8888" },
+            { other: "no-address-or-id" },
+          ],
+        }],
+      },
+    }
+    const result = normalizeBlueBubblesEvent(payload)
+    expect(result.chat.participantHandles).toEqual(["alice@example.com", "+15559998888"])
+  })
+
+  it("returns empty participantHandles when chat has no participants", async () => {
+    const { normalizeBlueBubblesEvent } = await import("../../senses/bluebubbles-model")
+    const result = normalizeBlueBubblesEvent(dmOgPayload)
+    expect(result.chat.participantHandles).toEqual([])
+  })
+
   it("uses the same DM chat trunk for top-level and threaded replies", async () => {
     const { normalizeBlueBubblesEvent } = await import("../../senses/bluebubbles-model")
     const topLevel = normalizeBlueBubblesEvent(dmTopLevelPayload)
