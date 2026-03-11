@@ -36,13 +36,39 @@ cp subagents/*.md ~/.claude/agents/
 ## Installing For Codex-Style Skills
 
 ```bash
-mkdir -p ~/.codex/skills/work-planner ~/.codex/skills/work-doer ~/.codex/skills/work-merger
-cp subagents/work-planner.md ~/.codex/skills/work-planner/SKILL.md
-cp subagents/work-doer.md ~/.codex/skills/work-doer/SKILL.md
-cp subagents/work-merger.md ~/.codex/skills/work-merger/SKILL.md
+mkdir -p ~/.agents/skills/work-planner ~/.agents/skills/work-doer ~/.agents/skills/work-merger
+
+# Hard-link to keep one source of truth
+ln -f "$(pwd)/subagents/work-planner.md" ~/.agents/skills/work-planner/SKILL.md
+ln -f "$(pwd)/subagents/work-doer.md" ~/.agents/skills/work-doer/SKILL.md
+ln -f "$(pwd)/subagents/work-merger.md" ~/.agents/skills/work-merger/SKILL.md
 ```
 
-If you prefer symlinks or hard-links, that is fine too, but plain copies are easier to reason about and easier to repair when editors replace files.
+**Important:** For Codex/OpenAI skill installs, use the generic `~/.agents/skills` root and use hard links (`ln`, not `ln -s`). Installing the same skill into both `~/.agents/skills` and `~/.codex/skills` can produce duplicate entries in Codex. Symlinked `SKILL.md` files may load but are not advertised reliably by Codex surfaces. Hard-links break when editors save by replacing the file (new inode). After editing any `subagents/*.md` file, re-run the `ln -f` command for that file to restore the link. You can verify with `stat -f '%i'` — both files should share the same inode.
+
+Optional UI metadata:
+
+```bash
+mkdir -p ~/.agents/skills/work-planner/agents ~/.agents/skills/work-doer/agents ~/.agents/skills/work-merger/agents
+cat > ~/.agents/skills/work-planner/agents/openai.yaml << 'EOF'
+interface:
+  display_name: "Work Planner"
+  short_description: "Create and gate planning/doing task docs"
+  default_prompt: "Use $work-planner to create or update a planning doc, then stop at NEEDS_REVIEW."
+EOF
+cat > ~/.agents/skills/work-doer/agents/openai.yaml << 'EOF'
+interface:
+  display_name: "Work Doer"
+  short_description: "Execute approved doing docs with strict TDD"
+  default_prompt: "Use $work-doer to execute an approved doing doc unit by unit."
+EOF
+cat > ~/.agents/skills/work-merger/agents/openai.yaml << 'EOF'
+interface:
+  display_name: "Work Merger"
+  short_description: "Merge feature branch into main via PR after work-doer completes"
+  default_prompt: "Use $work-merger to merge the current feature branch into main."
+EOF
+```
 
 ## Keeping Local Skill Copies Fresh
 
@@ -51,8 +77,8 @@ After editing any `subagents/*.md` file, resync your local installed copies.
 The repo workflow usually checks this with diffs like:
 
 ```bash
-diff -q ~/.codex/skills/work-planner/SKILL.md subagents/work-planner.md
-diff -q ~/.codex/skills/work-doer/SKILL.md subagents/work-doer.md
+diff -q ~/.agents/skills/work-planner/SKILL.md subagents/work-planner.md
+diff -q ~/.agents/skills/work-doer/SKILL.md subagents/work-doer.md
 ```
 
 ## Restart Behavior

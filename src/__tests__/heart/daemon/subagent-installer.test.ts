@@ -14,6 +14,14 @@ function writeSubagents(repoRoot: string): void {
   fs.writeFileSync(path.join(dir, "README.md"), "# docs\n", "utf-8")
 }
 
+function expectHardLink(target: string, source: string): void {
+  expect(fs.lstatSync(target).isSymbolicLink()).toBe(false)
+  const targetStats = fs.statSync(target)
+  const sourceStats = fs.statSync(source)
+  expect(targetStats.dev).toBe(sourceStats.dev)
+  expect(targetStats.ino).toBe(sourceStats.ino)
+}
+
 describe("subagent installer", () => {
   let tmpRoot = ""
 
@@ -43,11 +51,10 @@ describe("subagent installer", () => {
     expect(fs.lstatSync(claudeLink).isSymbolicLink()).toBe(true)
     expect(fs.readlinkSync(claudeLink)).toBe(path.join(repoRoot, "subagents", "work-planner.md"))
 
-    const codexLink = path.join(homeDir, ".codex", "skills", "work-doer", "SKILL.md")
-    expect(fs.lstatSync(codexLink).isSymbolicLink()).toBe(true)
-    expect(fs.readlinkSync(codexLink)).toBe(path.join(repoRoot, "subagents", "work-doer.md"))
+    const agentsLink = path.join(homeDir, ".agents", "skills", "work-merger", "SKILL.md")
+    expectHardLink(agentsLink, path.join(repoRoot, "subagents", "work-merger.md"))
 
-    expect(fs.existsSync(path.join(homeDir, ".codex", "skills", "README", "SKILL.md"))).toBe(false)
+    expect(fs.existsSync(path.join(homeDir, ".codex", "skills", "work-doer", "SKILL.md"))).toBe(false)
   })
 
   it("is idempotent when matching symlinks already exist", async () => {
@@ -87,8 +94,31 @@ describe("subagent installer", () => {
     expect(result.codexInstalled).toBe(0)
     expect(result.notes).toEqual(expect.arrayContaining([
       "claude CLI not found; skipping subagent install",
-      "codex CLI not found; skipping subagent install",
+      "codex CLI/config not found; skipping subagent install",
     ]))
+  })
+
+  it("installs codex-family skill links when local codex config exists without the CLI binary", async () => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "subagent-installer-"))
+    const repoRoot = path.join(tmpRoot, "repo")
+    const homeDir = path.join(tmpRoot, "home")
+    writeSubagents(repoRoot)
+
+    fs.mkdirSync(path.join(homeDir, ".codex"), { recursive: true })
+    fs.writeFileSync(path.join(homeDir, ".codex", "config.toml"), "", "utf-8")
+
+    const result = await installSubagentsForAvailableCli({
+      repoRoot,
+      homeDir,
+      which: (binary) => (binary === "claude" ? "/usr/bin/claude" : null),
+    })
+
+    expect(result.claudeInstalled).toBe(3)
+    expect(result.codexInstalled).toBe(3)
+
+    const agentsLink = path.join(homeDir, ".agents", "skills", "work-planner", "SKILL.md")
+    expectHardLink(agentsLink, path.join(repoRoot, "subagents", "work-planner.md"))
+    expect(fs.existsSync(path.join(homeDir, ".codex", "skills", "work-planner", "SKILL.md"))).toBe(false)
   })
 
   it("returns early when the repo has no subagent files", async () => {
@@ -192,6 +222,26 @@ describe("subagent installer", () => {
     expect(fs.readlinkSync(claudeTarget)).toBe(path.join(repoRoot, "subagents", "work-merger.md"))
   })
 
+  it("replaces symlinked agents skill targets with hard links", async () => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "subagent-installer-"))
+    const repoRoot = path.join(tmpRoot, "repo")
+    const homeDir = path.join(tmpRoot, "home")
+    writeSubagents(repoRoot)
+
+    const agentsTarget = path.join(homeDir, ".agents", "skills", "work-planner", "SKILL.md")
+    fs.mkdirSync(path.dirname(agentsTarget), { recursive: true })
+    fs.symlinkSync(path.join(repoRoot, "subagents", "work-planner.md"), agentsTarget)
+
+    const result = await installSubagentsForAvailableCli({
+      repoRoot,
+      homeDir,
+      which: (binary) => (binary === "codex" ? "/usr/bin/codex" : null),
+    })
+
+    expect(result.codexInstalled).toBe(3)
+    expectHardLink(agentsTarget, path.join(repoRoot, "subagents", "work-planner.md"))
+  })
+
   it("uses default repo/home resolution when options omit those paths", async () => {
     tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "subagent-installer-"))
 
@@ -199,9 +249,6 @@ describe("subagent installer", () => {
       which: () => null,
     })
 
-    expect(result.notes).toEqual(expect.arrayContaining([
-      "claude CLI not found; skipping subagent install",
-      "codex CLI not found; skipping subagent install",
-    ]))
+    expect(result.notes).toContain("claude CLI not found; skipping subagent install")
   })
 })

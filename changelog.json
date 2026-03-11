@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.44",
+      "changes": [
+        "Workflow skills now install into `~/.agents/skills` for Codex/OpenAI instead of duplicating installs under both `.agents` and `.codex`, which prevents duplicate advertised skills while keeping re-installs safe."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.43",
       "changes": [
         "Continuity-aware onboarding now stays contextual: when an active task goes idle, onboarding guidance can reappear during genuine lulls instead of staying hidden just because no-handoff state was previously persisted.",

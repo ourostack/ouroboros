@@ -42,6 +42,16 @@ function pathExists(target: string): boolean {
   }
 }
 
+function isSameFile(source: string, target: string): boolean {
+  try {
+    const sourceStats = fs.statSync(source)
+    const targetStats = fs.statSync(target)
+    return sourceStats.dev === targetStats.dev && sourceStats.ino === targetStats.ino
+  } catch {
+    return false
+  }
+}
+
 function ensureSymlink(source: string, target: string): boolean {
   fs.mkdirSync(path.dirname(target), { recursive: true })
 
@@ -56,6 +66,30 @@ function ensureSymlink(source: string, target: string): boolean {
 
   fs.symlinkSync(source, target)
   return true
+}
+
+function ensureHardLink(source: string, target: string): boolean {
+  fs.mkdirSync(path.dirname(target), { recursive: true })
+
+  if (pathExists(target)) {
+    const stats = fs.lstatSync(target)
+    if (!stats.isSymbolicLink() && isSameFile(source, target)) {
+      return false
+    }
+    fs.unlinkSync(target)
+  }
+
+  fs.linkSync(source, target)
+  return true
+}
+
+function hasOpenAiSkillHome(homeDir: string): boolean {
+  return pathExists(path.join(homeDir, ".codex")) || pathExists(path.join(homeDir, ".agents"))
+}
+
+function openAiSkillTargets(homeDir: string, source: string): string[] {
+  const skillName = path.basename(source, ".md")
+  return [path.join(homeDir, ".agents", "skills", skillName, "SKILL.md")]
 }
 
 export async function installSubagentsForAvailableCli(
@@ -97,14 +131,17 @@ export async function installSubagentsForAvailableCli(
   }
 
   const codexPath = which("codex")
-  if (!codexPath) {
-    notes.push("codex CLI not found; skipping subagent install")
+  if (!codexPath && !hasOpenAiSkillHome(homeDir)) {
+    notes.push("codex CLI/config not found; skipping subagent install")
   } else {
-    const codexSkillsDir = path.join(homeDir, ".codex", "skills")
     for (const source of sources) {
-      const skillName = path.basename(source, ".md")
-      const target = path.join(codexSkillsDir, skillName, "SKILL.md")
-      if (ensureSymlink(source, target)) {
+      let installedForSkill = false
+      for (const target of openAiSkillTargets(homeDir, source)) {
+        if (ensureHardLink(source, target)) {
+          installedForSkill = true
+        }
+      }
+      if (installedForSkill) {
         codexInstalled += 1
       }
     }
