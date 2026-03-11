@@ -444,6 +444,9 @@ function memoryFriendToolContractSection(): string {
 
 export interface BuildSystemOptions {
   toolChoiceRequired?: boolean;
+  currentObligation?: string;
+  mustResolveBeforeHandoff?: boolean;
+  hasQueuedFollowUp?: boolean;
 }
 
 function toolBehaviorSection(options?: BuildSystemOptions): string {

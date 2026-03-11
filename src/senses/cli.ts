@@ -44,6 +44,11 @@ export function formatPendingPrefix(messages: PendingMessage[], agentName: strin
     .join("\n")
 }
 
+export function getCliContinuityIngressTexts(input: string): string[] {
+  const trimmed = input.trim()
+  return trimmed ? [trimmed] : []
+}
+
 // readline.Interface exposes undocumented mutable line/cursor for in-progress input
 type ReadlineInternals = readline.Interface & { line: string; cursor: number }
 
@@ -784,6 +789,7 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
           channel: "cli",
           capabilities: cliCapabilities,
           messages: [{ role: "user", content: userInput }],
+          continuityIngressTexts: getCliContinuityIngressTexts(userInput),
           callbacks,
           friendResolver: { resolve: () => Promise.resolve(resolvedContext) },
           sessionLoader: { loadOrCreate: () => Promise.resolve({ messages, sessionPath: sessPath }) },

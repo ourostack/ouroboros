@@ -250,6 +250,7 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
     channel: "inner",
     capabilities: innerCapabilities,
     messages: [userMessage],
+    continuityIngressTexts: [],
     callbacks,
     friendResolver: { resolve: () => Promise.resolve(selfContext) },
     sessionLoader,

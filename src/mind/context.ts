@@ -12,6 +12,16 @@ export interface UsageData {
   total_tokens: number
 }
 
+export interface SessionContinuityState {
+  mustResolveBeforeHandoff?: boolean
+}
+
+export interface SessionData {
+  messages: OpenAI.ChatCompletionMessageParam[]
+  lastUsage?: UsageData
+  state?: SessionContinuityState
+}
+
 export interface PostTurnHooks {
   beforeTrim?: (messages: OpenAI.ChatCompletionMessageParam[]) => void
 }
@@ -237,7 +247,12 @@ export function repairSessionMessages(messages: OpenAI.ChatCompletionMessagePara
   return result
 }
 
-export function saveSession(filePath: string, messages: OpenAI.ChatCompletionMessageParam[], lastUsage?: UsageData): void {
+export function saveSession(
+  filePath: string,
+  messages: OpenAI.ChatCompletionMessageParam[],
+  lastUsage?: UsageData,
+  state?: SessionContinuityState,
+): void {
   const violations = validateSessionMessages(messages)
   if (violations.length > 0) {
     emitNervesEvent({
@@ -250,12 +265,20 @@ export function saveSession(filePath: string, messages: OpenAI.ChatCompletionMes
     messages = repairSessionMessages(messages)
   }
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
-  const envelope: { version: number; messages: OpenAI.ChatCompletionMessageParam[]; lastUsage?: UsageData } = { version: 1, messages }
+  const envelope: {
+    version: number
+    messages: OpenAI.ChatCompletionMessageParam[]
+    lastUsage?: UsageData
+    state?: SessionContinuityState
+  } = { version: 1, messages }
   if (lastUsage) envelope.lastUsage = lastUsage
+  if (state?.mustResolveBeforeHandoff === true) {
+    envelope.state = { mustResolveBeforeHandoff: true }
+  }
   fs.writeFileSync(filePath, JSON.stringify(envelope, null, 2))
 }
 
-export function loadSession(filePath: string): { messages: OpenAI.ChatCompletionMessageParam[]; lastUsage?: UsageData } | null {
+export function loadSession(filePath: string): SessionData | null {
   try {
     const raw = fs.readFileSync(filePath, "utf-8")
     const data = JSON.parse(raw)
@@ -272,7 +295,12 @@ export function loadSession(filePath: string): { messages: OpenAI.ChatCompletion
       })
       messages = repairSessionMessages(messages)
     }
-    return { messages, lastUsage: data.lastUsage }
+    const state = data?.state && typeof data.state === "object" && data.state !== null
+      && typeof data.state.mustResolveBeforeHandoff === "boolean"
+      && data.state.mustResolveBeforeHandoff === true
+      ? { mustResolveBeforeHandoff: true }
+      : undefined
+    return { messages, lastUsage: data.lastUsage, state }
   } catch {
     return null
   }
@@ -283,6 +311,7 @@ export function postTurn(
   sessPath: string,
   usage?: UsageData,
   hooks?: PostTurnHooks,
+  state?: SessionContinuityState,
 ): void {
   if (hooks?.beforeTrim) {
     try {
@@ -302,7 +331,7 @@ export function postTurn(
   const { maxTokens, contextMargin } = getContextConfig()
   const trimmed = trimMessages(messages, maxTokens, contextMargin, usage?.input_tokens)
   messages.splice(0, messages.length, ...trimmed)
-  saveSession(sessPath, messages, usage)
+  saveSession(sessPath, messages, usage, state)
 }
 
 export function deleteSession(filePath: string): void {

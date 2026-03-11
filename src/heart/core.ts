@@ -173,10 +173,20 @@ export interface RunAgentOptions {
   skipConfirmation?: boolean;
   toolContext?: ToolContext;
   traceId?: string;
+  currentObligation?: string;
+  mustResolveBeforeHandoff?: boolean;
+  hasQueuedFollowUp?: boolean;
   drainSteeringFollowUps?: () => Array<{ text: string }>;
   tools?: OpenAI.ChatCompletionFunctionTool[];
   execTool?: (name: string, args: Record<string, string>, ctx?: ToolContext) => Promise<string>;
 }
+
+export type RunAgentOutcome =
+  | "complete"
+  | "blocked"
+  | "superseded"
+  | "aborted"
+  | "errored";
 
 // Re-export kick utilities for backward compat
 export { hasToolIntent } from "./kicks";
@@ -333,7 +343,7 @@ export async function runAgent(
   channel?: Channel,
   signal?: AbortSignal,
   options?: RunAgentOptions,
-): Promise<{ usage?: UsageData }> {
+): Promise<{ usage?: UsageData; outcome: RunAgentOutcome }> {
   const providerRuntime = getProviderRuntime();
   const provider = providerRuntime.id;
   const toolChoiceRequired = options?.toolChoiceRequired ?? true;
@@ -394,6 +404,7 @@ export async function runAgent(
   let lastUsage: UsageData | undefined;
   let overflowRetried = false;
   let retryCount = 0;
+  let outcome: RunAgentOutcome = "complete";
 
   // Prevent MaxListenersExceeded warning — each iteration adds a listener
   try { require("events").setMaxListeners(50, signal); } catch { /* unsupported */ }
@@ -423,7 +434,10 @@ export async function runAgent(
     }
     // Yield so pending I/O (stdin Ctrl-C) can be processed between iterations
     await new Promise((r) => setImmediate(r));
-    if (signal?.aborted) break;
+    if (signal?.aborted) {
+      outcome = "aborted";
+      break;
+    }
     try {
       callbacks.onModelStart();
 
@@ -581,6 +595,7 @@ export async function runAgent(
       // Abort is not an error — just stop cleanly
       if (signal?.aborted) {
         stripLastToolCalls(messages);
+        outcome = "aborted";
         break;
       }
       // Context overflow: trim aggressively and retry once
@@ -609,7 +624,11 @@ export async function runAgent(
             signal.addEventListener("abort", onAbort, { once: true });
           }
         });
-        if (aborted) { stripLastToolCalls(messages); break; }
+        if (aborted) {
+          stripLastToolCalls(messages);
+          outcome = "aborted";
+          break;
+        }
         providerRuntime.resetTurnState(messages);
         continue;
       }
@@ -623,6 +642,7 @@ export async function runAgent(
         meta: {},
       });
       stripLastToolCalls(messages);
+      outcome = "errored";
       done = true;
     }
   }
@@ -633,5 +653,5 @@ export async function runAgent(
     message: "runAgent turn completed",
     meta: { done },
   });
-  return { usage: lastUsage };
+  return { usage: lastUsage, outcome };
 }
