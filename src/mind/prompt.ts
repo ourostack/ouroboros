@@ -105,7 +105,7 @@ export function buildSessionSummary(options: SessionSummaryOptions): string {
 
   let friendDirs: string[]
   try {
-    friendDirs = fs.readdirSync(sessionsDir) as unknown as string[]
+    friendDirs = fs.readdirSync(sessionsDir)
   } catch {
     return ""
   }
@@ -114,7 +114,7 @@ export function buildSessionSummary(options: SessionSummaryOptions): string {
     const friendPath = path.join(sessionsDir, friendId)
     let channels: string[]
     try {
-      channels = fs.readdirSync(friendPath) as unknown as string[]
+      channels = fs.readdirSync(friendPath)
     } catch {
       continue
     }
@@ -123,7 +123,7 @@ export function buildSessionSummary(options: SessionSummaryOptions): string {
       const channelPath = path.join(friendPath, channel)
       let keys: string[]
       try {
-        keys = fs.readdirSync(channelPath) as unknown as string[]
+        keys = fs.readdirSync(channelPath)
       } catch {
         continue
       }

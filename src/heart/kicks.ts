@@ -1,21 +1,11 @@
-// TODO: Kicks enforce "any action" but not "meaningful action". After a narration
-// kick, the model can satisfy the constraint by calling a no-op tool like
-// list_skills({}). We need to detect trivial compliance and either re-kick
-// or discount the tool call. Ideally, the kick message would suggest a specific
-// tool call based on conversation context (what the user asked, what tools are
-// relevant) rather than just saying "call a tool". That's a bigger piece of work —
-// it requires the kick system to be context-aware.
-// See ouroboros' observation: "i'm not chickening out. i'm satisfying a crude
-// constraint. poorly."
+import { emitNervesEvent } from "../nerves/runtime"
+
+// Kick detection is currently disabled (tool_choice: required + final_answer
+// is the primary loop control). Preserved for future re-enablement.
 //
 // A kick is a self-correction. When the harness detects a malformed response,
 // it injects an assistant-role message as if the model caught its own mistake.
-//
-// Kicks are:
-//   - assistant role (self-correction, not external rebuke)
-//   - first person ("I" not "you")
-//   - forward-looking (what I'm doing next, not what I did wrong)
-//   - short (one sentence)
+// Kicks are assistant-role, first-person, forward-looking, and short.
 
 export type KickReason = "empty" | "narration" | "tool_required";
 
@@ -171,4 +161,3 @@ export function detectKick(
 
   return null;
 }
-import { emitNervesEvent } from "../nerves/runtime";

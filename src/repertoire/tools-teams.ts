@@ -1,4 +1,4 @@
-import type { ToolDefinition, ToolHandler } from "./tools-base";
+import type { ToolDefinition } from "./tools-base";
 import { getProfile, graphRequest } from "./graph-client";
 import { queryWorkItems, adoRequest, discoverOrganizations } from "./ado-client";
 import graphEndpoints from "./data/graph-endpoints.json";
@@ -6,18 +6,6 @@ import adoEndpoints from "./data/ado-endpoints.json";
 import { emitNervesEvent } from "../nerves/runtime";
 
 const MUTATE_METHODS = ["POST", "PATCH", "DELETE"];
-
-// Map HTTP method to authority action name for canWrite() checks
-const METHOD_TO_ACTION: Record<string, string> = {
-  POST: "createWorkItem",
-  PATCH: "updateWorkItem",
-  DELETE: "deleteWorkItem",
-};
-
-// Check if a tool response indicates a 403 PERMISSION_DENIED (authority checker removed; this is now a no-op kept for call-site stability)
-function checkAndRecord403(_result: string, _integration: string, _scope: string, _action: string, _ctx?: import("./tools-base").ToolContext): void {
-  // No-op: AuthorityChecker eliminated. 403 recording removed.
-}
 
 const DEFAULT_ADO_QUERY = "SELECT [System.Id], [System.Title], [System.State], [System.AssignedTo] FROM WorkItems WHERE [System.AssignedTo] = @Me AND [System.State] <> 'Closed' ORDER BY [System.ChangedDate] DESC";
 
@@ -100,9 +88,7 @@ export const teamsToolDefinitions: ToolDefinition[] = [
         return "AUTH_REQUIRED:ado -- I need access to Azure DevOps. Please sign in when prompted.";
       }
       const method = args.method || "GET";
-      const result = await adoRequest(ctx.adoToken, method, args.organization, args.path, args.body, args.host);
-      checkAndRecord403(result, "ado", args.organization, method, ctx);
-      return result;
+      return adoRequest(ctx.adoToken, method, args.organization, args.path, args.body, args.host);
     },
     integration: "ado",
   },
@@ -132,11 +118,7 @@ export const teamsToolDefinitions: ToolDefinition[] = [
       if (!MUTATE_METHODS.includes(args.method)) {
         return `Invalid method "${args.method}". Must be one of: ${MUTATE_METHODS.join(", ")}`;
       }
-      /* v8 ignore next -- fallback unreachable: method is validated against MUTATE_METHODS above @preserve */
-      const action = METHOD_TO_ACTION[args.method] || args.method;
-      const result = await adoRequest(ctx.adoToken, args.method, args.organization, args.path, args.body, args.host);
-      checkAndRecord403(result, "ado", args.organization, action, ctx);
-      return result;
+      return adoRequest(ctx.adoToken, args.method, args.organization, args.path, args.body, args.host);
     },
     integration: "ado",
     confirmationRequired: true,
@@ -292,14 +274,6 @@ export const teamsToolDefinitions: ToolDefinition[] = [
     integration: "ado",
   },
 ];
-
-// Backward-compat: extract just the OpenAI tool schemas
-export const teamsTools: import("openai").default.ChatCompletionFunctionTool[] = teamsToolDefinitions.map((d) => d.tool);
-
-// Backward-compat: extract just the handlers by name
-export const teamsToolHandlers: Record<string, ToolHandler> = Object.fromEntries(
-  teamsToolDefinitions.map((d) => [d.tool.function.name, d.handler]),
-);
 
 // Search endpoint index by case-insensitive substring match on description + path.
 // Returns top 5 matches formatted for the LLM.

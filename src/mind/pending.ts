@@ -29,7 +29,7 @@ export function drainPending(pendingDir: string): PendingMessage[] {
 
   let entries: string[]
   try {
-    entries = fs.readdirSync(pendingDir) as unknown as string[]
+    entries = fs.readdirSync(pendingDir)
   } catch {
     return []
   }

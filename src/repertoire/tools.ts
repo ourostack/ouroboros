@@ -12,7 +12,6 @@ import { emitNervesEvent } from "../nerves/runtime";
 // Re-export types and constants used by the rest of the codebase
 export { tools, finalAnswerTool } from "./tools-base";
 export type { ToolContext, ToolHandler, ToolDefinition } from "./tools-base";
-export { teamsTools } from "./tools-teams";
 
 // All tool definitions in a single registry
 const allDefinitions: ToolDefinition[] = [...baseToolDefinitions, ...bluebubblesToolDefinitions, ...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions];

@@ -218,6 +218,26 @@ describe("startUpdateChecker / stopUpdateChecker", () => {
     expect(onUpdate).not.toHaveBeenCalled()
   })
 
+  it("logs error when onUpdate callback throws instead of crashing", async () => {
+    const fetchRegistryJson = vi.fn().mockResolvedValue({
+      "dist-tags": { alpha: "0.2.0-alpha.1" },
+    })
+
+    const onUpdate = vi.fn().mockRejectedValue(new Error("callback boom"))
+
+    startUpdateChecker({
+      currentVersion: "0.1.0-alpha.5",
+      intervalMs: 1000,
+      onUpdate,
+      deps: { fetchRegistryJson, distTag: "alpha" },
+    })
+
+    // Should not throw — the .catch() handler absorbs the error.
+    await vi.advanceTimersByTimeAsync(1000)
+
+    expect(onUpdate).toHaveBeenCalled()
+  })
+
   it("uses default interval of 30 minutes when not specified", async () => {
     const fetchRegistryJson = vi.fn().mockResolvedValue({
       "dist-tags": { alpha: "0.2.0-alpha.1" },

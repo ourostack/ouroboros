@@ -262,6 +262,11 @@ describe("inner dialog runtime", () => {
     expect(checkpoint).toBe("no prior checkpoint recorded")
   })
 
+  it("falls back when assistant content is all whitespace", () => {
+    const checkpoint = deriveResumeCheckpoint([{ role: "assistant", content: "   \n  \n   " }])
+    expect(checkpoint).toBe("no prior checkpoint recorded")
+  })
+
   it("derives and truncates checkpoint text from structured assistant content arrays", () => {
     const longLine = "A".repeat(250)
     const checkpoint = deriveResumeCheckpoint([

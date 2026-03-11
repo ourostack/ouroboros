@@ -419,8 +419,17 @@ export function getLogsDir(): string {
 }
 
 
-function sanitizeKey(key: string): string {
+export function sanitizeKey(key: string): string {
   return key.replace(/[/:]/g, "_")
+}
+
+export function slugify(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+/, "")
+    .replace(/-+$/, "")
 }
 
 export function resolveSessionPath(

@@ -66,7 +66,7 @@ function buildPrompt(request: CodingSessionRequest, deps: Required<Pick<SpawnCod
 }
 
 export function spawnCodingProcess(request: CodingSessionRequest, deps: SpawnCodingDeps = {}): SpawnCodingResult {
-  const spawnFn = deps.spawnFn ?? ((command, args, options) => nodeSpawn(command, args, options) as unknown as CodingProcess)
+  const spawnFn = deps.spawnFn ?? ((command: string, args: string[], options: Record<string, unknown>) => nodeSpawn(command, args, options) as CodingProcess)
   const existsSync = deps.existsSync ?? fs.existsSync
   const readFileSync = deps.readFileSync ?? fs.readFileSync
 

@@ -80,7 +80,15 @@ export function startUpdateChecker(options: StartUpdateCheckerOptions): void {
       if (result.available && options.onUpdate) {
         await options.onUpdate(result)
       }
-    })()
+    })().catch((err) => {
+      emitNervesEvent({
+        component: "daemon",
+        event: "daemon.update_checker_error",
+        level: "warn",
+        message: "update checker tick failed",
+        meta: { reason: err instanceof Error ? err.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(err) },
+      })
+    })
   }, intervalMs)
 }
 

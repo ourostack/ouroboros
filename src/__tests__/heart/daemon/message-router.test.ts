@@ -76,4 +76,26 @@ describe("FileMessageRouter", () => {
       }),
     ])
   })
+
+  it("skips corrupt lines, returns valid messages, and preserves unparsed lines in inbox", async () => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "message-router-"))
+    tempDirs.push(baseDir)
+
+    const router = new FileMessageRouter({
+      baseDir,
+      now: () => "2026-03-10T00:00:00.000Z",
+    })
+
+    // Write a mix of valid and corrupt lines directly to the inbox file.
+    const inboxPath = path.join(baseDir, "agent-inbox.jsonl")
+    const validMsg = JSON.stringify({ id: "msg-1", from: "a", to: "agent", content: "ok", queuedAt: "t", priority: "normal" })
+    fs.writeFileSync(inboxPath, `${validMsg}\n{corrupt\n`, "utf-8")
+
+    const messages = router.pollInbox("agent")
+    expect(messages).toHaveLength(1)
+    expect(messages[0].content).toBe("ok")
+
+    // The corrupt line should still be in the inbox for inspection.
+    expect(fs.readFileSync(inboxPath, "utf-8")).toContain("{corrupt")
+  })
 })

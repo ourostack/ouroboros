@@ -2,6 +2,32 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.42",
+      "changes": [
+        "Associative recall now skips corrupt JSONL lines instead of crashing — matches the resilient pattern already used in memory.ts."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.41",
+      "changes": [
+        "JSONL readers (memory facts, inter-agent inbox) now skip corrupt lines instead of crashing — partial writes from crashes no longer lose all data.",
+        "Inter-agent message router now parses before clearing the inbox file, and preserves unparsed lines so corrupt messages are not silently lost.",
+        "Inner-dialog checkpoint derivation no longer crashes on all-whitespace assistant content — returns fallback checkpoint instead.",
+        "Update checker interval now catches and logs errors from the onUpdate callback instead of silently swallowing them."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.40",
+      "changes": [
+        "Removed dead backward-compat re-exports from core.ts (tools, streaming, prompt, kicks) — consumers already import from the canonical modules.",
+        "Removed dead exports: baseToolHandlers, teamsToolHandlers, teamsTools, __internal (token-estimate), TASK_STEM_PATTERN, checkAndRecord403 no-op and METHOD_TO_ACTION.",
+        "Consolidated duplicate sanitizeKey (config.ts + bluebubbles-mutation-log.ts) and slugify (hatch-flow.ts + tasks/index.ts) into shared exports from config.ts.",
+        "Replaced all as-any casts in source with proper TypeScript narrowing or Record<string, unknown> — only 2 SDK-required casts remain.",
+        "Removed unnecessary as-unknown-as casts on readdirSync (4 locations) and spawner double-cast.",
+        "Cleaned up commented-out kick detection code, stale TODOs, misplaced imports, and unused type imports."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.39",
       "changes": [
         "All senses now route through a shared per-turn pipeline — friend resolution, trust gate, session load, pending drain, agent turn, post-turn, and token accumulation happen in one place instead of four.",

@@ -363,19 +363,34 @@ describe("associative recall", () => {
     )
   })
 
-  it("emits outer error event when facts file contains invalid JSON", async () => {
+  it("skips corrupt lines in facts file and recalls valid ones", async () => {
+    const memoryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
+    const validFact = JSON.stringify(makeFact("f1", "Ari likes mushroom pizza", [0.99, 0.01]))
+    fs.writeFileSync(path.join(memoryRoot, "facts.jsonl"), `not valid json\n\n${validFact}\n`, "utf8")
+
+    const provider: EmbeddingProvider = {
+      embed: async () => [[1, 0]],
+    }
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "system", content: "base system prompt" },
+      { role: "user", content: "pizza?" },
+    ]
+
+    await injectAssociativeRecall(messages, { memoryRoot, provider, minScore: 0.5 })
+    expect(messages[0].content).toContain("Ari likes mushroom pizza")
+  })
+
+  it("does nothing when facts file contains only invalid JSON", async () => {
     const memoryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
     fs.writeFileSync(path.join(memoryRoot, "facts.jsonl"), "not valid json\n", "utf8")
+    const provider = { embed: vi.fn() }
     const messages: OpenAI.ChatCompletionMessageParam[] = [
       { role: "system", content: "base system prompt" },
       { role: "user", content: "anything" },
     ]
 
-    await injectAssociativeRecall(messages, { memoryRoot })
-    expect(mockEmitNervesEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: "mind.associative_recall_error",
-      }),
-    )
+    await injectAssociativeRecall(messages, { memoryRoot, provider })
+    expect(provider.embed).not.toHaveBeenCalled()
+    expect(messages[0].content).toBe("base system prompt")
   })
 })

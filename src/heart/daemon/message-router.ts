@@ -70,13 +70,20 @@ export class FileMessageRouter {
     if (!fs.existsSync(inboxPath)) return []
 
     const raw = fs.readFileSync(inboxPath, "utf-8")
-    fs.writeFileSync(inboxPath, "", "utf-8")
 
-    const messages = raw
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0)
-      .map((line) => JSON.parse(line) as RoutedMessage)
+    const messages: RoutedMessage[] = []
+    const unparsed: string[] = []
+    for (const line of raw.split("\n")) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      try {
+        messages.push(JSON.parse(trimmed) as RoutedMessage)
+      } catch {
+        unparsed.push(trimmed)
+      }
+    }
+    // Only clear inbox after parsing; preserve lines that failed to parse.
+    fs.writeFileSync(inboxPath, unparsed.length > 0 ? unparsed.map((l) => `${l}\n`).join("") : "", "utf-8")
 
     emitNervesEvent({
       component: "daemon",

@@ -4776,7 +4776,7 @@ describe("openai-codex oauth provider contract", () => {
 
 describe("hasToolIntent", () => {
   it("returns true for each intent phrase", async () => {
-    const { hasToolIntent } = await import("../../heart/core")
+    const { hasToolIntent } = await import("../../heart/kicks")
     // Explicit intent
     expect(hasToolIntent("let me read that file")).toBe(true)
     expect(hasToolIntent("I'll read that file")).toBe(true)
@@ -4811,7 +4811,7 @@ describe("hasToolIntent", () => {
   })
 
   it("returns false for text without intent phrases", async () => {
-    const { hasToolIntent } = await import("../../heart/core")
+    const { hasToolIntent } = await import("../../heart/kicks")
     expect(hasToolIntent("Hello")).toBe(false)
     expect(hasToolIntent("Here is the result")).toBe(false)
     expect(hasToolIntent("The file contains data")).toBe(false)
@@ -4819,7 +4819,7 @@ describe("hasToolIntent", () => {
   })
 
   it("is case-insensitive", async () => {
-    const { hasToolIntent } = await import("../../heart/core")
+    const { hasToolIntent } = await import("../../heart/kicks")
     expect(hasToolIntent("LET ME read that file")).toBe(true)
     expect(hasToolIntent("i'll do that")).toBe(true)
     expect(hasToolIntent("I WILL check")).toBe(true)

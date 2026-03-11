@@ -46,7 +46,6 @@ export const TASK_TYPE_TO_COLLECTION: Record<CanonicalTaskType, CanonicalTaskCol
 
 export const TASK_RESERVED_DIRECTORIES = ["templates", ".trash", "archive"] as const
 
-export const TASK_STEM_PATTERN = /^\d{4}-\d{2}-\d{2}-\d{4}-[a-z0-9][a-z0-9-]*$/
 export const TASK_FILENAME_PATTERN = /^\d{4}-\d{2}-\d{2}-\d{4}-[a-z0-9][a-z0-9-]*\.md$/
 
 export const TASK_REQUIRED_TEMPLATE_FIELDS: Record<CanonicalTaskType, readonly string[]> = {
