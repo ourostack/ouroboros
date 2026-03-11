@@ -431,6 +431,46 @@ export interface TeamsMessageContext {
   botApi?: ToolContext["botApi"]
 }
 
+function createTeamsCommandRegistry() {
+  const registry = createCommandRegistry()
+  registerDefaultCommands(registry)
+  return registry
+}
+
+function handleTeamsSlashCommand(
+  text: string,
+  registry: ReturnType<typeof createCommandRegistry>,
+  friendId: string,
+  conversationId: string,
+  stream: TeamsStream,
+  emitResponse = true,
+): "new" | "response" | null {
+  const parsed = parseSlashCommand(text)
+  if (!parsed) return null
+
+  const dispatchResult = registry.dispatch(parsed.command, { channel: "teams" })
+  if (!dispatchResult.handled || !dispatchResult.result) {
+    return null
+  }
+
+  if (dispatchResult.result.action === "new") {
+    deleteSession(sessionPath(friendId, "teams", conversationId))
+    if (emitResponse) {
+      stream.emit("session cleared")
+    }
+    return "new"
+  }
+
+  if (dispatchResult.result.action === "response") {
+    if (emitResponse) {
+      stream.emit(dispatchResult.result.message || "")
+    }
+    return "response"
+  }
+
+  return null
+}
+
 // Handle an incoming Teams message
 export async function handleTeamsMessage(text: string, stream: TeamsStream, conversationId: string, teamsContext?: TeamsMessageContext, sendMessage?: (text: string) => Promise<void>): Promise<void> {
   const turnKey = teamsTurnKey(conversationId)
@@ -461,24 +501,11 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
   const resolvedContext = await resolver.resolve()
   const friendId = resolvedContext.friend.id
 
-  const registry = createCommandRegistry()
-  registerDefaultCommands(registry)
+  const registry = createTeamsCommandRegistry()
 
   // Check for slash commands (before pipeline -- these are transport-level concerns)
-  const parsed = parseSlashCommand(text)
-  if (parsed) {
-    const dispatchResult = registry.dispatch(parsed.command, { channel: "teams" })
-    if (dispatchResult.handled && dispatchResult.result) {
-      if (dispatchResult.result.action === "new") {
-        const sessPath = sessionPath(friendId, "teams", conversationId)
-        deleteSession(sessPath)
-        stream.emit("session cleared")
-        return
-      } else if (dispatchResult.result.action === "response") {
-        stream.emit(dispatchResult.result.message || "")
-        return
-      }
-    }
+  if (handleTeamsSlashCommand(text, registry, friendId, conversationId, stream)) {
+    return
   }
 
   // ── Teams adapter concerns: controller, callbacks, session path ──────────
@@ -585,12 +612,28 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
       return
     }
 
-    const supersedingFollowUp = [...drainedSteeringFollowUps]
-      .reverse()
-      .find((followUp) => followUp.effect === "clear_and_supersede")
-    if (!supersedingFollowUp) {
+    const supersedingIndex = drainedSteeringFollowUps
+      .map((followUp) => followUp.effect)
+      .lastIndexOf("clear_and_supersede")
+    if (supersedingIndex < 0) {
       return
     }
+    const supersedingFollowUp = drainedSteeringFollowUps[supersedingIndex]
+    const replayTail = drainedSteeringFollowUps
+      .slice(supersedingIndex + 1)
+      .map((followUp) => followUp.text.trim())
+      .filter((followUpText) => followUpText.length > 0)
+      .join("\n")
+
+    if (replayTail) {
+      currentText = replayTail
+      continue
+    }
+
+    if (handleTeamsSlashCommand(supersedingFollowUp.text, registry, friendId, conversationId, stream, false)) {
+      return
+    }
+
     currentText = supersedingFollowUp.text
   }
 }
@@ -701,6 +744,42 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
     // fetches are also unnecessary (and slow) for a simple yes/no reply.
     if (resolvePendingConfirmation(convId, text)) {
       return
+    }
+
+    const commandRegistry = createTeamsCommandRegistry()
+    const parsedSlashCommand = parseSlashCommand(text)
+    if (parsedSlashCommand) {
+      const dispatchResult = commandRegistry.dispatch(parsedSlashCommand.command, { channel: "teams" })
+      if (dispatchResult.handled && dispatchResult.result) {
+        if (dispatchResult.result.action === "response") {
+          stream.emit(dispatchResult.result.message || "")
+          return
+        }
+        if (dispatchResult.result.action === "new") {
+          const commandStore = getFriendStore()
+          const commandProvider = activity.from?.aadObjectId ? "aad" as const : "teams-conversation" as const
+          const commandExternalId = activity.from?.aadObjectId || convId
+          const commandResolver = new FriendResolver(commandStore, {
+            provider: commandProvider,
+            externalId: commandExternalId,
+            tenantId: activity.conversation?.tenantId,
+            displayName: activity.from?.name || "Unknown",
+            channel: "teams",
+          })
+          const commandContext = await commandResolver.resolve()
+          deleteSession(sessionPath(commandContext.friend.id, "teams", convId))
+          stream.emit("session cleared")
+          if (_turnCoordinator.isTurnActive(turnKey)) {
+            _turnCoordinator.enqueueFollowUp(turnKey, {
+              conversationId: convId,
+              text,
+              receivedAt: Date.now(),
+              effect: "clear_and_supersede",
+            })
+          }
+          return
+        }
+      }
     }
 
     // If this conversation already has an active turn, steer follow-up input
