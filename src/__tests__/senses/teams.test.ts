@@ -1193,6 +1193,103 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
     vi.restoreAllMocks()
   })
 
+  it("active-turn /new clears the session instead of buffering as ordinary steering", async () => {
+    vi.resetModules()
+
+    let capturedHandler: ((args: any) => Promise<void>) | null = null
+    vi.doMock("@microsoft/teams.apps", () => ({
+      App: class MockApp {
+        constructor(_opts: any) {}
+        on = vi.fn().mockImplementation((_event: string, handler: any) => {
+          capturedHandler = handler
+        })
+        event = vi.fn()
+        start = vi.fn()
+      },
+    }))
+    vi.doMock("@microsoft/teams.dev", () => ({
+      DevtoolsPlugin: class MockDevtoolsPlugin {},
+    }))
+
+    let releaseFirst: (() => void) | undefined
+    const firstTurn = new Promise<void>((resolve) => { releaseFirst = resolve })
+    let drainedFollowUps: Array<{ text: string; effect?: string }> = []
+    const deleteSessionCalls: string[] = []
+    const runAgentFn = vi.fn()
+      .mockImplementationOnce(async (_messages: any, _callbacks: any, _channel: any, _signal: any, options: any) => {
+        await firstTurn
+        drainedFollowUps = options?.drainSteeringFollowUps?.() ?? []
+        const superseded = drainedFollowUps.some((followUp) => followUp.effect === "clear_and_supersede")
+        return { usage: undefined, outcome: superseded ? "superseded" : "complete" }
+      })
+      .mockResolvedValue({ usage: undefined, outcome: "complete" })
+
+    vi.doMock("../../heart/core", () => ({
+      createSummarize: vi.fn(() => vi.fn()),
+      runAgent: runAgentFn,
+      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      summarizeArgs: vi.fn().mockReturnValue(""),
+      repairOrphanedToolCalls: vi.fn(),
+    }))
+    vi.doMock("../../mind/prompt", () => ({
+      buildSystem: vi.fn().mockResolvedValue("system prompt"),
+      contextSection: vi.fn().mockReturnValue(""),
+    }))
+    vi.doMock("../../mind/context", () => ({
+      loadSession: vi.fn().mockReturnValue(null),
+      saveSession: vi.fn(),
+      deleteSession: vi.fn().mockImplementation((path: string) => { deleteSessionCalls.push(path) }),
+      trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
+      postTurn: vi.fn(),
+    }))
+
+    vi.spyOn(console, "log").mockImplementation(() => {})
+
+    const teams = await import("../../senses/teams")
+    teams.startTeamsApp()
+
+    const stream1 = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+    const stream2 = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+    const api = {
+      users: {
+        token: {
+          get: vi.fn().mockResolvedValue({ token: undefined }),
+        },
+      },
+    }
+
+    const firstMessage = capturedHandler!({
+      stream: stream1,
+      activity: { text: "first", conversation: { id: "conv-reset" }, from: { id: "user-1" }, channelId: "msteams" },
+      api,
+      signin: vi.fn(),
+      send: vi.fn(),
+    })
+
+    for (let i = 0; i < 20 && runAgentFn.mock.calls.length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 1))
+    }
+
+    await capturedHandler!({
+      stream: stream2,
+      activity: { text: "/new", conversation: { id: "conv-reset" }, from: { id: "user-1" }, channelId: "msteams" },
+      api,
+      signin: vi.fn(),
+      send: vi.fn(),
+    })
+
+    expect(stream2.emit).toHaveBeenCalledWith(expect.stringContaining("session cleared"))
+    expect(deleteSessionCalls).toContain("/tmp/teams-session.json")
+
+    releaseFirst?.()
+    await firstMessage
+
+    expect(drainedFollowUps).toEqual([{ text: "/new", effect: "clear_and_supersede" }])
+    expect(runAgentFn).toHaveBeenCalledTimes(1)
+
+    vi.restoreAllMocks()
+  })
+
   it("replays a superseding follow-up as the next turn opener after a superseded turn", async () => {
     vi.resetModules()
 
@@ -1283,6 +1380,111 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
     const replayMessages = runAgentFn.mock.calls[1][0]
     const userMessages = replayMessages.filter((message: any) => message.role === "user")
     expect(userMessages.at(-1)).toEqual(expect.objectContaining({ content: "stop working on that" }))
+
+    vi.restoreAllMocks()
+  })
+
+  it("replays the replacement-ask tail after a superseding follow-up batch", async () => {
+    vi.resetModules()
+
+    let capturedHandler: ((args: any) => Promise<void>) | null = null
+    vi.doMock("@microsoft/teams.apps", () => ({
+      App: class MockApp {
+        constructor(_opts: any) {}
+        on = vi.fn().mockImplementation((_event: string, handler: any) => {
+          capturedHandler = handler
+        })
+        event = vi.fn()
+        start = vi.fn()
+      },
+    }))
+    vi.doMock("@microsoft/teams.dev", () => ({
+      DevtoolsPlugin: class MockDevtoolsPlugin {},
+    }))
+
+    let releaseFirst: (() => void) | undefined
+    const firstTurn = new Promise<void>((resolve) => { releaseFirst = resolve })
+    const runAgentFn = vi.fn()
+      .mockImplementationOnce(async (_messages: any, _callbacks: any, _channel: any, _signal: any, options: any) => {
+        await firstTurn
+        const followUps = options?.drainSteeringFollowUps?.() ?? []
+        const superseded = followUps.some((followUp: any) => followUp.effect === "clear_and_supersede")
+        return { usage: undefined, outcome: superseded ? "superseded" : "complete" }
+      })
+      .mockResolvedValueOnce({ usage: undefined, outcome: "complete" })
+
+    vi.doMock("../../heart/core", () => ({
+      createSummarize: vi.fn(() => vi.fn()),
+      runAgent: runAgentFn,
+      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      summarizeArgs: vi.fn().mockReturnValue(""),
+      repairOrphanedToolCalls: vi.fn(),
+    }))
+    vi.doMock("../../mind/prompt", () => ({
+      buildSystem: vi.fn().mockResolvedValue("system prompt"),
+      contextSection: vi.fn().mockReturnValue(""),
+    }))
+    vi.doMock("../../mind/context", () => ({
+      loadSession: vi.fn().mockReturnValue(null),
+      saveSession: vi.fn(),
+      deleteSession: vi.fn(),
+      trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
+      postTurn: vi.fn(),
+    }))
+
+    vi.spyOn(console, "log").mockImplementation(() => {})
+
+    const teams = await import("../../senses/teams")
+    teams.startTeamsApp()
+
+    const stream1 = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+    const stream2 = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+    const stream3 = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+    const api = {
+      users: {
+        token: {
+          get: vi.fn().mockResolvedValue({ token: undefined }),
+        },
+      },
+    }
+
+    const firstMessage = capturedHandler!({
+      stream: stream1,
+      activity: { text: "first", conversation: { id: "conv-batch-supersede" }, from: { id: "user-1" }, channelId: "msteams" },
+      api,
+      signin: vi.fn(),
+      send: vi.fn(),
+    })
+
+    for (let i = 0; i < 20 && runAgentFn.mock.calls.length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 1))
+    }
+
+    await capturedHandler!({
+      stream: stream2,
+      activity: { text: "stop working on that", conversation: { id: "conv-batch-supersede" }, from: { id: "user-1" }, channelId: "msteams" },
+      api,
+      signin: vi.fn(),
+      send: vi.fn(),
+    })
+
+    await capturedHandler!({
+      stream: stream3,
+      activity: { text: "instead do the release checklist\nand include the rollback note", conversation: { id: "conv-batch-supersede" }, from: { id: "user-1" }, channelId: "msteams" },
+      api,
+      signin: vi.fn(),
+      send: vi.fn(),
+    })
+
+    releaseFirst?.()
+    await firstMessage
+
+    expect(runAgentFn).toHaveBeenCalledTimes(2)
+    const replayMessages = runAgentFn.mock.calls[1][0]
+    const userMessages = replayMessages.filter((message: any) => message.role === "user")
+    expect(userMessages.at(-1)).toEqual(expect.objectContaining({
+      content: "instead do the release checklist\nand include the rollback note",
+    }))
 
     vi.restoreAllMocks()
   })
