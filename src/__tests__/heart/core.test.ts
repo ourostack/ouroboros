@@ -284,6 +284,12 @@ describe("RunAgentOptions trace propagation contract", () => {
     const options: core.RunAgentOptions = { traceId: "trace-123" }
     expect((options as any).traceId).toBe("trace-123")
   })
+
+  it("supports a currentObligation field in RunAgentOptions", async () => {
+    const core = await import("../../heart/core")
+    const options: core.RunAgentOptions = { currentObligation: "investigate the active thread" } as any
+    expect((options as any).currentObligation).toBe("investigate the active thread")
+  })
 })
 
 describe("runAgent", () => {
@@ -2129,6 +2135,32 @@ describe("runAgent", () => {
 
     const result = await runAgent([{ role: "system", content: "test" }], callbacks)
     expect(result.usage).toBeUndefined()
+  })
+
+  it("returns a structured outcome alongside usage", async () => {
+    mockCreate.mockReturnValue(
+      makeStream([makeChunk("hello there")])
+    )
+
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+    }
+
+    const result = await runAgent(
+      [{ role: "system", content: "test" }],
+      callbacks,
+      undefined,
+      undefined,
+      { toolChoiceRequired: false, currentObligation: "reply to the live ask" } as any,
+    )
+
+    expect((result as any).outcome).toBe("complete")
   })
 
   // ── context overflow auto-recovery ──
