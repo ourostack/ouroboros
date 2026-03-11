@@ -6,6 +6,7 @@ export type SenseStatus = "disabled" | "needs_config" | "ready" | "running" | "i
 export interface SenseRuntimeInfo {
   configured?: boolean
   runtime?: "running" | "error"
+  detail?: string
 }
 
 export interface SenseInventoryEntry {

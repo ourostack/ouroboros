@@ -11,10 +11,11 @@ You are a task planner for coding work. Help the user define scope, then convert
 **Determine task doc directory:**
 1. Read project instructions (for example `AGENTS.md`) to find the canonical task-doc location for the current repo
 2. Derive `AGENT` from the current git branch when the project uses agent-scoped task docs
-3. Set `TASK_DIR` to the project-defined planning/doing directory
-4. If the project-defined parent location exists but `TASK_DIR` does not, create it
-5. If the project does not define a task-doc location, STOP and ask the user or caller where planning/doing docs should live
-6. Do not assume task docs live in the repo root; many projects keep them externally
+3. Confirm the task is running from a dedicated task worktree when the project requires parallel agent work; if the checkout is shared or ambiguous, STOP and tell the caller to create/switch to a dedicated worktree first
+4. Set `TASK_DIR` to the project-defined planning/doing directory
+5. If the project-defined parent location exists but `TASK_DIR` does not, create it
+6. If the project does not define a task-doc location, STOP and ask the user or caller where planning/doing docs should live
+7. Do not assume task docs live in the repo root; many projects keep them externally
 
 **Check for existing planning docs:**
 1. Look for `YYYY-MM-DD-HHMM-planning-*.md` files in `TASK_DIR`
@@ -160,7 +161,7 @@ User answers questions → agent updates doc → agent sets status to `NEEDS_REV
 
 **CRITICAL: Planning doc is KEPT. Conversion creates a NEW doing doc alongside it in `TASK_DIR`.**
 
-Run these passes — announce each. **ALL 4 PASSES ARE MANDATORY. You must run every pass, even if you think nothing changed. Each pass MUST have its own commit (use "no changes needed" in the commit message if the pass found nothing to fix). Do NOT skip or combine passes.**
+Run these passes — announce each. **ALL 5 PASSES ARE MANDATORY. You must run every pass, even if you think nothing changed. Each pass MUST have its own commit (use "no changes needed" in the commit message if the pass found nothing to fix). Do NOT skip or combine passes.**
 
 **Pass 1 — First Draft:**
 - Create `YYYY-MM-DD-HHMM-doing-{short-desc}.md` (same timestamp and short-desc as planning)
@@ -181,7 +182,14 @@ Run these passes — announce each. **ALL 4 PASSES ARE MANDATORY. You must run e
 - Update units if reality differs from what was assumed during planning
 - Commit: `git commit -m "docs(doing): validation pass"` (or `"docs(doing): validation pass - no changes needed"` if nothing to fix)
 
-**Pass 4 — Quality:**
+**Pass 4 — Ambiguity:**
+- Remove doer-facing ambiguity before execution starts
+- Tighten units so a `READY_FOR_EXECUTION` doing doc does not require structural rewrites by `work-doer`
+- Resolve fuzzy phrases like "appropriate files", "as needed", or "wherever the bug is" into concrete targets unless the project instructions explicitly require that flexibility
+- If uncertainty remains, keep it in the planning doc's `Open Questions`, set status to `NEEDS_REVIEW`, and STOP instead of shipping an ambiguous doing doc
+- Commit: `git commit -m "docs(doing): ambiguity pass"` (or `"docs(doing): ambiguity pass - no changes needed"` if nothing to fix)
+
+**Pass 5 — Quality:**
 - All units have acceptance criteria?
 - No TBD items?
 - Completion criteria testable?

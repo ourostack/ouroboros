@@ -138,4 +138,146 @@ describe("BlueBubbles mutation log", () => {
       }),
     )
   })
+
+  it("lists only recoverable state-only mutations, ignoring unreadable files and malformed rows", async () => {
+    const {
+      getBlueBubblesMutationLogPath,
+      listBlueBubblesRecoveryCandidates,
+      recordBlueBubblesMutation,
+    } = await import("../../senses/bluebubbles-mutation-log")
+
+    recordBlueBubblesMutation("slugger", {
+      kind: "mutation",
+      eventType: "updated-message",
+      mutationType: "delivery",
+      messageGuid: "msg-2",
+      timestamp: 2,
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        rawId: "ari@mendelow.me",
+        displayName: "ari@mendelow.me",
+      },
+      chat: {
+        chatGuid: "any;-;ari@mendelow.me",
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat:any;-;ari@mendelow.me",
+        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+      },
+      shouldNotifyAgent: false,
+      textForAgent: "message marked as delivered",
+      requiresRepair: false,
+    })
+    recordBlueBubblesMutation("slugger", {
+      kind: "mutation",
+      eventType: "updated-message",
+      mutationType: "read",
+      messageGuid: "msg-1",
+      timestamp: 1,
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        rawId: "ari@mendelow.me",
+        displayName: "ari@mendelow.me",
+      },
+      chat: {
+        chatGuid: "any;-;ari@mendelow.me",
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat:any;-;ari@mendelow.me",
+        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+      },
+      shouldNotifyAgent: false,
+      textForAgent: "message marked as read",
+      requiresRepair: false,
+    })
+    recordBlueBubblesMutation("slugger", {
+      kind: "mutation",
+      eventType: "updated-message",
+      mutationType: "read",
+      messageGuid: "msg-1",
+      timestamp: 3,
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        rawId: "ari@mendelow.me",
+        displayName: "ari@mendelow.me",
+      },
+      chat: {
+        chatGuid: "any;-;ari@mendelow.me",
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat:any;-;ari@mendelow.me",
+        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+      },
+      shouldNotifyAgent: false,
+      textForAgent: "latest read mutation",
+      requiresRepair: false,
+    })
+    recordBlueBubblesMutation("slugger", {
+      kind: "mutation",
+      eventType: "updated-message",
+      mutationType: "edit",
+      messageGuid: "msg-edit",
+      timestamp: 4,
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        rawId: "ari@mendelow.me",
+        displayName: "ari@mendelow.me",
+      },
+      chat: {
+        chatGuid: "any;-;ari@mendelow.me",
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat:any;-;ari@mendelow.me",
+        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+      },
+      shouldNotifyAgent: true,
+      textForAgent: "edited message",
+      requiresRepair: false,
+    })
+
+    const pathToLog = getBlueBubblesMutationLogPath("slugger", "chat:any;-;ari@mendelow.me")
+    fs.appendFileSync(
+      pathToLog,
+      [
+        JSON.stringify({
+          recordedAt: new Date(5).toISOString(),
+          eventType: "updated-message",
+          mutationType: "delivery",
+          messageGuid: "",
+          targetMessageGuid: null,
+          chatGuid: "any;-;ari@mendelow.me",
+          chatIdentifier: "ari@mendelow.me",
+          sessionKey: "chat:any;-;ari@mendelow.me",
+          shouldNotifyAgent: false,
+          textForAgent: "blank guid",
+          fromMe: false,
+        }),
+        "{bad json",
+      ].join("\n") + "\n",
+      "utf-8",
+    )
+
+    const brokenPath = path.join(path.dirname(pathToLog), "broken.ndjson")
+    fs.mkdirSync(brokenPath, { recursive: true })
+
+    expect(listBlueBubblesRecoveryCandidates("slugger")).toEqual([
+      expect.objectContaining({
+        messageGuid: "msg-2",
+        mutationType: "delivery",
+      }),
+      expect.objectContaining({
+        messageGuid: "msg-1",
+        mutationType: "read",
+        textForAgent: "latest read mutation",
+      }),
+    ])
+  })
 })

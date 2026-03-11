@@ -8,5 +8,7 @@ if (!process.argv.includes("--agent")) {
 }
 
 import { startBlueBubblesApp } from "./bluebubbles"
+import { configureDaemonRuntimeLogger } from "../heart/daemon/runtime-logging"
 
+configureDaemonRuntimeLogger("bluebubbles")
 startBlueBubblesApp()

@@ -27,6 +27,8 @@ Task docs go in `~/AgentBundles/<agent>.ouro/tasks/one-shots/` with naming schem
 Artifacts for a doing doc live adjacent to that doing doc in the same `one-shots/` directory.
 Do not create agent-specific task directories inside this repo.
 
+- Use a dedicated git worktree per active agent task so multiple agents can work in parallel without sharing one checkout.
+- Unless the human explicitly asks to control branch naming or worktree layout, the agent may create its own agent-specific branch/worktree as long as the branch follows `<agent>/<slug>`.
 - Default `<agent>` from the current git branch using this shape: `<agent>[/<slug>]`.
   - The first path segment is always the agent name (e.g., `ouroboros`, `slugger`).
   - If the branch has no `/`, the entire branch name is the agent.
@@ -44,7 +46,7 @@ Do not create agent-specific task directories inside this repo.
 
 ### Gate Flow
 
-0. **Branch**: Verify the current branch follows `<agent>/<slug>`. If on `main` or an ambiguous branch, STOP and create/switch to the correct branch before proceeding. This is always the first step — no planning, converting, or implementing without a proper branch.
+0. **Branch + worktree**: Verify the current branch follows `<agent>/<slug>` and that the task is running from a dedicated worktree. If on `main`, on an ambiguous branch, or in the wrong shared checkout, STOP and create/switch to the correct branch/worktree before proceeding. This is always the first step — no planning, converting, or implementing without a proper branch/worktree.
 1. **Plan**: Launch `work-planner`. It produces/updates a planning doc under `~/AgentBundles/<agent>.ouro/tasks/one-shots/`.
 2. **Review**: Show the user the planning doc path and STOP. Wait for explicit user approval.
 3. **Convert**: Only after user approves the planning doc, re-run `work-planner` to convert to a doing doc in the same bundle `one-shots/` directory. User must also review and sign off on the doing doc before implementation.

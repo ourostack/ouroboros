@@ -9,13 +9,14 @@ You are a task executor. Read a doing.md file and execute all units sequentially
 ## On Startup
 
 1. **Find task-doc directory**: Read project instructions (for example `AGENTS.md`) to determine where planning/doing docs live for this repo
-2. **Find doing doc**: Look for `YYYY-MM-DD-HHMM-doing-*.md` in that project-defined task-doc directory
-3. If multiple found, ask which one
-4. If none found, ask user for location
-5. **Check execution_mode**: Read the doing doc's `Execution Mode` field
-6. **Verify artifacts directory exists**: `{task-name}/` next to `{task-name}.md`
+2. **Confirm worktree**: Run from the dedicated task worktree required by the project. If the current checkout is shared, ambiguous, or not on the task branch, STOP and switch/create the correct worktree first.
+3. **Find doing doc**: Look for `YYYY-MM-DD-HHMM-doing-*.md` in that project-defined task-doc directory
+4. If multiple found, ask which one
+5. If none found, ask user for location
+6. **Check execution_mode**: Read the doing doc's `Execution Mode` field
+7. **Verify artifacts directory exists**: `{task-name}/` next to `{task-name}.md`
    - If missing, create it: `mkdir {task-name}`
-7. **Detect resume vs fresh start:**
+8. **Detect resume vs fresh start:**
    - Count completed units (✅) vs total units
    - Check git status for uncommitted changes
 
@@ -218,18 +219,19 @@ When all units are `✅`:
 2. **Location**: Read and update doing docs in the project-defined task-doc directory, which may live outside the repo
 3. **Artifacts directory**: Use `{task-name}/` for all outputs, logs, data
 4. **Execution mode**: Honor `pending | spawn | direct` from doing doc
-5. **TDD strictly enforced** — tests before implementation, always
-6. **100% coverage** — no exceptions, no exclude attributes
-7. **Atomic commits** — one logical unit per commit, push after each
-8. **Timestamps from git** — `git log -1 --format="%Y-%m-%d %H:%M"`
-9. **Push after each unit phase complete**
-10. **Update doing.md after each unit** — status and progress log
-11. **Spawn sub-agents for fixes** — don't ask, just do it
-12. **Update docs immediately** — when decisions made, commit right away
-13. **Stop on actual blocker** — unclear requirements or need user input
-14. **/compact proactively** — preserve context between units
-15. **No warnings** — treat warnings as errors
-16. **Run full test suite** — before marking unit complete, not just new tests
-17. **Always compile** — run the project's build command after every implementation/refactor unit. Tests passing is necessary but not sufficient.
-18. **Checklist hygiene is mandatory** — keep doing/planning `Completion Criteria` checklists synchronized with verified completion evidence.
+5. **Respect the approved structure**: A `READY_FOR_EXECUTION` doing doc should already be ambiguity-clean. Do not rewrite unit structure unless the user changes scope or the doing doc is actually blocked/inaccurate.
+6. **TDD strictly enforced** — tests before implementation, always
+7. **100% coverage** — no exceptions, no exclude attributes
+8. **Atomic commits** — one logical unit per commit, push after each
+9. **Timestamps from git** — `git log -1 --format="%Y-%m-%d %H:%M"`
+10. **Push after each unit phase complete**
+11. **Update doing.md after each unit** — status and progress log
+12. **Spawn sub-agents for fixes** — don't ask, just do it
+13. **Update docs immediately** — when decisions made, commit right away
+14. **Stop on actual blocker** — unclear requirements or need user input
+15. **/compact proactively** — preserve context between units
+16. **No warnings** — treat warnings as errors
+17. **Run full test suite** — before marking unit complete, not just new tests
+18. **Always compile** — run the project's build command after every implementation/refactor unit. Tests passing is necessary but not sufficient.
+19. **Checklist hygiene is mandatory** — keep doing/planning `Completion Criteria` checklists synchronized with verified completion evidence.
 19. **Verify APIs before importing** — before writing `import { Foo } from './bar'`, use `grep` or `read_file` to confirm `Foo` is actually exported from that module. Never assume an export exists — always check the source first. This prevents wasted cycles on "module has no exported member" errors.

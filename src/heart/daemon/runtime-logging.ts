@@ -23,12 +23,14 @@ export interface ConfigureDaemonRuntimeLoggerOptions {
   configPath?: string
 }
 
+type RuntimeProcessName = "daemon" | "ouro" | "ouro-bot" | "bluebubbles"
+
 const DEFAULT_RUNTIME_LOGGING: RuntimeLoggingConfig = {
   level: "info",
   sinks: ["terminal", "ndjson"],
 }
 
-function defaultLevelForProcess(processName: "daemon" | "ouro" | "ouro-bot"): LogLevel {
+function defaultLevelForProcess(processName: RuntimeProcessName): LogLevel {
   return processName === "daemon" ? "info" : "warn"
 }
 
@@ -36,7 +38,7 @@ function isLogLevel(value: unknown): value is LogLevel {
   return value === "debug" || value === "info" || value === "warn" || value === "error"
 }
 
-function resolveRuntimeLoggingConfig(configPath: string, processName: "daemon" | "ouro" | "ouro-bot"): RuntimeLoggingConfig {
+function resolveRuntimeLoggingConfig(configPath: string, processName: RuntimeProcessName): RuntimeLoggingConfig {
   const defaultLevel = defaultLevelForProcess(processName)
   let parsed: unknown = null
   try {
@@ -63,7 +65,7 @@ function resolveRuntimeLoggingConfig(configPath: string, processName: "daemon" |
 }
 
 export function configureDaemonRuntimeLogger(
-  processName: "daemon" | "ouro" | "ouro-bot",
+  processName: RuntimeProcessName,
   options: ConfigureDaemonRuntimeLoggerOptions = {},
 ): void {
   const homeDir = options.homeDir ?? os.homedir()

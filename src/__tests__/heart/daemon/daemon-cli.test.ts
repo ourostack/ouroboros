@@ -512,6 +512,7 @@ describe("ouro CLI execution", () => {
 
   it("attempts .ouro UTI registration during `up` setup", async () => {
     const registerOuroBundleType = vi.fn(async () => ({ attempted: true, registered: true }))
+    const ensureDaemonBootPersistence = vi.fn(async () => undefined)
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
       sendCommand: vi.fn(),
@@ -522,11 +523,13 @@ describe("ouro CLI execution", () => {
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
       installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
       registerOuroBundleType,
+      ensureDaemonBootPersistence,
     }
 
     await runOuroCli(["up"], deps)
 
     expect(registerOuroBundleType).toHaveBeenCalledTimes(1)
+    expect(ensureDaemonBootPersistence).toHaveBeenCalledTimes(1)
   })
 
   it("continues `up` flow when .ouro UTI registration throws", async () => {
@@ -548,6 +551,50 @@ describe("ouro CLI execution", () => {
     const result = await runOuroCli(["up"], deps)
 
     expect(registerOuroBundleType).toHaveBeenCalledTimes(1)
+    expect(result).toContain("daemon started")
+  })
+
+  it("continues `up` flow when boot persistence throws a non-Error value", async () => {
+    const ensureDaemonBootPersistence = vi.fn(async () => {
+      throw "boot persistence failed"
+    })
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 6789 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => false),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+      ensureDaemonBootPersistence,
+    }
+
+    const result = await runOuroCli(["up"], deps)
+
+    expect(ensureDaemonBootPersistence).toHaveBeenCalledTimes(1)
+    expect(result).toContain("daemon started")
+  })
+
+  it("continues `up` flow when boot persistence throws an Error", async () => {
+    const ensureDaemonBootPersistence = vi.fn(async () => {
+      throw new Error("boot persistence exploded")
+    })
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 6790 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => false),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+      ensureDaemonBootPersistence,
+    }
+
+    const result = await runOuroCli(["up"], deps)
+
+    expect(ensureDaemonBootPersistence).toHaveBeenCalledTimes(1)
     expect(result).toContain("daemon started")
   })
 

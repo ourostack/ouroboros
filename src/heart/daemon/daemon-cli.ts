@@ -35,6 +35,7 @@ import { getPackageVersion } from "../../mind/bundle-manifest"
 import { getTaskModule } from "../../repertoire/tasks"
 import type { TaskModule } from "../../repertoire/tasks/types"
 import { syncGlobalOuroBotWrapper as defaultSyncGlobalOuroBotWrapper } from "./ouro-bot-global-installer"
+import { writeLaunchAgentPlist, type LaunchdWriteDeps } from "./launchd"
 
 export type OuroCliCommand =
   | { kind: "daemon.up" }
@@ -77,6 +78,7 @@ export interface OuroCliDeps {
   registerOuroBundleType?: () => Promise<unknown> | unknown
   installOuroCommand?: () => OuroPathInstallResult
   syncGlobalOuroBotWrapper?: () => Promise<unknown> | unknown
+  ensureDaemonBootPersistence?: (socketPath: string) => Promise<void> | void
   startChat?: (agentName: string) => Promise<void>
   tailLogs?: (options?: { follow?: boolean; lines?: number; agentFilter?: string }) => () => void
   taskModule?: TaskModule
@@ -846,6 +848,28 @@ function defaultFallbackPendingMessage(command: Extract<DaemonCommand, { kind: "
   return pendingPath
 }
 
+function defaultEnsureDaemonBootPersistence(socketPath: string): void {
+  if (process.platform !== "darwin") {
+    return
+  }
+
+  const homeDir = os.homedir()
+  const launchdDeps: LaunchdWriteDeps = {
+    writeFile: (filePath, content) => fs.writeFileSync(filePath, content, "utf-8"),
+    mkdirp: (dir) => fs.mkdirSync(dir, { recursive: true }),
+    homeDir,
+  }
+
+  const entryPath = path.join(getRepoRoot(), "dist", "heart", "daemon", "daemon-entry.js")
+  const logDir = path.join(homeDir, ".agentstate", "daemon", "logs")
+  writeLaunchAgentPlist(launchdDeps, {
+    nodePath: process.execPath,
+    entryPath,
+    socketPath,
+    logDir,
+  })
+}
+
 async function defaultInstallSubagents(): Promise<SubagentInstallResult> {
   return installSubagentsForAvailableCli({
     repoRoot: getRepoRoot(),
@@ -1145,6 +1169,7 @@ export function createDefaultOuroCliDeps(socketPath = "/tmp/ouroboros-daemon.soc
     registerOuroBundleType: defaultRegisterOuroBundleUti,
     installOuroCommand: defaultInstallOuroCommand,
     syncGlobalOuroBotWrapper: defaultSyncGlobalOuroBotWrapper,
+    ensureDaemonBootPersistence: defaultEnsureDaemonBootPersistence,
     /* v8 ignore next 3 -- integration: launches interactive CLI session @preserve */
     startChat: async (agentName: string) => {
       const { main } = await import("../../senses/cli")
@@ -1548,6 +1573,20 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
   if (command.kind === "daemon.up") {
     await performSystemSetup(deps)
+
+    if (deps.ensureDaemonBootPersistence) {
+      try {
+        await Promise.resolve(deps.ensureDaemonBootPersistence(deps.socketPath))
+      } catch (error) {
+        emitNervesEvent({
+          level: "warn",
+          component: "daemon",
+          event: "daemon.system_setup_launchd_error",
+          message: "failed to persist daemon boot startup",
+          meta: { error: error instanceof Error ? error.message : String(error), socketPath: deps.socketPath },
+        })
+      }
+    }
 
     // Run update hooks before starting daemon so user sees the output
     registerUpdateHook(bundleMetaHook)

@@ -9,6 +9,7 @@ import {
   uninstallLaunchAgent,
   isDaemonInstalled,
   DAEMON_PLIST_LABEL,
+  writeLaunchAgentPlist,
 } from "../../../heart/daemon/launchd"
 import type { LaunchdDeps, DaemonPlistOptions } from "../../../heart/daemon/launchd"
 
@@ -71,6 +72,13 @@ describe("launchd daemon management", () => {
       expect(xml).toMatch(/<key>KeepAlive<\/key>\s*<true\/>/)
     })
 
+    it("includes RunAtLoad true for boot startup", () => {
+      const xml = generateDaemonPlist(defaultPlistOptions)
+
+      expect(xml).toContain("<key>RunAtLoad</key>")
+      expect(xml).toMatch(/<key>RunAtLoad<\/key>\s*<true\/>/)
+    })
+
     it("includes StandardOutPath and StandardErrorPath when logDir provided", () => {
       const xml = generateDaemonPlist({
         ...defaultPlistOptions,
@@ -102,6 +110,20 @@ describe("launchd daemon management", () => {
   })
 
   describe("installLaunchAgent", () => {
+    it("writes the plist and creates the log directory when requested directly", () => {
+      const deps = makeDeps()
+      const logDir = path.join(tmpHome, "logs", "daemon")
+
+      const plistPath = writeLaunchAgentPlist(deps, {
+        ...defaultPlistOptions,
+        logDir,
+      })
+
+      expect(plistPath).toBe(path.join(launchAgentsDir, `${DAEMON_PLIST_LABEL}.plist`))
+      expect(fs.existsSync(plistPath)).toBe(true)
+      expect(fs.existsSync(logDir)).toBe(true)
+    })
+
     it("writes plist file and calls launchctl load", () => {
       const deps = makeDeps()
 
