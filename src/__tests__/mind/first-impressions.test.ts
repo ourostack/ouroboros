@@ -54,6 +54,30 @@ describe("first-impressions", () => {
       expect(result).toBe("")
     })
 
+    it("returns empty string when an active obligation is already in flight", () => {
+      const result = (getFirstImpressions as any)(
+        { totalTokens: 0, name: "Jordan" },
+        { currentObligation: "finish the current task" },
+      )
+      expect(result).toBe("")
+    })
+
+    it("returns empty string when a queued follow-up is waiting", () => {
+      const result = (getFirstImpressions as any)(
+        { totalTokens: 0, name: "Jordan" },
+        { hasQueuedFollowUp: true },
+      )
+      expect(result).toBe("")
+    })
+
+    it("returns empty string when mustResolveBeforeHandoff is active", () => {
+      const result = (getFirstImpressions as any)(
+        { totalTokens: 0, name: "Jordan" },
+        { mustResolveBeforeHandoff: true },
+      )
+      expect(result).toBe("")
+    })
+
     it("actively asks about the friend and mentions agent capabilities", () => {
       const result = getFirstImpressions({ totalTokens: 0, name: "Jordan" })
       // Should actively ask about the friend

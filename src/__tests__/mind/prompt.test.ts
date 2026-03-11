@@ -115,6 +115,31 @@ function setupReadFileSync() {
   })
 }
 
+function makeOnboardingContext() {
+  return {
+    friend: {
+      id: "uuid-1",
+      name: "Jordan",
+      externalIds: [],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: {},
+      totalTokens: 0,
+      createdAt: "2026-01-01",
+      updatedAt: "2026-01-01",
+      schemaVersion: 1,
+    },
+    channel: {
+      channel: "teams" as const,
+      availableIntegrations: ["ado" as const, "graph" as const],
+      supportsMarkdown: true,
+      supportsStreaming: true,
+      supportsRichCards: true,
+      maxMessageLength: 28000,
+    },
+  }
+}
+
 describe("buildSystem", () => {
   beforeEach(() => {
     vi.resetModules()
@@ -1675,6 +1700,60 @@ describe("contextSection", () => {
     const result = contextSection(ctx)
     // Tool preferences are irrelevant -- onboarding is token-based
     expect(result.toLowerCase()).toMatch(/learn|get to know/)
+  })
+
+  it("buildSystem omits onboarding when an active obligation is present", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("teams", { currentObligation: "finish the current task" }, makeOnboardingContext() as any)
+
+    expect(result.toLowerCase()).not.toContain("i actively ask my friend about themselves")
+    expect(result.toLowerCase()).not.toContain("only when the conversation is genuinely fresh and idle")
+  })
+
+  it("buildSystem omits onboarding when a queued follow-up exists", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("teams", { hasQueuedFollowUp: true }, makeOnboardingContext() as any)
+
+    expect(result.toLowerCase()).not.toContain("i actively ask my friend about themselves")
+  })
+
+  it("buildSystem omits onboarding when mustResolveBeforeHandoff is active", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("teams", { mustResolveBeforeHandoff: true }, makeOnboardingContext() as any)
+
+    expect(result.toLowerCase()).not.toContain("i actively ask my friend about themselves")
+  })
+
+  it("buildSystem keeps first-person onboarding language during a genuine lull", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("teams", undefined, makeOnboardingContext() as any)
+
+    expect(result.toLowerCase()).toContain("i actively ask my friend about themselves")
+    expect(result.toLowerCase()).toContain("a light opener is okay")
   })
 
   it("does NOT render toolPreferences in system prompt", async () => {
