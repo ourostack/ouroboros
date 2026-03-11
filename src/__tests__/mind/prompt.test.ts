@@ -1756,6 +1756,37 @@ describe("contextSection", () => {
     expect(result.toLowerCase()).toContain("a light opener is okay")
   })
 
+  it("contextSection omits onboarding when live continuity pressure is present", async () => {
+    setupReadFileSync()
+    const { contextSection, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = contextSection(makeOnboardingContext() as any, {
+      currentObligation: "finish the current task",
+      hasQueuedFollowUp: true,
+      mustResolveBeforeHandoff: true,
+    })
+
+    expect(result).toContain("## friend context")
+    expect(result.toLowerCase()).not.toContain("i'm still getting to know them")
+    expect(result.toLowerCase()).not.toContain("i actively ask my friend about themselves")
+  })
+
+  it("contextSection includes onboarding during a genuine lull when continuity state is idle", async () => {
+    setupReadFileSync()
+    const { contextSection, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = contextSection(makeOnboardingContext() as any, {
+      currentObligation: "   ",
+      hasQueuedFollowUp: false,
+      mustResolveBeforeHandoff: false,
+    })
+
+    expect(result.toLowerCase()).toContain("i'm still getting to know them")
+    expect(result.toLowerCase()).toContain("i actively ask my friend about themselves")
+  })
+
   it("does NOT render toolPreferences in system prompt", async () => {
     const { contextSection } = await import("../../mind/prompt")
     const ctx = {

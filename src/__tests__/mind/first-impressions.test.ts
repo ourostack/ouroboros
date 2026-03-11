@@ -78,6 +78,15 @@ describe("first-impressions", () => {
       expect(result).toBe("")
     })
 
+    it("keeps onboarding available when continuity state is present but idle", () => {
+      const result = (getFirstImpressions as any)(
+        { totalTokens: 0, name: "Jordan" },
+        { currentObligation: "   ", hasQueuedFollowUp: false, mustResolveBeforeHandoff: false },
+      )
+      expect(result.length).toBeGreaterThan(0)
+      expect(result).toContain("Jordan")
+    })
+
     it("actively asks about the friend and mentions agent capabilities", () => {
       const result = getFirstImpressions({ totalTokens: 0, name: "Jordan" })
       // Should actively ask about the friend
