@@ -161,6 +161,11 @@ type HistoricalLaneSummary = {
   snippet: string
 }
 
+function isHistoricalLaneMetadataLine(line: string): boolean {
+  return /^\[(conversation scope|recent active lanes|routing control):?/i.test(line)
+    || /^- (top_level|thread:[^:]+):/i.test(line)
+}
+
 function extractHistoricalLaneSummary(
   messages: OpenAI.ChatCompletionMessageParam[],
 ): HistoricalLaneSummary[] {
@@ -184,7 +189,7 @@ function extractHistoricalLaneSummary(
       .split("\n")
       .slice(1)
       .map((line) => line.trim())
-      .find(Boolean)
+      .find((line) => line.length > 0 && !isHistoricalLaneMetadataLine(line))
       ?.slice(0, 80) ?? "(no recent text)"
     summaries.push({
       key: laneKey,
@@ -260,6 +265,25 @@ function buildInboundContent(
     { type: "text", text },
     ...event.inputPartsForAgent,
   ]
+}
+
+function getBlueBubblesContinuityIngressTexts(event: BlueBubblesNormalizedEvent): string[] {
+  if (event.kind !== "message") return []
+
+  const text = event.textForAgent.trim()
+  if (text.length > 0) return [text]
+
+  const fallbackText = (event.inputPartsForAgent ?? [])
+    .map((part) => {
+      if (part.type === "text" && typeof part.text === "string") {
+        return part.text.trim()
+      }
+      return ""
+    })
+    .filter(Boolean)
+    .join("\n")
+
+  return fallbackText ? [fallbackText] : []
 }
 
 function createReplyTargetController(event: BlueBubblesNormalizedEvent): BlueBubblesReplyTargetController {
@@ -584,9 +608,10 @@ export async function handleBlueBubblesEvent(
       channel: "bluebubbles",
       capabilities: bbCapabilities,
       messages: [userMessage],
+      continuityIngressTexts: getBlueBubblesContinuityIngressTexts(event),
       callbacks,
       friendResolver: { resolve: () => Promise.resolve(context) },
-      sessionLoader: { loadOrCreate: () => Promise.resolve({ messages: sessionMessages, sessionPath: sessPath }) },
+      sessionLoader: { loadOrCreate: () => Promise.resolve({ messages: sessionMessages, sessionPath: sessPath, state: existing?.state }) },
       pendingDir,
       friendStore: store,
       provider: "imessage-handle",

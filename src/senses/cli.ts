@@ -44,6 +44,11 @@ export function formatPendingPrefix(messages: PendingMessage[], agentName: strin
     .join("\n")
 }
 
+export function getCliContinuityIngressTexts(input: string): string[] {
+  const trimmed = input.trim()
+  return trimmed ? [trimmed] : []
+}
+
 // readline.Interface exposes undocumented mutable line/cursor for in-progress input
 type ReadlineInternals = readline.Interface & { line: string; cursor: number }
 
@@ -763,6 +768,7 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
 
   // Load existing session or start fresh
   const existing = loadSession(sessPath)
+  let sessionState = existing?.state
   const sessionMessages: OpenAI.ChatCompletionMessageParam[] = existing?.messages && existing.messages.length > 0
     ? existing.messages
     : [{ role: "system", content: await buildSystem("cli", undefined, resolvedContext) }]
@@ -784,9 +790,10 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
           channel: "cli",
           capabilities: cliCapabilities,
           messages: [{ role: "user", content: userInput }],
+          continuityIngressTexts: getCliContinuityIngressTexts(userInput),
           callbacks,
           friendResolver: { resolve: () => Promise.resolve(resolvedContext) },
-          sessionLoader: { loadOrCreate: () => Promise.resolve({ messages, sessionPath: sessPath }) },
+          sessionLoader: { loadOrCreate: () => Promise.resolve({ messages, sessionPath: sessPath, state: sessionState }) },
           pendingDir,
           friendStore,
           provider: "local",
@@ -802,7 +809,10 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
               summarize,
             },
           }),
-          postTurn,
+          postTurn: (turnMessages, sessionPathArg, usage, hooks, state) => {
+            postTurn(turnMessages, sessionPathArg, usage, hooks, state)
+            sessionState = state
+          },
           accumulateFriendTokens,
           signal,
           runAgentOptions: {

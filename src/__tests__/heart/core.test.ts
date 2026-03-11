@@ -284,6 +284,52 @@ describe("RunAgentOptions trace propagation contract", () => {
     const options: core.RunAgentOptions = { traceId: "trace-123" }
     expect((options as any).traceId).toBe("trace-123")
   })
+
+  it("supports a currentObligation field in RunAgentOptions", async () => {
+    const core = await import("../../heart/core")
+    const options: core.RunAgentOptions = { currentObligation: "investigate the active thread" } as any
+    expect((options as any).currentObligation).toBe("investigate the active thread")
+  })
+})
+
+describe("getProviderDisplayLabel", () => {
+  it("formats the azure provider label", async () => {
+    await setupConfig({
+      provider: "azure",
+      providers: {
+        azure: {
+          deployment: "gpt-4.1",
+          modelName: "gpt-4.1",
+          apiKey: "azure-key",
+          endpoint: "https://example.openai.azure.com",
+        },
+      },
+    })
+    const { getProviderDisplayLabel, resetProviderRuntime } = await import("../../heart/core")
+    resetProviderRuntime()
+    expect(getProviderDisplayLabel()).toBe("azure openai (gpt-4.1, model: gpt-4.1)")
+  })
+
+  it("formats the anthropic provider label", async () => {
+    await setupConfig({ providers: { anthropic: { model: "claude-sonnet", setupToken: makeAnthropicSetupToken() } } })
+    const { getProviderDisplayLabel, resetProviderRuntime } = await import("../../heart/core")
+    resetProviderRuntime()
+    expect(getProviderDisplayLabel()).toBe("anthropic (claude-sonnet)")
+  })
+
+  it("formats the minimax provider label", async () => {
+    await setupConfig({ provider: "minimax", providers: { minimax: { model: "mini-max", apiKey: "minimax-key" } } })
+    const { getProviderDisplayLabel, resetProviderRuntime } = await import("../../heart/core")
+    resetProviderRuntime()
+    expect(getProviderDisplayLabel()).toBe("minimax (mini-max)")
+  })
+
+  it("formats the openai-codex provider label", async () => {
+    await setupConfig({ providers: { "openai-codex": { model: "gpt-5-codex", oauthAccessToken: makeOpenAICodexAccessToken() } } })
+    const { getProviderDisplayLabel, resetProviderRuntime } = await import("../../heart/core")
+    resetProviderRuntime()
+    expect(getProviderDisplayLabel()).toBe("openai codex (gpt-5-codex)")
+  })
 })
 
 describe("runAgent", () => {
@@ -2129,6 +2175,32 @@ describe("runAgent", () => {
 
     const result = await runAgent([{ role: "system", content: "test" }], callbacks)
     expect(result.usage).toBeUndefined()
+  })
+
+  it("returns a structured outcome alongside usage", async () => {
+    mockCreate.mockReturnValue(
+      makeStream([makeChunk("hello there")])
+    )
+
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+    }
+
+    const result = await runAgent(
+      [{ role: "system", content: "test" }],
+      callbacks,
+      undefined,
+      undefined,
+      { toolChoiceRequired: false, currentObligation: "reply to the live ask" } as any,
+    )
+
+    expect((result as any).outcome).toBe("complete")
   })
 
   // ── context overflow auto-recovery ──
@@ -5016,7 +5088,13 @@ describe("kick mechanism", () => {
 })
 
 describe("tool_choice required and final_answer", () => {
-  let runAgent: (messages: any[], callbacks: ChannelCallbacks, channel?: string, signal?: AbortSignal, options?: { toolChoiceRequired?: boolean }) => Promise<{ usage?: any }>
+  let runAgent: (
+    messages: any[],
+    callbacks: ChannelCallbacks,
+    channel?: string,
+    signal?: AbortSignal,
+    options?: Record<string, unknown>,
+  ) => Promise<{ usage?: any; outcome: string }>
 
   function makeStream(chunks: any[]) {
     return {
@@ -5281,6 +5359,212 @@ describe("tool_choice required and final_answer", () => {
     expect(toolResults[0].content).toBe("(delivered)")
     // Only 1 API call (no loop continuation)
     expect(mockCreate).toHaveBeenCalledTimes(1)
+  })
+
+  it("requires intent before closing when mustResolveBeforeHandoff is true", async () => {
+    let callCount = 0
+    mockCreate.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        return makeStream([
+          makeChunk(undefined, [
+            { index: 0, id: "call_1", function: { name: "final_answer", arguments: '{"answer":"still working"}' } },
+          ]),
+        ])
+      }
+      return makeStream([
+        makeChunk(undefined, [
+          {
+            index: 0,
+            id: "call_2",
+            function: { name: "final_answer", arguments: '{"answer":"blocked on credentials","intent":"blocked"}' },
+          },
+        ]),
+      ])
+    })
+
+    const textChunks: string[] = []
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: (text) => textChunks.push(text),
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+      onClearText: () => { textChunks.length = 0 },
+    }
+
+    const messages: any[] = [{ role: "system", content: "test" }]
+    const result = await runAgent(messages, callbacks, undefined, undefined, {
+      toolChoiceRequired: true,
+      mustResolveBeforeHandoff: true,
+    })
+
+    expect(callCount).toBe(2)
+    expect(result.outcome).toBe("blocked")
+    expect(textChunks).toEqual(["blocked on credentials"])
+  })
+
+  it("treats direct_reply as non-terminal when a newer steering follow-up exists", async () => {
+    let callCount = 0
+    let drainCount = 0
+    mockCreate.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        return makeStream([
+          makeChunk(undefined, [
+            {
+              index: 0,
+              id: "call_1",
+              function: { name: "final_answer", arguments: '{"answer":"youre right, fixing that","intent":"direct_reply"}' },
+            },
+          ]),
+        ])
+      }
+      return makeStream([
+        makeChunk(undefined, [
+          {
+            index: 0,
+            id: "call_2",
+            function: { name: "final_answer", arguments: '{"answer":"fixed now","intent":"complete"}' },
+          },
+        ]),
+      ])
+    })
+
+    const textChunks: string[] = []
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: (text) => textChunks.push(text),
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+    }
+
+    const messages: any[] = [{ role: "system", content: "test" }]
+    const result = await runAgent(messages, callbacks, undefined, undefined, {
+      toolChoiceRequired: true,
+      mustResolveBeforeHandoff: true,
+      drainSteeringFollowUps: () => {
+        drainCount++
+        return drainCount === 1 ? [{ text: "hey wait a sec youre doing that wrong" }] : []
+      },
+    })
+
+    expect(callCount).toBe(2)
+    expect(result.outcome).toBe("complete")
+    expect(textChunks).toEqual(["youre right, fixing that", "fixed now"])
+  })
+
+  it("rejects direct_reply as closure when no newer steering follow-up exists", async () => {
+    let callCount = 0
+    mockCreate.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        return makeStream([
+          makeChunk(undefined, [
+            {
+              index: 0,
+              id: "call_1",
+              function: { name: "final_answer", arguments: '{"answer":"quick status update","intent":"direct_reply"}' },
+            },
+          ]),
+        ])
+      }
+      return makeStream([
+        makeChunk(undefined, [
+          {
+            index: 0,
+            id: "call_2",
+            function: { name: "final_answer", arguments: '{"answer":"finished the audit","intent":"complete"}' },
+          },
+        ]),
+      ])
+    })
+
+    const textChunks: string[] = []
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: (text) => textChunks.push(text),
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+      onClearText: () => { textChunks.length = 0 },
+    }
+
+    const messages: any[] = [{ role: "system", content: "test" }]
+    const result = await runAgent(messages, callbacks, undefined, undefined, {
+      toolChoiceRequired: true,
+      mustResolveBeforeHandoff: true,
+      drainSteeringFollowUps: () => [],
+    })
+
+    expect(callCount).toBe(2)
+    expect(result.outcome).toBe("complete")
+    expect(textChunks).toEqual(["finished the audit"])
+  })
+
+  it("clears no-handoff state and exits when a superseding steering follow-up is drained", async () => {
+    const setMustResolveBeforeHandoff = vi.fn()
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+    }
+
+    const result = await runAgent([{ role: "system", content: "test" }], callbacks, undefined, undefined, {
+      toolChoiceRequired: true,
+      mustResolveBeforeHandoff: true,
+      setMustResolveBeforeHandoff,
+      drainSteeringFollowUps: () => [{ text: "stop working on that", effect: "clear_and_supersede" }],
+    })
+
+    expect(result.outcome).toBe("superseded")
+    expect(setMustResolveBeforeHandoff).toHaveBeenCalledWith(false)
+    expect(mockCreate).not.toHaveBeenCalled()
+  })
+
+  it("promotes no-handoff state when a steering follow-up requests it", async () => {
+    mockCreate.mockReturnValue(
+      makeStream([
+        makeChunk(undefined, [
+          {
+            index: 0,
+            id: "call_1",
+            function: { name: "final_answer", arguments: '{"answer":"done","intent":"complete"}' },
+          },
+        ]),
+      ])
+    )
+
+    const setMustResolveBeforeHandoff = vi.fn()
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+    }
+
+    const result = await runAgent([{ role: "system", content: "test" }], callbacks, undefined, undefined, {
+      toolChoiceRequired: true,
+      setMustResolveBeforeHandoff,
+      drainSteeringFollowUps: () => [{ text: "work autonomously on this", effect: "set_no_handoff" }],
+    })
+
+    expect(result.outcome).toBe("complete")
+    expect(setMustResolveBeforeHandoff).toHaveBeenCalledWith(true)
   })
 
   it("final_answer mixed with other tool calls: other tools execute, final_answer rejected, loop continues", async () => {
@@ -5650,6 +5934,45 @@ describe("tool_choice required and final_answer", () => {
     expect(toolMsgs[0].content).toContain("incomplete or malformed")
     // Recovered answer from retry
     expect(textChunks).toEqual(["recovered"])
+  })
+
+  it("final_answer with valid non-object JSON: retries", async () => {
+    let callCount = 0
+    mockCreate.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        return makeStream([
+          makeChunk(undefined, [
+            { index: 0, id: "call_1", function: { name: "final_answer", arguments: "123" } },
+          ]),
+        ])
+      }
+      return makeStream([
+        makeChunk(undefined, [
+          { index: 0, id: "call_2", function: { name: "final_answer", arguments: '{"answer":"recovered from scalar"}' } },
+        ]),
+      ])
+    })
+
+    const textChunks: string[] = []
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: (text) => textChunks.push(text),
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+    }
+
+    const messages: any[] = [{ role: "system", content: "test" }]
+    await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
+
+    expect(callCount).toBe(2)
+    const toolMsgs = messages.filter((m: any) => m.role === "tool")
+    expect(toolMsgs[0].tool_call_id).toBe("call_1")
+    expect(toolMsgs[0].content).toContain("incomplete or malformed")
+    expect(textChunks).toEqual(["recovered from scalar"])
   })
 
   it("final_answer with valid JSON, no answer field, and no content: retries", async () => {

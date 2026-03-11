@@ -52,9 +52,9 @@ describe("turn coordinator", () => {
     const coordinator = createTurnCoordinator()
     const key = "teams:conv-order"
 
-    coordinator.enqueueFollowUp(key, { conversationId: "conv-order", text: "step 1", receivedAt: 1 })
-    coordinator.enqueueFollowUp(key, { conversationId: "conv-order", text: "step 2", receivedAt: 2 })
-    coordinator.enqueueFollowUp(key, { conversationId: "conv-order", text: "step 3", receivedAt: 3 })
+    coordinator.enqueueFollowUp(key, { conversationId: "conv-order", text: "step 1", receivedAt: 1, effect: "none" })
+    coordinator.enqueueFollowUp(key, { conversationId: "conv-order", text: "step 2", receivedAt: 2, effect: "none" })
+    coordinator.enqueueFollowUp(key, { conversationId: "conv-order", text: "step 3", receivedAt: 3, effect: "none" })
 
     const drained = coordinator.drainFollowUps(key)
     expect(drained.map((m) => m.text)).toEqual(["step 1", "step 2", "step 3"])
@@ -67,7 +67,7 @@ describe("turn coordinator", () => {
     const key = "teams:conv-carry"
 
     await coordinator.withTurnLock(key, async () => {
-      coordinator.enqueueFollowUp(key, { conversationId: "conv-carry", text: "carry me", receivedAt: 1 })
+      coordinator.enqueueFollowUp(key, { conversationId: "conv-carry", text: "carry me", receivedAt: 1, effect: "none" })
     })
 
     const carried = coordinator.drainFollowUps(key)
@@ -83,8 +83,8 @@ describe("turn coordinator", () => {
     const coordinator = createTurnCoordinator()
     const key = "teams:conv-no-dedupe"
 
-    coordinator.enqueueFollowUp(key, { conversationId: "conv-no-dedupe", text: "same", receivedAt: 1 })
-    coordinator.enqueueFollowUp(key, { conversationId: "conv-no-dedupe", text: "same", receivedAt: 2 })
+    coordinator.enqueueFollowUp(key, { conversationId: "conv-no-dedupe", text: "same", receivedAt: 1, effect: "none" })
+    coordinator.enqueueFollowUp(key, { conversationId: "conv-no-dedupe", text: "same", receivedAt: 2, effect: "none" })
 
     const drained = coordinator.drainFollowUps(key)
     expect(drained).toHaveLength(2)

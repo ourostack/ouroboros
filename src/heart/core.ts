@@ -19,6 +19,7 @@ import { createAnthropicProviderRuntime } from "./providers/anthropic";
 import { createAzureProviderRuntime } from "./providers/azure";
 import { createMinimaxProviderRuntime } from "./providers/minimax";
 import { createOpenAICodexProviderRuntime } from "./providers/openai-codex";
+import type { SteeringFollowUpEffect } from "../senses/continuity";
 
 export type ProviderId = "azure" | "anthropic" | "minimax" | "openai-codex";
 
@@ -139,6 +140,17 @@ export function getProviderDisplayLabel(): string {
   return providerLabelBuilders[getProvider()]();
 }
 
+// Re-export tools, execTool, summarizeArgs from ./tools for backward compat
+export { tools, execTool, summarizeArgs, getToolsForChannel } from "../repertoire/tools";
+export type { ToolContext } from "../repertoire/tools";
+// Re-export streaming functions for backward compat
+export { streamChatCompletion, streamResponsesApi, toResponsesInput, toResponsesTools } from "./streaming";
+export type { TurnResult } from "./streaming";
+
+// Re-export prompt functions for backward compat
+export { buildSystem } from "../mind/prompt";
+export type { Channel } from "../mind/prompt";
+
 export interface ChannelCallbacks {
   onModelStart(): void;
   onModelStreamStart(): void;
@@ -159,11 +171,61 @@ export interface RunAgentOptions {
   skipConfirmation?: boolean;
   toolContext?: ToolContext;
   traceId?: string;
-  drainSteeringFollowUps?: () => Array<{ text: string }>;
+  currentObligation?: string;
+  mustResolveBeforeHandoff?: boolean;
+  hasQueuedFollowUp?: boolean;
+  drainSteeringFollowUps?: () => Array<{ text: string; effect?: SteeringFollowUpEffect }>;
+  setMustResolveBeforeHandoff?: (value: boolean) => void;
   tools?: OpenAI.ChatCompletionFunctionTool[];
   execTool?: (name: string, args: Record<string, string>, ctx?: ToolContext) => Promise<string>;
 }
 
+export type RunAgentOutcome =
+  | "complete"
+  | "blocked"
+  | "superseded"
+  | "aborted"
+  | "errored";
+
+type FinalAnswerIntent = "complete" | "blocked" | "direct_reply";
+
+function parseFinalAnswerPayload(argumentsText: string): { answer?: string; intent?: FinalAnswerIntent } {
+  try {
+    const parsed = JSON.parse(argumentsText);
+    if (typeof parsed === "string") {
+      return { answer: parsed };
+    }
+    if (!parsed || typeof parsed !== "object") {
+      return {};
+    }
+
+    const answer = typeof parsed.answer === "string" ? parsed.answer : undefined;
+    const rawIntent = parsed.intent;
+    const intent = rawIntent === "complete" || rawIntent === "blocked" || rawIntent === "direct_reply"
+      ? rawIntent
+      : undefined;
+    return { answer, intent };
+  } catch {
+    return {};
+  }
+}
+
+function getFinalAnswerRetryError(
+  mustResolveBeforeHandoff: boolean,
+  intent: FinalAnswerIntent | undefined,
+  sawSteeringFollowUp: boolean,
+): string {
+  if (mustResolveBeforeHandoff && !intent) {
+    return "your final_answer is missing required intent. when you must keep going until done or blocked, call final_answer again with answer plus intent=complete, blocked, or direct_reply.";
+  }
+  if (mustResolveBeforeHandoff && intent === "direct_reply" && !sawSteeringFollowUp) {
+    return "your final_answer used intent=direct_reply without a newer steering follow-up. continue the unresolved work, or call final_answer again with intent=complete or blocked when appropriate.";
+  }
+  return "your final_answer was incomplete or malformed. call final_answer again with your complete response.";
+}
+
+// Re-export kick utilities for backward compat
+export { hasToolIntent } from "./kicks";
 
 function upsertSystemPrompt(
   messages: OpenAI.ChatCompletionMessageParam[],
@@ -316,7 +378,7 @@ export async function runAgent(
   channel?: Channel,
   signal?: AbortSignal,
   options?: RunAgentOptions,
-): Promise<{ usage?: UsageData }> {
+): Promise<{ usage?: UsageData; outcome: RunAgentOutcome }> {
   const providerRuntime = getProviderRuntime();
   const provider = providerRuntime.id;
   const toolChoiceRequired = options?.toolChoiceRequired ?? true;
@@ -374,6 +436,9 @@ export async function runAgent(
   let lastUsage: UsageData | undefined;
   let overflowRetried = false;
   let retryCount = 0;
+  let outcome: RunAgentOutcome = "complete";
+  let sawSteeringFollowUp = false;
+  let mustResolveBeforeHandoffActive = options?.mustResolveBeforeHandoff === true;
 
   // Prevent MaxListenersExceeded warning — each iteration adds a listener
   try { require("events").setMaxListeners(50, signal); } catch { /* unsupported */ }
@@ -396,6 +461,18 @@ export async function runAgent(
     const activeTools = toolChoiceRequired ? [...baseTools, finalAnswerTool] : baseTools;
     const steeringFollowUps = options?.drainSteeringFollowUps?.() ?? [];
     if (steeringFollowUps.length > 0) {
+      const hasSupersedingFollowUp = steeringFollowUps.some((followUp) => followUp.effect === "clear_and_supersede");
+      if (hasSupersedingFollowUp) {
+        mustResolveBeforeHandoffActive = false;
+        options?.setMustResolveBeforeHandoff?.(false);
+        outcome = "superseded";
+        break;
+      }
+      if (steeringFollowUps.some((followUp) => followUp.effect === "set_no_handoff")) {
+        mustResolveBeforeHandoffActive = true;
+        options?.setMustResolveBeforeHandoff?.(true);
+      }
+      sawSteeringFollowUp = true;
       for (const followUp of steeringFollowUps) {
         messages.push({ role: "user", content: followUp.text });
       }
@@ -403,7 +480,10 @@ export async function runAgent(
     }
     // Yield so pending I/O (stdin Ctrl-C) can be processed between iterations
     await new Promise((r) => setImmediate(r));
-    if (signal?.aborted) break;
+    if (signal?.aborted) {
+      outcome = "aborted";
+      break;
+    }
     try {
       callbacks.onModelStart();
 
@@ -448,21 +528,14 @@ export async function runAgent(
         const isSoleFinalAnswer = result.toolCalls.length === 1 && result.toolCalls[0].name === "final_answer";
         if (isSoleFinalAnswer) {
           // Extract answer from the tool call arguments.
-          // Supports: {"answer":"text"}, "text" (JSON string), retry on failure.
-          let answer: string | undefined;
-          try {
-            const parsed = JSON.parse(result.toolCalls[0].arguments);
-            if (typeof parsed === "string") {
-              answer = parsed;
-            } else if (parsed.answer != null) {
-              answer = parsed.answer;
-            }
-            // else: valid JSON but no answer field — answer stays undefined (retry)
-          } catch {
-            // JSON parsing failed (e.g. truncated output) — answer stays undefined (retry)
-          }
+          // Supports: {"answer":"text","intent":"..."} or "text" (JSON string).
+          const { answer, intent } = parseFinalAnswerPayload(result.toolCalls[0].arguments);
+          const validDirectReply = mustResolveBeforeHandoffActive && intent === "direct_reply" && sawSteeringFollowUp;
+          const validTerminalIntent = intent === "complete" || intent === "blocked";
+          const validClosure = answer != null
+            && (!mustResolveBeforeHandoffActive || validDirectReply || validTerminalIntent);
 
-          if (answer != null) {
+          if (validClosure) {
             if (result.finalAnswerStreamed) {
               // The streaming layer already parsed and emitted the answer
               // progressively via FinalAnswerParser. Skip clearing and
@@ -474,18 +547,24 @@ export async function runAgent(
               // Never truncate -- channel adapters handle splitting long messages.
               callbacks.onTextChunk(answer);
             }
-            // Keep the full assistant message (with tool_calls) for debuggability,
-            // plus a synthetic tool response so the conversation stays valid on resume.
             messages.push(msg);
-            messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: "(delivered)" });
-            providerRuntime.appendToolOutput(result.toolCalls[0].id, "(delivered)");
-            done = true;
+            if (validDirectReply) {
+              const resumeWork = "direct reply delivered. resume the unresolved obligation now and keep working until you can finish or clearly report that you are blocked.";
+              messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: resumeWork });
+              providerRuntime.appendToolOutput(result.toolCalls[0].id, resumeWork);
+            } else {
+              const delivered = "(delivered)";
+              messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: delivered });
+              providerRuntime.appendToolOutput(result.toolCalls[0].id, delivered);
+              outcome = intent === "blocked" ? "blocked" : "complete";
+              done = true;
+            }
           } else {
             // Answer is undefined -- the model's final_answer was incomplete or
             // malformed. Clear any partial streamed text or noise, then push the
             // assistant msg + error tool result and let the model try again.
             callbacks.onClearText?.();
-            const retryError = "your final_answer was incomplete or malformed. call final_answer again with your complete response.";
+            const retryError = getFinalAnswerRetryError(mustResolveBeforeHandoffActive, intent, sawSteeringFollowUp);
             messages.push(msg);
             messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: retryError });
             providerRuntime.appendToolOutput(result.toolCalls[0].id, retryError);
@@ -546,6 +625,7 @@ export async function runAgent(
       // Abort is not an error — just stop cleanly
       if (signal?.aborted) {
         stripLastToolCalls(messages);
+        outcome = "aborted";
         break;
       }
       // Context overflow: trim aggressively and retry once
@@ -574,7 +654,11 @@ export async function runAgent(
             signal.addEventListener("abort", onAbort, { once: true });
           }
         });
-        if (aborted) { stripLastToolCalls(messages); break; }
+        if (aborted) {
+          stripLastToolCalls(messages);
+          outcome = "aborted";
+          break;
+        }
         providerRuntime.resetTurnState(messages);
         continue;
       }
@@ -588,6 +672,7 @@ export async function runAgent(
         meta: {},
       });
       stripLastToolCalls(messages);
+      outcome = "errored";
       done = true;
     }
   }
@@ -598,5 +683,5 @@ export async function runAgent(
     message: "runAgent turn completed",
     meta: { done },
   });
-  return { usage: lastUsage };
+  return { usage: lastUsage, outcome };
 }

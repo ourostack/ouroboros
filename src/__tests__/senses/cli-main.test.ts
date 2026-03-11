@@ -1384,6 +1384,60 @@ describe("agent.ts main() - pipeline integration", () => {
     expect(pipelineInput.channel).toBe("cli")
     expect(pipelineInput.capabilities.senseType).toBe("local")
   })
+
+  it("passes raw continuity ingress text into the shared pipeline", async () => {
+    setupBasic({ inputSequence: ["  hello from cli  ", "/exit"] })
+
+    await main(undefined, { pasteDebounceMs: 0 })
+
+    const pipelineInput = mocks.handleInboundTurn.mock.calls[0][0]
+    expect(pipelineInput.continuityIngressTexts).toEqual(["hello from cli"])
+  })
+
+  it("persists postTurn continuity state across CLI turns", async () => {
+    setupBasic({ inputSequence: ["first", "second", "/exit"] })
+
+    let turnCount = 0
+    mocks.handleInboundTurn.mockImplementation(async (input: any) => {
+      turnCount += 1
+      const resolvedContext = await input.friendResolver.resolve()
+      const session = await input.sessionLoader.loadOrCreate()
+
+      if (turnCount === 1) {
+        expect(session.state).toBeUndefined()
+        input.postTurn(
+          session.messages,
+          session.sessionPath,
+          undefined,
+          undefined,
+          { mustResolveBeforeHandoff: true },
+        )
+      } else {
+        expect(session.state).toEqual({ mustResolveBeforeHandoff: true })
+        input.postTurn(session.messages, session.sessionPath, undefined)
+      }
+
+      return {
+        resolvedContext,
+        gateResult: { allowed: true },
+        usage: undefined,
+        sessionPath: session.sessionPath,
+        messages: session.messages,
+      }
+    })
+
+    await main(undefined, { pasteDebounceMs: 0 })
+
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(2)
+    expect(mocks.postTurn).toHaveBeenNthCalledWith(
+      1,
+      expect.any(Array),
+      "/tmp/test-session.json",
+      undefined,
+      undefined,
+      { mustResolveBeforeHandoff: true },
+    )
+  })
 })
 
 // ── formatPendingPrefix tests ──

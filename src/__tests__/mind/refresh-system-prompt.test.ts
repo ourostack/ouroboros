@@ -112,4 +112,22 @@ describe("refreshSystemPrompt", () => {
     // With toolChoiceRequired, the prompt should contain tool behavior section
     expect((messages[0] as any).content).toContain("tool_choice")
   })
+
+  it("accepts continuity-aware build options without breaking prompt refresh", async () => {
+    const { refreshSystemPrompt } = await import("../../mind/prompt-refresh")
+
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "system", content: "old" },
+    ]
+
+    await refreshSystemPrompt(messages, "cli", {
+      toolChoiceRequired: true,
+      currentObligation: "debug the onboarding interruption",
+      mustResolveBeforeHandoff: true,
+      hasQueuedFollowUp: true,
+    } as any)
+
+    expect(messages[0].role).toBe("system")
+    expect((messages[0] as any).content).toContain("tool_choice")
+  })
 })

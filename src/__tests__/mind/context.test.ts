@@ -266,6 +266,38 @@ describe("saveSession", () => {
     expect(parsed.lastUsage).toBeUndefined()
   })
 
+  it("writes persisted continuity state when mustResolveBeforeHandoff is true", async () => {
+    const { saveSession } = await import("../../mind/context")
+    const msgs: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "system", content: "sys" },
+    ]
+
+    ;(saveSession as any)("/tmp/session.json", msgs, undefined, { mustResolveBeforeHandoff: true })
+
+    expect(fs.writeFileSync).toHaveBeenCalledWith(
+      "/tmp/session.json",
+      JSON.stringify(
+        { version: 1, messages: msgs, state: { mustResolveBeforeHandoff: true } },
+        null,
+        2,
+      ),
+    )
+  })
+
+  it("omits persisted continuity state when mustResolveBeforeHandoff is false", async () => {
+    const { saveSession } = await import("../../mind/context")
+    const msgs: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "system", content: "sys" },
+    ]
+
+    ;(saveSession as any)("/tmp/session.json", msgs, undefined, { mustResolveBeforeHandoff: false })
+
+    expect(fs.writeFileSync).toHaveBeenCalledWith(
+      "/tmp/session.json",
+      JSON.stringify({ version: 1, messages: msgs }, null, 2),
+    )
+  })
+
   it("repairs back-to-back assistant messages on save", async () => {
     const { saveSession } = await import("../../mind/context")
     const msgs: any[] = [
@@ -312,6 +344,26 @@ describe("loadSession", () => {
     )
     const result = loadSession("/tmp/session.json")
     expect(result).toEqual({ messages: msgs, lastUsage: undefined })
+  })
+
+  it("returns persisted continuity state when the saved envelope has a boolean mustResolveBeforeHandoff", async () => {
+    const { loadSession } = await import("../../mind/context")
+    const msgs = [{ role: "system", content: "sys" }]
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({ version: 1, messages: msgs, state: { mustResolveBeforeHandoff: true } }),
+    )
+    const result = loadSession("/tmp/session.json")
+    expect(result).toEqual({ messages: msgs, lastUsage: undefined, state: { mustResolveBeforeHandoff: true } })
+  })
+
+  it("ignores malformed optional continuity state instead of rejecting the session", async () => {
+    const { loadSession } = await import("../../mind/context")
+    const msgs = [{ role: "system", content: "sys" }]
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({ version: 1, messages: msgs, state: { mustResolveBeforeHandoff: "yes please" } }),
+    )
+    const result = loadSession("/tmp/session.json")
+    expect(result).toEqual({ messages: msgs, lastUsage: undefined, state: undefined })
   })
 
   it("returns null when file is missing (ENOENT)", async () => {

@@ -395,6 +395,17 @@ describe("inner dialog runtime", () => {
     }))
   })
 
+  it("passes empty continuity ingress text to the shared pipeline for inner dialog", async () => {
+    await runInnerDialogTurn({
+      reason: "boot",
+      instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
+      now: () => new Date("2026-03-06T12:00:00.000Z"),
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    expect((input as any).continuityIngressTexts).toEqual([])
+  })
+
   it("passes bootstrap user message as pipeline input.messages on fresh session", async () => {
     await runInnerDialogTurn({
       reason: "boot",

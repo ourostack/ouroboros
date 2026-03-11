@@ -61,6 +61,20 @@ describe("CLI adapter - createCliCallbacks", () => {
   })
 })
 
+describe("CLI adapter - continuity ingress texts", () => {
+  it("returns the trimmed user input as the raw continuity ingress text", async () => {
+    vi.resetModules()
+    const agent = await import("../../senses/cli")
+    expect((agent as any).getCliContinuityIngressTexts("  hey can you check this  ")).toEqual(["hey can you check this"])
+  })
+
+  it("drops empty CLI input from continuity ingress text", async () => {
+    vi.resetModules()
+    const agent = await import("../../senses/cli")
+    expect((agent as any).getCliContinuityIngressTexts("   ")).toEqual([])
+  })
+})
+
 describe("CLI adapter - renderMarkdown", () => {
   it("renders **bold** as ANSI bold", async () => {
     vi.resetModules()

@@ -7,12 +7,30 @@ import type { FriendRecord } from "./friends/types"
 
 export const ONBOARDING_TOKEN_THRESHOLD = 100_000
 
+export interface FirstImpressionsContinuityState {
+  currentObligation?: string
+  mustResolveBeforeHandoff?: boolean
+  hasQueuedFollowUp?: boolean
+}
+
 export function isOnboarding(friend: Pick<FriendRecord, "totalTokens">): boolean {
   return (friend.totalTokens ?? 0) < ONBOARDING_TOKEN_THRESHOLD
 }
 
-export function getFirstImpressions(friend: Pick<FriendRecord, "totalTokens" | "name">): string {
+function hasLiveContinuityPressure(state?: FirstImpressionsContinuityState): boolean {
+  if (!state) return false
+  if (typeof state.currentObligation === "string" && state.currentObligation.trim().length > 0) return true
+  if (state.mustResolveBeforeHandoff === true) return true
+  if (state.hasQueuedFollowUp === true) return true
+  return false
+}
+
+export function getFirstImpressions(
+  friend: Pick<FriendRecord, "totalTokens" | "name">,
+  state?: FirstImpressionsContinuityState,
+): string {
   if (!isOnboarding(friend)) return ""
+  if (hasLiveContinuityPressure(state)) return ""
   emitNervesEvent({
     component: "mind",
     event: "mind.first_impressions",

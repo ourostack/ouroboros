@@ -854,6 +854,66 @@ describe("BlueBubbles sense runtime", () => {
     )
   })
 
+  it("skips nested recent-lane metadata when summarizing historical top-level text", async () => {
+    mocks.loadSession.mockReturnValueOnce({
+      messages: [
+        { role: "system", content: "system prompt" },
+        {
+          role: "user",
+          content:
+            "[conversation scope: existing chat trunk | current inbound lane: top_level | default outbound target for this turn: top_level]\n[recent active lanes]\n- thread:THREAD-OLDER: older thread topic\n[routing control: use bluebubbles_set_reply_target with target=top_level to widen back out, or target=thread plus a listed thread id to route into a specific active thread]\nactual top-level body",
+        },
+      ],
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    expect(mocks.runAgent).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "user",
+          content:
+            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: 54D4109C-7170-41A1-8161-F6F8C863CC0D | default outbound target for this turn: current_lane]\n[recent active lanes]\n- top_level: actual top-level body\n[routing control: use bluebubbles_set_reply_target with target=top_level to widen back out, or target=thread plus a listed thread id to route into a specific active thread]\nthreaded reply",
+        }),
+      ]),
+      expect.any(Object),
+      "bluebubbles",
+      expect.any(AbortSignal),
+      expect.any(Object),
+    )
+  })
+
+  it("skips routing-control metadata when summarizing historical thread text", async () => {
+    mocks.loadSession.mockReturnValueOnce({
+      messages: [
+        { role: "system", content: "system prompt" },
+        {
+          role: "user",
+          content:
+            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: THREAD-META | default outbound target for this turn: current_lane]\n[routing control: use bluebubbles_set_reply_target with target=top_level to widen back out, or target=thread plus a listed thread id to route into a specific active thread]\nactual threaded body",
+        },
+      ],
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    expect(mocks.runAgent).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "user",
+          content:
+            "[conversation scope: existing chat trunk | current inbound lane: top_level | default outbound target for this turn: top_level]\n[recent active lanes]\n- thread:THREAD-META: actual threaded body\n[routing control: use bluebubbles_set_reply_target with target=top_level to widen back out, or target=thread plus a listed thread id to route into a specific active thread]\ntop-level follow-up",
+        }),
+      ]),
+      expect.any(Object),
+      "bluebubbles",
+      expect.any(AbortSignal),
+      expect.any(Object),
+    )
+  })
+
   it("ignores empty or irrelevant historical user entries and falls back when a lane has no body text", async () => {
     mocks.loadSession.mockReturnValueOnce({
       messages: [
@@ -1417,6 +1477,8 @@ describe("BlueBubbles sense runtime", () => {
       }),
     )
     expect(runAgentCallCount).toBe(1)
+    const reactionInput = mocks.handleInboundTurn.mock.calls[0][0]
+    expect(reactionInput.continuityIngressTexts).toEqual([])
     expect(readResult).toEqual(
       expect.objectContaining({
         handled: true,
@@ -2110,6 +2172,117 @@ describe("BlueBubbles sense runtime", () => {
         content: expect.stringContaining("top-level follow-up"),
       }),
     ])
+    expect(input.continuityIngressTexts).toEqual(["top-level follow-up"])
+  })
+
+  it("derives continuity ingress text from text input parts when textForAgent is empty", async () => {
+    mocks.repairEvent.mockResolvedValueOnce({
+      kind: "message",
+      eventType: "new-message",
+      messageGuid: "text-parts-msg",
+      timestamp: 11,
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        rawId: "ari@mendelow.me",
+        displayName: "ari@mendelow.me",
+      },
+      chat: {
+        chatGuid: "any;-;ari@mendelow.me",
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat:any;-;ari@mendelow.me",
+        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+      },
+      text: "",
+      textForAgent: "",
+      attachments: [],
+      hasPayloadData: false,
+      requiresRepair: false,
+      inputPartsForAgent: [
+        { type: "text", text: "first line" },
+        { type: "image_url", image_url: { url: "data:image/png;base64,aGVsbG8=", detail: "auto" } },
+        { type: "text", text: "second line" },
+      ],
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    const input = mocks.handleInboundTurn.mock.calls.at(-1)?.[0]
+    expect(input.continuityIngressTexts).toEqual(["first line\nsecond line"])
+  })
+
+  it("passes no continuity ingress text when textForAgent and text parts are both empty", async () => {
+    mocks.repairEvent.mockResolvedValueOnce({
+      kind: "message",
+      eventType: "new-message",
+      messageGuid: "empty-text-parts-msg",
+      timestamp: 12,
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        rawId: "ari@mendelow.me",
+        displayName: "ari@mendelow.me",
+      },
+      chat: {
+        chatGuid: "any;-;ari@mendelow.me",
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat:any;-;ari@mendelow.me",
+        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+      },
+      text: "",
+      textForAgent: "   ",
+      attachments: [],
+      hasPayloadData: false,
+      requiresRepair: false,
+      inputPartsForAgent: [
+        { type: "image_url", image_url: { url: "data:image/png;base64,aGVsbG8=", detail: "auto" } },
+      ],
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    const input = mocks.handleInboundTurn.mock.calls.at(-1)?.[0]
+    expect(input.continuityIngressTexts).toEqual([])
+  })
+
+  it("passes no continuity ingress text when textForAgent is empty and input parts are absent", async () => {
+    mocks.repairEvent.mockResolvedValueOnce({
+      kind: "message",
+      eventType: "new-message",
+      messageGuid: "missing-text-parts-msg",
+      timestamp: 13,
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        rawId: "ari@mendelow.me",
+        displayName: "ari@mendelow.me",
+      },
+      chat: {
+        chatGuid: "any;-;ari@mendelow.me",
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat:any;-;ari@mendelow.me",
+        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+      },
+      text: "",
+      textForAgent: "",
+      attachments: [],
+      hasPayloadData: false,
+      requiresRepair: false,
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    const input = mocks.handleInboundTurn.mock.calls.at(-1)?.[0]
+    expect(input.continuityIngressTexts).toEqual([])
   })
 
   it("passes isGroupChat=true and group-level friend params for group messages", async () => {
