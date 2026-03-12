@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.48",
+      "changes": [
+        "BlueBubbles same-chat turns now serialize through the shared heart-level turn coordinator, so duplicate delivery of one inbound message no longer races into two handled turns or duplicate replies.",
+        "BlueBubbles duplicate-check, session load, inbound turn execution, and inbound sidecar recording now happen inside one canonical chat-trunk critical section keyed by the resolved session path.",
+        "Workflow docs now let agents auto-create the required dedicated task worktree and branch by default when the human has not asked to control naming or layout."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.47",
       "changes": [
         "Self-messages now wake inner dialog now/soon instead of only queueing: the harness requests a daemon-managed inner wake when available and falls back to an inline inner turn when it is not.",
