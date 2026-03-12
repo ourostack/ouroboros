@@ -10,6 +10,7 @@ import type { FriendStore } from "../mind/friends/store";
 import { emitNervesEvent } from "../nerves/runtime";
 import { getAgentRoot, getAgentName } from "../heart/identity";
 import { requestInnerWake } from "../heart/daemon/socket-client";
+import { formatInnerDialogStatus, formatSurfacedValue, getInnerDialogSessionPath, readInnerDialogStatus } from "../heart/daemon/thoughts";
 import { codingToolDefinitions } from "./coding/tools";
 import { readMemoryFacts, saveMemoryFact, searchMemoryFacts } from "../mind/memory";
 import { getPendingDir, getInnerDialogPendingDir } from "../mind/pending";
@@ -70,6 +71,24 @@ function buildContextDiff(lines: string[], changeStart: number, changeEnd: numbe
     result.push(`${prefix} ${lineNum} | ${lines[i]}`)
   }
   return result.join("\n")
+}
+
+function assistantPreviewFromMessages(messages: OpenAI.ChatCompletionMessageParam[]): string {
+  const lastAssistant = [...messages].reverse().find((message) => message.role === "assistant")
+  if (!lastAssistant) return ""
+  const content = lastAssistant.content
+  if (typeof content === "string") return content
+  if (!Array.isArray(content)) return ""
+
+  return content
+    .map((part) => {
+      if (typeof part === "string") return part
+      if (part && typeof part === "object" && "text" in part && typeof part.text === "string") {
+        return part.text
+      }
+      return ""
+    })
+    .join("\n")
 }
 
 export const baseToolDefinitions: ToolDefinition[] = [
@@ -618,6 +637,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
             channel: { type: "string", description: "the channel: cli, teams, or inner" },
             key: { type: "string", description: "session key (defaults to 'session')" },
             messageCount: { type: "string", description: "how many recent messages to return (default 20)" },
+            mode: { type: "string", enum: ["transcript", "status"], description: "transcript (default) or lightweight status for self/inner checks" },
           },
           required: ["friendId", "channel"],
         },
@@ -629,6 +649,17 @@ export const baseToolDefinitions: ToolDefinition[] = [
         const channel = args.channel
         const key = args.key || "session"
         const count = parseInt(args.messageCount || "20", 10)
+        const mode = args.mode || "transcript"
+
+        if (mode === "status") {
+          if (friendId !== "self" || channel !== "inner") {
+            return "status mode is only available for self/inner dialog."
+          }
+
+          const sessionPath = getInnerDialogSessionPath(getAgentRoot())
+          const pendingDir = getInnerDialogPendingDir(getAgentName())
+          return formatInnerDialogStatus(readInnerDialogStatus(sessionPath, pendingDir))
+        }
 
         const sessFile = resolveSessionPath(friendId, channel, key)
         const raw = fs.readFileSync(sessFile, "utf-8")
@@ -716,10 +747,29 @@ export const baseToolDefinitions: ToolDefinition[] = [
             queueMicrotask(() => {
               void runInnerDialogTurn({ reason: "instinct" })
             })
+            return formatInnerDialogStatus({
+              queue: "queued to inner/dialog",
+              wake: "inline scheduled",
+              processing: "pending",
+              surfaced: "nothing yet",
+            })
           } else {
-            await runInnerDialogTurn({ reason: "instinct" })
+            const turnResult = await runInnerDialogTurn({ reason: "instinct" })
+            return formatInnerDialogStatus({
+              queue: "queued to inner/dialog",
+              wake: "inline fallback",
+              processing: "processed",
+              surfaced: formatSurfacedValue(assistantPreviewFromMessages(turnResult?.messages ?? [])),
+            })
           }
         }
+
+        return formatInnerDialogStatus({
+          queue: "queued to inner/dialog",
+          wake: "daemon requested",
+          processing: "pending",
+          surfaced: "nothing yet",
+        })
       }
 
       const preview = content.length > 80 ? content.slice(0, 80) + "…" : content

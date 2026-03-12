@@ -4,6 +4,7 @@
 import * as fs from "fs"
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
+import type { PendingMessage } from "../../mind/pending"
 
 export interface ThoughtTurn {
   /** Turn type derived from user message content. */
@@ -16,6 +17,13 @@ export interface ThoughtTurn {
   tools: string[]
   /** Task ID if this was a task-triggered turn. */
   taskId?: string
+}
+
+export interface InnerDialogStatus {
+  queue: string
+  wake: string
+  processing: string
+  surfaced: string
 }
 
 function contentToText(content: unknown): string {
@@ -49,6 +57,103 @@ function extractToolNames(messages: Array<{ role: string; tool_calls?: Array<{ f
     }
   }
   return names
+}
+
+function extractPendingPromptMessages(prompt: string): string[] {
+  return prompt
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("[pending from "))
+    .map((line) => {
+      const separator = line.indexOf("]: ")
+      return separator >= 0 ? line.slice(separator + 3).trim() : ""
+    })
+    .filter((line) => line.length > 0)
+}
+
+function readPendingMessagesForStatus(pendingDir: string): PendingMessage[] {
+  if (!fs.existsSync(pendingDir)) return []
+
+  let entries: string[]
+  try {
+    entries = fs.readdirSync(pendingDir)
+  } catch {
+    return []
+  }
+
+  const files = [
+    ...entries.filter((entry) => entry.endsWith(".json.processing")),
+    ...entries.filter((entry) => entry.endsWith(".json") && !entry.endsWith(".json.processing")),
+  ].sort((a, b) => a.localeCompare(b))
+
+  const messages: PendingMessage[] = []
+  for (const file of files) {
+    try {
+      const raw = fs.readFileSync(path.join(pendingDir, file), "utf-8")
+      const parsed = JSON.parse(raw) as PendingMessage
+      if (typeof parsed.content === "string") {
+        messages.push(parsed)
+      }
+    } catch {
+      // unreadable pending files should not break status queries
+    }
+  }
+
+  return messages
+}
+
+export function formatSurfacedValue(text: string, maxLength = 120): string {
+  const firstLine = text
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.length > 0)
+
+  if (!firstLine) return "no outward result"
+  if (firstLine.length <= maxLength) return `"${firstLine}"`
+  return `"${firstLine.slice(0, maxLength - 3)}..."`
+}
+
+export function deriveInnerDialogStatus(
+  pendingMessages: Array<Pick<PendingMessage, "content" | "timestamp" | "from">>,
+  turns: ThoughtTurn[],
+): InnerDialogStatus {
+  if (pendingMessages.length > 0) {
+    return {
+      queue: "queued to inner/dialog",
+      wake: "awaiting inner session",
+      processing: "pending",
+      surfaced: "nothing yet",
+    }
+  }
+
+  const latestProcessedPendingTurn = [...turns]
+    .reverse()
+    .find((turn) => extractPendingPromptMessages(turn.prompt).length > 0)
+
+  if (!latestProcessedPendingTurn) {
+    return {
+      queue: "clear",
+      wake: "idle",
+      processing: "idle",
+      surfaced: "nothing recent",
+    }
+  }
+
+  return {
+    queue: "clear",
+    wake: "completed",
+    processing: "processed",
+    surfaced: formatSurfacedValue(latestProcessedPendingTurn.response),
+  }
+}
+
+export function formatInnerDialogStatus(status: InnerDialogStatus): string {
+  return [
+    `queue: ${status.queue}`,
+    `wake: ${status.wake}`,
+    `processing: ${status.processing}`,
+    `surfaced: ${status.surfaced}`,
+  ].join("\n")
 }
 
 /** Extract text from a final_answer tool call's arguments. */
@@ -177,6 +282,12 @@ export function formatThoughtTurns(turns: ThoughtTurn[], lastN: number): string 
 
 export function getInnerDialogSessionPath(agentRoot: string): string {
   return path.join(agentRoot, "state", "sessions", "self", "inner", "dialog.json")
+}
+
+export function readInnerDialogStatus(sessionPath: string, pendingDir: string): InnerDialogStatus {
+  const pendingMessages = readPendingMessagesForStatus(pendingDir)
+  const turns = parseInnerDialogSession(sessionPath)
+  return deriveInnerDialogStatus(pendingMessages, turns)
 }
 
 /**
