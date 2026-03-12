@@ -9,6 +9,7 @@ import type { Integration, ResolvedContext, FriendRecord } from "../mind/friends
 import type { FriendStore } from "../mind/friends/store";
 import { emitNervesEvent } from "../nerves/runtime";
 import { getAgentRoot, getAgentName } from "../heart/identity";
+import { requestInnerWake } from "../heart/daemon/socket-client";
 import { codingToolDefinitions } from "./coding/tools";
 import { readMemoryFacts, saveMemoryFact, searchMemoryFacts } from "../mind/memory";
 import { getPendingDir, getInnerDialogPendingDir } from "../mind/pending";
@@ -673,7 +674,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
         },
       },
     },
-    handler: async (args) => {
+    handler: async (args, ctx) => {
       const friendId = args.friendId
       const channel = args.channel
       const key = args.key || "session"
@@ -700,6 +701,27 @@ export const baseToolDefinitions: ToolDefinition[] = [
         timestamp: now,
       }
       fs.writeFileSync(filePath, JSON.stringify(envelope, null, 2))
+
+      if (isSelf) {
+        let wakeResponse: { ok: boolean } | null = null
+        try {
+          wakeResponse = await requestInnerWake(agentName)
+        } catch {
+          wakeResponse = null
+        }
+
+        if (!wakeResponse?.ok) {
+          const { runInnerDialogTurn } = await import("../senses/inner-dialog")
+          if (ctx?.context?.channel.channel === "inner") {
+            queueMicrotask(() => {
+              void runInnerDialogTurn({ reason: "instinct" })
+            })
+          } else {
+            await runInnerDialogTurn({ reason: "instinct" })
+          }
+        }
+      }
+
       const preview = content.length > 80 ? content.slice(0, 80) + "…" : content
       const target = isSelf ? "inner/dialog" : `${channel}/${key}`
       return `message queued for delivery to ${friendId} on ${target}. preview: "${preview}". it will be delivered when their session is next active.`
