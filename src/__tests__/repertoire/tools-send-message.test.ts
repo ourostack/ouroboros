@@ -31,9 +31,14 @@ vi.mock("../../repertoire/tasks", () => ({
 }))
 
 const mockRunInnerDialogTurn = vi.fn()
+const mockRequestInnerWake = vi.fn()
 
 vi.mock("../../senses/inner-dialog", () => ({
   runInnerDialogTurn: (...args: any[]) => mockRunInnerDialogTurn(...args),
+}))
+
+vi.mock("../../heart/daemon/socket-client", () => ({
+  requestInnerWake: (...args: any[]) => mockRequestInnerWake(...args),
 }))
 
 vi.mock("../../heart/identity", () => ({
@@ -55,6 +60,8 @@ beforeEach(() => {
   vi.mocked(fs.writeFileSync).mockReset()
   vi.mocked(fs.mkdirSync).mockReset()
   mockRunInnerDialogTurn.mockReset()
+  mockRequestInnerWake.mockReset()
+  mockRequestInnerWake.mockResolvedValue(null)
 })
 
 describe("send_message tool", () => {
@@ -287,7 +294,6 @@ describe("send_message tool", () => {
       const { baseToolDefinitions } = await import("../../repertoire/tools-base")
       const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
 
-      vi.mocked(fs.existsSync).mockReturnValue(false)
       mockRunInnerDialogTurn.mockResolvedValue({
         messages: [{ role: "assistant", content: "penguins surfaced." }],
         sessionPath: "/mock/agent-root/state/sessions/self/inner/dialog.json",
@@ -300,6 +306,81 @@ describe("send_message tool", () => {
       })
 
       expect(mockRunInnerDialogTurn).toHaveBeenCalledTimes(1)
+    })
+
+    it("uses daemon-managed wake when available and skips the inline fallback", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      mockRequestInnerWake.mockResolvedValue({
+        ok: true,
+        message: "woke inner dialog for testagent",
+      })
+
+      await tool.handler({
+        friendId: "self",
+        channel: "cli",
+        content: "notice this now",
+      })
+
+      expect(mockRequestInnerWake).toHaveBeenCalledWith("testagent")
+      expect(mockRunInnerDialogTurn).not.toHaveBeenCalled()
+    })
+
+    it("falls back to an immediate inner turn when daemon wake rejects", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      mockRequestInnerWake.mockRejectedValue(new Error("socket unavailable"))
+      mockRunInnerDialogTurn.mockResolvedValue({
+        messages: [{ role: "assistant", content: "picked up inline." }],
+        sessionPath: "/mock/agent-root/state/sessions/self/inner/dialog.json",
+      })
+
+      await tool.handler({
+        friendId: "self",
+        channel: "cli",
+        content: "keep thinking",
+      })
+
+      expect(mockRunInnerDialogTurn).toHaveBeenCalledTimes(1)
+    })
+
+    it("defers the inline fallback to a microtask when already in inner dialog", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+      const queuedCallbacks: Array<() => void> = []
+      const queueMicrotaskSpy = vi
+        .spyOn(globalThis, "queueMicrotask")
+        .mockImplementation((callback: VoidFunction) => {
+          queuedCallbacks.push(callback)
+        })
+
+      mockRunInnerDialogTurn.mockResolvedValue({
+        messages: [{ role: "assistant", content: "i kept the thread alive." }],
+        sessionPath: "/mock/agent-root/state/sessions/self/inner/dialog.json",
+      })
+
+      await tool.handler(
+        {
+          friendId: "self",
+          channel: "inner",
+          content: "stay with this",
+        },
+        {
+          context: {
+            friend: {} as any,
+            channel: { channel: "inner" } as any,
+          },
+          signin: async () => undefined,
+        },
+      )
+
+      expect(queueMicrotaskSpy).toHaveBeenCalledTimes(1)
+      expect(mockRunInnerDialogTurn).not.toHaveBeenCalled()
+      queuedCallbacks[0]?.()
+      expect(mockRunInnerDialogTurn).toHaveBeenCalledTimes(1)
+      queueMicrotaskSpy.mockRestore()
     })
   })
 })
