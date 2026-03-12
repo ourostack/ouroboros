@@ -346,6 +346,19 @@ describe("send_message tool", () => {
       expect(mockRunInnerDialogTurn).toHaveBeenCalledTimes(1)
     })
 
+    it("surfaces inline fallback failures instead of masking them as queued success", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      mockRunInnerDialogTurn.mockRejectedValue(new Error("inner dialog failed"))
+
+      await expect(tool.handler({
+        friendId: "self",
+        channel: "cli",
+        content: "keep going",
+      })).rejects.toThrow("inner dialog failed")
+    })
+
     it("defers the inline fallback to a microtask when already in inner dialog", async () => {
       const { baseToolDefinitions } = await import("../../repertoire/tools-base")
       const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
