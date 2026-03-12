@@ -299,13 +299,17 @@ describe("send_message tool", () => {
         sessionPath: "/mock/agent-root/state/sessions/self/inner/dialog.json",
       })
 
-      await tool.handler({
+      const result = await tool.handler({
         friendId: "self",
         channel: "cli",
         content: "think about penguins",
       })
 
       expect(mockRunInnerDialogTurn).toHaveBeenCalledTimes(1)
+      expect(result).toContain("queue: queued to inner/dialog")
+      expect(result).toContain("wake: inline fallback")
+      expect(result).toContain("processing: processed")
+      expect(result).toContain('surfaced: "penguins surfaced."')
     })
 
     it("uses daemon-managed wake when available and skips the inline fallback", async () => {
@@ -317,7 +321,7 @@ describe("send_message tool", () => {
         message: "woke inner dialog for testagent",
       })
 
-      await tool.handler({
+      const result = await tool.handler({
         friendId: "self",
         channel: "cli",
         content: "notice this now",
@@ -325,6 +329,12 @@ describe("send_message tool", () => {
 
       expect(mockRequestInnerWake).toHaveBeenCalledWith("testagent")
       expect(mockRunInnerDialogTurn).not.toHaveBeenCalled()
+      expect(result).toBe([
+        "queue: queued to inner/dialog",
+        "wake: daemon requested",
+        "processing: pending",
+        "surfaced: nothing yet",
+      ].join("\n"))
     })
 
     it("falls back to an immediate inner turn when daemon wake rejects", async () => {

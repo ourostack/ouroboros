@@ -46,6 +46,7 @@ import * as fs from "fs"
 beforeEach(() => {
   vi.mocked(fs.existsSync).mockReset()
   vi.mocked(fs.readFileSync).mockReset()
+  vi.mocked(fs.readdirSync).mockReset()
 })
 
 describe("query_session tool", () => {
@@ -296,5 +297,78 @@ describe("query_session tool", () => {
     const result = await tool.handler({ friendId: "friend-1", channel: "cli" })
     expect(result).toContain("[user] hello")
     expect(result).toContain("[assistant] hi there")
+  })
+
+  it("supports a lightweight status mode for self/inner checks", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
+
+    expect(tool.tool.function.parameters).toMatchObject({
+      properties: {
+        mode: { type: "string", enum: ["transcript", "status"] },
+      },
+    })
+
+    vi.mocked(fs.existsSync).mockImplementation((filePath) => (
+      String(filePath) === "/mock/agent-root/state/pending/self/inner/dialog"
+    ))
+    vi.mocked(fs.readdirSync).mockReturnValue(["123-pending.json"] as any)
+    vi.mocked(fs.readFileSync).mockImplementation((filePath) => {
+      if (String(filePath).endsWith("/state/pending/self/inner/dialog/123-pending.json")) {
+        return JSON.stringify({
+          from: "testagent",
+          content: "think about penguins",
+          timestamp: 123,
+        })
+      }
+      throw new Error("ENOENT")
+    })
+
+    const result = await tool.handler({
+      friendId: "self",
+      channel: "inner",
+      mode: "status",
+    })
+
+    expect(result).toBe([
+      "queue: queued to inner/dialog",
+      "wake: awaiting inner session",
+      "processing: pending",
+      "surfaced: nothing yet",
+    ].join("\n"))
+  })
+
+  it("surfaces the latest processed preview in status mode without dumping the full transcript", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
+
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([] as any)
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        version: 1,
+        messages: [
+          { role: "system", content: "sys" },
+          {
+            role: "user",
+            content: "## pending messages\n[pending from testagent]: think about penguins\n\n...time passing. anything stirring?",
+          },
+          { role: "assistant", content: "formal little blokes." },
+        ],
+      }),
+    )
+
+    const result = await tool.handler({
+      friendId: "self",
+      channel: "inner",
+      mode: "status",
+    })
+
+    expect(result).toBe([
+      "queue: clear",
+      "wake: completed",
+      "processing: processed",
+      'surfaced: "formal little blokes."',
+    ].join("\n"))
   })
 })

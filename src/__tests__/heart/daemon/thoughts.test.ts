@@ -475,4 +475,41 @@ describe("thoughts", () => {
       fs.rmSync(dir, { recursive: true, force: true })
     })
   })
+
+  describe("deriveInnerDialogStatus", () => {
+    it("derives pending status from queued self-messages", async () => {
+      const thoughts = await import("../../../heart/daemon/thoughts")
+
+      expect(typeof thoughts.deriveInnerDialogStatus).toBe("function")
+      expect(thoughts.deriveInnerDialogStatus(
+        [{ from: "slugger", content: "think about penguins", timestamp: 1 }],
+        [],
+      )).toEqual({
+        queue: "queued to inner/dialog",
+        wake: "awaiting inner session",
+        processing: "pending",
+        surfaced: "nothing yet",
+      })
+    })
+
+    it("derives surfaced preview from the latest processed pending turn", async () => {
+      const thoughts = await import("../../../heart/daemon/thoughts")
+
+      expect(typeof thoughts.deriveInnerDialogStatus).toBe("function")
+      expect(thoughts.deriveInnerDialogStatus(
+        [],
+        [{
+          type: "heartbeat",
+          prompt: "## pending messages\n[pending from slugger]: think about penguins\n\n...time passing. anything stirring?",
+          response: "formal little blokes.",
+          tools: [],
+        }],
+      )).toEqual({
+        queue: "clear",
+        wake: "completed",
+        processing: "processed",
+        surfaced: '"formal little blokes."',
+      })
+    })
+  })
 })
