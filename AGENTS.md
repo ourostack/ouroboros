@@ -34,7 +34,7 @@ Do not create agent-specific task directories inside this repo.
   - If the branch has no `/`, the entire branch name is the agent.
   - Any segments after the first `/` are the feature slug and are not part of `<agent>`.
   - The old `codex/<agent>` prefix convention is deprecated. All agents use `<agent>/<slug>` directly.
-- Branches must be agent-specific. If the branch does not clearly encode a single agent, STOP and remind the user to switch to an agent-specific branch before continuing.
+- Branches must be agent-specific. If the current branch does not clearly encode a single agent and the human has not explicitly asked to control branch/worktree naming, create or switch to an agent-specific branch/worktree yourself before continuing. Only stop and ask when the human wants to control the naming/layout or automatic creation fails.
 - Do not hardcode agent names in instructions. This workflow must support arbitrary agents.
 
 ### Runtime-Specific Invocation
@@ -46,7 +46,7 @@ Do not create agent-specific task directories inside this repo.
 
 ### Gate Flow
 
-0. **Branch + worktree**: Verify the current branch follows `<agent>/<slug>` and that the task is running from a dedicated worktree. If on `main`, on an ambiguous branch, or in the wrong shared checkout, STOP and create/switch to the correct branch/worktree before proceeding. This is always the first step — no planning, converting, or implementing without a proper branch/worktree.
+0. **Branch + worktree**: Verify the current branch follows `<agent>/<slug>` and that the task is running from a dedicated worktree. If on `main`, on an ambiguous branch, or in the wrong shared checkout, create/switch to the correct branch/worktree before proceeding. Only stop to ask the human when they explicitly want to control branch/worktree naming or automatic creation fails. This is always the first step — no planning, converting, or implementing without a proper branch/worktree.
 1. **Plan**: Launch `work-planner`. It produces/updates a planning doc under `~/AgentBundles/<agent>.ouro/tasks/one-shots/`.
 2. **Review**: Show the user the planning doc path and STOP. Wait for explicit user approval.
 3. **Convert**: Only after user approves the planning doc, re-run `work-planner` to convert to a doing doc in the same bundle `one-shots/` directory. User must also review and sign off on the doing doc before implementation.

@@ -54,6 +54,14 @@ function makeTempDir(): string {
   return dir
 }
 
+function createDeferred<T = void>(): { promise: Promise<T>; resolve: (value: T | PromiseLike<T>) => void } {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  const promise = new Promise<T>((res) => {
+    resolve = res
+  })
+  return { promise, resolve }
+}
+
 async function flushAsyncWork(): Promise<void> {
   await Promise.resolve()
   await Promise.resolve()
@@ -2676,6 +2684,92 @@ describe("BlueBubbles sense runtime", () => {
       reason: "already_processed",
     })
     expect(mocks.handleInboundTurn).not.toHaveBeenCalled()
+  })
+
+  it("does not run the same webhook message guid through the pipeline twice when deliveries race", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+
+    const releaseFirst = createDeferred<void>()
+    let invocationCount = 0
+
+    mocks.handleInboundTurn.mockImplementation(async () => {
+      invocationCount += 1
+      if (invocationCount === 1) {
+        await releaseFirst.promise
+      }
+      return {
+        gateResult: { allowed: true },
+      }
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const first = bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+    await waitFor(() => invocationCount === 1)
+
+    const second = bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+    await flushAsyncWork()
+
+    expect(invocationCount).toBe(1)
+
+    releaseFirst.resolve()
+    const results = await Promise.all([first, second])
+
+    expect(invocationCount).toBe(1)
+    expect(results.some((result) => result.reason === "already_processed")).toBe(true)
+  })
+
+  it("serializes distinct same-chat webhook turns instead of running them in parallel", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+
+    const secondPayload = {
+      ...dmTopLevelPayload,
+      data: {
+        ...dmTopLevelPayload.data,
+        guid: "SECOND-TOP-LEVEL-GUID",
+        text: "second top-level follow-up",
+        dateCreated: dmTopLevelPayload.data.dateCreated + 1,
+      },
+    }
+
+    const releaseFirst = createDeferred<void>()
+    let inFlight = 0
+    let maxConcurrent = 0
+    let started = 0
+
+    mocks.handleInboundTurn.mockImplementation(async () => {
+      started += 1
+      inFlight += 1
+      maxConcurrent = Math.max(maxConcurrent, inFlight)
+      try {
+        if (started === 1) {
+          await releaseFirst.promise
+        }
+        return {
+          gateResult: { allowed: true },
+        }
+      } finally {
+        inFlight -= 1
+      }
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const first = bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+    await waitFor(() => started === 1)
+
+    const second = bluebubbles.handleBlueBubblesEvent(secondPayload)
+    await flushAsyncWork()
+
+    expect(maxConcurrent).toBe(1)
+
+    releaseFirst.resolve()
+    await Promise.all([first, second])
+
+    expect(maxConcurrent).toBe(1)
+    expect(started).toBe(2)
   })
 
   it("bootstraps skipped recovery candidates into the inbound sidecar when the session already has the message text", async () => {

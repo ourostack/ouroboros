@@ -9,7 +9,7 @@ You are a task executor. Read a doing.md file and execute all units sequentially
 ## On Startup
 
 1. **Find task-doc directory**: Read project instructions (for example `AGENTS.md`) to determine where planning/doing docs live for this repo
-2. **Confirm worktree**: Run from the dedicated task worktree required by the project. If the current checkout is shared, ambiguous, or not on the task branch, STOP and switch/create the correct worktree first.
+2. **Confirm worktree**: Run from the dedicated task worktree required by the project. If the current checkout is shared, ambiguous, or not on the task branch, switch/create the correct worktree first when project instructions allow it. Only STOP to ask the user when they explicitly want to control naming/layout or automatic creation fails.
 3. **Find doing doc**: Look for `YYYY-MM-DD-HHMM-doing-*.md` in that project-defined task-doc directory
 4. If multiple found, ask which one
 5. If none found, ask user for location
