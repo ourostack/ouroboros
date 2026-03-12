@@ -5,6 +5,7 @@ import OpenAI from "openai"
 import { runAgent, type ChannelCallbacks, createSummarize } from "../heart/core"
 import { getBlueBubblesChannelConfig, getBlueBubblesConfig, sessionPath } from "../heart/config"
 import { getAgentName, getAgentRoot } from "../heart/identity"
+import { withSharedTurnLock } from "../heart/turn-coordinator"
 import { loadSession, postTurn } from "../mind/context"
 import { accumulateFriendTokens } from "../mind/friends/tokens"
 import { FriendResolver, type FriendResolverParams } from "../mind/friends/resolver"
@@ -617,164 +618,166 @@ async function handleBlueBubblesNormalizedEvent(
     })
   }
 
-  // Pre-load session (adapter needs existing messages for lane history in content building)
-  const existing = resolvedDeps.loadSession(sessPath)
-  const sessionMessages: OpenAI.ChatCompletionMessageParam[] =
-    existing?.messages && existing.messages.length > 0
-      ? existing.messages
-      : [{ role: "system", content: await resolvedDeps.buildSystem("bluebubbles", undefined, context) }]
+  return withSharedTurnLock("bluebubbles", sessPath, async () => {
+    // Pre-load session inside the turn lock so same-chat deliveries cannot race on stale trunk state.
+    const existing = resolvedDeps.loadSession(sessPath)
+    const sessionMessages: OpenAI.ChatCompletionMessageParam[] =
+      existing?.messages && existing.messages.length > 0
+        ? existing.messages
+        : [{ role: "system", content: await resolvedDeps.buildSystem("bluebubbles", undefined, context) }]
 
-  if (event.kind === "message") {
-    const agentName = resolvedDeps.getAgentName()
-    if (hasRecordedBlueBubblesInbound(agentName, event.chat.sessionKey, event.messageGuid)) {
-      emitNervesEvent({
-        component: "senses",
-        event: "senses.bluebubbles_recovery_skip",
-        message: "skipped bluebubbles message already recorded as handled",
-        meta: {
-          messageGuid: event.messageGuid,
-          sessionKey: event.chat.sessionKey,
-          source,
-        },
-      })
-      return { handled: true, notifiedAgent: false, kind: event.kind, reason: "already_processed" }
-    }
-
-    if (source !== "webhook" && sessionLikelyContainsMessage(event, existing?.messages ?? sessionMessages)) {
-      recordBlueBubblesInbound(agentName, event, "recovery-bootstrap")
-      emitNervesEvent({
-        component: "senses",
-        event: "senses.bluebubbles_recovery_skip",
-        message: "skipped bluebubbles recovery because the session already contains the message text",
-        meta: {
-          messageGuid: event.messageGuid,
-          sessionKey: event.chat.sessionKey,
-          source,
-        },
-      })
-      return { handled: true, notifiedAgent: false, kind: event.kind, reason: "already_processed" }
-    }
-  }
-
-  // Build inbound user message (adapter concern: BB-specific content formatting)
-  const userMessage: OpenAI.ChatCompletionMessageParam = {
-    role: "user",
-    content: buildInboundContent(event, existing?.messages ?? sessionMessages),
-  }
-
-  const callbacks = createBlueBubblesCallbacks(
-    client,
-    event.chat,
-    replyTarget,
-  )
-  const controller = new AbortController()
-
-  // BB-specific tool context wrappers
-  const summarize = createSummarize()
-
-  const bbCapabilities = getChannelCapabilities("bluebubbles")
-  const pendingDir = getPendingDir(resolvedDeps.getAgentName(), friendId, "bluebubbles", event.chat.sessionKey)
-
-  // ── Compute trust gate context for group/acquaintance rules ─────
-  const groupHasFamilyMember = await checkGroupHasFamilyMember(store, event)
-  const hasExistingGroupWithFamily = event.chat.isGroup
-    ? false
-    : await checkHasExistingGroupWithFamily(store, context.friend)
-
-  // ── Call shared pipeline ──────────────────────────────────────────
-
-  try {
-    const result = await handleInboundTurn({
-      channel: "bluebubbles",
-      capabilities: bbCapabilities,
-      messages: [userMessage],
-      continuityIngressTexts: getBlueBubblesContinuityIngressTexts(event),
-      callbacks,
-      friendResolver: { resolve: () => Promise.resolve(context) },
-      sessionLoader: { loadOrCreate: () => Promise.resolve({ messages: sessionMessages, sessionPath: sessPath, state: existing?.state }) },
-      pendingDir,
-      friendStore: store,
-      provider: "imessage-handle",
-      externalId: event.sender.externalId || event.sender.rawId,
-      isGroupChat: event.chat.isGroup,
-      groupHasFamilyMember,
-      hasExistingGroupWithFamily,
-      enforceTrustGate,
-      drainPending,
-      runAgent: (msgs, cb, channel, sig, opts) => resolvedDeps.runAgent(msgs, cb, channel, sig, {
-        ...opts,
-        toolContext: {
-          /* v8 ignore next -- default no-op signin; pipeline provides the real one @preserve */
-          signin: async () => undefined,
-          ...opts?.toolContext,
-          summarize,
-          bluebubblesReplyTarget: {
-            setSelection: (selection: BlueBubblesReplyTargetSelection) => replyTarget.setSelection(selection),
+    if (event.kind === "message") {
+      const agentName = resolvedDeps.getAgentName()
+      if (hasRecordedBlueBubblesInbound(agentName, event.chat.sessionKey, event.messageGuid)) {
+        emitNervesEvent({
+          component: "senses",
+          event: "senses.bluebubbles_recovery_skip",
+          message: "skipped bluebubbles message already recorded as handled",
+          meta: {
+            messageGuid: event.messageGuid,
+            sessionKey: event.chat.sessionKey,
+            source,
           },
-          codingFeedback: {
-            send: async (message: string) => {
-              await client.sendText({
-                chat: event.chat,
-                text: message,
-                replyToMessageGuid: replyTarget.getReplyToMessageGuid(),
-              })
+        })
+        return { handled: true, notifiedAgent: false, kind: event.kind, reason: "already_processed" }
+      }
+
+      if (source !== "webhook" && sessionLikelyContainsMessage(event, existing?.messages ?? sessionMessages)) {
+        recordBlueBubblesInbound(agentName, event, "recovery-bootstrap")
+        emitNervesEvent({
+          component: "senses",
+          event: "senses.bluebubbles_recovery_skip",
+          message: "skipped bluebubbles recovery because the session already contains the message text",
+          meta: {
+            messageGuid: event.messageGuid,
+            sessionKey: event.chat.sessionKey,
+            source,
+          },
+        })
+        return { handled: true, notifiedAgent: false, kind: event.kind, reason: "already_processed" }
+      }
+    }
+
+    // Build inbound user message (adapter concern: BB-specific content formatting)
+    const userMessage: OpenAI.ChatCompletionMessageParam = {
+      role: "user",
+      content: buildInboundContent(event, existing?.messages ?? sessionMessages),
+    }
+
+    const callbacks = createBlueBubblesCallbacks(
+      client,
+      event.chat,
+      replyTarget,
+    )
+    const controller = new AbortController()
+
+    // BB-specific tool context wrappers
+    const summarize = createSummarize()
+
+    const bbCapabilities = getChannelCapabilities("bluebubbles")
+    const pendingDir = getPendingDir(resolvedDeps.getAgentName(), friendId, "bluebubbles", event.chat.sessionKey)
+
+    // ── Compute trust gate context for group/acquaintance rules ─────
+    const groupHasFamilyMember = await checkGroupHasFamilyMember(store, event)
+    const hasExistingGroupWithFamily = event.chat.isGroup
+      ? false
+      : await checkHasExistingGroupWithFamily(store, context.friend)
+
+    // ── Call shared pipeline ──────────────────────────────────────────
+
+    try {
+      const result = await handleInboundTurn({
+        channel: "bluebubbles",
+        capabilities: bbCapabilities,
+        messages: [userMessage],
+        continuityIngressTexts: getBlueBubblesContinuityIngressTexts(event),
+        callbacks,
+        friendResolver: { resolve: () => Promise.resolve(context) },
+        sessionLoader: { loadOrCreate: () => Promise.resolve({ messages: sessionMessages, sessionPath: sessPath, state: existing?.state }) },
+        pendingDir,
+        friendStore: store,
+        provider: "imessage-handle",
+        externalId: event.sender.externalId || event.sender.rawId,
+        isGroupChat: event.chat.isGroup,
+        groupHasFamilyMember,
+        hasExistingGroupWithFamily,
+        enforceTrustGate,
+        drainPending,
+        runAgent: (msgs, cb, channel, sig, opts) => resolvedDeps.runAgent(msgs, cb, channel, sig, {
+          ...opts,
+          toolContext: {
+            /* v8 ignore next -- default no-op signin; pipeline provides the real one @preserve */
+            signin: async () => undefined,
+            ...opts?.toolContext,
+            summarize,
+            bluebubblesReplyTarget: {
+              setSelection: (selection: BlueBubblesReplyTargetSelection) => replyTarget.setSelection(selection),
+            },
+            codingFeedback: {
+              send: async (message: string) => {
+                await client.sendText({
+                  chat: event.chat,
+                  text: message,
+                  replyToMessageGuid: replyTarget.getReplyToMessageGuid(),
+                })
+              },
             },
           },
-        },
-      }),
-      postTurn: resolvedDeps.postTurn,
-      accumulateFriendTokens: resolvedDeps.accumulateFriendTokens,
-      signal: controller.signal,
-    })
+        }),
+        postTurn: resolvedDeps.postTurn,
+        accumulateFriendTokens: resolvedDeps.accumulateFriendTokens,
+        signal: controller.signal,
+      })
 
-    // ── Handle gate result ────────────────────────────────────────
+      // ── Handle gate result ────────────────────────────────────────
 
-    if (!result.gateResult.allowed) {
-      // Send auto-reply via BB API if the gate provides one
-      if ("autoReply" in result.gateResult && result.gateResult.autoReply) {
-        await client.sendText({
-          chat: event.chat,
-          text: result.gateResult.autoReply,
-        })
+      if (!result.gateResult.allowed) {
+        // Send auto-reply via BB API if the gate provides one
+        if ("autoReply" in result.gateResult && result.gateResult.autoReply) {
+          await client.sendText({
+            chat: event.chat,
+            text: result.gateResult.autoReply,
+          })
+        }
+
+        if (event.kind === "message") {
+          recordBlueBubblesInbound(resolvedDeps.getAgentName(), event, source)
+        }
+
+        return {
+          handled: true,
+          notifiedAgent: false,
+          kind: event.kind,
+        }
       }
+
+      // Gate allowed — flush the agent's reply
+      await callbacks.flush()
 
       if (event.kind === "message") {
         recordBlueBubblesInbound(resolvedDeps.getAgentName(), event, source)
       }
 
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.bluebubbles_turn_end",
+        message: "bluebubbles event handled",
+        meta: {
+          messageGuid: event.messageGuid,
+          kind: event.kind,
+          sessionKey: event.chat.sessionKey,
+        },
+      })
+
       return {
         handled: true,
-        notifiedAgent: false,
+        notifiedAgent: true,
         kind: event.kind,
       }
+    } finally {
+      await callbacks.finish()
     }
-
-    // Gate allowed — flush the agent's reply
-    await callbacks.flush()
-
-    if (event.kind === "message") {
-      recordBlueBubblesInbound(resolvedDeps.getAgentName(), event, source)
-    }
-
-    emitNervesEvent({
-      component: "senses",
-      event: "senses.bluebubbles_turn_end",
-      message: "bluebubbles event handled",
-      meta: {
-        messageGuid: event.messageGuid,
-        kind: event.kind,
-        sessionKey: event.chat.sessionKey,
-      },
-    })
-
-    return {
-      handled: true,
-      notifiedAgent: true,
-      kind: event.kind,
-    }
-  } finally {
-    await callbacks.finish()
-  }
+  })
 }
 
 export async function handleBlueBubblesEvent(

@@ -76,3 +76,9 @@ export function createTurnCoordinator(): TurnCoordinator {
     },
   }
 }
+
+const _sharedTurnCoordinator = createTurnCoordinator()
+
+export function withSharedTurnLock<T>(scope: string, key: string, fn: () => Promise<T>): Promise<T> {
+  return _sharedTurnCoordinator.withTurnLock(`${scope}:${key}`, fn)
+}
