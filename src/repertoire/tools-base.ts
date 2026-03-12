@@ -10,7 +10,7 @@ import type { FriendStore } from "../mind/friends/store";
 import { emitNervesEvent } from "../nerves/runtime";
 import { getAgentRoot, getAgentName } from "../heart/identity";
 import { requestInnerWake } from "../heart/daemon/socket-client";
-import { formatInnerDialogStatus, formatSurfacedValue, getInnerDialogSessionPath, readInnerDialogStatus } from "../heart/daemon/thoughts";
+import { extractThoughtResponseFromMessages, formatInnerDialogStatus, formatSurfacedValue, getInnerDialogSessionPath, readInnerDialogStatus } from "../heart/daemon/thoughts";
 import { codingToolDefinitions } from "./coding/tools";
 import { readMemoryFacts, saveMemoryFact, searchMemoryFacts } from "../mind/memory";
 import { getPendingDir, getInnerDialogPendingDir } from "../mind/pending";
@@ -71,24 +71,6 @@ function buildContextDiff(lines: string[], changeStart: number, changeEnd: numbe
     result.push(`${prefix} ${lineNum} | ${lines[i]}`)
   }
   return result.join("\n")
-}
-
-function assistantPreviewFromMessages(messages: OpenAI.ChatCompletionMessageParam[]): string {
-  const lastAssistant = [...messages].reverse().find((message) => message.role === "assistant")
-  if (!lastAssistant) return ""
-  const content = lastAssistant.content
-  if (typeof content === "string") return content
-  if (!Array.isArray(content)) return ""
-
-  return content
-    .map((part) => {
-      if (typeof part === "string") return part
-      if (part && typeof part === "object" && "text" in part && typeof part.text === "string") {
-        return part.text
-      }
-      return ""
-    })
-    .join("\n")
 }
 
 export const baseToolDefinitions: ToolDefinition[] = [
@@ -759,7 +741,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
               queue: "queued to inner/dialog",
               wake: "inline fallback",
               processing: "processed",
-              surfaced: formatSurfacedValue(assistantPreviewFromMessages(turnResult?.messages ?? [])),
+              surfaced: formatSurfacedValue(extractThoughtResponseFromMessages(turnResult?.messages ?? [])),
             })
           }
         }

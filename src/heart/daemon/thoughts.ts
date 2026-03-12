@@ -47,6 +47,23 @@ function contentToText(content: unknown): string {
     .join("\n")
 }
 
+function extractToolFunction(
+  toolCall: unknown,
+): { name?: string; arguments?: string } | null {
+  if (!toolCall || typeof toolCall !== "object" || !("function" in toolCall)) return null
+  const maybeFunction = (toolCall as { function?: unknown }).function
+  if (!maybeFunction || typeof maybeFunction !== "object") return null
+
+  const name = "name" in maybeFunction && typeof maybeFunction.name === "string"
+    ? maybeFunction.name
+    : undefined
+  const argumentsValue = "arguments" in maybeFunction && typeof maybeFunction.arguments === "string"
+    ? maybeFunction.arguments
+    : undefined
+
+  return { name, arguments: argumentsValue }
+}
+
 function classifyTurn(userText: string): { type: ThoughtTurn["type"]; taskId?: string } {
   if (userText.includes("waking up.")) return { type: "boot" }
   const taskMatch = /## task: (.+)$/m.exec(userText)
@@ -54,12 +71,13 @@ function classifyTurn(userText: string): { type: ThoughtTurn["type"]; taskId?: s
   return { type: "heartbeat" }
 }
 
-function extractToolNames(messages: Array<{ role: string; tool_calls?: Array<{ function?: { name?: string } }> }>): string[] {
+function extractToolNames(messages: Array<{ role: string; tool_calls?: unknown[] }>): string[] {
   const names: string[] = []
   for (const msg of messages) {
     if (msg.role === "assistant" && Array.isArray(msg.tool_calls)) {
       for (const tc of msg.tool_calls) {
-        if (tc.function?.name && tc.function.name !== "final_answer") names.push(tc.function.name)
+        const toolFunction = extractToolFunction(tc)
+        if (toolFunction?.name && toolFunction.name !== "final_answer") names.push(toolFunction.name)
       }
     }
   }
@@ -174,14 +192,15 @@ export function formatInnerDialogStatus(status: InnerDialogStatus): string {
 }
 
 /** Extract text from a final_answer tool call's arguments. */
-function extractFinalAnswer(messages: Array<{ role: string; tool_calls?: Array<{ function?: { name?: string; arguments?: string } }> }>): string {
+function extractFinalAnswer(messages: Array<{ role: string; tool_calls?: unknown[] }>): string {
   for (let k = messages.length - 1; k >= 0; k--) {
     const msg = messages[k]
     if (msg.role !== "assistant" || !Array.isArray(msg.tool_calls)) continue
     for (const tc of msg.tool_calls) {
-      if (tc.function?.name !== "final_answer") continue
+      const toolFunction = extractToolFunction(tc)
+      if (toolFunction?.name !== "final_answer") continue
       try {
-        const parsed = JSON.parse(tc.function.arguments ?? "{}")
+        const parsed = JSON.parse(toolFunction.arguments ?? "{}")
         if (typeof parsed.answer === "string" && parsed.answer.trim()) return parsed.answer.trim()
       } catch {
         // malformed arguments — skip
@@ -189,6 +208,16 @@ function extractFinalAnswer(messages: Array<{ role: string; tool_calls?: Array<{
     }
   }
   return ""
+}
+
+export function extractThoughtResponseFromMessages(
+  messages: Array<{ role: string; content?: unknown; tool_calls?: unknown[] }>,
+): string {
+  const assistantMsgs = messages.filter((message) => message.role === "assistant")
+  const lastAssistant = assistantMsgs.reverse().find((message) => contentToText(message.content).trim().length > 0)
+  return lastAssistant
+    ? contentToText(lastAssistant.content).trim()
+    : extractFinalAnswer(messages)
 }
 
 export function parseInnerDialogSession(sessionPath: string): ThoughtTurn[] {
@@ -244,11 +273,7 @@ export function parseInnerDialogSession(sessionPath: string): ThoughtTurn[] {
 
     // Find the last assistant text response in this turn.
     // With tool_choice="required", the response may be inside a final_answer tool call.
-    const assistantMsgs = turnMessages.filter((m) => m.role === "assistant")
-    const lastAssistant = assistantMsgs.reverse().find((m) => contentToText(m.content).trim().length > 0)
-    const response = lastAssistant
-      ? contentToText(lastAssistant.content).trim()
-      : extractFinalAnswer(turnMessages)
+    const response = extractThoughtResponseFromMessages(turnMessages)
     const tools = extractToolNames(turnMessages)
 
     turns.push({

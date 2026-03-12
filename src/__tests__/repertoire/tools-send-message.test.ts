@@ -433,6 +433,40 @@ describe("send_message tool", () => {
       expect(result).toContain('surfaced: "penguins"')
     })
 
+    it("extracts surfaced previews from final_answer-only inner turns", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      mockRunInnerDialogTurn.mockResolvedValue({
+        messages: [{
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "tc_1",
+              type: "function",
+              function: {
+                name: "final_answer",
+                arguments: JSON.stringify({
+                  answer: "formal little blokes",
+                  intent: "complete",
+                }),
+              },
+            },
+          ],
+        }],
+        sessionPath: "/mock/agent-root/state/sessions/self/inner/dialog.json",
+      })
+
+      const result = await tool.handler({
+        friendId: "self",
+        channel: "cli",
+        content: "let the thought conclude cleanly",
+      })
+
+      expect(result).toContain('surfaced: "formal little blokes"')
+    })
+
     it("treats non-array assistant content as no outward result", async () => {
       const { baseToolDefinitions } = await import("../../repertoire/tools-base")
       const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
