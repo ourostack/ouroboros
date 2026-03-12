@@ -3,6 +3,15 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 
+vi.mock("fs", async () => {
+  const actual = await vi.importActual<typeof import("fs")>("fs")
+  return {
+    ...actual,
+    watchFile: vi.fn(actual.watchFile),
+    unwatchFile: vi.fn(actual.unwatchFile),
+  }
+})
+
 vi.mock("../../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn(),
 }))
@@ -385,116 +394,126 @@ describe("thoughts", () => {
   })
 
   describe("followThoughts", () => {
-    it("calls onNewTurns when session file is updated with new turns", async () => {
+    function writeThoughtSession(sessionPath: string, messages: unknown[]): void {
+      fs.writeFileSync(sessionPath, JSON.stringify({ version: 1, messages }))
+    }
+
+    function captureWatchListener() {
+      let listener: ((curr: fs.Stats, prev: fs.Stats) => void) | undefined
+      const watchSpy = vi.mocked(fs.watchFile).mockImplementation(((pathArg, options, callback) => {
+        listener = callback
+        return undefined as unknown as fs.StatWatcher
+      }) as typeof fs.watchFile)
+      const unwatchSpy = vi.mocked(fs.unwatchFile).mockImplementation((() => undefined) as typeof fs.unwatchFile)
+
+      return {
+        invoke(sessionPath: string) {
+          const stats = fs.statSync(sessionPath)
+          listener?.(stats, stats)
+        },
+        watchSpy,
+        unwatchSpy,
+      }
+    }
+
+    it("calls onNewTurns when session file is updated with new turns", () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "follow-test-"))
       const sessionPath = path.join(dir, "dialog.json")
 
-      // Start with one turn
-      fs.writeFileSync(sessionPath, JSON.stringify({
-        version: 1,
-        messages: [
-          { role: "system", content: "system" },
-          { role: "user", content: "waking up.\n\nwhat needs my attention?" },
-          { role: "assistant", content: "first thought." },
-        ],
-      }))
+      writeThoughtSession(sessionPath, [
+        { role: "system", content: "system" },
+        { role: "user", content: "waking up.\n\nwhat needs my attention?" },
+        { role: "assistant", content: "first thought." },
+      ])
 
-      const received: string[] = []
-      const stop = followThoughts(sessionPath, (formatted) => {
-        received.push(formatted)
-      }, 100)
+      const { invoke, watchSpy, unwatchSpy } = captureWatchListener()
 
-      // Add a second turn
-      fs.writeFileSync(sessionPath, JSON.stringify({
-        version: 1,
-        messages: [
+      try {
+        const received: string[] = []
+        const stop = followThoughts(sessionPath, (formatted) => {
+          received.push(formatted)
+        }, 100)
+
+        writeThoughtSession(sessionPath, [
           { role: "system", content: "system" },
           { role: "user", content: "waking up.\n\nwhat needs my attention?" },
           { role: "assistant", content: "first thought." },
           { role: "user", content: "...time passing. anything stirring?" },
           { role: "assistant", content: "second thought." },
-        ],
-      }))
+        ])
 
-      // Wait for poll to detect the change
-      await new Promise((resolve) => setTimeout(resolve, 300))
+        invoke(sessionPath)
+        stop()
 
-      stop()
-      expect(received.length).toBeGreaterThanOrEqual(1)
-      expect(received[0]).toContain("second thought.")
-      expect(received[0]).not.toContain("first thought.")
-
-      fs.rmSync(dir, { recursive: true, force: true })
+        expect(watchSpy).toHaveBeenCalledWith(sessionPath, { interval: 100 }, expect.any(Function))
+        expect(received).toHaveLength(1)
+        expect(received[0]).toContain("second thought.")
+        expect(received[0]).not.toContain("first thought.")
+      } finally {
+        watchSpy.mockReset()
+        unwatchSpy.mockReset()
+        fs.rmSync(dir, { recursive: true, force: true })
+      }
     })
 
-    it("does not call onNewTurns when turn count stays the same", async () => {
+    it("does not call onNewTurns when turn count stays the same", () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "follow-test-"))
       const sessionPath = path.join(dir, "dialog.json")
 
-      const data = JSON.stringify({
-        version: 1,
-        messages: [
-          { role: "system", content: "system" },
-          { role: "user", content: "waking up.\n\nwhat needs my attention?" },
-          { role: "assistant", content: "same thought." },
-        ],
-      })
-      fs.writeFileSync(sessionPath, data)
+      const initialMessages = [
+        { role: "system", content: "system" },
+        { role: "user", content: "waking up.\n\nwhat needs my attention?" },
+        { role: "assistant", content: "same thought." },
+      ]
+      writeThoughtSession(sessionPath, initialMessages)
 
-      const received: string[] = []
-      const stop = followThoughts(sessionPath, (formatted) => {
-        received.push(formatted)
-      }, 100)
+      const { invoke, watchSpy, unwatchSpy } = captureWatchListener()
 
-      // Touch the file without adding turns
-      fs.writeFileSync(sessionPath, data)
+      try {
+        const received: string[] = []
+        const stop = followThoughts(sessionPath, (formatted) => {
+          received.push(formatted)
+        }, 100)
 
-      await new Promise((resolve) => setTimeout(resolve, 300))
+        writeThoughtSession(sessionPath, initialMessages)
+        invoke(sessionPath)
+        stop()
 
-      stop()
-      expect(received).toHaveLength(0)
-
-      fs.rmSync(dir, { recursive: true, force: true })
+        expect(received).toHaveLength(0)
+      } finally {
+        watchSpy.mockReset()
+        unwatchSpy.mockReset()
+        fs.rmSync(dir, { recursive: true, force: true })
+      }
     })
 
-    it("returns cleanup function that stops watching", async () => {
+    it("returns cleanup function that stops watching", () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "follow-test-"))
       const sessionPath = path.join(dir, "dialog.json")
 
-      fs.writeFileSync(sessionPath, JSON.stringify({
-        version: 1,
-        messages: [
-          { role: "system", content: "system" },
-          { role: "user", content: "waking up.\n\nwhat needs my attention?" },
-          { role: "assistant", content: "initial." },
-        ],
-      }))
+      writeThoughtSession(sessionPath, [
+        { role: "system", content: "system" },
+        { role: "user", content: "waking up.\n\nwhat needs my attention?" },
+        { role: "assistant", content: "initial." },
+      ])
 
-      const received: string[] = []
-      const stop = followThoughts(sessionPath, (formatted) => {
-        received.push(formatted)
-      }, 100)
+      const { watchSpy, unwatchSpy } = captureWatchListener()
 
-      // Stop immediately
-      stop()
+      try {
+        const received: string[] = []
+        const stop = followThoughts(sessionPath, (formatted) => {
+          received.push(formatted)
+        }, 100)
 
-      // Add a new turn after stopping
-      fs.writeFileSync(sessionPath, JSON.stringify({
-        version: 1,
-        messages: [
-          { role: "system", content: "system" },
-          { role: "user", content: "waking up.\n\nwhat needs my attention?" },
-          { role: "assistant", content: "initial." },
-          { role: "user", content: "...time passing. anything stirring?" },
-          { role: "assistant", content: "should not appear." },
-        ],
-      }))
+        stop()
 
-      await new Promise((resolve) => setTimeout(resolve, 300))
-
-      expect(received).toHaveLength(0)
-
-      fs.rmSync(dir, { recursive: true, force: true })
+        expect(received).toHaveLength(0)
+        expect(unwatchSpy).toHaveBeenCalledWith(sessionPath)
+      } finally {
+        watchSpy.mockReset()
+        unwatchSpy.mockReset()
+        fs.rmSync(dir, { recursive: true, force: true })
+      }
     })
   })
 
