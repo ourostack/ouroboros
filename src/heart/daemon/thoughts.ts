@@ -26,6 +26,13 @@ export interface InnerDialogStatus {
   surfaced: string
 }
 
+export interface InnerDialogRuntimeState {
+  status: "idle" | "running"
+  reason?: "boot" | "heartbeat" | "instinct"
+  startedAt?: string
+  lastCompletedAt?: string
+}
+
 function contentToText(content: unknown): string {
   if (typeof content === "string") return content
   if (!Array.isArray(content)) return ""
@@ -116,7 +123,17 @@ export function formatSurfacedValue(text: string, maxLength = 120): string {
 export function deriveInnerDialogStatus(
   pendingMessages: Array<Pick<PendingMessage, "content" | "timestamp" | "from">>,
   turns: ThoughtTurn[],
+  runtimeState?: InnerDialogRuntimeState | null,
 ): InnerDialogStatus {
+  if (runtimeState?.status === "running") {
+    return {
+      queue: pendingMessages.length > 0 ? "queued to inner/dialog" : "clear",
+      wake: "in progress",
+      processing: "started",
+      surfaced: "nothing yet",
+    }
+  }
+
   if (pendingMessages.length > 0) {
     return {
       queue: "queued to inner/dialog",
@@ -284,10 +301,33 @@ export function getInnerDialogSessionPath(agentRoot: string): string {
   return path.join(agentRoot, "state", "sessions", "self", "inner", "dialog.json")
 }
 
-export function readInnerDialogStatus(sessionPath: string, pendingDir: string): InnerDialogStatus {
+function getInnerDialogRuntimeStatePath(sessionPath: string): string {
+  return path.join(path.dirname(sessionPath), "runtime.json")
+}
+
+function readInnerDialogRuntimeState(runtimePath: string): InnerDialogRuntimeState | null {
+  try {
+    const raw = fs.readFileSync(runtimePath, "utf-8")
+    const parsed = JSON.parse(raw) as Partial<InnerDialogRuntimeState>
+    if (parsed.status !== "running" && parsed.status !== "idle") return null
+    return {
+      status: parsed.status,
+      reason: parsed.reason === "boot" || parsed.reason === "heartbeat" || parsed.reason === "instinct"
+        ? parsed.reason
+        : undefined,
+      startedAt: typeof parsed.startedAt === "string" ? parsed.startedAt : undefined,
+      lastCompletedAt: typeof parsed.lastCompletedAt === "string" ? parsed.lastCompletedAt : undefined,
+    }
+  } catch {
+    return null
+  }
+}
+
+export function readInnerDialogStatus(sessionPath: string, pendingDir: string, runtimePath = getInnerDialogRuntimeStatePath(sessionPath)): InnerDialogStatus {
   const pendingMessages = readPendingMessagesForStatus(pendingDir)
   const turns = parseInnerDialogSession(sessionPath)
-  return deriveInnerDialogStatus(pendingMessages, turns)
+  const runtimeState = readInnerDialogRuntimeState(runtimePath)
+  return deriveInnerDialogStatus(pendingMessages, turns, runtimeState)
 }
 
 /**

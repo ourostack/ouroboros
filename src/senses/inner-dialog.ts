@@ -44,6 +44,13 @@ export interface InnerDialogTurnResult {
   sessionPath: string
 }
 
+interface InnerDialogRuntimeState {
+  status: "idle" | "running"
+  reason?: "boot" | "heartbeat" | "instinct"
+  startedAt?: string
+  lastCompletedAt?: string
+}
+
 const DEFAULT_INNER_DIALOG_INSTINCTS: InnerDialogInstinct[] = [
   {
     id: "heartbeat_checkin",
@@ -210,6 +217,32 @@ export function innerDialogSessionPath(): string {
   return sessionPath(INNER_DIALOG_PENDING.friendId, INNER_DIALOG_PENDING.channel, INNER_DIALOG_PENDING.key)
 }
 
+function innerDialogRuntimeStatePath(sessionFilePath: string): string {
+  return path.join(path.dirname(sessionFilePath), "runtime.json")
+}
+
+function writeInnerDialogRuntimeState(sessionFilePath: string, state: InnerDialogRuntimeState): void {
+  const filePath = innerDialogRuntimeStatePath(sessionFilePath)
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true })
+    fs.writeFileSync(filePath, JSON.stringify(state, null, 2) + "\n", "utf8")
+  } catch (error) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.inner_dialog_runtime_state_error",
+      message: "failed to write inner dialog runtime state",
+      meta: {
+        status: state.status,
+        reason: state.reason ?? null,
+        path: filePath,
+        /* v8 ignore next -- Node fs APIs throw Error objects for mkdirSync/writeFileSync failures @preserve */
+        error: error instanceof Error ? error.message : String(error),
+      },
+    })
+  }
+}
+
 // Self-referencing friend record for inner dialog (agent talking to itself).
 // No real friend to resolve -- this satisfies the pipeline's friend resolver contract.
 function createSelfFriend(agentName: string): FriendRecord {
@@ -242,6 +275,13 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
   const now = options?.now ?? (() => new Date())
   const reason = options?.reason ?? "heartbeat"
   const sessionFilePath = innerDialogSessionPath()
+  writeInnerDialogRuntimeState(sessionFilePath, {
+    status: "running",
+    reason,
+    startedAt: now().toISOString(),
+  })
+
+  try {
   const loaded = loadSession(sessionFilePath)
   const existingMessages = loaded?.messages ? [...loaded.messages] : []
   const instincts = options?.instincts ?? loadInnerDialogInstincts()
@@ -352,5 +392,11 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
     messages: resultMessages,
     usage: result.usage,
     sessionPath: result.sessionPath ?? sessionFilePath,
+  }
+  } finally {
+    writeInnerDialogRuntimeState(sessionFilePath, {
+      status: "idle",
+      lastCompletedAt: now().toISOString(),
+    })
   }
 }

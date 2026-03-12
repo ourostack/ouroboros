@@ -372,6 +372,54 @@ describe("query_session tool", () => {
     ].join("\n"))
   })
 
+  it("reports live processing when runtime state says an inner turn is still running", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
+
+    vi.mocked(fs.existsSync).mockImplementation((filePath) => (
+      String(filePath) === "/mock/agent-root/state/sessions/self/inner/runtime.json"
+    ))
+    vi.mocked(fs.readdirSync).mockReturnValue([] as any)
+    vi.mocked(fs.readFileSync).mockImplementation((filePath) => {
+      if (String(filePath).endsWith("/state/sessions/self/inner/dialog.json")) {
+        return JSON.stringify({
+          version: 1,
+          messages: [
+            { role: "system", content: "sys" },
+            {
+              role: "user",
+              content: "## pending messages\n[pending from testagent]: think about penguins\n\n...time passing. anything stirring?",
+            },
+            { role: "assistant", content: "formal little blokes." },
+          ],
+        })
+      }
+
+      if (String(filePath).endsWith("/state/sessions/self/inner/runtime.json")) {
+        return JSON.stringify({
+          status: "running",
+          reason: "instinct",
+          startedAt: "2026-03-12T00:00:00.000Z",
+        })
+      }
+
+      throw new Error(`ENOENT: ${String(filePath)}`)
+    })
+
+    const result = await tool.handler({
+      friendId: "self",
+      channel: "inner",
+      mode: "status",
+    })
+
+    expect(result).toBe([
+      "queue: clear",
+      "wake: in progress",
+      "processing: started",
+      "surfaced: nothing yet",
+    ].join("\n"))
+  })
+
   it("rejects status mode for non-self sessions instead of pretending it can inspect them", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!

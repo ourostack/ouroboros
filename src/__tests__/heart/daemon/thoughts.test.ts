@@ -512,6 +512,49 @@ describe("thoughts", () => {
       })
     })
 
+    it("reports processing started when runtime state says the inner turn is still active", async () => {
+      const thoughts = await import("../../../heart/daemon/thoughts")
+
+      expect(thoughts.deriveInnerDialogStatus(
+        [],
+        [{
+          type: "heartbeat",
+          prompt: "## pending messages\n[pending from slugger]: think about penguins\n\n...time passing. anything stirring?",
+          response: "formal little blokes.",
+          tools: [],
+        }],
+        {
+          status: "running",
+          reason: "instinct",
+          startedAt: "2026-03-12T00:00:00.000Z",
+        },
+      )).toEqual({
+        queue: "clear",
+        wake: "in progress",
+        processing: "started",
+        surfaced: "nothing yet",
+      })
+    })
+
+    it("keeps queued state visible while runtime state is active and pending remains", async () => {
+      const thoughts = await import("../../../heart/daemon/thoughts")
+
+      expect(thoughts.deriveInnerDialogStatus(
+        [{ from: "slugger", content: "think about penguins", timestamp: 1 }],
+        [],
+        {
+          status: "running",
+          reason: "instinct",
+          startedAt: "2026-03-12T00:00:00.000Z",
+        },
+      )).toEqual({
+        queue: "queued to inner/dialog",
+        wake: "in progress",
+        processing: "started",
+        surfaced: "nothing yet",
+      })
+    })
+
     it("returns idle status when nothing is queued or recently surfaced", async () => {
       const thoughts = await import("../../../heart/daemon/thoughts")
 
@@ -566,6 +609,89 @@ describe("thoughts", () => {
       })
 
       fs.unlinkSync(notADirectoryPath)
+    })
+
+    it("prefers live runtime state over stale processed transcript state", async () => {
+      const thoughts = await import("../../../heart/daemon/thoughts")
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "thoughts-runtime-"))
+      const sessionPath = path.join(dir, "dialog.json")
+      const runtimePath = path.join(dir, "runtime.json")
+
+      fs.writeFileSync(sessionPath, JSON.stringify({
+        version: 1,
+        messages: [
+          { role: "system", content: "system" },
+          {
+            role: "user",
+            content: "## pending messages\n[pending from slugger]: think about penguins\n\n...time passing. anything stirring?",
+          },
+          { role: "assistant", content: "formal little blokes." },
+        ],
+      }))
+      fs.writeFileSync(runtimePath, JSON.stringify({
+        status: "running",
+        reason: "instinct",
+        startedAt: "2026-03-12T00:00:00.000Z",
+      }))
+
+      expect(thoughts.readInnerDialogStatus(sessionPath, path.join(dir, "pending"), runtimePath)).toEqual({
+        queue: "clear",
+        wake: "in progress",
+        processing: "started",
+        surfaced: "nothing yet",
+      })
+
+      fs.rmSync(dir, { recursive: true, force: true })
+    })
+
+    it("ignores malformed runtime metadata fields while preserving valid status", async () => {
+      const thoughts = await import("../../../heart/daemon/thoughts")
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "thoughts-runtime-"))
+      const sessionPath = path.join(dir, "dialog.json")
+      const pendingDir = path.join(dir, "pending")
+      const runtimePath = path.join(dir, "runtime.json")
+
+      fs.mkdirSync(pendingDir, { recursive: true })
+      fs.writeFileSync(sessionPath, JSON.stringify({ version: 1, messages: [] }))
+      fs.writeFileSync(runtimePath, JSON.stringify({
+        status: "idle",
+        reason: "mystery",
+        startedAt: 42,
+        lastCompletedAt: false,
+      }))
+
+      expect(thoughts.readInnerDialogStatus(sessionPath, pendingDir, runtimePath)).toEqual({
+        queue: "clear",
+        wake: "idle",
+        processing: "idle",
+        surfaced: "nothing recent",
+      })
+
+      fs.rmSync(dir, { recursive: true, force: true })
+    })
+
+    it("accepts lastCompletedAt when runtime metadata is otherwise idle", async () => {
+      const thoughts = await import("../../../heart/daemon/thoughts")
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "thoughts-runtime-"))
+      const sessionPath = path.join(dir, "dialog.json")
+      const pendingDir = path.join(dir, "pending")
+      const runtimePath = path.join(dir, "runtime.json")
+
+      fs.mkdirSync(pendingDir, { recursive: true })
+      fs.writeFileSync(sessionPath, JSON.stringify({ version: 1, messages: [] }))
+      fs.writeFileSync(runtimePath, JSON.stringify({
+        status: "idle",
+        lastCompletedAt: "2026-03-12T00:00:00.000Z",
+      }))
+
+      expect(thoughts.readInnerDialogStatus(sessionPath, pendingDir, runtimePath)).toEqual({
+        queue: "clear",
+        wake: "idle",
+        processing: "idle",
+        surfaced: "nothing recent",
+      })
+
+      fs.rmSync(dir, { recursive: true, force: true })
     })
   })
 })
