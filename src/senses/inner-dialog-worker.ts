@@ -5,23 +5,29 @@ export type InnerDialogWorkerReason = "boot" | "heartbeat" | "instinct"
 
 export interface InnerDialogWorkerMessage {
   type: "heartbeat" | "shutdown" | "poke" | "chat" | "message" | string
+  taskId?: string
+}
+
+export interface InnerDialogWorkerRunOptions {
+  reason: InnerDialogWorkerReason
+  taskId?: string
 }
 
 export interface InnerDialogWorkerController {
-  run(reason: InnerDialogWorkerReason): Promise<void>
+  run(reason: InnerDialogWorkerReason, taskId?: string): Promise<void>
   handleMessage(message: unknown): Promise<void>
 }
 
 export function createInnerDialogWorker(
-  runTurn: (options: { reason: InnerDialogWorkerReason }) => Promise<unknown> = (options) => runInnerDialogTurn(options),
+  runTurn: (options: InnerDialogWorkerRunOptions) => Promise<unknown> = (options) => runInnerDialogTurn(options),
 ): InnerDialogWorkerController {
   let running = false
 
-  async function run(reason: InnerDialogWorkerReason): Promise<void> {
+  async function run(reason: InnerDialogWorkerReason, taskId?: string): Promise<void> {
     if (running) return
     running = true
     try {
-      await runTurn({ reason })
+      await runTurn({ reason, taskId })
     } catch (error) {
       emitNervesEvent({
         level: "error",
@@ -45,8 +51,11 @@ export function createInnerDialogWorker(
       await run("heartbeat")
       return
     }
+    if (maybeMessage.type === "poke") {
+      await run("instinct", maybeMessage.taskId)
+      return
+    }
     if (
-      maybeMessage.type === "poke" ||
       maybeMessage.type === "chat" ||
       maybeMessage.type === "message"
     ) {

@@ -32,10 +32,10 @@ export interface InnerDialogState {
 
 export interface RunInnerDialogTurnOptions {
   reason?: "boot" | "heartbeat" | "instinct"
+  taskId?: string
   instincts?: InnerDialogInstinct[]
   now?: () => Date
   signal?: AbortSignal
-  drainInbox?: () => Array<{ from: string; content: string }>
 }
 
 export interface InnerDialogTurnResult {
@@ -64,8 +64,16 @@ export function loadInnerDialogInstincts(): InnerDialogInstinct[] {
   return [...DEFAULT_INNER_DIALOG_INSTINCTS]
 }
 
-export function buildInnerDialogBootstrapMessage(_aspirations: string, _stateSummary: string): string {
-  return "waking up. settling in.\n\nwhat needs my attention?"
+export function buildInnerDialogBootstrapMessage(aspirations: string, stateSummary: string): string {
+  const lines = ["waking up."]
+  if (aspirations) {
+    lines.push("", "## what matters to me", aspirations)
+  }
+  if (stateSummary) {
+    lines.push("", "## what i know so far", stateSummary)
+  }
+  lines.push("", "what needs my attention?")
+  return lines.join("\n")
 }
 
 export function buildNonCanonicalCleanupNudge(nonCanonicalPaths: string[]): string {
@@ -91,6 +99,33 @@ export function buildInstinctUserMessage(
   const lines = [active.prompt]
   if (checkpoint) {
     lines.push(`\nlast i remember: ${checkpoint}`)
+  }
+  return lines.join("\n")
+}
+
+export function readTaskFile(agentRoot: string, taskId: string): string {
+  // Task files live in collection subdirectories (one-shots, ongoing, habits).
+  // Try each collection, then fall back to root tasks/ for legacy layout.
+  const collections = ["one-shots", "ongoing", "habits", ""]
+  for (const collection of collections) {
+    try {
+      return fs.readFileSync(path.join(agentRoot, "tasks", collection, `${taskId}.md`), "utf8").trim()
+    } catch {
+      // not in this collection — try next
+    }
+  }
+  return ""
+}
+
+export function buildTaskTriggeredMessage(taskId: string, taskContent: string, checkpoint?: string): string {
+  const lines = ["a task needs my attention."]
+  if (taskContent) {
+    lines.push("", `## task: ${taskId}`, taskContent)
+  } else {
+    lines.push("", `## task: ${taskId}`, "(task file not found)")
+  }
+  if (checkpoint) {
+    lines.push("", `last i remember: ${checkpoint}`)
   }
   return lines.join("\n")
 }
@@ -134,6 +169,29 @@ export function deriveResumeCheckpoint(messages: OpenAI.ChatCompletionMessagePar
   if (!firstLine) return "no prior checkpoint recorded"
   if (firstLine.length <= 220) return firstLine
   return `${firstLine.slice(0, 217)}...`
+}
+
+function extractAssistantPreview(messages: OpenAI.ChatCompletionMessageParam[], maxLength = 120): string {
+  const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant")
+  if (!lastAssistant) return ""
+  const text = contentToText(lastAssistant.content)
+  if (!text) return ""
+  /* v8 ignore next -- unreachable: contentToText().trim() guarantees a non-empty line @preserve */
+  const firstLine = text.split("\n").find((line) => line.trim().length > 0) ?? ""
+  if (firstLine.length <= maxLength) return firstLine
+  return `${firstLine.slice(0, maxLength - 3)}...`
+}
+
+function extractToolCallNames(messages: OpenAI.ChatCompletionMessageParam[]): string[] {
+  const names: string[] = []
+  for (const msg of messages) {
+    if (msg.role === "assistant" && "tool_calls" in msg && Array.isArray(msg.tool_calls)) {
+      for (const tc of msg.tool_calls) {
+        if ("function" in tc && tc.function?.name) names.push(tc.function.name)
+      }
+    }
+  }
+  return [...new Set(names)]
 }
 
 function createInnerDialogCallbacks(): ChannelCallbacks {
@@ -206,20 +264,17 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
       cleanupNudge,
     ].filter(Boolean).join("\n\n")
   } else {
-    // Resumed session: instinct message with checkpoint context
+    // Resumed session: task-triggered or instinct message with checkpoint context
     const assistantTurns = existingMessages.filter((message) => message.role === "assistant").length
     state.cycleCount = assistantTurns + 1
     state.checkpoint = deriveResumeCheckpoint(existingMessages)
-    userContent = buildInstinctUserMessage(instincts, reason, state)
-  }
 
-  // ── Adapter concern: inbox drain (inner-dialog-specific) ─────────
-  const inboxMessages = options?.drainInbox?.() ?? []
-  if (inboxMessages.length > 0) {
-    const section = inboxMessages
-      .map((msg) => `- **${msg.from}**: ${msg.content}`)
-      .join("\n")
-    userContent = `${userContent}\n\n## incoming messages\n${section}`
+    if (options?.taskId) {
+      const taskContent = readTaskFile(getAgentRoot(), options.taskId)
+      userContent = buildTaskTriggeredMessage(options.taskId, taskContent, state.checkpoint)
+    } else {
+      userContent = buildInstinctUserMessage(instincts, reason, state)
+    }
   }
 
   const userMessage: OpenAI.ChatCompletionMessageParam = { role: "user", content: userContent }
@@ -271,15 +326,30 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
     },
   })
 
+  const resultMessages = result.messages ?? []
+  const assistantPreview = extractAssistantPreview(resultMessages)
+  const toolCalls = extractToolCallNames(resultMessages)
+
   emitNervesEvent({
     component: "senses",
     event: "senses.inner_dialog_turn",
     message: "inner dialog turn completed",
-    meta: { reason, session: sessionFilePath },
+    meta: {
+      reason,
+      session: sessionFilePath,
+      ...(options?.taskId && { taskId: options.taskId }),
+      ...(assistantPreview && { assistantPreview }),
+      ...(toolCalls.length > 0 && { toolCalls }),
+      ...(result.usage && {
+        promptTokens: result.usage.input_tokens,
+        completionTokens: result.usage.output_tokens,
+        totalTokens: result.usage.total_tokens,
+      }),
+    },
   })
 
   return {
-    messages: result.messages ?? [],
+    messages: resultMessages,
     usage: result.usage,
     sessionPath: result.sessionPath ?? sessionFilePath,
   }

@@ -18,6 +18,7 @@ const mockHandleInboundTurn = vi.fn()
 const mockGetChannelCapabilities = vi.fn()
 const mockEnforceTrustGate = vi.fn()
 const mockAccumulateFriendTokens = vi.fn()
+const mockEmitNervesEvent = vi.fn()
 
 vi.mock("../../mind/prompt", () => ({
   buildSystem: (...args: any[]) => mockBuildSystem(...args),
@@ -49,7 +50,7 @@ vi.mock("../../mind/pending", () => ({
 }))
 
 vi.mock("../../nerves/runtime", () => ({
-  emitNervesEvent: vi.fn(),
+  emitNervesEvent: (...args: any[]) => mockEmitNervesEvent(...args),
 }))
 
 vi.mock("../../senses/pipeline", () => ({
@@ -72,6 +73,8 @@ import {
   buildInnerDialogBootstrapMessage,
   buildNonCanonicalCleanupNudge,
   buildInstinctUserMessage,
+  buildTaskTriggeredMessage,
+  readTaskFile,
   deriveResumeCheckpoint,
   loadInnerDialogInstincts,
   runInnerDialogTurn,
@@ -120,10 +123,9 @@ describe("inner dialog runtime", () => {
     mockGetChannelCapabilities.mockReset().mockReturnValue(innerCapabilities)
     mockEnforceTrustGate.mockReset().mockReturnValue({ allowed: true })
     mockAccumulateFriendTokens.mockReset().mockResolvedValue(undefined)
+    mockEmitNervesEvent.mockReset()
 
     // Default handleInboundTurn: simulate pipeline running agent and returning result.
-    // Mirrors the real pipeline: resolves friend, calls sessionLoader, appends input.messages,
-    // calls injected runAgent, postTurn, and accumulateFriendTokens.
     mockHandleInboundTurn.mockReset().mockImplementation(async (input: any) => {
       const resolvedContext = await input.friendResolver.resolve()
       const session = await input.sessionLoader.loadOrCreate()
@@ -155,14 +157,33 @@ describe("inner dialog runtime", () => {
 
   // ── Pure function tests (adapter concerns, no pipeline) ──────────
 
-  it("builds bootstrap message with first-person awareness framing", () => {
+  it("builds bootstrap message with aspirations and state summary", () => {
     const message = buildInnerDialogBootstrapMessage("Learn and help Ari.", "No prior session found.")
-    expect(message).toBe("waking up. settling in.\n\nwhat needs my attention?")
+    expect(message).toContain("waking up.")
+    expect(message).toContain("## what matters to me")
+    expect(message).toContain("Learn and help Ari.")
+    expect(message).toContain("## what i know so far")
+    expect(message).toContain("No prior session found.")
+    expect(message).toContain("what needs my attention?")
   })
 
-  it("returns same bootstrap message regardless of aspirations content", () => {
+  it("omits aspirations section when aspirations are empty", () => {
     const message = buildInnerDialogBootstrapMessage("", "No prior session found.")
-    expect(message).toBe("waking up. settling in.\n\nwhat needs my attention?")
+    expect(message).not.toContain("## what matters to me")
+    expect(message).toContain("## what i know so far")
+    expect(message).toContain("what needs my attention?")
+  })
+
+  it("omits state summary section when state summary is empty", () => {
+    const message = buildInnerDialogBootstrapMessage("Learn things.", "")
+    expect(message).toContain("## what matters to me")
+    expect(message).not.toContain("## what i know so far")
+    expect(message).toContain("what needs my attention?")
+  })
+
+  it("returns minimal bootstrap when both aspirations and state are empty", () => {
+    const message = buildInnerDialogBootstrapMessage("", "")
+    expect(message).toBe("waking up.\n\nwhat needs my attention?")
   })
 
   it("returns default instincts with first-person awareness framing", () => {
@@ -203,11 +224,6 @@ describe("inner dialog runtime", () => {
     expect(nudge).toContain("... (1 more)")
   })
 
-  it("bootstrap message is exactly 'waking up. settling in.\\n\\nwhat needs my attention?'", () => {
-    const message = buildInnerDialogBootstrapMessage("any aspirations", "any state")
-    expect(message).toBe("waking up. settling in.\n\nwhat needs my attention?")
-  })
-
   it("default instinct message uses first-person awareness language", () => {
     const instincts = loadInnerDialogInstincts()
     const text = buildInstinctUserMessage(
@@ -229,6 +245,65 @@ describe("inner dialog runtime", () => {
     )
     expect(text).toContain("stirring")
     expect(text).not.toContain("Instinct:")
+  })
+
+  // ── Task-triggered message tests ──────────────────────────────────
+
+  it("builds task-triggered message with task content and checkpoint", () => {
+    const msg = buildTaskTriggeredMessage(
+      "habits/daily-standup",
+      "---\ntype: habit\ncadence: 0 9 * * *\n---\nSummarize yesterday.",
+      "standup sent yesterday",
+    )
+    expect(msg).toContain("a task needs my attention.")
+    expect(msg).toContain("## task: habits/daily-standup")
+    expect(msg).toContain("Summarize yesterday.")
+    expect(msg).toContain("last i remember: standup sent yesterday")
+  })
+
+  it("shows fallback when task file is not found", () => {
+    const msg = buildTaskTriggeredMessage("habits/missing", "", "some checkpoint")
+    expect(msg).toContain("(task file not found)")
+    expect(msg).toContain("last i remember: some checkpoint")
+  })
+
+  it("omits checkpoint line when no checkpoint is provided", () => {
+    const msg = buildTaskTriggeredMessage("ongoing/review", "task body here")
+    expect(msg).not.toContain("last i remember")
+  })
+
+  // ── readTaskFile tests ──────────────────────────────────────────
+
+  it("reads task file from agent root tasks directory", () => {
+    const tasksDir = path.join(agentRoot, "tasks", "habits")
+    fs.mkdirSync(tasksDir, { recursive: true })
+    fs.writeFileSync(path.join(tasksDir, "daily-standup.md"), "---\ntype: habit\n---\nDo standup.", "utf8")
+
+    const content = readTaskFile(agentRoot, "habits/daily-standup")
+    expect(content).toContain("Do standup.")
+  })
+
+  it("finds task file by stem across collection subdirectories", () => {
+    const habitsDir = path.join(agentRoot, "tasks", "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(path.join(habitsDir, "2026-0311-0900-daily-standup.md"), "---\ntype: habit\n---\nDo standup.", "utf8")
+
+    // Scheduler sends bare stem, not collection-prefixed path
+    const content = readTaskFile(agentRoot, "2026-0311-0900-daily-standup")
+    expect(content).toContain("Do standup.")
+  })
+
+  it("finds task in one-shots collection by stem", () => {
+    const dir = path.join(agentRoot, "tasks", "one-shots")
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, "2026-0312-0900-remind-ari.md"), "---\ntype: one-shot\n---\nRemind Ari about PR.", "utf8")
+
+    const content = readTaskFile(agentRoot, "2026-0312-0900-remind-ari")
+    expect(content).toContain("Remind Ari about PR.")
+  })
+
+  it("returns empty string when task file does not exist", () => {
+    expect(readTaskFile(agentRoot, "nonexistent-task")).toBe("")
   })
 
   // ── Checkpoint derivation tests ──────────────────────────────────
@@ -314,8 +389,6 @@ describe("inner dialog runtime", () => {
   })
 
   it("does not call runAgent directly — pipeline handles it", async () => {
-    // Use a non-call-through pipeline mock so mockRunAgent is only called if inner-dialog
-    // invokes it directly (not through the pipeline's input.runAgent pass-through)
     mockHandleInboundTurn.mockResolvedValueOnce({
       resolvedContext: { friend: { id: "self" }, channel: innerCapabilities },
       gateResult: { allowed: true },
@@ -334,7 +407,6 @@ describe("inner dialog runtime", () => {
   })
 
   it("does not call postTurn directly — pipeline handles it", async () => {
-    // Use a non-call-through pipeline mock
     mockHandleInboundTurn.mockResolvedValueOnce({
       resolvedContext: { friend: { id: "self" }, channel: innerCapabilities },
       gateResult: { allowed: true },
@@ -406,7 +478,7 @@ describe("inner dialog runtime", () => {
     expect((input as any).continuityIngressTexts).toEqual([])
   })
 
-  it("passes bootstrap user message as pipeline input.messages on fresh session", async () => {
+  it("passes bootstrap user message with aspirations on fresh session", async () => {
     await runInnerDialogTurn({
       reason: "boot",
       instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
@@ -416,7 +488,10 @@ describe("inner dialog runtime", () => {
     const input = mockHandleInboundTurn.mock.calls[0][0]
     expect(input.messages).toHaveLength(1)
     expect(input.messages[0].role).toBe("user")
-    expect(String(input.messages[0].content)).toContain("waking up. settling in.")
+    const content = String(input.messages[0].content)
+    expect(content).toContain("waking up.")
+    expect(content).toContain("Keep improving the harness.")
+    expect(content).toContain("what needs my attention?")
   })
 
   it("passes instinct user message as pipeline input.messages on resumed session", async () => {
@@ -463,8 +538,69 @@ describe("inner dialog runtime", () => {
     expect(content).toContain("Unit 2b editing src/repertoire/tools.ts")
   })
 
+  // ── TaskId passthrough tests ──────────────────────────────────────
+
+  it("builds task-triggered user message when taskId is provided on resumed session", async () => {
+    const tasksDir = path.join(agentRoot, "tasks", "habits")
+    fs.mkdirSync(tasksDir, { recursive: true })
+    fs.writeFileSync(path.join(tasksDir, "daily-standup.md"), "---\ntype: habit\ncadence: 0 9 * * *\n---\nSummarize yesterday's work.", "utf8")
+
+    mockLoadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "assistant", content: "checkpoint: standup sent" },
+      ],
+    })
+
+    await runInnerDialogTurn({
+      reason: "instinct",
+      taskId: "habits/daily-standup",
+      now: () => new Date("2026-03-06T09:00:00.000Z"),
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    const content = String(input.messages[0].content)
+    expect(content).toContain("a task needs my attention.")
+    expect(content).toContain("## task: habits/daily-standup")
+    expect(content).toContain("Summarize yesterday's work.")
+    expect(content).toContain("last i remember: standup sent")
+  })
+
+  it("shows task-not-found fallback when task file is missing", async () => {
+    mockLoadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "assistant", content: "ready" },
+      ],
+    })
+
+    await runInnerDialogTurn({
+      reason: "instinct",
+      taskId: "habits/nonexistent",
+      now: () => new Date("2026-03-06T09:00:00.000Z"),
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    const content = String(input.messages[0].content)
+    expect(content).toContain("(task file not found)")
+  })
+
+  it("ignores taskId on fresh session (uses bootstrap instead)", async () => {
+    await runInnerDialogTurn({
+      reason: "boot",
+      taskId: "habits/daily-standup",
+      now: () => new Date("2026-03-06T12:00:00.000Z"),
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    const content = String(input.messages[0].content)
+    expect(content).toContain("waking up.")
+    expect(content).not.toContain("a task needs my attention.")
+  })
+
+  // ── Session loader tests ──────────────────────────────────────────
+
   it("session loader returns system prompt on fresh session", async () => {
-    // Use non-call-through mock to prevent session mutation before inspection
     mockHandleInboundTurn.mockResolvedValueOnce({
       resolvedContext: { friend: { id: "self" }, channel: innerCapabilities },
       gateResult: { allowed: true },
@@ -493,7 +629,6 @@ describe("inner dialog runtime", () => {
     ]
     mockLoadSession.mockReturnValue({ messages: existingMessages })
 
-    // Use non-call-through mock to prevent session mutation before inspection
     mockHandleInboundTurn.mockResolvedValueOnce({
       resolvedContext: { friend: { id: "self" }, channel: innerCapabilities },
       gateResult: { allowed: true },
@@ -526,7 +661,7 @@ describe("inner dialog runtime", () => {
     expect(mockBuildSystem.mock.calls[0][0]).toBe("inner")
   })
 
-  it("uses same bootstrap message when aspirations file is missing", async () => {
+  it("uses bootstrap with empty aspirations when aspirations file is missing", async () => {
     fs.unlinkSync(path.join(agentRoot, "psyche", "ASPIRATIONS.md"))
 
     await runInnerDialogTurn({
@@ -536,7 +671,9 @@ describe("inner dialog runtime", () => {
     })
 
     const input = mockHandleInboundTurn.mock.calls[0][0]
-    expect(String(input.messages[0].content)).toContain("waking up. settling in.")
+    const content = String(input.messages[0].content)
+    expect(content).toContain("waking up.")
+    expect(content).not.toContain("## what matters to me")
   })
 
   it("injects non-canonical cleanup nudge on boot when bundle scan finds legacy files", async () => {
@@ -570,81 +707,6 @@ describe("inner dialog runtime", () => {
     const content = String(input.messages[0].content)
     expect(content).toContain("stirring")
     expect(content).toContain("last i remember: ready for next cycle")
-  })
-
-  // ── Inbox drain (adapter concern, not pipeline) ──────────────────
-
-  it("drains inbox messages into user message when drainInbox returns messages", async () => {
-    const drainInbox = vi.fn(() => [
-      { from: "ouroboros", content: "review PR #42" },
-      { from: "ari", content: "check task board" },
-    ])
-
-    await runInnerDialogTurn({
-      reason: "boot",
-      instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
-      now: () => new Date("2026-03-07T12:00:00.000Z"),
-      drainInbox,
-    })
-
-    expect(drainInbox).toHaveBeenCalledTimes(1)
-    const input = mockHandleInboundTurn.mock.calls[0][0]
-    const content = String(input.messages[0].content)
-    expect(content).toContain("## incoming messages")
-    expect(content).toContain("**ouroboros**: review PR #42")
-    expect(content).toContain("**ari**: check task board")
-  })
-
-  it("does not inject incoming messages section when drainInbox returns empty array", async () => {
-    const drainInbox = vi.fn(() => [])
-
-    await runInnerDialogTurn({
-      reason: "boot",
-      instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
-      now: () => new Date("2026-03-07T12:01:00.000Z"),
-      drainInbox,
-    })
-
-    expect(drainInbox).toHaveBeenCalledTimes(1)
-    const input = mockHandleInboundTurn.mock.calls[0][0]
-    expect(String(input.messages[0].content)).not.toContain("## incoming messages")
-  })
-
-  it("works without drainInbox option (default no-op)", async () => {
-    await runInnerDialogTurn({
-      reason: "boot",
-      instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
-      now: () => new Date("2026-03-07T12:02:00.000Z"),
-    })
-
-    const input = mockHandleInboundTurn.mock.calls[0][0]
-    expect(String(input.messages[0].content)).not.toContain("## incoming messages")
-  })
-
-  it("drains inbox on resumed sessions (heartbeat) and appends to instinct message", async () => {
-    mockLoadSession.mockReturnValue({
-      messages: [
-        { role: "system", content: "system prompt" },
-        { role: "assistant", content: "checkpoint: working on task board" },
-      ],
-    })
-
-    const drainInbox = vi.fn(() => [
-      { from: "ouro-poke", content: "poke habit-heartbeat" },
-    ])
-
-    await runInnerDialogTurn({
-      reason: "heartbeat",
-      instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
-      now: () => new Date("2026-03-07T12:03:00.000Z"),
-      drainInbox,
-    })
-
-    const input = mockHandleInboundTurn.mock.calls[0][0]
-    const content = String(input.messages[0].content)
-    expect(content).toContain("Instinct: check in.")
-    expect(content).toContain("## incoming messages")
-    expect(content).toContain("**ouro-poke**: poke habit-heartbeat")
   })
 
   // ── Return value propagation ──────────────────────────────────────
@@ -739,18 +801,195 @@ describe("inner dialog runtime", () => {
     expect(input.signal).toBe(controller.signal)
   })
 
-  it("emits nerves event after pipeline completes", async () => {
-    const { emitNervesEvent } = await import("../../nerves/runtime")
+  // ── Nerves event enrichment ──────────────────────────────────────
+
+  it("emits nerves event with assistant preview and token counts", async () => {
+    mockHandleInboundTurn.mockResolvedValueOnce({
+      resolvedContext: { friend: { id: "self" }, channel: innerCapabilities },
+      gateResult: { allowed: true },
+      usage: { input_tokens: 500, output_tokens: 100, reasoning_tokens: 20, total_tokens: 620 },
+      sessionPath: sessionFile,
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "user", content: "waking up" },
+        { role: "assistant", content: "checked the billing fix. tests pass." },
+      ],
+    })
 
     await runInnerDialogTurn({
       reason: "boot",
-      instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
       now: () => new Date("2026-03-06T12:00:00.000Z"),
     })
 
-    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
-      component: "senses",
-      event: "senses.inner_dialog_turn",
-    }))
+    const nervesCall = mockEmitNervesEvent.mock.calls.find(
+      (call: any[]) => call[0].event === "senses.inner_dialog_turn",
+    )
+    expect(nervesCall).toBeDefined()
+    const meta = nervesCall![0].meta
+    expect(meta.assistantPreview).toBe("checked the billing fix. tests pass.")
+    expect(meta.promptTokens).toBe(500)
+    expect(meta.completionTokens).toBe(100)
+    expect(meta.totalTokens).toBe(620)
+  })
+
+  it("emits nerves event with taskId when task-triggered", async () => {
+    mockLoadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "assistant", content: "ready" },
+      ],
+    })
+
+    await runInnerDialogTurn({
+      reason: "instinct",
+      taskId: "habits/daily-standup",
+      now: () => new Date("2026-03-06T09:00:00.000Z"),
+    })
+
+    const nervesCall = mockEmitNervesEvent.mock.calls.find(
+      (call: any[]) => call[0].event === "senses.inner_dialog_turn",
+    )
+    expect(nervesCall).toBeDefined()
+    expect(nervesCall![0].meta.taskId).toBe("habits/daily-standup")
+  })
+
+  it("emits nerves event with tool call names from assistant messages", async () => {
+    mockHandleInboundTurn.mockResolvedValueOnce({
+      resolvedContext: { friend: { id: "self" }, channel: innerCapabilities },
+      gateResult: { allowed: true },
+      usage: undefined,
+      sessionPath: sessionFile,
+      messages: [
+        { role: "system", content: "system prompt" },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            { id: "tc_1", type: "function", function: { name: "query_session", arguments: "{}" } },
+            { id: "tc_2", type: "function", function: { name: "send_message", arguments: "{}" } },
+          ],
+        },
+        { role: "assistant", content: "done" },
+      ],
+    })
+
+    await runInnerDialogTurn({
+      reason: "boot",
+      now: () => new Date("2026-03-06T12:00:00.000Z"),
+    })
+
+    const nervesCall = mockEmitNervesEvent.mock.calls.find(
+      (call: any[]) => call[0].event === "senses.inner_dialog_turn",
+    )
+    expect(nervesCall![0].meta.toolCalls).toEqual(["query_session", "send_message"])
+  })
+
+  it("omits optional nerves meta fields when not available", async () => {
+    mockHandleInboundTurn.mockResolvedValueOnce({
+      resolvedContext: { friend: { id: "self" }, channel: innerCapabilities },
+      gateResult: { allowed: true },
+      usage: undefined,
+      sessionPath: sessionFile,
+      messages: [{ role: "system", content: "system prompt" }],
+    })
+
+    await runInnerDialogTurn({
+      reason: "boot",
+      now: () => new Date("2026-03-06T12:00:00.000Z"),
+    })
+
+    const nervesCall = mockEmitNervesEvent.mock.calls.find(
+      (call: any[]) => call[0].event === "senses.inner_dialog_turn",
+    )
+    expect(nervesCall).toBeDefined()
+    const meta = nervesCall![0].meta
+    expect(meta.assistantPreview).toBeUndefined()
+    expect(meta.toolCalls).toBeUndefined()
+    expect(meta.promptTokens).toBeUndefined()
+    expect(meta.taskId).toBeUndefined()
+  })
+
+  it("truncates long assistant preview in nerves event", async () => {
+    const longResponse = "A".repeat(200)
+    mockHandleInboundTurn.mockResolvedValueOnce({
+      resolvedContext: { friend: { id: "self" }, channel: innerCapabilities },
+      gateResult: { allowed: true },
+      usage: undefined,
+      sessionPath: sessionFile,
+      messages: [
+        { role: "assistant", content: longResponse },
+      ],
+    })
+
+    await runInnerDialogTurn({
+      reason: "boot",
+      now: () => new Date("2026-03-06T12:00:00.000Z"),
+    })
+
+    const nervesCall = mockEmitNervesEvent.mock.calls.find(
+      (call: any[]) => call[0].event === "senses.inner_dialog_turn",
+    )
+    const preview = nervesCall![0].meta.assistantPreview
+    expect(preview.length).toBe(120)
+    expect(preview.endsWith("...")).toBe(true)
+  })
+
+  it("skips tool calls without function name in nerves event", async () => {
+    mockHandleInboundTurn.mockResolvedValueOnce({
+      resolvedContext: { friend: { id: "self" }, channel: innerCapabilities },
+      gateResult: { allowed: true },
+      usage: undefined,
+      sessionPath: sessionFile,
+      messages: [
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            { id: "tc_1", type: "custom", custom: { name: "custom_tool" } },
+            { id: "tc_2", type: "function", function: { name: "", arguments: "{}" } },
+            { id: "tc_3", type: "function", function: { name: "valid_tool", arguments: "{}" } },
+          ],
+        },
+      ],
+    })
+
+    await runInnerDialogTurn({
+      reason: "boot",
+      now: () => new Date("2026-03-06T12:00:00.000Z"),
+    })
+
+    const nervesCall = mockEmitNervesEvent.mock.calls.find(
+      (call: any[]) => call[0].event === "senses.inner_dialog_turn",
+    )
+    expect(nervesCall![0].meta.toolCalls).toEqual(["valid_tool"])
+  })
+
+  it("deduplicates tool call names in nerves event", async () => {
+    mockHandleInboundTurn.mockResolvedValueOnce({
+      resolvedContext: { friend: { id: "self" }, channel: innerCapabilities },
+      gateResult: { allowed: true },
+      usage: undefined,
+      sessionPath: sessionFile,
+      messages: [
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            { id: "tc_1", type: "function", function: { name: "memory_search", arguments: "{}" } },
+            { id: "tc_2", type: "function", function: { name: "memory_search", arguments: "{}" } },
+          ],
+        },
+      ],
+    })
+
+    await runInnerDialogTurn({
+      reason: "boot",
+      now: () => new Date("2026-03-06T12:00:00.000Z"),
+    })
+
+    const nervesCall = mockEmitNervesEvent.mock.calls.find(
+      (call: any[]) => call[0].event === "senses.inner_dialog_turn",
+    )
+    expect(nervesCall![0].meta.toolCalls).toEqual(["memory_search"])
   })
 })

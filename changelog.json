@@ -2,6 +2,19 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.46",
+      "changes": [
+        "Inner dialog now knows which task triggered it: taskId flows from daemon poke through the worker into the turn, and the agent gets the full task file content instead of a generic heartbeat prompt.",
+        "Inner dialog boot message includes aspirations and state summary instead of a vacuous placeholder, so the agent wakes up with context about what matters and what's happening.",
+        "Vestigial `drainInbox` removed from inner dialog — pipeline already handles pending drain correctly.",
+        "Inner dialog nerves events now include assistant response preview, tool call names, token usage, and taskId for meaningful observability.",
+        "`ouro thoughts` command reads and formats inner dialog session turns with `--last`, `--json`, `--follow`, and `--agent` flags — humans can now see what the agent has been thinking.",
+        "`readTaskFile` searches collection subdirectories (one-shots, ongoing, habits) since the scheduler sends bare task stems without collection prefixes.",
+        "`ouro reminder create` accepts `--requester` to track who requested a reminder for notification round-trip.",
+        "Response extraction handles `tool_choice=required` models by falling back to `final_answer` tool call arguments when assistant message content is empty."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.45",
       "changes": [
         "`ouro up` now persists a boot-time launch agent with `RunAtLoad`, so the daemon comes back reliably after reboot instead of only starting for the current session.",

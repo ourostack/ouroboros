@@ -27,11 +27,40 @@ describe("inner-dialog-worker", () => {
     await worker.handleMessage(null)
 
     expect(runTurn).toHaveBeenCalledTimes(5)
-    expect(runTurn).toHaveBeenNthCalledWith(1, { reason: "boot" })
-    expect(runTurn).toHaveBeenNthCalledWith(2, { reason: "heartbeat" })
-    expect(runTurn).toHaveBeenNthCalledWith(3, { reason: "instinct" })
-    expect(runTurn).toHaveBeenNthCalledWith(4, { reason: "instinct" })
-    expect(runTurn).toHaveBeenNthCalledWith(5, { reason: "instinct" })
+    expect(runTurn).toHaveBeenNthCalledWith(1, { reason: "boot", taskId: undefined })
+    expect(runTurn).toHaveBeenNthCalledWith(2, { reason: "heartbeat", taskId: undefined })
+    expect(runTurn).toHaveBeenNthCalledWith(3, { reason: "instinct", taskId: undefined })
+    expect(runTurn).toHaveBeenNthCalledWith(4, { reason: "instinct", taskId: undefined })
+    expect(runTurn).toHaveBeenNthCalledWith(5, { reason: "instinct", taskId: undefined })
+  })
+
+  it("forwards taskId from poke messages to runTurn", async () => {
+    const runTurn = vi.fn().mockResolvedValue(undefined)
+    const worker = createInnerDialogWorker(runTurn)
+
+    await worker.handleMessage({ type: "poke", taskId: "habits/daily-standup" })
+
+    expect(runTurn).toHaveBeenCalledWith({ reason: "instinct", taskId: "habits/daily-standup" })
+  })
+
+  it("passes undefined taskId when poke has no taskId", async () => {
+    const runTurn = vi.fn().mockResolvedValue(undefined)
+    const worker = createInnerDialogWorker(runTurn)
+
+    await worker.handleMessage({ type: "poke" })
+
+    expect(runTurn).toHaveBeenCalledWith({ reason: "instinct", taskId: undefined })
+  })
+
+  it("does not forward taskId from chat or message types", async () => {
+    const runTurn = vi.fn().mockResolvedValue(undefined)
+    const worker = createInnerDialogWorker(runTurn)
+
+    await worker.handleMessage({ type: "chat", taskId: "should-be-ignored" })
+    await worker.handleMessage({ type: "message", taskId: "should-be-ignored" })
+
+    expect(runTurn).toHaveBeenNthCalledWith(1, { reason: "instinct", taskId: undefined })
+    expect(runTurn).toHaveBeenNthCalledWith(2, { reason: "instinct", taskId: undefined })
   })
 
   it("emits an error event when a turn fails", async () => {
@@ -102,15 +131,15 @@ describe("inner-dialog-worker", () => {
 
     try {
       await startInnerDialogWorker()
-      expect(mockRunInnerDialogTurn).toHaveBeenCalledWith({ reason: "boot" })
+      expect(mockRunInnerDialogTurn).toHaveBeenCalledWith({ reason: "boot", taskId: undefined })
 
       listeners.message?.({ type: "heartbeat" })
       await Promise.resolve()
-      expect(mockRunInnerDialogTurn).toHaveBeenCalledWith({ reason: "heartbeat" })
+      expect(mockRunInnerDialogTurn).toHaveBeenCalledWith({ reason: "heartbeat", taskId: undefined })
 
-      listeners.message?.({ type: "poke" })
+      listeners.message?.({ type: "poke", taskId: "habits/check-in" })
       await Promise.resolve()
-      expect(mockRunInnerDialogTurn).toHaveBeenCalledWith({ reason: "instinct" })
+      expect(mockRunInnerDialogTurn).toHaveBeenCalledWith({ reason: "instinct", taskId: "habits/check-in" })
 
       expect(() => listeners.disconnect?.()).toThrow("process.exit called")
     } finally {

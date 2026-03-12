@@ -33,6 +33,7 @@ import { applyPendingUpdates, registerUpdateHook } from "./update-hooks"
 import { bundleMetaHook } from "./hooks/bundle-meta"
 import { getPackageVersion } from "../../mind/bundle-manifest"
 import { getTaskModule } from "../../repertoire/tasks"
+import { parseInnerDialogSession, formatThoughtTurns, getInnerDialogSessionPath, followThoughts } from "./thoughts"
 import type { TaskModule } from "../../repertoire/tasks/types"
 import { syncGlobalOuroBotWrapper as defaultSyncGlobalOuroBotWrapper } from "./ouro-bot-global-installer"
 import { writeLaunchAgentPlist, type LaunchdWriteDeps } from "./launchd"
@@ -54,7 +55,8 @@ export type OuroCliCommand =
   | { kind: "task.sessions"; agent?: string }
   | { kind: "whoami"; agent?: string }
   | { kind: "session.list"; agent?: string }
-  | { kind: "reminder.create"; title: string; body: string; scheduledAt?: string; cadence?: string; category?: string; agent?: string }
+  | { kind: "thoughts"; agent?: string; last?: number; json?: boolean; follow?: boolean }
+  | { kind: "reminder.create"; title: string; body: string; scheduledAt?: string; cadence?: string; category?: string; requester?: string; agent?: string }
   | { kind: "friend.list"; agent?: string }
   | { kind: "friend.show"; friendId: string; agent?: string }
   | { kind: "friend.create"; name: string; trustLevel?: string; agent?: string }
@@ -331,6 +333,7 @@ function usage(): string {
     "  ouro friend list [--agent <name>]",
     "  ouro friend show <id> [--agent <name>]",
     "  ouro friend create --name <name> [--trust <level>] [--agent <name>]",
+    "  ouro thoughts [--last <n>] [--json] [--follow] [--agent <name>]",
     "  ouro friend link <agent> --friend <id> --provider <p> --external-id <eid>",
     "  ouro friend unlink <agent> --friend <id> --provider <p> --external-id <eid>",
     "  ouro whoami [--agent <name>]",
@@ -610,6 +613,7 @@ function parseReminderCommand(args: string[]): OuroCliCommand {
     let scheduledAt: string | undefined
     let cadence: string | undefined
     let category: string | undefined
+    let requester: string | undefined
 
     for (let i = 1; i < rest.length; i++) {
       if (rest[i] === "--body" && rest[i + 1]) {
@@ -624,6 +628,9 @@ function parseReminderCommand(args: string[]): OuroCliCommand {
       } else if (rest[i] === "--category" && rest[i + 1]) {
         category = rest[i + 1]
         i += 1
+      } else if (rest[i] === "--requester" && rest[i + 1]) {
+        requester = rest[i + 1]
+        i += 1
       }
     }
 
@@ -637,6 +644,7 @@ function parseReminderCommand(args: string[]): OuroCliCommand {
       ...(scheduledAt ? { scheduledAt } : {}),
       ...(cadence ? { cadence } : {}),
       ...(category ? { category } : {}),
+      ...(requester ? { requester } : {}),
       ...(agent ? { agent } : {}),
     }
   }
@@ -652,6 +660,22 @@ function parseSessionCommand(args: string[]): OuroCliCommand {
   if (sub === "list") return { kind: "session.list", ...(agent ? { agent } : {}) }
 
   throw new Error(`Usage\n${usage()}`)
+}
+
+function parseThoughtsCommand(args: string[]): OuroCliCommand {
+  const { agent, rest: cleaned } = extractAgentFlag(args)
+  let last: number | undefined
+  let json = false
+  let follow = false
+  for (let i = 0; i < cleaned.length; i++) {
+    if (cleaned[i] === "--last" && i + 1 < cleaned.length) {
+      last = Number.parseInt(cleaned[i + 1], 10)
+      i++
+    }
+    if (cleaned[i] === "--json") json = true
+    if (cleaned[i] === "--follow" || cleaned[i] === "-f") follow = true
+  }
+  return { kind: "thoughts", ...(agent ? { agent } : {}), ...(last ? { last } : {}), ...(json ? { json } : {}), ...(follow ? { follow } : {}) }
 }
 
 function parseFriendCommand(args: string[]): OuroCliCommand {
@@ -711,6 +735,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
     return { kind: "whoami", ...(agent ? { agent } : {}) }
   }
   if (head === "session") return parseSessionCommand(args.slice(1))
+  if (head === "thoughts") return parseThoughtsCommand(args.slice(1))
   if (head === "chat") {
     if (!second) throw new Error(`Usage\n${usage()}`)
     return { kind: "chat.connect", agent: second }
@@ -1178,7 +1203,8 @@ export function createDefaultOuroCliDeps(socketPath = "/tmp/ouroboros-daemon.soc
   }
 }
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "hatch.start" } | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand>): DaemonCommand {
+type ThoughtsCliCommand = Extract<OuroCliCommand, { kind: "thoughts" }>
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "hatch.start" } | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand>): DaemonCommand {
   return command
 }
 
@@ -1480,6 +1506,7 @@ function executeReminderCommand(command: ReminderCliCommand, taskMod: TaskModule
       body: command.body,
       scheduledAt: command.scheduledAt,
       cadence: command.cadence,
+      requester: command.requester,
     })
     return `created: ${created}`
   } catch (error) {
@@ -1688,6 +1715,48 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       return message
     }
     /* v8 ignore stop */
+  }
+
+  // ── thoughts (local, no daemon socket needed) ──
+  if (command.kind === "thoughts") {
+    try {
+      const agentName = command.agent ?? getAgentName()
+      const agentRoot = path.join(getAgentBundlesRoot(), `${agentName}.ouro`)
+      const sessionFilePath = getInnerDialogSessionPath(agentRoot)
+      if (command.json) {
+        try {
+          const raw = fs.readFileSync(sessionFilePath, "utf-8")
+          deps.writeStdout(raw)
+          return raw
+        } catch {
+          const message = "no inner dialog session found"
+          deps.writeStdout(message)
+          return message
+        }
+      }
+      const turns = parseInnerDialogSession(sessionFilePath)
+      const message = formatThoughtTurns(turns, command.last ?? 10)
+      deps.writeStdout(message)
+      if (command.follow) {
+        deps.writeStdout("\n\n--- following (ctrl+c to stop) ---\n")
+        /* v8 ignore start -- callback tested via followThoughts unit tests @preserve */
+        const stop = followThoughts(sessionFilePath, (formatted) => {
+          deps.writeStdout("\n" + formatted)
+        })
+        /* v8 ignore stop */
+        // Block until process exit; cleanup watcher on SIGINT/SIGTERM
+        return new Promise<string>((resolve) => {
+          const cleanup = () => { stop(); resolve(message) }
+          process.once("SIGINT", cleanup)
+          process.once("SIGTERM", cleanup)
+        })
+      }
+      return message
+    } catch {
+      const message = "error: no agent context — use --agent <name> to specify"
+      deps.writeStdout(message)
+      return message
+    }
   }
 
   // ── session list (local, no daemon socket needed) ──
