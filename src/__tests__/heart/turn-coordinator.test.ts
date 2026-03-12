@@ -103,6 +103,20 @@ describe("turn coordinator", () => {
     expect(coordinator.isTurnActive("teams:conv-active")).toBe(false)
   })
 
+  it("tryBeginTurn blocks re-entry until endTurn releases the key", async () => {
+    const { createTurnCoordinator } = await import("../../heart/turn-coordinator")
+    const coordinator = createTurnCoordinator()
+
+    expect(coordinator.tryBeginTurn("teams:conv-manual")).toBe(true)
+    expect(coordinator.tryBeginTurn("teams:conv-manual")).toBe(false)
+    expect(coordinator.isTurnActive("teams:conv-manual")).toBe(true)
+
+    coordinator.endTurn("teams:conv-manual")
+
+    expect(coordinator.isTurnActive("teams:conv-manual")).toBe(false)
+    expect(coordinator.tryBeginTurn("teams:conv-manual")).toBe(true)
+  })
+
   it("continues processing future turns after a turn fails", async () => {
     const { createTurnCoordinator } = await import("../../heart/turn-coordinator")
     const coordinator = createTurnCoordinator()
@@ -118,5 +132,28 @@ describe("turn coordinator", () => {
       ran = true
     })
     expect(ran).toBe(true)
+  })
+
+  it("serializes shared turn locks by scoped key", async () => {
+    const { withSharedTurnLock } = await import("../../heart/turn-coordinator")
+    const order: string[] = []
+    let callCount = 0
+
+    await Promise.all([
+      withSharedTurnLock("bluebubbles", "chat-1", async () => {
+        const id = callCount++
+        order.push(`start-${id}`)
+        await new Promise((r) => setTimeout(r, 10))
+        order.push(`end-${id}`)
+      }),
+      withSharedTurnLock("bluebubbles", "chat-1", async () => {
+        const id = callCount++
+        order.push(`start-${id}`)
+        await new Promise((r) => setTimeout(r, 10))
+        order.push(`end-${id}`)
+      }),
+    ])
+
+    expect(order).toEqual(["start-0", "end-0", "start-1", "end-1"])
   })
 })
