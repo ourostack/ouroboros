@@ -182,6 +182,28 @@ describe("thoughts", () => {
       expect(turns[0].response).toBe("")
     })
 
+    it("ignores malformed tool-call function payloads while continuing to parse the turn", () => {
+      const sessionPath = tmpSessionFile([
+        { role: "system", content: "system prompt" },
+        { role: "user", content: "waking up.\n\nwhat needs my attention?" },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            { id: "tc_1", type: "function", function: "not-an-object" },
+            { id: "tc_2", type: "function", function: { name: 42, arguments: "{\"answer\":\"hidden\"}" } },
+          ],
+        },
+        { role: "assistant", content: "still here." },
+      ])
+
+      const turns = parseInnerDialogSession(sessionPath)
+
+      expect(turns).toHaveLength(1)
+      expect(turns[0].tools).toEqual([])
+      expect(turns[0].response).toBe("still here.")
+    })
+
     it("returns empty array for nonexistent file", () => {
       expect(parseInnerDialogSession("/tmp/nonexistent-dialog.json")).toEqual([])
     })
