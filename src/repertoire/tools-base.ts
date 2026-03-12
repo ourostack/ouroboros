@@ -9,6 +9,8 @@ import type { Integration, ResolvedContext, FriendRecord } from "../mind/friends
 import type { FriendStore } from "../mind/friends/store";
 import { emitNervesEvent } from "../nerves/runtime";
 import { getAgentRoot, getAgentName } from "../heart/identity";
+import { requestInnerWake } from "../heart/daemon/socket-client";
+import { extractThoughtResponseFromMessages, formatInnerDialogStatus, formatSurfacedValue, getInnerDialogSessionPath, readInnerDialogStatus } from "../heart/daemon/thoughts";
 import { codingToolDefinitions } from "./coding/tools";
 import { readMemoryFacts, saveMemoryFact, searchMemoryFacts } from "../mind/memory";
 import { getPendingDir, getInnerDialogPendingDir } from "../mind/pending";
@@ -617,6 +619,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
             channel: { type: "string", description: "the channel: cli, teams, or inner" },
             key: { type: "string", description: "session key (defaults to 'session')" },
             messageCount: { type: "string", description: "how many recent messages to return (default 20)" },
+            mode: { type: "string", enum: ["transcript", "status"], description: "transcript (default) or lightweight status for self/inner checks" },
           },
           required: ["friendId", "channel"],
         },
@@ -628,6 +631,17 @@ export const baseToolDefinitions: ToolDefinition[] = [
         const channel = args.channel
         const key = args.key || "session"
         const count = parseInt(args.messageCount || "20", 10)
+        const mode = args.mode || "transcript"
+
+        if (mode === "status") {
+          if (friendId !== "self" || channel !== "inner") {
+            return "status mode is only available for self/inner dialog."
+          }
+
+          const sessionPath = getInnerDialogSessionPath(getAgentRoot())
+          const pendingDir = getInnerDialogPendingDir(getAgentName())
+          return formatInnerDialogStatus(readInnerDialogStatus(sessionPath, pendingDir))
+        }
 
         const sessFile = resolveSessionPath(friendId, channel, key)
         const raw = fs.readFileSync(sessFile, "utf-8")
@@ -673,7 +687,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
         },
       },
     },
-    handler: async (args) => {
+    handler: async (args, ctx) => {
       const friendId = args.friendId
       const channel = args.channel
       const key = args.key || "session"
@@ -700,8 +714,48 @@ export const baseToolDefinitions: ToolDefinition[] = [
         timestamp: now,
       }
       fs.writeFileSync(filePath, JSON.stringify(envelope, null, 2))
+
+      if (isSelf) {
+        let wakeResponse: { ok: boolean } | null = null
+        try {
+          wakeResponse = await requestInnerWake(agentName)
+        } catch {
+          wakeResponse = null
+        }
+
+        if (!wakeResponse?.ok) {
+          const { runInnerDialogTurn } = await import("../senses/inner-dialog")
+          if (ctx?.context?.channel.channel === "inner") {
+            queueMicrotask(() => {
+              void runInnerDialogTurn({ reason: "instinct" })
+            })
+            return formatInnerDialogStatus({
+              queue: "queued to inner/dialog",
+              wake: "inline scheduled",
+              processing: "pending",
+              surfaced: "nothing yet",
+            })
+          } else {
+            const turnResult = await runInnerDialogTurn({ reason: "instinct" })
+            return formatInnerDialogStatus({
+              queue: "queued to inner/dialog",
+              wake: "inline fallback",
+              processing: "processed",
+              surfaced: formatSurfacedValue(extractThoughtResponseFromMessages(turnResult?.messages ?? [])),
+            })
+          }
+        }
+
+        return formatInnerDialogStatus({
+          queue: "queued to inner/dialog",
+          wake: "daemon requested",
+          processing: "pending",
+          surfaced: "nothing yet",
+        })
+      }
+
       const preview = content.length > 80 ? content.slice(0, 80) + "…" : content
-      const target = isSelf ? "inner/dialog" : `${channel}/${key}`
+      const target = `${channel}/${key}`
       return `message queued for delivery to ${friendId} on ${target}. preview: "${preview}". it will be delivered when their session is next active.`
     },
   },

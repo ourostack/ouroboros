@@ -735,6 +735,104 @@ describe("inner dialog runtime", () => {
     expect(result.messages).toBeDefined()
   })
 
+  it("marks runtime state as running during the turn and idle afterward", async () => {
+    const runtimePath = path.join(path.dirname(sessionFile), "runtime.json")
+    let runtimeDuringTurn: Record<string, unknown> | null = null
+
+    mockHandleInboundTurn.mockImplementationOnce(async (input: any) => {
+      runtimeDuringTurn = JSON.parse(fs.readFileSync(runtimePath, "utf8")) as Record<string, unknown>
+      return {
+        resolvedContext: await input.friendResolver.resolve(),
+        gateResult: { allowed: true },
+        usage: undefined,
+        sessionPath: sessionFile,
+        messages: [
+          { role: "system", content: "system prompt" },
+          { role: "user", content: "waking up" },
+          { role: "assistant", content: "ready" },
+        ],
+      }
+    })
+
+    await runInnerDialogTurn({
+      reason: "boot",
+      instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
+      now: () => new Date("2026-03-06T12:00:00.000Z"),
+    })
+
+    expect(runtimeDuringTurn).toEqual(expect.objectContaining({
+      status: "running",
+      reason: "boot",
+      startedAt: "2026-03-06T12:00:00.000Z",
+    }))
+    expect(JSON.parse(fs.readFileSync(runtimePath, "utf8"))).toEqual(expect.objectContaining({
+      status: "idle",
+      lastCompletedAt: "2026-03-06T12:00:00.000Z",
+    }))
+  })
+
+  it("restores idle runtime state even when the turn throws", async () => {
+    const runtimePath = path.join(path.dirname(sessionFile), "runtime.json")
+    mockHandleInboundTurn.mockRejectedValueOnce(new Error("turn exploded"))
+
+    await expect(runInnerDialogTurn({
+      reason: "instinct",
+      instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
+      now: () => new Date("2026-03-06T12:00:00.000Z"),
+    })).rejects.toThrow("turn exploded")
+
+    expect(JSON.parse(fs.readFileSync(runtimePath, "utf8"))).toEqual(expect.objectContaining({
+      status: "idle",
+      lastCompletedAt: "2026-03-06T12:00:00.000Z",
+    }))
+  })
+
+  it("emits a warning when runtime state writes fail", async () => {
+    const blockedParent = path.join(path.dirname(sessionFile), "runtime-parent-blocker")
+    fs.writeFileSync(blockedParent, "not a directory", "utf8")
+
+    mockSessionPath.mockReturnValue(path.join(blockedParent, "inner-dialog-session.json"))
+
+    await runInnerDialogTurn({
+      reason: "boot",
+      instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
+      now: () => new Date("2026-03-06T12:00:00.000Z"),
+    })
+
+    const warnings = mockEmitNervesEvent.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event?.event === "senses.inner_dialog_runtime_state_error")
+
+    expect(warnings).toEqual(expect.arrayContaining([expect.objectContaining({
+      level: "warn",
+      component: "senses",
+      event: "senses.inner_dialog_runtime_state_error",
+      message: "failed to write inner dialog runtime state",
+      meta: expect.objectContaining({
+        path: path.join(blockedParent, "runtime.json"),
+        error: expect.any(String),
+      }),
+    })]))
+    expect(warnings).toEqual(expect.arrayContaining([expect.objectContaining({
+      level: "warn",
+      component: "senses",
+      event: "senses.inner_dialog_runtime_state_error",
+      meta: expect.objectContaining({
+        status: "running",
+        reason: "boot",
+      }),
+    })]))
+    expect(warnings).toEqual(expect.arrayContaining([expect.objectContaining({
+      level: "warn",
+      component: "senses",
+      event: "senses.inner_dialog_runtime_state_error",
+      meta: expect.objectContaining({
+        status: "idle",
+        reason: null,
+      }),
+    })]))
+  })
+
   it("returns empty messages and fallback sessionPath when pipeline returns undefined", async () => {
     mockHandleInboundTurn.mockResolvedValueOnce({
       resolvedContext: { friend: { id: "self" }, channel: innerCapabilities },

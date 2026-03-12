@@ -1,7 +1,6 @@
 import { spawn } from "child_process"
 import { randomUUID } from "crypto"
 import * as fs from "fs"
-import * as net from "net"
 import * as os from "os"
 import * as path from "path"
 import { getAgentBundlesRoot, getAgentName, getRepoRoot, type AgentProvider } from "../identity"
@@ -37,6 +36,7 @@ import { parseInnerDialogSession, formatThoughtTurns, getInnerDialogSessionPath,
 import type { TaskModule } from "../../repertoire/tasks/types"
 import { syncGlobalOuroBotWrapper as defaultSyncGlobalOuroBotWrapper } from "./ouro-bot-global-installer"
 import { writeLaunchAgentPlist, type LaunchdWriteDeps } from "./launchd"
+import { DEFAULT_DAEMON_SOCKET_PATH, sendDaemonCommand, checkDaemonSocketAlive } from "./socket-client"
 
 export type OuroCliCommand =
   | { kind: "daemon.up" }
@@ -747,39 +747,6 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   throw new Error(`Unknown command '${args.join(" ")}'.\n${usage()}`)
 }
 
-function defaultSendCommand(socketPath: string, command: DaemonCommand): Promise<DaemonResponse> {
-  return new Promise((resolve, reject) => {
-    const client = net.createConnection(socketPath)
-    let raw = ""
-
-    client.on("connect", () => {
-      client.write(JSON.stringify(command))
-      client.end()
-    })
-    client.on("data", (chunk) => {
-      raw += chunk.toString("utf-8")
-    })
-    client.on("error", reject)
-    client.on("end", () => {
-      const trimmed = raw.trim()
-      if (trimmed.length === 0 && command.kind === "daemon.stop") {
-        resolve({ ok: true, message: "daemon stopped" })
-        return
-      }
-      if (trimmed.length === 0) {
-        reject(new Error("Daemon returned empty response."))
-        return
-      }
-      try {
-        const parsed = JSON.parse(trimmed) as DaemonResponse
-        resolve(parsed)
-      } catch (error) {
-        reject(error)
-      }
-    })
-  })
-}
-
 function defaultStartDaemonProcess(socketPath: string): Promise<{ pid: number | null }> {
   const entry = path.join(getRepoRoot(), "dist", "heart", "daemon", "daemon-entry.js")
   const child = spawn("node", [entry, "--socket", socketPath], {
@@ -793,48 +760,6 @@ function defaultStartDaemonProcess(socketPath: string): Promise<{ pid: number | 
 function defaultWriteStdout(text: string): void {
   // eslint-disable-next-line no-console -- terminal UX: CLI command output
   console.log(text)
-}
-
-function defaultCheckSocketAlive(socketPath: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const client = net.createConnection(socketPath)
-    let raw = ""
-    let done = false
-
-    const finalize = (alive: boolean) => {
-      if (done) return
-      done = true
-      resolve(alive)
-    }
-
-    if ("setTimeout" in client && typeof client.setTimeout === "function") {
-      client.setTimeout(800, () => {
-        client.destroy()
-        finalize(false)
-      })
-    }
-
-    client.on("connect", () => {
-      client.write(JSON.stringify({ kind: "daemon.status" } satisfies DaemonCommand))
-      client.end()
-    })
-    client.on("data", (chunk) => {
-      raw += chunk.toString("utf-8")
-    })
-    client.on("error", () => finalize(false))
-    client.on("end", () => {
-      if (raw.trim().length === 0) {
-        finalize(false)
-        return
-      }
-      try {
-        JSON.parse(raw)
-        finalize(true)
-      } catch {
-        finalize(false)
-      }
-    })
-  })
 }
 
 function defaultCleanupStaleSocket(socketPath: string): void {
@@ -1177,13 +1102,13 @@ async function defaultRunAdoptionSpecialist(): Promise<string | null> {
 }
 /* v8 ignore stop */
 
-export function createDefaultOuroCliDeps(socketPath = "/tmp/ouroboros-daemon.sock"): OuroCliDeps {
+export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH): OuroCliDeps {
   return {
     socketPath,
-    sendCommand: defaultSendCommand,
+    sendCommand: sendDaemonCommand,
     startDaemonProcess: defaultStartDaemonProcess,
     writeStdout: defaultWriteStdout,
-    checkSocketAlive: defaultCheckSocketAlive,
+    checkSocketAlive: checkDaemonSocketAlive,
     cleanupStaleSocket: defaultCleanupStaleSocket,
     fallbackPendingMessage: defaultFallbackPendingMessage,
     installSubagents: defaultInstallSubagents,

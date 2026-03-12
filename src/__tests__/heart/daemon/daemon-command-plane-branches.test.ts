@@ -236,6 +236,17 @@ describe("daemon command plane branches", () => {
     expect(hatch.message).toContain("Gate 6")
   })
 
+  it("starts the managed agent and wakes inner dialog via direct IPC", async () => {
+    const socketPath = tmpSocketPath("daemon-inner-wake")
+    const { daemon, processManager } = make(socketPath)
+
+    const wake = await daemon.handleCommand({ kind: "inner.wake", agent: "slugger" } as unknown as never)
+
+    expect(wake).toEqual({ ok: true, message: "woke inner dialog for slugger" })
+    expect(processManager.startAgent).toHaveBeenCalledWith("slugger")
+    expect(processManager.sendToAgent).toHaveBeenCalledWith("slugger", { type: "message" })
+  })
+
   it("returns protocol errors for malformed payloads", async () => {
     const socketPath = tmpSocketPath("daemon-bad-raw")
     const { daemon } = make(socketPath)

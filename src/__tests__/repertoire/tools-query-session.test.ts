@@ -46,6 +46,7 @@ import * as fs from "fs"
 beforeEach(() => {
   vi.mocked(fs.existsSync).mockReset()
   vi.mocked(fs.readFileSync).mockReset()
+  vi.mocked(fs.readdirSync).mockReset()
 })
 
 describe("query_session tool", () => {
@@ -296,5 +297,139 @@ describe("query_session tool", () => {
     const result = await tool.handler({ friendId: "friend-1", channel: "cli" })
     expect(result).toContain("[user] hello")
     expect(result).toContain("[assistant] hi there")
+  })
+
+  it("supports a lightweight status mode for self/inner checks", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
+
+    expect(tool.tool.function.parameters).toMatchObject({
+      properties: {
+        mode: { type: "string", enum: ["transcript", "status"] },
+      },
+    })
+
+    vi.mocked(fs.existsSync).mockImplementation((filePath) => (
+      String(filePath) === "/mock/agent-root/state/pending/self/inner/dialog"
+    ))
+    vi.mocked(fs.readdirSync).mockReturnValue(["123-pending.json"] as any)
+    vi.mocked(fs.readFileSync).mockImplementation((filePath) => {
+      if (String(filePath).endsWith("/state/pending/self/inner/dialog/123-pending.json")) {
+        return JSON.stringify({
+          from: "testagent",
+          content: "think about penguins",
+          timestamp: 123,
+        })
+      }
+      throw new Error("ENOENT")
+    })
+
+    const result = await tool.handler({
+      friendId: "self",
+      channel: "inner",
+      mode: "status",
+    })
+
+    expect(result).toBe([
+      "queue: queued to inner/dialog",
+      "wake: awaiting inner session",
+      "processing: pending",
+      "surfaced: nothing yet",
+    ].join("\n"))
+  })
+
+  it("surfaces the latest processed preview in status mode without dumping the full transcript", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
+
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([] as any)
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        version: 1,
+        messages: [
+          { role: "system", content: "sys" },
+          {
+            role: "user",
+            content: "## pending messages\n[pending from testagent]: think about penguins\n\n...time passing. anything stirring?",
+          },
+          { role: "assistant", content: "formal little blokes." },
+        ],
+      }),
+    )
+
+    const result = await tool.handler({
+      friendId: "self",
+      channel: "inner",
+      mode: "status",
+    })
+
+    expect(result).toBe([
+      "queue: clear",
+      "wake: completed",
+      "processing: processed",
+      'surfaced: "formal little blokes."',
+    ].join("\n"))
+  })
+
+  it("reports live processing when runtime state says an inner turn is still running", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
+
+    vi.mocked(fs.existsSync).mockImplementation((filePath) => (
+      String(filePath) === "/mock/agent-root/state/sessions/self/inner/runtime.json"
+    ))
+    vi.mocked(fs.readdirSync).mockReturnValue([] as any)
+    vi.mocked(fs.readFileSync).mockImplementation((filePath) => {
+      if (String(filePath).endsWith("/state/sessions/self/inner/dialog.json")) {
+        return JSON.stringify({
+          version: 1,
+          messages: [
+            { role: "system", content: "sys" },
+            {
+              role: "user",
+              content: "## pending messages\n[pending from testagent]: think about penguins\n\n...time passing. anything stirring?",
+            },
+            { role: "assistant", content: "formal little blokes." },
+          ],
+        })
+      }
+
+      if (String(filePath).endsWith("/state/sessions/self/inner/runtime.json")) {
+        return JSON.stringify({
+          status: "running",
+          reason: "instinct",
+          startedAt: "2026-03-12T00:00:00.000Z",
+        })
+      }
+
+      throw new Error(`ENOENT: ${String(filePath)}`)
+    })
+
+    const result = await tool.handler({
+      friendId: "self",
+      channel: "inner",
+      mode: "status",
+    })
+
+    expect(result).toBe([
+      "queue: clear",
+      "wake: in progress",
+      "processing: started",
+      "surfaced: nothing yet",
+    ].join("\n"))
+  })
+
+  it("rejects status mode for non-self sessions instead of pretending it can inspect them", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
+
+    const result = await tool.handler({
+      friendId: "friend-1",
+      channel: "cli",
+      mode: "status",
+    })
+
+    expect(result).toBe("status mode is only available for self/inner dialog.")
   })
 })

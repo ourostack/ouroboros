@@ -86,6 +86,7 @@ export type DaemonCommand =
   | { kind: "agent.restart"; agent: string }
   | { kind: "cron.list" }
   | { kind: "cron.trigger"; jobId: string }
+  | { kind: "inner.wake"; agent: string }
   | { kind: "chat.connect"; agent: string }
   | { kind: "task.poke"; agent: string; taskId: string }
   | { kind: "message.send"; from: string; to: string; content: string; priority?: string; sessionId?: string; taskRef?: string }
@@ -562,6 +563,13 @@ export class OuroDaemon {
           data: messages,
         }
       }
+      case "inner.wake":
+        await this.processManager.startAgent(command.agent)
+        this.processManager.sendToAgent?.(command.agent, { type: "message" })
+        return {
+          ok: true,
+          message: `woke inner dialog for ${command.agent}`,
+        }
       case "chat.connect":
         await this.processManager.startAgent(command.agent)
         return {

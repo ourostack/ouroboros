@@ -30,6 +30,17 @@ vi.mock("../../repertoire/tasks", () => ({
   }),
 }))
 
+const mockRunInnerDialogTurn = vi.fn()
+const mockRequestInnerWake = vi.fn()
+
+vi.mock("../../senses/inner-dialog", () => ({
+  runInnerDialogTurn: (...args: any[]) => mockRunInnerDialogTurn(...args),
+}))
+
+vi.mock("../../heart/daemon/socket-client", () => ({
+  requestInnerWake: (...args: any[]) => mockRequestInnerWake(...args),
+}))
+
 vi.mock("../../heart/identity", () => ({
   getAgentRoot: vi.fn(() => "/mock/agent-root"),
   getAgentName: vi.fn(() => "testagent"),
@@ -48,6 +59,9 @@ beforeEach(() => {
   vi.mocked(fs.readFileSync).mockReset()
   vi.mocked(fs.writeFileSync).mockReset()
   vi.mocked(fs.mkdirSync).mockReset()
+  mockRunInnerDialogTurn.mockReset()
+  mockRequestInnerWake.mockReset()
+  mockRequestInnerWake.mockResolvedValue(null)
 })
 
 describe("send_message tool", () => {
@@ -274,6 +288,241 @@ describe("send_message tool", () => {
       // Should indicate inner dialog routing, not the original channel
       expect(result).toContain("inner")
       expect(result).toContain("dialog")
+    })
+
+    it("falls back to an immediate inner turn when no daemon wake path is available", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      mockRunInnerDialogTurn.mockResolvedValue({
+        messages: [{ role: "assistant", content: "penguins surfaced." }],
+        sessionPath: "/mock/agent-root/state/sessions/self/inner/dialog.json",
+      })
+
+      const result = await tool.handler({
+        friendId: "self",
+        channel: "cli",
+        content: "think about penguins",
+      })
+
+      expect(mockRunInnerDialogTurn).toHaveBeenCalledTimes(1)
+      expect(result).toContain("queue: queued to inner/dialog")
+      expect(result).toContain("wake: inline fallback")
+      expect(result).toContain("processing: processed")
+      expect(result).toContain('surfaced: "penguins surfaced."')
+    })
+
+    it("uses daemon-managed wake when available and skips the inline fallback", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      mockRequestInnerWake.mockResolvedValue({
+        ok: true,
+        message: "woke inner dialog for testagent",
+      })
+
+      const result = await tool.handler({
+        friendId: "self",
+        channel: "cli",
+        content: "notice this now",
+      })
+
+      expect(mockRequestInnerWake).toHaveBeenCalledWith("testagent")
+      expect(mockRunInnerDialogTurn).not.toHaveBeenCalled()
+      expect(result).toBe([
+        "queue: queued to inner/dialog",
+        "wake: daemon requested",
+        "processing: pending",
+        "surfaced: nothing yet",
+      ].join("\n"))
+    })
+
+    it("falls back to an immediate inner turn when daemon wake rejects", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      mockRequestInnerWake.mockRejectedValue(new Error("socket unavailable"))
+      mockRunInnerDialogTurn.mockResolvedValue({
+        messages: [{ role: "assistant", content: "picked up inline." }],
+        sessionPath: "/mock/agent-root/state/sessions/self/inner/dialog.json",
+      })
+
+      await tool.handler({
+        friendId: "self",
+        channel: "cli",
+        content: "keep thinking",
+      })
+
+      expect(mockRunInnerDialogTurn).toHaveBeenCalledTimes(1)
+    })
+
+    it("surfaces inline fallback failures instead of masking them as queued success", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      mockRunInnerDialogTurn.mockRejectedValue(new Error("inner dialog failed"))
+
+      await expect(tool.handler({
+        friendId: "self",
+        channel: "cli",
+        content: "keep going",
+      })).rejects.toThrow("inner dialog failed")
+    })
+
+    it("reports no outward result when the inline fallback finishes without assistant text", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      mockRunInnerDialogTurn.mockResolvedValue({
+        messages: [],
+        sessionPath: "/mock/agent-root/state/sessions/self/inner/dialog.json",
+      })
+
+      const result = await tool.handler({
+        friendId: "self",
+        channel: "cli",
+        content: "sit with this quietly",
+      })
+
+      expect(result).toContain("processing: processed")
+      expect(result).toContain("surfaced: no outward result")
+    })
+
+    it("truncates long surfaced previews in the inline fallback response", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      mockRunInnerDialogTurn.mockResolvedValue({
+        messages: [{ role: "assistant", content: "a".repeat(160) }],
+        sessionPath: "/mock/agent-root/state/sessions/self/inner/dialog.json",
+      })
+
+      const result = await tool.handler({
+        friendId: "self",
+        channel: "cli",
+        content: "stretch the preview",
+      })
+
+      expect(result).toContain('surfaced: "')
+      expect(result).toContain("...")
+      expect(result).not.toContain("a".repeat(160))
+    })
+
+    it("extracts surfaced previews from structured assistant content arrays", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      mockRunInnerDialogTurn.mockResolvedValue({
+        messages: [{
+          role: "assistant",
+          content: [
+            "penguins",
+            { type: "text", text: "formal little blokes" },
+            { type: "image_url", image_url: { url: "https://example.test/penguin.png" } },
+          ] as any,
+        }],
+        sessionPath: "/mock/agent-root/state/sessions/self/inner/dialog.json",
+      })
+
+      const result = await tool.handler({
+        friendId: "self",
+        channel: "cli",
+        content: "let the image-thought settle",
+      })
+
+      expect(result).toContain('surfaced: "penguins"')
+    })
+
+    it("extracts surfaced previews from final_answer-only inner turns", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      mockRunInnerDialogTurn.mockResolvedValue({
+        messages: [{
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "tc_1",
+              type: "function",
+              function: {
+                name: "final_answer",
+                arguments: JSON.stringify({
+                  answer: "formal little blokes",
+                  intent: "complete",
+                }),
+              },
+            },
+          ],
+        }],
+        sessionPath: "/mock/agent-root/state/sessions/self/inner/dialog.json",
+      })
+
+      const result = await tool.handler({
+        friendId: "self",
+        channel: "cli",
+        content: "let the thought conclude cleanly",
+      })
+
+      expect(result).toContain('surfaced: "formal little blokes"')
+    })
+
+    it("treats non-array assistant content as no outward result", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      mockRunInnerDialogTurn.mockResolvedValue({
+        messages: [{
+          role: "assistant",
+          content: { type: "text", text: "not in the expected array shape" } as any,
+        }],
+        sessionPath: "/mock/agent-root/state/sessions/self/inner/dialog.json",
+      })
+
+      const result = await tool.handler({
+        friendId: "self",
+        channel: "cli",
+        content: "hold a strangely-shaped reply",
+      })
+
+      expect(result).toContain("surfaced: no outward result")
+    })
+
+    it("defers the inline fallback to a microtask when already in inner dialog", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+      const queuedCallbacks: Array<() => void> = []
+      const queueMicrotaskSpy = vi
+        .spyOn(globalThis, "queueMicrotask")
+        .mockImplementation((callback: VoidFunction) => {
+          queuedCallbacks.push(callback)
+        })
+
+      mockRunInnerDialogTurn.mockResolvedValue({
+        messages: [{ role: "assistant", content: "i kept the thread alive." }],
+        sessionPath: "/mock/agent-root/state/sessions/self/inner/dialog.json",
+      })
+
+      await tool.handler(
+        {
+          friendId: "self",
+          channel: "inner",
+          content: "stay with this",
+        },
+        {
+          context: {
+            friend: {} as any,
+            channel: { channel: "inner" } as any,
+          },
+          signin: async () => undefined,
+        },
+      )
+
+      expect(queueMicrotaskSpy).toHaveBeenCalledTimes(1)
+      expect(mockRunInnerDialogTurn).not.toHaveBeenCalled()
+      queuedCallbacks[0]?.()
+      expect(mockRunInnerDialogTurn).toHaveBeenCalledTimes(1)
+      queueMicrotaskSpy.mockRestore()
     })
   })
 })

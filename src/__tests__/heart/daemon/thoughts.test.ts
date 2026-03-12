@@ -3,6 +3,15 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 
+vi.mock("fs", async () => {
+  const actual = await vi.importActual<typeof import("fs")>("fs")
+  return {
+    ...actual,
+    watchFile: vi.fn(actual.watchFile),
+    unwatchFile: vi.fn(actual.unwatchFile),
+  }
+})
+
 vi.mock("../../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn(),
 }))
@@ -180,6 +189,28 @@ describe("thoughts", () => {
 
       const turns = parseInnerDialogSession(sessionPath)
       expect(turns[0].response).toBe("")
+    })
+
+    it("ignores malformed tool-call function payloads while continuing to parse the turn", () => {
+      const sessionPath = tmpSessionFile([
+        { role: "system", content: "system prompt" },
+        { role: "user", content: "waking up.\n\nwhat needs my attention?" },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            { id: "tc_1", type: "function", function: "not-an-object" },
+            { id: "tc_2", type: "function", function: { name: 42, arguments: "{\"answer\":\"hidden\"}" } },
+          ],
+        },
+        { role: "assistant", content: "still here." },
+      ])
+
+      const turns = parseInnerDialogSession(sessionPath)
+
+      expect(turns).toHaveLength(1)
+      expect(turns[0].tools).toEqual([])
+      expect(turns[0].response).toBe("still here.")
     })
 
     it("returns empty array for nonexistent file", () => {
@@ -363,114 +394,343 @@ describe("thoughts", () => {
   })
 
   describe("followThoughts", () => {
-    it("calls onNewTurns when session file is updated with new turns", async () => {
+    function writeThoughtSession(sessionPath: string, messages: unknown[]): void {
+      fs.writeFileSync(sessionPath, JSON.stringify({ version: 1, messages }))
+    }
+
+    function captureWatchListener() {
+      let listener: ((curr: fs.Stats, prev: fs.Stats) => void) | undefined
+      const watchSpy = vi.mocked(fs.watchFile).mockImplementation(((pathArg, options, callback) => {
+        listener = callback
+        return undefined as unknown as fs.StatWatcher
+      }) as typeof fs.watchFile)
+      const unwatchSpy = vi.mocked(fs.unwatchFile).mockImplementation((() => undefined) as typeof fs.unwatchFile)
+
+      return {
+        invoke(sessionPath: string) {
+          const stats = fs.statSync(sessionPath)
+          listener?.(stats, stats)
+        },
+        watchSpy,
+        unwatchSpy,
+      }
+    }
+
+    it("calls onNewTurns when session file is updated with new turns", () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "follow-test-"))
       const sessionPath = path.join(dir, "dialog.json")
 
-      // Start with one turn
-      fs.writeFileSync(sessionPath, JSON.stringify({
-        version: 1,
-        messages: [
-          { role: "system", content: "system" },
-          { role: "user", content: "waking up.\n\nwhat needs my attention?" },
-          { role: "assistant", content: "first thought." },
-        ],
-      }))
+      writeThoughtSession(sessionPath, [
+        { role: "system", content: "system" },
+        { role: "user", content: "waking up.\n\nwhat needs my attention?" },
+        { role: "assistant", content: "first thought." },
+      ])
 
-      const received: string[] = []
-      const stop = followThoughts(sessionPath, (formatted) => {
-        received.push(formatted)
-      }, 100)
+      const { invoke, watchSpy, unwatchSpy } = captureWatchListener()
 
-      // Add a second turn
-      fs.writeFileSync(sessionPath, JSON.stringify({
-        version: 1,
-        messages: [
+      try {
+        const received: string[] = []
+        const stop = followThoughts(sessionPath, (formatted) => {
+          received.push(formatted)
+        }, 100)
+
+        writeThoughtSession(sessionPath, [
           { role: "system", content: "system" },
           { role: "user", content: "waking up.\n\nwhat needs my attention?" },
           { role: "assistant", content: "first thought." },
           { role: "user", content: "...time passing. anything stirring?" },
           { role: "assistant", content: "second thought." },
-        ],
-      }))
+        ])
 
-      // Wait for poll to detect the change
-      await new Promise((resolve) => setTimeout(resolve, 300))
+        invoke(sessionPath)
+        stop()
 
-      stop()
-      expect(received.length).toBeGreaterThanOrEqual(1)
-      expect(received[0]).toContain("second thought.")
-      expect(received[0]).not.toContain("first thought.")
-
-      fs.rmSync(dir, { recursive: true, force: true })
+        expect(watchSpy).toHaveBeenCalledWith(sessionPath, { interval: 100 }, expect.any(Function))
+        expect(received).toHaveLength(1)
+        expect(received[0]).toContain("second thought.")
+        expect(received[0]).not.toContain("first thought.")
+      } finally {
+        watchSpy.mockReset()
+        unwatchSpy.mockReset()
+        fs.rmSync(dir, { recursive: true, force: true })
+      }
     })
 
-    it("does not call onNewTurns when turn count stays the same", async () => {
+    it("does not call onNewTurns when turn count stays the same", () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "follow-test-"))
       const sessionPath = path.join(dir, "dialog.json")
 
-      const data = JSON.stringify({
-        version: 1,
-        messages: [
-          { role: "system", content: "system" },
-          { role: "user", content: "waking up.\n\nwhat needs my attention?" },
-          { role: "assistant", content: "same thought." },
-        ],
+      const initialMessages = [
+        { role: "system", content: "system" },
+        { role: "user", content: "waking up.\n\nwhat needs my attention?" },
+        { role: "assistant", content: "same thought." },
+      ]
+      writeThoughtSession(sessionPath, initialMessages)
+
+      const { invoke, watchSpy, unwatchSpy } = captureWatchListener()
+
+      try {
+        const received: string[] = []
+        const stop = followThoughts(sessionPath, (formatted) => {
+          received.push(formatted)
+        }, 100)
+
+        writeThoughtSession(sessionPath, initialMessages)
+        invoke(sessionPath)
+        stop()
+
+        expect(received).toHaveLength(0)
+      } finally {
+        watchSpy.mockReset()
+        unwatchSpy.mockReset()
+        fs.rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it("returns cleanup function that stops watching", () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "follow-test-"))
+      const sessionPath = path.join(dir, "dialog.json")
+
+      writeThoughtSession(sessionPath, [
+        { role: "system", content: "system" },
+        { role: "user", content: "waking up.\n\nwhat needs my attention?" },
+        { role: "assistant", content: "initial." },
+      ])
+
+      const { watchSpy, unwatchSpy } = captureWatchListener()
+
+      try {
+        const received: string[] = []
+        const stop = followThoughts(sessionPath, (formatted) => {
+          received.push(formatted)
+        }, 100)
+
+        stop()
+
+        expect(received).toHaveLength(0)
+        expect(unwatchSpy).toHaveBeenCalledWith(sessionPath)
+      } finally {
+        watchSpy.mockReset()
+        unwatchSpy.mockReset()
+        fs.rmSync(dir, { recursive: true, force: true })
+      }
+    })
+  })
+
+  describe("deriveInnerDialogStatus", () => {
+    it("derives pending status from queued self-messages", async () => {
+      const thoughts = await import("../../../heart/daemon/thoughts")
+
+      expect(typeof thoughts.deriveInnerDialogStatus).toBe("function")
+      expect(thoughts.deriveInnerDialogStatus(
+        [{ from: "slugger", content: "think about penguins", timestamp: 1 }],
+        [],
+      )).toEqual({
+        queue: "queued to inner/dialog",
+        wake: "awaiting inner session",
+        processing: "pending",
+        surfaced: "nothing yet",
       })
-      fs.writeFileSync(sessionPath, data)
+    })
 
-      const received: string[] = []
-      const stop = followThoughts(sessionPath, (formatted) => {
-        received.push(formatted)
-      }, 100)
+    it("derives surfaced preview from the latest processed pending turn", async () => {
+      const thoughts = await import("../../../heart/daemon/thoughts")
 
-      // Touch the file without adding turns
-      fs.writeFileSync(sessionPath, data)
+      expect(typeof thoughts.deriveInnerDialogStatus).toBe("function")
+      expect(thoughts.deriveInnerDialogStatus(
+        [],
+        [{
+          type: "heartbeat",
+          prompt: "## pending messages\n[pending from slugger]: think about penguins\n\n...time passing. anything stirring?",
+          response: "formal little blokes.",
+          tools: [],
+        }],
+      )).toEqual({
+        queue: "clear",
+        wake: "completed",
+        processing: "processed",
+        surfaced: '"formal little blokes."',
+      })
+    })
 
-      await new Promise((resolve) => setTimeout(resolve, 300))
+    it("reports processing started when runtime state says the inner turn is still active", async () => {
+      const thoughts = await import("../../../heart/daemon/thoughts")
 
-      stop()
-      expect(received).toHaveLength(0)
+      expect(thoughts.deriveInnerDialogStatus(
+        [],
+        [{
+          type: "heartbeat",
+          prompt: "## pending messages\n[pending from slugger]: think about penguins\n\n...time passing. anything stirring?",
+          response: "formal little blokes.",
+          tools: [],
+        }],
+        {
+          status: "running",
+          reason: "instinct",
+          startedAt: "2026-03-12T00:00:00.000Z",
+        },
+      )).toEqual({
+        queue: "clear",
+        wake: "in progress",
+        processing: "started",
+        surfaced: "nothing yet",
+      })
+    })
+
+    it("keeps queued state visible while runtime state is active and pending remains", async () => {
+      const thoughts = await import("../../../heart/daemon/thoughts")
+
+      expect(thoughts.deriveInnerDialogStatus(
+        [{ from: "slugger", content: "think about penguins", timestamp: 1 }],
+        [],
+        {
+          status: "running",
+          reason: "instinct",
+          startedAt: "2026-03-12T00:00:00.000Z",
+        },
+      )).toEqual({
+        queue: "queued to inner/dialog",
+        wake: "in progress",
+        processing: "started",
+        surfaced: "nothing yet",
+      })
+    })
+
+    it("returns idle status when nothing is queued or recently surfaced", async () => {
+      const thoughts = await import("../../../heart/daemon/thoughts")
+
+      expect(thoughts.deriveInnerDialogStatus(
+        [],
+        [{
+          type: "heartbeat",
+          prompt: "[pending from slugger] malformed pending marker",
+          response: "",
+          tools: [],
+        }],
+      )).toEqual({
+        queue: "clear",
+        wake: "idle",
+        processing: "idle",
+        surfaced: "nothing recent",
+      })
+    })
+
+    it("formats no-result and truncated surfaced values explicitly", async () => {
+      const thoughts = await import("../../../heart/daemon/thoughts")
+
+      expect(thoughts.formatSurfacedValue("")).toBe("no outward result")
+      expect(thoughts.formatSurfacedValue("a".repeat(140), 20)).toBe('"aaaaaaaaaaaaaaaaa..."')
+    })
+
+    it("ignores unreadable or malformed pending files when reading status from disk", async () => {
+      const thoughts = await import("../../../heart/daemon/thoughts")
+      const pendingDir = fs.mkdtempSync(path.join(os.tmpdir(), "thoughts-pending-"))
+      fs.writeFileSync(path.join(pendingDir, "000.json.processing"), "{not-json")
+      fs.writeFileSync(path.join(pendingDir, "001.json"), JSON.stringify({
+        from: "slugger",
+        content: 42,
+        timestamp: 1,
+      }))
+
+      expect(thoughts.readInnerDialogStatus("/tmp/nonexistent-dialog.json", pendingDir)).toEqual({
+        queue: "clear",
+        wake: "idle",
+        processing: "idle",
+        surfaced: "nothing recent",
+      })
+
+      const notADirectoryPath = path.join(os.tmpdir(), `thoughts-pending-file-${Date.now()}.json`)
+      fs.writeFileSync(notADirectoryPath, "{}")
+
+      expect(thoughts.readInnerDialogStatus("/tmp/nonexistent-dialog.json", notADirectoryPath)).toEqual({
+        queue: "clear",
+        wake: "idle",
+        processing: "idle",
+        surfaced: "nothing recent",
+      })
+
+      fs.unlinkSync(notADirectoryPath)
+    })
+
+    it("prefers live runtime state over stale processed transcript state", async () => {
+      const thoughts = await import("../../../heart/daemon/thoughts")
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "thoughts-runtime-"))
+      const sessionPath = path.join(dir, "dialog.json")
+      const runtimePath = path.join(dir, "runtime.json")
+
+      fs.writeFileSync(sessionPath, JSON.stringify({
+        version: 1,
+        messages: [
+          { role: "system", content: "system" },
+          {
+            role: "user",
+            content: "## pending messages\n[pending from slugger]: think about penguins\n\n...time passing. anything stirring?",
+          },
+          { role: "assistant", content: "formal little blokes." },
+        ],
+      }))
+      fs.writeFileSync(runtimePath, JSON.stringify({
+        status: "running",
+        reason: "instinct",
+        startedAt: "2026-03-12T00:00:00.000Z",
+      }))
+
+      expect(thoughts.readInnerDialogStatus(sessionPath, path.join(dir, "pending"), runtimePath)).toEqual({
+        queue: "clear",
+        wake: "in progress",
+        processing: "started",
+        surfaced: "nothing yet",
+      })
 
       fs.rmSync(dir, { recursive: true, force: true })
     })
 
-    it("returns cleanup function that stops watching", async () => {
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "follow-test-"))
+    it("ignores malformed runtime metadata fields while preserving valid status", async () => {
+      const thoughts = await import("../../../heart/daemon/thoughts")
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "thoughts-runtime-"))
       const sessionPath = path.join(dir, "dialog.json")
+      const pendingDir = path.join(dir, "pending")
+      const runtimePath = path.join(dir, "runtime.json")
 
-      fs.writeFileSync(sessionPath, JSON.stringify({
-        version: 1,
-        messages: [
-          { role: "system", content: "system" },
-          { role: "user", content: "waking up.\n\nwhat needs my attention?" },
-          { role: "assistant", content: "initial." },
-        ],
+      fs.mkdirSync(pendingDir, { recursive: true })
+      fs.writeFileSync(sessionPath, JSON.stringify({ version: 1, messages: [] }))
+      fs.writeFileSync(runtimePath, JSON.stringify({
+        status: "idle",
+        reason: "mystery",
+        startedAt: 42,
+        lastCompletedAt: false,
       }))
 
-      const received: string[] = []
-      const stop = followThoughts(sessionPath, (formatted) => {
-        received.push(formatted)
-      }, 100)
+      expect(thoughts.readInnerDialogStatus(sessionPath, pendingDir, runtimePath)).toEqual({
+        queue: "clear",
+        wake: "idle",
+        processing: "idle",
+        surfaced: "nothing recent",
+      })
 
-      // Stop immediately
-      stop()
+      fs.rmSync(dir, { recursive: true, force: true })
+    })
 
-      // Add a new turn after stopping
-      fs.writeFileSync(sessionPath, JSON.stringify({
-        version: 1,
-        messages: [
-          { role: "system", content: "system" },
-          { role: "user", content: "waking up.\n\nwhat needs my attention?" },
-          { role: "assistant", content: "initial." },
-          { role: "user", content: "...time passing. anything stirring?" },
-          { role: "assistant", content: "should not appear." },
-        ],
+    it("accepts lastCompletedAt when runtime metadata is otherwise idle", async () => {
+      const thoughts = await import("../../../heart/daemon/thoughts")
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "thoughts-runtime-"))
+      const sessionPath = path.join(dir, "dialog.json")
+      const pendingDir = path.join(dir, "pending")
+      const runtimePath = path.join(dir, "runtime.json")
+
+      fs.mkdirSync(pendingDir, { recursive: true })
+      fs.writeFileSync(sessionPath, JSON.stringify({ version: 1, messages: [] }))
+      fs.writeFileSync(runtimePath, JSON.stringify({
+        status: "idle",
+        lastCompletedAt: "2026-03-12T00:00:00.000Z",
       }))
 
-      await new Promise((resolve) => setTimeout(resolve, 300))
-
-      expect(received).toHaveLength(0)
+      expect(thoughts.readInnerDialogStatus(sessionPath, pendingDir, runtimePath)).toEqual({
+        queue: "clear",
+        wake: "idle",
+        processing: "idle",
+        surfaced: "nothing recent",
+      })
 
       fs.rmSync(dir, { recursive: true, force: true })
     })

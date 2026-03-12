@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.47",
+      "changes": [
+        "Self-messages now wake inner dialog now/soon instead of only queueing: the harness requests a daemon-managed inner wake when available and falls back to an inline inner turn when it is not.",
+        "`send_message(friendId=self)` and `query_session(friendId=self, channel=inner, mode=status)` now share a truthful four-line status contract: `queue`, `wake`, `processing`, and `surfaced`.",
+        "Inner dialog persists live runtime activity beside the transcript, so status checks can report active processing instead of stale last-turn history.",
+        "Inline fallback surfaced previews now extract `final_answer` text too, so completed inner turns no longer show `no outward result` when the response lived in the final tool call."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.46",
       "changes": [
         "Inner dialog now knows which task triggered it: taskId flows from daemon poke through the worker into the turn, and the agent gets the full task file content instead of a generic heartbeat prompt.",
