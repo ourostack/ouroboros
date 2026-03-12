@@ -30,6 +30,12 @@ vi.mock("../../repertoire/tasks", () => ({
   }),
 }))
 
+const mockRunInnerDialogTurn = vi.fn()
+
+vi.mock("../../senses/inner-dialog", () => ({
+  runInnerDialogTurn: (...args: any[]) => mockRunInnerDialogTurn(...args),
+}))
+
 vi.mock("../../heart/identity", () => ({
   getAgentRoot: vi.fn(() => "/mock/agent-root"),
   getAgentName: vi.fn(() => "testagent"),
@@ -48,6 +54,7 @@ beforeEach(() => {
   vi.mocked(fs.readFileSync).mockReset()
   vi.mocked(fs.writeFileSync).mockReset()
   vi.mocked(fs.mkdirSync).mockReset()
+  mockRunInnerDialogTurn.mockReset()
 })
 
 describe("send_message tool", () => {
@@ -274,6 +281,25 @@ describe("send_message tool", () => {
       // Should indicate inner dialog routing, not the original channel
       expect(result).toContain("inner")
       expect(result).toContain("dialog")
+    })
+
+    it("falls back to an immediate inner turn when no daemon wake path is available", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      vi.mocked(fs.existsSync).mockReturnValue(false)
+      mockRunInnerDialogTurn.mockResolvedValue({
+        messages: [{ role: "assistant", content: "penguins surfaced." }],
+        sessionPath: "/mock/agent-root/state/sessions/self/inner/dialog.json",
+      })
+
+      await tool.handler({
+        friendId: "self",
+        channel: "cli",
+        content: "think about penguins",
+      })
+
+      expect(mockRunInnerDialogTurn).toHaveBeenCalledTimes(1)
     })
   })
 })
