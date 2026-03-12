@@ -511,5 +511,61 @@ describe("thoughts", () => {
         surfaced: '"formal little blokes."',
       })
     })
+
+    it("returns idle status when nothing is queued or recently surfaced", async () => {
+      const thoughts = await import("../../../heart/daemon/thoughts")
+
+      expect(thoughts.deriveInnerDialogStatus(
+        [],
+        [{
+          type: "heartbeat",
+          prompt: "[pending from slugger] malformed pending marker",
+          response: "",
+          tools: [],
+        }],
+      )).toEqual({
+        queue: "clear",
+        wake: "idle",
+        processing: "idle",
+        surfaced: "nothing recent",
+      })
+    })
+
+    it("formats no-result and truncated surfaced values explicitly", async () => {
+      const thoughts = await import("../../../heart/daemon/thoughts")
+
+      expect(thoughts.formatSurfacedValue("")).toBe("no outward result")
+      expect(thoughts.formatSurfacedValue("a".repeat(140), 20)).toBe('"aaaaaaaaaaaaaaaaa..."')
+    })
+
+    it("ignores unreadable or malformed pending files when reading status from disk", async () => {
+      const thoughts = await import("../../../heart/daemon/thoughts")
+      const pendingDir = fs.mkdtempSync(path.join(os.tmpdir(), "thoughts-pending-"))
+      fs.writeFileSync(path.join(pendingDir, "000.json.processing"), "{not-json")
+      fs.writeFileSync(path.join(pendingDir, "001.json"), JSON.stringify({
+        from: "slugger",
+        content: 42,
+        timestamp: 1,
+      }))
+
+      expect(thoughts.readInnerDialogStatus("/tmp/nonexistent-dialog.json", pendingDir)).toEqual({
+        queue: "clear",
+        wake: "idle",
+        processing: "idle",
+        surfaced: "nothing recent",
+      })
+
+      const notADirectoryPath = path.join(os.tmpdir(), `thoughts-pending-file-${Date.now()}.json`)
+      fs.writeFileSync(notADirectoryPath, "{}")
+
+      expect(thoughts.readInnerDialogStatus("/tmp/nonexistent-dialog.json", notADirectoryPath)).toEqual({
+        queue: "clear",
+        wake: "idle",
+        processing: "idle",
+        surfaced: "nothing recent",
+      })
+
+      fs.unlinkSync(notADirectoryPath)
+    })
   })
 })

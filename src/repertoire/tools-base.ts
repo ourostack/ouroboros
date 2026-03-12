@@ -773,7 +773,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
       }
 
       const preview = content.length > 80 ? content.slice(0, 80) + "…" : content
-      const target = isSelf ? "inner/dialog" : `${channel}/${key}`
+      const target = `${channel}/${key}`
       return `message queued for delivery to ${friendId} on ${target}. preview: "${preview}". it will be delivered when their session is next active.`
     },
   },

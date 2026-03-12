@@ -369,6 +369,91 @@ describe("send_message tool", () => {
       })).rejects.toThrow("inner dialog failed")
     })
 
+    it("reports no outward result when the inline fallback finishes without assistant text", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      mockRunInnerDialogTurn.mockResolvedValue({
+        messages: [],
+        sessionPath: "/mock/agent-root/state/sessions/self/inner/dialog.json",
+      })
+
+      const result = await tool.handler({
+        friendId: "self",
+        channel: "cli",
+        content: "sit with this quietly",
+      })
+
+      expect(result).toContain("processing: processed")
+      expect(result).toContain("surfaced: no outward result")
+    })
+
+    it("truncates long surfaced previews in the inline fallback response", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      mockRunInnerDialogTurn.mockResolvedValue({
+        messages: [{ role: "assistant", content: "a".repeat(160) }],
+        sessionPath: "/mock/agent-root/state/sessions/self/inner/dialog.json",
+      })
+
+      const result = await tool.handler({
+        friendId: "self",
+        channel: "cli",
+        content: "stretch the preview",
+      })
+
+      expect(result).toContain('surfaced: "')
+      expect(result).toContain("...")
+      expect(result).not.toContain("a".repeat(160))
+    })
+
+    it("extracts surfaced previews from structured assistant content arrays", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      mockRunInnerDialogTurn.mockResolvedValue({
+        messages: [{
+          role: "assistant",
+          content: [
+            "penguins",
+            { type: "text", text: "formal little blokes" },
+            { type: "image_url", image_url: { url: "https://example.test/penguin.png" } },
+          ] as any,
+        }],
+        sessionPath: "/mock/agent-root/state/sessions/self/inner/dialog.json",
+      })
+
+      const result = await tool.handler({
+        friendId: "self",
+        channel: "cli",
+        content: "let the image-thought settle",
+      })
+
+      expect(result).toContain('surfaced: "penguins"')
+    })
+
+    it("treats non-array assistant content as no outward result", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      mockRunInnerDialogTurn.mockResolvedValue({
+        messages: [{
+          role: "assistant",
+          content: { type: "text", text: "not in the expected array shape" } as any,
+        }],
+        sessionPath: "/mock/agent-root/state/sessions/self/inner/dialog.json",
+      })
+
+      const result = await tool.handler({
+        friendId: "self",
+        channel: "cli",
+        content: "hold a strangely-shaped reply",
+      })
+
+      expect(result).toContain("surfaced: no outward result")
+    })
+
     it("defers the inline fallback to a microtask when already in inner dialog", async () => {
       const { baseToolDefinitions } = await import("../../repertoire/tools-base")
       const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!

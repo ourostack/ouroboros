@@ -371,4 +371,17 @@ describe("query_session tool", () => {
       'surfaced: "formal little blokes."',
     ].join("\n"))
   })
+
+  it("rejects status mode for non-self sessions instead of pretending it can inspect them", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
+
+    const result = await tool.handler({
+      friendId: "friend-1",
+      channel: "cli",
+      mode: "status",
+    })
+
+    expect(result).toBe("status mode is only available for self/inner dialog.")
+  })
 })
