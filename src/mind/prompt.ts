@@ -444,9 +444,17 @@ function memoryFriendToolContractSection(): string {
 
 export interface BuildSystemOptions {
   toolChoiceRequired?: boolean;
+  bridgeContext?: string;
+  currentSessionKey?: string;
   currentObligation?: string;
   mustResolveBeforeHandoff?: boolean;
   hasQueuedFollowUp?: boolean;
+}
+
+function bridgeContextSection(options?: BuildSystemOptions): string {
+  const bridgeContext = options?.bridgeContext?.trim() ?? ""
+  if (!bridgeContext) return ""
+  return bridgeContext.startsWith("## ") ? bridgeContext : `## active bridge work\n${bridgeContext}`
 }
 
 function toolBehaviorSection(options?: BuildSystemOptions): string {
@@ -584,13 +592,14 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     mixedTrustGroupSection(context),
     skillsSection(),
     taskBoardSection(),
+    bridgeContextSection(options),
     buildSessionSummary({
       sessionsDir: path.join(getAgentRoot(), "state", "sessions"),
       friendsDir: path.join(getAgentRoot(), "friends"),
       agentName: getAgentName(),
       currentFriendId: context?.friend?.id,
       currentChannel: channel,
-      currentKey: "session",
+      currentKey: options?.currentSessionKey ?? "session",
     }),
     memoryFriendToolContractSection(),
     toolBehaviorSection(options),

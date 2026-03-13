@@ -11,9 +11,12 @@ import { emitNervesEvent } from "../nerves/runtime";
 import { getAgentRoot, getAgentName } from "../heart/identity";
 import { requestInnerWake } from "../heart/daemon/socket-client";
 import { extractThoughtResponseFromMessages, formatInnerDialogStatus, formatSurfacedValue, getInnerDialogSessionPath, readInnerDialogStatus } from "../heart/daemon/thoughts";
+import { createBridgeManager, formatBridgeStatus } from "../heart/bridges/manager";
+import { recallSession, type SessionRecallOptions, type SessionRecallResult } from "../heart/session-recall";
 import { codingToolDefinitions } from "./coding/tools";
 import { readMemoryFacts, saveMemoryFact, searchMemoryFacts } from "../mind/memory";
 import { getPendingDir, getInnerDialogPendingDir } from "../mind/pending";
+import type { BridgeRecord, BridgeSessionRef } from "../heart/bridges/store";
 
 export interface CodingFeedbackTarget {
   send: (message: string) => Promise<void>;
@@ -46,6 +49,8 @@ export interface ToolContext {
     conversations: unknown;
   };
   bluebubblesReplyTarget?: BlueBubblesReplyTargetController;
+  currentSession?: BridgeSessionRef;
+  activeBridges?: BridgeRecord[];
 }
 
 export type ToolHandler = (args: Record<string, string>, ctx?: ToolContext) => string | Promise<string>;
@@ -71,6 +76,17 @@ function buildContextDiff(lines: string[], changeStart: number, changeEnd: numbe
     result.push(`${prefix} ${lineNum} | ${lines[i]}`)
   }
   return result.join("\n")
+}
+
+const NO_SESSION_FOUND_MESSAGE = "no session found for that friend/channel/key combination."
+const EMPTY_SESSION_MESSAGE = "session exists but has no non-system messages."
+
+async function recallSessionSafely(options: SessionRecallOptions): Promise<SessionRecallResult | { kind: "missing" }> {
+  try {
+    return await recallSession(options)
+  } catch {
+    return { kind: "missing" }
+  }
 }
 
 export const baseToolDefinitions: ToolDefinition[] = [
@@ -610,6 +626,118 @@ export const baseToolDefinitions: ToolDefinition[] = [
     tool: {
       type: "function",
       function: {
+        name: "bridge_manage",
+        description: "create and manage shared live-work bridges across already-active sessions.",
+        parameters: {
+          type: "object",
+          properties: {
+            action: {
+              type: "string",
+              enum: ["begin", "attach", "status", "promote_task", "complete", "cancel"],
+            },
+            bridgeId: { type: "string", description: "bridge id for all actions except begin" },
+            objective: { type: "string", description: "objective for begin" },
+            summary: { type: "string", description: "optional concise shared-work summary" },
+            friendId: { type: "string", description: "target friend id for attach" },
+            channel: { type: "string", description: "target channel for attach" },
+            key: { type: "string", description: "target session key for attach (defaults to 'session')" },
+            title: { type: "string", description: "task title override for promote_task" },
+            category: { type: "string", description: "task category override for promote_task" },
+            body: { type: "string", description: "task body override for promote_task" },
+          },
+          required: ["action"],
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      const manager = createBridgeManager()
+      const action = (args.action || "").trim()
+
+      if (action === "begin") {
+        if (!ctx?.currentSession) {
+          return "bridge_manage begin requires an active session context."
+        }
+        const objective = (args.objective || "").trim()
+        if (!objective) return "objective is required for bridge begin."
+
+        return formatBridgeStatus(
+          manager.beginBridge({
+            objective,
+            summary: (args.summary || objective).trim(),
+            session: ctx.currentSession,
+          }),
+        )
+      }
+
+      const bridgeId = (args.bridgeId || "").trim()
+      if (!bridgeId) {
+        return "bridgeId is required for this bridge action."
+      }
+
+      if (action === "attach") {
+        const friendId = (args.friendId || "").trim()
+        const channel = (args.channel || "").trim()
+        const key = (args.key || "session").trim()
+        if (!friendId || !channel) {
+          return "friendId and channel are required for bridge attach."
+        }
+
+        const sessionPath = resolveSessionPath(friendId, channel, key)
+        const recall = await recallSessionSafely({
+          sessionPath,
+          friendId,
+          channel,
+          key,
+          messageCount: 20,
+          trustLevel: ctx?.context?.friend?.trustLevel,
+          summarize: ctx?.summarize,
+        })
+        if (recall.kind === "missing") {
+          return NO_SESSION_FOUND_MESSAGE
+        }
+
+        return formatBridgeStatus(
+          manager.attachSession(bridgeId, {
+            friendId,
+            channel,
+            key,
+            sessionPath,
+            snapshot: recall.kind === "ok" ? recall.snapshot : EMPTY_SESSION_MESSAGE,
+          }),
+        )
+      }
+
+      if (action === "status") {
+        const bridge = manager.getBridge(bridgeId)
+        if (!bridge) return `bridge not found: ${bridgeId}`
+        return formatBridgeStatus(bridge)
+      }
+
+      if (action === "promote_task") {
+        return formatBridgeStatus(
+          manager.promoteBridgeToTask(bridgeId, {
+            title: args.title,
+            category: args.category,
+            body: args.body,
+          }),
+        )
+      }
+
+      if (action === "complete") {
+        return formatBridgeStatus(manager.completeBridge(bridgeId))
+      }
+
+      if (action === "cancel") {
+        return formatBridgeStatus(manager.cancelBridge(bridgeId))
+      }
+
+      return `unknown bridge action: ${action}`
+    },
+  },
+  {
+    tool: {
+      type: "function",
+      function: {
         name: "query_session",
         description: "read the last messages from another session. use this to check on a conversation with a friend or review your own inner dialog.",
         parameters: {
@@ -626,47 +754,41 @@ export const baseToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
-      try {
-        const friendId = args.friendId
-        const channel = args.channel
-        const key = args.key || "session"
-        const count = parseInt(args.messageCount || "20", 10)
-        const mode = args.mode || "transcript"
+      const friendId = args.friendId
+      const channel = args.channel
+      const key = args.key || "session"
+      const count = parseInt(args.messageCount || "20", 10)
+      const mode = args.mode || "transcript"
 
-        if (mode === "status") {
-          if (friendId !== "self" || channel !== "inner") {
-            return "status mode is only available for self/inner dialog."
-          }
-
-          const sessionPath = getInnerDialogSessionPath(getAgentRoot())
-          const pendingDir = getInnerDialogPendingDir(getAgentName())
-          return formatInnerDialogStatus(readInnerDialogStatus(sessionPath, pendingDir))
+      if (mode === "status") {
+        if (friendId !== "self" || channel !== "inner") {
+          return "status mode is only available for self/inner dialog."
         }
 
-        const sessFile = resolveSessionPath(friendId, channel, key)
-        const raw = fs.readFileSync(sessFile, "utf-8")
-        const data = JSON.parse(raw)
-        const messages: { role: string; content: string }[] = (data.messages || [])
-          .filter((m: { role: string }) => m.role !== "system")
-        const tail = messages.slice(-count)
-        if (tail.length === 0) return "session exists but has no non-system messages."
-
-        const transcript = tail.map((m: { role: string; content: string }) => `[${m.role}] ${m.content}`).join("\n")
-
-        // LLM summarization when summarize function is available
-        if (ctx?.summarize) {
-          const trustLevel = ctx.context?.friend?.trustLevel ?? "family"
-          const isSelfQuery = friendId === "self"
-          const instruction = isSelfQuery
-            ? "summarize this session transcript fully and transparently. this is my own inner dialog — include all details, decisions, and reasoning."
-            : `summarize this session transcript. the person asking has trust level: ${trustLevel}. family=full transparency, friend=share work and general topics but protect other people's identities, acquaintance=very guarded minimal disclosure.`
-          return await ctx.summarize(transcript, instruction)
-        }
-
-        return transcript
-      } catch {
-        return "no session found for that friend/channel/key combination."
+        const sessionPath = getInnerDialogSessionPath(getAgentRoot())
+        const pendingDir = getInnerDialogPendingDir(getAgentName())
+        return formatInnerDialogStatus(readInnerDialogStatus(sessionPath, pendingDir))
       }
+
+      const sessFile = resolveSessionPath(friendId, channel, key)
+      const recall = await recallSessionSafely({
+        sessionPath: sessFile,
+        friendId,
+        channel,
+        key,
+        messageCount: count,
+        trustLevel: ctx?.context?.friend?.trustLevel,
+        summarize: ctx?.summarize,
+      })
+
+      if (recall.kind === "missing") {
+        return NO_SESSION_FOUND_MESSAGE
+      }
+      if (recall.kind === "empty") {
+        return EMPTY_SESSION_MESSAGE
+      }
+
+      return recall.summary
     },
   },
   {

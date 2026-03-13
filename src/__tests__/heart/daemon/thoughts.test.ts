@@ -590,8 +590,8 @@ describe("thoughts", () => {
         },
       )).toEqual({
         queue: "queued to inner/dialog",
-        wake: "in progress",
-        processing: "started",
+        wake: "queued behind active turn",
+        processing: "pending",
         surfaced: "nothing yet",
       })
     })

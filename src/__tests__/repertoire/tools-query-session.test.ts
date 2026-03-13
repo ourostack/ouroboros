@@ -299,6 +299,65 @@ describe("query_session tool", () => {
     expect(result).toContain("[assistant] hi there")
   })
 
+  it("delegates transcript recall to the shared session-recall helper", async () => {
+    const mockRecallSession = vi.fn().mockResolvedValue({
+      kind: "ok",
+      transcript: "[user] hello",
+      summary: "Summary: hello",
+      snapshot: "recent focus: hello",
+    })
+    vi.doMock("../../heart/session-recall", () => ({
+      recallSession: mockRecallSession,
+    }))
+
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
+
+    const result = await tool.handler(
+      { friendId: "friend-1", channel: "cli", key: "session" },
+      {
+        signin: async () => undefined,
+        summarize: vi.fn().mockResolvedValue("Summary: hello"),
+        context: {
+          friend: { trustLevel: "friend" as const },
+          channel: { channel: "cli" as const, supportsMarkdown: true, supportsStreaming: true, supportsRichCards: false },
+        },
+      } as any,
+    )
+
+    expect(mockRecallSession).toHaveBeenCalledWith(expect.objectContaining({
+      sessionPath: "/mock/agent-root/state/sessions/friend-1/cli/session.json",
+      friendId: "friend-1",
+      channel: "cli",
+      key: "session",
+    }))
+    expect(result).toBe("Summary: hello")
+  })
+
+  it("falls back to a missing-session message when shared recall throws unexpectedly", async () => {
+    const mockRecallSession = vi.fn().mockRejectedValue(new Error("recall failed"))
+    vi.doMock("../../heart/session-recall", () => ({
+      recallSession: mockRecallSession,
+    }))
+
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
+
+    const result = await tool.handler({
+      friendId: "friend-1",
+      channel: "cli",
+      key: "session",
+    })
+
+    expect(mockRecallSession).toHaveBeenCalledWith(expect.objectContaining({
+      sessionPath: "/mock/agent-root/state/sessions/friend-1/cli/session.json",
+      friendId: "friend-1",
+      channel: "cli",
+      key: "session",
+    }))
+    expect(result).toBe("no session found for that friend/channel/key combination.")
+  })
+
   it("supports a lightweight status mode for self/inner checks", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
@@ -416,6 +475,63 @@ describe("query_session tool", () => {
       "queue: clear",
       "wake: in progress",
       "processing: started",
+      "surfaced: nothing yet",
+    ].join("\n"))
+  })
+
+  it("reports queued-behind-active-turn when pending work exists during a running inner turn", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
+
+    vi.mocked(fs.existsSync).mockImplementation((filePath) => (
+      String(filePath) === "/mock/agent-root/state/sessions/self/inner/runtime.json"
+      || String(filePath) === "/mock/agent-root/state/pending/self/inner/dialog"
+    ))
+    vi.mocked(fs.readdirSync).mockReturnValue(["123-pending.json"] as any)
+    vi.mocked(fs.readFileSync).mockImplementation((filePath) => {
+      if (String(filePath).endsWith("/state/pending/self/inner/dialog/123-pending.json")) {
+        return JSON.stringify({
+          from: "testagent",
+          content: "think about penguins",
+          timestamp: 123,
+        })
+      }
+
+      if (String(filePath).endsWith("/state/sessions/self/inner/dialog.json")) {
+        return JSON.stringify({
+          version: 1,
+          messages: [
+            { role: "system", content: "sys" },
+            {
+              role: "user",
+              content: "## pending messages\n[pending from testagent]: earlier thought\n\n...time passing. anything stirring?",
+            },
+            { role: "assistant", content: "older surfaced thought." },
+          ],
+        })
+      }
+
+      if (String(filePath).endsWith("/state/sessions/self/inner/runtime.json")) {
+        return JSON.stringify({
+          status: "running",
+          reason: "instinct",
+          startedAt: "2026-03-12T00:00:00.000Z",
+        })
+      }
+
+      throw new Error(`ENOENT: ${String(filePath)}`)
+    })
+
+    const result = await tool.handler({
+      friendId: "self",
+      channel: "inner",
+      mode: "status",
+    })
+
+    expect(result).toBe([
+      "queue: queued to inner/dialog",
+      "wake: queued behind active turn",
+      "processing: pending",
       "surfaced: nothing yet",
     ].join("\n"))
   })

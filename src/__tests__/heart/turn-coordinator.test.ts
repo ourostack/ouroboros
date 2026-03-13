@@ -156,4 +156,16 @@ describe("turn coordinator", () => {
 
     expect(order).toEqual(["start-0", "end-0", "start-1", "end-1"])
   })
+
+  it("reports shared scoped activity for manual turn lifecycles", async () => {
+    const { tryBeginSharedTurn, endSharedTurn, isSharedTurnActive } = await import("../../heart/turn-coordinator")
+
+    expect(isSharedTurnActive("bridge", "bridge-1")).toBe(false)
+    expect(tryBeginSharedTurn("bridge", "bridge-1")).toBe(true)
+    expect(isSharedTurnActive("bridge", "bridge-1")).toBe(true)
+
+    endSharedTurn("bridge", "bridge-1")
+
+    expect(isSharedTurnActive("bridge", "bridge-1")).toBe(false)
+  })
 })

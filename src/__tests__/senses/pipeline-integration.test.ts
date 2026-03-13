@@ -23,6 +23,7 @@ import { enforceTrustGate, STRANGER_AUTO_REPLY } from "../../senses/trust-gate"
 import { getChannelCapabilities } from "../../mind/friends/channel"
 import { getToolsForChannel } from "../../repertoire/tools"
 import { parseOuroCommand } from "../../heart/daemon/daemon-cli"
+import { getAgentRoot, resetIdentity, setAgentName } from "../../heart/identity"
 
 // ── Shared helpers ──────────────────────────────────────────────────
 
@@ -115,9 +116,18 @@ function makeIntegrationInput(overrides: Partial<InboundTurnInput> = {}): Inboun
 
 describe("pipeline integration — full UX/AX scenarios", () => {
   let bundleRoot: string
+  let agentRoot: string
 
   beforeEach(() => {
     bundleRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pipeline-int-"))
+    setAgentName(`pipeline-int-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
+    agentRoot = getAgentRoot()
+    fs.rmSync(agentRoot, { recursive: true, force: true })
+  })
+
+  afterEach(() => {
+    fs.rmSync(agentRoot, { recursive: true, force: true })
+    resetIdentity()
   })
 
   // ── Scenario 1: Family DMs on BB -> full turn, full tools ─────────

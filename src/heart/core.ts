@@ -171,6 +171,8 @@ export interface RunAgentOptions {
   skipConfirmation?: boolean;
   toolContext?: ToolContext;
   traceId?: string;
+  bridgeContext?: string;
+  currentSessionKey?: string;
   currentObligation?: string;
   mustResolveBeforeHandoff?: boolean;
   hasQueuedFollowUp?: boolean;

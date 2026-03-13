@@ -1,7 +1,10 @@
-import { describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const mockRunInnerDialogTurn = vi.fn()
 const mockEmitNervesEvent = vi.fn()
+const mockGetAgentName = vi.fn(() => "slugger")
+const mockGetInnerDialogPendingDir = vi.fn(() => "/mock/pending/self/inner/dialog")
+const mockHasPendingMessages = vi.fn(() => false)
 
 vi.mock("../../senses/inner-dialog", () => ({
   runInnerDialogTurn: (...args: any[]) => mockRunInnerDialogTurn(...args),
@@ -11,9 +14,24 @@ vi.mock("../../nerves/runtime", () => ({
   emitNervesEvent: (...args: any[]) => mockEmitNervesEvent(...args),
 }))
 
+vi.mock("../../heart/identity", () => ({
+  getAgentName: (...args: any[]) => mockGetAgentName(...args),
+}))
+
+vi.mock("../../mind/pending", () => ({
+  getInnerDialogPendingDir: (...args: any[]) => mockGetInnerDialogPendingDir(...args),
+  hasPendingMessages: (...args: any[]) => mockHasPendingMessages(...args),
+}))
+
 import { createInnerDialogWorker, startInnerDialogWorker } from "../../senses/inner-dialog-worker"
 
 describe("inner-dialog-worker", () => {
+  beforeEach(() => {
+    mockHasPendingMessages.mockReset().mockReturnValue(false)
+    mockGetAgentName.mockReset().mockReturnValue("slugger")
+    mockGetInnerDialogPendingDir.mockReset().mockReturnValue("/mock/pending/self/inner/dialog")
+  })
+
   it("runs boot/heartbeat/instinct cycles and ignores unknown messages", async () => {
     const runTurn = vi.fn().mockResolvedValue(undefined)
     const worker = createInnerDialogWorker(runTurn)
@@ -102,7 +120,7 @@ describe("inner-dialog-worker", () => {
     }
   })
 
-  it("ignores overlapping runs while a cycle is already in progress", async () => {
+  it("coalesces overlapping runs into one guaranteed follow-up turn", async () => {
     let release!: () => void
     const gate = new Promise<void>((resolve) => {
       release = resolve
@@ -115,7 +133,41 @@ describe("inner-dialog-worker", () => {
     release()
     await Promise.all([first, second])
 
-    expect(runTurn).toHaveBeenCalledTimes(1)
+    expect(runTurn).toHaveBeenCalledTimes(2)
+    expect(runTurn).toHaveBeenNthCalledWith(1, { reason: "heartbeat", taskId: undefined })
+    expect(runTurn).toHaveBeenNthCalledWith(2, { reason: "heartbeat", taskId: undefined })
+  })
+
+  it("preserves deferred taskId when an overlapping poke arrives during an active run", async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const runTurn = vi.fn().mockImplementationOnce(() => gate).mockResolvedValueOnce(undefined)
+    const worker = createInnerDialogWorker(runTurn)
+
+    const first = worker.run("heartbeat")
+    const second = worker.handleMessage({ type: "poke", taskId: "habits/daily-standup" })
+    release()
+    await Promise.all([first, second])
+
+    expect(runTurn).toHaveBeenCalledTimes(2)
+    expect(runTurn).toHaveBeenNthCalledWith(1, { reason: "heartbeat", taskId: undefined })
+    expect(runTurn).toHaveBeenNthCalledWith(2, { reason: "instinct", taskId: "habits/daily-standup" })
+  })
+
+  it("runs a follow-up turn when durable pending work remains after a turn completes", async () => {
+    const runTurn = vi.fn().mockResolvedValue(undefined)
+    const hasPendingWork = vi.fn()
+      .mockReturnValueOnce(true)
+      .mockReturnValueOnce(false)
+    const worker = createInnerDialogWorker(runTurn, hasPendingWork as any)
+
+    await worker.run("instinct")
+
+    expect(runTurn).toHaveBeenCalledTimes(2)
+    expect(runTurn).toHaveBeenNthCalledWith(1, { reason: "instinct", taskId: undefined })
+    expect(runTurn).toHaveBeenNthCalledWith(2, { reason: "instinct", taskId: undefined })
   })
 
   it("starts worker listeners and triggers boot + event cycles", async () => {

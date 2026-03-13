@@ -13,12 +13,15 @@ import type { TrustGateInput, TrustGateResult } from "./trust-gate"
 import type { PendingMessage } from "../mind/pending"
 import { emitNervesEvent } from "../nerves/runtime"
 import { resolveMustResolveBeforeHandoff } from "./continuity"
+import { createBridgeManager, formatBridgeContext } from "../heart/bridges/manager"
 
 // ── Input / Output types ──────────────────────────────────────────
 
 export interface InboundTurnInput {
   /** Which channel this turn arrives on (used for runAgent channel param). */
   channel: Channel
+  /** Canonical session key for this inbound turn (defaults to "session"). */
+  sessionKey?: string
   /** Capabilities of the channel (carries senseType). */
   capabilities: ChannelCapabilities
   /** The inbound user message(s) to append to the session. */
@@ -155,6 +158,18 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     ?.map((text) => text.trim())
     .filter((text) => text.length > 0)
     .at(-1)
+  const currentSession = {
+    friendId: resolvedContext.friend.id,
+    channel: input.channel,
+    key: input.sessionKey ?? "session",
+    sessionPath: session.sessionPath,
+  }
+  const activeBridges = createBridgeManager().findBridgesForSession({
+    friendId: currentSession.friendId,
+    channel: currentSession.channel,
+    key: currentSession.key,
+  })
+  const bridgeContext = formatBridgeContext(activeBridges) || undefined
 
   // Step 4: Drain pending messages
   const pending = input.drainPending(input.pendingDir)
@@ -197,6 +212,8 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   const existingToolContext = input.runAgentOptions?.toolContext
   const runAgentOptions: RunAgentOptions = {
     ...input.runAgentOptions,
+    bridgeContext,
+    currentSessionKey: currentSession.key,
     currentObligation,
     mustResolveBeforeHandoff,
     setMustResolveBeforeHandoff: (value) => {
@@ -208,6 +225,8 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
       ...existingToolContext,
       context: resolvedContext,
       friendStore: input.friendStore,
+      currentSession,
+      activeBridges,
     },
   }
 

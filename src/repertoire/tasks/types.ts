@@ -59,6 +59,7 @@ export interface BoardResult {
   actionRequired: string[]
   unresolvedDependencies: string[]
   activeSessions: string[]
+  activeBridges: string[]
 }
 
 export interface CreateTaskInput {
@@ -72,6 +73,14 @@ export interface CreateTaskInput {
   cadence?: string | null
   scheduledAt?: string | null
   lastRun?: string | null
+  activeBridge?: string | null
+  bridgeSessions?: string[] | null
+}
+
+export interface BindBridgeResult {
+  ok: boolean
+  path?: string
+  reason?: string
 }
 
 export interface TaskModule {
@@ -79,6 +88,7 @@ export interface TaskModule {
   getBoard(): BoardResult
   getTask(name: string): TaskFile | null
   createTask(input: CreateTaskInput): string
+  bindBridge(name: string, input: { bridgeId: string; sessionRefs: string[] }): BindBridgeResult
   updateStatus(name: string, toStatus: string): TransitionResult & { path?: string; archived?: string[] }
   validateWrite(filePath: string, content: string): ValidationResult
   validateTransition(from: TaskStatus, to: TaskStatus): TransitionResult

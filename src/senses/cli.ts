@@ -788,6 +788,7 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
         // User message passed via input.messages so the pipeline can prepend pending messages to it.
         const result = await handleInboundTurn({
           channel: "cli",
+          sessionKey: "session",
           capabilities: cliCapabilities,
           messages: [{ role: "user", content: userInput }],
           continuityIngressTexts: getCliContinuityIngressTexts(userInput),

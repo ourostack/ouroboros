@@ -9,6 +9,7 @@ import { clearTaskScanCache, getTaskRoot, scanTasks } from "./scanner"
 import { validateSpawn, validateStatusTransition, validateWrite } from "./middleware"
 import type {
   BoardResult,
+  BindBridgeResult,
   CreateTaskInput,
   SpawnValidation,
   TaskFile,
@@ -109,6 +110,12 @@ class FileTaskModule implements TaskModule {
       frontmatter.parent_task = null
       frontmatter.depends_on = []
     }
+    if (input.activeBridge && input.activeBridge.trim()) {
+      frontmatter.active_bridge = input.activeBridge.trim()
+    }
+    if (Array.isArray(input.bridgeSessions) && input.bridgeSessions.length > 0) {
+      frontmatter.bridge_sessions = input.bridgeSessions.filter((value) => typeof value === "string" && value.trim())
+    }
     const content = renderTaskFile(frontmatter, input.body)
     const validation = validateWrite(filePath, content)
     if (!validation.ok) {
@@ -119,6 +126,24 @@ class FileTaskModule implements TaskModule {
     fs.writeFileSync(filePath, content, "utf-8")
     clearTaskScanCache()
     return filePath
+  }
+
+  bindBridge(name: string, input: { bridgeId: string; sessionRefs: string[] }): BindBridgeResult {
+    const task = this.getTask(name)
+    if (!task) {
+      return { ok: false, reason: `task not found: ${name}` }
+    }
+
+    const content = fs.readFileSync(task.path, "utf-8")
+    const parsed = parseTaskFile(content, task.path)
+    const frontmatter = removeRuntimeFrontmatter(parsed.frontmatter)
+    frontmatter.active_bridge = input.bridgeId.trim()
+    frontmatter.bridge_sessions = input.sessionRefs.filter((value) => value.trim().length > 0)
+    frontmatter.updated = formatDate()
+
+    fs.writeFileSync(task.path, renderTaskFile(frontmatter, parsed.body), "utf-8")
+    clearTaskScanCache()
+    return { ok: true, path: task.path }
   }
 
   updateStatus(name: string, toStatus: string): TransitionResult & { path?: string; archived?: string[] } {

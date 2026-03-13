@@ -688,6 +688,7 @@ async function handleBlueBubblesNormalizedEvent(
     try {
       const result = await handleInboundTurn({
         channel: "bluebubbles",
+        sessionKey: event.chat.sessionKey,
         capabilities: bbCapabilities,
         messages: [userMessage],
         continuityIngressTexts: getBlueBubblesContinuityIngressTexts(event),

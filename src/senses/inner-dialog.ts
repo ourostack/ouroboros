@@ -345,6 +345,7 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
 
   const result = await handleInboundTurn({
     channel: "inner",
+    sessionKey: "dialog",
     capabilities: innerCapabilities,
     messages: [userMessage],
     continuityIngressTexts: [],

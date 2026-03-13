@@ -2061,6 +2061,20 @@ describe("summarizeArgs for docs tools", () => {
       .toBe("target=thread threadOriginatorGuid=THREAD-1")
   })
 
+  it("returns the approved bridge summary fields for bridge_manage", () => {
+    expect(summarizeArgs("bridge_manage", {
+      action: "attach",
+      bridgeId: "bridge-1",
+      objective: "keep cli and teams aligned",
+      friendId: "friend-2",
+      channel: "teams",
+      key: "conv-2",
+      body: "ignored",
+    })).toBe(
+      "action=attach bridgeId=bridge-1 objective=keep cli and teams aligned friendId=friend-2 channel=teams key=conv-2",
+    )
+  })
+
   it("returns type for save_friend_note name type (no key)", () => {
     expect(summarizeArgs("save_friend_note", { type: "name", content: "Jordan" })).toBe("type=name content=Jordan")
   })

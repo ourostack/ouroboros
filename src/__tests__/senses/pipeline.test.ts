@@ -9,6 +9,18 @@ import type { PendingMessage } from "../../mind/pending"
 import { handleInboundTurn } from "../../senses/pipeline"
 import type { InboundTurnInput, InboundTurnResult } from "../../senses/pipeline"
 
+const mockFindBridgesForSession = vi.fn()
+
+vi.mock("../../heart/bridges/manager", async () => {
+  const actual = await vi.importActual<typeof import("../../heart/bridges/manager")>("../../heart/bridges/manager")
+  return {
+    ...actual,
+    createBridgeManager: () => ({
+      findBridgesForSession: (...args: any[]) => mockFindBridgesForSession(...args),
+    }),
+  }
+})
+
 // ── Test helpers ──────────────────────────────────────────────────
 
 function makeFriend(overrides: Partial<FriendRecord> = {}): FriendRecord {
@@ -109,6 +121,10 @@ function makeInput(overrides: Partial<InboundTurnInput> = {}): InboundTurnInput 
 // ── Tests ────────────────────────────────────────────────────────
 
 describe("handleInboundTurn", () => {
+  beforeEach(() => {
+    mockFindBridgesForSession.mockReset().mockReturnValue([])
+  })
+
   // Step 1: friend resolution
   describe("friend resolution", () => {
     it("calls friendResolver.resolve()", async () => {
@@ -668,6 +684,93 @@ describe("handleInboundTurn", () => {
       const options = runAgentCall[4] as RunAgentOptions
       expect(options.toolContext?.context).toBe(context)
       expect(options.toolContext?.friendStore).toBe(store)
+    })
+
+    it("loads active bridge context for the current canonical session", async () => {
+      mockFindBridgesForSession.mockReturnValue([
+        {
+          id: "bridge-1",
+          objective: "relay Ari between cli and teams",
+          summary: "keep the two live surfaces aligned",
+          lifecycle: "active",
+          runtime: "idle",
+          createdAt: "2026-03-13T16:00:00.000Z",
+          updatedAt: "2026-03-13T16:00:00.000Z",
+          attachedSessions: [],
+          task: { taskName: "2026-03-13-1600-shared-relay", path: "/tmp/task.md", mode: "promoted", boundAt: "2026-03-13T16:00:00.000Z" },
+        },
+      ])
+      const input = makeInput({
+        channel: "teams",
+        capabilities: makeCapabilities({ channel: "teams" }),
+      }) as InboundTurnInput & { sessionKey: string }
+      input.sessionKey = "conv-1"
+
+      await handleInboundTurn(input as InboundTurnInput)
+
+      expect(mockFindBridgesForSession).toHaveBeenCalledWith({
+        friendId: "friend-1",
+        channel: "teams",
+        key: "conv-1",
+      })
+      const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
+      const options = runAgentCall[4] as RunAgentOptions
+      expect((options.toolContext as any).currentSession).toMatchObject({
+        friendId: "friend-1",
+        channel: "teams",
+        key: "conv-1",
+      })
+      expect((options.toolContext as any).activeBridges).toHaveLength(1)
+      expect((options as any).bridgeContext).toContain("bridge-1")
+      expect((options as any).bridgeContext).toContain("2026-03-13-1600-shared-relay")
+    })
+
+    it("formats non-idle bridge runtime states without task linkage", async () => {
+      mockFindBridgesForSession.mockReturnValue([
+        {
+          id: "bridge-processing",
+          objective: "processing bridge",
+          summary: "",
+          lifecycle: "active",
+          runtime: "processing",
+          createdAt: "2026-03-13T16:00:00.000Z",
+          updatedAt: "2026-03-13T16:00:00.000Z",
+          attachedSessions: [],
+          task: null,
+        },
+        {
+          id: "bridge-awaiting",
+          objective: "awaiting bridge",
+          summary: "",
+          lifecycle: "active",
+          runtime: "awaiting-follow-up",
+          createdAt: "2026-03-13T16:00:00.000Z",
+          updatedAt: "2026-03-13T16:00:00.000Z",
+          attachedSessions: [],
+          task: null,
+        },
+        {
+          id: "bridge-suspended",
+          objective: "suspended bridge",
+          summary: "",
+          lifecycle: "suspended",
+          runtime: "idle",
+          createdAt: "2026-03-13T16:00:00.000Z",
+          updatedAt: "2026-03-13T16:00:00.000Z",
+          attachedSessions: [],
+          task: null,
+        },
+      ])
+      const input = makeInput() as InboundTurnInput & { sessionKey: string }
+      input.sessionKey = "session"
+
+      await handleInboundTurn(input as InboundTurnInput)
+
+      const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
+      const options = runAgentCall[4] as RunAgentOptions
+      expect((options as any).bridgeContext).toContain("bridge-processing: processing bridge [active-processing]")
+      expect((options as any).bridgeContext).toContain("bridge-awaiting: awaiting bridge [awaiting-follow-up]")
+      expect((options as any).bridgeContext).toContain("bridge-suspended: suspended bridge [suspended]")
     })
 
     it("derives currentObligation from the last continuity ingress text", async () => {
