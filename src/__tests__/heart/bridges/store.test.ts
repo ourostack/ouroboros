@@ -67,4 +67,15 @@ describe("bridge store", () => {
       }).map((entry) => entry.id),
     ).toEqual(["bridge-1"])
   })
+
+  it("returns null for missing records and ignores unreadable files during listing", async () => {
+    const { createBridgeStore } = await import("../../../heart/bridges/store")
+
+    const store = createBridgeStore()
+    fs.mkdirSync(path.join(agentStateRoot, "bridges"), { recursive: true })
+    fs.writeFileSync(path.join(agentStateRoot, "bridges", "broken.json"), "{", "utf-8")
+
+    expect(store.get("missing")).toBeNull()
+    expect(store.list()).toEqual([])
+  })
 })

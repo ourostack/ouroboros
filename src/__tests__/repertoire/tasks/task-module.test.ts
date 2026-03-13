@@ -422,6 +422,41 @@ describe("task module", () => {
     expect(board.full).toContain("bridge-1")
   })
 
+  it("persists bridge metadata during task creation and returns bindBridge miss errors", async () => {
+    const parser = await import("../../../repertoire/tasks/parser")
+    const tasks = await import("../../../repertoire/tasks")
+    const module = tasks.getTaskModule() as unknown as {
+      createTask: (input: {
+        title: string
+        type: string
+        category: string
+        body: string
+        status?: string
+        activeBridge?: string
+        bridgeSessions?: string[]
+      }) => string
+      bindBridge: (name: string, input: { bridgeId: string; sessionRefs: string[] }) => { ok: boolean; reason?: string }
+    }
+
+    const created = module.createTask({
+      title: "Bridge Metadata",
+      type: "ongoing",
+      category: "coordination",
+      status: "processing",
+      body: "## scope\ncarry the bridge metadata",
+      activeBridge: "bridge-2",
+      bridgeSessions: ["friend-1/cli/session", "  ", "friend-1/teams/conv-1"],
+    })
+    const parsed = parser.parseTaskFile(fs.readFileSync(created, "utf-8"), created)
+    expect(parsed.frontmatter.active_bridge).toBe("bridge-2")
+    expect(parsed.frontmatter.bridge_sessions).toEqual(["friend-1/cli/session", "friend-1/teams/conv-1"])
+
+    expect(module.bindBridge("missing-task", { bridgeId: "bridge-3", sessionRefs: [] })).toEqual({
+      ok: false,
+      reason: "task not found: missing-task",
+    })
+  })
+
   it("detects stale tasks while excluding done tasks", async () => {
     const scanner = await import("../../../repertoire/tasks/scanner")
     const parser = await import("../../../repertoire/tasks/parser")

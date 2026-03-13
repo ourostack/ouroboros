@@ -721,6 +721,54 @@ describe("handleInboundTurn", () => {
       expect((options as any).bridgeContext).toContain("2026-03-13-1600-shared-relay")
     })
 
+    it("formats non-idle bridge runtime states without task linkage", async () => {
+      mockFindBridgesForSession.mockReturnValue([
+        {
+          id: "bridge-processing",
+          objective: "processing bridge",
+          summary: "",
+          lifecycle: "active",
+          runtime: "processing",
+          createdAt: "2026-03-13T16:00:00.000Z",
+          updatedAt: "2026-03-13T16:00:00.000Z",
+          attachedSessions: [],
+          task: null,
+        },
+        {
+          id: "bridge-awaiting",
+          objective: "awaiting bridge",
+          summary: "",
+          lifecycle: "active",
+          runtime: "awaiting-follow-up",
+          createdAt: "2026-03-13T16:00:00.000Z",
+          updatedAt: "2026-03-13T16:00:00.000Z",
+          attachedSessions: [],
+          task: null,
+        },
+        {
+          id: "bridge-suspended",
+          objective: "suspended bridge",
+          summary: "",
+          lifecycle: "suspended",
+          runtime: "idle",
+          createdAt: "2026-03-13T16:00:00.000Z",
+          updatedAt: "2026-03-13T16:00:00.000Z",
+          attachedSessions: [],
+          task: null,
+        },
+      ])
+      const input = makeInput() as InboundTurnInput & { sessionKey: string }
+      input.sessionKey = "session"
+
+      await handleInboundTurn(input as InboundTurnInput)
+
+      const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
+      const options = runAgentCall[4] as RunAgentOptions
+      expect((options as any).bridgeContext).toContain("bridge-processing: processing bridge [active-processing]")
+      expect((options as any).bridgeContext).toContain("bridge-awaiting: awaiting bridge [awaiting-follow-up]")
+      expect((options as any).bridgeContext).toContain("bridge-suspended: suspended bridge [suspended]")
+    })
+
     it("derives currentObligation from the last continuity ingress text", async () => {
       const input = makeInput({
         continuityIngressTexts: ["first ask", "latest ask"],

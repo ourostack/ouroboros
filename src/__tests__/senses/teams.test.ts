@@ -1,3 +1,4 @@
+import * as fs from "fs"
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import type { ChannelCallbacks } from "../../heart/core"
 import { emitNervesEvent } from "../../nerves/runtime"
@@ -9,7 +10,8 @@ vi.mock("../../nerves/runtime", () => ({
 vi.mock("../../heart/identity", () => ({
   getAgentName: vi.fn(() => "testagent"),
   getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/testagent/secrets.json"),
-  getAgentRoot: vi.fn(() => "/mock/agent/root"),
+  getAgentRoot: vi.fn(() => "/tmp/mock-agent-root"),
+  getAgentStateRoot: vi.fn(() => "/tmp/mock-agent-root/state"),
   resetAgentConfigCache: vi.fn(),
   loadAgentConfig: vi.fn(() => ({
     name: "testagent",
@@ -40,6 +42,10 @@ vi.mock("../../mind/friends/resolver", () => ({
 }))
 
 import { getPhrases } from "../../mind/phrases"
+
+afterEach(() => {
+  fs.rmSync("/tmp/mock-agent-root", { recursive: true, force: true })
+})
 
 // Tests for src/teams.ts Teams channel adapter.
 

@@ -42,4 +42,22 @@ describe("bridge state machine", () => {
     const cancelled = bridges.cancelBridge(bridges.activateBridge(bridges.createBridgeState()))
     expect(() => bridges.activateBridge(cancelled)).toThrow("cannot activate")
   })
+
+  it("rejects invalid non-terminal transitions", async () => {
+    const bridges = await import("../../../heart/bridges/state-machine")
+
+    expect(() => bridges.activateBridge(bridges.activateBridge(bridges.createBridgeState()))).toThrow("cannot activate")
+    expect(() => bridges.beginBridgeProcessing(bridges.createBridgeState())).toThrow("cannot process")
+    expect(() => bridges.queueBridgeFollowUp(bridges.createBridgeState())).toThrow("cannot queue")
+    expect(() => bridges.queueBridgeFollowUp(bridges.activateBridge(bridges.createBridgeState()))).toThrow("cannot queue")
+    expect(() => bridges.advanceBridgeAfterTurn(bridges.createBridgeState())).toThrow("cannot advance")
+    expect(() => bridges.advanceBridgeAfterTurn(bridges.activateBridge(bridges.createBridgeState()))).toThrow("cannot advance")
+    expect(() => bridges.suspendBridge(bridges.beginBridgeProcessing(bridges.activateBridge(bridges.createBridgeState())))).toThrow("cannot suspend")
+    expect(() => bridges.completeBridge(bridges.beginBridgeProcessing(bridges.activateBridge(bridges.createBridgeState())))).toThrow("cannot complete")
+    expect(() => bridges.cancelBridge(bridges.beginBridgeProcessing(bridges.activateBridge(bridges.createBridgeState())))).toThrow("cannot cancel")
+    const awaiting = bridges.queueBridgeFollowUp(
+      bridges.beginBridgeProcessing(bridges.activateBridge(bridges.createBridgeState())),
+    )
+    expect(bridges.queueBridgeFollowUp(awaiting)).toBe(awaiting)
+  })
 })

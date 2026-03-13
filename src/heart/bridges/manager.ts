@@ -218,7 +218,7 @@ export function createBridgeManager(options: CreateBridgeManagerOptions = {}): B
         activeBridge: bridge.id,
         bridgeSessions: bridge.attachedSessions.map((session) => sessionIdentityKey(session)),
       })
-      const taskName = taskPath.split("/").pop()?.replace(/\.md$/, "") ?? taskPath
+      const taskName = taskPath.replace(/^.*\//, "").replace(/\.md$/, "")
       const updated = save({
         ...bridge,
         task: {

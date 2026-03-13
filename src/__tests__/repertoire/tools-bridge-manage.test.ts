@@ -165,4 +165,90 @@ describe("bridge_manage tool", () => {
     expect(result).toContain("bridge: bridge-1")
     expect(result).toContain("sessions: 2")
   })
+
+  it("supports status, promote_task, complete, and cancel actions through the shared manager", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find((entry) => entry.tool.function.name === "bridge_manage")!
+
+    mockGetBridge.mockReturnValue({
+      id: "bridge-1",
+      objective: "relay Ari between cli and teams",
+      lifecycle: "active",
+      runtime: "idle",
+      summary: "keep the two live surfaces aligned",
+      attachedSessions: [{ friendId: "friend-1", channel: "cli", key: "session", sessionPath: "/tmp/session.json" }],
+      task: null,
+    })
+    mockPromoteBridgeToTask.mockReturnValue({
+      id: "bridge-1",
+      objective: "relay Ari between cli and teams",
+      lifecycle: "active",
+      runtime: "idle",
+      summary: "keep the two live surfaces aligned",
+      attachedSessions: [{ friendId: "friend-1", channel: "cli", key: "session", sessionPath: "/tmp/session.json" }],
+      task: { taskName: "2026-03-13-1600-shared-relay", path: "/tmp/task.md", mode: "promoted", boundAt: "2026-03-13T16:00:00.000Z" },
+    })
+    mockCompleteBridge.mockReturnValue({
+      id: "bridge-1",
+      objective: "relay Ari between cli and teams",
+      lifecycle: "completed",
+      runtime: "idle",
+      summary: "keep the two live surfaces aligned",
+      attachedSessions: [{ friendId: "friend-1", channel: "cli", key: "session", sessionPath: "/tmp/session.json" }],
+      task: { taskName: "2026-03-13-1600-shared-relay", path: "/tmp/task.md", mode: "promoted", boundAt: "2026-03-13T16:00:00.000Z" },
+    })
+    mockCancelBridge.mockReturnValue({
+      id: "bridge-1",
+      objective: "relay Ari between cli and teams",
+      lifecycle: "cancelled",
+      runtime: "idle",
+      summary: "keep the two live surfaces aligned",
+      attachedSessions: [{ friendId: "friend-1", channel: "cli", key: "session", sessionPath: "/tmp/session.json" }],
+      task: null,
+    })
+
+    expect(
+      await tool.handler({ action: "status", bridgeId: "bridge-1" }, { signin: vi.fn() } as any),
+    ).toContain("state: active-idle")
+
+    expect(
+      await tool.handler({ action: "promote_task", bridgeId: "bridge-1", title: "Shared Relay" }, { signin: vi.fn() } as any),
+    ).toContain("task: 2026-03-13-1600-shared-relay")
+    expect(mockPromoteBridgeToTask).toHaveBeenCalledWith("bridge-1", {
+      title: "Shared Relay",
+      category: undefined,
+      body: undefined,
+    })
+
+    expect(
+      await tool.handler({ action: "complete", bridgeId: "bridge-1" }, { signin: vi.fn() } as any),
+    ).toContain("state: completed")
+    expect(
+      await tool.handler({ action: "cancel", bridgeId: "bridge-1" }, { signin: vi.fn() } as any),
+    ).toContain("state: cancelled")
+  })
+
+  it("returns clear errors for missing bridge context, bridge ids, attach inputs, and missing sessions", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find((entry) => entry.tool.function.name === "bridge_manage")!
+
+    expect(await tool.handler({ action: "begin", objective: "bridge it" }, { signin: vi.fn() } as any)).toBe(
+      "bridge_manage begin requires an active session context.",
+    )
+    expect(await tool.handler({ action: "status" }, { signin: vi.fn() } as any)).toBe(
+      "bridgeId is required for this bridge action.",
+    )
+    expect(await tool.handler({ action: "attach", bridgeId: "bridge-1", friendId: "friend-2" }, { signin: vi.fn() } as any)).toBe(
+      "friendId and channel are required for bridge attach.",
+    )
+
+    const recall = await import("../../heart/session-recall")
+    vi.mocked(recall.recallSession).mockResolvedValueOnce({ kind: "missing" } as any)
+    expect(
+      await tool.handler(
+        { action: "attach", bridgeId: "bridge-1", friendId: "friend-2", channel: "teams", key: "conv-2" },
+        { signin: vi.fn() } as any,
+      ),
+    ).toBe("no session found for that friend/channel/key combination.")
+  })
 })
