@@ -219,6 +219,24 @@ describe("buildSystem", () => {
     expect(result).toContain("shared-relay")
   })
 
+  it("reuses a pre-headed bridge section without duplicating the heading", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem(
+      "teams",
+      {
+        bridgeContext: "## active bridge work\nbridge-2: keep cli and teams aligned",
+      } as any,
+      makeOnboardingContext() as any,
+    )
+    expect(result).toContain("## active bridge work\nbridge-2: keep cli and teams aligned")
+    expect(result.match(/## active bridge work/g)).toHaveLength(1)
+  })
+
   it("includes lore section", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")

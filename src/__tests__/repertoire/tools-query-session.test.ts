@@ -334,6 +334,30 @@ describe("query_session tool", () => {
     expect(result).toBe("Summary: hello")
   })
 
+  it("falls back to a missing-session message when shared recall throws unexpectedly", async () => {
+    const mockRecallSession = vi.fn().mockRejectedValue(new Error("recall failed"))
+    vi.doMock("../../heart/session-recall", () => ({
+      recallSession: mockRecallSession,
+    }))
+
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
+
+    const result = await tool.handler({
+      friendId: "friend-1",
+      channel: "cli",
+      key: "session",
+    })
+
+    expect(mockRecallSession).toHaveBeenCalledWith(expect.objectContaining({
+      sessionPath: "/mock/agent-root/state/sessions/friend-1/cli/session.json",
+      friendId: "friend-1",
+      channel: "cli",
+      key: "session",
+    }))
+    expect(result).toBe("no session found for that friend/channel/key combination.")
+  })
+
   it("supports a lightweight status mode for self/inner checks", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
