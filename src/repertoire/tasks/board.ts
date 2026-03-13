@@ -64,6 +64,13 @@ function activeSessionLines(tasks: TaskFile[]): string[] {
   return active.map((task) => task.stem).sort()
 }
 
+function activeBridgeLines(tasks: TaskFile[]): string[] {
+  return tasks
+    .filter((task) => typeof task.frontmatter.active_bridge === "string" && String(task.frontmatter.active_bridge).trim())
+    .map((task) => `${task.stem} -> ${String(task.frontmatter.active_bridge).trim()}`)
+    .sort()
+}
+
 function actionRequired(index: TaskIndex, byStatus: Record<TaskStatus, string[]>): string[] {
   const actions = [...index.parseErrors, ...index.invalidFilenames.map((filePath) => `bad filename: ${filePath}`)]
 
@@ -113,6 +120,12 @@ export function buildTaskBoard(index: TaskIndex): BoardResult {
     fullLines.push(active.map((line) => `- ${line}`).join("\n"))
   }
 
+  const activeBridges = activeBridgeLines(index.tasks)
+  if (activeBridges.length > 0) {
+    fullLines.push("## active bridges")
+    fullLines.push(activeBridges.map((line) => `- ${line}`).join("\n"))
+  }
+
   return {
     compact,
     full: fullLines.join("\n\n"),
@@ -120,6 +133,7 @@ export function buildTaskBoard(index: TaskIndex): BoardResult {
     actionRequired: actionRequired(index, byStatus),
     unresolvedDependencies: unresolved,
     activeSessions: active,
+    activeBridges,
   }
 }
 
