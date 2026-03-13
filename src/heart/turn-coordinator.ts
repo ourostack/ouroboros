@@ -17,6 +17,10 @@ export interface TurnCoordinator {
   drainFollowUps(key: string): SteeringFollowUp[]
 }
 
+function scopedKey(scope: string, key: string): string {
+  return `${scope}:${key}`
+}
+
 export function createTurnCoordinator(): TurnCoordinator {
   const turnLocks = new Map<string, Promise<void>>()
   const activeTurns = new Set<string>()
@@ -80,5 +84,25 @@ export function createTurnCoordinator(): TurnCoordinator {
 const _sharedTurnCoordinator = createTurnCoordinator()
 
 export function withSharedTurnLock<T>(scope: string, key: string, fn: () => Promise<T>): Promise<T> {
-  return _sharedTurnCoordinator.withTurnLock(`${scope}:${key}`, fn)
+  return _sharedTurnCoordinator.withTurnLock(scopedKey(scope, key), fn)
+}
+
+export function tryBeginSharedTurn(scope: string, key: string): boolean {
+  return _sharedTurnCoordinator.tryBeginTurn(scopedKey(scope, key))
+}
+
+export function endSharedTurn(scope: string, key: string): void {
+  _sharedTurnCoordinator.endTurn(scopedKey(scope, key))
+}
+
+export function isSharedTurnActive(scope: string, key: string): boolean {
+  return _sharedTurnCoordinator.isTurnActive(scopedKey(scope, key))
+}
+
+export function enqueueSharedFollowUp(scope: string, key: string, followUp: SteeringFollowUp): void {
+  _sharedTurnCoordinator.enqueueFollowUp(scopedKey(scope, key), followUp)
+}
+
+export function drainSharedFollowUps(scope: string, key: string): SteeringFollowUp[] {
+  return _sharedTurnCoordinator.drainFollowUps(scopedKey(scope, key))
 }
