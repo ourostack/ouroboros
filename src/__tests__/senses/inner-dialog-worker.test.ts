@@ -102,7 +102,7 @@ describe("inner-dialog-worker", () => {
     }
   })
 
-  it("ignores overlapping runs while a cycle is already in progress", async () => {
+  it("coalesces overlapping runs into one guaranteed follow-up turn", async () => {
     let release!: () => void
     const gate = new Promise<void>((resolve) => {
       release = resolve
@@ -115,7 +115,9 @@ describe("inner-dialog-worker", () => {
     release()
     await Promise.all([first, second])
 
-    expect(runTurn).toHaveBeenCalledTimes(1)
+    expect(runTurn).toHaveBeenCalledTimes(2)
+    expect(runTurn).toHaveBeenNthCalledWith(1, { reason: "heartbeat", taskId: undefined })
+    expect(runTurn).toHaveBeenNthCalledWith(2, { reason: "heartbeat", taskId: undefined })
   })
 
   it("starts worker listeners and triggers boot + event cycles", async () => {
