@@ -144,8 +144,17 @@ export function deriveInnerDialogStatus(
   runtimeState?: InnerDialogRuntimeState | null,
 ): InnerDialogStatus {
   if (runtimeState?.status === "running") {
+    if (pendingMessages.length > 0) {
+      return {
+        queue: "queued to inner/dialog",
+        wake: "queued behind active turn",
+        processing: "pending",
+        surfaced: "nothing yet",
+      }
+    }
+
     return {
-      queue: pendingMessages.length > 0 ? "queued to inner/dialog" : "clear",
+      queue: "clear",
       wake: "in progress",
       processing: "started",
       surfaced: "nothing yet",
