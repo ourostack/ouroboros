@@ -154,6 +154,9 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     session.state?.mustResolveBeforeHandoff === true,
     input.continuityIngressTexts,
   )
+  const lastFriendActivityAt = input.channel === "inner"
+    ? session.state?.lastFriendActivityAt
+    : new Date().toISOString()
   const currentObligation = input.continuityIngressTexts
     ?.map((text) => text.trim())
     .filter((text) => text.length > 0)
@@ -240,10 +243,13 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
 
   // Step 6: postTurn
   const nextState = result.outcome === "complete" || result.outcome === "blocked" || result.outcome === "superseded"
-    ? undefined
-    : mustResolveBeforeHandoff
-      ? { mustResolveBeforeHandoff: true }
-      : undefined
+    ? (typeof lastFriendActivityAt === "string"
+      ? { lastFriendActivityAt }
+      : undefined)
+    : {
+      ...(mustResolveBeforeHandoff ? { mustResolveBeforeHandoff: true } : {}),
+      ...(typeof lastFriendActivityAt === "string" ? { lastFriendActivityAt } : {}),
+    }
   input.postTurn(sessionMessages, session.sessionPath, result.usage, undefined, nextState)
 
   // Step 7: Token accumulation
