@@ -11,6 +11,7 @@ import { emitNervesEvent } from "../nerves/runtime";
 import { getAgentRoot, getAgentName } from "../heart/identity";
 import { requestInnerWake } from "../heart/daemon/socket-client";
 import { extractThoughtResponseFromMessages, formatInnerDialogStatus, formatSurfacedValue, getInnerDialogSessionPath, readInnerDialogStatus } from "../heart/daemon/thoughts";
+import { recallSession } from "../heart/session-recall";
 import { codingToolDefinitions } from "./coding/tools";
 import { readMemoryFacts, saveMemoryFact, searchMemoryFacts } from "../mind/memory";
 import { getPendingDir, getInnerDialogPendingDir } from "../mind/pending";
@@ -644,26 +645,24 @@ export const baseToolDefinitions: ToolDefinition[] = [
         }
 
         const sessFile = resolveSessionPath(friendId, channel, key)
-        const raw = fs.readFileSync(sessFile, "utf-8")
-        const data = JSON.parse(raw)
-        const messages: { role: string; content: string }[] = (data.messages || [])
-          .filter((m: { role: string }) => m.role !== "system")
-        const tail = messages.slice(-count)
-        if (tail.length === 0) return "session exists but has no non-system messages."
+        const recall = await recallSession({
+          sessionPath: sessFile,
+          friendId,
+          channel,
+          key,
+          messageCount: count,
+          trustLevel: ctx?.context?.friend?.trustLevel,
+          summarize: ctx?.summarize,
+        })
 
-        const transcript = tail.map((m: { role: string; content: string }) => `[${m.role}] ${m.content}`).join("\n")
-
-        // LLM summarization when summarize function is available
-        if (ctx?.summarize) {
-          const trustLevel = ctx.context?.friend?.trustLevel ?? "family"
-          const isSelfQuery = friendId === "self"
-          const instruction = isSelfQuery
-            ? "summarize this session transcript fully and transparently. this is my own inner dialog — include all details, decisions, and reasoning."
-            : `summarize this session transcript. the person asking has trust level: ${trustLevel}. family=full transparency, friend=share work and general topics but protect other people's identities, acquaintance=very guarded minimal disclosure.`
-          return await ctx.summarize(transcript, instruction)
+        if (recall.kind === "missing") {
+          return "no session found for that friend/channel/key combination."
+        }
+        if (recall.kind === "empty") {
+          return "session exists but has no non-system messages."
         }
 
-        return transcript
+        return recall.summary
       } catch {
         return "no session found for that friend/channel/key combination."
       }
