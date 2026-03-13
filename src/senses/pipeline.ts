@@ -242,14 +242,15 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   )
 
   // Step 6: postTurn
+  const continuingState = {
+    ...(mustResolveBeforeHandoff ? { mustResolveBeforeHandoff: true } : {}),
+    ...(typeof lastFriendActivityAt === "string" ? { lastFriendActivityAt } : {}),
+  }
   const nextState = result.outcome === "complete" || result.outcome === "blocked" || result.outcome === "superseded"
     ? (typeof lastFriendActivityAt === "string"
       ? { lastFriendActivityAt }
       : undefined)
-    : {
-      ...(mustResolveBeforeHandoff ? { mustResolveBeforeHandoff: true } : {}),
-      ...(typeof lastFriendActivityAt === "string" ? { lastFriendActivityAt } : {}),
-    }
+    : (Object.keys(continuingState).length > 0 ? continuingState : undefined)
   input.postTurn(sessionMessages, session.sessionPath, result.usage, undefined, nextState)
 
   // Step 7: Token accumulation

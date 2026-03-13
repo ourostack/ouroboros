@@ -801,7 +801,10 @@ describe("handleInboundTurn", () => {
         "/tmp/test-session.json",
         usageData,
         undefined,
-        { mustResolveBeforeHandoff: true },
+        expect.objectContaining({
+          mustResolveBeforeHandoff: true,
+          lastFriendActivityAt: expect.any(String),
+        }),
       )
     })
 
@@ -828,7 +831,9 @@ describe("handleInboundTurn", () => {
         "/tmp/test-session.json",
         usageData,
         undefined,
-        undefined,
+        expect.objectContaining({
+          lastFriendActivityAt: expect.any(String),
+        }),
       )
     })
 
@@ -847,7 +852,71 @@ describe("handleInboundTurn", () => {
         "/tmp/test-session.json",
         usageData,
         undefined,
-        { mustResolveBeforeHandoff: true },
+        expect.objectContaining({
+          mustResolveBeforeHandoff: true,
+          lastFriendActivityAt: expect.any(String),
+        }),
+      )
+    })
+
+    it("does not stamp a fresh friend-facing activity time for inner turns", async () => {
+      const input = makeInput({
+        channel: "inner",
+        capabilities: makeCapabilities({ channel: "inner", senseType: "local" }),
+        sessionLoader: {
+          loadOrCreate: vi.fn().mockResolvedValue({
+            messages: [{ role: "system", content: "You are helpful." }],
+            sessionPath: "/tmp/test-session.json",
+            state: { lastFriendActivityAt: "2026-03-13T20:00:00.000Z" },
+          }),
+        },
+        runAgent: vi.fn().mockResolvedValue({ usage: usageData, outcome: "errored" }),
+      })
+
+      await handleInboundTurn(input)
+
+      expect(input.postTurn).toHaveBeenCalledWith(
+        expect.any(Array),
+        "/tmp/test-session.json",
+        usageData,
+        undefined,
+        { lastFriendActivityAt: "2026-03-13T20:00:00.000Z" },
+      )
+    })
+
+    it("keeps inner turns without saved friend activity from inventing state", async () => {
+      const input = makeInput({
+        channel: "inner",
+        capabilities: makeCapabilities({ channel: "inner", senseType: "local" }),
+        runAgent: vi.fn().mockResolvedValue({ usage: usageData, outcome: "errored" }),
+      })
+
+      await handleInboundTurn(input)
+
+      expect(input.postTurn).toHaveBeenCalledWith(
+        expect.any(Array),
+        "/tmp/test-session.json",
+        usageData,
+        undefined,
+        undefined,
+      )
+    })
+
+    it("clears terminal inner turns with no saved friend activity to undefined state", async () => {
+      const input = makeInput({
+        channel: "inner",
+        capabilities: makeCapabilities({ channel: "inner", senseType: "local" }),
+        runAgent: vi.fn().mockResolvedValue({ usage: usageData, outcome: "complete" }),
+      })
+
+      await handleInboundTurn(input)
+
+      expect(input.postTurn).toHaveBeenCalledWith(
+        expect.any(Array),
+        "/tmp/test-session.json",
+        usageData,
+        undefined,
+        undefined,
       )
     })
   })
@@ -908,7 +977,9 @@ describe("handleInboundTurn", () => {
           "/tmp/test-session.json",
           usageData,
           undefined,
-          undefined,
+          expect.objectContaining({
+            lastFriendActivityAt: expect.any(String),
+          }),
         )
       },
     )

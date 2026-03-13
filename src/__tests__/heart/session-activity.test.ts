@@ -135,4 +135,96 @@ describe("session activity", () => {
     })
     expect(any?.friendId).toBe("friend-1")
   })
+
+  it("falls back cleanly when sessions are missing or explicit friend activity is malformed", async () => {
+    const missingSessionsDir = "/missing/sessions"
+    const friendsDir = "/mock/friends"
+
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+
+    const { listSessionActivity, findFreshestFriendSession } = await import("../../heart/session-activity")
+
+    expect(listSessionActivity({
+      sessionsDir: missingSessionsDir,
+      friendsDir,
+      agentName: "slugger",
+    })).toEqual([])
+    expect(findFreshestFriendSession({
+      sessionsDir: missingSessionsDir,
+      friendsDir,
+      agentName: "slugger",
+      friendId: "friend-1",
+    })).toBeNull()
+
+    const sessionsDir = "/mock/sessions"
+    const now = Date.now()
+
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    vi.mocked(fs.readdirSync).mockImplementation(((p: string) => {
+      if (p === sessionsDir) return ["friend-1"] as any
+      if (p === path.join(sessionsDir, "friend-1")) return ["cli"] as any
+      if (p === path.join(sessionsDir, "friend-1", "cli")) return ["session.json"] as any
+      return [] as any
+    }) as any)
+    vi.mocked(fs.statSync).mockReturnValue({ mtimeMs: now - 1000 * 15 } as any)
+    vi.mocked(fs.readFileSync).mockImplementation(((p: string) => {
+      if (p === path.join(friendsDir, "friend-1.json")) return JSON.stringify({ name: "Ari" })
+      if (p === path.join(sessionsDir, "friend-1", "cli", "session.json")) {
+        return JSON.stringify({
+          version: 1,
+          messages: [],
+          state: { lastFriendActivityAt: { not: "a string" } },
+        })
+      }
+      throw new Error("ENOENT")
+    }) as any)
+
+    expect(listSessionActivity({
+      sessionsDir,
+      friendsDir,
+      agentName: "slugger",
+    })).toMatchObject([
+      {
+        friendId: "friend-1",
+        activitySource: "mtime-fallback",
+      },
+    ])
+  })
+
+  it("falls back to mtime when lastFriendActivityAt is an invalid date string", async () => {
+    const sessionsDir = "/mock/sessions"
+    const friendsDir = "/mock/friends"
+    const now = Date.now()
+
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    vi.mocked(fs.readdirSync).mockImplementation(((p: string) => {
+      if (p === sessionsDir) return ["friend-1"] as any
+      if (p === path.join(sessionsDir, "friend-1")) return ["cli"] as any
+      if (p === path.join(sessionsDir, "friend-1", "cli")) return ["session.json"] as any
+      return [] as any
+    }) as any)
+    vi.mocked(fs.statSync).mockReturnValue({ mtimeMs: now - 1000 * 20 } as any)
+    vi.mocked(fs.readFileSync).mockImplementation(((p: string) => {
+      if (p === path.join(friendsDir, "friend-1.json")) return JSON.stringify({ name: "Ari" })
+      if (p === path.join(sessionsDir, "friend-1", "cli", "session.json")) {
+        return JSON.stringify({
+          version: 1,
+          messages: [],
+          state: { lastFriendActivityAt: "not-a-real-date" },
+        })
+      }
+      throw new Error("ENOENT")
+    }) as any)
+
+    const { listSessionActivity } = await import("../../heart/session-activity")
+    expect(listSessionActivity({
+      sessionsDir,
+      friendsDir,
+      agentName: "slugger",
+    })[0]).toMatchObject({
+      friendId: "friend-1",
+      activitySource: "mtime-fallback",
+      lastActivityAt: new Date(now - 1000 * 20).toISOString(),
+    })
+  })
 })
