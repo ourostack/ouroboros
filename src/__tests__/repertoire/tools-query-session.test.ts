@@ -299,6 +299,41 @@ describe("query_session tool", () => {
     expect(result).toContain("[assistant] hi there")
   })
 
+  it("delegates transcript recall to the shared session-recall helper", async () => {
+    const mockRecallSession = vi.fn().mockResolvedValue({
+      kind: "ok",
+      transcript: "[user] hello",
+      summary: "Summary: hello",
+      snapshot: "recent focus: hello",
+    })
+    vi.doMock("../../heart/session-recall", () => ({
+      recallSession: mockRecallSession,
+    }))
+
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
+
+    const result = await tool.handler(
+      { friendId: "friend-1", channel: "cli", key: "session" },
+      {
+        signin: async () => undefined,
+        summarize: vi.fn().mockResolvedValue("Summary: hello"),
+        context: {
+          friend: { trustLevel: "friend" as const },
+          channel: { channel: "cli" as const, supportsMarkdown: true, supportsStreaming: true, supportsRichCards: false },
+        },
+      } as any,
+    )
+
+    expect(mockRecallSession).toHaveBeenCalledWith(expect.objectContaining({
+      sessionPath: "/mock/agent-root/state/sessions/friend-1/cli/session.json",
+      friendId: "friend-1",
+      channel: "cli",
+      key: "session",
+    }))
+    expect(result).toBe("Summary: hello")
+  })
+
   it("supports a lightweight status mode for self/inner checks", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
