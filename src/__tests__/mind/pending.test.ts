@@ -46,6 +46,50 @@ describe("getPendingDir", () => {
   })
 })
 
+describe("hasPendingMessages", () => {
+  beforeEach(() => {
+    vi.resetModules()
+  })
+
+  it("returns false when the directory does not exist", async () => {
+    const { hasPendingMessages } = await import("../../mind/pending")
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+
+    expect(hasPendingMessages("/mock/pending/friend-1/cli/session")).toBe(false)
+  })
+
+  it("returns true when json or processing files are present", async () => {
+    const { hasPendingMessages } = await import("../../mind/pending")
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    vi.mocked(fs.readdirSync).mockReturnValue([
+      "1709900001-a.json.processing",
+      "1709900002-b.json",
+      "notes.txt",
+    ] as any)
+
+    expect(hasPendingMessages("/mock/pending/friend-1/cli/session")).toBe(true)
+  })
+
+  it("returns false when only unrelated files are present", async () => {
+    const { hasPendingMessages } = await import("../../mind/pending")
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    vi.mocked(fs.readdirSync).mockReturnValue([
+      ".DS_Store",
+      "notes.txt",
+    ] as any)
+
+    expect(hasPendingMessages("/mock/pending/friend-1/cli/session")).toBe(false)
+  })
+
+  it("returns false when readdirSync throws", async () => {
+    const { hasPendingMessages } = await import("../../mind/pending")
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    vi.mocked(fs.readdirSync).mockImplementation(() => { throw new Error("EACCES") })
+
+    expect(hasPendingMessages("/mock/pending/friend-1/cli/session")).toBe(false)
+  })
+})
+
 describe("drainPending", () => {
   beforeEach(() => {
     vi.resetModules()

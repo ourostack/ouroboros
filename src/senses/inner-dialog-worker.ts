@@ -1,5 +1,7 @@
 import { runInnerDialogTurn } from "./inner-dialog"
 import { emitNervesEvent } from "../nerves/runtime"
+import { getAgentName } from "../heart/identity"
+import { getInnerDialogPendingDir, hasPendingMessages } from "../mind/pending"
 
 export type InnerDialogWorkerReason = "boot" | "heartbeat" | "instinct"
 
@@ -20,6 +22,7 @@ export interface InnerDialogWorkerController {
 
 export function createInnerDialogWorker(
   runTurn: (options: InnerDialogWorkerRunOptions) => Promise<unknown> = (options) => runInnerDialogTurn(options),
+  hasPendingWork: () => boolean = () => hasPendingMessages(getInnerDialogPendingDir(getAgentName())),
 ): InnerDialogWorkerController {
   let running = false
   let rerunRequested = false
@@ -56,6 +59,10 @@ export function createInnerDialogWorker(
               error: error instanceof Error ? error.message : String(error),
             },
           })
+        }
+        if (!rerunRequested && hasPendingWork()) {
+          rerunRequested = true
+          rerunReason = "instinct"
         }
         nextReason = rerunReason
         nextTaskId = rerunTaskId

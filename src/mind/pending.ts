@@ -24,6 +24,18 @@ export function getInnerDialogPendingDir(agentName: string): string {
   return getPendingDir(agentName, INNER_DIALOG_PENDING.friendId, INNER_DIALOG_PENDING.channel, INNER_DIALOG_PENDING.key)
 }
 
+export function hasPendingMessages(pendingDir: string): boolean {
+  if (!fs.existsSync(pendingDir)) return false
+
+  try {
+    return fs.readdirSync(pendingDir).some((entry) =>
+      entry.endsWith(".json") || entry.endsWith(".json.processing"),
+    )
+  } catch {
+    return false
+  }
+}
+
 export function drainPending(pendingDir: string): PendingMessage[] {
   if (!fs.existsSync(pendingDir)) return []
 
