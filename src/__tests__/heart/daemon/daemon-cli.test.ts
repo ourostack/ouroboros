@@ -4,6 +4,7 @@ import * as path from "path"
 import { afterAll, describe, expect, it, vi } from "vitest"
 
 import {
+  createDefaultOuroCliDeps,
   discoverExistingCredentials,
   parseOuroCommand,
   runOuroCli,
@@ -4082,6 +4083,11 @@ describe("ouro whoami and session list CLI execution", () => {
     const result = await runOuroCli(["session", "list"], deps)
 
     expect(result).toContain("no active sessions")
+  })
+
+  it("default deps provide a real session scanner", () => {
+    const deps = createDefaultOuroCliDeps("/tmp/ouro-test.sock")
+    expect(deps.scanSessions).toEqual(expect.any(Function))
   })
 })
 
