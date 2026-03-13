@@ -20,6 +20,8 @@ import { createAzureProviderRuntime } from "./providers/azure";
 import { createMinimaxProviderRuntime } from "./providers/minimax";
 import { createOpenAICodexProviderRuntime } from "./providers/openai-codex";
 import type { SteeringFollowUpEffect } from "../senses/continuity";
+import type { ActiveWorkFrame } from "./active-work";
+import type { DelegationDecision } from "./delegation";
 
 export type ProviderId = "azure" | "anthropic" | "minimax" | "openai-codex";
 
@@ -176,6 +178,8 @@ export interface RunAgentOptions {
   currentObligation?: string;
   mustResolveBeforeHandoff?: boolean;
   hasQueuedFollowUp?: boolean;
+  activeWorkFrame?: ActiveWorkFrame;
+  delegationDecision?: DelegationDecision;
   drainSteeringFollowUps?: () => Array<{ text: string; effect?: SteeringFollowUpEffect }>;
   setMustResolveBeforeHandoff?: (value: boolean) => void;
   tools?: OpenAI.ChatCompletionFunctionTool[];

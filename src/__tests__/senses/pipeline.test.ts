@@ -773,6 +773,47 @@ describe("handleInboundTurn", () => {
       expect((options as any).bridgeContext).toContain("bridge-suspended: suspended bridge [suspended]")
     })
 
+    it("passes a shared active-work frame and delegation hint into runAgent options", async () => {
+      mockFindBridgesForSession.mockReturnValue([
+        {
+          id: "bridge-1",
+          objective: "carry Ari across cli and bluebubbles",
+          summary: "same work, two surfaces",
+          lifecycle: "active",
+          runtime: "idle",
+          createdAt: "2026-03-13T16:00:00.000Z",
+          updatedAt: "2026-03-13T16:00:00.000Z",
+          attachedSessions: [
+            {
+              friendId: "friend-1",
+              channel: "cli",
+              key: "session",
+              sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+            },
+          ],
+          task: null,
+        },
+      ])
+      const input = makeInput({
+        channel: "bluebubbles",
+        capabilities: makeCapabilities({ channel: "bluebubbles", senseType: "open" }),
+        continuityIngressTexts: ["think this through and keep my other chat aligned"],
+      })
+
+      await handleInboundTurn(input)
+
+      const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
+      const options = runAgentCall[4] as RunAgentOptions
+      expect((options as any).activeWorkFrame.centerOfGravity).toBe("shared-work")
+      expect((options as any).activeWorkFrame.currentSession.channel).toBe("bluebubbles")
+      expect((options as any).delegationDecision).toEqual(
+        expect.objectContaining({
+          target: "delegate-inward",
+          reasons: expect.arrayContaining(["explicit_reflection"]),
+        }),
+      )
+    })
+
     it("derives currentObligation from the last continuity ingress text", async () => {
       const input = makeInput({
         continuityIngressTexts: ["first ask", "latest ask"],

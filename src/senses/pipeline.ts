@@ -14,6 +14,15 @@ import type { PendingMessage } from "../mind/pending"
 import { emitNervesEvent } from "../nerves/runtime"
 import { resolveMustResolveBeforeHandoff } from "./continuity"
 import { createBridgeManager, formatBridgeContext } from "../heart/bridges/manager"
+import { getAgentName, getAgentRoot } from "../heart/identity"
+import { getTaskModule } from "../repertoire/tasks"
+import { listSessionActivity } from "../heart/session-activity"
+import type { SessionActivityRecord } from "../heart/session-activity"
+import { buildActiveWorkFrame } from "../heart/active-work"
+import { decideDelegation } from "../heart/delegation"
+import { readInnerDialogStatus, getInnerDialogSessionPath } from "../heart/daemon/thoughts"
+import { getInnerDialogPendingDir } from "../mind/pending"
+import type { BoardResult } from "../repertoire/tasks/types"
 
 // ── Input / Output types ──────────────────────────────────────────
 
@@ -96,6 +105,44 @@ export interface InboundTurnResult {
   messages?: ChatCompletionMessageParam[]
 }
 
+function emptyTaskBoard(): BoardResult {
+  return {
+    compact: "",
+    full: "",
+    byStatus: {
+      drafting: [],
+      processing: [],
+      validating: [],
+      collaborating: [],
+      paused: [],
+      blocked: [],
+      done: [],
+    },
+    actionRequired: [],
+    unresolvedDependencies: [],
+    activeSessions: [],
+    activeBridges: [],
+  }
+}
+
+function readInnerWorkState(): { status: "idle" | "running"; hasPending: boolean } {
+  try {
+    const agentRoot = getAgentRoot()
+    const pendingDir = getInnerDialogPendingDir(getAgentName())
+    const sessionPath = getInnerDialogSessionPath(agentRoot)
+    const status = readInnerDialogStatus(sessionPath, pendingDir)
+    return {
+      status: status.processing === "started" ? "running" : "idle",
+      hasPending: status.queue !== "clear",
+    }
+  } catch {
+    return {
+      status: "idle",
+      hasPending: false,
+    }
+  }
+}
+
 // ── Pipeline ──────────────────────────────────────────────────────
 
 export async function handleInboundTurn(input: InboundTurnInput): Promise<InboundTurnResult> {
@@ -173,6 +220,43 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     key: currentSession.key,
   })
   const bridgeContext = formatBridgeContext(activeBridges) || undefined
+  let sessionActivity: SessionActivityRecord[] = []
+  try {
+    const agentRoot = getAgentRoot()
+    sessionActivity = listSessionActivity({
+      sessionsDir: `${agentRoot}/state/sessions`,
+      friendsDir: `${agentRoot}/friends`,
+      agentName: getAgentName(),
+      currentSession: {
+        friendId: currentSession.friendId,
+        channel: currentSession.channel,
+        key: currentSession.key,
+      },
+    })
+  } catch {
+    sessionActivity = []
+  }
+  const activeWorkFrame = buildActiveWorkFrame({
+    currentSession,
+    currentObligation,
+    mustResolveBeforeHandoff,
+    inner: readInnerWorkState(),
+    bridges: activeBridges,
+    taskBoard: (() => {
+      try {
+        return getTaskModule().getBoard()
+      } catch {
+        return emptyTaskBoard()
+      }
+    })(),
+    friendActivity: sessionActivity,
+  })
+  const delegationDecision = decideDelegation({
+    channel: input.channel,
+    ingressTexts: input.continuityIngressTexts ?? [],
+    activeWork: activeWorkFrame,
+    mustResolveBeforeHandoff,
+  })
 
   // Step 4: Drain pending messages
   const pending = input.drainPending(input.pendingDir)
@@ -216,6 +300,8 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   const runAgentOptions: RunAgentOptions = {
     ...input.runAgentOptions,
     bridgeContext,
+    activeWorkFrame,
+    delegationDecision,
     currentSessionKey: currentSession.key,
     currentObligation,
     mustResolveBeforeHandoff,

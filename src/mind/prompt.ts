@@ -12,6 +12,8 @@ import type { BundleMeta } from "./bundle-manifest";
 import { getFirstImpressions } from "./first-impressions";
 import { getTaskModule } from "../repertoire/tasks";
 import { listSessionActivity, type SessionActivityQuery } from "../heart/session-activity";
+import { formatActiveWorkFrame, type ActiveWorkFrame } from "../heart/active-work";
+import type { DelegationDecision } from "../heart/delegation";
 
 // Lazy-loaded psyche text cache
 let _psycheCache: {
@@ -385,12 +387,31 @@ export interface BuildSystemOptions {
   currentObligation?: string;
   mustResolveBeforeHandoff?: boolean;
   hasQueuedFollowUp?: boolean;
+  activeWorkFrame?: ActiveWorkFrame;
+  delegationDecision?: DelegationDecision;
 }
 
 function bridgeContextSection(options?: BuildSystemOptions): string {
+  if (options?.activeWorkFrame) return ""
   const bridgeContext = options?.bridgeContext?.trim() ?? ""
   if (!bridgeContext) return ""
   return bridgeContext.startsWith("## ") ? bridgeContext : `## active bridge work\n${bridgeContext}`
+}
+
+function activeWorkSection(options?: BuildSystemOptions): string {
+  if (!options?.activeWorkFrame) return ""
+  return formatActiveWorkFrame(options.activeWorkFrame)
+}
+
+function delegationHintSection(options?: BuildSystemOptions): string {
+  if (!options?.delegationDecision) return ""
+  const lines = [
+    "## delegation hint",
+    `target: ${options.delegationDecision.target}`,
+    `reasons: ${options.delegationDecision.reasons.length > 0 ? options.delegationDecision.reasons.join(", ") : "none"}`,
+    `outward closure: ${options.delegationDecision.outwardClosureRequired ? "required" : "not required"}`,
+  ]
+  return lines.join("\n")
 }
 
 function toolBehaviorSection(options?: BuildSystemOptions): string {
@@ -528,6 +549,8 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     mixedTrustGroupSection(context),
     skillsSection(),
     taskBoardSection(),
+    activeWorkSection(options),
+    delegationHintSection(options),
     bridgeContextSection(options),
     buildSessionSummary({
       sessionsDir: path.join(getAgentRoot(), "state", "sessions"),
