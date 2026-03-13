@@ -548,6 +548,7 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
     // ── Call shared pipeline ──────────────────────────────────────────
     const result = await handleInboundTurn({
       channel: "teams",
+      sessionKey: conversationId,
       capabilities: teamsCapabilities,
       messages: [{ role: "user" as const, content: currentText }],
       continuityIngressTexts: [currentText],

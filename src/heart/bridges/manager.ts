@@ -202,6 +202,7 @@ export function createBridgeManager(options: CreateBridgeManagerOptions = {}): B
 
     findBridgesForSession(session: Pick<BridgeSessionRef, "friendId" | "channel" | "key">): BridgeRecord[] {
       return store.findBySession(session)
+        .filter((bridge) => bridge.lifecycle !== "completed" && bridge.lifecycle !== "cancelled")
     },
 
     promoteBridgeToTask(bridgeId: string, input: { title?: string; category?: string; body?: string } = {}): BridgeRecord {
