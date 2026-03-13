@@ -278,6 +278,32 @@ describe("handleInboundTurn", () => {
       expect(allContent).toContain("someone tried to reach you")
     })
 
+    it("drains deferred friend returns before ordinary session pending and exposes the combined batch", async () => {
+      const deferredReturns: PendingMessage[] = [
+        { from: "testagent", content: "penguins surfaced", timestamp: 999 },
+      ]
+      const sessionPending: PendingMessage[] = [
+        { from: "inner-dialog", content: "a local pending note", timestamp: 1000 },
+      ]
+      const input = makeInput({
+        drainPending: vi.fn().mockReturnValue(sessionPending),
+      }) as any
+      input.drainDeferredReturns = vi.fn().mockReturnValue(deferredReturns)
+
+      const result = await handleInboundTurn(input)
+
+      expect(input.drainDeferredReturns).toHaveBeenCalledWith("friend-1")
+      expect((result as any).drainedPending).toEqual([
+        ...deferredReturns,
+        ...sessionPending,
+      ])
+
+      const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
+      const messagesArg = runAgentCall[0] as ChatCompletionMessageParam[]
+      const allContent = messagesArg.map(m => typeof m.content === "string" ? m.content : "").join("\n")
+      expect(allContent.indexOf("penguins surfaced")).toBeLessThan(allContent.indexOf("a local pending note"))
+    })
+
     it("does not modify messages when pending exists but input.messages is empty", async () => {
       const pendingMsgs: PendingMessage[] = [
         { from: "system", content: "a pending notice", timestamp: 1000 },

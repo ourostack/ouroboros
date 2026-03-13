@@ -240,6 +240,73 @@ describe("send_message tool", () => {
       expect(written.content).toBe("note to self")
     })
 
+    it("tags outward delegated self-messages with the originating friend session and bridge", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      await tool.handler({
+        friendId: "self",
+        channel: "bluebubbles",
+        content: "think this through",
+      }, {
+        currentSession: {
+          friendId: "friend-uuid-1",
+          channel: "bluebubbles",
+          key: "chat",
+          sessionPath: "/mock/agent-root/state/sessions/friend-uuid-1/bluebubbles/chat.json",
+        },
+        activeBridges: [
+          {
+            id: "bridge-1",
+            objective: "carry Ari across cli and bluebubbles",
+            summary: "same work, two surfaces",
+            lifecycle: "active",
+            runtime: "idle",
+            createdAt: "2026-03-13T20:00:00.000Z",
+            updatedAt: "2026-03-13T20:00:00.000Z",
+            attachedSessions: [
+              {
+                friendId: "friend-uuid-1",
+                channel: "bluebubbles",
+                key: "chat",
+                sessionPath: "/mock/agent-root/state/sessions/friend-uuid-1/bluebubbles/chat.json",
+              },
+            ],
+            task: null,
+          },
+        ],
+      } as any)
+
+      const written = JSON.parse(vi.mocked(fs.writeFileSync).mock.calls[0][1] as string)
+      expect(written.delegatedFrom).toEqual({
+        friendId: "friend-uuid-1",
+        channel: "bluebubbles",
+        key: "chat",
+        bridgeId: "bridge-1",
+      })
+    })
+
+    it("keeps purely inner self-thought private by omitting delegated origin metadata", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      await tool.handler({
+        friendId: "self",
+        channel: "inner",
+        content: "private thought",
+      }, {
+        currentSession: {
+          friendId: "self",
+          channel: "inner",
+          key: "dialog",
+          sessionPath: "/mock/agent-root/state/sessions/self/inner/dialog.json",
+        },
+      } as any)
+
+      const written = JSON.parse(vi.mocked(fs.writeFileSync).mock.calls[0][1] as string)
+      expect(written.delegatedFrom).toBeUndefined()
+    })
+
     it("does NOT self-route when friendId is a regular UUID", async () => {
       const { baseToolDefinitions } = await import("../../repertoire/tools-base")
       const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!

@@ -14,11 +14,15 @@ const mockGetAgentName = vi.fn()
 const mockDrainPending = vi.fn()
 const mockGetPendingDir = vi.fn()
 const mockGetInnerDialogPendingDir = vi.fn()
+const mockGetDeferredReturnDir = vi.fn()
 const mockHandleInboundTurn = vi.fn()
 const mockGetChannelCapabilities = vi.fn()
 const mockEnforceTrustGate = vi.fn()
 const mockAccumulateFriendTokens = vi.fn()
 const mockEmitNervesEvent = vi.fn()
+const mockListSessionActivity = vi.fn()
+const mockFindFreshestFriendSession = vi.fn()
+const mockGetBridge = vi.fn()
 
 vi.mock("../../mind/prompt", () => ({
   buildSystem: (...args: any[]) => mockBuildSystem(...args),
@@ -46,6 +50,7 @@ vi.mock("../../mind/pending", () => ({
   drainPending: (...args: any[]) => mockDrainPending(...args),
   getPendingDir: (...args: any[]) => mockGetPendingDir(...args),
   getInnerDialogPendingDir: (...args: any[]) => mockGetInnerDialogPendingDir(...args),
+  getDeferredReturnDir: (...args: any[]) => mockGetDeferredReturnDir(...args),
   INNER_DIALOG_PENDING: { friendId: "self", channel: "inner", key: "dialog" },
 }))
 
@@ -67,6 +72,17 @@ vi.mock("../../senses/trust-gate", () => ({
 
 vi.mock("../../mind/friends/tokens", () => ({
   accumulateFriendTokens: (...args: any[]) => mockAccumulateFriendTokens(...args),
+}))
+
+vi.mock("../../heart/session-activity", () => ({
+  listSessionActivity: (...args: any[]) => mockListSessionActivity(...args),
+  findFreshestFriendSession: (...args: any[]) => mockFindFreshestFriendSession(...args),
+}))
+
+vi.mock("../../heart/bridges/manager", () => ({
+  createBridgeManager: () => ({
+    getBridge: (...args: any[]) => mockGetBridge(...args),
+  }),
 }))
 
 import {
@@ -120,10 +136,14 @@ describe("inner dialog runtime", () => {
     mockDrainPending.mockReset().mockReturnValue([])
     mockGetPendingDir.mockReset().mockReturnValue("/tmp/fake-pending-dir")
     mockGetInnerDialogPendingDir.mockReset().mockReturnValue("/tmp/fake-pending-dir")
+    mockGetDeferredReturnDir.mockReset().mockReturnValue("/tmp/fake-deferred-returns")
     mockGetChannelCapabilities.mockReset().mockReturnValue(innerCapabilities)
     mockEnforceTrustGate.mockReset().mockReturnValue({ allowed: true })
     mockAccumulateFriendTokens.mockReset().mockResolvedValue(undefined)
     mockEmitNervesEvent.mockReset()
+    mockListSessionActivity.mockReset().mockReturnValue([])
+    mockFindFreshestFriendSession.mockReset().mockReturnValue(null)
+    mockGetBridge.mockReset().mockReturnValue(null)
 
     // Default handleInboundTurn: simulate pipeline running agent and returning result.
     mockHandleInboundTurn.mockReset().mockImplementation(async (input: any) => {
@@ -476,6 +496,121 @@ describe("inner dialog runtime", () => {
 
     const input = mockHandleInboundTurn.mock.calls[0][0]
     expect((input as any).continuityIngressTexts).toEqual([])
+  })
+
+  it("routes delegated inner completions to the freshest attached bridge session before plain recency", async () => {
+    const bluebubblesPendingDir = path.join(agentRoot, "state", "pending", "friend-1", "bluebubbles", "chat")
+    const cliPendingDir = path.join(agentRoot, "state", "pending", "friend-1", "cli", "session")
+    mockGetPendingDir.mockImplementation((_agent: string, _friendId: string, channel: string, key: string) =>
+      channel === "bluebubbles" && key === "chat" ? bluebubblesPendingDir : cliPendingDir,
+    )
+    mockListSessionActivity.mockReturnValue([
+      {
+        friendId: "friend-1",
+        friendName: "Ari",
+        channel: "cli",
+        key: "session",
+        sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+        lastActivityAt: "2026-03-13T20:05:00.000Z",
+        lastActivityMs: Date.parse("2026-03-13T20:05:00.000Z"),
+        activitySource: "friend-facing",
+      },
+      {
+        friendId: "friend-1",
+        friendName: "Ari",
+        channel: "bluebubbles",
+        key: "chat",
+        sessionPath: "/tmp/state/sessions/friend-1/bluebubbles/chat.json",
+        lastActivityAt: "2026-03-13T20:01:00.000Z",
+        lastActivityMs: Date.parse("2026-03-13T20:01:00.000Z"),
+        activitySource: "friend-facing",
+      },
+    ])
+    mockGetBridge.mockReturnValue({
+      id: "bridge-1",
+      objective: "keep cli and bluebubbles aligned",
+      summary: "shared relay",
+      lifecycle: "active",
+      runtime: "idle",
+      createdAt: "2026-03-13T20:00:00.000Z",
+      updatedAt: "2026-03-13T20:00:00.000Z",
+      attachedSessions: [
+        {
+          friendId: "friend-1",
+          channel: "bluebubbles",
+          key: "chat",
+          sessionPath: "/tmp/state/sessions/friend-1/bluebubbles/chat.json",
+        },
+      ],
+      task: null,
+    })
+    mockHandleInboundTurn.mockResolvedValue({
+      resolvedContext: { friend: { id: "self", name: "test-agent" }, channel: innerCapabilities },
+      gateResult: { allowed: true },
+      usage: undefined,
+      sessionPath: sessionFile,
+      messages: [{ role: "assistant", content: "formal little blokes" }],
+      completion: { answer: "formal little blokes", intent: "complete" },
+      drainedPending: [
+        {
+          from: "test-agent",
+          content: "think about penguins",
+          timestamp: 1709900001,
+          delegatedFrom: {
+            friendId: "friend-1",
+            channel: "bluebubbles",
+            key: "chat",
+            bridgeId: "bridge-1",
+          },
+        },
+      ],
+    })
+
+    await runInnerDialogTurn({
+      reason: "heartbeat",
+      now: () => new Date("2026-03-13T20:10:00.000Z"),
+    })
+
+    const routedFiles = fs.readdirSync(bluebubblesPendingDir)
+    expect(routedFiles.length).toBe(1)
+    const routedPayload = JSON.parse(fs.readFileSync(path.join(bluebubblesPendingDir, routedFiles[0]), "utf8"))
+    expect(routedPayload.content).toBe("formal little blokes")
+    expect(fs.existsSync(cliPendingDir)).toBe(false)
+  })
+
+  it("persists delegated completions when no live outward session is available", async () => {
+    const deferredDir = path.join(agentRoot, "state", "pending-returns", "friend-1")
+    mockGetDeferredReturnDir.mockReturnValue(deferredDir)
+    mockHandleInboundTurn.mockResolvedValue({
+      resolvedContext: { friend: { id: "self", name: "test-agent" }, channel: innerCapabilities },
+      gateResult: { allowed: true },
+      usage: undefined,
+      sessionPath: sessionFile,
+      messages: [{ role: "assistant", content: "nothing to send yet" }],
+      completion: { answer: "i sat with it and landed on penguins", intent: "complete" },
+      drainedPending: [
+        {
+          from: "test-agent",
+          content: "think about penguins",
+          timestamp: 1709900001,
+          delegatedFrom: {
+            friendId: "friend-1",
+            channel: "bluebubbles",
+            key: "chat",
+          },
+        },
+      ],
+    })
+
+    await runInnerDialogTurn({
+      reason: "heartbeat",
+      now: () => new Date("2026-03-13T20:10:00.000Z"),
+    })
+
+    const deferredFiles = fs.readdirSync(deferredDir)
+    expect(deferredFiles.length).toBe(1)
+    const deferredPayload = JSON.parse(fs.readFileSync(path.join(deferredDir, deferredFiles[0]), "utf8"))
+    expect(deferredPayload.content).toBe("i sat with it and landed on penguins")
   })
 
   it("passes bootstrap user message with aspirations on fresh session", async () => {
