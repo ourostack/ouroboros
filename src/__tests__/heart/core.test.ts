@@ -290,6 +290,24 @@ describe("RunAgentOptions trace propagation contract", () => {
     const options: core.RunAgentOptions = { currentObligation: "investigate the active thread" } as any
     expect((options as any).currentObligation).toBe("investigate the active thread")
   })
+
+  it("supports bridgeContext and currentSession tool context for shared bridge work", async () => {
+    const core = await import("../../heart/core")
+    const options: core.RunAgentOptions = {
+      bridgeContext: "bridge-1: relay Ari between cli and teams",
+      toolContext: {
+        signin: vi.fn(),
+        currentSession: {
+          friendId: "friend-1",
+          channel: "teams",
+          key: "conv-1",
+          sessionPath: "/tmp/session.json",
+        },
+      },
+    } as any
+    expect((options as any).bridgeContext).toBe("bridge-1: relay Ari between cli and teams")
+    expect((options.toolContext as any).currentSession.key).toBe("conv-1")
+  })
 })
 
 describe("getProviderDisplayLabel", () => {

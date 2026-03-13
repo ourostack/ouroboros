@@ -200,6 +200,25 @@ describe("buildSystem", () => {
     expect(result).toContain("i use lowercase")
   })
 
+  it("includes active bridge work when bridge context is present", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem(
+      "teams",
+      {
+        bridgeContext: "bridge-1: relay Ari between cli and teams (task: 2026-03-13-1600-shared-relay)",
+      } as any,
+      makeOnboardingContext() as any,
+    )
+    expect(result).toContain("## active bridge work")
+    expect(result).toContain("bridge-1")
+    expect(result).toContain("shared-relay")
+  })
+
   it("includes lore section", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
