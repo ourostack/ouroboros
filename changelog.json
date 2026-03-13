@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.49",
+      "changes": [
+        "Inner dialog no longer drops self-directed wake signals that arrive mid-turn; overlapping inward requests now guarantee a truthful follow-up inner pass instead of mailbox-like limbo.",
+        "The harness now has a shared core bridge layer with lifecycle/runtime state, persistence, task linkage, and one `bridge_manage` path so already-live sessions can coordinate as one coherent piece of work.",
+        "`query_session` and bridge attachment now share one session-recall helper, reducing duplicate cross-session summarization logic and setting up thinner outer surfaces around a stronger inner/core."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.48",
       "changes": [
         "BlueBubbles same-chat turns now serialize through the shared heart-level turn coordinator, so duplicate delivery of one inbound message no longer races into two handled turns or duplicate replies.",
