@@ -11,8 +11,8 @@ import { emitNervesEvent } from "../nerves/runtime";
 import { getAgentRoot, getAgentName } from "../heart/identity";
 import { requestInnerWake } from "../heart/daemon/socket-client";
 import { extractThoughtResponseFromMessages, formatInnerDialogStatus, formatSurfacedValue, getInnerDialogSessionPath, readInnerDialogStatus } from "../heart/daemon/thoughts";
-import { createBridgeManager } from "../heart/bridges/manager";
-import { recallSession } from "../heart/session-recall";
+import { createBridgeManager, formatBridgeStatus } from "../heart/bridges/manager";
+import { recallSession, type SessionRecallOptions, type SessionRecallResult } from "../heart/session-recall";
 import { codingToolDefinitions } from "./coding/tools";
 import { readMemoryFacts, saveMemoryFact, searchMemoryFacts } from "../mind/memory";
 import { getPendingDir, getInnerDialogPendingDir } from "../mind/pending";
@@ -78,27 +78,15 @@ function buildContextDiff(lines: string[], changeStart: number, changeEnd: numbe
   return result.join("\n")
 }
 
-function formatBridgeManageStatus(bridge: BridgeRecord): string {
-  const runtimeLabel = bridge.lifecycle === "active"
-    ? bridge.runtime === "processing"
-      ? "active-processing"
-      : bridge.runtime === "awaiting-follow-up"
-        ? "awaiting-follow-up"
-        : "active-idle"
-    : bridge.lifecycle
+const NO_SESSION_FOUND_MESSAGE = "no session found for that friend/channel/key combination."
+const EMPTY_SESSION_MESSAGE = "session exists but has no non-system messages."
 
-  const lines = [
-    `bridge: ${bridge.id}`,
-    `objective: ${bridge.objective}`,
-    `state: ${runtimeLabel}`,
-    `sessions: ${bridge.attachedSessions.length}`,
-    `task: ${bridge.task?.taskName ?? "none"}`,
-  ]
-  const summary = typeof bridge.summary === "string" ? bridge.summary.trim() : ""
-  if (summary) {
-    lines.push(`summary: ${summary}`)
+async function recallSessionSafely(options: SessionRecallOptions): Promise<SessionRecallResult | { kind: "missing" }> {
+  try {
+    return await recallSession(options)
+  } catch {
+    return { kind: "missing" }
   }
-  return lines.join("\n")
 }
 
 export const baseToolDefinitions: ToolDefinition[] = [
@@ -672,7 +660,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
         const objective = (args.objective || "").trim()
         if (!objective) return "objective is required for bridge begin."
 
-        return formatBridgeManageStatus(
+        return formatBridgeStatus(
           manager.beginBridge({
             objective,
             summary: (args.summary || objective).trim(),
@@ -695,7 +683,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
         }
 
         const sessionPath = resolveSessionPath(friendId, channel, key)
-        const recall = await recallSession({
+        const recall = await recallSessionSafely({
           sessionPath,
           friendId,
           channel,
@@ -705,16 +693,16 @@ export const baseToolDefinitions: ToolDefinition[] = [
           summarize: ctx?.summarize,
         })
         if (recall.kind === "missing") {
-          return "no session found for that friend/channel/key combination."
+          return NO_SESSION_FOUND_MESSAGE
         }
 
-        return formatBridgeManageStatus(
+        return formatBridgeStatus(
           manager.attachSession(bridgeId, {
             friendId,
             channel,
             key,
             sessionPath,
-            snapshot: recall.kind === "ok" ? recall.snapshot : "session exists but has no non-system messages.",
+            snapshot: recall.kind === "ok" ? recall.snapshot : EMPTY_SESSION_MESSAGE,
           }),
         )
       }
@@ -722,11 +710,11 @@ export const baseToolDefinitions: ToolDefinition[] = [
       if (action === "status") {
         const bridge = manager.getBridge(bridgeId)
         if (!bridge) return `bridge not found: ${bridgeId}`
-        return formatBridgeManageStatus(bridge)
+        return formatBridgeStatus(bridge)
       }
 
       if (action === "promote_task") {
-        return formatBridgeManageStatus(
+        return formatBridgeStatus(
           manager.promoteBridgeToTask(bridgeId, {
             title: args.title,
             category: args.category,
@@ -736,11 +724,11 @@ export const baseToolDefinitions: ToolDefinition[] = [
       }
 
       if (action === "complete") {
-        return formatBridgeManageStatus(manager.completeBridge(bridgeId))
+        return formatBridgeStatus(manager.completeBridge(bridgeId))
       }
 
       if (action === "cancel") {
-        return formatBridgeManageStatus(manager.cancelBridge(bridgeId))
+        return formatBridgeStatus(manager.cancelBridge(bridgeId))
       }
 
       return `unknown bridge action: ${action}`
@@ -766,45 +754,41 @@ export const baseToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
-      try {
-        const friendId = args.friendId
-        const channel = args.channel
-        const key = args.key || "session"
-        const count = parseInt(args.messageCount || "20", 10)
-        const mode = args.mode || "transcript"
+      const friendId = args.friendId
+      const channel = args.channel
+      const key = args.key || "session"
+      const count = parseInt(args.messageCount || "20", 10)
+      const mode = args.mode || "transcript"
 
-        if (mode === "status") {
-          if (friendId !== "self" || channel !== "inner") {
-            return "status mode is only available for self/inner dialog."
-          }
-
-          const sessionPath = getInnerDialogSessionPath(getAgentRoot())
-          const pendingDir = getInnerDialogPendingDir(getAgentName())
-          return formatInnerDialogStatus(readInnerDialogStatus(sessionPath, pendingDir))
+      if (mode === "status") {
+        if (friendId !== "self" || channel !== "inner") {
+          return "status mode is only available for self/inner dialog."
         }
 
-        const sessFile = resolveSessionPath(friendId, channel, key)
-        const recall = await recallSession({
-          sessionPath: sessFile,
-          friendId,
-          channel,
-          key,
-          messageCount: count,
-          trustLevel: ctx?.context?.friend?.trustLevel,
-          summarize: ctx?.summarize,
-        })
-
-        if (recall.kind === "missing") {
-          return "no session found for that friend/channel/key combination."
-        }
-        if (recall.kind === "empty") {
-          return "session exists but has no non-system messages."
-        }
-
-        return recall.summary
-      } catch {
-        return "no session found for that friend/channel/key combination."
+        const sessionPath = getInnerDialogSessionPath(getAgentRoot())
+        const pendingDir = getInnerDialogPendingDir(getAgentName())
+        return formatInnerDialogStatus(readInnerDialogStatus(sessionPath, pendingDir))
       }
+
+      const sessFile = resolveSessionPath(friendId, channel, key)
+      const recall = await recallSessionSafely({
+        sessionPath: sessFile,
+        friendId,
+        channel,
+        key,
+        messageCount: count,
+        trustLevel: ctx?.context?.friend?.trustLevel,
+        summarize: ctx?.summarize,
+      })
+
+      if (recall.kind === "missing") {
+        return NO_SESSION_FOUND_MESSAGE
+      }
+      if (recall.kind === "empty") {
+        return EMPTY_SESSION_MESSAGE
+      }
+
+      return recall.summary
     },
   },
   {

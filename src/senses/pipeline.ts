@@ -13,7 +13,7 @@ import type { TrustGateInput, TrustGateResult } from "./trust-gate"
 import type { PendingMessage } from "../mind/pending"
 import { emitNervesEvent } from "../nerves/runtime"
 import { resolveMustResolveBeforeHandoff } from "./continuity"
-import { createBridgeManager } from "../heart/bridges/manager"
+import { createBridgeManager, formatBridgeContext } from "../heart/bridges/manager"
 
 // ── Input / Output types ──────────────────────────────────────────
 
@@ -169,21 +169,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     channel: currentSession.channel,
     key: currentSession.key,
   })
-  const bridgeContext = activeBridges.length === 0
-    ? undefined
-    : [
-      "## active bridge work",
-      ...activeBridges.map((bridge) => {
-        const task = bridge.task?.taskName ? ` (task: ${bridge.task.taskName})` : ""
-        return `- ${bridge.id}: ${bridge.summary || bridge.objective} [${bridge.lifecycle === "active"
-          ? bridge.runtime === "processing"
-            ? "active-processing"
-            : bridge.runtime === "awaiting-follow-up"
-              ? "awaiting-follow-up"
-              : "active-idle"
-          : bridge.lifecycle}]${task}`
-      }),
-    ].join("\n")
+  const bridgeContext = formatBridgeContext(activeBridges) || undefined
 
   // Step 4: Drain pending messages
   const pending = input.drainPending(input.pendingDir)

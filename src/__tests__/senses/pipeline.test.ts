@@ -11,11 +11,15 @@ import type { InboundTurnInput, InboundTurnResult } from "../../senses/pipeline"
 
 const mockFindBridgesForSession = vi.fn()
 
-vi.mock("../../heart/bridges/manager", () => ({
-  createBridgeManager: () => ({
-    findBridgesForSession: (...args: any[]) => mockFindBridgesForSession(...args),
-  }),
-}))
+vi.mock("../../heart/bridges/manager", async () => {
+  const actual = await vi.importActual<typeof import("../../heart/bridges/manager")>("../../heart/bridges/manager")
+  return {
+    ...actual,
+    createBridgeManager: () => ({
+      findBridgesForSession: (...args: any[]) => mockFindBridgesForSession(...args),
+    }),
+  }
+})
 
 // ── Test helpers ──────────────────────────────────────────────────
 

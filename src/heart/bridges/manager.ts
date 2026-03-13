@@ -52,6 +52,12 @@ function sessionIdentityKey(session: Pick<BridgeSessionRef, "friendId" | "channe
   return `${session.friendId}/${session.channel}/${session.key}`
 }
 
+function assertBridgeMutable(bridge: BridgeRecord, action: string): void {
+  if (bridge.lifecycle === "completed" || bridge.lifecycle === "cancelled") {
+    throw new Error(`cannot ${action} a terminal bridge`)
+  }
+}
+
 function defaultTaskBody(bridge: BridgeRecord): string {
   const lines = [
     "## scope",
@@ -70,6 +76,7 @@ function defaultTaskBody(bridge: BridgeRecord): string {
 }
 
 export function formatBridgeStatus(bridge: BridgeRecord): string {
+  const summary = typeof bridge.summary === "string" ? bridge.summary.trim() : ""
   const lines = [
     `bridge: ${bridge.id}`,
     `objective: ${bridge.objective}`,
@@ -77,8 +84,8 @@ export function formatBridgeStatus(bridge: BridgeRecord): string {
     `sessions: ${bridge.attachedSessions.length}`,
     `task: ${bridge.task?.taskName ?? "none"}`,
   ]
-  if (bridge.summary.trim()) {
-    lines.push(`summary: ${bridge.summary}`)
+  if (summary) {
+    lines.push(`summary: ${summary}`)
   }
   return lines.join("\n")
 }
@@ -88,7 +95,8 @@ export function formatBridgeContext(bridges: BridgeRecord[]): string {
   const lines = ["## active bridge work"]
   for (const bridge of bridges) {
     const task = bridge.task?.taskName ? ` (task: ${bridge.task.taskName})` : ""
-    lines.push(`- ${bridge.id}: ${bridge.summary || bridge.objective} [${bridgeStateLabel(bridge)}]${task}`)
+    const label = typeof bridge.summary === "string" && bridge.summary.trim().length > 0 ? bridge.summary.trim() : bridge.objective
+    lines.push(`- ${bridge.id}: ${label} [${bridgeStateLabel(bridge)}]${task}`)
   }
   return lines.join("\n")
 }
@@ -154,6 +162,7 @@ export function createBridgeManager(options: CreateBridgeManagerOptions = {}): B
 
     attachSession(bridgeId: string, session: BridgeSessionRef): BridgeRecord {
       const bridge = requireBridge(bridgeId)
+      assertBridgeMutable(bridge, "attach session to")
       const existing = bridge.attachedSessions.some((candidate) => sessionIdentityKey(candidate) === sessionIdentityKey(session))
       if (existing) return bridge
       const updated = {
@@ -175,6 +184,7 @@ export function createBridgeManager(options: CreateBridgeManagerOptions = {}): B
 
     detachSession(bridgeId: string, session: Pick<BridgeSessionRef, "friendId" | "channel" | "key">): BridgeRecord {
       const bridge = requireBridge(bridgeId)
+      assertBridgeMutable(bridge, "detach session from")
       const updated = {
         ...bridge,
         attachedSessions: bridge.attachedSessions.filter((candidate) => sessionIdentityKey(candidate) !== sessionIdentityKey(session)),
@@ -207,6 +217,7 @@ export function createBridgeManager(options: CreateBridgeManagerOptions = {}): B
 
     promoteBridgeToTask(bridgeId: string, input: { title?: string; category?: string; body?: string } = {}): BridgeRecord {
       const bridge = requireBridge(bridgeId)
+      assertBridgeMutable(bridge, "promote")
       if (bridge.task) return bridge
 
       const taskPath = getTaskModule().createTask({

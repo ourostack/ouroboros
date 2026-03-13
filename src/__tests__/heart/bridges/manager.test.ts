@@ -244,6 +244,18 @@ describe("bridge manager", () => {
     }
     const terminalManager = createBridgeManager({ store: terminalStore as any, now: () => "2026-03-13T16:00:00.000Z" })
     await expect(terminalManager.runBridgeTurn(created.id, async () => undefined)).rejects.toThrow("bridge is terminal")
+    expect(() =>
+      terminalManager.attachSession(created.id, {
+        friendId: "friend-9",
+        channel: "teams",
+        key: "conv-9",
+        sessionPath: "/tmp/state/sessions/friend-9/teams/conv-9.json",
+      }),
+    ).toThrow("cannot attach session to a terminal bridge")
+    expect(() =>
+      terminalManager.detachSession(created.id, { friendId: "friend-7", channel: "cli", key: "session" }),
+    ).toThrow("cannot detach session from a terminal bridge")
+    expect(() => terminalManager.promoteBridgeToTask(created.id)).toThrow("cannot promote a terminal bridge")
 
     const withTask = {
       ...created,

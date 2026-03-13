@@ -7,16 +7,20 @@ const mockPromoteBridgeToTask = vi.fn()
 const mockCompleteBridge = vi.fn()
 const mockCancelBridge = vi.fn()
 
-vi.mock("../../heart/bridges/manager", () => ({
-  createBridgeManager: () => ({
-    beginBridge: (...args: any[]) => mockBeginBridge(...args),
-    attachSession: (...args: any[]) => mockAttachSession(...args),
-    getBridge: (...args: any[]) => mockGetBridge(...args),
-    promoteBridgeToTask: (...args: any[]) => mockPromoteBridgeToTask(...args),
-    completeBridge: (...args: any[]) => mockCompleteBridge(...args),
-    cancelBridge: (...args: any[]) => mockCancelBridge(...args),
-  }),
-}))
+vi.mock("../../heart/bridges/manager", async () => {
+  const actual = await vi.importActual<typeof import("../../heart/bridges/manager")>("../../heart/bridges/manager")
+  return {
+    ...actual,
+    createBridgeManager: () => ({
+      beginBridge: (...args: any[]) => mockBeginBridge(...args),
+      attachSession: (...args: any[]) => mockAttachSession(...args),
+      getBridge: (...args: any[]) => mockGetBridge(...args),
+      promoteBridgeToTask: (...args: any[]) => mockPromoteBridgeToTask(...args),
+      completeBridge: (...args: any[]) => mockCompleteBridge(...args),
+      cancelBridge: (...args: any[]) => mockCancelBridge(...args),
+    }),
+  }
+})
 
 vi.mock("../../heart/session-recall", () => ({
   recallSession: vi.fn().mockResolvedValue({
@@ -386,6 +390,20 @@ describe("bridge_manage tool", () => {
 
     const recall = await import("../../heart/session-recall")
     vi.mocked(recall.recallSession).mockResolvedValueOnce({ kind: "missing" } as any)
+    expect(
+      await tool.handler(
+        { action: "attach", bridgeId: "bridge-1", friendId: "friend-2", channel: "teams", key: "conv-2" },
+        { signin: vi.fn() } as any,
+      ),
+    ).toBe("no session found for that friend/channel/key combination.")
+  })
+
+  it("falls back to the same missing-session response when shared recall throws during attach", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find((entry) => entry.tool.function.name === "bridge_manage")!
+    const recall = await import("../../heart/session-recall")
+    vi.mocked(recall.recallSession).mockRejectedValueOnce(new Error("boom"))
+
     expect(
       await tool.handler(
         { action: "attach", bridgeId: "bridge-1", friendId: "friend-2", channel: "teams", key: "conv-2" },
