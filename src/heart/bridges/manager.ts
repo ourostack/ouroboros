@@ -3,12 +3,16 @@ import {
   advanceBridgeAfterTurn,
   activateBridge,
   beginBridgeProcessing,
+  bridgeStateLabel,
+  cancelBridge,
+  completeBridge,
   createBridgeState,
   queueBridgeFollowUp,
 } from "./state-machine"
 import type { BridgeRecord, BridgeSessionRef, BridgeStore } from "./store"
 import { createBridgeStore } from "./store"
 import { drainSharedFollowUps, enqueueSharedFollowUp, endSharedTurn, tryBeginSharedTurn } from "../turn-coordinator"
+import { getTaskModule } from "../../repertoire/tasks"
 
 export interface BeginBridgeInput {
   objective: string
@@ -28,6 +32,9 @@ export interface BridgeManager {
   getBridge(bridgeId: string): BridgeRecord | null
   listBridges(): BridgeRecord[]
   findBridgesForSession(session: Pick<BridgeSessionRef, "friendId" | "channel" | "key">): BridgeRecord[]
+  promoteBridgeToTask(bridgeId: string, input?: { title?: string; category?: string; body?: string }): BridgeRecord
+  completeBridge(bridgeId: string): BridgeRecord
+  cancelBridge(bridgeId: string): BridgeRecord
   runBridgeTurn(bridgeId: string, fn: () => Promise<void>): Promise<RunBridgeTurnResult>
 }
 
@@ -43,6 +50,47 @@ function defaultIdFactory(): string {
 
 function sessionIdentityKey(session: Pick<BridgeSessionRef, "friendId" | "channel" | "key">): string {
   return `${session.friendId}/${session.channel}/${session.key}`
+}
+
+function defaultTaskBody(bridge: BridgeRecord): string {
+  const lines = [
+    "## scope",
+    bridge.objective,
+    "",
+    "## bridge",
+    `id: ${bridge.id}`,
+  ]
+  if (bridge.attachedSessions.length > 0) {
+    lines.push("sessions:")
+    for (const session of bridge.attachedSessions) {
+      lines.push(`- ${sessionIdentityKey(session)}`)
+    }
+  }
+  return lines.join("\n")
+}
+
+export function formatBridgeStatus(bridge: BridgeRecord): string {
+  const lines = [
+    `bridge: ${bridge.id}`,
+    `objective: ${bridge.objective}`,
+    `state: ${bridgeStateLabel(bridge)}`,
+    `sessions: ${bridge.attachedSessions.length}`,
+    `task: ${bridge.task?.taskName ?? "none"}`,
+  ]
+  if (bridge.summary.trim()) {
+    lines.push(`summary: ${bridge.summary}`)
+  }
+  return lines.join("\n")
+}
+
+export function formatBridgeContext(bridges: BridgeRecord[]): string {
+  if (bridges.length === 0) return ""
+  const lines = ["## active bridge work"]
+  for (const bridge of bridges) {
+    const task = bridge.task?.taskName ? ` (task: ${bridge.task.taskName})` : ""
+    lines.push(`- ${bridge.id}: ${bridge.summary || bridge.objective} [${bridgeStateLabel(bridge)}]${task}`)
+  }
+  return lines.join("\n")
 }
 
 function ensureRunnable(bridge: BridgeRecord, now: () => string, store: BridgeStore): BridgeRecord {
@@ -154,6 +202,78 @@ export function createBridgeManager(options: CreateBridgeManagerOptions = {}): B
 
     findBridgesForSession(session: Pick<BridgeSessionRef, "friendId" | "channel" | "key">): BridgeRecord[] {
       return store.findBySession(session)
+    },
+
+    promoteBridgeToTask(bridgeId: string, input: { title?: string; category?: string; body?: string } = {}): BridgeRecord {
+      const bridge = requireBridge(bridgeId)
+      if (bridge.task) return bridge
+
+      const taskPath = getTaskModule().createTask({
+        title: input.title?.trim() || bridge.objective,
+        type: "ongoing",
+        category: input.category?.trim() || "coordination",
+        status: "processing",
+        body: input.body?.trim() || defaultTaskBody(bridge),
+        activeBridge: bridge.id,
+        bridgeSessions: bridge.attachedSessions.map((session) => sessionIdentityKey(session)),
+      })
+      const taskName = taskPath.split("/").pop()?.replace(/\.md$/, "") ?? taskPath
+      const updated = save({
+        ...bridge,
+        task: {
+          taskName,
+          path: taskPath,
+          mode: "promoted",
+          boundAt: now(),
+        },
+        updatedAt: now(),
+      })
+      emitNervesEvent({
+        component: "engine",
+        event: "engine.bridge_promote_task",
+        message: "promoted bridge to task-backed work",
+        meta: {
+          bridgeId,
+          taskName,
+        },
+      })
+      return updated
+    },
+
+    completeBridge(bridgeId: string): BridgeRecord {
+      const bridge = requireBridge(bridgeId)
+      const updated = save({
+        ...bridge,
+        ...completeBridge(bridge),
+        updatedAt: now(),
+      })
+      emitNervesEvent({
+        component: "engine",
+        event: "engine.bridge_complete",
+        message: "completed bridge",
+        meta: {
+          bridgeId,
+        },
+      })
+      return updated
+    },
+
+    cancelBridge(bridgeId: string): BridgeRecord {
+      const bridge = requireBridge(bridgeId)
+      const updated = save({
+        ...bridge,
+        ...cancelBridge(bridge),
+        updatedAt: now(),
+      })
+      emitNervesEvent({
+        component: "engine",
+        event: "engine.bridge_cancel",
+        message: "cancelled bridge",
+        meta: {
+          bridgeId,
+        },
+      })
+      return updated
     },
 
     async runBridgeTurn(bridgeId: string, fn: () => Promise<void>): Promise<RunBridgeTurnResult> {

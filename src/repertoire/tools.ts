@@ -208,6 +208,7 @@ export function summarizeArgs(name: string, args: Record<string, string>): strin
   if (name === "save_friend_note") {
     return summarizeKeyValues(args, ["type", "key", "content"]);
   }
+  if (name === "bridge_manage") return summarizeKeyValues(args, ["action", "bridgeId", "objective", "friendId", "channel", "key"]);
   if (name === "ado_backlog_list") return summarizeKeyValues(args, ["organization", "project"]);
   if (name === "ado_batch_update") return summarizeKeyValues(args, ["organization", "project"]);
   if (name === "ado_create_epic" || name === "ado_create_issue") return summarizeKeyValues(args, ["organization", "project", "title"]);
