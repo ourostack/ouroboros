@@ -8,7 +8,7 @@ import { pickPhrase, getPhrases } from "../mind/phrases"
 import { formatToolResult, formatKick, formatError } from "../mind/format"
 import { sessionPath } from "../heart/config"
 import { loadSession, deleteSession, postTurn } from "../mind/context"
-import { getPendingDir, drainPending, type PendingMessage } from "../mind/pending"
+import { getPendingDir, drainDeferredReturns, drainPending, type PendingMessage } from "../mind/pending"
 // refreshSystemPrompt removed: runAgent already handles prompt refresh per-turn
 import type { UsageData } from "../mind/context"
 import { createCommandRegistry, registerDefaultCommands, parseSlashCommand, getToolChoiceRequired } from "./commands"
@@ -775,12 +775,13 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
 
   // Per-turn pipeline input: CLI capabilities and pending dir
   const cliCapabilities = getChannelCapabilities("cli")
-  const pendingDir = getPendingDir(getAgentName(), friendId, "cli", "session")
+  const currentAgentName = getAgentName()
+  const pendingDir = getPendingDir(currentAgentName, friendId, "cli", "session")
   const summarize = createSummarize()
 
   try {
     await runCliSession({
-      agentName: getAgentName(),
+      agentName: currentAgentName,
       pasteDebounceMs,
       messages: sessionMessages,
       runTurn: async (messages, userInput, callbacks, signal) => {
@@ -801,6 +802,7 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
           externalId: localExternalId,
           enforceTrustGate,
           drainPending,
+          drainDeferredReturns: (deferredFriendId) => drainDeferredReturns(currentAgentName, deferredFriendId),
           runAgent: (msgs, cb, channel, sig, opts) => runAgent(msgs, cb, channel, sig, {
             ...opts,
             toolContext: {

@@ -286,6 +286,32 @@ describe("send_message tool", () => {
       })
     })
 
+    it("tags outward delegated self-messages without a bridge id when no active bridge matches", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      await tool.handler({
+        friendId: "self",
+        channel: "bluebubbles",
+        content: "think this through too",
+      }, {
+        currentSession: {
+          friendId: "friend-uuid-1",
+          channel: "bluebubbles",
+          key: "chat",
+          sessionPath: "/mock/agent-root/state/sessions/friend-uuid-1/bluebubbles/chat.json",
+        },
+        activeBridges: [],
+      } as any)
+
+      const written = JSON.parse(vi.mocked(fs.writeFileSync).mock.calls[0][1] as string)
+      expect(written.delegatedFrom).toEqual({
+        friendId: "friend-uuid-1",
+        channel: "bluebubbles",
+        key: "chat",
+      })
+    })
+
     it("keeps purely inner self-thought private by omitting delegated origin metadata", async () => {
       const { baseToolDefinitions } = await import("../../repertoire/tools-base")
       const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!

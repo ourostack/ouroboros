@@ -318,3 +318,18 @@ describe("drainPending", () => {
     expect(result[0].content).toBe("good msg")
   })
 })
+
+describe("drainDeferredReturns", () => {
+  beforeEach(() => {
+    vi.resetModules()
+  })
+
+  it("returns empty array when deferred return directory does not exist", async () => {
+    const { drainDeferredReturns } = await import("../../mind/pending")
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+
+    const result = drainDeferredReturns("testagent", "friend-1")
+
+    expect(result).toEqual([])
+  })
+})

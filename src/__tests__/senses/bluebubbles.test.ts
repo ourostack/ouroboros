@@ -41,6 +41,7 @@ const mocks = vi.hoisted(() => ({
   getChannelCapabilities: vi.fn(),
   getPendingDir: vi.fn(),
   drainPending: vi.fn(),
+  drainDeferredReturns: vi.fn(),
   enforceTrustGate: vi.fn(),
   findByExternalId: vi.fn().mockResolvedValue(null),
   listAll: vi.fn().mockResolvedValue([]),
@@ -193,6 +194,7 @@ vi.mock("../../mind/friends/channel", () => ({
 vi.mock("../../mind/pending", () => ({
   getPendingDir: (...args: any[]) => mocks.getPendingDir(...args),
   drainPending: (...args: any[]) => mocks.drainPending(...args),
+  drainDeferredReturns: (...args: any[]) => mocks.drainDeferredReturns(...args),
 }))
 
 vi.mock("../../senses/trust-gate", () => ({
@@ -526,6 +528,7 @@ function resetMocks(): void {
   })
   mocks.getPendingDir.mockReset().mockReturnValue("/tmp/pending/friend-uuid/bluebubbles/session")
   mocks.drainPending.mockReset().mockReturnValue([])
+  mocks.drainDeferredReturns.mockReset().mockReturnValue([])
   mocks.enforceTrustGate.mockReset().mockReturnValue({ allowed: true })
   mocks.findByExternalId.mockReset().mockResolvedValue(null)
   mocks.listAll.mockReset().mockResolvedValue([])
@@ -3764,6 +3767,16 @@ describe("BlueBubbles sense runtime", () => {
     const input = mocks.handleInboundTurn.mock.calls[0][0]
     expect(input.pendingDir).toEqual(expect.stringContaining("pending"))
     expect(typeof input.drainPending).toBe("function")
+  })
+
+  it("passes deferred-return drain to pipeline for friend-level completion routing", async () => {
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    const input = mocks.handleInboundTurn.mock.calls[0][0]
+    expect(typeof input.drainDeferredReturns).toBe("function")
+    expect(input.drainDeferredReturns("friend-uuid")).toEqual([])
+    expect(mocks.drainDeferredReturns).toHaveBeenCalledWith("testagent", "friend-uuid")
   })
 
   it("passes BB-specific toolContext (bluebubblesReplyTarget, codingFeedback) via runAgent wrapper", async () => {

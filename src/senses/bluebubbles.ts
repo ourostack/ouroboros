@@ -12,7 +12,7 @@ import { FriendResolver, type FriendResolverParams } from "../mind/friends/resol
 import { FileFriendStore } from "../mind/friends/store-file"
 import { TRUSTED_LEVELS, type FriendRecord } from "../mind/friends/types"
 import { getChannelCapabilities } from "../mind/friends/channel"
-import { getPendingDir, drainPending } from "../mind/pending"
+import { getPendingDir, drainDeferredReturns, drainPending } from "../mind/pending"
 import { buildSystem } from "../mind/prompt"
 import { getPhrases } from "../mind/phrases"
 import { emitNervesEvent } from "../nerves/runtime"
@@ -704,6 +704,7 @@ async function handleBlueBubblesNormalizedEvent(
         hasExistingGroupWithFamily,
         enforceTrustGate,
         drainPending,
+        drainDeferredReturns: (deferredFriendId) => drainDeferredReturns(resolvedDeps.getAgentName(), deferredFriendId),
         runAgent: (msgs, cb, channel, sig, opts) => resolvedDeps.runAgent(msgs, cb, channel, sig, {
           ...opts,
           toolContext: {

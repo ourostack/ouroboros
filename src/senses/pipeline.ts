@@ -5,7 +5,7 @@
 // Transport-level concerns (BB API calls, Teams cards, readline) stay in sense adapters.
 
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions"
-import type { ChannelCallbacks, RunAgentOptions, RunAgentOutcome } from "../heart/core"
+import type { ChannelCallbacks, CompletionMetadata, RunAgentOptions, RunAgentOutcome } from "../heart/core"
 import type { PostTurnHooks, SessionContinuityState, UsageData } from "../mind/context"
 import type { Channel, ChannelCapabilities, IdentityProvider, ResolvedContext } from "../mind/friends/types"
 import type { FriendStore } from "../mind/friends/store"
@@ -69,13 +69,14 @@ export interface InboundTurnInput {
   // ── Dependency injection for testability ──
   enforceTrustGate: (input: TrustGateInput) => TrustGateResult
   drainPending: (pendingDir: string) => PendingMessage[]
+  drainDeferredReturns?: (friendId: string) => PendingMessage[]
   runAgent: (
     messages: ChatCompletionMessageParam[],
     callbacks: ChannelCallbacks,
     channel?: Channel,
     signal?: AbortSignal,
     options?: RunAgentOptions,
-  ) => Promise<{ usage?: UsageData; outcome: RunAgentOutcome }>
+  ) => Promise<{ usage?: UsageData; outcome: RunAgentOutcome; completion?: CompletionMetadata }>
   postTurn: (
     messages: ChatCompletionMessageParam[],
     sessPath: string,
@@ -99,10 +100,14 @@ export interface InboundTurnResult {
   usage?: UsageData
   /** Structured turn outcome from runAgent. Undefined when gate rejects. */
   turnOutcome?: RunAgentOutcome
+  /** Explicit completion metadata from runAgent when available. */
+  completion?: CompletionMetadata
   /** Session file path. Undefined when gate rejects. */
   sessionPath?: string
   /** The final messages array after the turn. Undefined when gate rejects. */
   messages?: ChatCompletionMessageParam[]
+  /** Pending envelopes drained at turn start, including deferred returns. */
+  drainedPending?: PendingMessage[]
 }
 
 function emptyTaskBoard(): BoardResult {
@@ -258,8 +263,12 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     mustResolveBeforeHandoff,
   })
 
-  // Step 4: Drain pending messages
-  const pending = input.drainPending(input.pendingDir)
+  // Step 4: Drain deferred friend returns, then ordinary per-session pending.
+  const deferredReturns = input.channel === "inner"
+    ? []
+    : (input.drainDeferredReturns?.(resolvedContext.friend.id) ?? [])
+  const sessionPending = input.drainPending(input.pendingDir)
+  const pending = [...deferredReturns, ...sessionPending]
 
   // Assemble messages: session messages + pending (formatted) + inbound user messages
   if (pending.length > 0) {
@@ -357,7 +366,9 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     gateResult,
     usage: result.usage,
     turnOutcome: result.outcome,
+    completion: result.completion,
     sessionPath: session.sessionPath,
     messages: sessionMessages,
+    drainedPending: pending,
   }
 }

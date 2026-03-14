@@ -26,7 +26,7 @@ import * as http from "http"
 import * as path from "path"
 import { enforceTrustGate } from "./trust-gate"
 import { handleInboundTurn } from "./pipeline"
-import { drainPending, getPendingDir } from "../mind/pending"
+import { drainDeferredReturns, drainPending, getPendingDir } from "../mind/pending"
 import { classifySteeringFollowUpEffect, type SteeringFollowUpEffect } from "./continuity"
 
 // Stream interface matching IStreamer from @microsoft/teams.apps
@@ -574,6 +574,7 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
       hasExistingGroupWithFamily: false,
       enforceTrustGate,
       drainPending,
+      drainDeferredReturns: (deferredFriendId) => drainDeferredReturns(getAgentName(), deferredFriendId),
       runAgent: (msgs, cb, channel, sig, opts) => runAgent(msgs, cb, channel, sig, {
         ...opts,
         toolContext: {

@@ -5944,6 +5944,12 @@ describe("Teams adapter - pipeline integration (U7)", () => {
       trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
       postTurn: vi.fn().mockImplementation((...args: any[]) => { postTurnCalls.push(args) }),
     }))
+    const mockDrainDeferredReturns = vi.fn().mockReturnValue([])
+    vi.doMock("../../mind/pending", () => ({
+      getPendingDir: vi.fn(() => "/tmp/mock-pending/teams"),
+      drainPending: vi.fn(() => []),
+      drainDeferredReturns: mockDrainDeferredReturns,
+    }))
     vi.doMock("../../senses/commands", () => ({
       createCommandRegistry: vi.fn().mockReturnValue({
         register: vi.fn(),
@@ -5991,7 +5997,7 @@ describe("Teams adapter - pipeline integration (U7)", () => {
       FriendResolver: MockFriendResolver,
     }))
 
-    return { mockHandleInboundTurn, runAgentFn, mockResolve }
+    return { mockHandleInboundTurn, runAgentFn, mockResolve, mockDrainDeferredReturns }
   }
 
   it("calls handleInboundTurn instead of inline lifecycle", async () => {
@@ -6119,6 +6125,25 @@ describe("Teams adapter - pipeline integration (U7)", () => {
 
     const input = mockHandleInboundTurn.mock.calls[0][0]
     expect(typeof input.drainPending).toBe("function")
+  })
+
+  it("passes deferred-return drain as injected dependency to pipeline", async () => {
+    vi.resetModules()
+    const { mockHandleInboundTurn, mockDrainDeferredReturns } = mockPipelineDeps()
+    const teams = await import("../../senses/teams")
+    const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+
+    await teams.handleTeamsMessage("hello", mockStream as any, "conv-123", {
+      signin: vi.fn(),
+      aadObjectId: "aad-user-123",
+      tenantId: "tenant-abc",
+      displayName: "Test User",
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    expect(typeof input.drainDeferredReturns).toBe("function")
+    expect(input.drainDeferredReturns("friend-1")).toEqual([])
+    expect(mockDrainDeferredReturns).toHaveBeenCalledWith("testagent", "friend-1")
   })
 
   it("passes runAgent, postTurn, and accumulateFriendTokens as injected deps", async () => {

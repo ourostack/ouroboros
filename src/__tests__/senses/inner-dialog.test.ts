@@ -613,6 +613,166 @@ describe("inner dialog runtime", () => {
     expect(deferredPayload.content).toBe("i sat with it and landed on penguins")
   })
 
+  it("routes delegated completions to the freshest active friend-facing session when bridge preference is unavailable", async () => {
+    const cliPendingDir = path.join(agentRoot, "state", "pending", "friend-1", "cli", "session")
+    const bluebubblesPendingDir = path.join(agentRoot, "state", "pending", "friend-1", "bluebubbles", "chat")
+    mockGetPendingDir.mockImplementation((_agent: string, _friendId: string, channel: string, key: string) =>
+      channel === "cli" && key === "session" ? cliPendingDir : bluebubblesPendingDir,
+    )
+    mockListSessionActivity.mockReturnValue([
+      {
+        friendId: "friend-1",
+        friendName: "Ari",
+        channel: "cli",
+        key: "session",
+        sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+        lastActivityAt: "2026-03-13T20:05:00.000Z",
+        lastActivityMs: Date.parse("2026-03-13T20:05:00.000Z"),
+        activitySource: "friend-facing",
+      },
+    ])
+    mockGetBridge.mockReturnValue({
+      id: "bridge-1",
+      objective: "keep cli and bluebubbles aligned",
+      summary: "shared relay",
+      lifecycle: "cancelled",
+      runtime: "idle",
+      createdAt: "2026-03-13T20:00:00.000Z",
+      updatedAt: "2026-03-13T20:00:00.000Z",
+      attachedSessions: [
+        {
+          friendId: "friend-1",
+          channel: "bluebubbles",
+          key: "chat",
+          sessionPath: "/tmp/state/sessions/friend-1/bluebubbles/chat.json",
+        },
+      ],
+      task: null,
+    })
+    mockFindFreshestFriendSession.mockReturnValue({
+      friendId: "friend-1",
+      friendName: "Ari",
+      channel: "cli",
+      key: "session",
+      sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+      lastActivityAt: "2026-03-13T20:05:00.000Z",
+      lastActivityMs: Date.parse("2026-03-13T20:05:00.000Z"),
+      activitySource: "friend-facing",
+    })
+    mockHandleInboundTurn.mockResolvedValue({
+      resolvedContext: { friend: { id: "self", name: "test-agent" }, channel: innerCapabilities },
+      gateResult: { allowed: true },
+      usage: undefined,
+      sessionPath: sessionFile,
+      messages: [{ role: "assistant", content: "cli got it" }],
+      completion: { answer: "cli got it", intent: "complete" },
+      drainedPending: [
+        {
+          from: "test-agent",
+          content: "reflect on penguins",
+          timestamp: 1709900001,
+          delegatedFrom: {
+            friendId: "friend-1",
+            channel: "bluebubbles",
+            key: "chat",
+            bridgeId: "bridge-1",
+          },
+        },
+      ],
+    })
+
+    await runInnerDialogTurn({
+      reason: "heartbeat",
+      now: () => new Date("2026-03-13T20:10:00.000Z"),
+    })
+
+    const routedFiles = fs.readdirSync(cliPendingDir)
+    expect(routedFiles.length).toBe(1)
+    const routedPayload = JSON.parse(fs.readFileSync(path.join(cliPendingDir, routedFiles[0]), "utf8"))
+    expect(routedPayload.content).toBe("cli got it")
+    expect(fs.existsSync(bluebubblesPendingDir)).toBe(false)
+  })
+
+  it("falls back to friend recency when an active bridge does not include a matching attached outward session", async () => {
+    const cliPendingDir = path.join(agentRoot, "state", "pending", "friend-1", "cli", "session")
+    const bluebubblesPendingDir = path.join(agentRoot, "state", "pending", "friend-1", "bluebubbles", "chat")
+    mockGetPendingDir.mockImplementation((_agent: string, _friendId: string, channel: string, key: string) =>
+      channel === "cli" && key === "session" ? cliPendingDir : bluebubblesPendingDir,
+    )
+    mockListSessionActivity.mockReturnValue([
+      {
+        friendId: "friend-1",
+        friendName: "Ari",
+        channel: "cli",
+        key: "session",
+        sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+        lastActivityAt: "2026-03-13T20:05:00.000Z",
+        lastActivityMs: Date.parse("2026-03-13T20:05:00.000Z"),
+        activitySource: "friend-facing",
+      },
+    ])
+    mockGetBridge.mockReturnValue({
+      id: "bridge-1",
+      objective: "keep cli and bluebubbles aligned",
+      summary: "shared relay",
+      lifecycle: "active",
+      runtime: "idle",
+      createdAt: "2026-03-13T20:00:00.000Z",
+      updatedAt: "2026-03-13T20:00:00.000Z",
+      attachedSessions: [
+        {
+          friendId: "friend-1",
+          channel: "teams",
+          key: "conversation",
+          sessionPath: "/tmp/state/sessions/friend-1/teams/conversation.json",
+        },
+      ],
+      task: null,
+    })
+    mockFindFreshestFriendSession.mockReturnValue({
+      friendId: "friend-1",
+      friendName: "Ari",
+      channel: "cli",
+      key: "session",
+      sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+      lastActivityAt: "2026-03-13T20:05:00.000Z",
+      lastActivityMs: Date.parse("2026-03-13T20:05:00.000Z"),
+      activitySource: "friend-facing",
+    })
+    mockHandleInboundTurn.mockResolvedValue({
+      resolvedContext: { friend: { id: "self", name: "test-agent" }, channel: innerCapabilities },
+      gateResult: { allowed: true },
+      usage: undefined,
+      sessionPath: sessionFile,
+      messages: [{ role: "assistant", content: "cli still got it" }],
+      completion: { answer: "cli still got it", intent: "complete" },
+      drainedPending: [
+        {
+          from: "test-agent",
+          content: "reflect on penguins more",
+          timestamp: 1709900001,
+          delegatedFrom: {
+            friendId: "friend-1",
+            channel: "bluebubbles",
+            key: "chat",
+            bridgeId: "bridge-1",
+          },
+        },
+      ],
+    })
+
+    await runInnerDialogTurn({
+      reason: "heartbeat",
+      now: () => new Date("2026-03-13T20:10:00.000Z"),
+    })
+
+    const routedFiles = fs.readdirSync(cliPendingDir)
+    expect(routedFiles.length).toBe(1)
+    const routedPayload = JSON.parse(fs.readFileSync(path.join(cliPendingDir, routedFiles[0]), "utf8"))
+    expect(routedPayload.content).toBe("cli still got it")
+    expect(fs.existsSync(bluebubblesPendingDir)).toBe(false)
+  })
+
   it("passes bootstrap user message with aspirations on fresh session", async () => {
     await runInnerDialogTurn({
       reason: "boot",

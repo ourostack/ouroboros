@@ -2,12 +2,19 @@ import type OpenAI from "openai"
 import * as fs from "fs"
 import * as path from "path"
 import { sessionPath } from "../heart/config"
-import { runAgent, type ChannelCallbacks } from "../heart/core"
+import { runAgent, type ChannelCallbacks, type CompletionMetadata } from "../heart/core"
 import { getAgentName, getAgentRoot } from "../heart/identity"
 import { loadSession, postTurn, type UsageData } from "../mind/context"
 import { buildSystem } from "../mind/prompt"
 import { findNonCanonicalBundlePaths } from "../mind/bundle-manifest"
-import { drainPending, getInnerDialogPendingDir, INNER_DIALOG_PENDING } from "../mind/pending"
+import {
+  drainPending,
+  getInnerDialogPendingDir,
+  getDeferredReturnDir,
+  getPendingDir,
+  INNER_DIALOG_PENDING,
+  type PendingMessage,
+} from "../mind/pending"
 import { getChannelCapabilities } from "../mind/friends/channel"
 import { enforceTrustGate } from "./trust-gate"
 import { accumulateFriendTokens } from "../mind/friends/tokens"
@@ -16,6 +23,8 @@ import { createTraceId } from "../nerves"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { FriendRecord, ResolvedContext } from "../mind/friends/types"
 import type { FriendStore } from "../mind/friends/store"
+import { createBridgeManager } from "../heart/bridges/manager"
+import { findFreshestFriendSession, listSessionActivity, type SessionActivityRecord } from "../heart/session-activity"
 
 export interface InnerDialogInstinct {
   id: string
@@ -42,6 +51,7 @@ export interface InnerDialogTurnResult {
   messages: OpenAI.ChatCompletionMessageParam[]
   usage?: UsageData
   sessionPath: string
+  completion?: CompletionMetadata
 }
 
 interface InnerDialogRuntimeState {
@@ -243,6 +253,88 @@ function writeInnerDialogRuntimeState(sessionFilePath: string, state: InnerDialo
   }
 }
 
+function writePendingEnvelope(pendingDir: string, message: PendingMessage): void {
+  fs.mkdirSync(pendingDir, { recursive: true })
+  const fileName = `${message.timestamp}-${Math.random().toString(36).slice(2, 10)}.json`
+  const filePath = path.join(pendingDir, fileName)
+  fs.writeFileSync(filePath, JSON.stringify(message, null, 2), "utf8")
+}
+
+function sessionMatchesActivity(
+  activity: SessionActivityRecord,
+  session: { friendId: string; channel: string; key: string },
+): boolean {
+  return activity.friendId === session.friendId
+    && activity.channel === session.channel
+    && activity.key === session.key
+}
+
+function resolveBridgePreferredSession(
+  delegatedFrom: NonNullable<PendingMessage["delegatedFrom"]>,
+  sessionActivity: SessionActivityRecord[],
+): SessionActivityRecord | null {
+  if (!delegatedFrom.bridgeId) return null
+  const bridge = createBridgeManager().getBridge(delegatedFrom.bridgeId)
+  if (!bridge || bridge.lifecycle === "completed" || bridge.lifecycle === "cancelled") {
+    return null
+  }
+  return sessionActivity.find((activity) =>
+    activity.friendId === delegatedFrom.friendId
+    && activity.channel !== "inner"
+    && bridge.attachedSessions.some((session) => sessionMatchesActivity(activity, session)),
+  ) ?? null
+}
+
+function routeDelegatedCompletion(
+  agentRoot: string,
+  agentName: string,
+  completion: CompletionMetadata | undefined,
+  drainedPending: PendingMessage[] | undefined,
+  timestamp: number,
+): void {
+  const delegated = (drainedPending ?? []).find((message) => message.delegatedFrom)
+  if (!delegated?.delegatedFrom || !completion?.answer?.trim()) {
+    return
+  }
+
+  const delegatedFrom = delegated.delegatedFrom
+  const outboundEnvelope: PendingMessage = {
+    from: agentName,
+    friendId: delegatedFrom.friendId,
+    channel: delegatedFrom.channel,
+    key: delegatedFrom.key,
+    content: completion.answer.trim(),
+    timestamp,
+    delegatedFrom,
+  }
+
+  const sessionActivity = listSessionActivity({
+    sessionsDir: path.join(agentRoot, "state", "sessions"),
+    friendsDir: path.join(agentRoot, "friends"),
+    agentName,
+  })
+
+  const bridgeTarget = resolveBridgePreferredSession(delegatedFrom, sessionActivity)
+  if (bridgeTarget) {
+    writePendingEnvelope(getPendingDir(agentName, bridgeTarget.friendId, bridgeTarget.channel, bridgeTarget.key), outboundEnvelope)
+    return
+  }
+
+  const freshest = findFreshestFriendSession({
+    sessionsDir: path.join(agentRoot, "state", "sessions"),
+    friendsDir: path.join(agentRoot, "friends"),
+    agentName,
+    friendId: delegatedFrom.friendId,
+    activeOnly: true,
+  })
+  if (freshest && freshest.channel !== "inner") {
+    writePendingEnvelope(getPendingDir(agentName, freshest.friendId, freshest.channel, freshest.key), outboundEnvelope)
+    return
+  }
+
+  writePendingEnvelope(getDeferredReturnDir(agentName, delegatedFrom.friendId), outboundEnvelope)
+}
+
 // Self-referencing friend record for inner dialog (agent talking to itself).
 // No real friend to resolve -- this satisfies the pipeline's friend resolver contract.
 function createSelfFriend(agentName: string): FriendRecord {
@@ -275,6 +367,8 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
   const now = options?.now ?? (() => new Date())
   const reason = options?.reason ?? "heartbeat"
   const sessionFilePath = innerDialogSessionPath()
+  const agentName = getAgentName()
+  const agentRoot = getAgentRoot()
   writeInnerDialogRuntimeState(sessionFilePath, {
     status: "running",
     reason,
@@ -321,8 +415,8 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
 
   // ── Session loader: wraps existing session logic ──────────────────
   const innerCapabilities = getChannelCapabilities("inner")
-  const pendingDir = getInnerDialogPendingDir(getAgentName())
-  const selfFriend = createSelfFriend(getAgentName())
+  const pendingDir = getInnerDialogPendingDir(agentName)
+  const selfFriend = createSelfFriend(agentName)
   const selfContext: ResolvedContext = { friend: selfFriend, channel: innerCapabilities }
 
   const sessionLoader = {
@@ -366,6 +460,7 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
       skipConfirmation: true,
     },
   })
+  routeDelegatedCompletion(agentRoot, agentName, result.completion, result.drainedPending, now().getTime())
 
   const resultMessages = result.messages ?? []
   const assistantPreview = extractAssistantPreview(resultMessages)
@@ -393,6 +488,7 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
     messages: resultMessages,
     usage: result.usage,
     sessionPath: result.sessionPath ?? sessionFilePath,
+    completion: result.completion,
   }
   } finally {
     writeInnerDialogRuntimeState(sessionFilePath, {

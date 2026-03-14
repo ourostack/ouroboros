@@ -16,6 +16,7 @@ import { recallSession, type SessionRecallOptions, type SessionRecallResult } fr
 import { codingToolDefinitions } from "./coding/tools";
 import { readMemoryFacts, saveMemoryFact, searchMemoryFacts } from "../mind/memory";
 import { getPendingDir, getInnerDialogPendingDir } from "../mind/pending";
+import type { PendingMessage } from "../mind/pending";
 import type { BridgeRecord, BridgeSessionRef } from "../heart/bridges/store";
 
 export interface CodingFeedbackTarget {
@@ -80,6 +81,19 @@ function buildContextDiff(lines: string[], changeStart: number, changeEnd: numbe
 
 const NO_SESSION_FOUND_MESSAGE = "no session found for that friend/channel/key combination."
 const EMPTY_SESSION_MESSAGE = "session exists but has no non-system messages."
+
+function findDelegatingBridgeId(ctx?: ToolContext): string | undefined {
+  const currentSession = ctx?.currentSession
+  if (!currentSession) return undefined
+  return ctx?.activeBridges?.find((bridge) =>
+    bridge.lifecycle === "active"
+    && bridge.attachedSessions.some((session) =>
+      session.friendId === currentSession.friendId
+      && session.channel === currentSession.channel
+      && session.key === currentSession.key,
+    ),
+  )?.id
+}
 
 async function recallSessionSafely(options: SessionRecallOptions): Promise<SessionRecallResult | { kind: "missing" }> {
   try {
@@ -827,13 +841,25 @@ export const baseToolDefinitions: ToolDefinition[] = [
 
       const fileName = `${now}-${Math.random().toString(36).slice(2, 10)}.json`
       const filePath = path.join(pendingDir, fileName)
-      const envelope = {
+      const delegatingBridgeId = findDelegatingBridgeId(ctx)
+      const delegatedFrom = isSelf
+        && ctx?.currentSession
+        && !(ctx.currentSession.friendId === "self" && ctx.currentSession.channel === "inner")
+        ? {
+            friendId: ctx.currentSession.friendId,
+            channel: ctx.currentSession.channel,
+            key: ctx.currentSession.key,
+            ...(delegatingBridgeId ? { bridgeId: delegatingBridgeId } : {}),
+          }
+        : undefined
+      const envelope: PendingMessage = {
         from: agentName,
         friendId,
         channel,
         key,
         content,
         timestamp: now,
+        ...(delegatedFrom ? { delegatedFrom } : {}),
       }
       fs.writeFileSync(filePath, JSON.stringify(envelope, null, 2))
 
