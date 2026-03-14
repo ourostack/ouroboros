@@ -280,6 +280,24 @@ describe("active work frame", () => {
     expect(rendered).toContain("freshest friend-facing session: cli/session")
   })
 
+  it("falls back gracefully when formatting a sparse frame with optional runtime sections absent", async () => {
+    const { formatActiveWorkFrame } = await import("../../heart/active-work")
+
+    const rendered = formatActiveWorkFrame({
+      currentSession: null,
+      currentObligation: null,
+      mustResolveBeforeHandoff: false,
+      centerOfGravity: "local-turn",
+      bridgeSuggestion: null,
+    } as any)
+
+    expect(rendered).toContain("## active work")
+    expect(rendered).toContain("center: local-turn")
+    expect(rendered).toContain("inner status: idle")
+    expect(rendered).not.toContain("live tasks:")
+    expect(rendered).not.toContain("bridges:")
+  })
+
   it("suggests beginning a new bridge when another live same-friend session exists but no bridge is active yet", async () => {
     const { buildActiveWorkFrame } = await import("../../heart/active-work")
 
@@ -540,9 +558,9 @@ describe("active work frame", () => {
   })
 
   it("exports a shared bridge suggestion helper that ignores already-covered sessions and only suggests other live surfaces", async () => {
-    const { suggestBridgeForActiveWork } = await import("../../heart/active-work")
+    const { suggestBridgeForActiveWork, formatActiveWorkFrame } = await import("../../heart/active-work")
 
-    expect(suggestBridgeForActiveWork({
+    const suggestion = suggestBridgeForActiveWork({
       currentSession: {
         friendId: "friend-1",
         channel: "teams",
@@ -606,7 +624,9 @@ describe("active work frame", () => {
           activitySource: "friend-facing",
         },
       ],
-    })).toEqual({
+    })
+
+    expect(suggestion).toEqual({
       kind: "attach-existing",
       bridgeId: "bridge-1",
       reason: "same-friend-shared-work",
@@ -615,6 +635,58 @@ describe("active work frame", () => {
         key: "session",
       }),
     })
+
+    expect(formatActiveWorkFrame({
+      currentSession: {
+        friendId: "friend-1",
+        channel: "teams",
+        key: "conv-1",
+        sessionPath: "/tmp/state/sessions/friend-1/teams/conv-1.json",
+      },
+      currentObligation: "keep Ari aligned across chats",
+      mustResolveBeforeHandoff: false,
+      centerOfGravity: "shared-work",
+      inner: { status: "idle", hasPending: false },
+      bridges: [
+        {
+          id: "bridge-1",
+          objective: "carry Ari across cli and teams",
+          summary: "same work, two surfaces",
+          lifecycle: "active",
+          runtime: "idle",
+          createdAt: "2026-03-13T20:00:00.000Z",
+          updatedAt: "2026-03-13T20:00:00.000Z",
+          attachedSessions: [
+            {
+              friendId: "friend-1",
+              channel: "teams",
+              key: "conv-1",
+              sessionPath: "/tmp/state/sessions/friend-1/teams/conv-1.json",
+            },
+          ],
+          task: null,
+        },
+      ],
+      taskPressure: {
+        compactBoard: "[Tasks] processing:0 blocked:0",
+        liveTaskNames: [],
+        activeBridges: [],
+      },
+      friendActivity: {
+        freshestForCurrentFriend: {
+          friendId: "friend-1",
+          friendName: "Ari",
+          channel: "cli",
+          key: "session",
+          sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+          lastActivityAt: "2026-03-13T20:02:00.000Z",
+          lastActivityMs: Date.parse("2026-03-13T20:02:00.000Z"),
+          activitySource: "friend-facing",
+        },
+        otherLiveSessionsForCurrentFriend: [],
+      },
+      bridgeSuggestion: suggestion,
+    })).toContain("suggested bridge: attach bridge-1 -> cli/session")
   })
 })
 

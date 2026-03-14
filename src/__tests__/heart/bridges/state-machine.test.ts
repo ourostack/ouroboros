@@ -76,6 +76,15 @@ describe("bridge state machine", () => {
 
     const suspended = bridges.suspendBridge(activeIdle)
     expect(bridges.reconcileBridgeState(suspended, {
+      hasAttachedSessionActivity: false,
+      hasLiveTask: false,
+      currentSessionAttached: false,
+    })).toEqual({
+      lifecycle: "suspended",
+      runtime: "idle",
+    })
+
+    expect(bridges.reconcileBridgeState(suspended, {
       hasAttachedSessionActivity: true,
       hasLiveTask: false,
       currentSessionAttached: false,
@@ -99,6 +108,60 @@ describe("bridge state machine", () => {
       currentSessionAttached: true,
     })).toEqual({
       lifecycle: "active",
+      runtime: "idle",
+    })
+
+    expect(bridges.reconcileBridgeState(
+      bridges.completeBridge(activeIdle),
+      {
+        hasAttachedSessionActivity: true,
+        hasLiveTask: true,
+        currentSessionAttached: true,
+      },
+    )).toEqual({
+      lifecycle: "completed",
+      runtime: "idle",
+    })
+
+    expect(bridges.reconcileBridgeState(
+      bridges.beginBridgeProcessing(activeIdle),
+      {
+        hasAttachedSessionActivity: false,
+        hasLiveTask: false,
+        currentSessionAttached: false,
+      },
+    )).toEqual({
+      lifecycle: "active",
+      runtime: "processing",
+    })
+
+    expect(bridges.reconcileBridgeState(bridges.createBridgeState(), {
+      hasAttachedSessionActivity: true,
+      hasLiveTask: false,
+      currentSessionAttached: false,
+    })).toEqual({
+      lifecycle: "active",
+      runtime: "idle",
+    })
+
+    expect(bridges.reconcileBridgeState(bridges.createBridgeState(), {
+      hasAttachedSessionActivity: false,
+      hasLiveTask: false,
+      currentSessionAttached: false,
+    })).toEqual({
+      lifecycle: "suspended",
+      runtime: "idle",
+    })
+
+    expect(bridges.reconcileBridgeState({
+      lifecycle: "mystery" as any,
+      runtime: "idle",
+    }, {
+      hasAttachedSessionActivity: false,
+      hasLiveTask: false,
+      currentSessionAttached: false,
+    })).toEqual({
+      lifecycle: "mystery",
       runtime: "idle",
     })
   })

@@ -191,6 +191,7 @@ describe("bridge manager", () => {
     expect(formatBridgeContext([])).toBe("")
     expect(formatBridgeContext([created])).toContain("- ")
     expect(formatBridgeContext([created])).not.toContain("(task:")
+    expect(formatBridgeStatus({ ...(created as any), summary: null })).not.toContain("summary:")
 
     expect(manager.attachSession(created.id, created.attachedSessions[0])).toEqual(created)
     expect(manager.listBridges()).toHaveLength(1)
