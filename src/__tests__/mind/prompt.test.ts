@@ -259,7 +259,7 @@ describe("buildSystem", () => {
           bridgeSuggestion: {
             kind: "attach-existing",
             bridgeId: "bridge-1",
-            reason: "same-friend-shared-work",
+            reason: "shared-work-candidate",
             targetSession: {
               channel: "cli",
               key: "session",

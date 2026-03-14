@@ -72,7 +72,7 @@ describe("active work frame", () => {
     expect(frame.bridgeSuggestion).toEqual({
       kind: "attach-existing",
       bridgeId: "bridge-1",
-      reason: "same-friend-shared-work",
+      reason: "shared-work-candidate",
       targetSession: expect.objectContaining({
         channel: "cli",
         key: "session",
@@ -352,7 +352,7 @@ describe("active work frame", () => {
     expect(rendered).toContain("shared_group")
   })
 
-  it("suggests beginning a new bridge when another live same-friend session exists but no bridge is active yet", async () => {
+  it("suggests beginning a new bridge when another live session makes the same work cross-surface even across a different relationship", async () => {
     const { buildActiveWorkFrame } = await import("../../heart/active-work")
 
     const frame = buildActiveWorkFrame({
@@ -379,13 +379,28 @@ describe("active work frame", () => {
           done: [],
         },
       },
-      friendActivity: [
+      friendActivity: [],
+      targetCandidates: [
         {
-          friendId: "friend-1",
-          friendName: "Ari",
-          channel: "cli",
-          key: "session",
-          sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+          friendId: "group-1",
+          friendName: "Project Group",
+          channel: "bluebubbles",
+          key: "chat:any;+;project-group-123",
+          sessionPath: "/tmp/state/sessions/group-1/bluebubbles/chat:any;+;project-group-123.json",
+          snapshot: "recent focus: waiting on Ari",
+          trust: {
+            level: "acquaintance",
+            basis: "shared_group",
+            summary: "known through the shared project group",
+            why: "this group is a relevant shared context",
+            permits: ["group-safe coordination"],
+            constraints: ["no direct private trust"],
+            relatedGroupId: "group:any;+;project-group-123",
+          },
+          delivery: {
+            mode: "queue_only",
+            reason: "requires explicit cross-chat authorization",
+          },
           lastActivityAt: "2026-03-13T20:01:00.000Z",
           lastActivityMs: Date.parse("2026-03-13T20:01:00.000Z"),
           activitySource: "friend-facing",
@@ -396,10 +411,11 @@ describe("active work frame", () => {
     expect(frame.bridgeSuggestion).toEqual({
       kind: "begin-new",
       objectiveHint: "keep Ari aligned across chats",
-      reason: "same-friend-shared-work",
+      reason: "shared-work-candidate",
       targetSession: expect.objectContaining({
-        channel: "cli",
-        key: "session",
+        friendId: "group-1",
+        channel: "bluebubbles",
+        key: "chat:any;+;project-group-123",
       }),
     })
   })
@@ -448,7 +464,7 @@ describe("active work frame", () => {
     expect(frame.bridgeSuggestion).toEqual({
       kind: "begin-new",
       objectiveHint: "keep this shared work aligned",
-      reason: "same-friend-shared-work",
+      reason: "shared-work-candidate",
       targetSession: expect.objectContaining({
         channel: "cli",
         key: "session",
@@ -500,7 +516,7 @@ describe("active work frame", () => {
     expect(frame.bridgeSuggestion).toEqual({
       kind: "begin-new",
       objectiveHint: "keep this shared work aligned",
-      reason: "same-friend-shared-work",
+      reason: "shared-work-candidate",
       targetSession: expect.objectContaining({
         channel: "cli",
         key: "session",
@@ -683,7 +699,7 @@ describe("active work frame", () => {
     expect(suggestion).toEqual({
       kind: "attach-existing",
       bridgeId: "bridge-1",
-      reason: "same-friend-shared-work",
+      reason: "shared-work-candidate",
       targetSession: expect.objectContaining({
         channel: "cli",
         key: "session",
@@ -741,6 +757,88 @@ describe("active work frame", () => {
       },
       bridgeSuggestion: suggestion,
     })).toContain("suggested bridge: attach bridge-1 -> cli/session")
+  })
+
+  it("refuses to auto-suggest when more than one non-blocked cross-relationship target candidate is live", async () => {
+    const { buildActiveWorkFrame } = await import("../../heart/active-work")
+
+    const frame = buildActiveWorkFrame({
+      currentSession: {
+        friendId: "friend-1",
+        channel: "bluebubbles",
+        key: "chat-any",
+        sessionPath: "/tmp/state/sessions/friend-1/bluebubbles/chat-any.json",
+      },
+      currentObligation: "carry this across the right chat",
+      mustResolveBeforeHandoff: false,
+      inner: { status: "idle", hasPending: false },
+      bridges: [],
+      taskBoard: {
+        compact: "[Tasks] processing:0 blocked:0",
+        activeBridges: [],
+        byStatus: {
+          drafting: [],
+          processing: [],
+          validating: [],
+          collaborating: [],
+          paused: [],
+          blocked: [],
+          done: [],
+        },
+      },
+      friendActivity: [],
+      targetCandidates: [
+        {
+          friendId: "group-1",
+          friendName: "Project Group",
+          channel: "bluebubbles",
+          key: "chat:any;+;project-group-123",
+          sessionPath: "/tmp/state/sessions/group-1/bluebubbles/chat:any;+;project-group-123.json",
+          snapshot: "recent focus: waiting on Ari",
+          trust: {
+            level: "acquaintance",
+            basis: "shared_group",
+            summary: "known through the shared project group",
+            why: "this group is a relevant shared context",
+            permits: ["group-safe coordination"],
+            constraints: ["no direct private trust"],
+            relatedGroupId: "group:any;+;project-group-123",
+          },
+          delivery: {
+            mode: "queue_only",
+            reason: "requires explicit cross-chat authorization",
+          },
+          lastActivityAt: "2026-03-13T20:01:00.000Z",
+          lastActivityMs: Date.parse("2026-03-13T20:01:00.000Z"),
+          activitySource: "friend-facing",
+        },
+        {
+          friendId: "friend-2",
+          friendName: "CLI Copilot",
+          channel: "cli",
+          key: "session",
+          sessionPath: "/tmp/state/sessions/friend-2/cli/session.json",
+          snapshot: "recent focus: waiting on the same answer",
+          trust: {
+            level: "friend",
+            basis: "direct",
+            summary: "directly trusted",
+            why: "this is a trusted active session",
+            permits: ["shared coordination"],
+            constraints: [],
+          },
+          delivery: {
+            mode: "queue_only",
+            reason: "live delivery still needs an explicit route decision",
+          },
+          lastActivityAt: "2026-03-13T20:02:00.000Z",
+          lastActivityMs: Date.parse("2026-03-13T20:02:00.000Z"),
+          activitySource: "friend-facing",
+        },
+      ],
+    } as any)
+
+    expect(frame.bridgeSuggestion).toBeNull()
   })
 })
 

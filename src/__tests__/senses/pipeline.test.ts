@@ -13,6 +13,7 @@ import { handleInboundTurn } from "../../senses/pipeline"
 import type { InboundTurnInput, InboundTurnResult } from "../../senses/pipeline"
 
 const mockFindBridgesForSession = vi.fn()
+const mockListTargetSessionCandidates = vi.fn()
 
 vi.mock("../../heart/bridges/manager", async () => {
   const actual = await vi.importActual<typeof import("../../heart/bridges/manager")>("../../heart/bridges/manager")
@@ -21,6 +22,14 @@ vi.mock("../../heart/bridges/manager", async () => {
     createBridgeManager: () => ({
       findBridgesForSession: (...args: any[]) => mockFindBridgesForSession(...args),
     }),
+  }
+})
+
+vi.mock("../../heart/target-resolution", async () => {
+  const actual = await vi.importActual<typeof import("../../heart/target-resolution")>("../../heart/target-resolution")
+  return {
+    ...actual,
+    listTargetSessionCandidates: (...args: any[]) => mockListTargetSessionCandidates(...args),
   }
 })
 
@@ -126,6 +135,7 @@ function makeInput(overrides: Partial<InboundTurnInput> = {}): InboundTurnInput 
 describe("handleInboundTurn", () => {
   beforeEach(() => {
     mockFindBridgesForSession.mockReset().mockReturnValue([])
+    mockListTargetSessionCandidates.mockReset().mockResolvedValue([])
   })
 
   // Step 1: friend resolution
@@ -839,6 +849,63 @@ describe("handleInboundTurn", () => {
         expect.objectContaining({
           target: "delegate-inward",
           reasons: expect.arrayContaining(["explicit_reflection"]),
+        }),
+      )
+    })
+
+    it("threads explicit cross-relationship target candidates into the active-work frame and suggests one shared-work candidate when the target is clear", async () => {
+      mockListTargetSessionCandidates.mockResolvedValue([
+        {
+          friendId: "group-1",
+          friendName: "Project Group",
+          channel: "bluebubbles",
+          key: "chat:any;+;project-group-123",
+          sessionPath: "/tmp/state/sessions/group-1/bluebubbles/chat:any;+;project-group-123.json",
+          snapshot: "recent focus: waiting on Ari",
+          trust: {
+            level: "acquaintance",
+            basis: "shared_group",
+            summary: "known through the shared project group",
+            why: "this is a relevant shared context",
+            permits: ["group-safe coordination"],
+            constraints: ["no direct private trust"],
+            relatedGroupId: "group:any;+;project-group-123",
+          },
+          delivery: {
+            mode: "queue_only",
+            reason: "requires explicit cross-chat authorization",
+          },
+          lastActivityAt: "2026-03-14T18:01:00.000Z",
+          lastActivityMs: Date.parse("2026-03-14T18:01:00.000Z"),
+          activitySource: "friend-facing",
+        },
+      ])
+      const input = makeInput({
+        channel: "bluebubbles",
+        capabilities: makeCapabilities({ channel: "bluebubbles", senseType: "open" }),
+        continuityIngressTexts: ["carry this into the group chat"],
+      })
+
+      await handleInboundTurn(input)
+
+      const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
+      const options = runAgentCall[4] as RunAgentOptions
+      expect((options as any).activeWorkFrame.targetCandidates).toEqual([
+        expect.objectContaining({
+          friendId: "group-1",
+          channel: "bluebubbles",
+          key: "chat:any;+;project-group-123",
+        }),
+      ])
+      expect((options as any).activeWorkFrame.bridgeSuggestion).toEqual(
+        expect.objectContaining({
+          kind: "begin-new",
+          reason: "shared-work-candidate",
+          targetSession: expect.objectContaining({
+            friendId: "group-1",
+            channel: "bluebubbles",
+            key: "chat:any;+;project-group-123",
+          }),
         }),
       )
     })
