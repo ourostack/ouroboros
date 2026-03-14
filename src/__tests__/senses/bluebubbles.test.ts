@@ -45,6 +45,7 @@ const mocks = vi.hoisted(() => ({
   enforceTrustGate: vi.fn(),
   findByExternalId: vi.fn().mockResolvedValue(null),
   listAll: vi.fn().mockResolvedValue([]),
+  lastStoreInstance: null as any,
 }))
 
 const tempDirs: string[] = []
@@ -128,6 +129,7 @@ vi.mock("../../mind/friends/tokens", () => ({
 vi.mock("../../mind/friends/store-file", () => ({
   FileFriendStore: vi.fn(function (this: any, root: string) {
     mocks.storeCtor(root)
+    mocks.lastStoreInstance = this
     this.get = vi.fn()
     this.put = vi.fn()
     this.delete = vi.fn()
@@ -532,6 +534,7 @@ function resetMocks(): void {
   mocks.enforceTrustGate.mockReset().mockReturnValue({ allowed: true })
   mocks.findByExternalId.mockReset().mockResolvedValue(null)
   mocks.listAll.mockReset().mockResolvedValue([])
+  mocks.lastStoreInstance = null
   // handleInboundTurn: by default, simulate a successful pipeline run that calls
   // the injected runAgent (which triggers BB callbacks for text buffering/flush).
   // Mirrors the real pipeline: resolves friend, builds toolContext with context/friendStore,
@@ -3365,6 +3368,56 @@ describe("BlueBubbles sense runtime", () => {
     const input = mocks.handleInboundTurn.mock.calls[0][0]
     expect(input.isGroupChat).toBe(true)
     expect(input.groupHasFamilyMember).toBe(false)
+  })
+
+  it("does not yet bootstrap relevant group participants into acquaintance records with shared-group context", async () => {
+    mocks.resolveContext.mockResolvedValueOnce({
+      friend: {
+        id: "group-uuid",
+        name: "Project Group",
+        externalIds: [],
+        tenantMemberships: [],
+        toolPreferences: {},
+        notes: {},
+        createdAt: "2026-01-01",
+        updatedAt: "2026-01-01",
+        schemaVersion: 1,
+      },
+      channel: defaultFriendContext.channel,
+    })
+
+    const liveGroupPayload = {
+      ...groupWithParticipantsPayload,
+      data: {
+        ...groupWithParticipantsPayload.data,
+        chats: [{
+          ...groupWithParticipantsPayload.data.chats[0],
+          guid: "any;+;project-group-123",
+          chatIdentifier: "project-group-123",
+          displayName: "Project Group",
+          participants: [
+            { address: "acquaintance@example.com" },
+            { address: "new-person@example.com" },
+            { address: "new-person@example.com" },
+          ],
+        }],
+      },
+    }
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(liveGroupPayload)
+
+    const store = mocks.lastStoreInstance
+    expect(store.put).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        trustLevel: "acquaintance",
+        externalIds: expect.arrayContaining([
+          expect.objectContaining({ externalId: "new-person@example.com" }),
+          expect.objectContaining({ externalId: "group:any;+;project-group-123" }),
+        ]),
+      }),
+    )
   })
 
   it("sets hasExistingGroupWithFamily=true for acquaintance 1:1 when they share a group with family", async () => {
