@@ -10,7 +10,7 @@ import type { FriendStore } from "../mind/friends/store";
 import { emitNervesEvent } from "../nerves/runtime";
 import { getAgentRoot, getAgentName } from "../heart/identity";
 import { requestInnerWake } from "../heart/daemon/socket-client";
-import { extractThoughtResponseFromMessages, formatInnerDialogStatus, formatSurfacedValue, getInnerDialogSessionPath, readInnerDialogStatus } from "../heart/daemon/thoughts";
+import { extractThoughtResponseFromMessages, formatSurfacedValue, getInnerDialogSessionPath, readInnerDialogStatus } from "../heart/daemon/thoughts";
 import { createBridgeManager, formatBridgeStatus } from "../heart/bridges/manager";
 import { recallSession, type SessionRecallOptions, type SessionRecallResult } from "../heart/session-recall";
 import { codingToolDefinitions } from "./coding/tools";
@@ -18,6 +18,7 @@ import { readMemoryFacts, saveMemoryFact, searchMemoryFacts } from "../mind/memo
 import { getPendingDir, getInnerDialogPendingDir } from "../mind/pending";
 import type { PendingMessage } from "../mind/pending";
 import type { BridgeRecord, BridgeSessionRef } from "../heart/bridges/store";
+import { buildProgressStory, renderProgressStory } from "../heart/progress-story";
 
 export interface CodingFeedbackTarget {
   send: (message: string) => Promise<void>;
@@ -101,6 +102,47 @@ async function recallSessionSafely(options: SessionRecallOptions): Promise<Sessi
   } catch {
     return { kind: "missing" }
   }
+}
+
+function normalizeProgressOutcome(text: string): string | null {
+  const trimmed = text.trim()
+  if (!trimmed || trimmed === "nothing yet" || trimmed === "nothing recent") {
+    return null
+  }
+  if (trimmed.startsWith("\"") && trimmed.endsWith("\"") && trimmed.length >= 2) {
+    return trimmed.slice(1, -1)
+  }
+  return trimmed
+}
+
+function renderInnerProgressStatus(
+  status: { queue: string; wake: string; processing: string; surfaced: string },
+  options: { includeWakeOnComplete?: boolean } = {},
+): string {
+  if (status.processing === "pending") {
+    return renderProgressStory(buildProgressStory({
+      scope: "inner-delegation",
+      phase: "queued",
+      objective: status.queue,
+      outcomeText: `wake: ${status.wake}`,
+    }))
+  }
+
+  if (status.processing === "started") {
+    return renderProgressStory(buildProgressStory({
+      scope: "inner-delegation",
+      phase: "processing",
+      outcomeText: `wake: ${status.wake}`,
+    }))
+  }
+
+  const completedOutcome = normalizeProgressOutcome(status.surfaced) ?? status.surfaced
+  return renderProgressStory(buildProgressStory({
+    scope: "inner-delegation",
+    phase: "completed",
+    objective: options.includeWakeOnComplete ? `wake: ${status.wake}` : null,
+    outcomeText: completedOutcome,
+  }))
 }
 
 export const baseToolDefinitions: ToolDefinition[] = [
@@ -781,7 +823,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
 
         const sessionPath = getInnerDialogSessionPath(getAgentRoot())
         const pendingDir = getInnerDialogPendingDir(getAgentName())
-        return formatInnerDialogStatus(readInnerDialogStatus(sessionPath, pendingDir))
+        return renderInnerProgressStatus(readInnerDialogStatus(sessionPath, pendingDir))
       }
 
       const sessFile = resolveSessionPath(friendId, channel, key)
@@ -877,7 +919,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
             queueMicrotask(() => {
               void runInnerDialogTurn({ reason: "instinct" })
             })
-            return formatInnerDialogStatus({
+            return renderInnerProgressStatus({
               queue: "queued to inner/dialog",
               wake: "inline scheduled",
               processing: "pending",
@@ -885,16 +927,19 @@ export const baseToolDefinitions: ToolDefinition[] = [
             })
           } else {
             const turnResult = await runInnerDialogTurn({ reason: "instinct" })
-            return formatInnerDialogStatus({
-              queue: "queued to inner/dialog",
-              wake: "inline fallback",
-              processing: "processed",
-              surfaced: formatSurfacedValue(extractThoughtResponseFromMessages(turnResult?.messages ?? [])),
-            })
+            const surfacedPreview = normalizeProgressOutcome(
+              formatSurfacedValue(extractThoughtResponseFromMessages(turnResult?.messages ?? [])),
+            ) ?? "no outward result"
+            return renderProgressStory(buildProgressStory({
+              scope: "inner-delegation",
+              phase: "completed",
+              objective: "queued to inner/dialog",
+              outcomeText: `wake: inline fallback\n${surfacedPreview}`,
+            }))
           }
         }
 
-        return formatInnerDialogStatus({
+        return renderInnerProgressStatus({
           queue: "queued to inner/dialog",
           wake: "daemon requested",
           processing: "pending",

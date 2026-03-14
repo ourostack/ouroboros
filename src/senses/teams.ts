@@ -22,6 +22,7 @@ import { FriendResolver } from "../mind/friends/resolver"
 import { accumulateFriendTokens } from "../mind/friends/tokens"
 import { createTurnCoordinator } from "../heart/turn-coordinator"
 import { getAgentRoot, getAgentName } from "../heart/identity"
+import { buildProgressStory, renderProgressStory } from "../heart/progress-story"
 import * as http from "http"
 import * as path from "path"
 import { enforceTrustGate } from "./trust-gate"
@@ -307,13 +308,21 @@ export function createTeamsCallbacks(
       // https://learn.microsoft.com/en-us/answers/questions/2288017/m365-custom-engine-agents-timeout-message-after-15
       if (!streamHasContent) safeEmit("⏳")
       const argSummary = summarizeArgs(name, args) || Object.keys(args).join(", ")
-      safeUpdate(`running ${name} (${argSummary})...`)
+      safeUpdate(renderProgressStory(buildProgressStory({
+        scope: "shared-work",
+        phase: "processing",
+        objective: `running ${name} (${argSummary})...`,
+      })))
       hadToolRun = true
     },
     onToolEnd: (name: string, summary: string, success: boolean) => {
       stopPhraseRotation()
       const msg = formatToolResult(name, summary, success)
-      safeUpdate(msg)
+      safeUpdate(renderProgressStory(buildProgressStory({
+        scope: "shared-work",
+        phase: "processing",
+        objective: msg,
+      })))
     },
     onKick: () => {
       stopPhraseRotation()
@@ -323,7 +332,11 @@ export function createTeamsCallbacks(
     onError: (error: Error, severity: "transient" | "terminal") => {
       stopPhraseRotation()
       if (stopped) return
-      const msg = formatError(error)
+      const msg = renderProgressStory(buildProgressStory({
+        scope: "shared-work",
+        phase: "errored",
+        outcomeText: formatError(error),
+      }))
       if (severity === "transient") {
         safeUpdate(msg)
       } else {
