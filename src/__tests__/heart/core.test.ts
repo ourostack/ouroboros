@@ -5359,7 +5359,7 @@ describe("tool_choice required and final_answer", () => {
     }
 
     const messages: any[] = [{ role: "system", content: "test" }]
-    await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
+    const result = await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
     // Should NOT have called any tools through onToolStart (final_answer is intercepted)
     expect(toolStarts).toEqual([])
@@ -5377,6 +5377,10 @@ describe("tool_choice required and final_answer", () => {
     expect(toolResults[0].content).toBe("(delivered)")
     // Only 1 API call (no loop continuation)
     expect(mockCreate).toHaveBeenCalledTimes(1)
+    expect((result as any).completion).toEqual({
+      answer: "the final response",
+      intent: "complete",
+    })
   })
 
   it("requires intent before closing when mustResolveBeforeHandoff is true", async () => {
@@ -5422,6 +5426,10 @@ describe("tool_choice required and final_answer", () => {
     expect(callCount).toBe(2)
     expect(result.outcome).toBe("blocked")
     expect(textChunks).toEqual(["blocked on credentials"])
+    expect((result as any).completion).toEqual({
+      answer: "blocked on credentials",
+      intent: "blocked",
+    })
   })
 
   it("treats direct_reply as non-terminal when a newer steering follow-up exists", async () => {

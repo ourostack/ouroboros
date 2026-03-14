@@ -243,6 +243,70 @@ describe("query_session tool", () => {
     )
   })
 
+  it("falls back to the raw transcript when summarization fails", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
+
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        version: 1,
+        messages: [
+          { role: "system", content: "sys" },
+          { role: "user", content: "how is the billing fix?" },
+          { role: "assistant", content: "I finished it an hour ago." },
+        ],
+      }),
+    )
+
+    const result = await tool.handler(
+      { friendId: "friend-uuid-1", channel: "cli", key: "session" },
+      {
+        signin: async () => undefined,
+        summarize: vi.fn().mockRejectedValue(new Error("summary failed")),
+        context: {
+          friend: { trustLevel: "friend" as const },
+          channel: { channel: "cli" as const, supportsMarkdown: true, supportsStreaming: true, supportsRichCards: false },
+        },
+      } as any,
+    )
+
+    expect(result).toContain("how is the billing fix?")
+    expect(result).toContain("I finished it an hour ago.")
+    expect(result).not.toContain("no session found")
+  })
+
+  it("falls back to the raw transcript when summarization fails with a string rejection", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
+
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        version: 1,
+        messages: [
+          { role: "system", content: "sys" },
+          { role: "user", content: "did the relay stick?" },
+          { role: "assistant", content: "yes, bridge attach persisted." },
+        ],
+      }),
+    )
+
+    const result = await tool.handler(
+      { friendId: "friend-uuid-1", channel: "cli", key: "session" },
+      {
+        signin: async () => undefined,
+        summarize: vi.fn().mockRejectedValue("summary failed as string"),
+        context: {
+          friend: { trustLevel: "friend" as const },
+          channel: { channel: "cli" as const, supportsMarkdown: true, supportsStreaming: true, supportsRichCards: false },
+        },
+      } as any,
+    )
+
+    expect(result).toContain("did the relay stick?")
+    expect(result).toContain("yes, bridge attach persisted.")
+    expect(result).not.toContain("no session found")
+  })
+
   it("uses fully transparent summarization for self-queries", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
@@ -390,10 +454,9 @@ describe("query_session tool", () => {
     })
 
     expect(result).toBe([
-      "queue: queued to inner/dialog",
+      "inner work: queued",
+      "queued to inner/dialog",
       "wake: awaiting inner session",
-      "processing: pending",
-      "surfaced: nothing yet",
     ].join("\n"))
   })
 
@@ -424,10 +487,8 @@ describe("query_session tool", () => {
     })
 
     expect(result).toBe([
-      "queue: clear",
-      "wake: completed",
-      "processing: processed",
-      'surfaced: "formal little blokes."',
+      "inner work: completed",
+      "formal little blokes.",
     ].join("\n"))
   })
 
@@ -472,10 +533,8 @@ describe("query_session tool", () => {
     })
 
     expect(result).toBe([
-      "queue: clear",
+      "inner work: processing",
       "wake: in progress",
-      "processing: started",
-      "surfaced: nothing yet",
     ].join("\n"))
   })
 
@@ -529,11 +588,32 @@ describe("query_session tool", () => {
     })
 
     expect(result).toBe([
-      "queue: queued to inner/dialog",
+      "inner work: queued",
+      "queued to inner/dialog",
       "wake: queued behind active turn",
-      "processing: pending",
-      "surfaced: nothing yet",
     ].join("\n"))
+  })
+
+  it("reports completed idle status when nothing recent has surfaced", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
+
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readFileSync).mockImplementation((filePath) => {
+      if (String(filePath).endsWith("/state/sessions/self/inner/dialog.json")) {
+        return JSON.stringify({ version: 1, messages: [{ role: "system", content: "sys" }] })
+      }
+      throw new Error(`ENOENT: ${String(filePath)}`)
+    })
+
+    const result = await tool.handler({
+      friendId: "self",
+      channel: "inner",
+      mode: "status",
+    })
+
+    expect(result).toContain("inner work: completed")
+    expect(result).toContain("nothing recent")
   })
 
   it("rejects status mode for non-self sessions instead of pretending it can inspect them", async () => {

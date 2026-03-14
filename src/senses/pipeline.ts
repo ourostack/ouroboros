@@ -5,7 +5,7 @@
 // Transport-level concerns (BB API calls, Teams cards, readline) stay in sense adapters.
 
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions"
-import type { ChannelCallbacks, RunAgentOptions, RunAgentOutcome } from "../heart/core"
+import type { ChannelCallbacks, CompletionMetadata, RunAgentOptions, RunAgentOutcome } from "../heart/core"
 import type { PostTurnHooks, SessionContinuityState, UsageData } from "../mind/context"
 import type { Channel, ChannelCapabilities, IdentityProvider, ResolvedContext } from "../mind/friends/types"
 import type { FriendStore } from "../mind/friends/store"
@@ -14,6 +14,15 @@ import type { PendingMessage } from "../mind/pending"
 import { emitNervesEvent } from "../nerves/runtime"
 import { resolveMustResolveBeforeHandoff } from "./continuity"
 import { createBridgeManager, formatBridgeContext } from "../heart/bridges/manager"
+import { getAgentName, getAgentRoot } from "../heart/identity"
+import { getTaskModule } from "../repertoire/tasks"
+import { listSessionActivity } from "../heart/session-activity"
+import type { SessionActivityRecord } from "../heart/session-activity"
+import { buildActiveWorkFrame } from "../heart/active-work"
+import { decideDelegation } from "../heart/delegation"
+import { readInnerDialogStatus, getInnerDialogSessionPath } from "../heart/daemon/thoughts"
+import { getInnerDialogPendingDir } from "../mind/pending"
+import type { BoardResult } from "../repertoire/tasks/types"
 
 // ── Input / Output types ──────────────────────────────────────────
 
@@ -60,13 +69,14 @@ export interface InboundTurnInput {
   // ── Dependency injection for testability ──
   enforceTrustGate: (input: TrustGateInput) => TrustGateResult
   drainPending: (pendingDir: string) => PendingMessage[]
+  drainDeferredReturns?: (friendId: string) => PendingMessage[]
   runAgent: (
     messages: ChatCompletionMessageParam[],
     callbacks: ChannelCallbacks,
     channel?: Channel,
     signal?: AbortSignal,
     options?: RunAgentOptions,
-  ) => Promise<{ usage?: UsageData; outcome: RunAgentOutcome }>
+  ) => Promise<{ usage?: UsageData; outcome: RunAgentOutcome; completion?: CompletionMetadata }>
   postTurn: (
     messages: ChatCompletionMessageParam[],
     sessPath: string,
@@ -90,10 +100,52 @@ export interface InboundTurnResult {
   usage?: UsageData
   /** Structured turn outcome from runAgent. Undefined when gate rejects. */
   turnOutcome?: RunAgentOutcome
+  /** Explicit completion metadata from runAgent when available. */
+  completion?: CompletionMetadata
   /** Session file path. Undefined when gate rejects. */
   sessionPath?: string
   /** The final messages array after the turn. Undefined when gate rejects. */
   messages?: ChatCompletionMessageParam[]
+  /** Pending envelopes drained at turn start, including deferred returns. */
+  drainedPending?: PendingMessage[]
+}
+
+function emptyTaskBoard(): BoardResult {
+  return {
+    compact: "",
+    full: "",
+    byStatus: {
+      drafting: [],
+      processing: [],
+      validating: [],
+      collaborating: [],
+      paused: [],
+      blocked: [],
+      done: [],
+    },
+    actionRequired: [],
+    unresolvedDependencies: [],
+    activeSessions: [],
+    activeBridges: [],
+  }
+}
+
+function readInnerWorkState(): { status: "idle" | "running"; hasPending: boolean } {
+  try {
+    const agentRoot = getAgentRoot()
+    const pendingDir = getInnerDialogPendingDir(getAgentName())
+    const sessionPath = getInnerDialogSessionPath(agentRoot)
+    const status = readInnerDialogStatus(sessionPath, pendingDir)
+    return {
+      status: status.processing === "started" ? "running" : "idle",
+      hasPending: status.queue !== "clear",
+    }
+  } catch {
+    return {
+      status: "idle",
+      hasPending: false,
+    }
+  }
 }
 
 // ── Pipeline ──────────────────────────────────────────────────────
@@ -154,6 +206,9 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     session.state?.mustResolveBeforeHandoff === true,
     input.continuityIngressTexts,
   )
+  const lastFriendActivityAt = input.channel === "inner"
+    ? session.state?.lastFriendActivityAt
+    : new Date().toISOString()
   const currentObligation = input.continuityIngressTexts
     ?.map((text) => text.trim())
     .filter((text) => text.length > 0)
@@ -170,9 +225,50 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     key: currentSession.key,
   })
   const bridgeContext = formatBridgeContext(activeBridges) || undefined
+  let sessionActivity: SessionActivityRecord[] = []
+  try {
+    const agentRoot = getAgentRoot()
+    sessionActivity = listSessionActivity({
+      sessionsDir: `${agentRoot}/state/sessions`,
+      friendsDir: `${agentRoot}/friends`,
+      agentName: getAgentName(),
+      currentSession: {
+        friendId: currentSession.friendId,
+        channel: currentSession.channel,
+        key: currentSession.key,
+      },
+    })
+  } catch {
+    sessionActivity = []
+  }
+  const activeWorkFrame = buildActiveWorkFrame({
+    currentSession,
+    currentObligation,
+    mustResolveBeforeHandoff,
+    inner: readInnerWorkState(),
+    bridges: activeBridges,
+    taskBoard: (() => {
+      try {
+        return getTaskModule().getBoard()
+      } catch {
+        return emptyTaskBoard()
+      }
+    })(),
+    friendActivity: sessionActivity,
+  })
+  const delegationDecision = decideDelegation({
+    channel: input.channel,
+    ingressTexts: input.continuityIngressTexts ?? [],
+    activeWork: activeWorkFrame,
+    mustResolveBeforeHandoff,
+  })
 
-  // Step 4: Drain pending messages
-  const pending = input.drainPending(input.pendingDir)
+  // Step 4: Drain deferred friend returns, then ordinary per-session pending.
+  const deferredReturns = input.channel === "inner"
+    ? []
+    : (input.drainDeferredReturns?.(resolvedContext.friend.id) ?? [])
+  const sessionPending = input.drainPending(input.pendingDir)
+  const pending = [...deferredReturns, ...sessionPending]
 
   // Assemble messages: session messages + pending (formatted) + inbound user messages
   if (pending.length > 0) {
@@ -213,6 +309,8 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   const runAgentOptions: RunAgentOptions = {
     ...input.runAgentOptions,
     bridgeContext,
+    activeWorkFrame,
+    delegationDecision,
     currentSessionKey: currentSession.key,
     currentObligation,
     mustResolveBeforeHandoff,
@@ -239,11 +337,15 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   )
 
   // Step 6: postTurn
+  const continuingState = {
+    ...(mustResolveBeforeHandoff ? { mustResolveBeforeHandoff: true } : {}),
+    ...(typeof lastFriendActivityAt === "string" ? { lastFriendActivityAt } : {}),
+  }
   const nextState = result.outcome === "complete" || result.outcome === "blocked" || result.outcome === "superseded"
-    ? undefined
-    : mustResolveBeforeHandoff
-      ? { mustResolveBeforeHandoff: true }
-      : undefined
+    ? (typeof lastFriendActivityAt === "string"
+      ? { lastFriendActivityAt }
+      : undefined)
+    : (Object.keys(continuingState).length > 0 ? continuingState : undefined)
   input.postTurn(sessionMessages, session.sessionPath, result.usage, undefined, nextState)
 
   // Step 7: Token accumulation
@@ -264,7 +366,9 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     gateResult,
     usage: result.usage,
     turnOutcome: result.outcome,
+    completion: result.completion,
     sessionPath: session.sessionPath,
     messages: sessionMessages,
+    drainedPending: pending,
   }
 }

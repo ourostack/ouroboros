@@ -46,6 +46,82 @@ describe("getPendingDir", () => {
   })
 })
 
+describe("deferred return queue helpers", () => {
+  beforeEach(() => {
+    vi.resetModules()
+  })
+
+  it("builds a friend-level deferred return directory", async () => {
+    const { getDeferredReturnDir } = await import("../../mind/pending")
+
+    expect(getDeferredReturnDir("testagent", "friend-1")).toBe(
+      path.join(
+        os.homedir(),
+        "AgentBundles",
+        "testagent.ouro",
+        "state",
+        "pending-returns",
+        "friend-1",
+      ),
+    )
+  })
+
+  it("writes deferred returns for later delivery", async () => {
+    const { enqueueDeferredReturn } = await import("../../mind/pending")
+
+    enqueueDeferredReturn("testagent", "friend-1", {
+      from: "testagent",
+      content: "penguins surfaced",
+      timestamp: 1709900001,
+      delegatedFrom: {
+        friendId: "friend-1",
+        channel: "bluebubbles",
+        key: "chat",
+      },
+    })
+
+    expect(fs.mkdirSync).toHaveBeenCalledWith(
+      path.join(
+        os.homedir(),
+        "AgentBundles",
+        "testagent.ouro",
+        "state",
+        "pending-returns",
+        "friend-1",
+      ),
+      { recursive: true },
+    )
+    expect(fs.writeFileSync).toHaveBeenCalledWith(
+      expect.stringMatching(/pending-returns\/friend-1\/1709900001-.+\.json$/),
+      expect.any(String),
+    )
+  })
+
+  it("drains deferred returns in timestamp order", async () => {
+    const { drainDeferredReturns } = await import("../../mind/pending")
+
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    vi.mocked(fs.readdirSync).mockReturnValue([
+      "1709900002-later.json",
+      "1709900001-earlier.json",
+    ] as any)
+    vi.mocked(fs.readFileSync).mockImplementation(((p: string) => {
+      if (p.includes("1709900001")) {
+        return JSON.stringify({ from: "testagent", content: "first", timestamp: 1709900001 })
+      }
+      if (p.includes("1709900002")) {
+        return JSON.stringify({ from: "testagent", content: "second", timestamp: 1709900002 })
+      }
+      throw new Error("ENOENT")
+    }) as any)
+
+    expect(drainDeferredReturns("testagent", "friend-1")).toEqual([
+      expect.objectContaining({ content: "first" }),
+      expect.objectContaining({ content: "second" }),
+    ])
+  })
+})
+
 describe("hasPendingMessages", () => {
   beforeEach(() => {
     vi.resetModules()
@@ -139,6 +215,34 @@ describe("drainPending", () => {
     expect(result[1].content).toBe("second message")
   })
 
+  it("preserves delegatedFrom metadata while draining pending envelopes", async () => {
+    const { drainPending } = await import("../../mind/pending")
+    const dir = "/mock/pending/self/inner/dialog"
+
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    vi.mocked(fs.readdirSync).mockReturnValue(["1709900001-abc.json"] as any)
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+      from: "testagent",
+      content: "think about penguins",
+      timestamp: 1709900001,
+      delegatedFrom: {
+        friendId: "friend-1",
+        channel: "bluebubbles",
+        key: "chat",
+        bridgeId: "bridge-1",
+      },
+    }))
+
+    const result = drainPending(dir)
+
+    expect(result[0].delegatedFrom).toEqual({
+      friendId: "friend-1",
+      channel: "bluebubbles",
+      key: "chat",
+      bridgeId: "bridge-1",
+    })
+  })
+
   it("renames to .processing before reading, deletes after", async () => {
     const { drainPending } = await import("../../mind/pending")
     const dir = "/mock/pending/friend-1/cli/session"
@@ -212,5 +316,20 @@ describe("drainPending", () => {
 
     expect(result).toHaveLength(1)
     expect(result[0].content).toBe("good msg")
+  })
+})
+
+describe("drainDeferredReturns", () => {
+  beforeEach(() => {
+    vi.resetModules()
+  })
+
+  it("returns empty array when deferred return directory does not exist", async () => {
+    const { drainDeferredReturns } = await import("../../mind/pending")
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+
+    const result = drainDeferredReturns("testagent", "friend-1")
+
+    expect(result).toEqual([])
   })
 })

@@ -6,6 +6,9 @@ import type { FriendStore } from "../../mind/friends/store"
 import type { TrustGateInput, TrustGateResult } from "../../senses/trust-gate"
 import type { UsageData } from "../../mind/context"
 import type { PendingMessage } from "../../mind/pending"
+import * as daemonThoughts from "../../heart/daemon/thoughts"
+import * as identity from "../../heart/identity"
+import * as pending from "../../mind/pending"
 import { handleInboundTurn } from "../../senses/pipeline"
 import type { InboundTurnInput, InboundTurnResult } from "../../senses/pipeline"
 
@@ -276,6 +279,32 @@ describe("handleInboundTurn", () => {
       // Pending messages should be formatted and included before the user message
       const allContent = messagesArg.map(m => typeof m.content === "string" ? m.content : "").join("\n")
       expect(allContent).toContain("someone tried to reach you")
+    })
+
+    it("drains deferred friend returns before ordinary session pending and exposes the combined batch", async () => {
+      const deferredReturns: PendingMessage[] = [
+        { from: "testagent", content: "penguins surfaced", timestamp: 999 },
+      ]
+      const sessionPending: PendingMessage[] = [
+        { from: "inner-dialog", content: "a local pending note", timestamp: 1000 },
+      ]
+      const input = makeInput({
+        drainPending: vi.fn().mockReturnValue(sessionPending),
+      }) as any
+      input.drainDeferredReturns = vi.fn().mockReturnValue(deferredReturns)
+
+      const result = await handleInboundTurn(input)
+
+      expect(input.drainDeferredReturns).toHaveBeenCalledWith("friend-1")
+      expect((result as any).drainedPending).toEqual([
+        ...deferredReturns,
+        ...sessionPending,
+      ])
+
+      const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
+      const messagesArg = runAgentCall[0] as ChatCompletionMessageParam[]
+      const allContent = messagesArg.map(m => typeof m.content === "string" ? m.content : "").join("\n")
+      expect(allContent.indexOf("penguins surfaced")).toBeLessThan(allContent.indexOf("a local pending note"))
     })
 
     it("does not modify messages when pending exists but input.messages is empty", async () => {
@@ -773,6 +802,79 @@ describe("handleInboundTurn", () => {
       expect((options as any).bridgeContext).toContain("bridge-suspended: suspended bridge [suspended]")
     })
 
+    it("passes a shared active-work frame and delegation hint into runAgent options", async () => {
+      mockFindBridgesForSession.mockReturnValue([
+        {
+          id: "bridge-1",
+          objective: "carry Ari across cli and bluebubbles",
+          summary: "same work, two surfaces",
+          lifecycle: "active",
+          runtime: "idle",
+          createdAt: "2026-03-13T16:00:00.000Z",
+          updatedAt: "2026-03-13T16:00:00.000Z",
+          attachedSessions: [
+            {
+              friendId: "friend-1",
+              channel: "cli",
+              key: "session",
+              sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+            },
+          ],
+          task: null,
+        },
+      ])
+      const input = makeInput({
+        channel: "bluebubbles",
+        capabilities: makeCapabilities({ channel: "bluebubbles", senseType: "open" }),
+        continuityIngressTexts: ["think this through and keep my other chat aligned"],
+      })
+
+      await handleInboundTurn(input)
+
+      const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
+      const options = runAgentCall[4] as RunAgentOptions
+      expect((options as any).activeWorkFrame.centerOfGravity).toBe("shared-work")
+      expect((options as any).activeWorkFrame.currentSession.channel).toBe("bluebubbles")
+      expect((options as any).delegationDecision).toEqual(
+        expect.objectContaining({
+          target: "delegate-inward",
+          reasons: expect.arrayContaining(["explicit_reflection"]),
+        }),
+      )
+    })
+
+    it("marks active-work inner status as running when live inner processing has started", async () => {
+      const getAgentRootSpy = vi.spyOn(identity, "getAgentRoot").mockReturnValue("/tmp/AgentBundles/slugger.ouro")
+      const getAgentNameSpy = vi.spyOn(identity, "getAgentName").mockReturnValue("slugger")
+      const getInnerDialogPendingDirSpy = vi.spyOn(pending, "getInnerDialogPendingDir").mockReturnValue("/tmp/pending/inner")
+      const getInnerDialogSessionPathSpy = vi.spyOn(daemonThoughts, "getInnerDialogSessionPath")
+        .mockReturnValue("/tmp/AgentBundles/slugger.ouro/state/sessions/self/inner/dialog.json")
+      const readInnerDialogStatusSpy = vi.spyOn(daemonThoughts, "readInnerDialogStatus").mockReturnValue({
+        queue: "clear",
+        wake: "in progress",
+        processing: "started",
+        surfaced: "nothing yet",
+      })
+      const input = makeInput()
+
+      await handleInboundTurn(input)
+
+      const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
+      const options = runAgentCall[4] as RunAgentOptions
+      expect((options as any).activeWorkFrame.inner).toEqual({
+        status: "running",
+        hasPending: false,
+      })
+      expect(getAgentRootSpy).toHaveBeenCalled()
+      expect(getAgentNameSpy).toHaveBeenCalled()
+      expect(getInnerDialogPendingDirSpy).toHaveBeenCalledWith("slugger")
+      expect(getInnerDialogSessionPathSpy).toHaveBeenCalledWith("/tmp/AgentBundles/slugger.ouro")
+      expect(readInnerDialogStatusSpy).toHaveBeenCalledWith(
+        "/tmp/AgentBundles/slugger.ouro/state/sessions/self/inner/dialog.json",
+        "/tmp/pending/inner",
+      )
+    })
+
     it("derives currentObligation from the last continuity ingress text", async () => {
       const input = makeInput({
         continuityIngressTexts: ["first ask", "latest ask"],
@@ -801,7 +903,10 @@ describe("handleInboundTurn", () => {
         "/tmp/test-session.json",
         usageData,
         undefined,
-        { mustResolveBeforeHandoff: true },
+        expect.objectContaining({
+          mustResolveBeforeHandoff: true,
+          lastFriendActivityAt: expect.any(String),
+        }),
       )
     })
 
@@ -828,7 +933,9 @@ describe("handleInboundTurn", () => {
         "/tmp/test-session.json",
         usageData,
         undefined,
-        undefined,
+        expect.objectContaining({
+          lastFriendActivityAt: expect.any(String),
+        }),
       )
     })
 
@@ -847,7 +954,71 @@ describe("handleInboundTurn", () => {
         "/tmp/test-session.json",
         usageData,
         undefined,
-        { mustResolveBeforeHandoff: true },
+        expect.objectContaining({
+          mustResolveBeforeHandoff: true,
+          lastFriendActivityAt: expect.any(String),
+        }),
+      )
+    })
+
+    it("does not stamp a fresh friend-facing activity time for inner turns", async () => {
+      const input = makeInput({
+        channel: "inner",
+        capabilities: makeCapabilities({ channel: "inner", senseType: "local" }),
+        sessionLoader: {
+          loadOrCreate: vi.fn().mockResolvedValue({
+            messages: [{ role: "system", content: "You are helpful." }],
+            sessionPath: "/tmp/test-session.json",
+            state: { lastFriendActivityAt: "2026-03-13T20:00:00.000Z" },
+          }),
+        },
+        runAgent: vi.fn().mockResolvedValue({ usage: usageData, outcome: "errored" }),
+      })
+
+      await handleInboundTurn(input)
+
+      expect(input.postTurn).toHaveBeenCalledWith(
+        expect.any(Array),
+        "/tmp/test-session.json",
+        usageData,
+        undefined,
+        { lastFriendActivityAt: "2026-03-13T20:00:00.000Z" },
+      )
+    })
+
+    it("keeps inner turns without saved friend activity from inventing state", async () => {
+      const input = makeInput({
+        channel: "inner",
+        capabilities: makeCapabilities({ channel: "inner", senseType: "local" }),
+        runAgent: vi.fn().mockResolvedValue({ usage: usageData, outcome: "errored" }),
+      })
+
+      await handleInboundTurn(input)
+
+      expect(input.postTurn).toHaveBeenCalledWith(
+        expect.any(Array),
+        "/tmp/test-session.json",
+        usageData,
+        undefined,
+        undefined,
+      )
+    })
+
+    it("clears terminal inner turns with no saved friend activity to undefined state", async () => {
+      const input = makeInput({
+        channel: "inner",
+        capabilities: makeCapabilities({ channel: "inner", senseType: "local" }),
+        runAgent: vi.fn().mockResolvedValue({ usage: usageData, outcome: "complete" }),
+      })
+
+      await handleInboundTurn(input)
+
+      expect(input.postTurn).toHaveBeenCalledWith(
+        expect.any(Array),
+        "/tmp/test-session.json",
+        usageData,
+        undefined,
+        undefined,
       )
     })
   })
@@ -908,7 +1079,9 @@ describe("handleInboundTurn", () => {
           "/tmp/test-session.json",
           usageData,
           undefined,
-          undefined,
+          expect.objectContaining({
+            lastFriendActivityAt: expect.any(String),
+          }),
         )
       },
     )

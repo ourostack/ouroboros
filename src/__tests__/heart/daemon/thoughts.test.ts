@@ -622,6 +622,22 @@ describe("thoughts", () => {
       expect(thoughts.formatSurfacedValue("a".repeat(140), 20)).toBe('"aaaaaaaaaaaaaaaaa..."')
     })
 
+    it("formats full inner-dialog status lines for terminal output", async () => {
+      const thoughts = await import("../../../heart/daemon/thoughts")
+
+      expect(thoughts.formatInnerDialogStatus({
+        queue: "queued to inner/dialog",
+        wake: "in progress",
+        processing: "started",
+        surfaced: '"formal little blokes"',
+      })).toBe([
+        "queue: queued to inner/dialog",
+        "wake: in progress",
+        "processing: started",
+        'surfaced: "formal little blokes"',
+      ].join("\n"))
+    })
+
     it("ignores unreadable or malformed pending files when reading status from disk", async () => {
       const thoughts = await import("../../../heart/daemon/thoughts")
       const pendingDir = fs.mkdtempSync(path.join(os.tmpdir(), "thoughts-pending-"))

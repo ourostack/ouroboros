@@ -237,6 +237,71 @@ describe("buildSystem", () => {
     expect(result.match(/## active bridge work/g)).toHaveLength(1)
   })
 
+  it("renders one shared active-work section when a center-of-gravity frame is present", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem(
+      "teams",
+      {
+        activeWorkFrame: {
+          centerOfGravity: "shared-work",
+          currentObligation: "carry Ari across cli and teams",
+          friendActivity: {
+            freshestForCurrentFriend: {
+              channel: "cli",
+              key: "session",
+            },
+          },
+          bridgeSuggestion: {
+            kind: "attach-existing",
+            bridgeId: "bridge-1",
+            reason: "same-friend-shared-work",
+            targetSession: {
+              channel: "cli",
+              key: "session",
+            },
+          },
+        },
+      } as any,
+      makeOnboardingContext() as any,
+    )
+
+    expect(result).toContain("## active work")
+    expect(result).toContain("center: shared-work")
+    expect(result).toContain("obligation: carry Ari across cli and teams")
+    expect(result).toContain("freshest friend-facing session: cli/session")
+    expect(result).toContain("suggested bridge: attach bridge-1 -> cli/session")
+  })
+
+  it("renders the delegation hint as part of the shared center-of-gravity story", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem(
+      "bluebubbles",
+      {
+        delegationDecision: {
+          target: "delegate-inward",
+          reasons: ["explicit_reflection", "cross_session"],
+          outwardClosureRequired: true,
+        },
+      } as any,
+      makeOnboardingContext() as any,
+    )
+
+    expect(result).toContain("## delegation hint")
+    expect(result).toContain("target: delegate-inward")
+    expect(result).toContain("reasons: explicit_reflection, cross_session")
+    expect(result).toContain("outward closure: required")
+  })
+
   it("includes lore section", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
@@ -2370,6 +2435,47 @@ describe("buildSystem with context", () => {
     expect(result).toContain("this is my inner dialog. there is no one else here.")
     expect(result).toContain("the messages that appear here are my own awareness surfacing")
     expect(result).toContain("i can think freely here")
+  })
+
+  it("buildSystem includes delegation hints with explicit reasons and closure state", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("cli", {
+      delegationDecision: {
+        target: "delegate-inward",
+        reasons: ["cross_session", "task_state"],
+        outwardClosureRequired: true,
+      },
+    } as any)
+
+    expect(result).toContain("## delegation hint")
+    expect(result).toContain("reasons: cross_session, task_state")
+    expect(result).toContain("outward closure: required")
+  })
+
+  it("buildSystem renders empty delegation reasons as none and optional closure as not required", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("cli", {
+      delegationDecision: {
+        target: "fast-path",
+        reasons: [],
+        outwardClosureRequired: false,
+      },
+    } as any)
+
+    expect(result).toContain("reasons: none")
+    expect(result).toContain("outward closure: not required")
   })
 
   it("buildSystem('inner') includes inner dialog loop orientation", async () => {

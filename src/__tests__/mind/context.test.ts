@@ -298,6 +298,54 @@ describe("saveSession", () => {
     )
   })
 
+  it("persists lastFriendActivityAt without forcing mustResolveBeforeHandoff", async () => {
+    const { saveSession } = await import("../../mind/context")
+    const msgs: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "system", content: "sys" },
+    ]
+
+    ;(saveSession as any)("/tmp/session.json", msgs, undefined, {
+      lastFriendActivityAt: "2026-03-13T20:00:00.000Z",
+    })
+
+    expect(fs.writeFileSync).toHaveBeenCalledWith(
+      "/tmp/session.json",
+      JSON.stringify(
+        { version: 1, messages: msgs, state: { lastFriendActivityAt: "2026-03-13T20:00:00.000Z" } },
+        null,
+        2,
+      ),
+    )
+  })
+
+  it("persists both mustResolveBeforeHandoff and lastFriendActivityAt together", async () => {
+    const { saveSession } = await import("../../mind/context")
+    const msgs: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "system", content: "sys" },
+    ]
+
+    ;(saveSession as any)("/tmp/session.json", msgs, undefined, {
+      mustResolveBeforeHandoff: true,
+      lastFriendActivityAt: "2026-03-13T20:00:00.000Z",
+    })
+
+    expect(fs.writeFileSync).toHaveBeenCalledWith(
+      "/tmp/session.json",
+      JSON.stringify(
+        {
+          version: 1,
+          messages: msgs,
+          state: {
+            mustResolveBeforeHandoff: true,
+            lastFriendActivityAt: "2026-03-13T20:00:00.000Z",
+          },
+        },
+        null,
+        2,
+      ),
+    )
+  })
+
   it("repairs back-to-back assistant messages on save", async () => {
     const { saveSession } = await import("../../mind/context")
     const msgs: any[] = [
@@ -364,6 +412,45 @@ describe("loadSession", () => {
     )
     const result = loadSession("/tmp/session.json")
     expect(result).toEqual({ messages: msgs, lastUsage: undefined, state: undefined })
+  })
+
+  it("returns persisted lastFriendActivityAt without requiring mustResolveBeforeHandoff", async () => {
+    const { loadSession } = await import("../../mind/context")
+    const msgs = [{ role: "system", content: "sys" }]
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        version: 1,
+        messages: msgs,
+        state: { lastFriendActivityAt: "2026-03-13T20:00:00.000Z" },
+      }),
+    )
+    const result = loadSession("/tmp/session.json")
+    expect(result).toEqual({
+      messages: msgs,
+      lastUsage: undefined,
+      state: { lastFriendActivityAt: "2026-03-13T20:00:00.000Z" },
+    })
+  })
+
+  it("ignores malformed lastFriendActivityAt while preserving valid mustResolveBeforeHandoff", async () => {
+    const { loadSession } = await import("../../mind/context")
+    const msgs = [{ role: "system", content: "sys" }]
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        version: 1,
+        messages: msgs,
+        state: {
+          mustResolveBeforeHandoff: true,
+          lastFriendActivityAt: 123,
+        },
+      }),
+    )
+    const result = loadSession("/tmp/session.json")
+    expect(result).toEqual({
+      messages: msgs,
+      lastUsage: undefined,
+      state: { mustResolveBeforeHandoff: true },
+    })
   })
 
   it("returns null when file is missing (ENOENT)", async () => {

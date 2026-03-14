@@ -20,8 +20,15 @@ import { createAzureProviderRuntime } from "./providers/azure";
 import { createMinimaxProviderRuntime } from "./providers/minimax";
 import { createOpenAICodexProviderRuntime } from "./providers/openai-codex";
 import type { SteeringFollowUpEffect } from "../senses/continuity";
+import type { ActiveWorkFrame } from "./active-work";
+import type { DelegationDecision } from "./delegation";
 
 export type ProviderId = "azure" | "anthropic" | "minimax" | "openai-codex";
+
+export interface CompletionMetadata {
+  answer: string;
+  intent: "complete" | "blocked" | "direct_reply";
+}
 
 export interface ProviderRuntime {
   id: ProviderId;
@@ -176,6 +183,8 @@ export interface RunAgentOptions {
   currentObligation?: string;
   mustResolveBeforeHandoff?: boolean;
   hasQueuedFollowUp?: boolean;
+  activeWorkFrame?: ActiveWorkFrame;
+  delegationDecision?: DelegationDecision;
   drainSteeringFollowUps?: () => Array<{ text: string; effect?: SteeringFollowUpEffect }>;
   setMustResolveBeforeHandoff?: (value: boolean) => void;
   tools?: OpenAI.ChatCompletionFunctionTool[];
@@ -380,7 +389,7 @@ export async function runAgent(
   channel?: Channel,
   signal?: AbortSignal,
   options?: RunAgentOptions,
-): Promise<{ usage?: UsageData; outcome: RunAgentOutcome }> {
+): Promise<{ usage?: UsageData; outcome: RunAgentOutcome; completion?: CompletionMetadata }> {
   const providerRuntime = getProviderRuntime();
   const provider = providerRuntime.id;
   const toolChoiceRequired = options?.toolChoiceRequired ?? true;
@@ -439,6 +448,7 @@ export async function runAgent(
   let overflowRetried = false;
   let retryCount = 0;
   let outcome: RunAgentOutcome = "complete";
+  let completion: CompletionMetadata | undefined;
   let sawSteeringFollowUp = false;
   let mustResolveBeforeHandoffActive = options?.mustResolveBeforeHandoff === true;
 
@@ -538,6 +548,10 @@ export async function runAgent(
             && (!mustResolveBeforeHandoffActive || validDirectReply || validTerminalIntent);
 
           if (validClosure) {
+            completion = {
+              answer,
+              intent: validDirectReply ? "direct_reply" : intent === "blocked" ? "blocked" : "complete",
+            };
             if (result.finalAnswerStreamed) {
               // The streaming layer already parsed and emitted the answer
               // progressively via FinalAnswerParser. Skip clearing and
@@ -685,5 +699,5 @@ export async function runAgent(
     message: "runAgent turn completed",
     meta: { done },
   });
-  return { usage: lastUsage, outcome };
+  return { usage: lastUsage, outcome, completion };
 }

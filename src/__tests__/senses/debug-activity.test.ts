@@ -28,11 +28,11 @@ describe("debug activity controller", () => {
     await controller.finish()
 
     expect(operations).toEqual([
-      "send:thinking...",
+      "send:shared work: processing\nthinking...",
       "typing:true",
-      "edit:status-guid:running read_file (notes.txt)...",
-      "edit:status-guid:\u2713 read_file (ok)",
-      "edit:status-guid:followup...",
+      "edit:status-guid:shared work: processing\nrunning read_file (notes.txt)...",
+      "edit:status-guid:shared work: processing\n\u2713 read_file (ok)",
+      "edit:status-guid:shared work: processing\nfollowup...",
       "typing:false",
     ])
   })
@@ -55,8 +55,8 @@ describe("debug activity controller", () => {
     controller.onToolStart("grep", {})
     await controller.finish()
 
-    expect(sendStatus).toHaveBeenNthCalledWith(1, "thinking...")
-    expect(sendStatus).toHaveBeenNthCalledWith(2, "running grep...")
+    expect(sendStatus).toHaveBeenNthCalledWith(1, "shared work: processing\nthinking...")
+    expect(sendStatus).toHaveBeenNthCalledWith(2, "shared work: processing\nrunning grep...")
     expect(editStatus).not.toHaveBeenCalled()
     expect(setTyping).toHaveBeenNthCalledWith(1, true)
     expect(setTyping).toHaveBeenNthCalledWith(2, false)
@@ -85,8 +85,8 @@ describe("debug activity controller", () => {
 
     expect(onTransportError).toHaveBeenCalledTimes(1)
     expect(onTransportError).toHaveBeenCalledWith("status_update", expect.any(Error))
-    expect(editStatus).toHaveBeenNthCalledWith(1, "status-guid", "running read_file...")
-    expect(editStatus).toHaveBeenNthCalledWith(2, "status-guid", "\u2713 read_file (ok)")
+    expect(editStatus).toHaveBeenNthCalledWith(1, "status-guid", "shared work: processing\nrunning read_file...")
+    expect(editStatus).toHaveBeenNthCalledWith(2, "status-guid", "shared work: processing\n\u2713 read_file (ok)")
   })
 
   it("formats errors through the shared formatter and stops typing", async () => {
@@ -114,9 +114,9 @@ describe("debug activity controller", () => {
     await controller.finish()
 
     expect(operations).toEqual([
-      "send:thinking...",
+      "send:shared work: processing\nthinking...",
       "typing:true",
-      "edit:status-guid:Error: boom",
+      "edit:status-guid:shared work: errored\nError: boom",
       "typing:false",
     ])
   })
@@ -169,8 +169,8 @@ describe("debug activity controller", () => {
 
     expect(operations).toEqual([
       "typing:true",
-      "send:thinking...",
-      "edit:status-guid:running read_file (notes.txt)...",
+      "send:shared work: processing\nthinking...",
+      "edit:status-guid:shared work: processing\nrunning read_file (notes.txt)...",
       "typing:false",
     ])
   })
@@ -201,7 +201,7 @@ describe("debug activity controller", () => {
 
     expect(operations).toEqual([
       "typing:true",
-      "send:thinking...",
+      "send:shared work: processing\nthinking...",
       "typing:false",
     ])
   })
@@ -233,8 +233,8 @@ describe("debug activity controller", () => {
 
     expect(operations).toEqual([
       "typing:true",
-      "send:thinking...",
-      "edit:status-guid:thinking...",
+      "send:shared work: processing\nthinking...",
+      "edit:status-guid:shared work: processing\nthinking...",
       "typing:false",
     ])
   })
@@ -295,10 +295,42 @@ describe("debug activity controller", () => {
     await controller.finish()
 
     expect(operations).toEqual([
-      "send:thinking...",
+      "send:shared work: processing\nthinking...",
       "typing:true",
-      "edit:status-guid:running read_file (notes.txt)...",
-      "edit:status-guid:\u2713 read_file (ok)",
+      "edit:status-guid:shared work: processing\nrunning read_file (notes.txt)...",
+      "edit:status-guid:shared work: processing\n\u2713 read_file (ok)",
+      "typing:false",
+    ])
+  })
+
+  it("can suppress the initial visible model status while still advancing phrase rotation state", async () => {
+    const operations: string[] = []
+    const { createDebugActivityController } = await import("../../senses/debug-activity")
+    const controller = createDebugActivityController({
+      thinkingPhrases: ["thinking"],
+      followupPhrases: ["followup"],
+      transport: {
+        sendStatus: vi.fn(async (text: string) => {
+          operations.push(`send:${text}`)
+          return "status-guid"
+        }),
+        editStatus: vi.fn(async (messageGuid: string, text: string) => {
+          operations.push(`edit:${messageGuid}:${text}`)
+        }),
+        setTyping: vi.fn(async (active: boolean) => {
+          operations.push(`typing:${active}`)
+        }),
+      },
+      suppressInitialModelStatus: true,
+    })
+
+    controller.onModelStart()
+    controller.onToolStart("read_file", { path: "notes.txt" })
+    await controller.finish()
+
+    expect(operations).toEqual([
+      "send:shared work: processing\nrunning read_file (notes.txt)...",
+      "typing:true",
       "typing:false",
     ])
   })

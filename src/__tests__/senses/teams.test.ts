@@ -373,7 +373,9 @@ describe("Teams adapter - createTeamsCallbacks (SDK-delegated streaming)", () =>
     const teams = await import("../../senses/teams")
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
     callbacks.onToolStart("read_file", { path: "package.json" })
-    expect(mockStream.update).toHaveBeenCalledWith("running read_file (path=package.json)...")
+    expect(mockStream.update).toHaveBeenCalledWith(
+      "shared work: processing\nrunning read_file (path=package.json)...",
+    )
   })
 
   it("onToolStart always flushes accumulated textBuffer before showing tool status", async () => {
@@ -394,7 +396,7 @@ describe("Teams adapter - createTeamsCallbacks (SDK-delegated streaming)", () =>
     const teams = await import("../../senses/teams")
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
     callbacks.onToolEnd("read_file", "package.json", true)
-    expect(mockStream.update).toHaveBeenCalledWith("\u2713 read_file (package.json)")
+    expect(mockStream.update).toHaveBeenCalledWith("shared work: processing\n\u2713 read_file (package.json)")
     expect(mockStream.emit).not.toHaveBeenCalled()
   })
 
@@ -403,7 +405,7 @@ describe("Teams adapter - createTeamsCallbacks (SDK-delegated streaming)", () =>
     const teams = await import("../../senses/teams")
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
     callbacks.onToolEnd("get_current_time", "", true)
-    expect(mockStream.update).toHaveBeenCalledWith("\u2713 get_current_time")
+    expect(mockStream.update).toHaveBeenCalledWith("shared work: processing\n\u2713 get_current_time")
     expect(mockStream.emit).not.toHaveBeenCalled()
   })
 
@@ -412,7 +414,7 @@ describe("Teams adapter - createTeamsCallbacks (SDK-delegated streaming)", () =>
     const teams = await import("../../senses/teams")
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
     callbacks.onToolEnd("read_file", "missing.txt", false)
-    expect(mockStream.update).toHaveBeenCalledWith("\u2717 read_file: missing.txt")
+    expect(mockStream.update).toHaveBeenCalledWith("shared work: processing\n\u2717 read_file: missing.txt")
     expect(mockStream.emit).not.toHaveBeenCalled()
   })
 
@@ -458,7 +460,7 @@ describe("Teams adapter - createTeamsCallbacks (SDK-delegated streaming)", () =>
     const teams = await import("../../senses/teams")
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
     callbacks.onError(new Error("context overflow"), "transient")
-    expect(mockStream.update).toHaveBeenCalledWith("Error: context overflow")
+    expect(mockStream.update).toHaveBeenCalledWith("shared work: errored\nError: context overflow")
     expect(mockStream.emit).not.toHaveBeenCalled()
   })
 
@@ -468,7 +470,7 @@ describe("Teams adapter - createTeamsCallbacks (SDK-delegated streaming)", () =>
     const sendMessage = vi.fn().mockResolvedValue(undefined)
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller, sendMessage)
     callbacks.onError(new Error("something broke"), "terminal")
-    expect(sendMessage).toHaveBeenCalledWith("Error: something broke")
+    expect(sendMessage).toHaveBeenCalledWith("shared work: errored\nError: something broke")
     expect(mockStream.emit).not.toHaveBeenCalled()
   })
 
@@ -5111,8 +5113,8 @@ describe("Teams adapter - handleTeamsMessage with sendMessage", () => {
     await teams.handleTeamsMessage("show file", mockStream as any, "conv-send-1", undefined, true, sendMessage)
 
     // onToolEnd now uses safeUpdate (stream.update) not safeSend in buffered mode
-    expect(mockStream.update).toHaveBeenCalledWith("\u2713 read_file (package.json)")
-    expect(sendMessage).not.toHaveBeenCalledWith("\u2713 read_file (package.json)")
+    expect(mockStream.update).toHaveBeenCalledWith("shared work: processing\n\u2713 read_file (package.json)")
+    expect(sendMessage).not.toHaveBeenCalledWith("shared work: processing\n\u2713 read_file (package.json)")
   })
 
   it("handleTeamsMessage awaits flush() (which is now async)", async () => {
@@ -5944,6 +5946,12 @@ describe("Teams adapter - pipeline integration (U7)", () => {
       trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
       postTurn: vi.fn().mockImplementation((...args: any[]) => { postTurnCalls.push(args) }),
     }))
+    const mockDrainDeferredReturns = vi.fn().mockReturnValue([])
+    vi.doMock("../../mind/pending", () => ({
+      getPendingDir: vi.fn(() => "/tmp/mock-pending/teams"),
+      drainPending: vi.fn(() => []),
+      drainDeferredReturns: mockDrainDeferredReturns,
+    }))
     vi.doMock("../../senses/commands", () => ({
       createCommandRegistry: vi.fn().mockReturnValue({
         register: vi.fn(),
@@ -5991,7 +5999,7 @@ describe("Teams adapter - pipeline integration (U7)", () => {
       FriendResolver: MockFriendResolver,
     }))
 
-    return { mockHandleInboundTurn, runAgentFn, mockResolve }
+    return { mockHandleInboundTurn, runAgentFn, mockResolve, mockDrainDeferredReturns }
   }
 
   it("calls handleInboundTurn instead of inline lifecycle", async () => {
@@ -6119,6 +6127,25 @@ describe("Teams adapter - pipeline integration (U7)", () => {
 
     const input = mockHandleInboundTurn.mock.calls[0][0]
     expect(typeof input.drainPending).toBe("function")
+  })
+
+  it("passes deferred-return drain as injected dependency to pipeline", async () => {
+    vi.resetModules()
+    const { mockHandleInboundTurn, mockDrainDeferredReturns } = mockPipelineDeps()
+    const teams = await import("../../senses/teams")
+    const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+
+    await teams.handleTeamsMessage("hello", mockStream as any, "conv-123", {
+      signin: vi.fn(),
+      aadObjectId: "aad-user-123",
+      tenantId: "tenant-abc",
+      displayName: "Test User",
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    expect(typeof input.drainDeferredReturns).toBe("function")
+    expect(input.drainDeferredReturns("friend-1")).toEqual([])
+    expect(mockDrainDeferredReturns).toHaveBeenCalledWith("testagent", "friend-1")
   })
 
   it("passes runAgent, postTurn, and accumulateFriendTokens as injected deps", async () => {

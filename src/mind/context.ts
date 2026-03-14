@@ -14,6 +14,7 @@ export interface UsageData {
 
 export interface SessionContinuityState {
   mustResolveBeforeHandoff?: boolean
+  lastFriendActivityAt?: string
 }
 
 export interface SessionData {
@@ -272,8 +273,11 @@ export function saveSession(
     state?: SessionContinuityState
   } = { version: 1, messages }
   if (lastUsage) envelope.lastUsage = lastUsage
-  if (state?.mustResolveBeforeHandoff === true) {
-    envelope.state = { mustResolveBeforeHandoff: true }
+  if (state?.mustResolveBeforeHandoff === true || typeof state?.lastFriendActivityAt === "string") {
+    envelope.state = {
+      ...(state?.mustResolveBeforeHandoff === true ? { mustResolveBeforeHandoff: true } : {}),
+      ...(typeof state?.lastFriendActivityAt === "string" ? { lastFriendActivityAt: state.lastFriendActivityAt } : {}),
+    }
   }
   fs.writeFileSync(filePath, JSON.stringify(envelope, null, 2))
 }
@@ -295,10 +299,17 @@ export function loadSession(filePath: string): SessionData | null {
       })
       messages = repairSessionMessages(messages)
     }
-    const state = data?.state && typeof data.state === "object" && data.state !== null
-      && typeof data.state.mustResolveBeforeHandoff === "boolean"
-      && data.state.mustResolveBeforeHandoff === true
-      ? { mustResolveBeforeHandoff: true }
+    const rawState = data?.state && typeof data.state === "object" && data.state !== null
+      ? data.state as { mustResolveBeforeHandoff?: unknown; lastFriendActivityAt?: unknown }
+      : undefined
+    const state = rawState && (
+      rawState.mustResolveBeforeHandoff === true
+      || typeof rawState.lastFriendActivityAt === "string"
+    )
+      ? {
+        ...(rawState.mustResolveBeforeHandoff === true ? { mustResolveBeforeHandoff: true } : {}),
+        ...(typeof rawState.lastFriendActivityAt === "string" ? { lastFriendActivityAt: rawState.lastFriendActivityAt } : {}),
+      }
       : undefined
     return { messages, lastUsage: data.lastUsage, state }
   } catch {

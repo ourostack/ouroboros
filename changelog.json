@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.50",
+      "changes": [
+        "Delegated inner work can now proactively surface its completion back into the active BlueBubbles session instead of waiting for a later inbox drain.",
+        "Session recall now falls back to the raw transcript when summarization fails, so bridge attachment and cross-session inspection stay truthful instead of claiming the session is missing."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.49",
       "changes": [
         "Inner dialog no longer drops self-directed wake signals that arrive mid-turn; overlapping inward requests now guarantee a truthful follow-up inner pass instead of mailbox-like limbo.",

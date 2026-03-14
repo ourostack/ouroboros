@@ -395,4 +395,46 @@ describe("buildSessionSummary", () => {
 
     expect(result).toContain("2d ago")
   })
+
+  it("prefers friend-facing activity over newer passive internal mtimes", async () => {
+    const { buildSessionSummary } = await import("../../mind/prompt")
+
+    const sessionsDir = "/mock/sessions"
+    const friendsDir = "/mock/friends"
+    const now = Date.now()
+
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    vi.mocked(fs.readdirSync).mockImplementation(((p: string) => {
+      if (p === sessionsDir) return ["friend-1", "friend-2"] as any
+      if (p === path.join(sessionsDir, "friend-1")) return ["cli"] as any
+      if (p === path.join(sessionsDir, "friend-2")) return ["cli"] as any
+      if (p === path.join(sessionsDir, "friend-1", "cli")) return ["session.json"] as any
+      if (p === path.join(sessionsDir, "friend-2", "cli")) return ["session.json"] as any
+      return [] as any
+    }) as any)
+
+    vi.mocked(fs.statSync).mockImplementation(((p: string) => {
+      if (String(p).includes("friend-1")) return { mtimeMs: now - 1000 * 60 * 60 } as any
+      return { mtimeMs: now - 1000 * 10 } as any
+    }) as any)
+
+    vi.mocked(fs.readFileSync).mockImplementation(((p: string) => {
+      if (p === path.join(friendsDir, "friend-1.json")) return JSON.stringify({ id: "friend-1", name: "Ari" })
+      if (p === path.join(friendsDir, "friend-2.json")) return JSON.stringify({ id: "friend-2", name: "Sam" })
+      if (p === path.join(sessionsDir, "friend-1", "cli", "session.json")) {
+        return JSON.stringify({
+          version: 1,
+          messages: [],
+          state: { lastFriendActivityAt: new Date(now - 1000 * 60).toISOString() },
+        })
+      }
+      if (p === path.join(sessionsDir, "friend-2", "cli", "session.json")) {
+        return JSON.stringify({ version: 1, messages: [] })
+      }
+      throw new Error("ENOENT")
+    }) as any)
+
+    const result = buildSessionSummary({ sessionsDir, friendsDir, agentName: "slugger" })
+    expect(result.indexOf("Ari/cli/session")).toBeLessThan(result.indexOf("Sam/cli/session"))
+  })
 })

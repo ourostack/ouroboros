@@ -1,6 +1,7 @@
 import { formatError, formatToolResult } from "../mind/format"
 import { pickPhrase } from "../mind/phrases"
 import { emitNervesEvent } from "../nerves/runtime"
+import { buildProgressStory, renderProgressStory } from "../heart/progress-story"
 
 export interface DebugActivityTransport {
   sendStatus(text: string): Promise<string | undefined>
@@ -110,7 +111,11 @@ export function createDebugActivityController(options: DebugActivityOptions): De
         nextPhrase(pool)
         return
       }
-      setStatus(`${nextPhrase(pool)}...`)
+      setStatus(renderProgressStory(buildProgressStory({
+        scope: "shared-work",
+        phase: "processing",
+        objective: `${nextPhrase(pool)}...`,
+      })))
     },
 
     onToolStart(name: string, args: Record<string, string>): void {
@@ -118,13 +123,21 @@ export function createDebugActivityController(options: DebugActivityOptions): De
       followupShown = false
       const argSummary = Object.values(args).join(", ")
       const detail = argSummary ? ` (${argSummary})` : ""
-      setStatus(`running ${name}${detail}...`)
+      setStatus(renderProgressStory(buildProgressStory({
+        scope: "shared-work",
+        phase: "processing",
+        objective: `running ${name}${detail}...`,
+      })))
     },
 
     onToolEnd(name: string, summary: string, success: boolean): void {
       hadToolRun = true
       followupShown = false
-      setStatus(formatToolResult(name, summary, success))
+      setStatus(renderProgressStory(buildProgressStory({
+        scope: "shared-work",
+        phase: "processing",
+        objective: formatToolResult(name, summary, success),
+      })))
     },
 
     onTextChunk(text: string): void {
@@ -135,11 +148,19 @@ export function createDebugActivityController(options: DebugActivityOptions): De
       if (options.suppressFollowupPhraseStatus) {
         return
       }
-      setStatus(`${nextPhrase(options.followupPhrases)}...`)
+      setStatus(renderProgressStory(buildProgressStory({
+        scope: "shared-work",
+        phase: "processing",
+        objective: `${nextPhrase(options.followupPhrases)}...`,
+      })))
     },
 
     onError(error: Error): void {
-      setStatus(formatError(error))
+      setStatus(renderProgressStory(buildProgressStory({
+        scope: "shared-work",
+        phase: "errored",
+        outcomeText: formatError(error),
+      })))
       this.finish()
     },
 

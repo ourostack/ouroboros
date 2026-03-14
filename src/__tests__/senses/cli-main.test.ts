@@ -92,6 +92,7 @@ vi.mock("../../mind/context", () => ({
 vi.mock("../../mind/pending", () => ({
   getPendingDir: vi.fn(() => "/mock/pending"),
   drainPending: vi.fn(() => []),
+  drainDeferredReturns: vi.fn(() => []),
 }))
 vi.mock("../../mind/prompt-refresh", () => ({
   refreshSystemPrompt: vi.fn(),
@@ -1392,6 +1393,19 @@ describe("agent.ts main() - pipeline integration", () => {
 
     const pipelineInput = mocks.handleInboundTurn.mock.calls[0][0]
     expect(pipelineInput.continuityIngressTexts).toEqual(["hello from cli"])
+  })
+
+  it("passes deferred-return drain into the shared pipeline", async () => {
+    const { drainDeferredReturns } = await import("../../mind/pending")
+    vi.mocked(drainDeferredReturns).mockClear()
+    setupBasic({ inputSequence: ["hello", "/exit"] })
+
+    await main(undefined, { pasteDebounceMs: 0 })
+
+    const pipelineInput = mocks.handleInboundTurn.mock.calls[0][0]
+    expect(typeof pipelineInput.drainDeferredReturns).toBe("function")
+    expect(pipelineInput.drainDeferredReturns("friend-1")).toEqual([])
+    expect(drainDeferredReturns).toHaveBeenCalledWith("testagent", "friend-1")
   })
 
   it("persists postTurn continuity state across CLI turns", async () => {

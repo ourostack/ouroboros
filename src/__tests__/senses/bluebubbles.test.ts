@@ -41,6 +41,7 @@ const mocks = vi.hoisted(() => ({
   getChannelCapabilities: vi.fn(),
   getPendingDir: vi.fn(),
   drainPending: vi.fn(),
+  drainDeferredReturns: vi.fn(),
   enforceTrustGate: vi.fn(),
   findByExternalId: vi.fn().mockResolvedValue(null),
   listAll: vi.fn().mockResolvedValue([]),
@@ -193,6 +194,7 @@ vi.mock("../../mind/friends/channel", () => ({
 vi.mock("../../mind/pending", () => ({
   getPendingDir: (...args: any[]) => mocks.getPendingDir(...args),
   drainPending: (...args: any[]) => mocks.drainPending(...args),
+  drainDeferredReturns: (...args: any[]) => mocks.drainDeferredReturns(...args),
 }))
 
 vi.mock("../../senses/trust-gate", () => ({
@@ -526,6 +528,7 @@ function resetMocks(): void {
   })
   mocks.getPendingDir.mockReset().mockReturnValue("/tmp/pending/friend-uuid/bluebubbles/session")
   mocks.drainPending.mockReset().mockReturnValue([])
+  mocks.drainDeferredReturns.mockReset().mockReturnValue([])
   mocks.enforceTrustGate.mockReset().mockReturnValue({ allowed: true })
   mocks.findByExternalId.mockReset().mockResolvedValue(null)
   mocks.listAll.mockReset().mockResolvedValue([])
@@ -1268,7 +1271,7 @@ describe("BlueBubbles sense runtime", () => {
       expect.objectContaining({
         chat: expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }),
         replyToMessageGuid: "C4B2E437-A373-43F6-9740-9CD84E5893A0",
-        text: "running read_file (notes.txt)...",
+        text: "shared work: processing\nrunning read_file (notes.txt)...",
       }),
     )
     expect(mocks.sendText).toHaveBeenNthCalledWith(
@@ -1276,7 +1279,7 @@ describe("BlueBubbles sense runtime", () => {
       expect.objectContaining({
         chat: expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }),
         replyToMessageGuid: "C4B2E437-A373-43F6-9740-9CD84E5893A0",
-        text: "\u2713 read_file (ok)",
+        text: "shared work: processing\n\u2713 read_file (ok)",
       }),
     )
     expect(mocks.sendText).toHaveBeenNthCalledWith(
@@ -1653,7 +1656,8 @@ describe("BlueBubbles sense runtime", () => {
       1,
       expect.objectContaining({
         chat: expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }),
-        text: "Error: turn blew up",
+        replyToMessageGuid: "C4B2E437-A373-43F6-9740-9CD84E5893A0",
+        text: "shared work: errored\nError: turn blew up",
       }),
     )
     expect(mocks.editMessage).not.toHaveBeenCalled()
@@ -1705,22 +1709,22 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.buildSystem).not.toHaveBeenCalled()
     expect(mocks.sendText).toHaveBeenCalledWith(
       expect.objectContaining({
-        text: "running query_session...",
+        text: "shared work: processing\nrunning query_session...",
       }),
     )
     expect(mocks.sendText).toHaveBeenCalledWith(
       expect.objectContaining({
-        text: "\u2713 query_session (done)",
+        text: "shared work: processing\n\u2713 query_session (done)",
       }),
     )
     expect(mocks.sendText).toHaveBeenCalledWith(
       expect.objectContaining({
-        text: "Error: temporary",
+        text: "shared work: errored\nError: temporary",
       }),
     )
     expect(mocks.sendText).toHaveBeenCalledWith(
       expect.objectContaining({
-        text: "Error: fatal",
+        text: "shared work: errored\nError: fatal",
       }),
     )
     expect(mocks.postTurn).toHaveBeenCalledTimes(1)
@@ -3766,6 +3770,16 @@ describe("BlueBubbles sense runtime", () => {
     expect(typeof input.drainPending).toBe("function")
   })
 
+  it("passes deferred-return drain to pipeline for friend-level completion routing", async () => {
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    const input = mocks.handleInboundTurn.mock.calls[0][0]
+    expect(typeof input.drainDeferredReturns).toBe("function")
+    expect(input.drainDeferredReturns("friend-uuid")).toEqual([])
+    expect(mocks.drainDeferredReturns).toHaveBeenCalledWith("testagent", "friend-uuid")
+  })
+
   it("passes BB-specific toolContext (bluebubblesReplyTarget, codingFeedback) via runAgent wrapper", async () => {
     let capturedOptions: any = null
     mocks.runAgent.mockImplementationOnce(async (_messages: any, callbacks: any, _channel: any, _signal: any, options: any) => {
@@ -4669,5 +4683,467 @@ describe("drainAndSendPendingBlueBubbles", () => {
         chatIdentifier: "alice@icloud.com",
       }),
     }))
+  })
+})
+
+describe("sendProactiveBlueBubblesMessageToSession", () => {
+  function makeFriend(overrides: Partial<{
+    id: string
+    name: string
+    trustLevel: string
+    externalIds: Array<{ provider: string; externalId: string; linkedAt: string }>
+  }> = {}): any {
+    return {
+      id: overrides.id ?? "friend-uuid-1",
+      name: overrides.name ?? "Alice",
+      trustLevel: overrides.trustLevel ?? "friend",
+      externalIds: overrides.externalIds ?? [
+        { provider: "imessage-handle", externalId: "alice@icloud.com", linkedAt: "2026-01-01" },
+      ],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: {},
+      totalTokens: 0,
+      createdAt: "2026-01-01",
+      updatedAt: "2026-01-01",
+      schemaVersion: 1,
+    }
+  }
+
+  beforeEach(() => {
+    mocks.sendText.mockReset().mockResolvedValue({ messageGuid: "proactive-sent-guid" })
+    mocks.emitNervesEvent.mockReset()
+  })
+
+  it("sends proactively to a specific BlueBubbles session key", async () => {
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(makeFriend()),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
+      friendId: "friend-uuid-1",
+      sessionKey: "chat:any;-;alice@icloud.com",
+      text: "surface this now",
+    }, {
+      createClient: () => ({
+        sendText: mocks.sendText,
+        editMessage: mocks.editMessage,
+        setTyping: mocks.setTyping,
+        markChatRead: mocks.markChatRead,
+        checkHealth: mocks.checkHealth,
+        repairEvent: mocks.repairEvent,
+      }),
+      createFriendStore: () => friendStore as any,
+    })
+
+    expect(result).toEqual({ delivered: true })
+    expect(mocks.sendText).toHaveBeenCalledWith(expect.objectContaining({
+      chat: expect.objectContaining({
+        chatGuid: "any;-;alice@icloud.com",
+        chatIdentifier: "alice@icloud.com",
+        sessionKey: "chat:any;-;alice@icloud.com",
+      }),
+      text: "surface this now",
+    }))
+  })
+
+  it("sends proactively to a chat_identifier session key", async () => {
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(makeFriend()),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
+      friendId: "friend-uuid-1",
+      sessionKey: "chat_identifier:alice@icloud.com",
+      text: "surface this now",
+    }, {
+      createClient: () => ({
+        sendText: mocks.sendText,
+        editMessage: mocks.editMessage,
+        setTyping: mocks.setTyping,
+        markChatRead: mocks.markChatRead,
+        checkHealth: mocks.checkHealth,
+        repairEvent: mocks.repairEvent,
+      }),
+      createFriendStore: () => friendStore as any,
+    })
+
+    expect(result).toEqual({ delivered: true })
+    expect(mocks.sendText).toHaveBeenCalledWith(expect.objectContaining({
+      chat: expect.objectContaining({
+        chatIdentifier: "alice@icloud.com",
+        sessionKey: "chat_identifier:alice@icloud.com",
+      }),
+      text: "surface this now",
+    }))
+  })
+
+  it("falls back to the friend's iMessage handle when chat_identifier is blank", async () => {
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(makeFriend()),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
+      friendId: "friend-uuid-1",
+      sessionKey: "chat_identifier:   ",
+      text: "surface this now",
+    }, {
+      createClient: () => ({
+        sendText: mocks.sendText,
+        editMessage: mocks.editMessage,
+        setTyping: mocks.setTyping,
+        markChatRead: mocks.markChatRead,
+        checkHealth: mocks.checkHealth,
+        repairEvent: mocks.repairEvent,
+      }),
+      createFriendStore: () => friendStore as any,
+    })
+
+    expect(result).toEqual({ delivered: true })
+    expect(mocks.sendText).toHaveBeenCalledWith(expect.objectContaining({
+      chat: expect.objectContaining({
+        chatIdentifier: "alice@icloud.com",
+      }),
+    }))
+  })
+
+  it("can proactively send with a chat guid even when no handle is available", async () => {
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(makeFriend({ externalIds: [] })),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
+      friendId: "friend-uuid-1",
+      sessionKey: "chat:opaque-guid",
+      text: "surface this now",
+    }, {
+      createClient: () => ({
+        sendText: mocks.sendText,
+        editMessage: mocks.editMessage,
+        setTyping: mocks.setTyping,
+        markChatRead: mocks.markChatRead,
+        checkHealth: mocks.checkHealth,
+        repairEvent: mocks.repairEvent,
+      }),
+      createFriendStore: () => friendStore as any,
+    })
+
+    expect(result).toEqual({ delivered: true })
+    expect(mocks.sendText).toHaveBeenCalledWith(expect.objectContaining({
+      chat: expect.objectContaining({
+        chatGuid: "opaque-guid",
+        sessionKey: "chat:opaque-guid",
+      }),
+    }))
+  })
+
+  it("falls back to the friend's handle when a chat guid carries an empty identifier segment", async () => {
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(makeFriend()),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
+      friendId: "friend-uuid-1",
+      sessionKey: "chat:any;-;   ",
+      text: "surface this now",
+    }, {
+      createClient: () => ({
+        sendText: mocks.sendText,
+        editMessage: mocks.editMessage,
+        setTyping: mocks.setTyping,
+        markChatRead: mocks.markChatRead,
+        checkHealth: mocks.checkHealth,
+        repairEvent: mocks.repairEvent,
+      }),
+      createFriendStore: () => friendStore as any,
+    })
+
+    expect(result).toEqual({ delivered: true })
+    expect(mocks.sendText).toHaveBeenCalledWith(expect.objectContaining({
+      chat: expect.objectContaining({
+        chatGuid: "any;-;",
+        chatIdentifier: "alice@icloud.com",
+      }),
+    }))
+  })
+
+  it("skips proactive delivery when no routing target can be derived", async () => {
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(makeFriend({ externalIds: [] })),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
+      friendId: "friend-uuid-1",
+      sessionKey: "session",
+      text: "surface this now",
+    }, {
+      createClient: () => ({
+        sendText: mocks.sendText,
+        editMessage: mocks.editMessage,
+        setTyping: mocks.setTyping,
+        markChatRead: mocks.markChatRead,
+        checkHealth: mocks.checkHealth,
+        repairEvent: mocks.repairEvent,
+      }),
+      createFriendStore: () => friendStore as any,
+    })
+
+    expect(result).toEqual({ delivered: false, reason: "missing_target" })
+    expect(mocks.sendText).not.toHaveBeenCalled()
+  })
+
+  it("skips proactive delivery when a chat session key has no guid payload", async () => {
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(makeFriend()),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
+      friendId: "friend-uuid-1",
+      sessionKey: "chat:   ",
+      text: "surface this now",
+    }, {
+      createClient: () => ({
+        sendText: mocks.sendText,
+        editMessage: mocks.editMessage,
+        setTyping: mocks.setTyping,
+        markChatRead: mocks.markChatRead,
+        checkHealth: mocks.checkHealth,
+        repairEvent: mocks.repairEvent,
+      }),
+      createFriendStore: () => friendStore as any,
+    })
+
+    expect(result).toEqual({ delivered: false, reason: "missing_target" })
+    expect(mocks.sendText).not.toHaveBeenCalled()
+  })
+
+  it("skips proactive delivery when the friend cannot be found", async () => {
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(null),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
+      friendId: "missing-friend",
+      sessionKey: "chat:any;-;alice@icloud.com",
+      text: "surface this now",
+    }, {
+      createClient: () => ({
+        sendText: mocks.sendText,
+        editMessage: mocks.editMessage,
+        setTyping: mocks.setTyping,
+        markChatRead: mocks.markChatRead,
+        checkHealth: mocks.checkHealth,
+        repairEvent: mocks.repairEvent,
+      }),
+      createFriendStore: () => friendStore as any,
+    })
+
+    expect(result).toEqual({ delivered: false, reason: "friend_not_found" })
+    expect(mocks.sendText).not.toHaveBeenCalled()
+  })
+
+  it("skips proactive delivery when the friend store throws", async () => {
+    const friendStore = {
+      get: vi.fn().mockRejectedValue(new Error("store blew up")),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
+      friendId: "missing-friend",
+      sessionKey: "chat:any;-;alice@icloud.com",
+      text: "surface this now",
+    }, {
+      createClient: () => ({
+        sendText: mocks.sendText,
+        editMessage: mocks.editMessage,
+        setTyping: mocks.setTyping,
+        markChatRead: mocks.markChatRead,
+        checkHealth: mocks.checkHealth,
+        repairEvent: mocks.repairEvent,
+      }),
+      createFriendStore: () => friendStore as any,
+    })
+
+    expect(result).toEqual({ delivered: false, reason: "friend_not_found" })
+    expect(mocks.sendText).not.toHaveBeenCalled()
+  })
+
+  it("skips proactive delivery when trust level is not allowed", async () => {
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(makeFriend({ trustLevel: "stranger" })),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
+      friendId: "friend-uuid-1",
+      sessionKey: "chat:any;-;alice@icloud.com",
+      text: "surface this now",
+    }, {
+      createClient: () => ({
+        sendText: mocks.sendText,
+        editMessage: mocks.editMessage,
+        setTyping: mocks.setTyping,
+        markChatRead: mocks.markChatRead,
+        checkHealth: mocks.checkHealth,
+        repairEvent: mocks.repairEvent,
+      }),
+      createFriendStore: () => friendStore as any,
+    })
+
+    expect(result).toEqual({ delivered: false, reason: "trust_skip" })
+    expect(mocks.sendText).not.toHaveBeenCalled()
+  })
+
+  it("treats undefined trust level as disallowed for proactive delivery", async () => {
+    const friend = makeFriend()
+    delete friend.trustLevel
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(friend),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
+      friendId: "friend-uuid-1",
+      sessionKey: "chat:any;-;alice@icloud.com",
+      text: "surface this now",
+    }, {
+      createClient: () => ({
+        sendText: mocks.sendText,
+        editMessage: mocks.editMessage,
+        setTyping: mocks.setTyping,
+        markChatRead: mocks.markChatRead,
+        checkHealth: mocks.checkHealth,
+        repairEvent: mocks.repairEvent,
+      }),
+      createFriendStore: () => friendStore as any,
+    })
+
+    expect(result).toEqual({ delivered: false, reason: "trust_skip" })
+    expect(mocks.sendText).not.toHaveBeenCalled()
+  })
+
+  it("returns send_error when proactive BlueBubbles delivery fails", async () => {
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(makeFriend()),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+    mocks.sendText.mockReset().mockRejectedValue(new Error("bb down"))
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
+      friendId: "friend-uuid-1",
+      sessionKey: "chat:any;-;alice@icloud.com",
+      text: "surface this now",
+    }, {
+      createClient: () => ({
+        sendText: mocks.sendText,
+        editMessage: mocks.editMessage,
+        setTyping: mocks.setTyping,
+        markChatRead: mocks.markChatRead,
+        checkHealth: mocks.checkHealth,
+        repairEvent: mocks.repairEvent,
+      }),
+      createFriendStore: () => friendStore as any,
+    })
+
+    expect(result).toEqual({ delivered: false, reason: "send_error" })
+  })
+
+  it("stringifies non-Error proactive BlueBubbles send failures", async () => {
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(makeFriend()),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+    mocks.sendText.mockReset().mockRejectedValue("bb string fail")
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
+      friendId: "friend-uuid-1",
+      sessionKey: "chat:any;-;alice@icloud.com",
+      text: "surface this now",
+    }, {
+      createClient: () => ({
+        sendText: mocks.sendText,
+        editMessage: mocks.editMessage,
+        setTyping: mocks.setTyping,
+        markChatRead: mocks.markChatRead,
+        checkHealth: mocks.checkHealth,
+        repairEvent: mocks.repairEvent,
+      }),
+      createFriendStore: () => friendStore as any,
+    })
+
+    expect(result).toEqual({ delivered: false, reason: "send_error" })
   })
 })

@@ -240,6 +240,99 @@ describe("send_message tool", () => {
       expect(written.content).toBe("note to self")
     })
 
+    it("tags outward delegated self-messages with the originating friend session and bridge", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      await tool.handler({
+        friendId: "self",
+        channel: "bluebubbles",
+        content: "think this through",
+      }, {
+        currentSession: {
+          friendId: "friend-uuid-1",
+          channel: "bluebubbles",
+          key: "chat",
+          sessionPath: "/mock/agent-root/state/sessions/friend-uuid-1/bluebubbles/chat.json",
+        },
+        activeBridges: [
+          {
+            id: "bridge-1",
+            objective: "carry Ari across cli and bluebubbles",
+            summary: "same work, two surfaces",
+            lifecycle: "active",
+            runtime: "idle",
+            createdAt: "2026-03-13T20:00:00.000Z",
+            updatedAt: "2026-03-13T20:00:00.000Z",
+            attachedSessions: [
+              {
+                friendId: "friend-uuid-1",
+                channel: "bluebubbles",
+                key: "chat",
+                sessionPath: "/mock/agent-root/state/sessions/friend-uuid-1/bluebubbles/chat.json",
+              },
+            ],
+            task: null,
+          },
+        ],
+      } as any)
+
+      const written = JSON.parse(vi.mocked(fs.writeFileSync).mock.calls[0][1] as string)
+      expect(written.delegatedFrom).toEqual({
+        friendId: "friend-uuid-1",
+        channel: "bluebubbles",
+        key: "chat",
+        bridgeId: "bridge-1",
+      })
+    })
+
+    it("tags outward delegated self-messages without a bridge id when no active bridge matches", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      await tool.handler({
+        friendId: "self",
+        channel: "bluebubbles",
+        content: "think this through too",
+      }, {
+        currentSession: {
+          friendId: "friend-uuid-1",
+          channel: "bluebubbles",
+          key: "chat",
+          sessionPath: "/mock/agent-root/state/sessions/friend-uuid-1/bluebubbles/chat.json",
+        },
+        activeBridges: [],
+      } as any)
+
+      const written = JSON.parse(vi.mocked(fs.writeFileSync).mock.calls[0][1] as string)
+      expect(written.delegatedFrom).toEqual({
+        friendId: "friend-uuid-1",
+        channel: "bluebubbles",
+        key: "chat",
+      })
+    })
+
+    it("keeps purely inner self-thought private by omitting delegated origin metadata", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      await tool.handler({
+        friendId: "self",
+        channel: "inner",
+        content: "private thought",
+      }, {
+        currentSession: {
+          friendId: "self",
+          channel: "inner",
+          key: "dialog",
+          sessionPath: "/mock/agent-root/state/sessions/self/inner/dialog.json",
+        },
+      } as any)
+
+      const written = JSON.parse(vi.mocked(fs.writeFileSync).mock.calls[0][1] as string)
+      expect(written.delegatedFrom).toBeUndefined()
+    })
+
     it("does NOT self-route when friendId is a regular UUID", async () => {
       const { baseToolDefinitions } = await import("../../repertoire/tools-base")
       const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
@@ -285,9 +378,9 @@ describe("send_message tool", () => {
         content: "remember this",
       })
 
-      // Should indicate inner dialog routing, not the original channel
+      // Should indicate inward routing, not the original outward channel
       expect(result).toContain("inner")
-      expect(result).toContain("dialog")
+      expect(result).toContain("queued to inner/dialog")
     })
 
     it("falls back to an immediate inner turn when no daemon wake path is available", async () => {
@@ -306,10 +399,12 @@ describe("send_message tool", () => {
       })
 
       expect(mockRunInnerDialogTurn).toHaveBeenCalledTimes(1)
-      expect(result).toContain("queue: queued to inner/dialog")
-      expect(result).toContain("wake: inline fallback")
-      expect(result).toContain("processing: processed")
-      expect(result).toContain('surfaced: "penguins surfaced."')
+      expect(result).toBe([
+        "inner work: completed",
+        "queued to inner/dialog",
+        "wake: inline fallback",
+        "penguins surfaced.",
+      ].join("\n"))
     })
 
     it("uses daemon-managed wake when available and skips the inline fallback", async () => {
@@ -330,10 +425,9 @@ describe("send_message tool", () => {
       expect(mockRequestInnerWake).toHaveBeenCalledWith("testagent")
       expect(mockRunInnerDialogTurn).not.toHaveBeenCalled()
       expect(result).toBe([
-        "queue: queued to inner/dialog",
+        "inner work: queued",
+        "queued to inner/dialog",
         "wake: daemon requested",
-        "processing: pending",
-        "surfaced: nothing yet",
       ].join("\n"))
     })
 
@@ -384,8 +478,28 @@ describe("send_message tool", () => {
         content: "sit with this quietly",
       })
 
-      expect(result).toContain("processing: processed")
-      expect(result).toContain("surfaced: no outward result")
+      expect(result).toContain("inner work: completed")
+      expect(result).toContain("queued to inner/dialog")
+      expect(result).toContain("wake: inline fallback")
+      expect(result).toContain("no outward result")
+    })
+
+    it("reports no outward result when the inline fallback returns without a messages payload", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      mockRunInnerDialogTurn.mockResolvedValue(undefined)
+
+      const result = await tool.handler({
+        friendId: "self",
+        channel: "cli",
+        content: "hold this lightly",
+      })
+
+      expect(result).toContain("inner work: completed")
+      expect(result).toContain("queued to inner/dialog")
+      expect(result).toContain("wake: inline fallback")
+      expect(result).toContain("no outward result")
     })
 
     it("truncates long surfaced previews in the inline fallback response", async () => {
@@ -403,7 +517,9 @@ describe("send_message tool", () => {
         content: "stretch the preview",
       })
 
-      expect(result).toContain('surfaced: "')
+      expect(result).toContain("inner work: completed")
+      expect(result).toContain("queued to inner/dialog")
+      expect(result).toContain("wake: inline fallback")
       expect(result).toContain("...")
       expect(result).not.toContain("a".repeat(160))
     })
@@ -430,7 +546,10 @@ describe("send_message tool", () => {
         content: "let the image-thought settle",
       })
 
-      expect(result).toContain('surfaced: "penguins"')
+      expect(result).toContain("inner work: completed")
+      expect(result).toContain("queued to inner/dialog")
+      expect(result).toContain("wake: inline fallback")
+      expect(result).toContain("penguins")
     })
 
     it("extracts surfaced previews from final_answer-only inner turns", async () => {
@@ -464,7 +583,10 @@ describe("send_message tool", () => {
         content: "let the thought conclude cleanly",
       })
 
-      expect(result).toContain('surfaced: "formal little blokes"')
+      expect(result).toContain("inner work: completed")
+      expect(result).toContain("queued to inner/dialog")
+      expect(result).toContain("wake: inline fallback")
+      expect(result).toContain("formal little blokes")
     })
 
     it("treats non-array assistant content as no outward result", async () => {
@@ -485,7 +607,10 @@ describe("send_message tool", () => {
         content: "hold a strangely-shaped reply",
       })
 
-      expect(result).toContain("surfaced: no outward result")
+      expect(result).toContain("inner work: completed")
+      expect(result).toContain("queued to inner/dialog")
+      expect(result).toContain("wake: inline fallback")
+      expect(result).toContain("no outward result")
     })
 
     it("defers the inline fallback to a microtask when already in inner dialog", async () => {

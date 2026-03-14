@@ -12,7 +12,7 @@ import { FriendResolver, type FriendResolverParams } from "../mind/friends/resol
 import { FileFriendStore } from "../mind/friends/store-file"
 import { TRUSTED_LEVELS, type FriendRecord } from "../mind/friends/types"
 import { getChannelCapabilities } from "../mind/friends/channel"
-import { getPendingDir, drainPending } from "../mind/pending"
+import { getPendingDir, drainDeferredReturns, drainPending } from "../mind/pending"
 import { buildSystem } from "../mind/prompt"
 import { getPhrases } from "../mind/phrases"
 import { emitNervesEvent } from "../nerves/runtime"
@@ -63,6 +63,17 @@ interface RuntimeDeps {
 interface BlueBubblesReplyTargetController {
   getReplyToMessageGuid(): string | undefined
   setSelection(selection: BlueBubblesReplyTargetSelection): string
+}
+
+export interface ProactiveBlueBubblesSessionSendParams {
+  friendId: string
+  sessionKey: string
+  text: string
+}
+
+export interface ProactiveBlueBubblesSessionSendResult {
+  delivered: boolean
+  reason?: "friend_not_found" | "trust_skip" | "missing_target" | "send_error"
 }
 
 const defaultDeps: RuntimeDeps = {
@@ -704,6 +715,7 @@ async function handleBlueBubblesNormalizedEvent(
         hasExistingGroupWithFamily,
         enforceTrustGate,
         drainPending,
+        drainDeferredReturns: (deferredFriendId) => drainDeferredReturns(resolvedDeps.getAgentName(), deferredFriendId),
         runAgent: (msgs, cb, channel, sig, opts) => resolvedDeps.runAgent(msgs, cb, channel, sig, {
           ...opts,
           toolContext: {
@@ -962,6 +974,122 @@ function findImessageHandle(friend: FriendRecord): string | undefined {
     }
   }
   return undefined
+}
+
+function extractChatIdentifierFromSessionKey(sessionKey: string): string | undefined {
+  if (sessionKey.startsWith("chat:")) {
+    const chatGuid = sessionKey.slice("chat:".length).trim()
+    const parts = chatGuid.split(";")
+    return parts.length >= 3 ? parts[2]?.trim() || undefined : undefined
+  }
+  if (sessionKey.startsWith("chat_identifier:")) {
+    const identifier = sessionKey.slice("chat_identifier:".length).trim()
+    return identifier || undefined
+  }
+  return undefined
+}
+
+function buildChatRefForSessionKey(friend: FriendRecord, sessionKey: string): BlueBubblesChatRef | null {
+  if (sessionKey.startsWith("chat:")) {
+    const chatGuid = sessionKey.slice("chat:".length).trim()
+    if (!chatGuid) return null
+    return {
+      chatGuid,
+      chatIdentifier: extractChatIdentifierFromSessionKey(sessionKey) ?? findImessageHandle(friend),
+      isGroup: chatGuid.includes(";+;"),
+      sessionKey,
+      sendTarget: { kind: "chat_guid", value: chatGuid },
+      participantHandles: [],
+    }
+  }
+
+  const chatIdentifier = extractChatIdentifierFromSessionKey(sessionKey) ?? findImessageHandle(friend)
+  if (!chatIdentifier) return null
+  return {
+    chatIdentifier,
+    isGroup: false,
+    sessionKey,
+    sendTarget: { kind: "chat_identifier", value: chatIdentifier },
+    participantHandles: [],
+  }
+}
+
+export async function sendProactiveBlueBubblesMessageToSession(
+  params: ProactiveBlueBubblesSessionSendParams,
+  deps: Partial<RuntimeDeps> = {},
+): Promise<ProactiveBlueBubblesSessionSendResult> {
+  const resolvedDeps = { ...defaultDeps, ...deps }
+  const client = resolvedDeps.createClient()
+  const store = resolvedDeps.createFriendStore()
+
+  let friend: FriendRecord | null
+  try {
+    friend = await store.get(params.friendId)
+  } catch {
+    friend = null
+  }
+
+  if (!friend) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.bluebubbles_proactive_no_friend",
+      message: "proactive send skipped: friend not found",
+      meta: { friendId: params.friendId, sessionKey: params.sessionKey },
+    })
+    return { delivered: false, reason: "friend_not_found" }
+  }
+
+  if (!TRUSTED_LEVELS.has(friend.trustLevel ?? "stranger")) {
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.bluebubbles_proactive_trust_skip",
+      message: "proactive send skipped: trust level not allowed",
+      meta: { friendId: params.friendId, sessionKey: params.sessionKey, trustLevel: friend.trustLevel ?? "unknown" },
+    })
+    return { delivered: false, reason: "trust_skip" }
+  }
+
+  const chat = buildChatRefForSessionKey(friend, params.sessionKey)
+  if (!chat) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.bluebubbles_proactive_no_handle",
+      message: "proactive send skipped: no iMessage handle found",
+      meta: { friendId: params.friendId, sessionKey: params.sessionKey },
+    })
+    return { delivered: false, reason: "missing_target" }
+  }
+
+  try {
+    await client.sendText({ chat, text: params.text })
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.bluebubbles_proactive_sent",
+      message: "proactive bluebubbles message sent",
+      meta: {
+        friendId: params.friendId,
+        sessionKey: params.sessionKey,
+        chatGuid: chat.chatGuid ?? null,
+        chatIdentifier: chat.chatIdentifier ?? null,
+      },
+    })
+    return { delivered: true }
+  } catch (error) {
+    emitNervesEvent({
+      level: "error",
+      component: "senses",
+      event: "senses.bluebubbles_proactive_send_error",
+      message: "proactive bluebubbles send failed",
+      meta: {
+        friendId: params.friendId,
+        sessionKey: params.sessionKey,
+        reason: error instanceof Error ? error.message : String(error),
+      },
+    })
+    return { delivered: false, reason: "send_error" }
+  }
 }
 
 function scanPendingBlueBubblesFiles(pendingRoot: string): Array<{

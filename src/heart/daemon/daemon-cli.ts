@@ -3,7 +3,7 @@ import { randomUUID } from "crypto"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
-import { getAgentBundlesRoot, getAgentName, getRepoRoot, type AgentProvider } from "../identity"
+import { getAgentBundlesRoot, getAgentName, getAgentRoot, getRepoRoot, type AgentProvider } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { FileFriendStore } from "../../mind/friends/store-file"
 import type { FriendStore } from "../../mind/friends/store"
@@ -37,6 +37,7 @@ import type { TaskModule } from "../../repertoire/tasks/types"
 import { syncGlobalOuroBotWrapper as defaultSyncGlobalOuroBotWrapper } from "./ouro-bot-global-installer"
 import { writeLaunchAgentPlist, type LaunchdWriteDeps } from "./launchd"
 import { DEFAULT_DAEMON_SOCKET_PATH, sendDaemonCommand, checkDaemonSocketAlive } from "./socket-client"
+import { listSessionActivity } from "../session-activity"
 
 export type OuroCliCommand =
   | { kind: "daemon.up" }
@@ -1124,6 +1125,20 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     startChat: async (agentName: string) => {
       const { main } = await import("../../senses/cli")
       await main(agentName)
+    },
+    scanSessions: async () => {
+      const agentName = getAgentName()
+      const agentRoot = getAgentRoot(agentName)
+      return listSessionActivity({
+        sessionsDir: path.join(agentRoot, "state", "sessions"),
+        friendsDir: path.join(agentRoot, "friends"),
+        agentName,
+      }).map((entry) => ({
+        friendId: entry.friendId,
+        friendName: entry.friendName,
+        channel: entry.channel,
+        lastActivity: entry.lastActivityAt,
+      }))
     },
   }
 }

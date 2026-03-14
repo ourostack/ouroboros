@@ -11,6 +11,9 @@ import { backfillBundleMeta, getPackageVersion, getChangelogPath } from "./bundl
 import type { BundleMeta } from "./bundle-manifest";
 import { getFirstImpressions } from "./first-impressions";
 import { getTaskModule } from "../repertoire/tasks";
+import { listSessionActivity, type SessionActivityQuery } from "../heart/session-activity";
+import { formatActiveWorkFrame, type ActiveWorkFrame } from "../heart/active-work";
+import type { DelegationDecision } from "../heart/delegation";
 
 // Lazy-loaded psyche text cache
 let _psycheCache: {
@@ -68,25 +71,6 @@ export interface SessionSummaryOptions {
   activeThresholdMs?: number
 }
 
-interface SessionEntry {
-  friendId: string
-  displayName: string
-  channel: string
-  key: string
-  lastActivityMs: number
-}
-
-function resolveFriendName(friendId: string, friendsDir: string, agentName: string): string {
-  if (friendId === "self") return agentName
-  try {
-    const raw = fs.readFileSync(path.join(friendsDir, `${friendId}.json`), "utf-8")
-    const record = JSON.parse(raw) as { name?: string }
-    return record.name ?? friendId
-  } catch {
-    return friendId
-  }
-}
-
 export function buildSessionSummary(options: SessionSummaryOptions): string {
   const {
     sessionsDir,
@@ -98,70 +82,24 @@ export function buildSessionSummary(options: SessionSummaryOptions): string {
     activeThresholdMs = DEFAULT_ACTIVE_THRESHOLD_MS,
   } = options
 
-  if (!fs.existsSync(sessionsDir)) return ""
-
   const now = Date.now()
-  const entries: SessionEntry[] = []
-
-  let friendDirs: string[]
-  try {
-    friendDirs = fs.readdirSync(sessionsDir)
-  } catch {
-    return ""
+  const query: SessionActivityQuery = {
+    sessionsDir,
+    friendsDir,
+    agentName,
+    activeThresholdMs,
+    currentSession: currentFriendId && currentChannel && currentKey
+      ? { friendId: currentFriendId, channel: currentChannel, key: currentKey }
+      : null,
   }
-
-  for (const friendId of friendDirs) {
-    const friendPath = path.join(sessionsDir, friendId)
-    let channels: string[]
-    try {
-      channels = fs.readdirSync(friendPath)
-    } catch {
-      continue
-    }
-
-    for (const channel of channels) {
-      const channelPath = path.join(friendPath, channel)
-      let keys: string[]
-      try {
-        keys = fs.readdirSync(channelPath)
-      } catch {
-        continue
-      }
-
-      for (const keyFile of keys) {
-        if (!keyFile.endsWith(".json")) continue
-        const key = keyFile.replace(/\.json$/, "")
-
-        // Exclude current session
-        if (friendId === currentFriendId && channel === currentChannel && key === currentKey) {
-          continue
-        }
-
-        const filePath = path.join(channelPath, keyFile)
-        let mtimeMs: number
-        try {
-          mtimeMs = fs.statSync(filePath).mtimeMs
-        } catch {
-          continue
-        }
-
-        if (now - mtimeMs > activeThresholdMs) continue
-
-        const displayName = resolveFriendName(friendId, friendsDir, agentName)
-        entries.push({ friendId, displayName, channel, key, lastActivityMs: mtimeMs })
-      }
-    }
-  }
+  const entries = listSessionActivity(query)
 
   if (entries.length === 0) return ""
-
-  // Sort by most recent first
-  entries.sort((a, b) => b.lastActivityMs - a.lastActivityMs)
 
   const lines: string[] = ["## active sessions"]
   for (const entry of entries) {
     const ago = formatTimeAgo(now - entry.lastActivityMs)
-    lines.push(`- ${entry.displayName}/${entry.channel}/${entry.key} (last: ${ago})`)
+    lines.push(`- ${entry.friendName}/${entry.channel}/${entry.key} (last: ${ago})`)
   }
 
   return lines.join("\n")
@@ -449,12 +387,31 @@ export interface BuildSystemOptions {
   currentObligation?: string;
   mustResolveBeforeHandoff?: boolean;
   hasQueuedFollowUp?: boolean;
+  activeWorkFrame?: ActiveWorkFrame;
+  delegationDecision?: DelegationDecision;
 }
 
 function bridgeContextSection(options?: BuildSystemOptions): string {
+  if (options?.activeWorkFrame) return ""
   const bridgeContext = options?.bridgeContext?.trim() ?? ""
   if (!bridgeContext) return ""
   return bridgeContext.startsWith("## ") ? bridgeContext : `## active bridge work\n${bridgeContext}`
+}
+
+function activeWorkSection(options?: BuildSystemOptions): string {
+  if (!options?.activeWorkFrame) return ""
+  return formatActiveWorkFrame(options.activeWorkFrame)
+}
+
+function delegationHintSection(options?: BuildSystemOptions): string {
+  if (!options?.delegationDecision) return ""
+  const lines = [
+    "## delegation hint",
+    `target: ${options.delegationDecision.target}`,
+    `reasons: ${options.delegationDecision.reasons.length > 0 ? options.delegationDecision.reasons.join(", ") : "none"}`,
+    `outward closure: ${options.delegationDecision.outwardClosureRequired ? "required" : "not required"}`,
+  ]
+  return lines.join("\n")
 }
 
 function toolBehaviorSection(options?: BuildSystemOptions): string {
@@ -592,6 +549,8 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     mixedTrustGroupSection(context),
     skillsSection(),
     taskBoardSection(),
+    activeWorkSection(options),
+    delegationHintSection(options),
     bridgeContextSection(options),
     buildSessionSummary({
       sessionsDir: path.join(getAgentRoot(), "state", "sessions"),
