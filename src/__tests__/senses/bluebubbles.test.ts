@@ -5105,6 +5105,58 @@ describe("sendProactiveBlueBubblesMessageToSession", () => {
     expect(mocks.sendText).not.toHaveBeenCalled()
   })
 
+  it("allows explicit cross-chat delivery to a group session when the asking chat is trusted even if the target record is only acquaintance", async () => {
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(makeFriend({
+        id: "group-uuid",
+        name: "Project Group",
+        trustLevel: "acquaintance",
+        externalIds: [
+          { provider: "imessage-handle", externalId: "group:any;+;project-group-123", linkedAt: "2026-01-01" },
+        ],
+      })),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
+      friendId: "group-uuid",
+      sessionKey: "chat:any;+;project-group-123",
+      text: "tell the group the plan changed",
+      intent: "explicit_cross_chat",
+      authorizingSession: {
+        friendId: "friend-uuid-1",
+        channel: "bluebubbles",
+        key: "chat:any;-;ari@icloud.com",
+        trustLevel: "friend",
+      },
+    } as any, {
+      createClient: () => ({
+        sendText: mocks.sendText,
+        editMessage: mocks.editMessage,
+        setTyping: mocks.setTyping,
+        markChatRead: mocks.markChatRead,
+        checkHealth: mocks.checkHealth,
+        repairEvent: mocks.repairEvent,
+      }),
+      createFriendStore: () => friendStore as any,
+    })
+
+    expect(result).toEqual({ delivered: true })
+    expect(mocks.sendText).toHaveBeenCalledWith(expect.objectContaining({
+      chat: expect.objectContaining({
+        chatGuid: "any;+;project-group-123",
+        sessionKey: "chat:any;+;project-group-123",
+        isGroup: true,
+      }),
+      text: "tell the group the plan changed",
+    }))
+  })
+
   it("treats undefined trust level as disallowed for proactive delivery", async () => {
     const friend = makeFriend()
     delete friend.trustLevel

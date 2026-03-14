@@ -782,3 +782,48 @@ describe("drainAndSendPendingTeams", () => {
     )
   })
 })
+
+describe("sendProactiveTeamsMessageToSession", () => {
+  it("allows explicit cross-chat delivery from a trusted asking session even when the target record is only acquaintance", async () => {
+    const friend = makeFriend({ trustLevel: "acquaintance" })
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(friend),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+    const botApi = makeBotApi()
+
+    const teams = await import("../../senses/teams") as any
+    const result = await teams.sendProactiveTeamsMessageToSession({
+      friendId: "friend-uuid-1",
+      sessionKey: "session",
+      text: "carry this into the other chat now",
+      intent: "explicit_cross_chat",
+      authorizingSession: {
+        friendId: "trusted-friend-1",
+        channel: "teams",
+        key: "ari-thread",
+        trustLevel: "friend",
+      },
+    }, {
+      botApi,
+      createFriendStore: () => friendStore as any,
+    })
+
+    expect(result).toEqual({ delivered: true })
+    expect(botApi._mocks.conversationsCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        members: [expect.objectContaining({ id: "aad-object-id-alice" })],
+      }),
+    )
+    expect(botApi._mocks.activityCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "message",
+        text: "carry this into the other chat now",
+      }),
+    )
+  })
+})

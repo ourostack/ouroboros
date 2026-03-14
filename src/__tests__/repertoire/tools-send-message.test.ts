@@ -32,6 +32,8 @@ vi.mock("../../repertoire/tasks", () => ({
 
 const mockRunInnerDialogTurn = vi.fn()
 const mockRequestInnerWake = vi.fn()
+const mockSendProactiveBlueBubblesMessageToSession = vi.fn()
+const mockSendProactiveTeamsMessageToSession = vi.fn()
 
 vi.mock("../../senses/inner-dialog", () => ({
   runInnerDialogTurn: (...args: any[]) => mockRunInnerDialogTurn(...args),
@@ -39,6 +41,16 @@ vi.mock("../../senses/inner-dialog", () => ({
 
 vi.mock("../../heart/daemon/socket-client", () => ({
   requestInnerWake: (...args: any[]) => mockRequestInnerWake(...args),
+}))
+
+vi.mock("../../senses/bluebubbles", () => ({
+  sendProactiveBlueBubblesMessageToSession: (...args: any[]) =>
+    mockSendProactiveBlueBubblesMessageToSession(...args),
+}))
+
+vi.mock("../../senses/teams", () => ({
+  sendProactiveTeamsMessageToSession: (...args: any[]) =>
+    mockSendProactiveTeamsMessageToSession(...args),
 }))
 
 vi.mock("../../heart/identity", () => ({
@@ -61,6 +73,8 @@ beforeEach(() => {
   vi.mocked(fs.mkdirSync).mockReset()
   mockRunInnerDialogTurn.mockReset()
   mockRequestInnerWake.mockReset()
+  mockSendProactiveBlueBubblesMessageToSession.mockReset()
+  mockSendProactiveTeamsMessageToSession.mockReset()
   mockRequestInnerWake.mockResolvedValue(null)
 })
 
@@ -166,6 +180,151 @@ describe("send_message tool", () => {
 
     expect(result).toContain("…")
     expect(result).not.toContain("a".repeat(100))
+  })
+
+  it("delivers immediately for a trusted explicit cross-chat request instead of only pretending the message queued", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+    mockSendProactiveBlueBubblesMessageToSession.mockResolvedValue({ delivered: true })
+
+    const result = await tool.handler({
+      friendId: "group-uuid",
+      channel: "bluebubbles",
+      key: "chat:any;+;project-group-123",
+      content: "tell the group the plan changed",
+    }, {
+      currentSession: {
+        friendId: "friend-uuid-1",
+        channel: "bluebubbles",
+        key: "chat:any;-;ari@icloud.com",
+        sessionPath: "/mock/agent-root/state/sessions/friend-uuid-1/bluebubbles/chat.json",
+      },
+      context: {
+        friend: {
+          id: "friend-uuid-1",
+          name: "Ari",
+          trustLevel: "friend",
+          externalIds: [],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          totalTokens: 0,
+          createdAt: "2026-03-14T00:00:00.000Z",
+          updatedAt: "2026-03-14T00:00:00.000Z",
+          schemaVersion: 1,
+        },
+        channel: {
+          channel: "bluebubbles",
+          senseType: "open",
+          availableIntegrations: [],
+          supportsMarkdown: true,
+          supportsStreaming: true,
+          supportsRichCards: false,
+          maxMessageLength: 1000,
+        },
+      } as any,
+    } as any)
+
+    expect(result).toContain("delivered")
+    expect(result).not.toContain("queued for delivery")
+    expect(fs.writeFileSync).not.toHaveBeenCalled()
+  })
+
+  it("returns a blocked result when an untrusted asking chat tries to force explicit cross-chat delivery", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+    const result = await tool.handler({
+      friendId: "group-uuid",
+      channel: "bluebubbles",
+      key: "chat:any;+;project-group-123",
+      content: "tell the group the plan changed",
+    }, {
+      currentSession: {
+        friendId: "friend-uuid-2",
+        channel: "bluebubbles",
+        key: "chat:any;-;new-person@icloud.com",
+        sessionPath: "/mock/agent-root/state/sessions/friend-uuid-2/bluebubbles/chat.json",
+      },
+      context: {
+        friend: {
+          id: "friend-uuid-2",
+          name: "New Person",
+          trustLevel: "acquaintance",
+          externalIds: [],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          totalTokens: 0,
+          createdAt: "2026-03-14T00:00:00.000Z",
+          updatedAt: "2026-03-14T00:00:00.000Z",
+          schemaVersion: 1,
+        },
+        channel: {
+          channel: "bluebubbles",
+          senseType: "open",
+          availableIntegrations: [],
+          supportsMarkdown: true,
+          supportsStreaming: true,
+          supportsRichCards: false,
+          maxMessageLength: 1000,
+        },
+      } as any,
+    } as any)
+
+    expect(result.toLowerCase()).toContain("blocked")
+    expect(fs.writeFileSync).not.toHaveBeenCalled()
+    expect(mockSendProactiveBlueBubblesMessageToSession).not.toHaveBeenCalled()
+  })
+
+  it("reports queued-for-later truthfully when live cross-chat delivery is unavailable", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+    const result = await tool.handler({
+      friendId: "friend-uuid-3",
+      channel: "cli",
+      key: "session",
+      content: "carry this over later",
+    }, {
+      currentSession: {
+        friendId: "friend-uuid-1",
+        channel: "bluebubbles",
+        key: "chat:any;-;ari@icloud.com",
+        sessionPath: "/mock/agent-root/state/sessions/friend-uuid-1/bluebubbles/chat.json",
+      },
+      context: {
+        friend: {
+          id: "friend-uuid-1",
+          name: "Ari",
+          trustLevel: "friend",
+          externalIds: [],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          totalTokens: 0,
+          createdAt: "2026-03-14T00:00:00.000Z",
+          updatedAt: "2026-03-14T00:00:00.000Z",
+          schemaVersion: 1,
+        },
+        channel: {
+          channel: "bluebubbles",
+          senseType: "open",
+          availableIntegrations: [],
+          supportsMarkdown: true,
+          supportsStreaming: true,
+          supportsRichCards: false,
+          maxMessageLength: 1000,
+        },
+      } as any,
+    } as any)
+
+    expect(result.toLowerCase()).toContain("queued")
+    expect(result.toLowerCase()).not.toContain("delivered now")
+    expect(fs.writeFileSync).toHaveBeenCalledWith(
+      expect.stringMatching(/^\/mock\/agent-root\/state\/pending\/friend-uuid-3\/cli\/session\/\d+-.+\.json$/),
+      expect.any(String),
+    )
   })
 
   describe("self-routing special case", () => {
