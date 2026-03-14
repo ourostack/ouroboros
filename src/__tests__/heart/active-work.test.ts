@@ -496,7 +496,7 @@ describe("active work frame", () => {
   })
 
   it("falls back to the default bridge objective when shared pressure comes from handoff rather than obligation text", async () => {
-    const { buildActiveWorkFrame } = await import("../../heart/active-work")
+    const { buildActiveWorkFrame, formatActiveWorkFrame } = await import("../../heart/active-work")
 
     const frame = buildActiveWorkFrame({
       currentSession: {
@@ -570,6 +570,10 @@ describe("active work frame", () => {
         key: "session",
       }),
     })
+
+    const rendered = formatActiveWorkFrame(frame)
+    expect(rendered).toContain("suggested bridge: begin -> cli/session")
+    expect(rendered).toContain("bridge objective hint: keep this shared work aligned")
   })
 
   it("can suggest a bridge from live task pressure even when there is no obligation text", async () => {
@@ -702,6 +706,31 @@ describe("active work frame", () => {
           channel: "cli",
           key: "session",
           sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+          lastActivityAt: "2026-03-13T20:01:00.000Z",
+          lastActivityMs: Date.parse("2026-03-13T20:01:00.000Z"),
+          activitySource: "friend-facing",
+        },
+      ],
+      targetCandidates: [
+        {
+          friendId: "friend-1",
+          friendName: "Ari",
+          channel: "cli",
+          key: "session",
+          sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+          snapshot: "recent focus: already attached surface",
+          trust: {
+            level: "friend",
+            basis: "direct",
+            summary: "directly trusted",
+            why: "other live same-friend chat",
+            permits: ["shared coordination"],
+            constraints: [],
+          },
+          delivery: {
+            mode: "queue_only",
+            reason: "needs explicit cross-chat authorization",
+          },
           lastActivityAt: "2026-03-13T20:01:00.000Z",
           lastActivityMs: Date.parse("2026-03-13T20:01:00.000Z"),
           activitySource: "friend-facing",
@@ -990,6 +1019,144 @@ describe("active work frame", () => {
     } as any)
 
     expect(frame.bridgeSuggestion).toBeNull()
+  })
+
+  it("ignores blocked and non-friend-facing candidates when evaluating bridge suggestions", async () => {
+    const { suggestBridgeForActiveWork } = await import("../../heart/active-work")
+
+    expect(suggestBridgeForActiveWork({
+      currentSession: {
+        friendId: "friend-1",
+        channel: "teams",
+        key: "conv-1",
+        sessionPath: "/tmp/state/sessions/friend-1/teams/conv-1.json",
+      },
+      currentObligation: "keep Ari aligned across chats",
+      mustResolveBeforeHandoff: false,
+      bridges: [],
+      taskBoard: {
+        compact: "[Tasks] processing:0 blocked:0",
+        activeBridges: [],
+        byStatus: {
+          drafting: [],
+          processing: [],
+          validating: [],
+          collaborating: [],
+          paused: [],
+          blocked: [],
+          done: [],
+        },
+      },
+      targetCandidates: [
+        {
+          friendId: "group-1",
+          friendName: "Project Group",
+          channel: "bluebubbles",
+          key: "chat:any;+;project-group-123",
+          sessionPath: "/tmp/state/sessions/group-1/bluebubbles/chat:any;+;project-group-123.json",
+          snapshot: "recent focus: waiting on Ari",
+          trust: {
+            level: "acquaintance",
+            basis: "shared_group",
+            summary: "known through a shared project group",
+            why: "this is a relevant shared context",
+            permits: ["group-safe coordination"],
+            constraints: ["no direct private trust"],
+            relatedGroupId: "group:any;+;project-group-123",
+          },
+          delivery: {
+            mode: "blocked",
+            reason: "this channel is unavailable",
+          },
+          lastActivityAt: "2026-03-13T20:01:00.000Z",
+          lastActivityMs: Date.parse("2026-03-13T20:01:00.000Z"),
+          activitySource: "friend-facing",
+        },
+        {
+          friendId: "group-2",
+          friendName: "Muted Group",
+          channel: "bluebubbles",
+          key: "chat:any;+;muted-group-456",
+          sessionPath: "/tmp/state/sessions/group-2/bluebubbles/chat:any;+;muted-group-456.json",
+          snapshot: "recent focus: archived surface",
+          trust: {
+            level: "acquaintance",
+            basis: "shared_group",
+            summary: "known through a shared group",
+            why: "this is a related group context",
+            permits: ["group-safe coordination"],
+            constraints: ["no direct private trust"],
+            relatedGroupId: "group:any;+;muted-group-456",
+          },
+          delivery: {
+            mode: "queue_only",
+            reason: "needs explicit cross-chat authorization",
+          },
+          lastActivityAt: "2026-03-13T20:02:00.000Z",
+          lastActivityMs: Date.parse("2026-03-13T20:02:00.000Z"),
+          activitySource: "mtime-fallback",
+        },
+      ],
+    })).toBeNull()
+  })
+
+  it("can suggest shared work even without a current outward session when one clear friend-facing candidate exists", async () => {
+    const { suggestBridgeForActiveWork } = await import("../../heart/active-work")
+
+    expect(suggestBridgeForActiveWork({
+      currentSession: null,
+      currentObligation: "carry this outward when ready",
+      mustResolveBeforeHandoff: false,
+      bridges: [],
+      taskBoard: {
+        compact: "[Tasks] processing:0 blocked:0",
+        activeBridges: [],
+        byStatus: {
+          drafting: [],
+          processing: [],
+          validating: [],
+          collaborating: [],
+          paused: [],
+          blocked: [],
+          done: [],
+        },
+      },
+      targetCandidates: [
+        {
+          friendId: "group-1",
+          friendName: "Project Group",
+          channel: "bluebubbles",
+          key: "chat:any;+;project-group-123",
+          sessionPath: "/tmp/state/sessions/group-1/bluebubbles/chat:any;+;project-group-123.json",
+          snapshot: "recent focus: waiting on Ari",
+          trust: {
+            level: "acquaintance",
+            basis: "shared_group",
+            summary: "known through a shared project group",
+            why: "this is a relevant shared context",
+            permits: ["group-safe coordination"],
+            constraints: ["no direct private trust"],
+            relatedGroupId: "group:any;+;project-group-123",
+          },
+          delivery: {
+            mode: "queue_only",
+            reason: "needs explicit cross-chat authorization",
+          },
+          lastActivityAt: "2026-03-13T20:01:00.000Z",
+          lastActivityMs: Date.parse("2026-03-13T20:01:00.000Z"),
+          activitySource: "friend-facing",
+        },
+      ],
+    })).toEqual({
+      kind: "begin-new",
+      objectiveHint: "carry this outward when ready",
+      reason: "shared-work-candidate",
+      targetSession: expect.objectContaining({
+        friendId: "group-1",
+        channel: "bluebubbles",
+        key: "chat:any;+;project-group-123",
+      }),
+    })
   })
 })
 

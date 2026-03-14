@@ -960,6 +960,24 @@ describe("handleInboundTurn", () => {
       expect((options as any).currentObligation).toBe("latest ask")
     })
 
+    it("falls back to an empty ingress list when continuity ingress texts are absent", async () => {
+      const input = makeInput({
+        continuityIngressTexts: undefined,
+      })
+
+      await handleInboundTurn(input)
+
+      const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
+      const options = runAgentCall[4] as RunAgentOptions
+      expect((options as any).currentObligation).toBeUndefined()
+      expect((options as any).delegationDecision).toEqual(
+        expect.objectContaining({
+          target: "fast-path",
+          reasons: [],
+        }),
+      )
+    })
+
     it("sets mustResolveBeforeHandoff from exact turn-start no-handoff language", async () => {
       const input = makeInput({
         continuityIngressTexts: ["keep going until you're done"],

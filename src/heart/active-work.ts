@@ -120,9 +120,6 @@ export function suggestBridgeForActiveWork(input: BridgeSuggestionInput): Bridge
       )
     })
     .sort((a, b) => {
-      if (a.activitySource !== b.activitySource) {
-        return activityPriority(a.activitySource) - activityPriority(b.activitySource)
-      }
       return b.lastActivityMs - a.lastActivityMs
     })
   if (!hasSharedObligationPressure(input) || targetCandidates.length !== 1) {
