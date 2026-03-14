@@ -126,7 +126,7 @@ export async function upsertGroupContextParticipants(input: {
       results.push({
         friendId: created.id,
         name: created.name,
-        trustLevel: created.trustLevel ?? "stranger",
+        trustLevel: "acquaintance",
         created: true,
         updated: false,
         addedGroupExternalId: true,
@@ -135,10 +135,11 @@ export async function upsertGroupContextParticipants(input: {
     }
 
     const hasGroupExternalId = existing.externalIds.some((externalId) => externalId.externalId === groupExternalId)
-    const trustLevel = shouldPromoteToAcquaintance(existing)
+    const promoteToAcquaintance = shouldPromoteToAcquaintance(existing)
+    const trustLevel: TrustLevel = promoteToAcquaintance
       ? "acquaintance"
-      : (existing.trustLevel ?? "stranger")
-    const role = shouldPromoteToAcquaintance(existing)
+      : existing.trustLevel!
+    const role = promoteToAcquaintance
       ? "acquaintance"
       : existing.role
 
@@ -146,7 +147,7 @@ export async function upsertGroupContextParticipants(input: {
       ? existing.externalIds
       : [...existing.externalIds, createGroupExternalId(participant.provider, groupExternalId, linkedAt)]
 
-    const updated = shouldPromoteToAcquaintance(existing) || !hasGroupExternalId
+    const updated = promoteToAcquaintance || !hasGroupExternalId
     const record: FriendRecord = updated
       ? {
           ...existing,
@@ -164,7 +165,7 @@ export async function upsertGroupContextParticipants(input: {
     results.push({
       friendId: record.id,
       name: record.name,
-      trustLevel: record.trustLevel ?? "stranger",
+      trustLevel,
       created: false,
       updated,
       addedGroupExternalId: !hasGroupExternalId,

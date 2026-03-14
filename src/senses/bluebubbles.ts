@@ -113,10 +113,9 @@ function resolveFriendParams(event: BlueBubblesNormalizedEvent): FriendResolverP
   }
 }
 
-function resolveGroupExternalId(event: BlueBubblesNormalizedEvent): string | null {
-  if (!event.chat.isGroup) return null
+function resolveGroupExternalId(event: BlueBubblesNormalizedEvent): string {
   const groupKey = event.chat.chatGuid ?? event.chat.chatIdentifier ?? event.sender.externalId
-  return groupKey ? `group:${groupKey}` : null
+  return `group:${groupKey}`
 }
 
 /**
@@ -677,17 +676,14 @@ async function handleBlueBubblesNormalizedEvent(
     }
 
     if (event.kind === "message" && event.chat.isGroup) {
-      const groupExternalId = resolveGroupExternalId(event)
-      if (groupExternalId) {
-        await upsertGroupContextParticipants({
-          store,
-          participants: (event.chat.participantHandles ?? []).map((externalId) => ({
-            provider: "imessage-handle" as const,
-            externalId,
-          })),
-          groupExternalId,
-        })
-      }
+      await upsertGroupContextParticipants({
+        store,
+        participants: (event.chat.participantHandles ?? []).map((externalId) => ({
+          provider: "imessage-handle" as const,
+          externalId,
+        })),
+        groupExternalId: resolveGroupExternalId(event),
+      })
     }
 
     // Build inbound user message (adapter concern: BB-specific content formatting)
