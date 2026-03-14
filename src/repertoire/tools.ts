@@ -1,5 +1,5 @@
 import type OpenAI from "openai";
-import { tools, baseToolDefinitions } from "./tools-base";
+import { baseToolDefinitions } from "./tools-base";
 import type { ToolContext, ToolDefinition } from "./tools-base";
 import { teamsToolDefinitions, summarizeTeamsArgs } from "./tools-teams";
 import { bluebubblesToolDefinitions } from "./tools-bluebubbles";
@@ -8,6 +8,7 @@ import { githubToolDefinitions, summarizeGithubArgs } from "./tools-github";
 import { isTrustedLevel, type ChannelCapabilities, type ResolvedContext } from "../mind/friends/types";
 import { isRemoteChannel } from "../mind/friends/channel";
 import { emitNervesEvent } from "../nerves/runtime";
+import type { ProviderCapability } from "../heart/core";
 
 // Re-export types and constants used by the rest of the codebase
 export { tools, finalAnswerTool } from "./tools-base";
@@ -39,8 +40,10 @@ function baseToolsForCapabilities(
   capabilities?: ChannelCapabilities,
   context?: Pick<ResolvedContext, "friend" | "channel">,
 ): OpenAI.ChatCompletionFunctionTool[] {
-  if (!shouldBlockLocalTools(capabilities, context)) return tools;
-  return tools.filter((tool) => !REMOTE_BLOCKED_LOCAL_TOOLS.has(tool.function.name));
+  // Use baseToolDefinitions at call time so dynamically-added tools are included
+  const currentTools = baseToolDefinitions.map((d) => d.tool);
+  if (!shouldBlockLocalTools(capabilities, context)) return currentTools;
+  return currentTools.filter((tool) => !REMOTE_BLOCKED_LOCAL_TOOLS.has(tool.function.name));
 }
 
 // Apply a single tool preference to a tool schema, returning a new object.
@@ -54,48 +57,69 @@ function applyPreference(tool: OpenAI.ChatCompletionFunctionTool, pref: string):
   };
 }
 
+// Filter out tools whose requiredCapability is not in the provider's capability set.
+// Uses baseToolDefinitions at call time so dynamically-added tools are included.
+// Only base tools can have requiredCapability (integration tools do not).
+function filterByCapability(
+  toolList: OpenAI.ChatCompletionFunctionTool[],
+  providerCapabilities?: ReadonlySet<ProviderCapability>,
+): OpenAI.ChatCompletionFunctionTool[] {
+  return toolList.filter((tool) => {
+    const def = baseToolDefinitions.find((d) => d.tool.function.name === tool.function.name);
+    if (!def?.requiredCapability) return true;
+    return providerCapabilities?.has(def.requiredCapability) === true;
+  });
+}
+
 // Return the appropriate tools list based on channel capabilities.
 // Base tools (no integration) are always included.
 // Teams/integration tools are included only if their integration is in availableIntegrations.
 // When toolPreferences is provided, matching preferences are appended to tool descriptions.
+// When providerCapabilities is provided, tools with requiredCapability are filtered.
 export function getToolsForChannel(
   capabilities?: ChannelCapabilities,
   toolPreferences?: Record<string, string>,
   context?: Pick<ResolvedContext, "friend" | "channel">,
+  providerCapabilities?: ReadonlySet<ProviderCapability>,
 ): OpenAI.ChatCompletionFunctionTool[] {
   const baseTools = baseToolsForCapabilities(capabilities, context);
   const bluebubblesTools = capabilities?.channel === "bluebubbles"
     ? bluebubblesToolDefinitions.map((d) => d.tool)
     : [];
 
+  let result: OpenAI.ChatCompletionFunctionTool[];
+
   if (!capabilities || capabilities.availableIntegrations.length === 0) {
-    return [...baseTools, ...bluebubblesTools];
+    result = [...baseTools, ...bluebubblesTools];
+  } else {
+    const available = new Set(capabilities.availableIntegrations);
+    const channelDefs = [...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions];
+    // Include tools whose integration is available, plus channel tools with no integration gate (e.g. teams_send_message)
+    const integrationDefs = channelDefs.filter(
+      (d) => d.integration ? available.has(d.integration) : capabilities.channel === "teams",
+    );
+
+    if (!toolPreferences || Object.keys(toolPreferences).length === 0) {
+      result = [...baseTools, ...bluebubblesTools, ...integrationDefs.map((d) => d.tool)];
+    } else {
+      // Build a map of integration -> preference text for fast lookup
+      const prefMap = new Map<string, string>();
+      for (const [key, value] of Object.entries(toolPreferences)) {
+        prefMap.set(key, value);
+      }
+
+      // Apply preferences to matching integration tools (new objects, no mutation)
+      // d.integration is guaranteed truthy -- integrationDefs are pre-filtered above
+      const enrichedIntegrationTools = integrationDefs.map((d) => {
+        const pref = prefMap.get(d.integration!);
+        return pref ? applyPreference(d.tool, pref) : d.tool;
+      });
+
+      result = [...baseTools, ...bluebubblesTools, ...enrichedIntegrationTools];
+    }
   }
-  const available = new Set(capabilities.availableIntegrations);
-  const channelDefs = [...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions];
-  // Include tools whose integration is available, plus channel tools with no integration gate (e.g. teams_send_message)
-  const integrationDefs = channelDefs.filter(
-    (d) => d.integration ? available.has(d.integration) : capabilities.channel === "teams",
-  );
 
-  if (!toolPreferences || Object.keys(toolPreferences).length === 0) {
-    return [...baseTools, ...bluebubblesTools, ...integrationDefs.map((d) => d.tool)];
-  }
-
-  // Build a map of integration -> preference text for fast lookup
-  const prefMap = new Map<string, string>();
-  for (const [key, value] of Object.entries(toolPreferences)) {
-    prefMap.set(key, value);
-  }
-
-  // Apply preferences to matching integration tools (new objects, no mutation)
-  // d.integration is guaranteed truthy -- integrationDefs are pre-filtered above
-  const enrichedIntegrationTools = integrationDefs.map((d) => {
-    const pref = prefMap.get(d.integration!);
-    return pref ? applyPreference(d.tool, pref) : d.tool;
-  });
-
-  return [...baseTools, ...bluebubblesTools, ...enrichedIntegrationTools];
+  return filterByCapability(result, providerCapabilities);
 }
 
 // Check whether a tool requires user confirmation before execution.
@@ -200,6 +224,7 @@ export function summarizeArgs(name: string, args: Record<string, string>): strin
   if (name === "coding_send_input") return summarizeKeyValues(args, ["sessionId", "input"]);
   if (name === "coding_kill") return summarizeKeyValues(args, ["sessionId"]);
   if (name === "bluebubbles_set_reply_target") return summarizeKeyValues(args, ["target", "threadOriginatorGuid"]);
+  if (name === "set_reasoning_effort") return summarizeKeyValues(args, ["level"]);
   if (name === "claude") return summarizeKeyValues(args, ["prompt"]);
   if (name === "web_search") return summarizeKeyValues(args, ["query"]);
   if (name === "memory_search") return summarizeKeyValues(args, ["query"]);

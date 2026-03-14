@@ -53,6 +53,8 @@ export interface ToolContext {
   bluebubblesReplyTarget?: BlueBubblesReplyTargetController;
   currentSession?: BridgeSessionRef;
   activeBridges?: BridgeRecord[];
+  supportedReasoningEfforts?: readonly string[];
+  setReasoningEffort?: (level: string) => void;
 }
 
 export type ToolHandler = (args: Record<string, string>, ctx?: ToolContext) => string | Promise<string>;
@@ -62,6 +64,7 @@ export interface ToolDefinition {
   handler: ToolHandler;
   integration?: Integration;
   confirmationRequired?: boolean;
+  requiredCapability?: import("../heart/core").ProviderCapability;
 }
 
 // Tracks which file paths have been read via read_file in this session.
@@ -971,6 +974,41 @@ export const baseToolDefinitions: ToolDefinition[] = [
       const target = `${channel}/${key}`
       return `message queued for delivery to ${friendId} on ${target}. preview: "${preview}". it will be delivered when their session is next active.`
     },
+  },
+  {
+    tool: {
+      type: "function",
+      function: {
+        name: "set_reasoning_effort",
+        description:
+          "adjust your own reasoning depth for subsequent turns. use higher effort for complex analysis, lower for simple tasks.",
+        parameters: {
+          type: "object",
+          properties: {
+            level: { type: "string", description: "the reasoning effort level to set" },
+          },
+          required: ["level"],
+        },
+      },
+    },
+    handler: (args, ctx) => {
+      if (!ctx?.supportedReasoningEfforts || !ctx.setReasoningEffort) {
+        return "reasoning effort adjustment is not available in this context.";
+      }
+      const level = (args.level || "").trim();
+      if (!ctx.supportedReasoningEfforts.includes(level)) {
+        return `invalid reasoning effort level "${level}". accepted levels: ${ctx.supportedReasoningEfforts.join(", ")}`;
+      }
+      ctx.setReasoningEffort(level);
+      emitNervesEvent({
+        component: "repertoire",
+        event: "repertoire.reasoning_effort_changed",
+        message: `reasoning effort set to ${level}`,
+        meta: { level },
+      });
+      return `reasoning effort set to "${level}".`;
+    },
+    requiredCapability: "reasoning-effort" as const,
   },
   ...codingToolDefinitions,
 ];

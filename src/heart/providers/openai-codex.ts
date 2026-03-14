@@ -2,9 +2,10 @@ import OpenAI from "openai";
 import { getOpenAICodexConfig } from "../config";
 import { getAgentName, getAgentSecretsPath } from "../identity";
 import { emitNervesEvent } from "../../nerves/runtime";
-import type { ProviderRuntime, ProviderTurnRequest } from "../core";
+import type { ProviderCapability, ProviderRuntime, ProviderTurnRequest } from "../core";
 import type { ResponseItem } from "../streaming";
 import { streamResponsesApi, toResponsesInput, toResponsesTools } from "../streaming";
+import { getModelCapabilities } from "../model-capabilities";
 
 interface HttpError extends Error { status?: number }
 const OPENAI_CODEX_AUTH_FAILURE_MARKERS = [
@@ -119,6 +120,11 @@ export function createOpenAICodexProviderRuntime(): ProviderRuntime {
       ),
     );
   }
+  const modelCaps = getModelCapabilities(codexConfig.model);
+  const capabilities = new Set<ProviderCapability>();
+  if (modelCaps.reasoningEffort) capabilities.add("reasoning-effort");
+  if (modelCaps.phase) capabilities.add("phase-annotation");
+
   const client = new OpenAI({
     apiKey: token,
     baseURL: OPENAI_CODEX_BACKEND_BASE_URL,
@@ -136,6 +142,8 @@ export function createOpenAICodexProviderRuntime(): ProviderRuntime {
     id: "openai-codex",
     model: codexConfig.model,
     client,
+    capabilities,
+    supportedReasoningEfforts: modelCaps.reasoningEffort,
     resetTurnState(messages: OpenAI.ChatCompletionMessageParam[]): void {
       const { instructions, input } = toResponsesInput(messages);
       nativeInput = input;
@@ -152,7 +160,7 @@ export function createOpenAICodexProviderRuntime(): ProviderRuntime {
         input: nativeInput,
         instructions: nativeInstructions,
         tools: toResponsesTools(request.activeTools),
-        reasoning: { effort: "medium", summary: "detailed" },
+        reasoning: { effort: request.reasoningEffort ?? "medium", summary: "detailed" },
         stream: true,
         store: false,
         include: ["reasoning.encrypted_content"],

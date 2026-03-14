@@ -25,6 +25,8 @@ import type { DelegationDecision } from "./delegation";
 
 export type ProviderId = "azure" | "anthropic" | "minimax" | "openai-codex";
 
+export type ProviderCapability = "reasoning-effort" | "phase-annotation";
+
 export interface CompletionMetadata {
   answer: string;
   intent: "complete" | "blocked" | "direct_reply";
@@ -34,6 +36,8 @@ export interface ProviderRuntime {
   id: ProviderId;
   model: string;
   client: unknown;
+  capabilities: ReadonlySet<ProviderCapability>;
+  supportedReasoningEfforts?: readonly string[];
   streamTurn(request: ProviderTurnRequest): Promise<TurnResult>;
   appendToolOutput(callId: string, output: string): void;
   resetTurnState(messages: OpenAI.ChatCompletionMessageParam[]): void;
@@ -46,6 +50,7 @@ export interface ProviderTurnRequest {
   signal?: AbortSignal;
   traceId?: string;
   toolChoiceRequired?: boolean;
+  reasoningEffort?: string;
 }
 
 interface ProviderRegistry {
@@ -419,7 +424,12 @@ export async function runAgent(
   // so turn execution remains consistent and non-fatal.
   if (channel) {
     try {
-      const refreshed = await buildSystem(channel, options, currentContext);
+      const buildSystemOptions = {
+        ...options,
+        providerCapabilities: providerRuntime.capabilities,
+        supportedReasoningEfforts: providerRuntime.supportedReasoningEfforts,
+      };
+      const refreshed = await buildSystem(channel, buildSystemOptions, currentContext);
       upsertSystemPrompt(messages, refreshed);
     } catch (error) {
       const hadExistingSystemPrompt = messages[0]?.role === "system" && typeof messages[0].content === "string";
@@ -451,6 +461,7 @@ export async function runAgent(
   let completion: CompletionMetadata | undefined;
   let sawSteeringFollowUp = false;
   let mustResolveBeforeHandoffActive = options?.mustResolveBeforeHandoff === true;
+  let currentReasoningEffort = "medium";
 
   // Prevent MaxListenersExceeded warning — each iteration adds a listener
   try { require("events").setMaxListeners(50, signal); } catch { /* unsupported */ }
@@ -460,7 +471,17 @@ export async function runAgent(
     channel ? getChannelCapabilities(channel) : undefined,
     toolPreferences && Object.keys(toolPreferences).length > 0 ? toolPreferences : undefined,
     currentContext,
+    providerRuntime.capabilities,
   );
+  // Augment tool context with reasoning effort controls from provider
+  const augmentedToolContext: ToolContext | undefined = options?.toolContext
+    ? {
+        ...options.toolContext,
+        supportedReasoningEfforts: providerRuntime.supportedReasoningEfforts,
+        setReasoningEffort: (level: string) => { currentReasoningEffort = level; },
+      }
+    : undefined;
+
   // Rebase provider-owned turn state from canonical messages at user-turn start.
   // This prevents stale provider caches from replaying prior-turn context.
   providerRuntime.resetTurnState(messages);
@@ -506,6 +527,7 @@ export async function runAgent(
         signal,
         traceId,
         toolChoiceRequired,
+        reasoningEffort: currentReasoningEffort,
       });
 
       // Track usage from the latest API call
@@ -529,6 +551,20 @@ export async function runAgent(
       if (reasoningItems.length > 0) {
         (msg as AssistantMessageWithReasoning)._reasoning_items = reasoningItems;
       }
+      // Store thinking blocks (Anthropic) on the assistant message for round-tripping
+      const thinkingItems = result.outputItems.filter((item) =>
+        "type" in item && (item.type === "thinking" || item.type === "redacted_thinking"));
+      if (thinkingItems.length > 0) {
+        (msg as unknown as Record<string, unknown>)._thinking_blocks = thinkingItems;
+      }
+      // Phase annotation for Codex provider
+      const hasPhaseAnnotation = providerRuntime.capabilities.has("phase-annotation");
+      const isSoleFinalAnswer = result.toolCalls.length === 1 && result.toolCalls[0].name === "final_answer";
+
+      if (hasPhaseAnnotation) {
+        (msg as AssistantMessageWithReasoning).phase = isSoleFinalAnswer ? "final_answer" : "commentary";
+      }
+
       if (!result.toolCalls.length) {
         // No tool calls — accept response as-is.
         // (Kick detection disabled; tool_choice: required + final_answer
@@ -537,7 +573,6 @@ export async function runAgent(
         done = true;
       } else {
         // Check for final_answer sole call: intercept before tool execution
-        const isSoleFinalAnswer = result.toolCalls.length === 1 && result.toolCalls[0].name === "final_answer";
         if (isSoleFinalAnswer) {
           // Extract answer from the tool call arguments.
           // Supports: {"answer":"text","intent":"..."} or "text" (JSON string).
@@ -626,7 +661,7 @@ export async function runAgent(
           let success: boolean;
           try {
             const execToolFn = options?.execTool ?? execTool;
-            toolResult = await execToolFn(tc.name, args, options?.toolContext);
+            toolResult = await execToolFn(tc.name, args, augmentedToolContext ?? options?.toolContext);
             success = true;
           } catch (e) {
             toolResult = `error: ${e}`;
