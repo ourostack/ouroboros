@@ -57,7 +57,7 @@ vi.mock("../../nerves/runtime", () => ({
 }))
 
 describe("bridge_manage tool", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules()
     mockBeginBridge.mockReset()
     mockAttachSession.mockReset()
@@ -65,6 +65,15 @@ describe("bridge_manage tool", () => {
     mockPromoteBridgeToTask.mockReset()
     mockCompleteBridge.mockReset()
     mockCancelBridge.mockReset()
+    const recall = await import("../../heart/session-recall")
+    vi.mocked(recall.recallSession).mockReset()
+    vi.mocked(recall.recallSession).mockResolvedValue({
+      kind: "ok",
+      transcript: "user: hi\nassistant: hello",
+      summary: "recent focus: relay setup",
+      snapshot: "recent focus: relay setup",
+      tailMessages: [],
+    } as any)
   })
 
   it("is registered in baseToolDefinitions with the approved action contract", async () => {
@@ -167,6 +176,71 @@ describe("bridge_manage tool", () => {
       snapshot: "recent focus: relay setup",
     })
     expect(result).toContain("bridge: bridge-1")
+    expect(result).toContain("sessions: 2")
+  })
+
+  it("falls back to the raw recall snapshot when summarization fails during attach", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find((entry) => entry.tool.function.name === "bridge_manage")!
+    const recall = await import("../../heart/session-recall")
+
+    vi.mocked(recall.recallSession)
+      .mockRejectedValueOnce(new Error("summary failed"))
+      .mockResolvedValueOnce({
+        kind: "ok",
+        transcript: "user: hi\nassistant: hello",
+        summary: "user: hi\nassistant: hello",
+        snapshot: "recent focus: user: hi",
+        tailMessages: [],
+      } as any)
+
+    mockAttachSession.mockReturnValue({
+      id: "bridge-1",
+      objective: "relay Ari between cli and teams",
+      lifecycle: "active",
+      runtime: "idle",
+      attachedSessions: [
+        { friendId: "friend-1", channel: "cli", key: "session", sessionPath: "/tmp/session.json" },
+        {
+          friendId: "friend-2",
+          channel: "teams",
+          key: "conv-2",
+          sessionPath: "/mock/agent-root/state/sessions/friend-2/teams/conv-2.json",
+          snapshot: "recent focus: user: hi",
+        },
+      ],
+      task: null,
+    })
+
+    const result = await tool.handler(
+      {
+        action: "attach",
+        bridgeId: "bridge-1",
+        friendId: "friend-2",
+        channel: "teams",
+        key: "conv-2",
+      },
+      {
+        signin: vi.fn(),
+        summarize: vi.fn().mockRejectedValue(new Error("summary failed")),
+      } as any,
+    )
+
+    expect(recall.recallSession).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      friendId: "friend-2",
+      channel: "teams",
+      key: "conv-2",
+      summarize: expect.any(Function),
+    }))
+    expect(recall.recallSession).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      friendId: "friend-2",
+      channel: "teams",
+      key: "conv-2",
+      summarize: undefined,
+    }))
+    expect(mockAttachSession).toHaveBeenCalledWith("bridge-1", expect.objectContaining({
+      snapshot: "recent focus: user: hi",
+    }))
     expect(result).toContain("sessions: 2")
   })
 

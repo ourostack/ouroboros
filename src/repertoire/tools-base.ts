@@ -99,7 +99,28 @@ function findDelegatingBridgeId(ctx?: ToolContext): string | undefined {
 async function recallSessionSafely(options: SessionRecallOptions): Promise<SessionRecallResult | { kind: "missing" }> {
   try {
     return await recallSession(options)
-  } catch {
+  } catch (error) {
+    if (options.summarize) {
+      emitNervesEvent({
+        component: "daemon",
+        event: "daemon.session_recall_summary_fallback",
+        message: "session recall summarization failed; using raw transcript",
+        meta: {
+          friendId: options.friendId,
+          channel: options.channel,
+          key: options.key,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      })
+      try {
+        return await recallSession({
+          ...options,
+          summarize: undefined,
+        })
+      } catch {
+        return { kind: "missing" }
+      }
+    }
     return { kind: "missing" }
   }
 }
