@@ -524,10 +524,9 @@ describe("query_session tool", () => {
     })
 
     expect(result).toBe([
-      "queue: queued to inner/dialog",
+      "inner work: queued",
+      "queued to inner/dialog",
       "wake: queued behind active turn",
-      "processing: pending",
-      "surfaced: nothing yet",
     ].join("\n"))
   })
 

@@ -378,9 +378,9 @@ describe("send_message tool", () => {
         content: "remember this",
       })
 
-      // Should indicate inner dialog routing, not the original channel
+      // Should indicate inward routing, not the original outward channel
       expect(result).toContain("inner")
-      expect(result).toContain("dialog")
+      expect(result).toContain("queued to inner/dialog")
     })
 
     it("falls back to an immediate inner turn when no daemon wake path is available", async () => {
@@ -401,6 +401,7 @@ describe("send_message tool", () => {
       expect(mockRunInnerDialogTurn).toHaveBeenCalledTimes(1)
       expect(result).toBe([
         "inner work: completed",
+        "queued to inner/dialog",
         "wake: inline fallback",
         "penguins surfaced.",
       ].join("\n"))
@@ -477,8 +478,10 @@ describe("send_message tool", () => {
         content: "sit with this quietly",
       })
 
-      expect(result).toContain("processing: processed")
-      expect(result).toContain("surfaced: no outward result")
+      expect(result).toContain("inner work: completed")
+      expect(result).toContain("queued to inner/dialog")
+      expect(result).toContain("wake: inline fallback")
+      expect(result).toContain("no outward result")
     })
 
     it("truncates long surfaced previews in the inline fallback response", async () => {
@@ -496,7 +499,9 @@ describe("send_message tool", () => {
         content: "stretch the preview",
       })
 
-      expect(result).toContain('surfaced: "')
+      expect(result).toContain("inner work: completed")
+      expect(result).toContain("queued to inner/dialog")
+      expect(result).toContain("wake: inline fallback")
       expect(result).toContain("...")
       expect(result).not.toContain("a".repeat(160))
     })
@@ -523,7 +528,10 @@ describe("send_message tool", () => {
         content: "let the image-thought settle",
       })
 
-      expect(result).toContain('surfaced: "penguins"')
+      expect(result).toContain("inner work: completed")
+      expect(result).toContain("queued to inner/dialog")
+      expect(result).toContain("wake: inline fallback")
+      expect(result).toContain("penguins")
     })
 
     it("extracts surfaced previews from final_answer-only inner turns", async () => {
@@ -557,7 +565,10 @@ describe("send_message tool", () => {
         content: "let the thought conclude cleanly",
       })
 
-      expect(result).toContain('surfaced: "formal little blokes"')
+      expect(result).toContain("inner work: completed")
+      expect(result).toContain("queued to inner/dialog")
+      expect(result).toContain("wake: inline fallback")
+      expect(result).toContain("formal little blokes")
     })
 
     it("treats non-array assistant content as no outward result", async () => {
@@ -578,7 +589,10 @@ describe("send_message tool", () => {
         content: "hold a strangely-shaped reply",
       })
 
-      expect(result).toContain("surfaced: no outward result")
+      expect(result).toContain("inner work: completed")
+      expect(result).toContain("queued to inner/dialog")
+      expect(result).toContain("wake: inline fallback")
+      expect(result).toContain("no outward result")
     })
 
     it("defers the inline fallback to a microtask when already in inner dialog", async () => {

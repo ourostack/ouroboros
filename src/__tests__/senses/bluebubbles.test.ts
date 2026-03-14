@@ -1271,7 +1271,7 @@ describe("BlueBubbles sense runtime", () => {
       expect.objectContaining({
         chat: expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }),
         replyToMessageGuid: "C4B2E437-A373-43F6-9740-9CD84E5893A0",
-        text: "running read_file (notes.txt)...",
+        text: "shared work: processing\nrunning read_file (notes.txt)...",
       }),
     )
     expect(mocks.sendText).toHaveBeenNthCalledWith(
@@ -1279,7 +1279,7 @@ describe("BlueBubbles sense runtime", () => {
       expect.objectContaining({
         chat: expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }),
         replyToMessageGuid: "C4B2E437-A373-43F6-9740-9CD84E5893A0",
-        text: "\u2713 read_file (ok)",
+        text: "shared work: processing\n\u2713 read_file (ok)",
       }),
     )
     expect(mocks.sendText).toHaveBeenNthCalledWith(
@@ -1656,7 +1656,8 @@ describe("BlueBubbles sense runtime", () => {
       1,
       expect.objectContaining({
         chat: expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }),
-        text: "Error: turn blew up",
+        replyToMessageGuid: "C4B2E437-A373-43F6-9740-9CD84E5893A0",
+        text: "shared work: errored\nError: turn blew up",
       }),
     )
     expect(mocks.editMessage).not.toHaveBeenCalled()
@@ -1708,22 +1709,22 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.buildSystem).not.toHaveBeenCalled()
     expect(mocks.sendText).toHaveBeenCalledWith(
       expect.objectContaining({
-        text: "running query_session...",
+        text: "shared work: processing\nrunning query_session...",
       }),
     )
     expect(mocks.sendText).toHaveBeenCalledWith(
       expect.objectContaining({
-        text: "\u2713 query_session (done)",
+        text: "shared work: processing\n\u2713 query_session (done)",
       }),
     )
     expect(mocks.sendText).toHaveBeenCalledWith(
       expect.objectContaining({
-        text: "Error: temporary",
+        text: "shared work: errored\nError: temporary",
       }),
     )
     expect(mocks.sendText).toHaveBeenCalledWith(
       expect.objectContaining({
-        text: "Error: fatal",
+        text: "shared work: errored\nError: fatal",
       }),
     )
     expect(mocks.postTurn).toHaveBeenCalledTimes(1)

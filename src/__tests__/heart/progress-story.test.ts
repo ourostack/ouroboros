@@ -63,4 +63,15 @@ describe("progress story", () => {
       "Error: boom",
     ].join("\n"))
   })
+
+  it("drops blank detail strings instead of rendering empty lines", async () => {
+    const { buildProgressStory, renderProgressStory } = await import("../../heart/progress-story")
+
+    expect(renderProgressStory(buildProgressStory({
+      scope: "inner-delegation",
+      phase: "processing",
+      objective: "   ",
+      outcomeText: "\n  ",
+    }))).toBe("inner work: processing")
+  })
 })

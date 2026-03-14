@@ -405,7 +405,7 @@ describe("Teams adapter - createTeamsCallbacks (SDK-delegated streaming)", () =>
     const teams = await import("../../senses/teams")
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
     callbacks.onToolEnd("get_current_time", "", true)
-    expect(mockStream.update).toHaveBeenCalledWith("\u2713 get_current_time")
+    expect(mockStream.update).toHaveBeenCalledWith("shared work: processing\n\u2713 get_current_time")
     expect(mockStream.emit).not.toHaveBeenCalled()
   })
 
@@ -414,7 +414,7 @@ describe("Teams adapter - createTeamsCallbacks (SDK-delegated streaming)", () =>
     const teams = await import("../../senses/teams")
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
     callbacks.onToolEnd("read_file", "missing.txt", false)
-    expect(mockStream.update).toHaveBeenCalledWith("\u2717 read_file: missing.txt")
+    expect(mockStream.update).toHaveBeenCalledWith("shared work: processing\n\u2717 read_file: missing.txt")
     expect(mockStream.emit).not.toHaveBeenCalled()
   })
 
@@ -460,7 +460,7 @@ describe("Teams adapter - createTeamsCallbacks (SDK-delegated streaming)", () =>
     const teams = await import("../../senses/teams")
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
     callbacks.onError(new Error("context overflow"), "transient")
-    expect(mockStream.update).toHaveBeenCalledWith("Error: context overflow")
+    expect(mockStream.update).toHaveBeenCalledWith("shared work: errored\nError: context overflow")
     expect(mockStream.emit).not.toHaveBeenCalled()
   })
 
@@ -470,7 +470,7 @@ describe("Teams adapter - createTeamsCallbacks (SDK-delegated streaming)", () =>
     const sendMessage = vi.fn().mockResolvedValue(undefined)
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller, sendMessage)
     callbacks.onError(new Error("something broke"), "terminal")
-    expect(sendMessage).toHaveBeenCalledWith("Error: something broke")
+    expect(sendMessage).toHaveBeenCalledWith("shared work: errored\nError: something broke")
     expect(mockStream.emit).not.toHaveBeenCalled()
   })
 
@@ -5113,8 +5113,8 @@ describe("Teams adapter - handleTeamsMessage with sendMessage", () => {
     await teams.handleTeamsMessage("show file", mockStream as any, "conv-send-1", undefined, true, sendMessage)
 
     // onToolEnd now uses safeUpdate (stream.update) not safeSend in buffered mode
-    expect(mockStream.update).toHaveBeenCalledWith("\u2713 read_file (package.json)")
-    expect(sendMessage).not.toHaveBeenCalledWith("\u2713 read_file (package.json)")
+    expect(mockStream.update).toHaveBeenCalledWith("shared work: processing\n\u2713 read_file (package.json)")
+    expect(sendMessage).not.toHaveBeenCalledWith("shared work: processing\n\u2713 read_file (package.json)")
   })
 
   it("handleTeamsMessage awaits flush() (which is now async)", async () => {
