@@ -23,6 +23,7 @@ const mockEmitNervesEvent = vi.fn()
 const mockListSessionActivity = vi.fn()
 const mockFindFreshestFriendSession = vi.fn()
 const mockGetBridge = vi.fn()
+const mockSendProactiveBlueBubblesMessageToSession = vi.fn()
 
 vi.mock("../../mind/prompt", () => ({
   buildSystem: (...args: any[]) => mockBuildSystem(...args),
@@ -85,6 +86,11 @@ vi.mock("../../heart/bridges/manager", () => ({
   }),
 }))
 
+vi.mock("../../senses/bluebubbles", () => ({
+  sendProactiveBlueBubblesMessageToSession: (...args: any[]) =>
+    mockSendProactiveBlueBubblesMessageToSession(...args),
+}))
+
 import {
   buildInnerDialogBootstrapMessage,
   buildNonCanonicalCleanupNudge,
@@ -144,6 +150,10 @@ describe("inner dialog runtime", () => {
     mockListSessionActivity.mockReset().mockReturnValue([])
     mockFindFreshestFriendSession.mockReset().mockReturnValue(null)
     mockGetBridge.mockReset().mockReturnValue(null)
+    mockSendProactiveBlueBubblesMessageToSession.mockReset().mockResolvedValue({
+      delivered: false,
+      reason: "unsupported-channel",
+    })
 
     // Default handleInboundTurn: simulate pipeline running agent and returning result.
     mockHandleInboundTurn.mockReset().mockImplementation(async (input: any) => {
@@ -565,6 +575,75 @@ describe("inner dialog runtime", () => {
         },
       ],
     })
+    mockSendProactiveBlueBubblesMessageToSession.mockResolvedValue({
+      delivered: true,
+    })
+
+    await runInnerDialogTurn({
+      reason: "heartbeat",
+      now: () => new Date("2026-03-13T20:10:00.000Z"),
+    })
+
+    expect(mockSendProactiveBlueBubblesMessageToSession).toHaveBeenCalledWith({
+      friendId: "friend-1",
+      sessionKey: "chat",
+      text: "formal little blokes",
+    })
+    expect(fs.existsSync(bluebubblesPendingDir)).toBe(false)
+    expect(fs.existsSync(cliPendingDir)).toBe(false)
+  })
+
+  it("falls back to queued session delivery when proactive BlueBubbles delivery does not succeed", async () => {
+    const bluebubblesPendingDir = path.join(agentRoot, "state", "pending", "friend-1", "bluebubbles", "chat")
+    mockGetPendingDir.mockImplementation((_agent: string, _friendId: string, channel: string, key: string) =>
+      channel === "bluebubbles" && key === "chat" ? bluebubblesPendingDir : "/tmp/unused",
+    )
+    mockListSessionActivity.mockReturnValue([
+      {
+        friendId: "friend-1",
+        friendName: "Ari",
+        channel: "bluebubbles",
+        key: "chat",
+        sessionPath: "/tmp/state/sessions/friend-1/bluebubbles/chat.json",
+        lastActivityAt: "2026-03-13T20:01:00.000Z",
+        lastActivityMs: Date.parse("2026-03-13T20:01:00.000Z"),
+        activitySource: "friend-facing",
+      },
+    ])
+    mockFindFreshestFriendSession.mockReturnValue({
+      friendId: "friend-1",
+      friendName: "Ari",
+      channel: "bluebubbles",
+      key: "chat",
+      sessionPath: "/tmp/state/sessions/friend-1/bluebubbles/chat.json",
+      lastActivityAt: "2026-03-13T20:01:00.000Z",
+      lastActivityMs: Date.parse("2026-03-13T20:01:00.000Z"),
+      activitySource: "friend-facing",
+    })
+    mockHandleInboundTurn.mockResolvedValue({
+      resolvedContext: { friend: { id: "self", name: "test-agent" }, channel: innerCapabilities },
+      gateResult: { allowed: true },
+      usage: undefined,
+      sessionPath: sessionFile,
+      messages: [{ role: "assistant", content: "fallback still lands" }],
+      completion: { answer: "fallback still lands", intent: "complete" },
+      drainedPending: [
+        {
+          from: "test-agent",
+          content: "think about penguins",
+          timestamp: 1709900001,
+          delegatedFrom: {
+            friendId: "friend-1",
+            channel: "bluebubbles",
+            key: "chat",
+          },
+        },
+      ],
+    })
+    mockSendProactiveBlueBubblesMessageToSession.mockResolvedValue({
+      delivered: false,
+      reason: "send_error",
+    })
 
     await runInnerDialogTurn({
       reason: "heartbeat",
@@ -574,8 +653,7 @@ describe("inner dialog runtime", () => {
     const routedFiles = fs.readdirSync(bluebubblesPendingDir)
     expect(routedFiles.length).toBe(1)
     const routedPayload = JSON.parse(fs.readFileSync(path.join(bluebubblesPendingDir, routedFiles[0]), "utf8"))
-    expect(routedPayload.content).toBe("formal little blokes")
-    expect(fs.existsSync(cliPendingDir)).toBe(false)
+    expect(routedPayload.content).toBe("fallback still lands")
   })
 
   it("persists delegated completions when no live outward session is available", async () => {
@@ -611,6 +689,78 @@ describe("inner dialog runtime", () => {
     expect(deferredFiles.length).toBe(1)
     const deferredPayload = JSON.parse(fs.readFileSync(path.join(deferredDir, deferredFiles[0]), "utf8"))
     expect(deferredPayload.content).toBe("i sat with it and landed on penguins")
+  })
+
+  it("falls back to queued bridge-session delivery when proactive BlueBubbles send fails for the bridge target", async () => {
+    const bluebubblesPendingDir = path.join(agentRoot, "state", "pending", "friend-1", "bluebubbles", "chat")
+    mockGetPendingDir.mockImplementation((_agent: string, _friendId: string, channel: string, key: string) =>
+      channel === "bluebubbles" && key === "chat" ? bluebubblesPendingDir : "/tmp/unused",
+    )
+    mockListSessionActivity.mockReturnValue([
+      {
+        friendId: "friend-1",
+        friendName: "Ari",
+        channel: "bluebubbles",
+        key: "chat",
+        sessionPath: "/tmp/state/sessions/friend-1/bluebubbles/chat.json",
+        lastActivityAt: "2026-03-13T20:01:00.000Z",
+        lastActivityMs: Date.parse("2026-03-13T20:01:00.000Z"),
+        activitySource: "friend-facing",
+      },
+    ])
+    mockGetBridge.mockReturnValue({
+      id: "bridge-1",
+      objective: "keep bluebubbles aligned",
+      summary: "shared relay",
+      lifecycle: "active",
+      runtime: "idle",
+      createdAt: "2026-03-13T20:00:00.000Z",
+      updatedAt: "2026-03-13T20:00:00.000Z",
+      attachedSessions: [
+        {
+          friendId: "friend-1",
+          channel: "bluebubbles",
+          key: "chat",
+          sessionPath: "/tmp/state/sessions/friend-1/bluebubbles/chat.json",
+        },
+      ],
+      task: null,
+    })
+    mockHandleInboundTurn.mockResolvedValue({
+      resolvedContext: { friend: { id: "self", name: "test-agent" }, channel: innerCapabilities },
+      gateResult: { allowed: true },
+      usage: undefined,
+      sessionPath: sessionFile,
+      messages: [{ role: "assistant", content: "bridge fallback lands" }],
+      completion: { answer: "bridge fallback lands", intent: "complete" },
+      drainedPending: [
+        {
+          from: "test-agent",
+          content: "think about penguins",
+          timestamp: 1709900001,
+          delegatedFrom: {
+            friendId: "friend-1",
+            channel: "bluebubbles",
+            key: "chat",
+            bridgeId: "bridge-1",
+          },
+        },
+      ],
+    })
+    mockSendProactiveBlueBubblesMessageToSession.mockResolvedValue({
+      delivered: false,
+      reason: "send_error",
+    })
+
+    await runInnerDialogTurn({
+      reason: "heartbeat",
+      now: () => new Date("2026-03-13T20:10:00.000Z"),
+    })
+
+    const routedFiles = fs.readdirSync(bluebubblesPendingDir)
+    expect(routedFiles.length).toBe(1)
+    const routedPayload = JSON.parse(fs.readFileSync(path.join(bluebubblesPendingDir, routedFiles[0]), "utf8"))
+    expect(routedPayload.content).toBe("bridge fallback lands")
   })
 
   it("routes delegated completions to the freshest active friend-facing session when bridge preference is unavailable", async () => {
@@ -690,6 +840,70 @@ describe("inner dialog runtime", () => {
     expect(routedFiles.length).toBe(1)
     const routedPayload = JSON.parse(fs.readFileSync(path.join(cliPendingDir, routedFiles[0]), "utf8"))
     expect(routedPayload.content).toBe("cli got it")
+    expect(fs.existsSync(bluebubblesPendingDir)).toBe(false)
+  })
+
+  it("delivers delegated completions directly to the freshest active BlueBubbles session when no bridge applies", async () => {
+    const bluebubblesPendingDir = path.join(agentRoot, "state", "pending", "friend-1", "bluebubbles", "chat")
+    mockGetPendingDir.mockImplementation((_agent: string, _friendId: string, channel: string, key: string) =>
+      channel === "bluebubbles" && key === "chat" ? bluebubblesPendingDir : "/tmp/unused",
+    )
+    mockListSessionActivity.mockReturnValue([
+      {
+        friendId: "friend-1",
+        friendName: "Ari",
+        channel: "bluebubbles",
+        key: "chat",
+        sessionPath: "/tmp/state/sessions/friend-1/bluebubbles/chat.json",
+        lastActivityAt: "2026-03-13T20:05:00.000Z",
+        lastActivityMs: Date.parse("2026-03-13T20:05:00.000Z"),
+        activitySource: "friend-facing",
+      },
+    ])
+    mockFindFreshestFriendSession.mockReturnValue({
+      friendId: "friend-1",
+      friendName: "Ari",
+      channel: "bluebubbles",
+      key: "chat",
+      sessionPath: "/tmp/state/sessions/friend-1/bluebubbles/chat.json",
+      lastActivityAt: "2026-03-13T20:05:00.000Z",
+      lastActivityMs: Date.parse("2026-03-13T20:05:00.000Z"),
+      activitySource: "friend-facing",
+    })
+    mockHandleInboundTurn.mockResolvedValue({
+      resolvedContext: { friend: { id: "self", name: "test-agent" }, channel: innerCapabilities },
+      gateResult: { allowed: true },
+      usage: undefined,
+      sessionPath: sessionFile,
+      messages: [{ role: "assistant", content: "bluebubbles got it live" }],
+      completion: { answer: "bluebubbles got it live", intent: "complete" },
+      drainedPending: [
+        {
+          from: "test-agent",
+          content: "reflect on penguins",
+          timestamp: 1709900001,
+          delegatedFrom: {
+            friendId: "friend-1",
+            channel: "bluebubbles",
+            key: "chat",
+          },
+        },
+      ],
+    })
+    mockSendProactiveBlueBubblesMessageToSession.mockResolvedValue({
+      delivered: true,
+    })
+
+    await runInnerDialogTurn({
+      reason: "heartbeat",
+      now: () => new Date("2026-03-13T20:10:00.000Z"),
+    })
+
+    expect(mockSendProactiveBlueBubblesMessageToSession).toHaveBeenCalledWith({
+      friendId: "friend-1",
+      sessionKey: "chat",
+      text: "bluebubbles got it live",
+    })
     expect(fs.existsSync(bluebubblesPendingDir)).toBe(false)
   })
 

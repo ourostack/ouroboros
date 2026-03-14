@@ -25,6 +25,7 @@ import type { FriendRecord, ResolvedContext } from "../mind/friends/types"
 import type { FriendStore } from "../mind/friends/store"
 import { createBridgeManager } from "../heart/bridges/manager"
 import { findFreshestFriendSession, listSessionActivity, type SessionActivityRecord } from "../heart/session-activity"
+import { sendProactiveBlueBubblesMessageToSession } from "./bluebubbles"
 
 export interface InnerDialogInstinct {
   id: string
@@ -285,13 +286,29 @@ function resolveBridgePreferredSession(
   ) ?? null
 }
 
-function routeDelegatedCompletion(
+async function tryDeliverDelegatedCompletion(
+  target: SessionActivityRecord,
+  outboundEnvelope: PendingMessage,
+): Promise<boolean> {
+  if (target.channel !== "bluebubbles") {
+    return false
+  }
+
+  const result = await sendProactiveBlueBubblesMessageToSession({
+    friendId: target.friendId,
+    sessionKey: target.key,
+    text: outboundEnvelope.content,
+  })
+  return result.delivered
+}
+
+async function routeDelegatedCompletion(
   agentRoot: string,
   agentName: string,
   completion: CompletionMetadata | undefined,
   drainedPending: PendingMessage[] | undefined,
   timestamp: number,
-): void {
+): Promise<void> {
   const delegated = (drainedPending ?? []).find((message) => message.delegatedFrom)
   if (!delegated?.delegatedFrom || !completion?.answer?.trim()) {
     return
@@ -316,6 +333,9 @@ function routeDelegatedCompletion(
 
   const bridgeTarget = resolveBridgePreferredSession(delegatedFrom, sessionActivity)
   if (bridgeTarget) {
+    if (await tryDeliverDelegatedCompletion(bridgeTarget, outboundEnvelope)) {
+      return
+    }
     writePendingEnvelope(getPendingDir(agentName, bridgeTarget.friendId, bridgeTarget.channel, bridgeTarget.key), outboundEnvelope)
     return
   }
@@ -328,6 +348,9 @@ function routeDelegatedCompletion(
     activeOnly: true,
   })
   if (freshest && freshest.channel !== "inner") {
+    if (await tryDeliverDelegatedCompletion(freshest, outboundEnvelope)) {
+      return
+    }
     writePendingEnvelope(getPendingDir(agentName, freshest.friendId, freshest.channel, freshest.key), outboundEnvelope)
     return
   }
@@ -460,7 +483,7 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
       skipConfirmation: true,
     },
   })
-  routeDelegatedCompletion(agentRoot, agentName, result.completion, result.drainedPending, now().getTime())
+  await routeDelegatedCompletion(agentRoot, agentName, result.completion, result.drainedPending, now().getTime())
 
   const resultMessages = result.messages ?? []
   const assistantPreview = extractAssistantPreview(resultMessages)
