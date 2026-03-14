@@ -4,6 +4,7 @@ import type { BoardResult } from "../repertoire/tasks/types"
 import { bridgeStateLabel } from "./bridges/state-machine"
 import type { BridgeRecord } from "./bridges/store"
 import type { SessionActivityRecord } from "./session-activity"
+import { formatTargetSessionCandidates, type TargetSessionCandidate } from "./target-resolution"
 
 export type CenterOfGravityMode = "local-turn" | "inward-work" | "shared-work"
 
@@ -45,6 +46,7 @@ export interface ActiveWorkFrame {
     freshestForCurrentFriend: SessionActivityRecord | null
     otherLiveSessionsForCurrentFriend: SessionActivityRecord[]
   }
+  targetCandidates?: TargetSessionCandidate[]
   bridgeSuggestion: BridgeSuggestion | null
 }
 
@@ -232,6 +234,14 @@ export function formatActiveWorkFrame(frame: ActiveWorkFrame): string {
 
   if (frame.friendActivity?.freshestForCurrentFriend) {
     lines.push(`freshest friend-facing session: ${formatSessionLabel(frame.friendActivity.freshestForCurrentFriend)}`)
+  }
+
+  const targetCandidatesBlock = frame.targetCandidates && frame.targetCandidates.length > 0
+    ? formatTargetSessionCandidates(frame.targetCandidates)
+    : ""
+  if (targetCandidatesBlock) {
+    lines.push("")
+    lines.push(targetCandidatesBlock)
   }
 
   if (frame.bridgeSuggestion) {
