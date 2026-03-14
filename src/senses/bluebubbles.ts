@@ -8,6 +8,7 @@ import { getAgentName, getAgentRoot } from "../heart/identity"
 import { withSharedTurnLock } from "../heart/turn-coordinator"
 import { loadSession, postTurn } from "../mind/context"
 import { accumulateFriendTokens } from "../mind/friends/tokens"
+import { upsertGroupContextParticipants } from "../mind/friends/group-context"
 import { FriendResolver, type FriendResolverParams } from "../mind/friends/resolver"
 import { FileFriendStore } from "../mind/friends/store-file"
 import { TRUSTED_LEVELS, type FriendRecord } from "../mind/friends/types"
@@ -110,6 +111,12 @@ function resolveFriendParams(event: BlueBubblesNormalizedEvent): FriendResolverP
     displayName: event.sender.displayName || "Unknown",
     channel: "bluebubbles",
   }
+}
+
+function resolveGroupExternalId(event: BlueBubblesNormalizedEvent): string | null {
+  if (!event.chat.isGroup) return null
+  const groupKey = event.chat.chatGuid ?? event.chat.chatIdentifier ?? event.sender.externalId
+  return groupKey ? `group:${groupKey}` : null
 }
 
 /**
@@ -666,6 +673,20 @@ async function handleBlueBubblesNormalizedEvent(
           },
         })
         return { handled: true, notifiedAgent: false, kind: event.kind, reason: "already_processed" }
+      }
+    }
+
+    if (event.kind === "message" && event.chat.isGroup) {
+      const groupExternalId = resolveGroupExternalId(event)
+      if (groupExternalId) {
+        await upsertGroupContextParticipants({
+          store,
+          participants: (event.chat.participantHandles ?? []).map((externalId) => ({
+            provider: "imessage-handle" as const,
+            externalId,
+          })),
+          groupExternalId,
+        })
       }
     }
 
