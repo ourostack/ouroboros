@@ -28,11 +28,11 @@ describe("debug activity controller", () => {
     await controller.finish()
 
     expect(operations).toEqual([
-      "send:thinking...",
+      "send:shared work: processing\nthinking...",
       "typing:true",
-      "edit:status-guid:running read_file (notes.txt)...",
-      "edit:status-guid:\u2713 read_file (ok)",
-      "edit:status-guid:followup...",
+      "edit:status-guid:shared work: processing\nrunning read_file (notes.txt)...",
+      "edit:status-guid:shared work: processing\n\u2713 read_file (ok)",
+      "edit:status-guid:shared work: processing\nfollowup...",
       "typing:false",
     ])
   })
@@ -114,9 +114,9 @@ describe("debug activity controller", () => {
     await controller.finish()
 
     expect(operations).toEqual([
-      "send:thinking...",
+      "send:shared work: processing\nthinking...",
       "typing:true",
-      "edit:status-guid:Error: boom",
+      "edit:status-guid:shared work: errored\nError: boom",
       "typing:false",
     ])
   })

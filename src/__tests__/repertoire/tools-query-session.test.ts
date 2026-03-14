@@ -390,10 +390,9 @@ describe("query_session tool", () => {
     })
 
     expect(result).toBe([
-      "queue: queued to inner/dialog",
+      "inner work: queued",
+      "queued to inner/dialog",
       "wake: awaiting inner session",
-      "processing: pending",
-      "surfaced: nothing yet",
     ].join("\n"))
   })
 
@@ -424,10 +423,8 @@ describe("query_session tool", () => {
     })
 
     expect(result).toBe([
-      "queue: clear",
-      "wake: completed",
-      "processing: processed",
-      'surfaced: "formal little blokes."',
+      "inner work: completed",
+      "formal little blokes.",
     ].join("\n"))
   })
 
@@ -472,10 +469,8 @@ describe("query_session tool", () => {
     })
 
     expect(result).toBe([
-      "queue: clear",
+      "inner work: processing",
       "wake: in progress",
-      "processing: started",
-      "surfaced: nothing yet",
     ].join("\n"))
   })
 

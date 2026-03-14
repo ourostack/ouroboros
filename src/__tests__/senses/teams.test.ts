@@ -373,7 +373,9 @@ describe("Teams adapter - createTeamsCallbacks (SDK-delegated streaming)", () =>
     const teams = await import("../../senses/teams")
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
     callbacks.onToolStart("read_file", { path: "package.json" })
-    expect(mockStream.update).toHaveBeenCalledWith("running read_file (path=package.json)...")
+    expect(mockStream.update).toHaveBeenCalledWith(
+      "shared work: processing\nrunning read_file (path=package.json)...",
+    )
   })
 
   it("onToolStart always flushes accumulated textBuffer before showing tool status", async () => {
@@ -394,7 +396,7 @@ describe("Teams adapter - createTeamsCallbacks (SDK-delegated streaming)", () =>
     const teams = await import("../../senses/teams")
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
     callbacks.onToolEnd("read_file", "package.json", true)
-    expect(mockStream.update).toHaveBeenCalledWith("\u2713 read_file (package.json)")
+    expect(mockStream.update).toHaveBeenCalledWith("shared work: processing\n\u2713 read_file (package.json)")
     expect(mockStream.emit).not.toHaveBeenCalled()
   })
 

@@ -399,10 +399,11 @@ describe("send_message tool", () => {
       })
 
       expect(mockRunInnerDialogTurn).toHaveBeenCalledTimes(1)
-      expect(result).toContain("queue: queued to inner/dialog")
-      expect(result).toContain("wake: inline fallback")
-      expect(result).toContain("processing: processed")
-      expect(result).toContain('surfaced: "penguins surfaced."')
+      expect(result).toBe([
+        "inner work: completed",
+        "wake: inline fallback",
+        "penguins surfaced.",
+      ].join("\n"))
     })
 
     it("uses daemon-managed wake when available and skips the inline fallback", async () => {
@@ -423,10 +424,9 @@ describe("send_message tool", () => {
       expect(mockRequestInnerWake).toHaveBeenCalledWith("testagent")
       expect(mockRunInnerDialogTurn).not.toHaveBeenCalled()
       expect(result).toBe([
-        "queue: queued to inner/dialog",
+        "inner work: queued",
+        "queued to inner/dialog",
         "wake: daemon requested",
-        "processing: pending",
-        "surfaced: nothing yet",
       ].join("\n"))
     })
 
