@@ -60,4 +60,46 @@ describe("bridge state machine", () => {
     )
     expect(bridges.queueBridgeFollowUp(awaiting)).toBe(awaiting)
   })
+
+  it("reconciles dormant bridges into suspension and reactivates suspended bridges when live signals return", async () => {
+    const bridges = await import("../../../heart/bridges/state-machine")
+
+    const activeIdle = bridges.activateBridge(bridges.createBridgeState())
+    expect(bridges.reconcileBridgeState(activeIdle, {
+      hasAttachedSessionActivity: false,
+      hasLiveTask: false,
+      currentSessionAttached: false,
+    })).toEqual({
+      lifecycle: "suspended",
+      runtime: "idle",
+    })
+
+    const suspended = bridges.suspendBridge(activeIdle)
+    expect(bridges.reconcileBridgeState(suspended, {
+      hasAttachedSessionActivity: true,
+      hasLiveTask: false,
+      currentSessionAttached: false,
+    })).toEqual({
+      lifecycle: "active",
+      runtime: "idle",
+    })
+
+    expect(bridges.reconcileBridgeState(suspended, {
+      hasAttachedSessionActivity: false,
+      hasLiveTask: true,
+      currentSessionAttached: false,
+    })).toEqual({
+      lifecycle: "active",
+      runtime: "idle",
+    })
+
+    expect(bridges.reconcileBridgeState(suspended, {
+      hasAttachedSessionActivity: false,
+      hasLiveTask: false,
+      currentSessionAttached: true,
+    })).toEqual({
+      lifecycle: "active",
+      runtime: "idle",
+    })
+  })
 })

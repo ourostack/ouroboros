@@ -305,4 +305,153 @@ describe("bridge manager", () => {
     })
     expect(runs).toBe(2)
   })
+
+  it("reconciles bridge lifecycle from live session activity, linked task state, and current-session reactivation", async () => {
+    const { createBridgeStore } = await import("../../../heart/bridges/store")
+    const { createBridgeManager } = await import("../../../heart/bridges/manager")
+
+    const store = createBridgeStore()
+    const manager = createBridgeManager({
+      store,
+      now: () => "2026-03-13T16:00:00.000Z",
+      idFactory: () => "bridge-life",
+    })
+
+    const bridge = manager.beginBridge({
+      objective: "carry Ari across cli and teams",
+      summary: "shared work",
+      session: {
+        friendId: "friend-1",
+        channel: "cli",
+        key: "session",
+        sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+      },
+    })
+
+    const suspended = manager.reconcileLifecycles({
+      currentSession: null,
+      sessionActivity: [],
+      taskBoard: {
+        compact: "[Tasks] processing:0 blocked:0",
+        activeBridges: [],
+        byStatus: {
+          drafting: [],
+          processing: [],
+          validating: [],
+          collaborating: [],
+          paused: [],
+          blocked: [],
+          done: [],
+        },
+      },
+    })
+    expect(suspended[0]).toEqual(expect.objectContaining({
+      id: bridge.id,
+      lifecycle: "suspended",
+    }))
+
+    const reactivatedBySession = manager.reconcileLifecycles({
+      currentSession: null,
+      sessionActivity: [
+        {
+          friendId: "friend-1",
+          friendName: "Ari",
+          channel: "cli",
+          key: "session",
+          sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+          lastActivityAt: "2026-03-13T16:01:00.000Z",
+          lastActivityMs: Date.parse("2026-03-13T16:01:00.000Z"),
+          activitySource: "friend-facing",
+        },
+      ],
+      taskBoard: {
+        compact: "[Tasks] processing:0 blocked:0",
+        activeBridges: [],
+        byStatus: {
+          drafting: [],
+          processing: [],
+          validating: [],
+          collaborating: [],
+          paused: [],
+          blocked: [],
+          done: [],
+        },
+      },
+    })
+    expect(reactivatedBySession[0]).toEqual(expect.objectContaining({
+      id: bridge.id,
+      lifecycle: "active",
+    }))
+
+    const promoted = manager.promoteBridgeToTask("bridge-life", { title: "Shared Relay" })
+    const keptActiveByTask = manager.reconcileLifecycles({
+      currentSession: null,
+      sessionActivity: [],
+      taskBoard: {
+        compact: "[Tasks] processing:1 blocked:0",
+        activeBridges: [`${promoted.task?.taskName} -> ${bridge.id}`],
+        byStatus: {
+          drafting: [],
+          processing: [promoted.task!.taskName],
+          validating: [],
+          collaborating: [],
+          paused: [],
+          blocked: [],
+          done: [],
+        },
+      },
+    })
+    expect(keptActiveByTask[0]).toEqual(expect.objectContaining({
+      id: bridge.id,
+      lifecycle: "active",
+    }))
+
+    const suspendedAgain = manager.reconcileLifecycles({
+      currentSession: null,
+      sessionActivity: [],
+      taskBoard: {
+        compact: "[Tasks] processing:0 blocked:0",
+        activeBridges: [],
+        byStatus: {
+          drafting: [],
+          processing: [],
+          validating: [],
+          collaborating: [],
+          paused: [],
+          blocked: [],
+          done: [],
+        },
+      },
+    })
+    expect(suspendedAgain[0]).toEqual(expect.objectContaining({
+      id: bridge.id,
+      lifecycle: "suspended",
+    }))
+
+    const reactivatedByCurrentSession = manager.reconcileLifecycles({
+      currentSession: {
+        friendId: "friend-1",
+        channel: "cli",
+        key: "session",
+      },
+      sessionActivity: [],
+      taskBoard: {
+        compact: "[Tasks] processing:0 blocked:0",
+        activeBridges: [],
+        byStatus: {
+          drafting: [],
+          processing: [],
+          validating: [],
+          collaborating: [],
+          paused: [],
+          blocked: [],
+          done: [],
+        },
+      },
+    })
+    expect(reactivatedByCurrentSession[0]).toEqual(expect.objectContaining({
+      id: bridge.id,
+      lifecycle: "active",
+    }))
+  })
 })

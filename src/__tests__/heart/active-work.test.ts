@@ -538,6 +538,84 @@ describe("active work frame", () => {
     expect(rendered).not.toContain("freshest friend-facing session:")
     expect(rendered).not.toContain("obligation:")
   })
+
+  it("exports a shared bridge suggestion helper that ignores already-covered sessions and only suggests other live surfaces", async () => {
+    const { suggestBridgeForActiveWork } = await import("../../heart/active-work")
+
+    expect(suggestBridgeForActiveWork({
+      currentSession: {
+        friendId: "friend-1",
+        channel: "teams",
+        key: "conv-1",
+        sessionPath: "/tmp/state/sessions/friend-1/teams/conv-1.json",
+      },
+      currentObligation: "keep Ari aligned across chats",
+      mustResolveBeforeHandoff: false,
+      bridges: [
+        {
+          id: "bridge-1",
+          objective: "carry Ari across cli and teams",
+          summary: "same work, two surfaces",
+          lifecycle: "active",
+          runtime: "idle",
+          createdAt: "2026-03-13T20:00:00.000Z",
+          updatedAt: "2026-03-13T20:00:00.000Z",
+          attachedSessions: [
+            {
+              friendId: "friend-1",
+              channel: "teams",
+              key: "conv-1",
+              sessionPath: "/tmp/state/sessions/friend-1/teams/conv-1.json",
+            },
+          ],
+          task: null,
+        },
+      ],
+      taskBoard: {
+        compact: "[Tasks] processing:0 blocked:0",
+        activeBridges: [],
+        byStatus: {
+          drafting: [],
+          processing: [],
+          validating: [],
+          collaborating: [],
+          paused: [],
+          blocked: [],
+          done: [],
+        },
+      },
+      friendSessions: [
+        {
+          friendId: "friend-1",
+          friendName: "Ari",
+          channel: "teams",
+          key: "conv-1",
+          sessionPath: "/tmp/state/sessions/friend-1/teams/conv-1.json",
+          lastActivityAt: "2026-03-13T20:03:00.000Z",
+          lastActivityMs: Date.parse("2026-03-13T20:03:00.000Z"),
+          activitySource: "friend-facing",
+        },
+        {
+          friendId: "friend-1",
+          friendName: "Ari",
+          channel: "cli",
+          key: "session",
+          sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+          lastActivityAt: "2026-03-13T20:02:00.000Z",
+          lastActivityMs: Date.parse("2026-03-13T20:02:00.000Z"),
+          activitySource: "friend-facing",
+        },
+      ],
+    })).toEqual({
+      kind: "attach-existing",
+      bridgeId: "bridge-1",
+      reason: "same-friend-shared-work",
+      targetSession: expect.objectContaining({
+        channel: "cli",
+        key: "session",
+      }),
+    })
+  })
 })
 
 describe("delegation router", () => {
