@@ -64,6 +64,31 @@ describe("active work frame", () => {
           activitySource: "friend-facing",
         },
       ],
+      targetCandidates: [
+        {
+          friendId: "friend-1",
+          friendName: "Ari",
+          channel: "cli",
+          key: "session",
+          sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+          snapshot: "recent focus: keep Ari aligned",
+          trust: {
+            level: "friend",
+            basis: "direct",
+            summary: "directly trusted",
+            why: "this is Ari's other live chat",
+            permits: ["shared coordination"],
+            constraints: [],
+          },
+          delivery: {
+            mode: "queue_only",
+            reason: "needs explicit cross-chat authorization",
+          },
+          lastActivityAt: "2026-03-13T20:01:00.000Z",
+          lastActivityMs: Date.parse("2026-03-13T20:01:00.000Z"),
+          activitySource: "friend-facing",
+        },
+      ],
     })
 
     expect(frame.centerOfGravity).toBe("shared-work")
@@ -163,6 +188,31 @@ describe("active work frame", () => {
           activitySource: "friend-facing",
         },
       ],
+      targetCandidates: [
+        {
+          friendId: "friend-1",
+          friendName: "Ari",
+          channel: "cli",
+          key: "session",
+          sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+          snapshot: "recent focus: keep Ari aligned",
+          trust: {
+            level: "friend",
+            basis: "direct",
+            summary: "directly trusted",
+            why: "this is Ari's other live chat",
+            permits: ["shared coordination"],
+            constraints: [],
+          },
+          delivery: {
+            mode: "queue_only",
+            reason: "needs explicit cross-chat authorization",
+          },
+          lastActivityAt: "2026-03-13T20:01:00.000Z",
+          lastActivityMs: Date.parse("2026-03-13T20:01:00.000Z"),
+          activitySource: "friend-facing",
+        },
+      ],
     })
 
     expect(frame.friendActivity.freshestForCurrentFriend).toEqual(
@@ -219,6 +269,31 @@ describe("active work frame", () => {
           sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
           lastActivityAt: "2026-03-13T20:03:00.000Z",
           lastActivityMs: Date.parse("2026-03-13T20:03:00.000Z"),
+          activitySource: "friend-facing",
+        },
+      ],
+      targetCandidates: [
+        {
+          friendId: "friend-1",
+          friendName: "Ari",
+          channel: "cli",
+          key: "session",
+          sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+          snapshot: "recent focus: keep Ari aligned",
+          trust: {
+            level: "friend",
+            basis: "direct",
+            summary: "directly trusted",
+            why: "this is Ari's other live chat",
+            permits: ["shared coordination"],
+            constraints: [],
+          },
+          delivery: {
+            mode: "queue_only",
+            reason: "needs explicit cross-chat authorization",
+          },
+          lastActivityAt: "2026-03-13T20:01:00.000Z",
+          lastActivityMs: Date.parse("2026-03-13T20:01:00.000Z"),
           activitySource: "friend-facing",
         },
       ],
@@ -459,6 +534,31 @@ describe("active work frame", () => {
           activitySource: "friend-facing",
         },
       ],
+      targetCandidates: [
+        {
+          friendId: "friend-1",
+          friendName: "Ari",
+          channel: "cli",
+          key: "session",
+          sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+          snapshot: "recent focus: other live surface",
+          trust: {
+            level: "friend",
+            basis: "direct",
+            summary: "directly trusted",
+            why: "other live same-friend chat",
+            permits: ["shared coordination"],
+            constraints: [],
+          },
+          delivery: {
+            mode: "queue_only",
+            reason: "needs explicit cross-chat authorization",
+          },
+          lastActivityAt: "2026-03-13T20:01:00.000Z",
+          lastActivityMs: Date.parse("2026-03-13T20:01:00.000Z"),
+          activitySource: "friend-facing",
+        },
+      ],
     })
 
     expect(frame.bridgeSuggestion).toEqual({
@@ -506,6 +606,31 @@ describe("active work frame", () => {
           channel: "cli",
           key: "session",
           sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+          lastActivityAt: "2026-03-13T20:01:00.000Z",
+          lastActivityMs: Date.parse("2026-03-13T20:01:00.000Z"),
+          activitySource: "friend-facing",
+        },
+      ],
+      targetCandidates: [
+        {
+          friendId: "friend-1",
+          friendName: "Ari",
+          channel: "cli",
+          key: "session",
+          sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+          snapshot: "recent focus: other live surface",
+          trust: {
+            level: "friend",
+            basis: "direct",
+            summary: "directly trusted",
+            why: "other live same-friend chat",
+            permits: ["shared coordination"],
+            constraints: [],
+          },
+          delivery: {
+            mode: "queue_only",
+            reason: "needs explicit cross-chat authorization",
+          },
           lastActivityAt: "2026-03-13T20:01:00.000Z",
           lastActivityMs: Date.parse("2026-03-13T20:01:00.000Z"),
           activitySource: "friend-facing",
@@ -672,13 +797,26 @@ describe("active work frame", () => {
           done: [],
         },
       },
-      friendSessions: [
+      targetCandidates: [
         {
           friendId: "friend-1",
           friendName: "Ari",
           channel: "teams",
           key: "conv-1",
           sessionPath: "/tmp/state/sessions/friend-1/teams/conv-1.json",
+          snapshot: "recent focus: current session",
+          trust: {
+            level: "friend",
+            basis: "direct",
+            summary: "directly trusted",
+            why: "current same-friend live chat",
+            permits: ["shared coordination"],
+            constraints: [],
+          },
+          delivery: {
+            mode: "queue_only",
+            reason: "needs explicit cross-chat authorization",
+          },
           lastActivityAt: "2026-03-13T20:03:00.000Z",
           lastActivityMs: Date.parse("2026-03-13T20:03:00.000Z"),
           activitySource: "friend-facing",
@@ -689,6 +827,19 @@ describe("active work frame", () => {
           channel: "cli",
           key: "session",
           sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+          snapshot: "recent focus: other surface",
+          trust: {
+            level: "friend",
+            basis: "direct",
+            summary: "directly trusted",
+            why: "other live same-friend chat",
+            permits: ["shared coordination"],
+            constraints: [],
+          },
+          delivery: {
+            mode: "queue_only",
+            reason: "needs explicit cross-chat authorization",
+          },
           lastActivityAt: "2026-03-13T20:02:00.000Z",
           lastActivityMs: Date.parse("2026-03-13T20:02:00.000Z"),
           activitySource: "friend-facing",

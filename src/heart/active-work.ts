@@ -11,15 +11,15 @@ export type CenterOfGravityMode = "local-turn" | "inward-work" | "shared-work"
 export type BridgeSuggestion =
   | {
       kind: "begin-new"
-      targetSession: SessionActivityRecord
+      targetSession: TargetSessionCandidate
       objectiveHint: string
-      reason: "same-friend-shared-work"
+      reason: "shared-work-candidate"
     }
   | {
       kind: "attach-existing"
       bridgeId: string
-      targetSession: SessionActivityRecord
-      reason: "same-friend-shared-work"
+      targetSession: TargetSessionCandidate
+      reason: "shared-work-candidate"
     }
 
 export interface ActiveWorkFrame {
@@ -58,6 +58,7 @@ interface BuildActiveWorkFrameInput {
   bridges: BridgeRecord[]
   taskBoard: BoardResult
   friendActivity: SessionActivityRecord[]
+  targetCandidates?: TargetSessionCandidate[]
 }
 
 export interface BridgeSuggestionInput {
@@ -66,7 +67,7 @@ export interface BridgeSuggestionInput {
   mustResolveBeforeHandoff: boolean
   bridges: BridgeRecord[]
   taskBoard: BoardResult
-  friendSessions: SessionActivityRecord[]
+  targetCandidates?: TargetSessionCandidate[]
 }
 
 function activityPriority(source: SessionActivityRecord["activitySource"]): number {
@@ -101,17 +102,33 @@ function hasSharedObligationPressure(input: Pick<BuildActiveWorkFrameInput, "cur
 }
 
 export function suggestBridgeForActiveWork(input: BridgeSuggestionInput): BridgeSuggestion | null {
-  const candidateSessions = input.friendSessions
-    .filter((session) =>
-      !input.currentSession
-      || session.friendId !== input.currentSession.friendId
-      || session.channel !== input.currentSession.channel
-      || session.key !== input.currentSession.key)
-    .sort(compareActivity)
-  const targetSession = candidateSessions[0] ?? null
-  if (!targetSession || !hasSharedObligationPressure(input)) {
+  const targetCandidates = (input.targetCandidates ?? [])
+    .filter((candidate) => {
+      if (candidate.delivery.mode === "blocked") {
+        return false
+      }
+      if (candidate.activitySource !== "friend-facing" || candidate.channel === "inner") {
+        return false
+      }
+      if (!input.currentSession) {
+        return true
+      }
+      return !(
+        candidate.friendId === input.currentSession.friendId
+        && candidate.channel === input.currentSession.channel
+        && candidate.key === input.currentSession.key
+      )
+    })
+    .sort((a, b) => {
+      if (a.activitySource !== b.activitySource) {
+        return activityPriority(a.activitySource) - activityPriority(b.activitySource)
+      }
+      return b.lastActivityMs - a.lastActivityMs
+    })
+  if (!hasSharedObligationPressure(input) || targetCandidates.length !== 1) {
     return null
   }
+  const targetSession = targetCandidates[0]
 
   const activeBridge = input.bridges.find(isActiveBridge) ?? null
   if (activeBridge) {
@@ -127,7 +144,7 @@ export function suggestBridgeForActiveWork(input: BridgeSuggestionInput): Bridge
       kind: "attach-existing",
       bridgeId: activeBridge.id,
       targetSession,
-      reason: "same-friend-shared-work",
+      reason: "shared-work-candidate",
     }
   }
 
@@ -135,7 +152,7 @@ export function suggestBridgeForActiveWork(input: BridgeSuggestionInput): Bridge
     kind: "begin-new",
     targetSession,
     objectiveHint: input.currentObligation?.trim() || "keep this shared work aligned",
-    reason: "same-friend-shared-work",
+    reason: "shared-work-candidate",
   }
 }
 
@@ -176,13 +193,14 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
       freshestForCurrentFriend: friendSessions[0] ?? null,
       otherLiveSessionsForCurrentFriend: friendSessions,
     },
+    targetCandidates: input.targetCandidates ?? [],
     bridgeSuggestion: suggestBridgeForActiveWork({
       currentSession: input.currentSession,
       currentObligation: input.currentObligation,
       mustResolveBeforeHandoff: input.mustResolveBeforeHandoff,
       bridges: input.bridges,
       taskBoard: input.taskBoard,
-      friendSessions,
+      targetCandidates: input.targetCandidates,
     }),
   }
 
