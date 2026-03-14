@@ -58,6 +58,15 @@ interface BuildActiveWorkFrameInput {
   friendActivity: SessionActivityRecord[]
 }
 
+export interface BridgeSuggestionInput {
+  currentSession: ActiveWorkFrame["currentSession"]
+  currentObligation?: string | null
+  mustResolveBeforeHandoff: boolean
+  bridges: BridgeRecord[]
+  taskBoard: BoardResult
+  friendSessions: SessionActivityRecord[]
+}
+
 function activityPriority(source: SessionActivityRecord["activitySource"]): number {
   return source === "friend-facing" ? 0 : 1
 }
@@ -81,7 +90,7 @@ function isActiveBridge(bridge: BridgeRecord): boolean {
   return bridge.lifecycle === "active"
 }
 
-function hasSharedObligationPressure(input: BuildActiveWorkFrameInput): boolean {
+function hasSharedObligationPressure(input: Pick<BuildActiveWorkFrameInput, "currentObligation" | "mustResolveBeforeHandoff" | "taskBoard">): boolean {
   return (
     typeof input.currentObligation === "string"
     && input.currentObligation.trim().length > 0
@@ -89,8 +98,15 @@ function hasSharedObligationPressure(input: BuildActiveWorkFrameInput): boolean 
     || summarizeLiveTasks(input.taskBoard).length > 0
 }
 
-function suggestBridge(input: BuildActiveWorkFrameInput, friendSessions: SessionActivityRecord[]): BridgeSuggestion | null {
-  const targetSession = friendSessions[0] ?? null
+export function suggestBridgeForActiveWork(input: BridgeSuggestionInput): BridgeSuggestion | null {
+  const candidateSessions = input.friendSessions
+    .filter((session) =>
+      !input.currentSession
+      || session.friendId !== input.currentSession.friendId
+      || session.channel !== input.currentSession.channel
+      || session.key !== input.currentSession.key)
+    .sort(compareActivity)
+  const targetSession = candidateSessions[0] ?? null
   if (!targetSession || !hasSharedObligationPressure(input)) {
     return null
   }
@@ -158,7 +174,14 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
       freshestForCurrentFriend: friendSessions[0] ?? null,
       otherLiveSessionsForCurrentFriend: friendSessions,
     },
-    bridgeSuggestion: suggestBridge(input, friendSessions),
+    bridgeSuggestion: suggestBridgeForActiveWork({
+      currentSession: input.currentSession,
+      currentObligation: input.currentObligation,
+      mustResolveBeforeHandoff: input.mustResolveBeforeHandoff,
+      bridges: input.bridges,
+      taskBoard: input.taskBoard,
+      friendSessions,
+    }),
   }
 
   emitNervesEvent({

@@ -8,11 +8,14 @@ import {
   completeBridge,
   createBridgeState,
   queueBridgeFollowUp,
+  reconcileBridgeState,
 } from "./state-machine"
 import type { BridgeRecord, BridgeSessionRef, BridgeStore } from "./store"
 import { createBridgeStore } from "./store"
 import { drainSharedFollowUps, enqueueSharedFollowUp, endSharedTurn, tryBeginSharedTurn } from "../turn-coordinator"
 import { getTaskModule } from "../../repertoire/tasks"
+import type { BoardResult } from "../../repertoire/tasks/types"
+import type { SessionActivityRecord } from "../session-activity"
 
 export interface BeginBridgeInput {
   objective: string
@@ -32,6 +35,11 @@ export interface BridgeManager {
   getBridge(bridgeId: string): BridgeRecord | null
   listBridges(): BridgeRecord[]
   findBridgesForSession(session: Pick<BridgeSessionRef, "friendId" | "channel" | "key">): BridgeRecord[]
+  reconcileLifecycles(input: {
+    currentSession: Pick<BridgeSessionRef, "friendId" | "channel" | "key"> | null
+    sessionActivity: SessionActivityRecord[]
+    taskBoard: BoardResult
+  }): BridgeRecord[]
   promoteBridgeToTask(bridgeId: string, input?: { title?: string; category?: string; body?: string }): BridgeRecord
   completeBridge(bridgeId: string): BridgeRecord
   cancelBridge(bridgeId: string): BridgeRecord
@@ -114,6 +122,37 @@ function ensureRunnable(bridge: BridgeRecord, now: () => string, store: BridgeSt
     throw new Error(`bridge is terminal: ${bridge.id}`)
   }
   return bridge
+}
+
+function sessionMatches(
+  left: Pick<BridgeSessionRef, "friendId" | "channel" | "key">,
+  right: Pick<BridgeSessionRef, "friendId" | "channel" | "key">,
+): boolean {
+  return left.friendId === right.friendId && left.channel === right.channel && left.key === right.key
+}
+
+function hasAttachedSessionActivity(bridge: BridgeRecord, sessionActivity: SessionActivityRecord[]): boolean {
+  return sessionActivity.some((activity) =>
+    activity.channel !== "inner"
+    && bridge.attachedSessions.some((session) => sessionMatches(activity, session)))
+}
+
+function hasLiveTaskStatus(bridge: BridgeRecord, taskBoard: BoardResult): boolean {
+  const taskName = bridge.task?.taskName
+  if (!taskName) return false
+  return (
+    taskBoard.byStatus.processing.includes(taskName)
+    || taskBoard.byStatus.collaborating.includes(taskName)
+    || taskBoard.byStatus.validating.includes(taskName)
+  )
+}
+
+function isCurrentSessionAttached(
+  bridge: BridgeRecord,
+  currentSession: Pick<BridgeSessionRef, "friendId" | "channel" | "key"> | null,
+): boolean {
+  if (!currentSession) return false
+  return bridge.attachedSessions.some((session) => sessionMatches(session, currentSession))
 }
 
 export function createBridgeManager(options: CreateBridgeManagerOptions = {}): BridgeManager {
@@ -213,6 +252,28 @@ export function createBridgeManager(options: CreateBridgeManagerOptions = {}): B
     findBridgesForSession(session: Pick<BridgeSessionRef, "friendId" | "channel" | "key">): BridgeRecord[] {
       return store.findBySession(session)
         .filter((bridge) => bridge.lifecycle !== "completed" && bridge.lifecycle !== "cancelled")
+    },
+
+    reconcileLifecycles(input: {
+      currentSession: Pick<BridgeSessionRef, "friendId" | "channel" | "key"> | null
+      sessionActivity: SessionActivityRecord[]
+      taskBoard: BoardResult
+    }): BridgeRecord[] {
+      return store.list().map((bridge) => {
+        const nextState = reconcileBridgeState(bridge, {
+          hasAttachedSessionActivity: hasAttachedSessionActivity(bridge, input.sessionActivity),
+          hasLiveTask: hasLiveTaskStatus(bridge, input.taskBoard),
+          currentSessionAttached: isCurrentSessionAttached(bridge, input.currentSession),
+        })
+        if (nextState.lifecycle === bridge.lifecycle && nextState.runtime === bridge.runtime) {
+          return bridge
+        }
+        return save({
+          ...bridge,
+          ...nextState,
+          updatedAt: now(),
+        })
+      })
     },
 
     promoteBridgeToTask(bridgeId: string, input: { title?: string; category?: string; body?: string } = {}): BridgeRecord {

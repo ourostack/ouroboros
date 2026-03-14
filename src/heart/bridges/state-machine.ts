@@ -16,6 +16,12 @@ export interface BridgeState {
   runtime: BridgeRuntime
 }
 
+export interface BridgeReconciliationInput {
+  hasAttachedSessionActivity: boolean
+  hasLiveTask: boolean
+  currentSessionAttached: boolean
+}
+
 function transition(state: BridgeState, next: BridgeState, action: string): BridgeState {
   emitNervesEvent({
     component: "engine",
@@ -126,4 +132,30 @@ export function cancelBridge(state: BridgeState): BridgeState {
     throw new Error("cannot cancel a bridge mid-turn")
   }
   return transition(state, { lifecycle: "cancelled", runtime: "idle" }, "cancel")
+}
+
+export function reconcileBridgeState(state: BridgeState, input: BridgeReconciliationInput): BridgeState {
+  if (state.lifecycle === "completed" || state.lifecycle === "cancelled") {
+    return state
+  }
+
+  if (state.runtime !== "idle") {
+    return state
+  }
+
+  const hasLiveSignal = input.hasAttachedSessionActivity || input.hasLiveTask || input.currentSessionAttached
+
+  if (state.lifecycle === "suspended") {
+    return hasLiveSignal ? activateBridge(state) : state
+  }
+
+  if (state.lifecycle === "forming") {
+    return hasLiveSignal ? activateBridge(state) : suspendBridge(state)
+  }
+
+  if (state.lifecycle === "active") {
+    return hasLiveSignal ? state : suspendBridge(state)
+  }
+
+  return state
 }
