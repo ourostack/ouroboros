@@ -167,7 +167,7 @@ describe("send_message tool", () => {
     expect(typeof written.timestamp).toBe("number")
   })
 
-  it("truncates long content in confirmation preview", async () => {
+  it("keeps generic outreach on truthful queued status instead of echoing the full outbound body", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
 
@@ -178,7 +178,7 @@ describe("send_message tool", () => {
       content: longContent,
     })
 
-    expect(result).toContain("…")
+    expect(result.toLowerCase()).toContain("queued for later")
     expect(result).not.toContain("a".repeat(100))
   })
 

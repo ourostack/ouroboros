@@ -70,6 +70,13 @@ export interface ProactiveBlueBubblesSessionSendParams {
   friendId: string
   sessionKey: string
   text: string
+  intent?: "generic_outreach" | "explicit_cross_chat"
+  authorizingSession?: {
+    friendId: string
+    channel: string
+    key: string
+    trustLevel?: string
+  }
 }
 
 export interface ProactiveBlueBubblesSessionSendResult {
@@ -1057,12 +1064,21 @@ export async function sendProactiveBlueBubblesMessageToSession(
     return { delivered: false, reason: "friend_not_found" }
   }
 
-  if (!TRUSTED_LEVELS.has(friend.trustLevel ?? "stranger")) {
+  const explicitCrossChatAuthorized = params.intent === "explicit_cross_chat"
+    && TRUSTED_LEVELS.has((params.authorizingSession?.trustLevel as any) ?? "stranger")
+
+  if (!explicitCrossChatAuthorized && !TRUSTED_LEVELS.has(friend.trustLevel ?? "stranger")) {
     emitNervesEvent({
       component: "senses",
       event: "senses.bluebubbles_proactive_trust_skip",
       message: "proactive send skipped: trust level not allowed",
-      meta: { friendId: params.friendId, sessionKey: params.sessionKey, trustLevel: friend.trustLevel ?? "unknown" },
+      meta: {
+        friendId: params.friendId,
+        sessionKey: params.sessionKey,
+        trustLevel: friend.trustLevel ?? "unknown",
+        intent: params.intent ?? "generic_outreach",
+        authorizingTrustLevel: params.authorizingSession?.trustLevel ?? null,
+      },
     })
     return { delivered: false, reason: "trust_skip" }
   }

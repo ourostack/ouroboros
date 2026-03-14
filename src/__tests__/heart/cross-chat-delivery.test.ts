@@ -153,6 +153,29 @@ describe("deliverCrossChatMessage", () => {
     expect(bluebubblesDeliver).not.toHaveBeenCalled()
   })
 
+  it("queues generic outreach even when there is no authorizing session context at all", async () => {
+    const { deliverCrossChatMessage } = await loadCrossChatDeliveryModule()
+    const queuePending = vi.fn()
+
+    const result = await deliverCrossChatMessage({
+      friendId: "friend-uuid-4",
+      channel: "teams",
+      key: "session",
+      content: "plain queued outreach",
+      intent: "generic_outreach",
+    }, {
+      agentName: "slugger",
+      queuePending,
+      deliverers: {},
+    })
+
+    expect(result).toEqual({
+      status: "queued_for_later",
+      detail: "generic outreach stays queued until the target session is next active",
+    })
+    expect(queuePending).toHaveBeenCalledTimes(1)
+  })
+
   it("surfaces channel-send failure truthfully instead of pretending the message merely queued", async () => {
     const { deliverCrossChatMessage } = await loadCrossChatDeliveryModule()
     const queuePending = vi.fn()
@@ -184,6 +207,140 @@ describe("deliverCrossChatMessage", () => {
     expect(result).toEqual({
       status: "failed",
       detail: "bluebubbles send failed: gateway timeout",
+    })
+    expect(queuePending).not.toHaveBeenCalled()
+  })
+
+  it("passes through adapter-level blocked delivery truth without silently queueing it", async () => {
+    const { deliverCrossChatMessage } = await loadCrossChatDeliveryModule()
+    const queuePending = vi.fn()
+    const bluebubblesDeliver = vi.fn().mockResolvedValue({
+      status: "blocked",
+      detail: "bluebubbles refused to target that lane",
+    })
+
+    const result = await deliverCrossChatMessage({
+      friendId: "group-uuid",
+      channel: "bluebubbles",
+      key: "chat:any;+;project-group-123",
+      content: "tell them i need confirmation",
+      intent: "explicit_cross_chat",
+      authorizingSession: {
+        friendId: "friend-uuid-1",
+        channel: "bluebubbles",
+        key: "chat:any;-;ari@icloud.com",
+        trustLevel: "friend",
+      },
+    }, {
+      agentName: "slugger",
+      queuePending,
+      deliverers: {
+        bluebubbles: bluebubblesDeliver,
+      },
+    })
+
+    expect(result).toEqual({
+      status: "blocked",
+      detail: "bluebubbles refused to target that lane",
+    })
+    expect(queuePending).not.toHaveBeenCalled()
+  })
+
+  it("falls back to the default queued detail when an adapter reports temporary unavailability without its own explanation", async () => {
+    const { deliverCrossChatMessage } = await loadCrossChatDeliveryModule()
+    const queuePending = vi.fn()
+    const bluebubblesDeliver = vi.fn().mockResolvedValue({
+      status: "unavailable",
+      detail: "   ",
+    })
+
+    const result = await deliverCrossChatMessage({
+      friendId: "group-uuid",
+      channel: "bluebubbles",
+      key: "chat:any;+;project-group-123",
+      content: "tell them i am on it",
+      intent: "explicit_cross_chat",
+      authorizingSession: {
+        friendId: "friend-uuid-1",
+        channel: "bluebubbles",
+        key: "chat:any;-;ari@icloud.com",
+        trustLevel: "friend",
+      },
+    }, {
+      agentName: "slugger",
+      queuePending,
+      deliverers: {
+        bluebubbles: bluebubblesDeliver,
+      },
+    })
+
+    expect(result).toEqual({
+      status: "queued_for_later",
+      detail: "live delivery unavailable right now; queued for the next active turn",
+    })
+    expect(queuePending).toHaveBeenCalledTimes(1)
+  })
+
+  it("surfaces thrown transport errors as failed delivery instead of silently queueing them", async () => {
+    const { deliverCrossChatMessage } = await loadCrossChatDeliveryModule()
+    const queuePending = vi.fn()
+    const bluebubblesDeliver = vi.fn().mockRejectedValue("socket exploded")
+
+    const result = await deliverCrossChatMessage({
+      friendId: "group-uuid",
+      channel: "bluebubbles",
+      key: "chat:any;+;project-group-123",
+      content: "tell them the transport died",
+      intent: "explicit_cross_chat",
+      authorizingSession: {
+        friendId: "friend-uuid-1",
+        channel: "bluebubbles",
+        key: "chat:any;-;ari@icloud.com",
+        trustLevel: "friend",
+      },
+    }, {
+      agentName: "slugger",
+      queuePending,
+      deliverers: {
+        bluebubbles: bluebubblesDeliver,
+      },
+    })
+
+    expect(result).toEqual({
+      status: "failed",
+      detail: "socket exploded",
+    })
+    expect(queuePending).not.toHaveBeenCalled()
+  })
+
+  it("stringifies thrown Error objects too", async () => {
+    const { deliverCrossChatMessage } = await loadCrossChatDeliveryModule()
+    const queuePending = vi.fn()
+    const bluebubblesDeliver = vi.fn().mockRejectedValue(new Error("socket crashed hard"))
+
+    const result = await deliverCrossChatMessage({
+      friendId: "group-uuid",
+      channel: "bluebubbles",
+      key: "chat:any;+;project-group-123",
+      content: "tell them the transport died again",
+      intent: "explicit_cross_chat",
+      authorizingSession: {
+        friendId: "friend-uuid-1",
+        channel: "bluebubbles",
+        key: "chat:any;-;ari@icloud.com",
+        trustLevel: "friend",
+      },
+    }, {
+      agentName: "slugger",
+      queuePending,
+      deliverers: {
+        bluebubbles: bluebubblesDeliver,
+      },
+    })
+
+    expect(result).toEqual({
+      status: "failed",
+      detail: "socket crashed hard",
     })
     expect(queuePending).not.toHaveBeenCalled()
   })

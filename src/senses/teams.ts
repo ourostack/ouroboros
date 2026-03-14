@@ -890,6 +890,29 @@ export interface TeamsBotApi {
   conversations: unknown
 }
 
+export interface ProactiveTeamsSessionSendParams {
+  friendId: string
+  sessionKey: string
+  text: string
+  intent?: "generic_outreach" | "explicit_cross_chat"
+  authorizingSession?: {
+    friendId: string
+    channel: string
+    key: string
+    trustLevel?: string
+  }
+}
+
+export interface ProactiveTeamsSessionSendResult {
+  delivered: boolean
+  reason?: "friend_not_found" | "trust_skip" | "missing_target" | "send_error"
+}
+
+interface ProactiveTeamsSessionSendDeps {
+  botApi: TeamsBotApi
+  store?: FriendStore
+  createFriendStore?: () => FriendStore
+}
 
 function findAadObjectId(friend: FriendRecord): { aadObjectId: string; tenantId?: string } | undefined {
   for (const ext of friend.externalIds) {
@@ -898,6 +921,115 @@ function findAadObjectId(friend: FriendRecord): { aadObjectId: string; tenantId?
     }
   }
   return undefined
+}
+
+function resolveTeamsFriendStore(deps: ProactiveTeamsSessionSendDeps): FriendStore {
+  return deps.store
+    ?? deps.createFriendStore?.()
+    ?? new FileFriendStore(path.join(getAgentRoot(), "friends"))
+}
+
+function getTeamsConversations(botApi: TeamsBotApi): {
+  create(params: Record<string, unknown>): Promise<{ id: string }>
+  activities(conversationId: string): { create(params: Record<string, unknown>): Promise<unknown> }
+} {
+  return botApi.conversations as {
+    create(params: Record<string, unknown>): Promise<{ id: string }>
+    activities(conversationId: string): { create(params: Record<string, unknown>): Promise<unknown> }
+  }
+}
+
+function hasExplicitCrossChatAuthorization(params: ProactiveTeamsSessionSendParams): boolean {
+  return params.intent === "explicit_cross_chat"
+    && TRUSTED_LEVELS.has((params.authorizingSession?.trustLevel as any) ?? "stranger")
+}
+
+export async function sendProactiveTeamsMessageToSession(
+  params: ProactiveTeamsSessionSendParams,
+  deps: ProactiveTeamsSessionSendDeps,
+): Promise<ProactiveTeamsSessionSendResult> {
+  const store = resolveTeamsFriendStore(deps)
+  const conversations = getTeamsConversations(deps.botApi)
+
+  let friend: FriendRecord | null
+  try {
+    friend = await store.get(params.friendId)
+  } catch {
+    friend = null
+  }
+
+  if (!friend) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.teams_proactive_no_friend",
+      message: "proactive send skipped: friend not found",
+      meta: { friendId: params.friendId, sessionKey: params.sessionKey },
+    })
+    return { delivered: false, reason: "friend_not_found" }
+  }
+
+  if (!hasExplicitCrossChatAuthorization(params) && !TRUSTED_LEVELS.has(friend.trustLevel ?? "stranger")) {
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.teams_proactive_trust_skip",
+      message: "proactive send skipped: trust level not allowed",
+      meta: {
+        friendId: params.friendId,
+        trustLevel: friend.trustLevel ?? "unknown",
+        intent: params.intent ?? "generic_outreach",
+        authorizingTrustLevel: params.authorizingSession?.trustLevel ?? null,
+      },
+    })
+    return { delivered: false, reason: "trust_skip" }
+  }
+
+  const aadInfo = findAadObjectId(friend)
+  if (!aadInfo) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.teams_proactive_no_aad_id",
+      message: "proactive send skipped: no AAD object ID found",
+      meta: { friendId: params.friendId, sessionKey: params.sessionKey },
+    })
+    return { delivered: false, reason: "missing_target" }
+  }
+
+  try {
+    const conversation = await conversations.create({
+      bot: { id: deps.botApi.id },
+      members: [{ id: aadInfo.aadObjectId, role: "user", name: friend.name || aadInfo.aadObjectId }],
+      tenantId: aadInfo.tenantId,
+      isGroup: false,
+    })
+    await conversations.activities(conversation.id).create({
+      type: "message",
+      text: params.text,
+    })
+
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.teams_proactive_sent",
+      message: "proactive teams message sent",
+      meta: { friendId: params.friendId, aadObjectId: aadInfo.aadObjectId, sessionKey: params.sessionKey },
+    })
+    return { delivered: true }
+  } catch (error) {
+    emitNervesEvent({
+      level: "error",
+      component: "senses",
+      event: "senses.teams_proactive_send_error",
+      message: "proactive teams send failed",
+      meta: {
+        friendId: params.friendId,
+        aadObjectId: aadInfo.aadObjectId,
+        sessionKey: params.sessionKey,
+        reason: error instanceof Error ? error.message : String(error),
+      },
+    })
+    return { delivered: false, reason: "send_error" }
+  }
 }
 
 function scanPendingTeamsFiles(pendingRoot: string): Array<{
@@ -958,12 +1090,7 @@ export async function drainAndSendPendingTeams(
   const pendingFiles = scanPendingTeamsFiles(root)
   const result: TeamsDrainAndSendResult = { sent: 0, skipped: 0, failed: 0 }
 
-  const conversations = botApi.conversations as {
-    create(params: Record<string, unknown>): Promise<{ id: string }>
-    activities(conversationId: string): { create(params: Record<string, unknown>): Promise<unknown> }
-  }
-
-  for (const { friendId, filePath, content } of pendingFiles) {
+  for (const { friendId, key, filePath, content } of pendingFiles) {
     let parsed: { content?: string }
     try {
       parsed = JSON.parse(content) as { content?: string }
@@ -980,85 +1107,30 @@ export async function drainAndSendPendingTeams(
       continue
     }
 
-    let friend: FriendRecord | null
-    try {
-      friend = await store.get(friendId)
-    } catch {
-      friend = null
-    }
+    const sendResult = await sendProactiveTeamsMessageToSession({
+      friendId,
+      sessionKey: key,
+      text: messageText,
+      intent: "generic_outreach",
+    }, {
+      botApi,
+      store,
+    })
 
-    if (!friend) {
-      result.skipped++
-      try { fs.unlinkSync(filePath) } catch { /* ignore */ }
-      emitNervesEvent({
-        level: "warn",
-        component: "senses",
-        event: "senses.teams_proactive_no_friend",
-        message: "proactive send skipped: friend not found",
-        meta: { friendId },
-      })
-      continue
-    }
-
-    if (!TRUSTED_LEVELS.has(friend.trustLevel ?? "stranger")) {
-      result.skipped++
-      try { fs.unlinkSync(filePath) } catch { /* ignore */ }
-      emitNervesEvent({
-        component: "senses",
-        event: "senses.teams_proactive_trust_skip",
-        message: "proactive send skipped: trust level not allowed",
-        meta: { friendId, trustLevel: friend.trustLevel ?? "unknown" },
-      })
-      continue
-    }
-
-    const aadInfo = findAadObjectId(friend)
-    if (!aadInfo) {
-      result.skipped++
-      try { fs.unlinkSync(filePath) } catch { /* ignore */ }
-      emitNervesEvent({
-        level: "warn",
-        component: "senses",
-        event: "senses.teams_proactive_no_aad_id",
-        message: "proactive send skipped: no AAD object ID found",
-        meta: { friendId },
-      })
-      continue
-    }
-
-    try {
-      const conversation = await conversations.create({
-        bot: { id: botApi.id },
-        members: [{ id: aadInfo.aadObjectId, role: "user", name: friend.name || aadInfo.aadObjectId }],
-        tenantId: aadInfo.tenantId,
-        isGroup: false,
-      })
-      await conversations.activities(conversation.id).create({
-        type: "message",
-        text: messageText,
-      })
+    if (sendResult.delivered) {
       result.sent++
       try { fs.unlinkSync(filePath) } catch { /* ignore */ }
+      continue
+    }
 
-      emitNervesEvent({
-        component: "senses",
-        event: "senses.teams_proactive_sent",
-        message: "proactive teams message sent",
-        meta: { friendId, aadObjectId: aadInfo.aadObjectId },
-      })
-    } catch (error) {
+    if (sendResult.reason === "friend_not_found" || sendResult.reason === "trust_skip" || sendResult.reason === "missing_target") {
+      result.skipped++
+      try { fs.unlinkSync(filePath) } catch { /* ignore */ }
+      continue
+    }
+
+    if (sendResult.reason === "send_error") {
       result.failed++
-      emitNervesEvent({
-        level: "error",
-        component: "senses",
-        event: "senses.teams_proactive_send_error",
-        message: "proactive teams send failed",
-        meta: {
-          friendId,
-          aadObjectId: aadInfo.aadObjectId,
-          reason: error instanceof Error ? error.message : String(error),
-        },
-      })
     }
   }
 
