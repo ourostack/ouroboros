@@ -367,7 +367,7 @@ function trustContextSection(context?: ResolvedContext): string {
     `basis: ${explanation.basis}`,
     `summary: ${explanation.summary}`,
     `why: ${explanation.why}`,
-    `permits: ${explanation.permits.join(", ") || "none"}`,
+    `permits: ${explanation.permits.join(", ")}`,
     `constraints: ${explanation.constraints.join(", ") || "none"}`,
   ]
   if (explanation.relatedGroupId) {

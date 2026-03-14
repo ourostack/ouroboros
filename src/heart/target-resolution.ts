@@ -54,10 +54,6 @@ function activityPriority(source: TargetSessionCandidate["activitySource"]): num
 }
 
 function describeDelivery(candidate: { channel: string; trust: TrustExplanation }): TargetSessionCandidate["delivery"] {
-  if (candidate.channel === "inner") {
-    return { mode: "blocked", reason: "inner dialog is not an outward delivery target" }
-  }
-
   if (candidate.channel !== "bluebubbles" && candidate.channel !== "teams") {
     return { mode: "blocked", reason: "this channel does not support proactive outward delivery yet" }
   }

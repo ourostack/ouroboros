@@ -355,6 +355,64 @@ describe("buildSystem", () => {
     expect(result).toContain("queue_only")
   })
 
+  it("keeps cli sessions free of remote trust framing", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const context = makeOnboardingContext()
+    context.friend.role = "friend"
+    context.friend.trustLevel = "friend"
+    context.channel = {
+      channel: "cli" as const,
+      availableIntegrations: [],
+      supportsMarkdown: false,
+      supportsStreaming: false,
+      supportsRichCards: false,
+      maxMessageLength: 28000,
+    }
+
+    const result = await buildSystem(
+      "cli",
+      {},
+      context as any,
+    )
+
+    expect(result).not.toContain("## trust context")
+  })
+
+  it("makes remote trust context explicit even when there is no related shared-group anchor", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const context = makeOnboardingContext()
+    context.friend.role = "acquaintance"
+    context.friend.trustLevel = "acquaintance"
+    context.friend.externalIds = [
+      { provider: "imessage-handle", externalId: "ari@mendelow.me", linkedAt: "2026-03-14T18:00:00.000Z" },
+    ]
+
+    const result = await buildSystem(
+      "teams",
+      {},
+      context as any,
+    )
+
+    expect(result).toContain("## trust context")
+    expect(result).toContain("level: acquaintance")
+    expect(result).toContain("basis: shared_group")
+    expect(result).toContain("permits:")
+    expect(result).toContain("constraints:")
+    expect(result).not.toContain("related group:")
+  })
+
   it("renders the delegation hint as part of the shared center-of-gravity story", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")

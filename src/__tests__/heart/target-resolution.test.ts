@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
@@ -80,6 +80,8 @@ async function loadTargetResolutionModule(): Promise<TargetResolutionModule> {
 }
 
 afterEach(() => {
+  vi.doUnmock("../../heart/session-recall")
+  vi.resetModules()
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop()
     if (dir) {
@@ -211,5 +213,119 @@ describe("listTargetSessionCandidates", () => {
     expect(formatted).toContain("teams/group-thread")
     expect(formatted.toLowerCase()).toContain("delivery")
     expect(formatted.toLowerCase()).toContain("trust")
+  })
+
+  it("falls back to synthesized stranger context for unknown sessions, blocks unsupported channels, and keeps same-priority candidates newest-first", async () => {
+    const { listTargetSessionCandidates } = await loadTargetResolutionModule()
+    const root = makeTempDir()
+    const sessionsDir = path.join(root, "state", "sessions")
+    const friendsDir = path.join(root, "friends")
+
+    writeJson(path.join(friendsDir, "friend-cli-newer.json"), { name: "CLI Newer" })
+    writeJson(path.join(friendsDir, "friend-cli-older.json"), { name: "CLI Older" })
+    writeJson(path.join(sessionsDir, "friend-cli-newer", "cli", "alpha.json"), {
+      state: { lastFriendActivityAt: "2026-03-14T18:05:00.000Z" },
+      messages: [{ role: "user", content: "newer cli target" }],
+    })
+    writeJson(path.join(sessionsDir, "friend-cli-older", "cli", "beta.json"), {
+      state: { lastFriendActivityAt: "2026-03-14T18:01:00.000Z" },
+      messages: [{ role: "user", content: "older cli target" }],
+    })
+    writeJson(path.join(sessionsDir, "missing-friend", "cli", "mystery.json"), {
+      state: { lastFriendActivityAt: "2026-03-14T18:03:00.000Z" },
+      messages: [{ role: "user", content: "unknown cli target" }],
+    })
+
+    const store = new InMemoryFriendStore([
+      makeFriend({
+        id: "friend-cli-newer",
+        name: "CLI Newer",
+        trustLevel: "friend",
+      }),
+      makeFriend({
+        id: "friend-cli-older",
+        name: "CLI Older",
+        trustLevel: "friend",
+      }),
+    ])
+
+    const candidates = await listTargetSessionCandidates({
+      sessionsDir,
+      friendsDir,
+      agentName: "slugger",
+      friendStore: store,
+    })
+
+    expect(candidates.map((candidate) => candidate.friendId)).toEqual([
+      "friend-cli-newer",
+      "missing-friend",
+      "friend-cli-older",
+    ])
+    expect(candidates.every((candidate) => candidate.delivery.mode === "blocked")).toBe(true)
+    expect(candidates[1]).toEqual(expect.objectContaining({
+      friendId: "missing-friend",
+      trust: expect.objectContaining({
+        level: "stranger",
+        basis: "unknown",
+      }),
+      delivery: expect.objectContaining({
+        mode: "blocked",
+        reason: "this channel does not support proactive outward delivery yet",
+      }),
+    }))
+  })
+
+  it("surfaces empty and unavailable recall states explicitly and formats no candidates as empty output", async () => {
+    vi.resetModules()
+    vi.doMock("../../heart/session-recall", async () => {
+      const actual = await vi.importActual<typeof import("../../heart/session-recall")>("../../heart/session-recall")
+      return {
+        ...actual,
+        recallSession: vi.fn()
+          .mockResolvedValueOnce({ kind: "empty" })
+          .mockResolvedValueOnce({ kind: "missing" }),
+      }
+    })
+
+    const { listTargetSessionCandidates, formatTargetSessionCandidates } = await loadTargetResolutionModule()
+    const root = makeTempDir()
+    const sessionsDir = path.join(root, "state", "sessions")
+    const friendsDir = path.join(root, "friends")
+
+    writeJson(path.join(friendsDir, "friend-1.json"), { name: "Ari" })
+    writeJson(path.join(friendsDir, "friend-2.json"), { name: "Ops Room" })
+    writeJson(path.join(sessionsDir, "friend-1", "teams", "chat-a.json"), {
+      state: { lastFriendActivityAt: "2026-03-14T18:04:00.000Z" },
+      messages: [{ role: "user", content: "anything here is ignored by the mock" }],
+    })
+    writeJson(path.join(sessionsDir, "friend-2", "teams", "chat-b.json"), {
+      state: { lastFriendActivityAt: "2026-03-14T18:03:00.000Z" },
+      messages: [{ role: "user", content: "still ignored by the mock" }],
+    })
+
+    const store = new InMemoryFriendStore([
+      makeFriend({
+        id: "friend-1",
+        name: "Ari",
+        trustLevel: "friend",
+      }),
+      makeFriend({
+        id: "friend-2",
+        name: "Ops Room",
+        trustLevel: "friend",
+      }),
+    ])
+
+    const candidates = await listTargetSessionCandidates({
+      sessionsDir,
+      friendsDir,
+      agentName: "slugger",
+      friendStore: store,
+    })
+
+    expect(candidates).toHaveLength(2)
+    expect(candidates[0]?.snapshot).toBe("recent focus: no recent visible messages")
+    expect(candidates[1]?.snapshot).toBe("recent focus: session transcript unavailable")
+    expect(formatTargetSessionCandidates([])).toBe("")
   })
 })
