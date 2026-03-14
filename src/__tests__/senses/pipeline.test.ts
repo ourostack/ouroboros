@@ -6,6 +6,9 @@ import type { FriendStore } from "../../mind/friends/store"
 import type { TrustGateInput, TrustGateResult } from "../../senses/trust-gate"
 import type { UsageData } from "../../mind/context"
 import type { PendingMessage } from "../../mind/pending"
+import * as daemonThoughts from "../../heart/daemon/thoughts"
+import * as identity from "../../heart/identity"
+import * as pending from "../../mind/pending"
 import { handleInboundTurn } from "../../senses/pipeline"
 import type { InboundTurnInput, InboundTurnResult } from "../../senses/pipeline"
 
@@ -837,6 +840,38 @@ describe("handleInboundTurn", () => {
           target: "delegate-inward",
           reasons: expect.arrayContaining(["explicit_reflection"]),
         }),
+      )
+    })
+
+    it("marks active-work inner status as running when live inner processing has started", async () => {
+      const getAgentRootSpy = vi.spyOn(identity, "getAgentRoot").mockReturnValue("/tmp/AgentBundles/slugger.ouro")
+      const getAgentNameSpy = vi.spyOn(identity, "getAgentName").mockReturnValue("slugger")
+      const getInnerDialogPendingDirSpy = vi.spyOn(pending, "getInnerDialogPendingDir").mockReturnValue("/tmp/pending/inner")
+      const getInnerDialogSessionPathSpy = vi.spyOn(daemonThoughts, "getInnerDialogSessionPath")
+        .mockReturnValue("/tmp/AgentBundles/slugger.ouro/state/sessions/self/inner/dialog.json")
+      const readInnerDialogStatusSpy = vi.spyOn(daemonThoughts, "readInnerDialogStatus").mockReturnValue({
+        queue: "clear",
+        wake: "in progress",
+        processing: "started",
+        surfaced: "nothing yet",
+      })
+      const input = makeInput()
+
+      await handleInboundTurn(input)
+
+      const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
+      const options = runAgentCall[4] as RunAgentOptions
+      expect((options as any).activeWorkFrame.inner).toEqual({
+        status: "running",
+        hasPending: false,
+      })
+      expect(getAgentRootSpy).toHaveBeenCalled()
+      expect(getAgentNameSpy).toHaveBeenCalled()
+      expect(getInnerDialogPendingDirSpy).toHaveBeenCalledWith("slugger")
+      expect(getInnerDialogSessionPathSpy).toHaveBeenCalledWith("/tmp/AgentBundles/slugger.ouro")
+      expect(readInnerDialogStatusSpy).toHaveBeenCalledWith(
+        "/tmp/AgentBundles/slugger.ouro/state/sessions/self/inner/dialog.json",
+        "/tmp/pending/inner",
       )
     })
 

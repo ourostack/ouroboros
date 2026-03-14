@@ -484,6 +484,24 @@ describe("send_message tool", () => {
       expect(result).toContain("no outward result")
     })
 
+    it("reports no outward result when the inline fallback returns without a messages payload", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      mockRunInnerDialogTurn.mockResolvedValue(undefined)
+
+      const result = await tool.handler({
+        friendId: "self",
+        channel: "cli",
+        content: "hold this lightly",
+      })
+
+      expect(result).toContain("inner work: completed")
+      expect(result).toContain("queued to inner/dialog")
+      expect(result).toContain("wake: inline fallback")
+      expect(result).toContain("no outward result")
+    })
+
     it("truncates long surfaced previews in the inline fallback response", async () => {
       const { baseToolDefinitions } = await import("../../repertoire/tools-base")
       const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!

@@ -2437,6 +2437,47 @@ describe("buildSystem with context", () => {
     expect(result).toContain("i can think freely here")
   })
 
+  it("buildSystem includes delegation hints with explicit reasons and closure state", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("cli", {
+      delegationDecision: {
+        target: "delegate-inward",
+        reasons: ["cross_session", "task_state"],
+        outwardClosureRequired: true,
+      },
+    } as any)
+
+    expect(result).toContain("## delegation hint")
+    expect(result).toContain("reasons: cross_session, task_state")
+    expect(result).toContain("outward closure: required")
+  })
+
+  it("buildSystem renders empty delegation reasons as none and optional closure as not required", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("cli", {
+      delegationDecision: {
+        target: "fast-path",
+        reasons: [],
+        outwardClosureRequired: false,
+      },
+    } as any)
+
+    expect(result).toContain("reasons: none")
+    expect(result).toContain("outward closure: not required")
+  })
+
   it("buildSystem('inner') includes inner dialog loop orientation", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")

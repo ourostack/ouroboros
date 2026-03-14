@@ -138,7 +138,6 @@ function normalizeProgressOutcome(text: string): string | null {
 
 function renderInnerProgressStatus(
   status: { queue: string; wake: string; processing: string; surfaced: string },
-  options: { includeWakeOnComplete?: boolean } = {},
 ): string {
   if (status.processing === "pending") {
     return renderProgressStory(buildProgressStory({
@@ -161,7 +160,7 @@ function renderInnerProgressStatus(
   return renderProgressStory(buildProgressStory({
     scope: "inner-delegation",
     phase: "completed",
-    objective: options.includeWakeOnComplete ? `wake: ${status.wake}` : null,
+    objective: null,
     outcomeText: completedOutcome,
   }))
 }
@@ -950,7 +949,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
             const turnResult = await runInnerDialogTurn({ reason: "instinct" })
             const surfacedPreview = normalizeProgressOutcome(
               formatSurfacedValue(extractThoughtResponseFromMessages(turnResult?.messages ?? [])),
-            ) ?? "no outward result"
+            )
             return renderProgressStory(buildProgressStory({
               scope: "inner-delegation",
               phase: "completed",

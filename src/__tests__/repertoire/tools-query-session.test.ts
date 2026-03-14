@@ -594,6 +594,28 @@ describe("query_session tool", () => {
     ].join("\n"))
   })
 
+  it("reports completed idle status when nothing recent has surfaced", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
+
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readFileSync).mockImplementation((filePath) => {
+      if (String(filePath).endsWith("/state/sessions/self/inner/dialog.json")) {
+        return JSON.stringify({ version: 1, messages: [{ role: "system", content: "sys" }] })
+      }
+      throw new Error(`ENOENT: ${String(filePath)}`)
+    })
+
+    const result = await tool.handler({
+      friendId: "self",
+      channel: "inner",
+      mode: "status",
+    })
+
+    expect(result).toContain("inner work: completed")
+    expect(result).toContain("nothing recent")
+  })
+
   it("rejects status mode for non-self sessions instead of pretending it can inspect them", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!

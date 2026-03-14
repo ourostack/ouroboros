@@ -11,6 +11,8 @@ import {
   type OuroCliDeps,
 } from "../../../heart/daemon/daemon-cli"
 import { OuroDaemon } from "../../../heart/daemon/daemon"
+import * as identity from "../../../heart/identity"
+import * as sessionActivity from "../../../heart/session-activity"
 
 const PACKAGE_VERSION = JSON.parse(
   fs.readFileSync(path.join(process.cwd(), "package.json"), "utf-8"),
@@ -4088,6 +4090,44 @@ describe("ouro whoami and session list CLI execution", () => {
   it("default deps provide a real session scanner", () => {
     const deps = createDefaultOuroCliDeps("/tmp/ouro-test.sock")
     expect(deps.scanSessions).toEqual(expect.any(Function))
+  })
+
+  it("default deps session scanner uses the shared session-activity helper", async () => {
+    const getAgentNameSpy = vi.spyOn(identity, "getAgentName").mockReturnValue("slugger")
+    const getAgentRootSpy = vi.spyOn(identity, "getAgentRoot").mockReturnValue("/tmp/AgentBundles/slugger.ouro")
+    const listSpy = vi.spyOn(sessionActivity, "listSessionActivity").mockReturnValue([
+      {
+        friendId: "friend-1",
+        friendName: "Ari",
+        channel: "bluebubbles",
+        key: "chat_any;-;ari@mendelow.me",
+        sessionPath: "/tmp/AgentBundles/slugger.ouro/state/sessions/friend-1/bluebubbles/chat_any;-;ari@mendelow.me.json",
+        lastActivityAt: "2026-03-14T16:00:00.000Z",
+        lastActivityMs: 123,
+        activitySource: "friend-facing",
+      },
+    ])
+
+    const deps = createDefaultOuroCliDeps("/tmp/ouro-test.sock")
+    const result = await deps.scanSessions?.()
+
+    expect(listSpy).toHaveBeenCalledWith({
+      sessionsDir: "/tmp/AgentBundles/slugger.ouro/state/sessions",
+      friendsDir: "/tmp/AgentBundles/slugger.ouro/friends",
+      agentName: "slugger",
+    })
+    expect(result).toEqual([
+      {
+        friendId: "friend-1",
+        friendName: "Ari",
+        channel: "bluebubbles",
+        lastActivity: "2026-03-14T16:00:00.000Z",
+      },
+    ])
+
+    listSpy.mockRestore()
+    getAgentRootSpy.mockRestore()
+    getAgentNameSpy.mockRestore()
   })
 })
 

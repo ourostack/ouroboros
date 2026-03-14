@@ -244,6 +244,33 @@ describe("bridge_manage tool", () => {
     expect(result).toContain("sessions: 2")
   })
 
+  it("still reports missing when both summarized and raw recall fail during attach", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find((entry) => entry.tool.function.name === "bridge_manage")!
+    const recall = await import("../../heart/session-recall")
+
+    vi.mocked(recall.recallSession)
+      .mockRejectedValueOnce(new Error("summary failed"))
+      .mockRejectedValueOnce(new Error("raw recall failed"))
+
+    const result = await tool.handler(
+      {
+        action: "attach",
+        bridgeId: "bridge-1",
+        friendId: "friend-2",
+        channel: "teams",
+        key: "conv-2",
+      },
+      {
+        signin: vi.fn(),
+        summarize: vi.fn().mockRejectedValue(new Error("summary failed")),
+      } as any,
+    )
+
+    expect(result).toBe("no session found for that friend/channel/key combination.")
+    expect(mockAttachSession).not.toHaveBeenCalled()
+  })
+
   it("requires a non-empty objective when beginning a bridge", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const tool = baseToolDefinitions.find((entry) => entry.tool.function.name === "bridge_manage")!
