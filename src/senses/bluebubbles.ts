@@ -1000,22 +1000,35 @@ function findImessageHandle(friend: FriendRecord): string | undefined {
   return undefined
 }
 
+function normalizeBlueBubblesSessionKey(sessionKey: string): string {
+  const trimmed = sessionKey.trim()
+  if (trimmed.startsWith("chat_identifier_")) {
+    return `chat_identifier:${trimmed.slice("chat_identifier_".length)}`
+  }
+  if (trimmed.startsWith("chat_")) {
+    return `chat:${trimmed.slice("chat_".length)}`
+  }
+  return trimmed
+}
+
 function extractChatIdentifierFromSessionKey(sessionKey: string): string | undefined {
-  if (sessionKey.startsWith("chat:")) {
-    const chatGuid = sessionKey.slice("chat:".length).trim()
+  const normalizedKey = normalizeBlueBubblesSessionKey(sessionKey)
+  if (normalizedKey.startsWith("chat:")) {
+    const chatGuid = normalizedKey.slice("chat:".length).trim()
     const parts = chatGuid.split(";")
     return parts.length >= 3 ? parts[2]?.trim() || undefined : undefined
   }
-  if (sessionKey.startsWith("chat_identifier:")) {
-    const identifier = sessionKey.slice("chat_identifier:".length).trim()
+  if (normalizedKey.startsWith("chat_identifier:")) {
+    const identifier = normalizedKey.slice("chat_identifier:".length).trim()
     return identifier || undefined
   }
   return undefined
 }
 
 function buildChatRefForSessionKey(friend: FriendRecord, sessionKey: string): BlueBubblesChatRef | null {
-  if (sessionKey.startsWith("chat:")) {
-    const chatGuid = sessionKey.slice("chat:".length).trim()
+  const normalizedKey = normalizeBlueBubblesSessionKey(sessionKey)
+  if (normalizedKey.startsWith("chat:")) {
+    const chatGuid = normalizedKey.slice("chat:".length).trim()
     if (!chatGuid) return null
     return {
       chatGuid,
