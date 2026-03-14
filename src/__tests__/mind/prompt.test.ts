@@ -277,6 +277,84 @@ describe("buildSystem", () => {
     expect(result).toContain("suggested bridge: attach bridge-1 -> cli/session")
   })
 
+  it("makes current trust context and candidate target chats explicit enough to reason about", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const context = makeOnboardingContext()
+    context.friend.role = "acquaintance"
+    context.friend.trustLevel = "acquaintance"
+    context.friend.externalIds = [
+      { provider: "imessage-handle", externalId: "ari@mendelow.me", linkedAt: "2026-03-14T18:00:00.000Z" },
+      { provider: "imessage-handle", externalId: "group:any;+;project-group-123", linkedAt: "2026-03-14T18:00:00.000Z" },
+    ]
+
+    const result = await buildSystem(
+      "bluebubbles",
+      {
+        activeWorkFrame: {
+          centerOfGravity: "shared-work",
+          currentObligation: "carry this into the group chat",
+          currentSession: {
+            friendId: "friend-1",
+            channel: "bluebubbles",
+            key: "chat-any",
+            sessionPath: "/tmp/state/sessions/friend-1/bluebubbles/chat-any.json",
+          },
+          mustResolveBeforeHandoff: false,
+          inner: { status: "idle", hasPending: false },
+          bridges: [],
+          taskPressure: {
+            compactBoard: "",
+            liveTaskNames: [],
+            activeBridges: [],
+          },
+          friendActivity: {
+            freshestForCurrentFriend: null,
+            otherLiveSessionsForCurrentFriend: [],
+          },
+          bridgeSuggestion: null,
+          targetCandidates: [
+            {
+              friendId: "friend-2",
+              friendName: "Project Group",
+              channel: "bluebubbles",
+              key: "chat-group",
+              sessionPath: "/tmp/state/sessions/friend-2/bluebubbles/chat-group.json",
+              snapshot: "recent focus: waiting on the update",
+              trust: {
+                level: "acquaintance",
+                basis: "shared_group",
+                summary: "known through the shared project group",
+                why: "this group is a shared social context, not direct trust",
+                permits: ["group-safe coordination"],
+                constraints: ["guarded local actions"],
+                relatedGroupId: "group:any;+;project-group-123",
+              },
+              delivery: {
+                mode: "queue_only",
+                reason: "requires explicit cross-chat authorization",
+              },
+              lastActivityAt: "2026-03-14T18:01:00.000Z",
+              lastActivityMs: Date.parse("2026-03-14T18:01:00.000Z"),
+            },
+          ],
+        } as any,
+      },
+      context as any,
+    )
+
+    expect(result).toContain("## trust context")
+    expect(result).toContain("shared project group")
+    expect(result).toContain("## candidate target chats")
+    expect(result).toContain("Project Group")
+    expect(result).toContain("queue_only")
+  })
+
   it("renders the delegation hint as part of the shared center-of-gravity story", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")

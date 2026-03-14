@@ -298,6 +298,60 @@ describe("active work frame", () => {
     expect(rendered).not.toContain("bridges:")
   })
 
+  it("surfaces explicit target-candidate detail when the frame already has candidate truth", async () => {
+    const { formatActiveWorkFrame } = await import("../../heart/active-work")
+
+    const rendered = formatActiveWorkFrame({
+      currentSession: {
+        friendId: "friend-1",
+        channel: "bluebubbles",
+        key: "chat-any",
+        sessionPath: "/tmp/state/sessions/friend-1/bluebubbles/chat-any.json",
+      },
+      currentObligation: "carry this across chats",
+      mustResolveBeforeHandoff: false,
+      centerOfGravity: "shared-work",
+      inner: { status: "idle", hasPending: false },
+      bridges: [],
+      taskPressure: {
+        compactBoard: "",
+        liveTaskNames: [],
+        activeBridges: [],
+      },
+      friendActivity: {
+        freshestForCurrentFriend: null,
+        otherLiveSessionsForCurrentFriend: [],
+      },
+      bridgeSuggestion: null,
+      targetCandidates: [
+        {
+          friendId: "friend-2",
+          friendName: "Project Group",
+          channel: "bluebubbles",
+          key: "chat-group",
+          sessionPath: "/tmp/state/sessions/friend-2/bluebubbles/chat-group.json",
+          snapshot: "recent focus: waiting on the update",
+          trust: {
+            level: "acquaintance",
+            basis: "shared_group",
+            summary: "known through the shared project group",
+          },
+          delivery: {
+            mode: "queue_only",
+            reason: "requires explicit cross-chat authorization",
+          },
+          lastActivityAt: "2026-03-14T18:01:00.000Z",
+          lastActivityMs: Date.parse("2026-03-14T18:01:00.000Z"),
+        },
+      ],
+    } as any)
+
+    expect(rendered).toContain("candidate target chats")
+    expect(rendered).toContain("Project Group")
+    expect(rendered).toContain("queue_only")
+    expect(rendered).toContain("shared_group")
+  })
+
   it("suggests beginning a new bridge when another live same-friend session exists but no bridge is active yet", async () => {
     const { buildActiveWorkFrame } = await import("../../heart/active-work")
 
