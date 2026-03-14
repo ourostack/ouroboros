@@ -20,6 +20,7 @@ import { listSessionActivity } from "../heart/session-activity"
 import type { SessionActivityRecord } from "../heart/session-activity"
 import { buildActiveWorkFrame } from "../heart/active-work"
 import { decideDelegation } from "../heart/delegation"
+import { listTargetSessionCandidates } from "../heart/target-resolution"
 import { readInnerDialogStatus, getInnerDialogSessionPath } from "../heart/daemon/thoughts"
 import { getInnerDialogPendingDir } from "../mind/pending"
 import type { BoardResult } from "../repertoire/tasks/types"
@@ -241,6 +242,25 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   } catch {
     sessionActivity = []
   }
+  let targetCandidates = [] as Awaited<ReturnType<typeof listTargetSessionCandidates>>
+  try {
+    if (input.channel !== "inner") {
+      const agentRoot = getAgentRoot()
+      targetCandidates = await listTargetSessionCandidates({
+        sessionsDir: `${agentRoot}/state/sessions`,
+        friendsDir: `${agentRoot}/friends`,
+        agentName: getAgentName(),
+        currentSession: {
+          friendId: currentSession.friendId,
+          channel: currentSession.channel,
+          key: currentSession.key,
+        },
+        friendStore: input.friendStore,
+      })
+    }
+  } catch {
+    targetCandidates = []
+  }
   const activeWorkFrame = buildActiveWorkFrame({
     currentSession,
     currentObligation,
@@ -255,6 +275,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
       }
     })(),
     friendActivity: sessionActivity,
+    targetCandidates,
   })
   const delegationDecision = decideDelegation({
     channel: input.channel,

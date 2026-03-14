@@ -854,6 +854,8 @@ describe("handleInboundTurn", () => {
     })
 
     it("threads explicit cross-relationship target candidates into the active-work frame and suggests one shared-work candidate when the target is clear", async () => {
+      const getAgentRootSpy = vi.spyOn(identity, "getAgentRoot").mockReturnValue("/tmp/AgentBundles/slugger.ouro")
+      const getAgentNameSpy = vi.spyOn(identity, "getAgentName").mockReturnValue("slugger")
       mockListTargetSessionCandidates.mockResolvedValue([
         {
           friendId: "group-1",
@@ -908,6 +910,10 @@ describe("handleInboundTurn", () => {
           }),
         }),
       )
+      expect(getAgentRootSpy).toHaveBeenCalled()
+      expect(getAgentNameSpy).toHaveBeenCalled()
+      getAgentRootSpy.mockRestore()
+      getAgentNameSpy.mockRestore()
     })
 
     it("marks active-work inner status as running when live inner processing has started", async () => {
