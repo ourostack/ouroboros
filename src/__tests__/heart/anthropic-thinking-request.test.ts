@@ -1,0 +1,247 @@
+import { describe, it, expect, vi, beforeEach } from "vitest"
+import { emitNervesEvent } from "../../nerves/runtime"
+
+function emitTestEvent(testName: string): void {
+  emitNervesEvent({
+    component: "engine",
+    event: "engine.test_run",
+    message: testName,
+    meta: { test: true },
+  })
+}
+
+function defaultReadFileSync(filePath: any, _encoding?: any): string {
+  const p = String(filePath)
+  if (p.endsWith("SOUL.md")) return "mock soul"
+  if (p.endsWith("IDENTITY.md")) return "mock identity"
+  if (p.endsWith("package.json")) return JSON.stringify({ name: "other" })
+  return ""
+}
+
+vi.mock("fs", () => ({
+  existsSync: vi.fn(),
+  readFileSync: vi.fn(defaultReadFileSync),
+  writeFileSync: vi.fn(),
+  readdirSync: vi.fn(),
+  mkdirSync: vi.fn(),
+}))
+
+vi.mock("child_process", () => ({ execSync: vi.fn(), spawnSync: vi.fn() }))
+vi.mock("../../repertoire/skills", () => ({ listSkills: vi.fn(), loadSkill: vi.fn() }))
+
+vi.mock("../../heart/identity", () => ({
+  loadAgentConfig: vi.fn(() => ({
+    name: "testagent",
+    configPath: "~/.agentsecrets/testagent/secrets.json",
+    provider: "anthropic",
+  })),
+  DEFAULT_AGENT_CONTEXT: { maxTokens: 80000, contextMargin: 20 },
+  getAgentName: vi.fn(() => "testagent"),
+  getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/testagent/secrets.json"),
+  getAgentRoot: vi.fn(() => "/mock/repo/testagent"),
+  getRepoRoot: vi.fn(() => "/mock/repo"),
+  resetIdentity: vi.fn(),
+}))
+
+let capturedAnthropicParams: any = null
+const mockAnthropicMessagesCreate = vi.fn().mockImplementation((params: any) => {
+  capturedAnthropicParams = params
+  return {
+    [Symbol.asyncIterator]: async function* () {
+      yield { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }
+      yield { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "hello" } }
+      yield { type: "content_block_stop", index: 0 }
+      yield { type: "message_delta", usage: { input_tokens: 10, output_tokens: 5 } }
+    },
+  }
+})
+
+vi.mock("openai", () => {
+  class MockOpenAI { chat = { completions: { create: vi.fn() } }; responses = { create: vi.fn() }; constructor() {} }
+  return { default: MockOpenAI, AzureOpenAI: MockOpenAI }
+})
+
+vi.mock("@anthropic-ai/sdk", () => {
+  class MockAnthropic {
+    messages = { create: mockAnthropicMessagesCreate }
+    constructor() {}
+  }
+  return { default: MockAnthropic }
+})
+
+import * as identity from "../../heart/identity"
+
+function makeAnthropicSetupToken(): string {
+  return `sk-ant-oat01-${"a".repeat(80)}`
+}
+
+describe("Anthropic thinking request params", () => {
+  beforeEach(() => {
+    vi.resetModules()
+    capturedAnthropicParams = null
+    mockAnthropicMessagesCreate.mockClear()
+  })
+
+  it("sends thinking parameter with adaptive type and effort in request", async () => {
+    emitTestEvent("anthropic thinking param sent")
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      name: "testagent",
+      configPath: "~/.agentsecrets/testagent/secrets.json",
+      provider: "anthropic",
+    })
+    const config = await import("../../heart/config")
+    config.resetConfigCache()
+    config.patchRuntimeConfig({
+      providers: { anthropic: { model: "claude-opus-4-6", setupToken: makeAnthropicSetupToken() } },
+    })
+
+    const { createAnthropicProviderRuntime } = await import("../../heart/providers/anthropic")
+    const runtime = createAnthropicProviderRuntime()
+    await runtime.streamTurn({
+      messages: [{ role: "user", content: "hi" }],
+      activeTools: [],
+      callbacks: {
+        onModelStart: () => {},
+        onModelStreamStart: () => {},
+        onTextChunk: () => {},
+        onReasoningChunk: () => {},
+        onToolStart: () => {},
+        onToolEnd: () => {},
+        onError: () => {},
+      },
+      reasoningEffort: "high",
+    })
+
+    expect(capturedAnthropicParams).toBeDefined()
+    expect(capturedAnthropicParams.thinking).toEqual({ type: "adaptive", effort: "high" })
+  })
+
+  it("defaults thinking effort to medium when reasoningEffort is undefined", async () => {
+    emitTestEvent("anthropic thinking defaults medium")
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      name: "testagent",
+      configPath: "~/.agentsecrets/testagent/secrets.json",
+      provider: "anthropic",
+    })
+    const config = await import("../../heart/config")
+    config.resetConfigCache()
+    config.patchRuntimeConfig({
+      providers: { anthropic: { model: "claude-opus-4-6", setupToken: makeAnthropicSetupToken() } },
+    })
+
+    const { createAnthropicProviderRuntime } = await import("../../heart/providers/anthropic")
+    const runtime = createAnthropicProviderRuntime()
+    await runtime.streamTurn({
+      messages: [{ role: "user", content: "hi" }],
+      activeTools: [],
+      callbacks: {
+        onModelStart: () => {},
+        onModelStreamStart: () => {},
+        onTextChunk: () => {},
+        onReasoningChunk: () => {},
+        onToolStart: () => {},
+        onToolEnd: () => {},
+        onError: () => {},
+      },
+    })
+
+    expect(capturedAnthropicParams.thinking).toEqual({ type: "adaptive", effort: "medium" })
+  })
+
+  it("sets max_tokens from registry maxOutputTokens for opus-4-6", async () => {
+    emitTestEvent("anthropic max_tokens from registry opus")
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      name: "testagent",
+      configPath: "~/.agentsecrets/testagent/secrets.json",
+      provider: "anthropic",
+    })
+    const config = await import("../../heart/config")
+    config.resetConfigCache()
+    config.patchRuntimeConfig({
+      providers: { anthropic: { model: "claude-opus-4-6", setupToken: makeAnthropicSetupToken() } },
+    })
+
+    const { createAnthropicProviderRuntime } = await import("../../heart/providers/anthropic")
+    const runtime = createAnthropicProviderRuntime()
+    await runtime.streamTurn({
+      messages: [{ role: "user", content: "hi" }],
+      activeTools: [],
+      callbacks: {
+        onModelStart: () => {},
+        onModelStreamStart: () => {},
+        onTextChunk: () => {},
+        onReasoningChunk: () => {},
+        onToolStart: () => {},
+        onToolEnd: () => {},
+        onError: () => {},
+      },
+    })
+
+    expect(capturedAnthropicParams.max_tokens).toBe(128000)
+  })
+
+  it("sets max_tokens from registry maxOutputTokens for sonnet-4-6", async () => {
+    emitTestEvent("anthropic max_tokens from registry sonnet")
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      name: "testagent",
+      configPath: "~/.agentsecrets/testagent/secrets.json",
+      provider: "anthropic",
+    })
+    const config = await import("../../heart/config")
+    config.resetConfigCache()
+    config.patchRuntimeConfig({
+      providers: { anthropic: { model: "claude-sonnet-4-6", setupToken: makeAnthropicSetupToken() } },
+    })
+
+    const { createAnthropicProviderRuntime } = await import("../../heart/providers/anthropic")
+    const runtime = createAnthropicProviderRuntime()
+    await runtime.streamTurn({
+      messages: [{ role: "user", content: "hi" }],
+      activeTools: [],
+      callbacks: {
+        onModelStart: () => {},
+        onModelStreamStart: () => {},
+        onTextChunk: () => {},
+        onReasoningChunk: () => {},
+        onToolStart: () => {},
+        onToolEnd: () => {},
+        onError: () => {},
+      },
+    })
+
+    expect(capturedAnthropicParams.max_tokens).toBe(64000)
+  })
+
+  it("falls back to sensible default max_tokens when registry has no maxOutputTokens", async () => {
+    emitTestEvent("anthropic max_tokens fallback")
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      name: "testagent",
+      configPath: "~/.agentsecrets/testagent/secrets.json",
+      provider: "anthropic",
+    })
+    const config = await import("../../heart/config")
+    config.resetConfigCache()
+    config.patchRuntimeConfig({
+      providers: { anthropic: { model: "unknown-model", setupToken: makeAnthropicSetupToken() } },
+    })
+
+    const { createAnthropicProviderRuntime } = await import("../../heart/providers/anthropic")
+    const runtime = createAnthropicProviderRuntime()
+    await runtime.streamTurn({
+      messages: [{ role: "user", content: "hi" }],
+      activeTools: [],
+      callbacks: {
+        onModelStart: () => {},
+        onModelStreamStart: () => {},
+        onTextChunk: () => {},
+        onReasoningChunk: () => {},
+        onToolStart: () => {},
+        onToolEnd: () => {},
+        onError: () => {},
+      },
+    })
+
+    // Should fall back to a sensible default (not 4096)
+    expect(capturedAnthropicParams.max_tokens).toBeGreaterThan(4096)
+  })
+})

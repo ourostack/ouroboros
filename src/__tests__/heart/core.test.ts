@@ -3828,9 +3828,10 @@ describe("anthropic setup-token provider contract", () => {
     expect(params).toEqual(expect.objectContaining({
       model: "claude-opus-4-6",
       stream: true,
-      max_tokens: 4096,
+      max_tokens: 128000,
       system: "system from array",
       tool_choice: { type: "any" },
+      thinking: { type: "adaptive", effort: "medium" },
     }))
     expect(Array.isArray((params as any).messages)).toBe(true)
     expect(Array.isArray((params as any).tools)).toBe(true)

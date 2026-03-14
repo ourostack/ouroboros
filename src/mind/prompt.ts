@@ -331,7 +331,7 @@ function dateSection(): string {
 }
 
 function toolsSection(channel: Channel, options?: BuildSystemOptions, context?: ResolvedContext): string {
-  const channelTools = getToolsForChannel(getChannelCapabilities(channel), undefined, context);
+  const channelTools = getToolsForChannel(getChannelCapabilities(channel), undefined, context, options?.providerCapabilities);
   const activeTools = (options?.toolChoiceRequired ?? true) ? [...channelTools, finalAnswerTool] : channelTools;
   const list = activeTools
     .map((t) => `- ${t.function.name}: ${t.function.description}`)
@@ -416,6 +416,8 @@ export interface BuildSystemOptions {
   hasQueuedFollowUp?: boolean;
   activeWorkFrame?: ActiveWorkFrame;
   delegationDecision?: DelegationDecision;
+  providerCapabilities?: ReadonlySet<import("../heart/core").ProviderCapability>;
+  supportedReasoningEfforts?: readonly string[];
 }
 
 function bridgeContextSection(options?: BuildSystemOptions): string {
@@ -439,6 +441,14 @@ function delegationHintSection(options?: BuildSystemOptions): string {
     `outward closure: ${options.delegationDecision.outwardClosureRequired ? "required" : "not required"}`,
   ]
   return lines.join("\n")
+}
+
+function reasoningEffortSection(options?: BuildSystemOptions): string {
+  if (!options?.providerCapabilities?.has("reasoning-effort")) return "";
+  const levels = options.supportedReasoningEfforts ?? [];
+  const levelList = levels.length > 0 ? levels.join(", ") : "varies by model";
+  return `## reasoning effort
+i can adjust my own reasoning depth using the set_reasoning_effort tool. i use higher effort for complex analysis and lower effort for simple tasks. available levels: ${levelList}.`;
 }
 
 function toolBehaviorSection(options?: BuildSystemOptions): string {
@@ -572,6 +582,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     providerSection(),
     dateSection(),
     toolsSection(channel, options, context),
+    reasoningEffortSection(options),
     toolRestrictionSection(context),
     trustContextSection(context),
     mixedTrustGroupSection(context),

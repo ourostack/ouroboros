@@ -3,6 +3,7 @@ import { getMinimaxConfig } from "../config";
 import { emitNervesEvent } from "../../nerves/runtime";
 import type { ProviderRuntime, ProviderTurnRequest } from "../core";
 import { streamChatCompletion } from "../streaming";
+import { getModelCapabilities } from "../model-capabilities";
 
 export function createMinimaxProviderRuntime(): ProviderRuntime {
   emitNervesEvent({
@@ -17,6 +18,9 @@ export function createMinimaxProviderRuntime(): ProviderRuntime {
       "provider 'minimax' is selected in agent.json but providers.minimax.apiKey is missing in secrets.json.",
     );
   }
+  // Registry consulted; MiniMax models return empty defaults (no capabilities to derive)
+  getModelCapabilities(minimaxConfig.model);
+
   const client = new OpenAI({
     apiKey: minimaxConfig.apiKey,
     baseURL: "https://api.minimaxi.chat/v1",
@@ -27,6 +31,7 @@ export function createMinimaxProviderRuntime(): ProviderRuntime {
     id: "minimax",
     model: minimaxConfig.model,
     client,
+    capabilities: new Set(),
     resetTurnState(_messages: OpenAI.ChatCompletionMessageParam[]): void {
       // No provider-owned turn state for chat-completions providers.
     },
