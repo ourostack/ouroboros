@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.52",
+      "changes": [
+        "Trusted 1:1 chats can now act live across active group threads: the harness resolves candidate target chats, carries explicit trust context into the model, and delivers messages into the right live BlueBubbles or Teams session instead of only queueing for later.",
+        "People discovered through a relevant live group are now bootstrapped as acquaintances with shared-group context, so the agent gets a socially truthful model of who is merely unknown versus who is known through the current group.",
+        "Cross-chat work now returns a truthful outcome back to the asking chat, and bridge suggestions can span different outward relationships when one live piece of work is clearly happening across them."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.51",
       "changes": [
         "Agents can now adjust their own reasoning depth mid-conversation via a new set_reasoning_effort tool, with effort levels derived from a central model capabilities registry.",
