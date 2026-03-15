@@ -98,6 +98,70 @@ describe("ensureCurrentDaemonRuntime", () => {
     expect(deps.startDaemonProcess).toHaveBeenCalledWith("/tmp/ouro-test.sock")
   })
 
+  it("restarts the daemon when lastUpdated drifts and versions match", async () => {
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      localVersion: "0.1.0-alpha.20",
+      localLastUpdated: "2026-03-09T11:00:00.000Z",
+      fetchRunningVersion: vi.fn(async () => "0.1.0-alpha.20"),
+      fetchRunningRuntimeMetadata: vi.fn(async () => ({
+        version: "0.1.0-alpha.20",
+        lastUpdated: "2026-03-08T00:00:00.000Z",
+      })),
+      stopDaemon: vi.fn(async () => {}),
+      cleanupStaleSocket: vi.fn(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 777 })),
+    } as any
+
+    const result = await ensureCurrentDaemonRuntime(deps)
+
+    expect(result.alreadyRunning).toBe(false)
+    expect(deps.stopDaemon).toHaveBeenCalledTimes(1)
+    expect(deps.cleanupStaleSocket).toHaveBeenCalledWith("/tmp/ouro-test.sock")
+    expect(deps.startDaemonProcess).toHaveBeenCalledWith("/tmp/ouro-test.sock")
+  })
+
+  it("falls back to fetchRunningVersion when runtime metadata omits the version", async () => {
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      localVersion: "0.1.0-alpha.20",
+      fetchRunningVersion: vi.fn(async () => "0.1.0-alpha.6"),
+      fetchRunningRuntimeMetadata: vi.fn(async () => ({})),
+      stopDaemon: vi.fn(async () => {}),
+      cleanupStaleSocket: vi.fn(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 777 })),
+    }
+
+    const result = await ensureCurrentDaemonRuntime(deps)
+
+    expect(result.alreadyRunning).toBe(false)
+    expect(deps.fetchRunningVersion).toHaveBeenCalledTimes(1)
+    expect(deps.stopDaemon).toHaveBeenCalledTimes(1)
+    expect(deps.cleanupStaleSocket).toHaveBeenCalledWith("/tmp/ouro-test.sock")
+    expect(deps.startDaemonProcess).toHaveBeenCalledWith("/tmp/ouro-test.sock")
+  })
+
+  it("formats unknown pid when same-version drift restart returns null pid", async () => {
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      localVersion: "0.1.0-alpha.20",
+      localRepoRoot: "/Users/arimendelow/Projects/ouroboros-agent-harness-bb-health-status",
+      fetchRunningVersion: vi.fn(async () => "0.1.0-alpha.20"),
+      fetchRunningRuntimeMetadata: vi.fn(async () => ({
+        version: "0.1.0-alpha.20",
+        repoRoot: "/Users/arimendelow/Projects/ouroboros-agent-harness-cross-chat-bridge-orchestration",
+      })),
+      stopDaemon: vi.fn(async () => {}),
+      cleanupStaleSocket: vi.fn(),
+      startDaemonProcess: vi.fn(async () => ({ pid: null })),
+    } as any
+
+    const result = await ensureCurrentDaemonRuntime(deps)
+
+    expect(result.alreadyRunning).toBe(false)
+    expect(result.message).toContain("pid unknown")
+  })
+
   it("formats unknown pid when stale daemon restart returns null pid", async () => {
     const deps = {
       socketPath: "/tmp/ouro-test.sock",
@@ -208,6 +272,33 @@ describe("ensureCurrentDaemonRuntime", () => {
       alreadyRunning: true,
       message: "daemon already running (/tmp/ouro-test.sock; could not replace stale daemon 0.1.0-alpha.6 -> 0.1.0-alpha.20: permission denied)",
     })
+    expect(deps.startDaemonProcess).not.toHaveBeenCalled()
+  })
+
+  it("keeps the daemon when same-version drift replacement fails", async () => {
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      localVersion: "0.1.0-alpha.20",
+      localRepoRoot: "/Users/arimendelow/Projects/ouroboros-agent-harness-bb-health-status",
+      fetchRunningVersion: vi.fn(async () => "0.1.0-alpha.20"),
+      fetchRunningRuntimeMetadata: vi.fn(async () => ({
+        version: "0.1.0-alpha.20",
+        repoRoot: "/Users/arimendelow/Projects/ouroboros-agent-harness-cross-chat-bridge-orchestration",
+      })),
+      stopDaemon: vi.fn(async () => {
+        throw new Error("permission denied")
+      }),
+      cleanupStaleSocket: vi.fn(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 777 })),
+    } as any
+
+    const result = await ensureCurrentDaemonRuntime(deps)
+
+    expect(result).toEqual({
+      alreadyRunning: true,
+      message: expect.stringContaining("could not replace drifted daemon"),
+    })
+    expect(result.message).toContain("permission denied")
     expect(deps.startDaemonProcess).not.toHaveBeenCalled()
   })
 
