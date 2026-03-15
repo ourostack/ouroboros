@@ -1,7 +1,10 @@
 import OpenAI from "openai";
 import {
+  getAnthropicConfig,
   getAzureConfig,
   getContextConfig,
+  getMinimaxConfig,
+  getOpenAICodexConfig,
 } from "./config";
 import { loadAgentConfig } from "./identity";
 import { execTool, summarizeArgs, finalAnswerTool, getToolsForChannel, isConfirmationRequired } from "../repertoire/tools";
@@ -52,7 +55,29 @@ interface ProviderRegistry {
   resolve(): ProviderRuntime | null;
 }
 
-let _providerRuntime: ProviderRuntime | null = null;
+let _providerRuntime: { fingerprint: string; runtime: ProviderRuntime } | null = null;
+
+function getProviderRuntimeFingerprint(): string {
+  const provider = loadAgentConfig().provider;
+  switch (provider) {
+    case "azure": {
+      const { apiKey, endpoint, deployment, modelName, apiVersion } = getAzureConfig();
+      return JSON.stringify({ provider, apiKey, endpoint, deployment, modelName, apiVersion });
+    }
+    case "anthropic": {
+      const { model, setupToken } = getAnthropicConfig();
+      return JSON.stringify({ provider, model, setupToken });
+    }
+    case "minimax": {
+      const { apiKey, model } = getMinimaxConfig();
+      return JSON.stringify({ provider, apiKey, model });
+    }
+    case "openai-codex": {
+      const { model, oauthAccessToken } = getOpenAICodexConfig();
+      return JSON.stringify({ provider, model, oauthAccessToken });
+    }
+  }
+}
 
 export function createProviderRegistry(): ProviderRegistry {
   const factories: Record<ProviderId, () => ProviderRuntime> = {
@@ -71,42 +96,45 @@ export function createProviderRegistry(): ProviderRegistry {
 }
 
 function getProviderRuntime(): ProviderRuntime {
-  if (!_providerRuntime) {
-    try {
-      _providerRuntime = createProviderRegistry().resolve();
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      emitNervesEvent({
-        level: "error",
-        event: "engine.provider_init_error",
-        component: "engine",
-        message: msg,
-        meta: {},
-      });
-      // eslint-disable-next-line no-console -- pre-boot guard: provider init failure
-      console.error(`\n[fatal] ${msg}\n`);
-      process.exit(1);
-      throw new Error("unreachable");
+  try {
+    const fingerprint = getProviderRuntimeFingerprint();
+    if (!_providerRuntime || _providerRuntime.fingerprint !== fingerprint) {
+      const runtime = createProviderRegistry().resolve();
+      _providerRuntime = runtime ? { fingerprint, runtime } : null;
     }
-    if (!_providerRuntime) {
-      emitNervesEvent({
-        level: "error",
-        event: "engine.provider_init_error",
-        component: "engine",
-        message: "provider runtime could not be initialized.",
-        meta: {},
-      });
-      process.exit(1);
-      throw new Error("unreachable");
-    }
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    emitNervesEvent({
+      level: "error",
+      event: "engine.provider_init_error",
+      component: "engine",
+      message: msg,
+      meta: {},
+    });
+    // eslint-disable-next-line no-console -- pre-boot guard: provider init failure
+    console.error(`\n[fatal] ${msg}\n`);
+    process.exit(1);
+    throw new Error("unreachable");
   }
-  return _providerRuntime;
+
+  if (!_providerRuntime) {
+    emitNervesEvent({
+      level: "error",
+      event: "engine.provider_init_error",
+      component: "engine",
+      message: "provider runtime could not be initialized.",
+      meta: {},
+    });
+    process.exit(1);
+    throw new Error("unreachable");
+  }
+  return _providerRuntime.runtime;
 }
 
 /**
- * Clear the cached provider runtime so the next call to getProviderRuntime()
- * re-creates it from current config. Used by the adoption specialist to
- * switch provider context without restarting the process.
+ * Clear the cached provider runtime so the next access re-creates it from
+ * current config. Runtime access also auto-refreshes when the selected
+ * provider fingerprint changes on disk.
  */
 export function resetProviderRuntime(): void {
   _providerRuntime = null;

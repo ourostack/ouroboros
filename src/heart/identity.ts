@@ -130,7 +130,6 @@ export function buildDefaultAgentTemplate(_agentName: string): AgentConfig {
 }
 
 let _cachedAgentName: string | null = null
-let _cachedAgentConfig: AgentConfig | null = null
 let _agentConfigOverride: AgentConfig | null = null
 
 /**
@@ -206,22 +205,12 @@ export function getAgentSecretsPath(agentName: string = getAgentName()): string 
 
 /**
  * Load and parse `<agentRoot>/agent.json`.
- * Caches the result after first load.
+ * Reads the file fresh on each call unless an override is set.
  * Throws descriptive error if file is missing or contains invalid JSON.
  */
 export function loadAgentConfig(): AgentConfig {
   if (_agentConfigOverride) {
     return _agentConfigOverride
-  }
-
-  if (_cachedAgentConfig) {
-    emitNervesEvent({
-      event: "identity.resolve",
-      component: "config/identity",
-      message: "loaded agent config from cache",
-      meta: { source: "cache" },
-    })
-    return _cachedAgentConfig
   }
 
   const agentRoot = getAgentRoot()
@@ -309,6 +298,7 @@ export function loadAgentConfig(): AgentConfig {
       `agent.json at ${configFile} must include provider: "azure", "minimax", "anthropic", or "openai-codex".`,
     )
   }
+  const provider: AgentProvider = rawProvider
 
   const rawVersion = parsed.version
   const version = rawVersion === undefined ? 1 : rawVersion
@@ -350,10 +340,10 @@ export function loadAgentConfig(): AgentConfig {
     )
   }
 
-  _cachedAgentConfig = {
+  const config = {
     version,
     enabled,
-    provider: rawProvider,
+    provider,
     context: parsed.context as AgentConfig["context"] | undefined,
     logging: parsed.logging as AgentConfig["logging"] | undefined,
     senses: normalizeSenses(parsed.senses, configFile),
@@ -365,7 +355,7 @@ export function loadAgentConfig(): AgentConfig {
     message: "loaded agent config from disk",
     meta: { source: "disk" },
   })
-  return _cachedAgentConfig
+  return config
 }
 
 /**
@@ -388,11 +378,11 @@ export function setAgentConfigOverride(config: AgentConfig | null): void {
 }
 
 /**
- * Clear only the cached agent config while preserving the resolved agent identity.
- * Used when a running agent should pick up updated disk-backed config on the next turn.
+ * Preserve the compatibility hook for callers that previously cleared cached
+ * disk-backed agent config. Agent config is now read fresh on every call.
  */
 export function resetAgentConfigCache(): void {
-  _cachedAgentConfig = null
+  // No-op: disk-backed agent config is no longer memoized in-process.
 }
 
 /**
@@ -401,6 +391,5 @@ export function resetAgentConfigCache(): void {
  */
 export function resetIdentity(): void {
   _cachedAgentName = null
-  _cachedAgentConfig = null
   _agentConfigOverride = null
 }
