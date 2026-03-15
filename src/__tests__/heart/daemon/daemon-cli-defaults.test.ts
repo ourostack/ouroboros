@@ -55,6 +55,51 @@ describe("daemon CLI default dependency branches", () => {
     }
   })
 
+  it("emits a warning nerves event when entryPath does not exist on disk", async () => {
+    vi.resetModules()
+
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-boot-warn-"))
+    const restorePlatform = withProcessPlatform("darwin")
+    const emitNervesEvent = vi.fn()
+
+    try {
+      vi.doMock("net", () => ({ createConnection: vi.fn() }))
+      vi.doMock("child_process", () => ({ spawn: vi.fn() }))
+      vi.doMock("os", async () => {
+        const actual = await vi.importActual<typeof import("os")>("os")
+        return { ...actual, homedir: () => tempHome }
+      })
+      vi.doMock("../../../heart/identity", () => ({
+        getRepoRoot: () => "/mock/repo",
+        getAgentBundlesRoot: () => "/mock/AgentBundles",
+      }))
+      vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
+
+      const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+      deps.ensureDaemonBootPersistence?.("/tmp/daemon.sock")
+
+      // Plist should still be written (non-blocking warning)
+      const plistPath = path.join(tempHome, "Library", "LaunchAgents", "bot.ouro.daemon.plist")
+      expect(fs.existsSync(plistPath)).toBe(true)
+
+      // Warning nerves event should have been emitted for missing entryPath
+      expect(emitNervesEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          level: "warn",
+          event: "daemon.entry_path_missing",
+          meta: expect.objectContaining({
+            entryPath: "/mock/repo/dist/heart/daemon/daemon-entry.js",
+          }),
+        }),
+      )
+    } finally {
+      restorePlatform()
+      fs.rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
   it("skips default boot persistence outside darwin", async () => {
     vi.resetModules()
 

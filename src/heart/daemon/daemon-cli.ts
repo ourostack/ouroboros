@@ -26,6 +26,7 @@ import {
 import { buildSpecialistSystemPrompt } from "./specialist-prompt"
 import { getSpecialistTools, createSpecialistExecTool } from "./specialist-tools"
 import { getRuntimeMetadata } from "./runtime-metadata"
+import { detectRuntimeMode } from "./runtime-mode"
 import { ensureCurrentDaemonRuntime } from "./daemon-runtime-sync"
 import { listEnabledBundleAgents } from "./agent-discovery"
 import { applyPendingUpdates, registerUpdateHook } from "./update-hooks"
@@ -112,6 +113,8 @@ interface StatusOverviewRow {
   configFingerprint: string
   workerCount: number
   senseCount: number
+  entryPath: string
+  mode: string
 }
 
 interface StatusSenseRow {
@@ -168,6 +171,8 @@ function parseStatusPayload(data: unknown): StatusPayload | null {
     configFingerprint: stringField((overview as Record<string, unknown>).configFingerprint) ?? "unknown",
     workerCount: numberField((overview as Record<string, unknown>).workerCount) ?? 0,
     senseCount: numberField((overview as Record<string, unknown>).senseCount) ?? 0,
+    entryPath: stringField((overview as Record<string, unknown>).entryPath) ?? "unknown",
+    mode: stringField((overview as Record<string, unknown>).mode) ?? "unknown",
   }
 
   const parsedSenses = senses.map((entry) => {
@@ -248,6 +253,8 @@ function formatDaemonStatusOutput(response: DaemonResponse, fallback: string): s
     ["Socket", payload.overview.socketPath],
     ["Version", payload.overview.version],
     ["Last Updated", payload.overview.lastUpdated],
+    ["Entry Path", payload.overview.entryPath],
+    ["Mode", payload.overview.mode],
     ["Workers", String(payload.overview.workerCount)],
     ["Senses", String(payload.overview.senseCount)],
     ["Health", payload.overview.health],
@@ -372,6 +379,7 @@ function formatVersionOutput(): string {
 
 function buildStoppedStatusPayload(socketPath: string): StatusPayload {
   const metadata = getRuntimeMetadata()
+  const repoRoot = getRepoRoot()
   return {
     overview: {
       daemon: "stopped",
@@ -383,6 +391,8 @@ function buildStoppedStatusPayload(socketPath: string): StatusPayload {
       configFingerprint: metadata.configFingerprint,
       workerCount: 0,
       senseCount: 0,
+      entryPath: path.join(repoRoot, "dist", "heart", "daemon", "daemon-entry.js"),
+      mode: detectRuntimeMode(repoRoot),
     },
     senses: [],
     workers: [],
@@ -838,12 +848,25 @@ function defaultEnsureDaemonBootPersistence(socketPath: string): void {
   }
 
   const entryPath = path.join(getRepoRoot(), "dist", "heart", "daemon", "daemon-entry.js")
+
+  /* v8 ignore next -- covered via mock in daemon-cli-defaults.test.ts; v8 on CI attributes the real fs.existsSync branch to the non-mock load @preserve */
+  if (!fs.existsSync(entryPath)) {
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.entry_path_missing",
+      message: "entryPath does not exist on disk — plist may point to a stale location. Run 'ouro daemon install' from the correct location.",
+      meta: { entryPath },
+    })
+  }
+
   const logDir = path.join(homeDir, ".agentstate", "daemon", "logs")
   writeLaunchAgentPlist(launchdDeps, {
     nodePath: process.execPath,
     entryPath,
     socketPath,
     logDir,
+    envPath: process.env.PATH,
   })
 }
 

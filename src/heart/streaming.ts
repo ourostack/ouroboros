@@ -10,11 +10,14 @@ export interface UsageData {
 }
 
 // Azure Responses API item types (SDK doesn't export these)
+// Anthropic thinking block types are also included for cross-provider compatibility
 export type ResponseItem =
   | { type: "reasoning"; id: string; summary: { text: string; type: string }[]; encrypted_content?: string }
   | { type: "message"; id?: string; role: "assistant"; content: { type: string; text: string }[] }
   | { type: "function_call"; call_id: string; name: string; arguments: string; status: string }
   | { type: "function_call_output"; call_id: string; output: string }
+  | { type: "thinking"; thinking: string; signature: string }
+  | { type: "redacted_thinking"; data: string }
   | { role: "user"; content: string | Array<Record<string, unknown>> }
   | { role: "assistant"; content: string };
 
@@ -135,9 +138,10 @@ export class FinalAnswerStreamer {
   }
 }
 
-// Assistant message with optional reasoning items (persisted through sessions)
+// Assistant message with optional reasoning items and phase (persisted through sessions)
 export interface AssistantMessageWithReasoning extends OpenAI.ChatCompletionAssistantMessageParam {
   _reasoning_items?: ResponseItem[];
+  phase?: "commentary" | "final_answer";
 }
 
 function toResponsesUserContent(
@@ -231,7 +235,9 @@ export function toResponsesInput(
         }
       }
       if (a.content) {
-        input.push({ role: "assistant", content: typeof a.content === "string" ? a.content : "" } as ResponseItem);
+        const assistantItem: Record<string, unknown> = { role: "assistant", content: typeof a.content === "string" ? a.content : "" };
+        if (a.phase) assistantItem.phase = a.phase;
+        input.push(assistantItem as ResponseItem);
       }
       if (a.tool_calls) {
         for (const tc of a.tool_calls) {

@@ -179,6 +179,50 @@ describe("bridge_manage tool", () => {
     expect(result).toContain("sessions: 2")
   })
 
+  it("can attach a candidate chat from a different outward relationship without forcing a same-friend shortcut", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find((entry) => entry.tool.function.name === "bridge_manage")!
+    mockAttachSession.mockReturnValue({
+      id: "bridge-1",
+      objective: "carry Ari between the 1:1 and the project group",
+      lifecycle: "active",
+      runtime: "idle",
+      attachedSessions: [
+        { friendId: "friend-1", channel: "bluebubbles", key: "chat-any", sessionPath: "/tmp/session.json" },
+        {
+          friendId: "group-1",
+          channel: "bluebubbles",
+          key: "chat:any;+;project-group-123",
+          sessionPath: "/mock/agent-root/state/sessions/group-1/bluebubbles/chat:any;+;project-group-123.json",
+          snapshot: "recent focus: waiting on Ari",
+        },
+      ],
+      task: null,
+    })
+
+    const result = await tool.handler(
+      {
+        action: "attach",
+        bridgeId: "bridge-1",
+        friendId: "group-1",
+        channel: "bluebubbles",
+        key: "chat:any;+;project-group-123",
+      },
+      {
+        signin: vi.fn(),
+      } as any,
+    )
+
+    expect(mockAttachSession).toHaveBeenCalledWith("bridge-1", {
+      friendId: "group-1",
+      channel: "bluebubbles",
+      key: "chat:any;+;project-group-123",
+      sessionPath: "/mock/agent-root/state/sessions/friend-2/teams/conv-2.json",
+      snapshot: "recent focus: relay setup",
+    })
+    expect(result).toContain("sessions: 2")
+  })
+
   it("falls back to the raw recall snapshot when summarization fails during attach", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const tool = baseToolDefinitions.find((entry) => entry.tool.function.name === "bridge_manage")!

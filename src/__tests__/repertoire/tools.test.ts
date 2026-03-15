@@ -816,8 +816,8 @@ describe("getToolsForChannel with ChannelCapabilities", () => {
     expect(names).not.toContain("graph_mutate")
     expect(names).not.toContain("ado_query")
     expect(names).not.toContain("ado_mutate")
-    // Same length as base tools
-    expect(result.length).toBe(tools.length)
+    // Same length as base tools minus capability-gated tools (set_reasoning_effort excluded without providerCapabilities)
+    expect(result.length).toBe(tools.length - 1)
   })
 
   it("returns base + ado + graph tools for Teams capabilities", async () => {
@@ -835,7 +835,9 @@ describe("getToolsForChannel with ChannelCapabilities", () => {
     const result = getToolsForChannel(teamsCaps)
     const names = result.map((t: any) => t.function.name)
     const blockedLocalTools = new Set(["read_file", "write_file", "shell", "edit_file", "glob", "grep"])
-    const remoteBaseCount = tools.filter((t: any) => !blockedLocalTools.has(t.function.name)).length
+    // Exclude blocked local tools AND capability-gated tools (set_reasoning_effort) from base count
+    const capabilityGatedTools = new Set(["set_reasoning_effort"])
+    const remoteBaseCount = tools.filter((t: any) => !blockedLocalTools.has(t.function.name) && !capabilityGatedTools.has(t.function.name)).length
     // Teams channel should exclude blocked local tools
     expect(names).not.toContain("read_file")
     expect(names).not.toContain("write_file")
@@ -883,7 +885,8 @@ describe("getToolsForChannel with ChannelCapabilities", () => {
     const result = getToolsForChannel(caps)
     const names = result.map((t: any) => t.function.name)
     const blockedLocalTools = new Set(["read_file", "write_file", "shell", "edit_file", "glob", "grep"])
-    const remoteBaseCount = tools.filter((t: any) => !blockedLocalTools.has(t.function.name)).length
+    const capabilityGatedTools = new Set(["set_reasoning_effort"])
+    const remoteBaseCount = tools.filter((t: any) => !blockedLocalTools.has(t.function.name) && !capabilityGatedTools.has(t.function.name)).length
     // Should have graph tools
     expect(names).toContain("graph_query")
     expect(names).toContain("graph_mutate")
@@ -913,7 +916,8 @@ describe("getToolsForChannel with ChannelCapabilities", () => {
     const result = getToolsForChannel(caps)
     const names = result.map((t: any) => t.function.name)
     const blockedLocalTools = new Set(["read_file", "write_file", "shell", "edit_file", "glob", "grep"])
-    const remoteBaseCount = tools.filter((t: any) => !blockedLocalTools.has(t.function.name)).length
+    const capabilityGatedTools = new Set(["set_reasoning_effort"])
+    const remoteBaseCount = tools.filter((t: any) => !blockedLocalTools.has(t.function.name) && !capabilityGatedTools.has(t.function.name)).length
     // Should have ado tools
     expect(names).toContain("ado_query")
     expect(names).toContain("ado_mutate")
@@ -2020,7 +2024,8 @@ describe("getToolsForChannel includes docs tools", () => {
     const teamsTools = getToolsForChannel(teamsCaps)
     const names = teamsTools.map((t: any) => t.function.name)
     const blockedLocalTools = new Set(["read_file", "write_file", "shell", "edit_file", "glob", "grep"])
-    const remoteBaseCount = tools.filter((t: any) => !blockedLocalTools.has(t.function.name)).length
+    const capabilityGatedTools = new Set(["set_reasoning_effort"])
+    const remoteBaseCount = tools.filter((t: any) => !blockedLocalTools.has(t.function.name) && !capabilityGatedTools.has(t.function.name)).length
     expect(names).toContain("graph_docs")
     expect(names).toContain("ado_docs")
     // Should have semantic ado tools

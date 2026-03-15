@@ -509,4 +509,45 @@ describe("daemon process manager", () => {
     expect(manager.getAgentSnapshot("slugger")?.status).toBe("starting")
     expect(manager.getAgentSnapshot("slugger")?.restartCount).toBe(2)
   })
+
+  it("sets status to crashed and does not spawn when entry script path does not exist", async () => {
+    const existsSync = vi.fn(() => false)
+    now.mockReturnValue(1_000)
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+      existsSync,
+    })
+
+    await manager.startAgent("slugger")
+
+    expect(spawn).not.toHaveBeenCalled()
+    expect(manager.getAgentSnapshot("slugger")?.status).toBe("crashed")
+  })
+
+  it("proceeds normally when entry script path exists", async () => {
+    const child = new MockChild()
+    spawn.mockReturnValue(child)
+    const existsSync = vi.fn(() => true)
+    now.mockReturnValue(1_000)
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+      existsSync,
+    })
+
+    await manager.startAgent("slugger")
+
+    expect(existsSync).toHaveBeenCalledWith(expect.stringContaining("heart/agent-entry.js"))
+    expect(spawn).toHaveBeenCalledTimes(1)
+    expect(manager.getAgentSnapshot("slugger")?.status).toBe("running")
+  })
 })

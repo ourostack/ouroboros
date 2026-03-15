@@ -103,6 +103,8 @@ describe("daemon command plane branches", () => {
         daemon: "running",
         workerCount: 0,
         senseCount: 0,
+        entryPath: expect.any(String),
+        mode: expect.stringMatching(/^(dev|production)$/),
       }),
       senses: [],
       workers: [],

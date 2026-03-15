@@ -19,6 +19,7 @@ import { getPendingDir, getInnerDialogPendingDir } from "../mind/pending";
 import type { PendingMessage } from "../mind/pending";
 import type { BridgeRecord, BridgeSessionRef } from "../heart/bridges/store";
 import { buildProgressStory, renderProgressStory } from "../heart/progress-story";
+import { deliverCrossChatMessage, type CrossChatDeliveryResult } from "../heart/cross-chat-delivery";
 
 export interface CodingFeedbackTarget {
   send: (message: string) => Promise<void>;
@@ -53,6 +54,8 @@ export interface ToolContext {
   bluebubblesReplyTarget?: BlueBubblesReplyTargetController;
   currentSession?: BridgeSessionRef;
   activeBridges?: BridgeRecord[];
+  supportedReasoningEfforts?: readonly string[];
+  setReasoningEffort?: (level: string) => void;
 }
 
 export type ToolHandler = (args: Record<string, string>, ctx?: ToolContext) => string | Promise<string>;
@@ -62,6 +65,7 @@ export interface ToolDefinition {
   handler: ToolHandler;
   integration?: Integration;
   confirmationRequired?: boolean;
+  requiredCapability?: import("../heart/core").ProviderCapability;
 }
 
 // Tracks which file paths have been read via read_file in this session.
@@ -134,6 +138,40 @@ function normalizeProgressOutcome(text: string): string | null {
     return trimmed.slice(1, -1)
   }
   return trimmed
+}
+
+function writePendingEnvelope(queueDir: string, message: PendingMessage): void {
+  fs.mkdirSync(queueDir, { recursive: true })
+  const fileName = `${message.timestamp}-${Math.random().toString(36).slice(2, 10)}.json`
+  const filePath = path.join(queueDir, fileName)
+  fs.writeFileSync(filePath, JSON.stringify(message, null, 2))
+}
+
+function renderCrossChatDeliveryStatus(
+  target: string,
+  result: CrossChatDeliveryResult,
+): string {
+  const phase = result.status === "delivered_now"
+    ? "completed"
+    : result.status === "queued_for_later"
+      ? "queued"
+      : result.status === "blocked"
+        ? "blocked"
+        : "errored"
+  const lead = result.status === "delivered_now"
+    ? "delivered now"
+    : result.status === "queued_for_later"
+      ? "queued for later"
+      : result.status === "blocked"
+        ? "blocked"
+        : "failed"
+
+  return renderProgressStory(buildProgressStory({
+    scope: "shared-work",
+    phase,
+    objective: `message to ${target}`,
+    outcomeText: `${lead}\n${result.detail}`,
+  }))
 }
 
 function renderInnerProgressStatus(
@@ -872,7 +910,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "send_message",
-        description: "send a message to a friend's session. the message is queued as a pending file and delivered when the target session drains its queue.",
+        description: "send a message to a friend's session. when the request is explicitly authorized from a trusted live chat, the harness will try to deliver immediately; otherwise it reports truthful queued/block/failure state.",
         parameters: {
           type: "object",
           properties: {
@@ -899,10 +937,6 @@ export const baseToolDefinitions: ToolDefinition[] = [
       const pendingDir = isSelf
         ? getInnerDialogPendingDir(agentName)
         : getPendingDir(agentName, friendId, channel, key)
-      fs.mkdirSync(pendingDir, { recursive: true })
-
-      const fileName = `${now}-${Math.random().toString(36).slice(2, 10)}.json`
-      const filePath = path.join(pendingDir, fileName)
       const delegatingBridgeId = findDelegatingBridgeId(ctx)
       const delegatedFrom = isSelf
         && ctx?.currentSession
@@ -923,9 +957,9 @@ export const baseToolDefinitions: ToolDefinition[] = [
         timestamp: now,
         ...(delegatedFrom ? { delegatedFrom } : {}),
       }
-      fs.writeFileSync(filePath, JSON.stringify(envelope, null, 2))
 
       if (isSelf) {
+        writePendingEnvelope(pendingDir, envelope)
         let wakeResponse: { ok: boolean } | null = null
         try {
           wakeResponse = await requestInnerWake(agentName)
@@ -967,10 +1001,140 @@ export const baseToolDefinitions: ToolDefinition[] = [
         })
       }
 
-      const preview = content.length > 80 ? content.slice(0, 80) + "…" : content
-      const target = `${channel}/${key}`
-      return `message queued for delivery to ${friendId} on ${target}. preview: "${preview}". it will be delivered when their session is next active.`
+      const deliveryResult = await deliverCrossChatMessage({
+        friendId,
+        channel,
+        key,
+        content,
+        intent: ctx?.currentSession && ctx.currentSession.friendId !== "self"
+          ? "explicit_cross_chat"
+          : "generic_outreach",
+        ...(ctx?.currentSession && ctx.currentSession.friendId !== "self"
+          ? {
+              authorizingSession: {
+                friendId: ctx.currentSession.friendId,
+                channel: ctx.currentSession.channel,
+                key: ctx.currentSession.key,
+                trustLevel: ctx?.context?.friend?.trustLevel,
+              },
+            }
+          : {}),
+      }, {
+        agentName,
+        queuePending: (message) => writePendingEnvelope(pendingDir, message),
+        deliverers: {
+          bluebubbles: async (request) => {
+            const { sendProactiveBlueBubblesMessageToSession } = await import("../senses/bluebubbles")
+            const result = await sendProactiveBlueBubblesMessageToSession({
+              friendId: request.friendId,
+              sessionKey: request.key,
+              text: request.content,
+              intent: request.intent,
+              authorizingSession: request.authorizingSession,
+            } as any)
+            if (result.delivered) {
+              return {
+                status: "delivered_now",
+                detail: "sent to the active bluebubbles chat now",
+              } as const
+            }
+            if (result.reason === "missing_target") {
+              return {
+                status: "blocked",
+                detail: "bluebubbles could not resolve a routable target for that session",
+              } as const
+            }
+            if (result.reason === "send_error") {
+              return {
+                status: "failed",
+                detail: "bluebubbles send failed",
+              } as const
+            }
+            return {
+              status: "unavailable",
+              detail: "live delivery unavailable right now; queued for the next active turn",
+            } as const
+          },
+          teams: async (request) => {
+            if (!ctx?.botApi) {
+              return {
+                status: "unavailable",
+                detail: "live delivery unavailable right now; queued for the next active turn",
+              } as const
+            }
+            const { sendProactiveTeamsMessageToSession } = await import("../senses/teams")
+            const result = await sendProactiveTeamsMessageToSession({
+              friendId: request.friendId,
+              sessionKey: request.key,
+              text: request.content,
+              intent: request.intent,
+              authorizingSession: request.authorizingSession,
+            } as any, {
+              botApi: ctx.botApi,
+            })
+            if (result.delivered) {
+              return {
+                status: "delivered_now",
+                detail: "sent to the active teams chat now",
+              } as const
+            }
+            if (result.reason === "missing_target") {
+              return {
+                status: "blocked",
+                detail: "teams could not resolve a routable target for that session",
+              } as const
+            }
+            if (result.reason === "send_error") {
+              return {
+                status: "failed",
+                detail: "teams send failed",
+              } as const
+            }
+            return {
+              status: "unavailable",
+              detail: "live delivery unavailable right now; queued for the next active turn",
+            } as const
+          },
+        },
+      })
+
+      return renderCrossChatDeliveryStatus(`${friendId} on ${channel}/${key}`, deliveryResult)
     },
+  },
+  {
+    tool: {
+      type: "function",
+      function: {
+        name: "set_reasoning_effort",
+        description:
+          "adjust your own reasoning depth for subsequent turns. use higher effort for complex analysis, lower for simple tasks.",
+        parameters: {
+          type: "object",
+          properties: {
+            level: { type: "string", description: "the reasoning effort level to set" },
+          },
+          required: ["level"],
+        },
+      },
+    },
+    handler: (args, ctx) => {
+      if (!ctx?.supportedReasoningEfforts || !ctx.setReasoningEffort) {
+        return "reasoning effort adjustment is not available in this context.";
+      }
+      const level = (args.level || "").trim();
+      if (!ctx.supportedReasoningEfforts.includes(level)) {
+        return `invalid reasoning effort level "${level}". accepted levels: ${ctx.supportedReasoningEfforts.join(", ")}`;
+      }
+      ctx.setReasoningEffort(level);
+      emitNervesEvent({
+        component: "repertoire",
+        event: "repertoire.reasoning_effort_changed",
+        message: `reasoning effort set to ${level}`,
+        meta: { level },
+      });
+      return `reasoning effort set to "${level}".`;
+    },
+    requiredCapability: "reasoning-effort" as const,
   },
   ...codingToolDefinitions,
 ];

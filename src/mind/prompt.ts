@@ -5,6 +5,7 @@ import { finalAnswerTool, getToolsForChannel, REMOTE_BLOCKED_LOCAL_TOOLS } from 
 import { listSkills } from "../repertoire/skills";
 import { getAgentRoot, getAgentName, getAgentSecretsPath, loadAgentConfig, type SenseName } from "../heart/identity";
 import { isTrustedLevel, type Channel, type ChannelCapabilities, type ResolvedContext } from "./friends/types";
+import { describeTrustContext } from "./friends/trust-explanation";
 import { getChannelCapabilities, isRemoteChannel } from "./friends/channel";
 import { emitNervesEvent } from "../nerves/runtime";
 import { backfillBundleMeta, getPackageVersion, getChangelogPath } from "./bundle-manifest";
@@ -330,7 +331,7 @@ function dateSection(): string {
 }
 
 function toolsSection(channel: Channel, options?: BuildSystemOptions, context?: ResolvedContext): string {
-  const channelTools = getToolsForChannel(getChannelCapabilities(channel), undefined, context);
+  const channelTools = getToolsForChannel(getChannelCapabilities(channel), undefined, context, options?.providerCapabilities);
   const activeTools = (options?.toolChoiceRequired ?? true) ? [...channelTools, finalAnswerTool] : channelTools;
   const list = activeTools
     .map((t) => `- ${t.function.name}: ${t.function.description}`)
@@ -348,6 +349,32 @@ export function toolRestrictionSection(context?: ResolvedContext): string {
 some of my tools are unavailable right now: ${toolList}
 
 i don't know this person well enough yet to run local operations on their behalf. i can suggest remote-safe alternatives or ask them to run it from CLI.`
+}
+
+function trustContextSection(context?: ResolvedContext): string {
+  if (!context?.friend) return ""
+  const channelName = context.channel.channel
+  if (channelName === "cli" || channelName === "inner") return ""
+
+  const explanation = describeTrustContext({
+    friend: context.friend,
+    channel: channelName,
+    isGroupChat: context.isGroupChat,
+  })
+  const lines = [
+    "## trust context",
+    `level: ${explanation.level}`,
+    `basis: ${explanation.basis}`,
+    `summary: ${explanation.summary}`,
+    `why: ${explanation.why}`,
+    `permits: ${explanation.permits.join(", ")}`,
+    `constraints: ${explanation.constraints.join(", ") || "none"}`,
+  ]
+  if (explanation.relatedGroupId) {
+    lines.push(`related group: ${explanation.relatedGroupId}`)
+  }
+
+  return lines.join("\n")
 }
 
 function skillsSection(): string {
@@ -389,6 +416,8 @@ export interface BuildSystemOptions {
   hasQueuedFollowUp?: boolean;
   activeWorkFrame?: ActiveWorkFrame;
   delegationDecision?: DelegationDecision;
+  providerCapabilities?: ReadonlySet<import("../heart/core").ProviderCapability>;
+  supportedReasoningEfforts?: readonly string[];
 }
 
 function bridgeContextSection(options?: BuildSystemOptions): string {
@@ -412,6 +441,14 @@ function delegationHintSection(options?: BuildSystemOptions): string {
     `outward closure: ${options.delegationDecision.outwardClosureRequired ? "required" : "not required"}`,
   ]
   return lines.join("\n")
+}
+
+function reasoningEffortSection(options?: BuildSystemOptions): string {
+  if (!options?.providerCapabilities?.has("reasoning-effort")) return "";
+  const levels = options.supportedReasoningEfforts ?? [];
+  const levelList = levels.length > 0 ? levels.join(", ") : "varies by model";
+  return `## reasoning effort
+i can adjust my own reasoning depth using the set_reasoning_effort tool. i use higher effort for complex analysis and lower effort for simple tasks. available levels: ${levelList}.`;
 }
 
 function toolBehaviorSection(options?: BuildSystemOptions): string {
@@ -545,7 +582,9 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     providerSection(),
     dateSection(),
     toolsSection(channel, options, context),
+    reasoningEffortSection(options),
     toolRestrictionSection(context),
+    trustContextSection(context),
     mixedTrustGroupSection(context),
     skillsSection(),
     taskBoardSection(),

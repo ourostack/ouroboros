@@ -125,8 +125,9 @@ describe("tool registry contract", () => {
     expect(names).toContain("coding_tail");
     expect(names).toContain("coding_send_input");
     expect(names).toContain("coding_kill");
+    expect(names).toContain("set_reasoning_effort");
 
-    // Exact count: 22 tools total
-    expect(names).toHaveLength(22);
+    // Exact count: 23 tools total
+    expect(names).toHaveLength(23);
   });
 });

@@ -4,9 +4,14 @@ import { getAnthropicConfig } from "../config";
 import { getAgentName, getAgentSecretsPath } from "../identity";
 import type { UsageData } from "../../mind/context";
 import { emitNervesEvent } from "../../nerves/runtime";
-import type { ProviderRuntime, ProviderTurnRequest } from "../core";
+import type { ProviderCapability, ProviderRuntime, ProviderTurnRequest } from "../core";
 import { FinalAnswerStreamer } from "../streaming";
 import type { TurnResult } from "../streaming";
+import { getModelCapabilities } from "../model-capabilities";
+
+export type AnthropicThinkingBlock =
+  | { type: "thinking"; thinking: string; signature: string }
+  | { type: "redacted_thinking"; data: string };
 
 const ANTHROPIC_SETUP_TOKEN_PREFIX = "sk-ant-oat01-";
 const ANTHROPIC_SETUP_TOKEN_MIN_LENGTH = 80;
@@ -94,7 +99,7 @@ function parseToolCallInput(argumentsJson: string): Record<string, unknown> {
   }
 }
 
-function toAnthropicMessages(
+export function toAnthropicMessages(
   messages: OpenAI.ChatCompletionMessageParam[],
 ): { system?: string; messages: Array<Record<string, unknown>> } {
   let system: string | undefined;
@@ -120,6 +125,17 @@ function toAnthropicMessages(
     if (msg.role === "assistant") {
       const assistant = msg as OpenAI.ChatCompletionAssistantMessageParam;
       const blocks: Array<Record<string, unknown>> = [];
+      // Restore thinking blocks before text/tool_use blocks
+      const thinkingBlocks = (assistant as unknown as Record<string, unknown>)._thinking_blocks as AnthropicThinkingBlock[] | undefined;
+      if (thinkingBlocks) {
+        for (const tb of thinkingBlocks) {
+          if (tb.type === "thinking") {
+            blocks.push({ type: "thinking", thinking: tb.thinking, signature: tb.signature });
+          } else {
+            blocks.push({ type: "redacted_thinking", data: tb.data });
+          }
+        }
+      }
       const text = toAnthropicTextContent(assistant.content);
       if (text) {
         blocks.push({ type: "text", text });
@@ -237,11 +253,14 @@ async function streamAnthropicMessages(
   const { system, messages } = toAnthropicMessages(request.messages);
   const anthropicTools = toAnthropicTools(request.activeTools);
 
+  const modelCaps = getModelCapabilities(model);
+  const maxTokens = modelCaps.maxOutputTokens ?? 16384;
   const params: Record<string, unknown> = {
     model,
-    max_tokens: 4096,
+    max_tokens: maxTokens,
     messages,
     stream: true,
+    thinking: { type: "adaptive", effort: request.reasoningEffort ?? "medium" },
   };
   if (system) params.system = system;
   if (anthropicTools.length > 0) params.tools = anthropicTools;
@@ -263,6 +282,8 @@ async function streamAnthropicMessages(
   let streamStarted = false;
   let usage: UsageData | undefined;
   const toolCalls = new Map<number, { id: string; name: string; arguments: string }>();
+  const thinkingBlocks = new Map<number, { type: "thinking"; thinking: string; signature: string }>();
+  const redactedBlocks = new Map<number, { type: "redacted_thinking"; data: string }>();
   const answerStreamer = new FinalAnswerStreamer(request.callbacks);
 
   try {
@@ -271,8 +292,12 @@ async function streamAnthropicMessages(
       const eventType = String(event.type ?? "");
       if (eventType === "content_block_start") {
         const block = event.content_block as Record<string, unknown> | undefined;
-        if (block?.type === "tool_use") {
-          const index = Number(event.index);
+        const index = Number(event.index);
+        if (block?.type === "thinking") {
+          thinkingBlocks.set(index, { type: "thinking", thinking: "", signature: "" });
+        } else if (block?.type === "redacted_thinking") {
+          redactedBlocks.set(index, { type: "redacted_thinking", data: String(block.data ?? "") });
+        } else if (block?.type === "tool_use") {
           const rawInput = block.input;
           const input = rawInput && typeof rawInput === "object"
             ? JSON.stringify(rawInput)
@@ -310,7 +335,17 @@ async function streamAnthropicMessages(
             request.callbacks.onModelStreamStart();
             streamStarted = true;
           }
-          request.callbacks.onReasoningChunk(String(delta?.thinking ?? ""));
+          const thinkingText = String(delta?.thinking ?? "");
+          request.callbacks.onReasoningChunk(thinkingText);
+          const thinkingIndex = Number(event.index);
+          const thinkingBlock = thinkingBlocks.get(thinkingIndex);
+          if (thinkingBlock) thinkingBlock.thinking += thinkingText;
+          continue;
+        }
+        if (deltaType === "signature_delta") {
+          const sigIndex = Number(event.index);
+          const sigBlock = thinkingBlocks.get(sigIndex);
+          if (sigBlock) sigBlock.signature += String(delta?.signature ?? "");
           continue;
         }
         if (deltaType === "input_json_delta") {
@@ -351,10 +386,18 @@ async function streamAnthropicMessages(
     throw withAnthropicAuthGuidance(error);
   }
 
+  // Collect all thinking blocks (regular + redacted) sorted by index to preserve ordering
+  const allThinkingIndices = [...thinkingBlocks.keys(), ...redactedBlocks.keys()].sort((a, b) => a - b);
+  const outputItems: AnthropicThinkingBlock[] = allThinkingIndices.map((idx) => {
+    const tb = thinkingBlocks.get(idx);
+    if (tb) return tb;
+    return redactedBlocks.get(idx)!;
+  });
+
   return {
     content,
     toolCalls: [...toolCalls.values()],
-    outputItems: [],
+    outputItems,
     usage,
     finalAnswerStreamed: answerStreamer.streamed,
   };
@@ -375,6 +418,10 @@ export function createAnthropicProviderRuntime(): ProviderRuntime {
       ),
     );
   }
+  const modelCaps = getModelCapabilities(anthropicConfig.model);
+  const capabilities = new Set<ProviderCapability>();
+  if (modelCaps.reasoningEffort) capabilities.add("reasoning-effort");
+
   const credential = resolveAnthropicSetupTokenCredential();
   const client = new Anthropic({
     authToken: credential.token,
@@ -388,6 +435,8 @@ export function createAnthropicProviderRuntime(): ProviderRuntime {
     id: "anthropic",
     model: anthropicConfig.model,
     client,
+    capabilities,
+    supportedReasoningEfforts: modelCaps.reasoningEffort,
     resetTurnState(_messages: OpenAI.ChatCompletionMessageParam[]): void {
       // Anthropic request payload is derived from canonical messages each turn.
     },
