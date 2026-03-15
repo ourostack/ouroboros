@@ -328,6 +328,39 @@ describe("getProviderDisplayLabel", () => {
     expect(getProviderDisplayLabel()).toBe("azure openai (gpt-4.1, model: gpt-4.1)")
   })
 
+  it("falls back to default in the azure provider label when deployment is blank", async () => {
+    vi.resetModules()
+    vi.doMock("../../heart/providers/azure", () => ({
+      createAzureProviderRuntime: () => ({
+        id: "azure",
+        model: "gpt-4.1",
+        client: {},
+        resetTurnState: vi.fn(),
+        appendToolOutput: vi.fn(),
+        streamTurn: vi.fn(),
+      }),
+    }))
+
+    try {
+      await setupConfig({
+        provider: "azure",
+        providers: {
+          azure: {
+            deployment: "",
+            modelName: "gpt-4.1",
+            apiKey: "azure-key",
+            endpoint: "https://example.openai.azure.com",
+          },
+        },
+      })
+      const { getProviderDisplayLabel, resetProviderRuntime } = await import("../../heart/core")
+      resetProviderRuntime()
+      expect(getProviderDisplayLabel()).toBe("azure openai (default, model: gpt-4.1)")
+    } finally {
+      vi.doUnmock("../../heart/providers/azure")
+    }
+  })
+
   it("formats the anthropic provider label", async () => {
     await setupConfig({ providers: { anthropic: { model: "claude-sonnet", setupToken: makeAnthropicSetupToken() } } })
     const { getProviderDisplayLabel, resetProviderRuntime } = await import("../../heart/core")

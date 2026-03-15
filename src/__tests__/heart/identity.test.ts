@@ -583,6 +583,43 @@ describe("loadAgentConfig", () => {
     expect(loadAgentConfig().phrases.thinking).toEqual(["second"])
     expect(fs.readFileSync).toHaveBeenCalledTimes(2)
   })
+
+  it("keeps refreshed agent.json behavior when resetAgentConfigCache is called", async () => {
+    process.argv = ["node", "cli-entry.js", "--agent", "ouroboros"]
+    vi.mocked(fs.readFileSync)
+      .mockReturnValueOnce(
+        JSON.stringify({
+          version: 1,
+          enabled: true,
+          provider: "minimax",
+          phrases: {
+            thinking: ["first"],
+            tool: ["tool"],
+            followup: ["followup"],
+          },
+        }),
+      )
+      .mockReturnValueOnce(
+        JSON.stringify({
+          version: 1,
+          enabled: true,
+          provider: "minimax",
+          phrases: {
+            thinking: ["second"],
+            tool: ["tool"],
+            followup: ["followup"],
+          },
+        }),
+      )
+
+    const { loadAgentConfig, resetAgentConfigCache, resetIdentity } = await import("../../heart/identity")
+    resetIdentity()
+
+    expect(loadAgentConfig().phrases.thinking).toEqual(["first"])
+    resetAgentConfigCache()
+    expect(loadAgentConfig().phrases.thinking).toEqual(["second"])
+    expect(fs.readFileSync).toHaveBeenCalledTimes(2)
+  })
 })
 
 describe("resetIdentity", () => {

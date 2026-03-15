@@ -627,6 +627,16 @@ describe("sessionPath", () => {
       { recursive: true },
     )
   })
+
+  it("does not create directories when resolveSessionPath is called without ensureDir", async () => {
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({}))
+
+    const { resolveSessionPath } = await import("../../heart/config")
+    const p = resolveSessionPath("uuid-1", "cli", "session")
+
+    expect(p).toBe(path.join(os.homedir(), "AgentBundles", "testagent.ouro", "state", "sessions", "uuid-1", "cli", "session.json"))
+    expect(fs.mkdirSync).not.toHaveBeenCalled()
+  })
 })
 
 describe("logPath", () => {
@@ -650,6 +660,16 @@ describe("logPath", () => {
     const p = logPath("teams", "a]conv/id:123")
 
     expect(p).toBe(path.join(os.homedir(), "AgentBundles", "testagent.ouro", "state", "logs", "teams", "a]conv_id_123.ndjson"))
+  })
+})
+
+describe("slugify", () => {
+  it("normalizes whitespace, casing, and punctuation into a slug", async () => {
+    vi.resetModules()
+
+    const { slugify } = await import("../../heart/config")
+
+    expect(slugify("  Hello, BlueBubbles World!  ")).toBe("hello-bluebubbles-world")
   })
 })
 
