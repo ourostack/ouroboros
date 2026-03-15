@@ -83,6 +83,79 @@ describe("send_message tool", () => {
     vi.resetModules()
   })
 
+  function makeTrustedBlueBubblesTurnContext(overrides: Partial<any> = {}): any {
+    return {
+      currentSession: {
+        friendId: "friend-uuid-1",
+        channel: "bluebubbles",
+        key: "chat:any;-;ari@icloud.com",
+        sessionPath: "/mock/agent-root/state/sessions/friend-uuid-1/bluebubbles/chat.json",
+      },
+      context: {
+        friend: {
+          id: "friend-uuid-1",
+          name: "Ari",
+          trustLevel: "friend",
+          externalIds: [],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          totalTokens: 0,
+          createdAt: "2026-03-14T00:00:00.000Z",
+          updatedAt: "2026-03-14T00:00:00.000Z",
+          schemaVersion: 1,
+        },
+        channel: {
+          channel: "bluebubbles",
+          senseType: "open",
+          availableIntegrations: [],
+          supportsMarkdown: true,
+          supportsStreaming: true,
+          supportsRichCards: false,
+          maxMessageLength: 1000,
+        },
+      },
+      ...overrides,
+    }
+  }
+
+  function makeTrustedTeamsTurnContext(overrides: Partial<any> = {}): any {
+    return {
+      currentSession: {
+        friendId: "friend-uuid-1",
+        channel: "teams",
+        key: "ari-thread",
+        sessionPath: "/mock/agent-root/state/sessions/friend-uuid-1/teams/ari-thread.json",
+      },
+      context: {
+        friend: {
+          id: "friend-uuid-1",
+          name: "Ari",
+          trustLevel: "friend",
+          externalIds: [],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          totalTokens: 0,
+          createdAt: "2026-03-14T00:00:00.000Z",
+          updatedAt: "2026-03-14T00:00:00.000Z",
+          schemaVersion: 1,
+        },
+        channel: {
+          channel: "teams",
+          senseType: "open",
+          availableIntegrations: [],
+          supportsMarkdown: true,
+          supportsStreaming: true,
+          supportsRichCards: false,
+          maxMessageLength: 1000,
+        },
+      },
+      botApi: { id: "bot-123" },
+      ...overrides,
+    }
+  }
+
   it("is registered in baseToolDefinitions", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")
@@ -323,6 +396,147 @@ describe("send_message tool", () => {
     expect(result.toLowerCase()).not.toContain("delivered now")
     expect(fs.writeFileSync).toHaveBeenCalledWith(
       expect.stringMatching(/^\/mock\/agent-root\/state\/pending\/friend-uuid-3\/cli\/session\/\d+-.+\.json$/),
+      expect.any(String),
+    )
+  })
+
+  it("reports a blocked result when bluebubbles cannot resolve a routable target", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+    mockSendProactiveBlueBubblesMessageToSession.mockResolvedValue({ delivered: false, reason: "missing_target" })
+
+    const result = await tool.handler({
+      friendId: "group-uuid",
+      channel: "bluebubbles",
+      key: "chat:any;+;missing-group",
+      content: "tell the group this could not route",
+    }, makeTrustedBlueBubblesTurnContext())
+
+    expect(result.toLowerCase()).toContain("blocked")
+    expect(result).toContain("could not resolve a routable target")
+    expect(fs.writeFileSync).not.toHaveBeenCalled()
+  })
+
+  it("reports a failed result when bluebubbles live send errors", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+    mockSendProactiveBlueBubblesMessageToSession.mockResolvedValue({ delivered: false, reason: "send_error" })
+
+    const result = await tool.handler({
+      friendId: "group-uuid",
+      channel: "bluebubbles",
+      key: "chat:any;+;project-group-123",
+      content: "this live send will fail",
+    }, makeTrustedBlueBubblesTurnContext())
+
+    expect(result.toLowerCase()).toContain("failed")
+    expect(result).toContain("bluebubbles send failed")
+    expect(fs.writeFileSync).not.toHaveBeenCalled()
+  })
+
+  it("falls back to truthful queued status when bluebubbles live delivery is unavailable", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+    mockSendProactiveBlueBubblesMessageToSession.mockResolvedValue({ delivered: false, reason: "trust_skip" })
+
+    const result = await tool.handler({
+      friendId: "group-uuid",
+      channel: "bluebubbles",
+      key: "chat:any;+;project-group-123",
+      content: "queue this for the next active turn",
+    }, makeTrustedBlueBubblesTurnContext())
+
+    expect(result.toLowerCase()).toContain("queued for later")
+    expect(fs.writeFileSync).toHaveBeenCalledWith(
+      expect.stringMatching(/^\/mock\/agent-root\/state\/pending\/group-uuid\/bluebubbles\/chat:any;\+\;project-group-123\/\d+-.+\.json$/),
+      expect.any(String),
+    )
+  })
+
+  it("reports delivered-now truthfully for a trusted explicit teams cross-chat request", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+    mockSendProactiveTeamsMessageToSession.mockResolvedValue({ delivered: true })
+
+    const result = await tool.handler({
+      friendId: "friend-uuid-4",
+      channel: "teams",
+      key: "target-thread",
+      content: "carry this into Teams right now",
+    }, makeTrustedTeamsTurnContext())
+
+    expect(result.toLowerCase()).toContain("delivered")
+    expect(result).toContain("sent to the active teams chat now")
+    expect(fs.writeFileSync).not.toHaveBeenCalled()
+  })
+
+  it("reports a blocked result when teams cannot resolve a routable target", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+    mockSendProactiveTeamsMessageToSession.mockResolvedValue({ delivered: false, reason: "missing_target" })
+
+    const result = await tool.handler({
+      friendId: "friend-uuid-4",
+      channel: "teams",
+      key: "target-thread",
+      content: "this teams send has no route",
+    }, makeTrustedTeamsTurnContext())
+
+    expect(result.toLowerCase()).toContain("blocked")
+    expect(result).toContain("teams could not resolve a routable target")
+    expect(fs.writeFileSync).not.toHaveBeenCalled()
+  })
+
+  it("reports a failed result when teams live send errors", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+    mockSendProactiveTeamsMessageToSession.mockResolvedValue({ delivered: false, reason: "send_error" })
+
+    const result = await tool.handler({
+      friendId: "friend-uuid-4",
+      channel: "teams",
+      key: "target-thread",
+      content: "this teams send will fail",
+    }, makeTrustedTeamsTurnContext())
+
+    expect(result.toLowerCase()).toContain("failed")
+    expect(result).toContain("teams send failed")
+    expect(fs.writeFileSync).not.toHaveBeenCalled()
+  })
+
+  it("falls back to truthful queued status when teams live delivery is unavailable", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+    const result = await tool.handler({
+      friendId: "friend-uuid-4",
+      channel: "teams",
+      key: "target-thread",
+      content: "queue this teams message for later",
+    }, makeTrustedTeamsTurnContext({ botApi: undefined }))
+
+    expect(result.toLowerCase()).toContain("queued for later")
+    expect(fs.writeFileSync).toHaveBeenCalledWith(
+      expect.stringMatching(/^\/mock\/agent-root\/state\/pending\/friend-uuid-4\/teams\/target-thread\/\d+-.+\.json$/),
+      expect.any(String),
+    )
+  })
+
+  it("falls back to truthful queued status when teams adapter reports undelivered without a specific reason", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+    mockSendProactiveTeamsMessageToSession.mockResolvedValue({ delivered: false })
+
+    const result = await tool.handler({
+      friendId: "friend-uuid-4",
+      channel: "teams",
+      key: "target-thread",
+      content: "queue this teams message when the adapter cannot say more",
+    }, makeTrustedTeamsTurnContext())
+
+    expect(result.toLowerCase()).toContain("queued for later")
+    expect(fs.writeFileSync).toHaveBeenCalledWith(
+      expect.stringMatching(/^\/mock\/agent-root\/state\/pending\/friend-uuid-4\/teams\/target-thread\/\d+-.+\.json$/),
       expect.any(String),
     )
   })

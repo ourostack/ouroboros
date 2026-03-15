@@ -1129,9 +1129,7 @@ export async function drainAndSendPendingTeams(
       continue
     }
 
-    if (sendResult.reason === "send_error") {
-      result.failed++
-    }
+    result.failed++
   }
 
   if (result.sent > 0 || result.skipped > 0 || result.failed > 0) {

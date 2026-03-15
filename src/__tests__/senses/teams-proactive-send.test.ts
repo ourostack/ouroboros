@@ -36,8 +36,14 @@ vi.mock("../../mind/friends/resolver", () => ({
 }))
 
 import { emitNervesEvent } from "../../nerves/runtime"
+import { FileFriendStore } from "../../mind/friends/store-file"
 
 const tempDirs: string[] = []
+const teamsPromise = import("../../senses/teams")
+
+async function loadTeams(): Promise<typeof import("../../senses/teams")> {
+  return teamsPromise
+}
 
 afterEach(() => {
   for (const dir of tempDirs) {
@@ -116,7 +122,6 @@ describe("drainAndSendPendingTeams", () => {
   let pendingRoot: string
 
   beforeEach(() => {
-    vi.resetModules()
     pendingRoot = makeTempDir()
     vi.mocked(emitNervesEvent).mockReset()
   })
@@ -142,7 +147,7 @@ describe("drainAndSendPendingTeams", () => {
       timestamp: Date.now(),
     })
 
-    const teams = await import("../../senses/teams")
+    const teams = await loadTeams()
     const result = await teams.drainAndSendPendingTeams(
       friendStore as any,
       botApi,
@@ -185,7 +190,7 @@ describe("drainAndSendPendingTeams", () => {
       timestamp: Date.now(),
     })
 
-    const teams = await import("../../senses/teams")
+    const teams = await loadTeams()
     await teams.drainAndSendPendingTeams(friendStore as any, botApi, pendingRoot)
 
     expect(fs.existsSync(filePath)).toBe(false)
@@ -211,7 +216,7 @@ describe("drainAndSendPendingTeams", () => {
       timestamp: Date.now(),
     })
 
-    const teams = await import("../../senses/teams")
+    const teams = await loadTeams()
     const result = await teams.drainAndSendPendingTeams(friendStore as any, botApi, pendingRoot)
 
     expect(result.skipped).toBe(1)
@@ -239,7 +244,7 @@ describe("drainAndSendPendingTeams", () => {
       timestamp: Date.now(),
     })
 
-    const teams = await import("../../senses/teams")
+    const teams = await loadTeams()
     const result = await teams.drainAndSendPendingTeams(friendStore as any, botApi, pendingRoot)
 
     expect(result.skipped).toBe(1)
@@ -266,7 +271,7 @@ describe("drainAndSendPendingTeams", () => {
       timestamp: Date.now(),
     })
 
-    const teams = await import("../../senses/teams")
+    const teams = await loadTeams()
     const result = await teams.drainAndSendPendingTeams(friendStore as any, botApi, pendingRoot)
 
     expect(result.sent).toBe(1)
@@ -297,7 +302,7 @@ describe("drainAndSendPendingTeams", () => {
       timestamp: Date.now(),
     })
 
-    const teams = await import("../../senses/teams")
+    const teams = await loadTeams()
     const result = await teams.drainAndSendPendingTeams(friendStore as any, botApi, pendingRoot)
 
     expect(result.skipped).toBe(1)
@@ -328,7 +333,7 @@ describe("drainAndSendPendingTeams", () => {
       timestamp: Date.now(),
     })
 
-    const teams = await import("../../senses/teams")
+    const teams = await loadTeams()
     const result = await teams.drainAndSendPendingTeams(friendStore as any, botApi, pendingRoot)
 
     expect(result.skipped).toBe(1)
@@ -360,7 +365,7 @@ describe("drainAndSendPendingTeams", () => {
       timestamp: Date.now(),
     })
 
-    const teams = await import("../../senses/teams")
+    const teams = await loadTeams()
     const result = await teams.drainAndSendPendingTeams(friendStore as any, botApi, pendingRoot)
 
     expect(result.skipped).toBe(1)
@@ -387,7 +392,7 @@ describe("drainAndSendPendingTeams", () => {
       timestamp: Date.now(),
     })
 
-    const teams = await import("../../senses/teams")
+    const teams = await loadTeams()
     const result = await teams.drainAndSendPendingTeams(friendStore as any, botApi, pendingRoot)
 
     expect(result.failed).toBe(1)
@@ -406,7 +411,7 @@ describe("drainAndSendPendingTeams", () => {
     const botApi = makeBotApi()
     const emptyRoot = makeTempDir()
 
-    const teams = await import("../../senses/teams")
+    const teams = await loadTeams()
     const result = await teams.drainAndSendPendingTeams(friendStore as any, botApi, emptyRoot)
 
     expect(result.sent).toBe(0)
@@ -453,7 +458,7 @@ describe("drainAndSendPendingTeams", () => {
       timestamp: Date.now(),
     })
 
-    const teams = await import("../../senses/teams")
+    const teams = await loadTeams()
     const result = await teams.drainAndSendPendingTeams(friendStore as any, botApi, pendingRoot)
 
     expect(result.sent).toBe(2)
@@ -471,7 +476,7 @@ describe("drainAndSendPendingTeams", () => {
     }
     const botApi = makeBotApi()
 
-    const teams = await import("../../senses/teams")
+    const teams = await loadTeams()
     const result = await teams.drainAndSendPendingTeams(
       friendStore as any,
       botApi,
@@ -502,7 +507,7 @@ describe("drainAndSendPendingTeams", () => {
     }
     const botApi = makeBotApi()
 
-    const teams = await import("../../senses/teams")
+    const teams = await loadTeams()
     const result = await teams.drainAndSendPendingTeams(friendStore as any, botApi, pendingRoot)
 
     expect(result.sent).toBe(0)
@@ -520,7 +525,7 @@ describe("drainAndSendPendingTeams", () => {
     }
     const botApi = makeBotApi()
 
-    const teams = await import("../../senses/teams")
+    const teams = await loadTeams()
     // Call without pendingRoot -- should use default from getAgentRoot
     const result = await teams.drainAndSendPendingTeams(friendStore as any, botApi)
 
@@ -545,7 +550,7 @@ describe("drainAndSendPendingTeams", () => {
     fs.mkdirSync(teamsDir, { recursive: true })
     fs.writeFileSync(path.join(teamsDir, "not-a-directory"), "oops")
 
-    const teams = await import("../../senses/teams")
+    const teams = await loadTeams()
     const result = await teams.drainAndSendPendingTeams(friendStore as any, botApi, pendingRoot)
 
     expect(result.sent).toBe(0)
@@ -568,7 +573,7 @@ describe("drainAndSendPendingTeams", () => {
     const filePath = path.join(dir, `${Date.now()}-bad.json`)
     fs.writeFileSync(filePath, "not valid json {{{")
 
-    const teams = await import("../../senses/teams")
+    const teams = await loadTeams()
     const result = await teams.drainAndSendPendingTeams(friendStore as any, botApi, pendingRoot)
 
     expect(result.failed).toBe(1)
@@ -595,7 +600,7 @@ describe("drainAndSendPendingTeams", () => {
       timestamp: Date.now(),
     })
 
-    const teams = await import("../../senses/teams")
+    const teams = await loadTeams()
     const result = await teams.drainAndSendPendingTeams(friendStore as any, botApi, pendingRoot)
 
     expect(result.skipped).toBe(1)
@@ -621,7 +626,7 @@ describe("drainAndSendPendingTeams", () => {
       timestamp: Date.now(),
     })
 
-    const teams = await import("../../senses/teams")
+    const teams = await loadTeams()
     const result = await teams.drainAndSendPendingTeams(friendStore as any, botApi, pendingRoot)
 
     expect(result.skipped).toBe(1)
@@ -646,7 +651,7 @@ describe("drainAndSendPendingTeams", () => {
       timestamp: Date.now(),
     })
 
-    const teams = await import("../../senses/teams")
+    const teams = await loadTeams()
     const result = await teams.drainAndSendPendingTeams(friendStore as any, botApi, pendingRoot)
 
     expect(result.skipped).toBe(1)
@@ -674,7 +679,7 @@ describe("drainAndSendPendingTeams", () => {
       timestamp: Date.now(),
     })
 
-    const teams = await import("../../senses/teams")
+    const teams = await loadTeams()
     const result = await teams.drainAndSendPendingTeams(friendStore as any, botApi, pendingRoot)
 
     expect(result.skipped).toBe(1)
@@ -702,7 +707,7 @@ describe("drainAndSendPendingTeams", () => {
       timestamp: Date.now(),
     })
 
-    const teams = await import("../../senses/teams")
+    const teams = await loadTeams()
     const result = await teams.drainAndSendPendingTeams(friendStore as any, botApi, pendingRoot)
 
     expect(result.failed).toBe(1)
@@ -736,7 +741,7 @@ describe("drainAndSendPendingTeams", () => {
       timestamp: Date.now(),
     })
 
-    const teams = await import("../../senses/teams")
+    const teams = await loadTeams()
     await teams.drainAndSendPendingTeams(friendStore as any, botApi, pendingRoot)
 
     expect(botApi._mocks.conversationsCreate).toHaveBeenCalledWith(
@@ -772,7 +777,7 @@ describe("drainAndSendPendingTeams", () => {
       timestamp: Date.now(),
     })
 
-    const teams = await import("../../senses/teams")
+    const teams = await loadTeams()
     await teams.drainAndSendPendingTeams(friendStore as any, botApi, pendingRoot)
 
     expect(botApi._mocks.conversationsCreate).toHaveBeenCalledWith(
@@ -796,7 +801,7 @@ describe("sendProactiveTeamsMessageToSession", () => {
     }
     const botApi = makeBotApi()
 
-    const teams = await import("../../senses/teams") as any
+    const teams = await loadTeams() as any
     const result = await teams.sendProactiveTeamsMessageToSession({
       friendId: "friend-uuid-1",
       sessionKey: "session",
@@ -825,5 +830,193 @@ describe("sendProactiveTeamsMessageToSession", () => {
         text: "carry this into the other chat now",
       }),
     )
+  })
+
+  it("prefers an explicitly provided friend store over createFriendStore", async () => {
+    const friend = makeFriend()
+    const providedStore = {
+      get: vi.fn().mockResolvedValue(friend),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+    const createFriendStore = vi.fn(() => ({
+      get: vi.fn(),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }))
+    const botApi = makeBotApi()
+
+    const teams = await loadTeams() as any
+    const result = await teams.sendProactiveTeamsMessageToSession({
+      friendId: "friend-uuid-1",
+      sessionKey: "session",
+      text: "use the provided store",
+    }, {
+      botApi,
+      store: providedStore as any,
+      createFriendStore,
+    })
+
+    expect(result).toEqual({ delivered: true })
+    expect(providedStore.get).toHaveBeenCalledWith("friend-uuid-1")
+    expect(createFriendStore).not.toHaveBeenCalled()
+  })
+
+  it("uses createFriendStore when no explicit store is provided", async () => {
+    const friend = makeFriend()
+    const createdStore = {
+      get: vi.fn().mockResolvedValue(friend),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+    const createFriendStore = vi.fn(() => createdStore as any)
+    const botApi = makeBotApi()
+
+    const teams = await loadTeams() as any
+    const result = await teams.sendProactiveTeamsMessageToSession({
+      friendId: "friend-uuid-1",
+      sessionKey: "session",
+      text: "use the created store",
+    }, {
+      botApi,
+      createFriendStore,
+    })
+
+    expect(result).toEqual({ delivered: true })
+    expect(createFriendStore).toHaveBeenCalledOnce()
+    expect(createdStore.get).toHaveBeenCalledWith("friend-uuid-1")
+  })
+
+  it("falls back to FileFriendStore when no store helpers are provided", async () => {
+    const friend = makeFriend()
+    vi.mocked(FileFriendStore).mockImplementationOnce(function (this: any) {
+      this.get = vi.fn().mockResolvedValue(friend)
+      this.put = vi.fn()
+      this.delete = vi.fn()
+      this.findByExternalId = vi.fn()
+    } as any)
+    const botApi = makeBotApi()
+
+    const teams = await loadTeams() as any
+    const result = await teams.sendProactiveTeamsMessageToSession({
+      friendId: "friend-uuid-1",
+      sessionKey: "session",
+      text: "use the file store fallback",
+    }, {
+      botApi,
+    })
+
+    expect(result).toEqual({ delivered: true })
+    expect(FileFriendStore).toHaveBeenCalledWith("/mock/agent/root/friends")
+  })
+
+  it("requires a trusted authorizing session for explicit cross-chat delivery into acquaintance chats", async () => {
+    const friend = makeFriend({ trustLevel: "acquaintance" })
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(friend),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+    const botApi = makeBotApi()
+
+    const teams = await loadTeams() as any
+    const result = await teams.sendProactiveTeamsMessageToSession({
+      friendId: "friend-uuid-1",
+      sessionKey: "session",
+      text: "this should not send",
+      intent: "explicit_cross_chat",
+    }, {
+      botApi,
+      createFriendStore: () => friendStore as any,
+    })
+
+    expect(result).toEqual({ delivered: false, reason: "trust_skip" })
+    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.teams_proactive_trust_skip",
+      meta: expect.objectContaining({
+        intent: "explicit_cross_chat",
+        authorizingTrustLevel: null,
+      }),
+    }))
+    expect(botApi._mocks.conversationsCreate).not.toHaveBeenCalled()
+  })
+
+  it("reports generic_outreach truthfully when a low-trust Teams target is skipped without explicit cross-chat intent", async () => {
+    const friend = makeFriend({ trustLevel: "stranger" })
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(friend),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+    const botApi = makeBotApi()
+
+    const teams = await loadTeams() as any
+    const result = await teams.sendProactiveTeamsMessageToSession({
+      friendId: "friend-uuid-1",
+      sessionKey: "session",
+      text: "this should stay queued",
+    }, {
+      botApi,
+      createFriendStore: () => friendStore as any,
+    })
+
+    expect(result).toEqual({ delivered: false, reason: "trust_skip" })
+    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.teams_proactive_trust_skip",
+      meta: expect.objectContaining({
+        intent: "generic_outreach",
+        authorizingTrustLevel: null,
+      }),
+    }))
+  })
+})
+
+describe("drainAndSendPendingTeams send_error accounting", () => {
+  it("counts Teams send_error results as failed when the activity send explodes", async () => {
+    const pendingRoot = makeTempDir()
+    const friend = makeFriend()
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(friend),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+    const botApi = makeBotApi({ sendError: new Error("activity exploded") })
+
+    writePendingFile(pendingRoot, "friend-uuid-1", "session", {
+      from: "testagent",
+      friendId: "friend-uuid-1",
+      channel: "teams",
+      content: "this activity send should fail",
+      timestamp: Date.now(),
+    })
+
+    const teams = await loadTeams()
+    const result = await teams.drainAndSendPendingTeams(friendStore as any, botApi, pendingRoot)
+
+    expect(result).toEqual({ sent: 0, skipped: 0, failed: 1 })
+    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.teams_proactive_send_error",
+      meta: expect.objectContaining({
+        reason: "activity exploded",
+      }),
+    }))
   })
 })
