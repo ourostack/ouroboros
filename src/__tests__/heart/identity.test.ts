@@ -508,30 +508,45 @@ describe("loadAgentConfig", () => {
     }
   })
 
-  it("caches loaded config", async () => {
-    vi.mocked(fs.readFileSync).mockReturnValue(
-      JSON.stringify({
-        version: 1,
-        enabled: true,
-        provider: "minimax",
-        phrases: {
-          thinking: ["thinking"],
-          tool: ["tool"],
-          followup: ["followup"],
-        },
-      }),
-    )
+  it("re-reads agent.json on each load", async () => {
+    vi.mocked(fs.readFileSync)
+      .mockReturnValueOnce(
+        JSON.stringify({
+          version: 1,
+          enabled: true,
+          provider: "minimax",
+          phrases: {
+            thinking: ["first"],
+            tool: ["tool"],
+            followup: ["followup"],
+          },
+        }),
+      )
+      .mockReturnValueOnce(
+        JSON.stringify({
+          version: 1,
+          enabled: true,
+          provider: "anthropic",
+          phrases: {
+            thinking: ["second"],
+            tool: ["tool"],
+            followup: ["followup"],
+          },
+        }),
+      )
 
     const { loadAgentConfig, resetIdentity } = await import("../../heart/identity")
     resetIdentity()
     const first = loadAgentConfig()
     const second = loadAgentConfig()
 
-    expect(first).toBe(second)
-    expect(fs.readFileSync).toHaveBeenCalledTimes(1)
+    expect(first).not.toBe(second)
+    expect(first.provider).toBe("minimax")
+    expect(second.provider).toBe("anthropic")
+    expect(fs.readFileSync).toHaveBeenCalledTimes(2)
   })
 
-  it("re-reads config after resetAgentConfigCache without resetting agent identity", async () => {
+  it("picks up updated agent.json without resetting agent identity", async () => {
     process.argv = ["node", "cli-entry.js", "--agent", "ouroboros"]
     vi.mocked(fs.readFileSync)
       .mockReturnValueOnce(
@@ -559,12 +574,10 @@ describe("loadAgentConfig", () => {
         }),
       )
 
-    const { getAgentName, loadAgentConfig, resetAgentConfigCache, resetIdentity } = await import("../../heart/identity")
+    const { getAgentName, loadAgentConfig, resetIdentity } = await import("../../heart/identity")
     resetIdentity()
     expect(getAgentName()).toBe("ouroboros")
     expect(loadAgentConfig().phrases.thinking).toEqual(["first"])
-
-    resetAgentConfigCache()
 
     expect(getAgentName()).toBe("ouroboros")
     expect(loadAgentConfig().phrases.thinking).toEqual(["second"])

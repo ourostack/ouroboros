@@ -296,31 +296,32 @@ describe("loadConfig", () => {
     expect(fs.readFileSync).toHaveBeenCalledWith(expectedPath, "utf-8")
   })
 
-  it("caches config after first load", async () => {
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ providers: { minimax: { apiKey: "k1" } } }))
+  it("re-reads disk-backed secrets config on each load", async () => {
+    vi.mocked(fs.readFileSync)
+      .mockReturnValueOnce(JSON.stringify({ providers: { minimax: { apiKey: "k1" } } }))
+      .mockReturnValueOnce(JSON.stringify({ providers: { minimax: { apiKey: "k2" } } }))
 
     const { loadConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     const config1 = loadConfig()
-    const config2 = loadConfig()
-
-    expect(config1).toBe(config2) // same reference
-    expect(fs.readFileSync).toHaveBeenCalledTimes(1)
-  })
-
-  it("re-reads from disk after resetConfigCache()", async () => {
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ providers: { azure: { apiKey: "first" } } }))
-
-    const { loadConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
-    const config1 = loadConfig()
-
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ providers: { azure: { apiKey: "second" } } }))
-    resetConfigCache()
     const config2 = loadConfig()
 
     expect(config1).not.toBe(config2)
-    expect(config2.providers.azure.apiKey).toBe("second")
+    expect(config1.providers.minimax.apiKey).toBe("k1")
+    expect(config2.providers.minimax.apiKey).toBe("k2")
+    expect(fs.readFileSync).toHaveBeenCalledTimes(2)
+  })
+
+  it("re-reads updated integrations config without resetConfigCache()", async () => {
+    vi.mocked(fs.readFileSync)
+      .mockReturnValueOnce(JSON.stringify({ integrations: { perplexityApiKey: "" } }))
+      .mockReturnValueOnce(JSON.stringify({ integrations: { perplexityApiKey: "fresh-key" } }))
+
+    const { getIntegrationsConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+
+    expect(getIntegrationsConfig().perplexityApiKey).toBe("")
+    expect(getIntegrationsConfig().perplexityApiKey).toBe("fresh-key")
     expect(fs.readFileSync).toHaveBeenCalledTimes(2)
   })
 
