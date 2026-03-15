@@ -108,6 +108,8 @@ interface StatusOverviewRow {
   socketPath: string
   version: string
   lastUpdated: string
+  repoRoot: string
+  configFingerprint: string
   workerCount: number
   senseCount: number
 }
@@ -162,6 +164,8 @@ function parseStatusPayload(data: unknown): StatusPayload | null {
     socketPath: stringField((overview as Record<string, unknown>).socketPath) ?? "unknown",
     version: stringField((overview as Record<string, unknown>).version) ?? "unknown",
     lastUpdated: stringField((overview as Record<string, unknown>).lastUpdated) ?? "unknown",
+    repoRoot: stringField((overview as Record<string, unknown>).repoRoot) ?? "unknown",
+    configFingerprint: stringField((overview as Record<string, unknown>).configFingerprint) ?? "unknown",
     workerCount: numberField((overview as Record<string, unknown>).workerCount) ?? 0,
     senseCount: numberField((overview as Record<string, unknown>).senseCount) ?? 0,
   }
@@ -279,14 +283,34 @@ export async function ensureDaemonRunning(deps: OuroCliDeps): Promise<EnsureDaem
   const alive = await deps.checkSocketAlive(deps.socketPath)
   if (alive) {
     const localRuntime = getRuntimeMetadata()
+    let runningRuntimePromise: Promise<{
+      version: string
+      lastUpdated: string
+      repoRoot: string
+      configFingerprint: string
+    }> | null = null
+    const fetchRunningRuntimeMetadata = async () => {
+      runningRuntimePromise ??= (async () => {
+        const status = await deps.sendCommand(deps.socketPath, { kind: "daemon.status" })
+        const payload = parseStatusPayload(status.data)
+        return {
+          version: payload?.overview.version ?? "unknown",
+          lastUpdated: payload?.overview.lastUpdated ?? "unknown",
+          repoRoot: payload?.overview.repoRoot ?? "unknown",
+          configFingerprint: payload?.overview.configFingerprint ?? "unknown",
+        }
+      })()
+      return runningRuntimePromise
+    }
+
     return ensureCurrentDaemonRuntime({
       socketPath: deps.socketPath,
       localVersion: localRuntime.version,
-      fetchRunningVersion: async () => {
-        const status = await deps.sendCommand(deps.socketPath, { kind: "daemon.status" })
-        const payload = parseStatusPayload(status.data)
-        return payload?.overview.version ?? "unknown"
-      },
+      localLastUpdated: localRuntime.lastUpdated,
+      localRepoRoot: localRuntime.repoRoot,
+      localConfigFingerprint: localRuntime.configFingerprint,
+      fetchRunningVersion: async () => (await fetchRunningRuntimeMetadata()).version,
+      fetchRunningRuntimeMetadata,
       stopDaemon: async () => {
         await deps.sendCommand(deps.socketPath, { kind: "daemon.stop" })
       },
@@ -355,6 +379,8 @@ function buildStoppedStatusPayload(socketPath: string): StatusPayload {
       socketPath,
       version: metadata.version,
       lastUpdated: metadata.lastUpdated,
+      repoRoot: metadata.repoRoot,
+      configFingerprint: metadata.configFingerprint,
       workerCount: 0,
       senseCount: 0,
     },
