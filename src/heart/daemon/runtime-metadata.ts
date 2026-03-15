@@ -83,15 +83,31 @@ function readLastUpdated(
   }
 }
 
+function readHomeDir(): string | null {
+  const homedirImpl = optionalFunction<typeof os.homedir>(os, "homedir")
+  if (!homedirImpl) {
+    return null
+  }
+
+  try {
+    return homedirImpl.call(os)
+  } catch {
+    return null
+  }
+}
+
 function listConfigTargets(
   bundlesRoot: string,
-  secretsRoot: string,
-  daemonLoggingPath: string,
+  secretsRoot: string | null,
+  daemonLoggingPath: string | null,
   readdirSyncImpl: typeof fs.readdirSync | null,
 ): string[] {
   if (!readdirSyncImpl) return []
 
-  const targets = new Set<string>([daemonLoggingPath])
+  const targets = new Set<string>()
+  if (daemonLoggingPath) {
+    targets.add(daemonLoggingPath)
+  }
 
   try {
     const bundleEntries = readdirSyncImpl(bundlesRoot, { withFileTypes: true }) as fs.Dirent[]
@@ -103,14 +119,16 @@ function listConfigTargets(
     // ignore unreadable bundle roots
   }
 
-  try {
-    const secretEntries = readdirSyncImpl(secretsRoot, { withFileTypes: true }) as fs.Dirent[]
-    for (const entry of secretEntries) {
-      if (!entry.isDirectory()) continue
-      targets.add(path.join(secretsRoot, entry.name, "secrets.json"))
+  if (secretsRoot) {
+    try {
+      const secretEntries = readdirSyncImpl(secretsRoot, { withFileTypes: true }) as fs.Dirent[]
+      for (const entry of secretEntries) {
+        if (!entry.isDirectory()) continue
+        targets.add(path.join(secretsRoot, entry.name, "secrets.json"))
+      }
+    } catch {
+      // ignore unreadable secrets roots
     }
-  } catch {
-    // ignore unreadable secrets roots
   }
 
   return [...targets].sort()
@@ -167,8 +185,9 @@ function readConfigFingerprint(
 export function getRuntimeMetadata(deps: RuntimeMetadataDeps = {}): RuntimeMetadata {
   const repoRoot = deps.repoRoot ?? getRepoRoot()
   const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
-  const secretsRoot = deps.secretsRoot ?? path.join(os.homedir(), ".agentsecrets")
-  const daemonLoggingPath = deps.daemonLoggingPath ?? path.join(os.homedir(), ".agentstate", "daemon", "logging.json")
+  const homeDir = readHomeDir()
+  const secretsRoot = deps.secretsRoot ?? (homeDir ? path.join(homeDir, ".agentsecrets") : null)
+  const daemonLoggingPath = deps.daemonLoggingPath ?? (homeDir ? path.join(homeDir, ".agentstate", "daemon", "logging.json") : null)
   const readFileSyncImpl = deps.readFileSync ?? optionalFunction<typeof fs.readFileSync>(fs, "readFileSync")?.bind(fs) ?? null
   const statSyncImpl = deps.statSync ?? optionalFunction<typeof fs.statSync>(fs, "statSync")?.bind(fs) ?? null
   const readdirSyncImpl = deps.readdirSync ?? optionalFunction<typeof fs.readdirSync>(fs, "readdirSync")?.bind(fs) ?? null

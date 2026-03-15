@@ -263,4 +263,60 @@ describe("runtime metadata", () => {
       configFingerprint: "unknown",
     })
   })
+
+  it("skips home-relative config targets when homedir is unavailable", async () => {
+    vi.resetModules()
+    const readFileSync = vi.fn((target: string) => {
+      if (target === "/mock/repo/package.json") {
+        return JSON.stringify({ version: "1.2.3" })
+      }
+      if (target === "/mock/bundles/slugger.ouro/agent.json") {
+        return JSON.stringify({ provider: "anthropic" })
+      }
+      throw new Error(`missing ${target}`)
+    })
+    const readdirSync = vi.fn((target: string) => {
+      if (target === "/mock/bundles") {
+        return [mockDirent("slugger.ouro", true)]
+      }
+      return []
+    })
+    const existsSync = vi.fn((target: string) => target === "/mock/bundles/slugger.ouro/agent.json")
+
+    vi.doMock("os", async () => {
+      const actual = await vi.importActual<typeof import("os")>("os")
+      return {
+        ...actual,
+        homedir: () => {
+          throw new Error("home unavailable")
+        },
+      }
+    })
+    vi.doMock("../../../heart/identity", () => ({
+      getRepoRoot: () => "/mock/repo",
+      getAgentBundlesRoot: () => "/mock/bundles",
+    }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+    vi.doMock("fs", () => ({
+      readFileSync,
+      readdirSync,
+      existsSync,
+      statSync: vi.fn(() => ({ mtime: new Date("2026-03-08T23:20:00.000Z") })),
+    }))
+    vi.doMock("child_process", () => ({
+      execFileSync: vi.fn(() => "2026-03-08T22:11:00.000Z\n"),
+    }))
+
+    const { getRuntimeMetadata: getWithMocks } = await import("../../../heart/daemon/runtime-metadata")
+    const metadata = getWithMocks()
+
+    expect(metadata).toEqual({
+      version: "1.2.3",
+      lastUpdated: "2026-03-08T22:11:00.000Z",
+      repoRoot: "/mock/repo",
+      configFingerprint: expect.any(String),
+    })
+    expect(readdirSync).toHaveBeenCalledTimes(1)
+    expect(readdirSync).toHaveBeenCalledWith("/mock/bundles", { withFileTypes: true })
+  })
 })
