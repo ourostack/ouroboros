@@ -107,6 +107,34 @@ describe("launchd daemon management", () => {
       // Should still be valid plist but without StandardOutPath/StandardErrorPath
       expect(xml).toContain("<plist version=\"1.0\">")
     })
+
+    it("includes EnvironmentVariables with PATH when envPath is provided", () => {
+      const xml = generateDaemonPlist({
+        ...defaultPlistOptions,
+        envPath: "/usr/local/bin:/usr/bin:/bin",
+      })
+
+      expect(xml).toContain("<key>EnvironmentVariables</key>")
+      expect(xml).toContain("<key>PATH</key>")
+      expect(xml).toContain("<string>/usr/local/bin:/usr/bin:/bin</string>")
+    })
+
+    it("omits EnvironmentVariables section when envPath is undefined", () => {
+      const xml = generateDaemonPlist(defaultPlistOptions)
+
+      expect(xml).not.toContain("<key>EnvironmentVariables</key>")
+      expect(xml).not.toContain("<key>PATH</key>")
+    })
+
+    it("renders envPath value verbatim inside the string element", () => {
+      const customPath = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+      const xml = generateDaemonPlist({
+        ...defaultPlistOptions,
+        envPath: customPath,
+      })
+
+      expect(xml).toContain(`<string>${customPath}</string>`)
+    })
   })
 
   describe("installLaunchAgent", () => {

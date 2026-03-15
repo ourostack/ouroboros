@@ -695,6 +695,8 @@ describe("ouro CLI execution", () => {
     expect(result).toContain("| Workers      | 0")
     expect(result).toContain("| Senses       | 0")
     expect(result).toContain("| Health       | unknown |")
+    expect(result).toContain("| Entry Path   | unknown |")
+    expect(result).toContain("| Mode         | unknown |")
   })
 
   it("renders daemon status with Overview, Senses, and Workers sections", async () => {
@@ -712,6 +714,8 @@ describe("ouro CLI execution", () => {
             workerCount: 1,
             senseCount: 3,
             health: "ok",
+            entryPath: "/usr/local/lib/node_modules/@ouro.bot/cli/dist/heart/daemon/daemon-entry.js",
+            mode: "production",
           },
           senses: [
             {
@@ -768,6 +772,10 @@ describe("ouro CLI execution", () => {
     expect(result).toContain("/bluebubbles-webhook")
     expect(result).toContain("inner-dialog")
     expect(result).toContain("n/a")
+    expect(result).toContain("| Entry Path")
+    expect(result).toContain("/usr/local/lib/node_modules/@ouro.bot/cli/dist/heart/daemon/daemon-entry.js")
+    expect(result).toContain("| Mode")
+    expect(result).toContain("production")
   })
 
   it("falls back to the raw sense name when daemon status includes an unknown sense label", async () => {

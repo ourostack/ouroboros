@@ -23,6 +23,7 @@ export interface DaemonPlistOptions {
   entryPath: string
   socketPath: string
   logDir?: string
+  envPath?: string
 }
 
 function plistFilePath(homeDir: string): string {
@@ -56,6 +57,16 @@ export function generateDaemonPlist(options: DaemonPlistOptions): string {
     `  <key>KeepAlive</key>`,
     `  <true/>`,
   ]
+
+  if (options.envPath) {
+    lines.push(
+      `  <key>EnvironmentVariables</key>`,
+      `  <dict>`,
+      `    <key>PATH</key>`,
+      `    <string>${options.envPath}</string>`,
+      `  </dict>`,
+    )
+  }
 
   if (options.logDir) {
     lines.push(

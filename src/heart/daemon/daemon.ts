@@ -1,10 +1,11 @@
 import * as fs from "fs"
 import * as net from "net"
 import * as path from "path"
-import { getAgentBundlesRoot } from "../identity"
+import { getAgentBundlesRoot, getRepoRoot } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { DaemonSenseManagerLike, DaemonSenseRow } from "./sense-manager"
 import { getRuntimeMetadata } from "./runtime-metadata"
+import { detectRuntimeMode } from "./runtime-mode"
 import { applyPendingUpdates, registerUpdateHook } from "./update-hooks"
 import { bundleMetaHook } from "./hooks/bundle-meta"
 import { getPackageVersion } from "../../mind/bundle-manifest"
@@ -128,6 +129,8 @@ interface DaemonStatusOverview {
   lastUpdated: string
   workerCount: number
   senseCount: number
+  entryPath: string
+  mode: "dev" | "production"
 }
 
 interface DaemonStatusPayload {
@@ -493,6 +496,7 @@ export class OuroDaemon {
         const snapshots = this.processManager.listAgentSnapshots()
         const workers = buildWorkerRows(snapshots)
         const senses = this.senseManager?.listSenseRows() ?? []
+        const repoRoot = getRepoRoot()
         const data: DaemonStatusPayload = {
           overview: {
             daemon: "running",
@@ -501,6 +505,8 @@ export class OuroDaemon {
             ...getRuntimeMetadata(),
             workerCount: workers.length,
             senseCount: senses.length,
+            entryPath: path.join(repoRoot, "dist", "heart", "daemon", "daemon-entry.js"),
+            mode: detectRuntimeMode(repoRoot),
           },
           workers,
           senses,

@@ -34,6 +34,7 @@ export interface DaemonProcessManagerOptions {
   now?: () => number
   setTimeoutFn?: (cb: () => void, delay: number) => unknown
   clearTimeoutFn?: (timer: unknown) => void
+  existsSync?: (p: string) => boolean
 }
 
 interface AgentRuntimeState {
@@ -59,6 +60,7 @@ export class DaemonProcessManager {
   private readonly now: () => number
   private readonly setTimeoutFn: (cb: () => void, delay: number) => unknown
   private readonly clearTimeoutFn: (timer: unknown) => void
+  private readonly existsSyncFn: ((p: string) => boolean) | null
 
   constructor(options: DaemonProcessManagerOptions) {
     this.maxRestartsPerHour = options.maxRestartsPerHour ?? 10
@@ -69,6 +71,7 @@ export class DaemonProcessManager {
     this.now = options.now ?? (() => Date.now())
     this.setTimeoutFn = options.setTimeoutFn ?? ((cb, delay) => setTimeout(cb, delay))
     this.clearTimeoutFn = options.clearTimeoutFn ?? ((timer) => clearTimeout(timer as NodeJS.Timeout))
+    this.existsSyncFn = options.existsSync ?? null
 
     for (const agent of options.agents) {
       this.agents.set(agent.name, {
@@ -109,6 +112,19 @@ export class DaemonProcessManager {
 
     const runCwd = getRepoRoot()
     const entryScript = path.join(getRepoRoot(), "dist", state.config.entry)
+
+    if (this.existsSyncFn && !this.existsSyncFn(entryScript)) {
+      state.snapshot.status = "crashed"
+      emitNervesEvent({
+        level: "error",
+        component: "daemon",
+        event: "daemon.agent_entry_missing",
+        message: "agent entry script does not exist — cannot spawn. Run 'ouro daemon install' from the correct location.",
+        meta: { agent, entryScript },
+      })
+      return
+    }
+
     const args = [entryScript, "--agent", state.config.agentArg ?? agent, ...(state.config.args ?? [])]
     const child = this.spawnFn("node", args, {
       cwd: runCwd,

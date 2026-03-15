@@ -127,7 +127,14 @@ describe("daemon entrypoint", () => {
     )
 
     expect(emitNervesEvent).toHaveBeenCalledWith(
-      expect.objectContaining({ event: "daemon.entry_start", meta: { socketPath: "/tmp/ouroboros-daemon.sock" } }),
+      expect.objectContaining({
+        event: "daemon.entry_start",
+        meta: expect.objectContaining({
+          socketPath: "/tmp/ouroboros-daemon.sock",
+          entryPath: expect.stringContaining("daemon-entry.js"),
+          mode: expect.stringMatching(/^(dev|production)$/),
+        }),
+      }),
     )
     expect(emitNervesEvent).toHaveBeenCalledWith(
       expect.objectContaining({ event: "daemon.health_alert" }),
@@ -366,7 +373,14 @@ describe("daemon entrypoint", () => {
     await Promise.resolve()
 
     expect(emitNervesEvent).toHaveBeenCalledWith(
-      expect.objectContaining({ event: "daemon.entry_start", meta: { socketPath: "/tmp/ouroboros-daemon.sock" } }),
+      expect.objectContaining({
+        event: "daemon.entry_start",
+        meta: expect.objectContaining({
+          socketPath: "/tmp/ouroboros-daemon.sock",
+          entryPath: expect.stringContaining("daemon-entry.js"),
+          mode: expect.stringMatching(/^(dev|production)$/),
+        }),
+      }),
     )
     expect(configureDaemonRuntimeLogger).toHaveBeenCalledWith("daemon")
 

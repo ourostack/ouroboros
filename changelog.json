@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.53",
+      "changes": [
+        "Daemon plist now inherits PATH from the installing process, so child agent spawns can find node regardless of launchd's minimal default environment.",
+        "Daemon startup and status output now show the entry path and runtime mode (dev vs production) so it's immediately obvious where the daemon is running from and whether it's a dev repo, worktree, or npm install.",
+        "Agent spawn in the process manager now validates the entry script exists before calling spawn, setting the agent to crashed with a clear error instead of an opaque ENOENT.",
+        "Plist write warns when the entry path doesn't exist on disk, catching stale worktree paths before they cause daemon crashes."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.52",
       "changes": [
         "Trusted 1:1 chats can now act live across active group threads: the harness resolves candidate target chats, carries explicit trust context into the model, and delivers messages into the right live BlueBubbles or Teams session instead of only queueing for later.",
