@@ -165,14 +165,17 @@ export function createSummarize(): (transcript: string, instruction: string) => 
 }
 
 export function getProviderDisplayLabel(): string {
-  const model = getModel();
+  const provider = loadAgentConfig().provider;
   const providerLabelBuilders: Record<ProviderId, () => string> = {
-    azure: () => `azure openai (${getAzureConfig().deployment || "default"}, model: ${model})`,
-    anthropic: () => `anthropic (${model})`,
-    minimax: () => `minimax (${model})`,
-    "openai-codex": () => `openai codex (${model})`,
+    azure: () => {
+      const config = getAzureConfig();
+      return `azure openai (${config.deployment || "default"}, model: ${config.modelName || "unknown"})`
+    },
+    anthropic: () => `anthropic (${getAnthropicConfig().model || "unknown"})`,
+    minimax: () => `minimax (${getMinimaxConfig().model || "unknown"})`,
+    "openai-codex": () => `openai codex (${getOpenAICodexConfig().model || "unknown"})`,
   };
-  return providerLabelBuilders[getProvider()]();
+  return providerLabelBuilders[provider]();
 }
 
 // Re-export tools, execTool, summarizeArgs from ./tools for backward compat
