@@ -45,6 +45,7 @@ const mocks = vi.hoisted(() => ({
   enforceTrustGate: vi.fn(),
   findByExternalId: vi.fn().mockResolvedValue(null),
   listAll: vi.fn().mockResolvedValue([]),
+  lastStoreInstance: null as any,
 }))
 
 const tempDirs: string[] = []
@@ -128,6 +129,7 @@ vi.mock("../../mind/friends/tokens", () => ({
 vi.mock("../../mind/friends/store-file", () => ({
   FileFriendStore: vi.fn(function (this: any, root: string) {
     mocks.storeCtor(root)
+    mocks.lastStoreInstance = this
     this.get = vi.fn()
     this.put = vi.fn()
     this.delete = vi.fn()
@@ -532,6 +534,7 @@ function resetMocks(): void {
   mocks.enforceTrustGate.mockReset().mockReturnValue({ allowed: true })
   mocks.findByExternalId.mockReset().mockResolvedValue(null)
   mocks.listAll.mockReset().mockResolvedValue([])
+  mocks.lastStoreInstance = null
   // handleInboundTurn: by default, simulate a successful pipeline run that calls
   // the injected runAgent (which triggers BB callbacks for text buffering/flush).
   // Mirrors the real pipeline: resolves friend, builds toolContext with context/friendStore,
@@ -3367,6 +3370,56 @@ describe("BlueBubbles sense runtime", () => {
     expect(input.groupHasFamilyMember).toBe(false)
   })
 
+  it("does not yet bootstrap relevant group participants into acquaintance records with shared-group context", async () => {
+    mocks.resolveContext.mockResolvedValueOnce({
+      friend: {
+        id: "group-uuid",
+        name: "Project Group",
+        externalIds: [],
+        tenantMemberships: [],
+        toolPreferences: {},
+        notes: {},
+        createdAt: "2026-01-01",
+        updatedAt: "2026-01-01",
+        schemaVersion: 1,
+      },
+      channel: defaultFriendContext.channel,
+    })
+
+    const liveGroupPayload = {
+      ...groupWithParticipantsPayload,
+      data: {
+        ...groupWithParticipantsPayload.data,
+        chats: [{
+          ...groupWithParticipantsPayload.data.chats[0],
+          guid: "any;+;project-group-123",
+          chatIdentifier: "project-group-123",
+          displayName: "Project Group",
+          participants: [
+            { address: "acquaintance@example.com" },
+            { address: "new-person@example.com" },
+            { address: "new-person@example.com" },
+          ],
+        }],
+      },
+    }
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(liveGroupPayload)
+
+    const store = mocks.lastStoreInstance
+    expect(store.put).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        trustLevel: "acquaintance",
+        externalIds: expect.arrayContaining([
+          expect.objectContaining({ externalId: "new-person@example.com" }),
+          expect.objectContaining({ externalId: "group:any;+;project-group-123" }),
+        ]),
+      }),
+    )
+  })
+
   it("sets hasExistingGroupWithFamily=true for acquaintance 1:1 when they share a group with family", async () => {
     // The sender is an acquaintance with a group externalId
     const acquaintanceFriend = {
@@ -5037,6 +5090,239 @@ describe("sendProactiveBlueBubblesMessageToSession", () => {
       sessionKey: "chat:any;-;alice@icloud.com",
       text: "surface this now",
     }, {
+      createClient: () => ({
+        sendText: mocks.sendText,
+        editMessage: mocks.editMessage,
+        setTyping: mocks.setTyping,
+        markChatRead: mocks.markChatRead,
+        checkHealth: mocks.checkHealth,
+        repairEvent: mocks.repairEvent,
+      }),
+      createFriendStore: () => friendStore as any,
+    })
+
+    expect(result).toEqual({ delivered: false, reason: "trust_skip" })
+    expect(mocks.sendText).not.toHaveBeenCalled()
+  })
+
+  it("allows explicit cross-chat delivery to a group session when the asking chat is trusted even if the target record is only acquaintance", async () => {
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(makeFriend({
+        id: "group-uuid",
+        name: "Project Group",
+        trustLevel: "acquaintance",
+        externalIds: [
+          { provider: "imessage-handle", externalId: "group:any;+;project-group-123", linkedAt: "2026-01-01" },
+        ],
+      })),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
+      friendId: "group-uuid",
+      sessionKey: "chat:any;+;project-group-123",
+      text: "tell the group the plan changed",
+      intent: "explicit_cross_chat",
+      authorizingSession: {
+        friendId: "friend-uuid-1",
+        channel: "bluebubbles",
+        key: "chat:any;-;ari@icloud.com",
+        trustLevel: "friend",
+      },
+    } as any, {
+      createClient: () => ({
+        sendText: mocks.sendText,
+        editMessage: mocks.editMessage,
+        setTyping: mocks.setTyping,
+        markChatRead: mocks.markChatRead,
+        checkHealth: mocks.checkHealth,
+        repairEvent: mocks.repairEvent,
+      }),
+      createFriendStore: () => friendStore as any,
+    })
+
+    expect(result).toEqual({ delivered: true })
+    expect(mocks.sendText).toHaveBeenCalledWith(expect.objectContaining({
+      chat: expect.objectContaining({
+        chatGuid: "any;+;project-group-123",
+        sessionKey: "chat:any;+;project-group-123",
+        isGroup: true,
+      }),
+      text: "tell the group the plan changed",
+    }))
+  })
+
+  it("uses the persisted BlueBubbles session filename key when explicitly sending to an active group chat", async () => {
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(makeFriend({
+        id: "group-uuid",
+        name: "Project Group",
+        trustLevel: "acquaintance",
+        externalIds: [
+          { provider: "imessage-handle", externalId: "group:any;+;project-group-123", linkedAt: "2026-01-01" },
+        ],
+      })),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
+      friendId: "group-uuid",
+      sessionKey: "chat_any;+;project-group-123",
+      text: "tell the active group this came from a stored session key",
+      intent: "explicit_cross_chat",
+      authorizingSession: {
+        friendId: "friend-uuid-1",
+        channel: "bluebubbles",
+        key: "chat:any;-;ari@icloud.com",
+        trustLevel: "friend",
+      },
+    } as any, {
+      createClient: () => ({
+        sendText: mocks.sendText,
+        editMessage: mocks.editMessage,
+        setTyping: mocks.setTyping,
+        markChatRead: mocks.markChatRead,
+        checkHealth: mocks.checkHealth,
+        repairEvent: mocks.repairEvent,
+      }),
+      createFriendStore: () => friendStore as any,
+    })
+
+    expect(result).toEqual({ delivered: true })
+    expect(mocks.sendText).toHaveBeenCalledWith(expect.objectContaining({
+      chat: expect.objectContaining({
+        chatGuid: "any;+;project-group-123",
+        chatIdentifier: "project-group-123",
+        sessionKey: "chat_any;+;project-group-123",
+        isGroup: true,
+      }),
+      text: "tell the active group this came from a stored session key",
+    }))
+  })
+
+  it("normalizes persisted BlueBubbles chat_identifier session keys for explicit delivery", async () => {
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(makeFriend({
+        id: "friend-uuid-2",
+        name: "Jordan",
+        trustLevel: "friend",
+        externalIds: [
+          { provider: "imessage-handle", externalId: "jordan@icloud.com", linkedAt: "2026-01-01" },
+        ],
+      })),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
+      friendId: "friend-uuid-2",
+      sessionKey: "chat_identifier_jordan@icloud.com",
+      text: "ping Jordan through the stored chat identifier",
+      intent: "explicit_cross_chat",
+      authorizingSession: {
+        friendId: "friend-uuid-1",
+        channel: "bluebubbles",
+        key: "chat:any;-;ari@icloud.com",
+        trustLevel: "friend",
+      },
+    } as any, {
+      createClient: () => ({
+        sendText: mocks.sendText,
+        editMessage: mocks.editMessage,
+        setTyping: mocks.setTyping,
+        markChatRead: mocks.markChatRead,
+        checkHealth: mocks.checkHealth,
+        repairEvent: mocks.repairEvent,
+      }),
+      createFriendStore: () => friendStore as any,
+    })
+
+    expect(result).toEqual({ delivered: true })
+    expect(mocks.sendText).toHaveBeenCalledWith(expect.objectContaining({
+      chat: expect.objectContaining({
+        chatIdentifier: "jordan@icloud.com",
+        sessionKey: "chat_identifier_jordan@icloud.com",
+        isGroup: false,
+      }),
+      text: "ping Jordan through the stored chat identifier",
+    }))
+  })
+
+  it("falls back to the friend's iMessage handle when a persisted chat_identifier filename key is blank", async () => {
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(makeFriend()),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
+      friendId: "friend-uuid-1",
+      sessionKey: "chat_identifier_   ",
+      text: "use the fallback handle from the friend record",
+    }, {
+      createClient: () => ({
+        sendText: mocks.sendText,
+        editMessage: mocks.editMessage,
+        setTyping: mocks.setTyping,
+        markChatRead: mocks.markChatRead,
+        checkHealth: mocks.checkHealth,
+        repairEvent: mocks.repairEvent,
+      }),
+      createFriendStore: () => friendStore as any,
+    })
+
+    expect(result).toEqual({ delivered: true })
+    expect(mocks.sendText).toHaveBeenCalledWith(expect.objectContaining({
+      chat: expect.objectContaining({
+        chatIdentifier: "alice@icloud.com",
+        sessionKey: "chat_identifier_   ",
+      }),
+      text: "use the fallback handle from the friend record",
+    }))
+  })
+
+  it("requires a trusted authorizing session for explicit cross-chat delivery into acquaintance chats", async () => {
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(makeFriend({
+        id: "group-uuid",
+        name: "Project Group",
+        trustLevel: "acquaintance",
+        externalIds: [
+          { provider: "imessage-handle", externalId: "group:any;+;project-group-123", linkedAt: "2026-01-01" },
+        ],
+      })),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
+      friendId: "group-uuid",
+      sessionKey: "chat:any;+;project-group-123",
+      text: "this should not send without a trusted asking chat",
+      intent: "explicit_cross_chat",
+    } as any, {
       createClient: () => ({
         sendText: mocks.sendText,
         editMessage: mocks.editMessage,

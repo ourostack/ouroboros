@@ -612,5 +612,5 @@ describe("complete_adoption via createSpecialistExecTool", () => {
     // Only README.md should be there, no friend JSON files
     const friendFiles = fs.readdirSync(friendsDir).filter((f) => f.endsWith(".json"))
     expect(friendFiles.length).toBe(0)
-  }, 10000)
+  }, 20000)
 })

@@ -5,6 +5,7 @@ import { finalAnswerTool, getToolsForChannel, REMOTE_BLOCKED_LOCAL_TOOLS } from 
 import { listSkills } from "../repertoire/skills";
 import { getAgentRoot, getAgentName, getAgentSecretsPath, loadAgentConfig, type SenseName } from "../heart/identity";
 import { isTrustedLevel, type Channel, type ChannelCapabilities, type ResolvedContext } from "./friends/types";
+import { describeTrustContext } from "./friends/trust-explanation";
 import { getChannelCapabilities, isRemoteChannel } from "./friends/channel";
 import { emitNervesEvent } from "../nerves/runtime";
 import { backfillBundleMeta, getPackageVersion, getChangelogPath } from "./bundle-manifest";
@@ -350,6 +351,32 @@ some of my tools are unavailable right now: ${toolList}
 i don't know this person well enough yet to run local operations on their behalf. i can suggest remote-safe alternatives or ask them to run it from CLI.`
 }
 
+function trustContextSection(context?: ResolvedContext): string {
+  if (!context?.friend) return ""
+  const channelName = context.channel.channel
+  if (channelName === "cli" || channelName === "inner") return ""
+
+  const explanation = describeTrustContext({
+    friend: context.friend,
+    channel: channelName,
+    isGroupChat: context.isGroupChat,
+  })
+  const lines = [
+    "## trust context",
+    `level: ${explanation.level}`,
+    `basis: ${explanation.basis}`,
+    `summary: ${explanation.summary}`,
+    `why: ${explanation.why}`,
+    `permits: ${explanation.permits.join(", ")}`,
+    `constraints: ${explanation.constraints.join(", ") || "none"}`,
+  ]
+  if (explanation.relatedGroupId) {
+    lines.push(`related group: ${explanation.relatedGroupId}`)
+  }
+
+  return lines.join("\n")
+}
+
 function skillsSection(): string {
   const names = listSkills() || [];
   if (!names.length) return "";
@@ -557,6 +584,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     toolsSection(channel, options, context),
     reasoningEffortSection(options),
     toolRestrictionSection(context),
+    trustContextSection(context),
     mixedTrustGroupSection(context),
     skillsSection(),
     taskBoardSection(),

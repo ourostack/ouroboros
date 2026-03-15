@@ -8,6 +8,7 @@ import { getAgentName, getAgentRoot } from "../heart/identity"
 import { withSharedTurnLock } from "../heart/turn-coordinator"
 import { loadSession, postTurn } from "../mind/context"
 import { accumulateFriendTokens } from "../mind/friends/tokens"
+import { upsertGroupContextParticipants } from "../mind/friends/group-context"
 import { FriendResolver, type FriendResolverParams } from "../mind/friends/resolver"
 import { FileFriendStore } from "../mind/friends/store-file"
 import { TRUSTED_LEVELS, type FriendRecord } from "../mind/friends/types"
@@ -69,6 +70,13 @@ export interface ProactiveBlueBubblesSessionSendParams {
   friendId: string
   sessionKey: string
   text: string
+  intent?: "generic_outreach" | "explicit_cross_chat"
+  authorizingSession?: {
+    friendId: string
+    channel: string
+    key: string
+    trustLevel?: string
+  }
 }
 
 export interface ProactiveBlueBubblesSessionSendResult {
@@ -110,6 +118,11 @@ function resolveFriendParams(event: BlueBubblesNormalizedEvent): FriendResolverP
     displayName: event.sender.displayName || "Unknown",
     channel: "bluebubbles",
   }
+}
+
+function resolveGroupExternalId(event: BlueBubblesNormalizedEvent): string {
+  const groupKey = event.chat.chatGuid ?? event.chat.chatIdentifier ?? event.sender.externalId
+  return `group:${groupKey}`
 }
 
 /**
@@ -669,6 +682,17 @@ async function handleBlueBubblesNormalizedEvent(
       }
     }
 
+    if (event.kind === "message" && event.chat.isGroup) {
+      await upsertGroupContextParticipants({
+        store,
+        participants: (event.chat.participantHandles ?? []).map((externalId) => ({
+          provider: "imessage-handle" as const,
+          externalId,
+        })),
+        groupExternalId: resolveGroupExternalId(event),
+      })
+    }
+
     // Build inbound user message (adapter concern: BB-specific content formatting)
     const userMessage: OpenAI.ChatCompletionMessageParam = {
       role: "user",
@@ -976,22 +1000,35 @@ function findImessageHandle(friend: FriendRecord): string | undefined {
   return undefined
 }
 
+function normalizeBlueBubblesSessionKey(sessionKey: string): string {
+  const trimmed = sessionKey.trim()
+  if (trimmed.startsWith("chat_identifier_")) {
+    return `chat_identifier:${trimmed.slice("chat_identifier_".length)}`
+  }
+  if (trimmed.startsWith("chat_")) {
+    return `chat:${trimmed.slice("chat_".length)}`
+  }
+  return trimmed
+}
+
 function extractChatIdentifierFromSessionKey(sessionKey: string): string | undefined {
-  if (sessionKey.startsWith("chat:")) {
-    const chatGuid = sessionKey.slice("chat:".length).trim()
+  const normalizedKey = normalizeBlueBubblesSessionKey(sessionKey)
+  if (normalizedKey.startsWith("chat:")) {
+    const chatGuid = normalizedKey.slice("chat:".length).trim()
     const parts = chatGuid.split(";")
     return parts.length >= 3 ? parts[2]?.trim() || undefined : undefined
   }
-  if (sessionKey.startsWith("chat_identifier:")) {
-    const identifier = sessionKey.slice("chat_identifier:".length).trim()
+  if (normalizedKey.startsWith("chat_identifier:")) {
+    const identifier = normalizedKey.slice("chat_identifier:".length).trim()
     return identifier || undefined
   }
   return undefined
 }
 
 function buildChatRefForSessionKey(friend: FriendRecord, sessionKey: string): BlueBubblesChatRef | null {
-  if (sessionKey.startsWith("chat:")) {
-    const chatGuid = sessionKey.slice("chat:".length).trim()
+  const normalizedKey = normalizeBlueBubblesSessionKey(sessionKey)
+  if (normalizedKey.startsWith("chat:")) {
+    const chatGuid = normalizedKey.slice("chat:".length).trim()
     if (!chatGuid) return null
     return {
       chatGuid,
@@ -1040,12 +1077,21 @@ export async function sendProactiveBlueBubblesMessageToSession(
     return { delivered: false, reason: "friend_not_found" }
   }
 
-  if (!TRUSTED_LEVELS.has(friend.trustLevel ?? "stranger")) {
+  const explicitCrossChatAuthorized = params.intent === "explicit_cross_chat"
+    && TRUSTED_LEVELS.has((params.authorizingSession?.trustLevel as any) ?? "stranger")
+
+  if (!explicitCrossChatAuthorized && !TRUSTED_LEVELS.has(friend.trustLevel ?? "stranger")) {
     emitNervesEvent({
       component: "senses",
       event: "senses.bluebubbles_proactive_trust_skip",
       message: "proactive send skipped: trust level not allowed",
-      meta: { friendId: params.friendId, sessionKey: params.sessionKey, trustLevel: friend.trustLevel ?? "unknown" },
+      meta: {
+        friendId: params.friendId,
+        sessionKey: params.sessionKey,
+        trustLevel: friend.trustLevel ?? "unknown",
+        intent: params.intent ?? "generic_outreach",
+        authorizingTrustLevel: params.authorizingSession?.trustLevel ?? null,
+      },
     })
     return { delivered: false, reason: "trust_skip" }
   }
