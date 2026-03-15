@@ -145,6 +145,7 @@ describe("daemon sense manager", () => {
   it("surfaces upstream BlueBubbles runtime failures even when the listener process is still running", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
     const secretsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-secrets-"))
+    const freshCheckedAt = new Date().toISOString()
     writeAgentJson(bundlesRoot, "slugger", {
       version: 1,
       enabled: true,
@@ -173,6 +174,7 @@ describe("daemon sense manager", () => {
       JSON.stringify({
         upstreamStatus: "error",
         detail: "upstream unreachable: connect ECONNREFUSED http://localhost:1234",
+        lastCheckedAt: freshCheckedAt,
         pendingRecoveryCount: 2,
       }, null, 2) + "\n",
       "utf-8",
@@ -210,6 +212,7 @@ describe("daemon sense manager", () => {
   it("keeps BlueBubbles marked running when runtime state reports the upstream as healthy", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
     const secretsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-secrets-"))
+    const freshCheckedAt = new Date().toISOString()
     writeAgentJson(bundlesRoot, "slugger", {
       version: 1,
       enabled: true,
@@ -238,6 +241,7 @@ describe("daemon sense manager", () => {
       JSON.stringify({
         upstreamStatus: "ok",
         detail: "upstream reachable",
+        lastCheckedAt: freshCheckedAt,
         pendingRecoveryCount: 0,
       }, null, 2) + "\n",
       "utf-8",
@@ -275,6 +279,7 @@ describe("daemon sense manager", () => {
   it("prefers healthy BlueBubbles runtime state over a stale crashed process snapshot", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
     const secretsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-secrets-"))
+    const freshCheckedAt = new Date().toISOString()
     writeAgentJson(bundlesRoot, "slugger", {
       version: 1,
       enabled: true,
@@ -304,7 +309,7 @@ describe("daemon sense manager", () => {
         upstreamStatus: "ok",
         detail: "upstream reachable",
         pendingRecoveryCount: 0,
-        lastCheckedAt: "2026-03-15T15:15:00.000Z",
+        lastCheckedAt: freshCheckedAt,
       }, null, 2) + "\n",
       "utf-8",
     )

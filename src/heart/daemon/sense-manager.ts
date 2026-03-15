@@ -53,6 +53,7 @@ type SecretsPayload = Record<string, unknown>
 const DEFAULT_TEAMS_PORT = 3978
 const DEFAULT_BLUEBUBBLES_PORT = 18790
 const DEFAULT_BLUEBUBBLES_WEBHOOK_PATH = "/bluebubbles-webhook"
+const BLUEBUBBLES_RUNTIME_FRESHNESS_WINDOW_MS = 90_000
 
 function defaultSenses(): AgentSensesConfig {
   return {
@@ -197,6 +198,19 @@ function runtimeInfoFor(status: string): SenseRuntimeInfo {
   return { runtime: "error" }
 }
 
+function blueBubblesRuntimeStateIsFresh(lastCheckedAt?: string, now = Date.now()): boolean {
+  if (!lastCheckedAt) {
+    return false
+  }
+
+  const checkedAt = Date.parse(lastCheckedAt)
+  if (!Number.isFinite(checkedAt)) {
+    return false
+  }
+
+  return checkedAt >= now - BLUEBUBBLES_RUNTIME_FRESHNESS_WINDOW_MS
+}
+
 function readBlueBubblesRuntimeFacts(
   agent: string,
   bundlesRoot: string,
@@ -204,11 +218,15 @@ function readBlueBubblesRuntimeFacts(
 ): SenseRuntimeFacts {
   const agentRoot = path.join(bundlesRoot, `${agent}.ouro`)
   const runtimePath = path.join(agentRoot, "state", "senses", "bluebubbles", "runtime.json")
-  if (snapshot?.runtime !== "running" || !fs.existsSync(runtimePath)) {
+  if (!fs.existsSync(runtimePath)) {
     return { runtime: snapshot?.runtime }
   }
 
   const state = readBlueBubblesRuntimeState(agent, agentRoot)
+  if (!blueBubblesRuntimeStateIsFresh(state.lastCheckedAt)) {
+    return { runtime: snapshot?.runtime }
+  }
+
   if (state.upstreamStatus === "error") {
     return {
       runtime: "error",
@@ -216,7 +234,11 @@ function readBlueBubblesRuntimeFacts(
     }
   }
 
-  return { runtime: snapshot.runtime }
+  if (state.upstreamStatus === "ok") {
+    return { runtime: "running" }
+  }
+
+  return { runtime: snapshot?.runtime }
 }
 
 export class DaemonSenseManager implements DaemonSenseManagerLike {
