@@ -191,6 +191,25 @@ describe("provider factory capability declarations", () => {
       expect(runtime.capabilities.has("phase-annotation")).toBe(true)
       expect(runtime.supportedReasoningEfforts).toEqual(["low", "medium", "high"])
     })
+
+    it("returns no optional capabilities for an uncatalogued codex model", async () => {
+      emitTestEvent("codex uncatalogued capabilities")
+      await setAgentProvider("openai-codex")
+      const config = await import("../../heart/config")
+      config.resetConfigCache()
+      config.patchRuntimeConfig({
+        providers: {
+          "openai-codex": {
+            model: "custom-codex-preview",
+            oauthAccessToken: makeOpenAICodexAccessToken(),
+          },
+        },
+      })
+      const { createOpenAICodexProviderRuntime } = await import("../../heart/providers/openai-codex")
+      const runtime = createOpenAICodexProviderRuntime()
+      expect(runtime.capabilities.size).toBe(0)
+      expect(runtime.supportedReasoningEfforts).toBeUndefined()
+    })
   })
 
   describe("MiniMax provider", () => {

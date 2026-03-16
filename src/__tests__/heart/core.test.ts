@@ -361,6 +361,23 @@ describe("getProviderDisplayLabel", () => {
     }
   })
 
+  it("falls back to unknown in the azure provider label when modelName is blank", async () => {
+    await setupConfig({
+      provider: "azure",
+      providers: {
+        azure: {
+          deployment: "gpt-4.1",
+          modelName: "",
+          apiKey: "azure-key",
+          endpoint: "https://example.openai.azure.com",
+        },
+      },
+    })
+    const { getProviderDisplayLabel, resetProviderRuntime } = await import("../../heart/core")
+    resetProviderRuntime()
+    expect(getProviderDisplayLabel()).toBe("azure openai (gpt-4.1, model: unknown)")
+  })
+
   it("formats the anthropic provider label", async () => {
     await setupConfig({ providers: { anthropic: { model: "claude-sonnet", setupToken: makeAnthropicSetupToken() } } })
     const { getProviderDisplayLabel, resetProviderRuntime } = await import("../../heart/core")
@@ -380,6 +397,38 @@ describe("getProviderDisplayLabel", () => {
     const { getProviderDisplayLabel, resetProviderRuntime } = await import("../../heart/core")
     resetProviderRuntime()
     expect(getProviderDisplayLabel()).toBe("openai codex (gpt-5-codex)")
+  })
+
+  it.each([
+    [
+      "anthropic",
+      {
+        provider: "anthropic",
+        providers: { anthropic: { model: "", setupToken: makeAnthropicSetupToken() } },
+      },
+      "anthropic (unknown)",
+    ],
+    [
+      "minimax",
+      {
+        provider: "minimax",
+        providers: { minimax: { model: "", apiKey: "minimax-key" } },
+      },
+      "minimax (unknown)",
+    ],
+    [
+      "openai-codex",
+      {
+        provider: "openai-codex",
+        providers: { "openai-codex": { model: "", oauthAccessToken: makeOpenAICodexAccessToken() } },
+      },
+      "openai codex (unknown)",
+    ],
+  ] as const)("falls back to unknown in the %s provider label when model is blank", async (_provider, configPatch, expectedLabel) => {
+    await setupConfig(configPatch as any)
+    const { getProviderDisplayLabel, resetProviderRuntime } = await import("../../heart/core")
+    resetProviderRuntime()
+    expect(getProviderDisplayLabel()).toBe(expectedLabel)
   })
 })
 
