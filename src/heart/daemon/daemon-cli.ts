@@ -1,4 +1,4 @@
-import { spawn } from "child_process"
+import { execSync, spawn } from "child_process"
 import { randomUUID } from "crypto"
 import * as fs from "fs"
 import * as os from "os"
@@ -36,7 +36,7 @@ import { getTaskModule } from "../../repertoire/tasks"
 import { parseInnerDialogSession, formatThoughtTurns, getInnerDialogSessionPath, followThoughts } from "./thoughts"
 import type { TaskModule } from "../../repertoire/tasks/types"
 import { syncGlobalOuroBotWrapper as defaultSyncGlobalOuroBotWrapper } from "./ouro-bot-global-installer"
-import { writeLaunchAgentPlist, type LaunchdWriteDeps } from "./launchd"
+import { installLaunchAgent, type LaunchdDeps } from "./launchd"
 import { DEFAULT_DAEMON_SOCKET_PATH, sendDaemonCommand, checkDaemonSocketAlive } from "./socket-client"
 import { listSessionActivity } from "../session-activity"
 
@@ -841,8 +841,11 @@ function defaultEnsureDaemonBootPersistence(socketPath: string): void {
   }
 
   const homeDir = os.homedir()
-  const launchdDeps: LaunchdWriteDeps = {
+  const launchdDeps: LaunchdDeps = {
+    exec: (cmd) => { execSync(cmd, { stdio: "ignore" }) },
     writeFile: (filePath, content) => fs.writeFileSync(filePath, content, "utf-8"),
+    removeFile: (filePath) => fs.rmSync(filePath, { force: true }),
+    existsFile: (filePath) => fs.existsSync(filePath),
     mkdirp: (dir) => fs.mkdirSync(dir, { recursive: true }),
     homeDir,
   }
@@ -861,7 +864,7 @@ function defaultEnsureDaemonBootPersistence(socketPath: string): void {
   }
 
   const logDir = path.join(homeDir, ".agentstate", "daemon", "logs")
-  writeLaunchAgentPlist(launchdDeps, {
+  installLaunchAgent(launchdDeps, {
     nodePath: process.execPath,
     entryPath,
     socketPath,
