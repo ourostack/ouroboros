@@ -10,6 +10,7 @@ export interface LaunchdDeps {
   existsFile: (filePath: string) => boolean
   mkdirp: (dir: string) => void
   homeDir: string
+  userUid: number
 }
 
 export interface LaunchdWriteDeps {
@@ -28,6 +29,10 @@ export interface DaemonPlistOptions {
 
 function plistFilePath(homeDir: string): string {
   return path.join(homeDir, "Library", "LaunchAgents", `${DAEMON_PLIST_LABEL}.plist`)
+}
+
+function userLaunchDomain(userUid: number): string {
+  return `gui/${userUid}`
 }
 
 export function generateDaemonPlist(options: DaemonPlistOptions): string {
@@ -113,15 +118,16 @@ export function installLaunchAgent(deps: LaunchdDeps, options: DaemonPlistOption
   })
 
   const fullPath = plistFilePath(deps.homeDir)
+  const domain = userLaunchDomain(deps.userUid)
 
   // Unload existing (best effort) for idempotent re-install
   if (deps.existsFile(fullPath)) {
-    try { deps.exec(`launchctl unload "${fullPath}"`) } catch { /* best effort */ }
+    try { deps.exec(`launchctl bootout ${domain} "${fullPath}"`) } catch { /* best effort */ }
   }
 
   writeLaunchAgentPlist(deps, options)
 
-  deps.exec(`launchctl load "${fullPath}"`)
+  deps.exec(`launchctl bootstrap ${domain} "${fullPath}"`)
 
   emitNervesEvent({
     component: "daemon",
@@ -140,9 +146,10 @@ export function uninstallLaunchAgent(deps: LaunchdDeps): void {
   })
 
   const fullPath = plistFilePath(deps.homeDir)
+  const domain = userLaunchDomain(deps.userUid)
 
   if (deps.existsFile(fullPath)) {
-    try { deps.exec(`launchctl unload "${fullPath}"`) } catch { /* best effort */ }
+    try { deps.exec(`launchctl bootout ${domain} "${fullPath}"`) } catch { /* best effort */ }
     deps.removeFile(fullPath)
   }
 

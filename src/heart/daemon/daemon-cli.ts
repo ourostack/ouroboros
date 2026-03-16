@@ -848,6 +848,7 @@ function defaultEnsureDaemonBootPersistence(socketPath: string): void {
     existsFile: (filePath) => fs.existsSync(filePath),
     mkdirp: (dir) => fs.mkdirSync(dir, { recursive: true }),
     homeDir,
+    userUid: process.getuid?.() ?? 0,
   }
 
   const entryPath = path.join(getRepoRoot(), "dist", "heart", "daemon", "daemon-entry.js")
