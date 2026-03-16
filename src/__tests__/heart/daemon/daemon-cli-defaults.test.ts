@@ -51,7 +51,7 @@ describe("daemon CLI default dependency branches", () => {
       expect(plist).toContain("<key>RunAtLoad</key>")
       expect(plist).toContain(path.join(logDir, "ouro-daemon-stdout.log"))
       expect(execSync).toHaveBeenCalledWith(
-        expect.stringContaining("launchctl load"),
+        expect.stringContaining("launchctl bootstrap gui/"),
         { stdio: "ignore" },
       )
     } finally {
@@ -90,11 +90,11 @@ describe("daemon CLI default dependency branches", () => {
       deps.ensureDaemonBootPersistence?.("/tmp/daemon.sock")
 
       expect(execSync).toHaveBeenCalledWith(
-        expect.stringContaining("launchctl unload"),
+        expect.stringContaining("launchctl bootout gui/"),
         { stdio: "ignore" },
       )
       expect(execSync).toHaveBeenCalledWith(
-        expect.stringContaining("launchctl load"),
+        expect.stringContaining("launchctl bootstrap gui/"),
         { stdio: "ignore" },
       )
     } finally {
