@@ -156,8 +156,11 @@ function registerCleanupHook(options: {
   })
 }
 
-export function resetSafeWorkspaceSelection(): void {
+export function resetSafeWorkspaceSelection(options: { keepCleanupHookRegistered?: boolean } = {}): void {
   activeSelection = null
+  if (!options.keepCleanupHookRegistered) {
+    cleanupHookRegistered = false
+  }
 }
 
 export function getActiveSafeWorkspaceSelection(): SafeWorkspaceSelection | null {

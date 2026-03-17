@@ -240,6 +240,44 @@ describe("daemon runtime logging", () => {
     expect(stderrChunks.join("")).toContain("INFO [daemon] default homedir used")
   })
 
+  it("uses identity-derived daemon paths when neither homeDir nor configPath are provided", async () => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-logging-"))
+    const configPath = path.join(tmpRoot, "identity-derived", "logging.json")
+    const logsDir = path.join(tmpRoot, "identity-derived", "logs")
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ level: "info", sinks: ["ndjson"] }, null, 2) + "\n",
+      "utf-8",
+    )
+
+    vi.resetModules()
+    vi.doMock("../../../heart/identity", async () => {
+      const actual = await vi.importActual<typeof import("../../../heart/identity")>("../../../heart/identity")
+      return {
+        ...actual,
+        getAgentDaemonLoggingConfigPath: () => configPath,
+        getAgentDaemonLogsDir: () => logsDir,
+      }
+    })
+
+    const { configureDaemonRuntimeLogger: configureWithMocks } = await import("../../../heart/daemon/runtime-logging")
+    const { emitNervesEvent: emitWithMocks, setRuntimeLogger: setLoggerWithMocks } = await import("../../../nerves/runtime")
+
+    setLoggerWithMocks(null)
+    configureWithMocks("daemon", { agentName: "slugger" })
+    emitWithMocks({
+      component: "daemon",
+      event: "daemon.identity_default_paths",
+      message: "identity default paths",
+      meta: {},
+    })
+
+    const logFile = path.join(logsDir, "daemon.ndjson")
+    await waitFor(() => fs.existsSync(logFile))
+    expect(fs.readFileSync(logFile, "utf-8")).toContain("\"event\":\"daemon.identity_default_paths\"")
+  })
+
   it("supports BlueBubbles runtime logging defaults and writes to a dedicated process log", async () => {
     tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-logging-"))
 
