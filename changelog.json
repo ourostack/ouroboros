@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.57",
+      "changes": [
+        "Explicit `ouro chat <agent>` now launches the local interactive chat flow instead of just printing the daemon's connection acknowledgement and exiting.",
+        "The explicit chat path still ensures the daemon is running first, so direct chat commands behave like the existing auto-chat flows without losing daemon setup.",
+        "Daemon CLI coverage now includes the explicit `chat <agent>` route so regressions in interactive chat startup get caught in tests."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.56",
       "changes": [
         "The installed runtime now supports `ouro auth --agent <name>` as the normal provider auth and reauth path, with `--provider <provider>` available for explicit provider add/switch flows.",
