@@ -5,7 +5,7 @@ const path = require("path")
 const os = require("os")
 
 const REPO_SLUG = "ouroboros-agent-harness"
-const ROOT = path.join(os.homedir(), ".agentstate", "test-runs", REPO_SLUG)
+const ROOT = path.join(os.tmpdir(), "ouroboros-test-runs", REPO_SLUG)
 
 function npmCmd() {
   return process.platform === "win32" ? "npm.cmd" : "npm"

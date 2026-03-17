@@ -189,11 +189,46 @@ export function getAgentRoot(agentName: string = getAgentName()): string {
   return path.join(getAgentBundlesRoot(), `${agentName}.ouro`)
 }
 
+function resolveOptionalAgentName(agentName?: string): string {
+  if (agentName && agentName.trim().length > 0) return agentName.trim()
+  try {
+    return getAgentName()
+  } catch {
+    return "slugger"
+  }
+}
+
 /**
  * Returns the bundle-local runtime state directory: `~/AgentBundles/<agentName>.ouro/state/`
  */
-export function getAgentStateRoot(agentName: string = getAgentName()): string {
-  return path.join(getAgentRoot(agentName), "state")
+export function getAgentStateRoot(agentName?: string): string {
+  return path.join(getAgentRoot(resolveOptionalAgentName(agentName)), "state")
+}
+
+export const HARNESS_CANONICAL_REPO_URL = "https://github.com/ouroborosbot/ouroboros.git"
+
+export function getAgentRepoWorkspacesRoot(agentName?: string): string {
+  return path.join(getAgentStateRoot(resolveOptionalAgentName(agentName)), "workspaces")
+}
+
+export function getAgentDaemonStateRoot(agentName?: string): string {
+  return path.join(getAgentStateRoot(resolveOptionalAgentName(agentName)), "daemon")
+}
+
+export function getAgentDaemonLogsDir(agentName?: string): string {
+  return path.join(getAgentDaemonStateRoot(resolveOptionalAgentName(agentName)), "logs")
+}
+
+export function getAgentDaemonLoggingConfigPath(agentName?: string): string {
+  return path.join(getAgentDaemonStateRoot(resolveOptionalAgentName(agentName)), "logging.json")
+}
+
+export function getAgentMessagesRoot(agentName?: string): string {
+  return path.join(getAgentStateRoot(resolveOptionalAgentName(agentName)), "messages")
+}
+
+export function getAgentToolsRoot(agentName?: string): string {
+  return path.join(getAgentStateRoot(resolveOptionalAgentName(agentName)), "tools")
 }
 
 /**

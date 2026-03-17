@@ -37,7 +37,7 @@ describe("daemon runtime logging", () => {
 
   it("uses daemon logging config to disable terminal sink", async () => {
     tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-logging-"))
-    const configPath = path.join(tmpRoot, ".agentstate", "daemon", "logging.json")
+    const configPath = path.join(tmpRoot, "AgentBundles", "slugger.ouro", "state", "daemon", "logging.json")
     fs.mkdirSync(path.dirname(configPath), { recursive: true })
     fs.writeFileSync(
       configPath,
@@ -58,7 +58,7 @@ describe("daemon runtime logging", () => {
       meta: {},
     })
 
-    const logFile = path.join(tmpRoot, ".agentstate", "daemon", "logs", "daemon.ndjson")
+    const logFile = path.join(tmpRoot, "AgentBundles", "slugger.ouro", "state", "daemon", "logs", "daemon.ndjson")
     await waitFor(() => fs.existsSync(logFile))
     const body = fs.readFileSync(logFile, "utf-8")
     expect(body).toContain("\"event\":\"daemon.custom_event\"")
@@ -83,7 +83,7 @@ describe("daemon runtime logging", () => {
       meta: { ok: true },
     })
 
-    const logFile = path.join(tmpRoot, ".agentstate", "daemon", "logs", "ouro.ndjson")
+    const logFile = path.join(tmpRoot, "AgentBundles", "slugger.ouro", "state", "daemon", "logs", "ouro.ndjson")
     await waitFor(() => fs.existsSync(logFile))
     const body = fs.readFileSync(logFile, "utf-8")
     expect(body).toContain("\"event\":\"daemon.default_sink_test\"")
@@ -108,7 +108,7 @@ describe("daemon runtime logging", () => {
       return true
     })
 
-    configureDaemonRuntimeLogger("ouro", { homeDir: tmpRoot })
+    configureDaemonRuntimeLogger("ouro", { homeDir: tmpRoot, configPath, agentName: "slugger" })
     emitNervesEvent({
       level: "info",
       component: "daemon",
@@ -117,7 +117,7 @@ describe("daemon runtime logging", () => {
       meta: {},
     })
 
-    const logFile = path.join(tmpRoot, ".agentstate", "daemon", "logs", "ouro.ndjson")
+    const logFile = path.join(tmpRoot, "AgentBundles", "slugger.ouro", "state", "daemon", "logs", "ouro.ndjson")
     await waitFor(() => fs.existsSync(logFile))
     const body = fs.readFileSync(logFile, "utf-8")
     expect(body).toContain("\"event\":\"daemon.legacy_shared_default\"")
@@ -126,7 +126,7 @@ describe("daemon runtime logging", () => {
 
   it("falls back when logging config JSON is not an object", async () => {
     tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-logging-"))
-    const configPath = path.join(tmpRoot, ".agentstate", "daemon", "logging.json")
+    const configPath = path.join(tmpRoot, "AgentBundles", "slugger.ouro", "state", "daemon", "logging.json")
     fs.mkdirSync(path.dirname(configPath), { recursive: true })
     fs.writeFileSync(configPath, "42\n", "utf-8")
 
@@ -144,7 +144,7 @@ describe("daemon runtime logging", () => {
       meta: {},
     })
 
-    const logFile = path.join(tmpRoot, ".agentstate", "daemon", "logs", "daemon.ndjson")
+    const logFile = path.join(tmpRoot, "AgentBundles", "slugger.ouro", "state", "daemon", "logs", "daemon.ndjson")
     await waitFor(() => fs.existsSync(logFile))
     expect(fs.readFileSync(logFile, "utf-8")).toContain("\"event\":\"daemon.non_object_config\"")
     expect(stderrChunks.join("")).toContain("INFO [daemon] non-object config fallback")
@@ -152,7 +152,7 @@ describe("daemon runtime logging", () => {
 
   it("accepts every valid level and falls back from invalid level/sink entries", async () => {
     tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-logging-"))
-    const configPath = path.join(tmpRoot, ".agentstate", "daemon", "logging.json")
+    const configPath = path.join(tmpRoot, "AgentBundles", "slugger.ouro", "state", "daemon", "logging.json")
     fs.mkdirSync(path.dirname(configPath), { recursive: true })
 
     const stderrChunks: string[] = []
@@ -203,7 +203,7 @@ describe("daemon runtime logging", () => {
       meta: {},
     })
 
-    const logFile = path.join(tmpRoot, ".agentstate", "daemon", "logs", "daemon.ndjson")
+    const logFile = path.join(tmpRoot, "AgentBundles", "slugger.ouro", "state", "daemon", "logs", "daemon.ndjson")
     await waitFor(() => fs.existsSync(logFile))
     const body = fs.readFileSync(logFile, "utf-8")
     expect(body).toContain("\"event\":\"daemon.level_debug\"")
@@ -240,6 +240,44 @@ describe("daemon runtime logging", () => {
     expect(stderrChunks.join("")).toContain("INFO [daemon] default homedir used")
   })
 
+  it("uses identity-derived daemon paths when neither homeDir nor configPath are provided", async () => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-logging-"))
+    const configPath = path.join(tmpRoot, "identity-derived", "logging.json")
+    const logsDir = path.join(tmpRoot, "identity-derived", "logs")
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ level: "info", sinks: ["ndjson"] }, null, 2) + "\n",
+      "utf-8",
+    )
+
+    vi.resetModules()
+    vi.doMock("../../../heart/identity", async () => {
+      const actual = await vi.importActual<typeof import("../../../heart/identity")>("../../../heart/identity")
+      return {
+        ...actual,
+        getAgentDaemonLoggingConfigPath: () => configPath,
+        getAgentDaemonLogsDir: () => logsDir,
+      }
+    })
+
+    const { configureDaemonRuntimeLogger: configureWithMocks } = await import("../../../heart/daemon/runtime-logging")
+    const { emitNervesEvent: emitWithMocks, setRuntimeLogger: setLoggerWithMocks } = await import("../../../nerves/runtime")
+
+    setLoggerWithMocks(null)
+    configureWithMocks("daemon", { agentName: "slugger" })
+    emitWithMocks({
+      component: "daemon",
+      event: "daemon.identity_default_paths",
+      message: "identity default paths",
+      meta: {},
+    })
+
+    const logFile = path.join(logsDir, "daemon.ndjson")
+    await waitFor(() => fs.existsSync(logFile))
+    expect(fs.readFileSync(logFile, "utf-8")).toContain("\"event\":\"daemon.identity_default_paths\"")
+  })
+
   it("supports BlueBubbles runtime logging defaults and writes to a dedicated process log", async () => {
     tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-logging-"))
 
@@ -258,7 +296,7 @@ describe("daemon runtime logging", () => {
       meta: {},
     })
 
-    const logFile = path.join(tmpRoot, ".agentstate", "daemon", "logs", "bluebubbles.ndjson")
+    const logFile = path.join(tmpRoot, "AgentBundles", "slugger.ouro", "state", "daemon", "logs", "bluebubbles.ndjson")
     await waitFor(() => fs.existsSync(logFile))
     expect(fs.readFileSync(logFile, "utf-8")).toContain("\"event\":\"daemon.bluebubbles_runtime_default\"")
     expect(stderrChunks.join("")).toContain("WARN [daemon] bluebubbles logger default")

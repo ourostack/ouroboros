@@ -1,5 +1,5 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs"
-import { homedir } from "os"
+import { tmpdir } from "os"
 import { dirname, join } from "path"
 import { beforeEach, afterAll } from "vitest"
 
@@ -8,7 +8,7 @@ import { registerGlobalLogSink, type LogEvent } from "../../nerves"
 const REPO_SLUG = "ouroboros-agent-harness"
 
 function readActiveRunDir(): string | null {
-  const activePath = join(homedir(), ".agentstate", "test-runs", REPO_SLUG, ".active-run.json")
+  const activePath = join(tmpdir(), "ouroboros-test-runs", REPO_SLUG, ".active-run.json")
   if (!existsSync(activePath)) return null
   try {
     const parsed = JSON.parse(readFileSync(activePath, "utf8")) as { run_dir?: unknown }

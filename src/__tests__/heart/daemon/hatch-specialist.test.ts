@@ -82,18 +82,18 @@ describe("hatch specialist identities", () => {
     expect(target).toContain(path.join("AdoptionSpecialist.ouro", "psyche", "identities"))
   })
 
-  it("falls back to __dirname-relative path when ~/AgentBundles/ does not exist", async () => {
-    // Reset module registry so the dynamic import picks up the mocked fs
-    vi.doMock("fs", async () => {
-      const real = await vi.importActual<typeof fs>("fs")
-      return { ...real, existsSync: () => false }
-    })
-    vi.resetModules()
-    const mod = await import("../../../heart/daemon/hatch-specialist")
-    const source = mod.getSpecialistIdentitySourceDir()
-    expect(source.startsWith(path.join(os.homedir(), "AgentBundles"))).toBe(false)
-    expect(source).toContain(path.join("AdoptionSpecialist.ouro", "psyche", "identities"))
-    vi.doUnmock("fs")
+  it("falls back to __dirname-relative path when ~/AgentBundles/ does not exist", () => {
+    const tempHome = makeTempDir("specialist-home")
+    cleanup.push(tempHome)
+    vi.stubEnv("HOME", tempHome)
+
+    try {
+      const source = getSpecialistIdentitySourceDir()
+      expect(source.startsWith(path.join(tempHome, "AgentBundles"))).toBe(false)
+      expect(source).toContain(path.join("AdoptionSpecialist.ouro", "psyche", "identities"))
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 
   it("returns an empty identity list when source directory is missing", () => {

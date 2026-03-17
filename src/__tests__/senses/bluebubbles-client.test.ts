@@ -10,6 +10,7 @@ vi.mock("../../heart/identity", () => ({
   loadAgentConfig: vi.fn(() => ({
     provider: "anthropic",
   })),
+  getAgentToolsRoot: () => "/tmp/AgentBundles/slugger.ouro/state/tools",
 }))
 
 const dmChat = {

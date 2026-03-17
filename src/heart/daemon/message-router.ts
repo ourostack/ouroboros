@@ -1,7 +1,7 @@
 import * as fs from "fs"
-import * as os from "os"
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { getAgentMessagesRoot } from "../identity"
 
 export interface RoutedMessage {
   id: string
@@ -28,7 +28,7 @@ export class FileMessageRouter {
   private readonly now: () => string
 
   constructor(options: FileMessageRouterOptions = {}) {
-    this.baseDir = options.baseDir ?? path.join(os.homedir(), ".agentstate", "messages")
+    this.baseDir = options.baseDir ?? getAgentMessagesRoot()
     this.now = options.now ?? (() => new Date().toISOString())
     fs.mkdirSync(this.baseDir, { recursive: true })
   }

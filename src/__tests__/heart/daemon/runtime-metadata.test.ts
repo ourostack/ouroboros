@@ -77,6 +77,60 @@ describe("runtime metadata", () => {
     expect(metadata.version).toBe("unknown")
   })
 
+  it("skips daemon logging config targets when no daemon logging path is provided", () => {
+    const readFileSync = vi.fn((target: string) => {
+      if (target === "/mock/repo/package.json") {
+        return JSON.stringify({ version: "1.2.3" })
+      }
+      throw new Error(`missing ${target}`)
+    })
+
+    const metadata = getRuntimeMetadata({
+      repoRoot: "/mock/repo",
+      bundlesRoot: "/mock/bundles",
+      secretsRoot: null,
+      daemonLoggingPath: "",
+      readFileSync: readFileSync as any,
+      statSync: vi.fn(() => ({ mtime: new Date("2026-03-08T23:00:00.000Z") })) as any,
+      readdirSync: vi.fn(() => []) as any,
+      existsSync: vi.fn(() => false) as any,
+      execFileSync: vi.fn(() => "2026-03-08T22:11:00.000Z\n") as any,
+    })
+
+    expect(metadata.version).toBe("1.2.3")
+    expect(metadata.configFingerprint).not.toBe("unknown")
+    expect(readFileSync).not.toHaveBeenCalledWith("/mock/logging.json", "utf-8")
+  })
+
+  it("includes daemon logging config in the tracked fingerprint targets", () => {
+    const readFileSync = vi.fn((target: string) => {
+      if (target === "/mock/repo/package.json") {
+        return JSON.stringify({ version: "1.2.3" })
+      }
+      if (target === "/mock/logging.json") {
+        return JSON.stringify({ level: "info", sinks: ["ndjson"] })
+      }
+      throw new Error(`missing ${target}`)
+    })
+
+    const metadata = getRuntimeMetadata({
+      repoRoot: "/mock/repo",
+      bundlesRoot: "/mock/bundles",
+      secretsRoot: null,
+      daemonLoggingPath: "/mock/logging.json",
+      readFileSync: readFileSync as any,
+      statSync: vi.fn(() => ({ mtime: new Date("2026-03-08T23:00:00.000Z") })) as any,
+      readdirSync: vi.fn(() => []) as any,
+      existsSync: vi.fn((target: string) => target === "/mock/logging.json") as any,
+      execFileSync: vi.fn(() => "2026-03-08T22:11:00.000Z\n") as any,
+    })
+
+    expect(metadata.version).toBe("1.2.3")
+    expect(metadata.lastUpdated).toBe("2026-03-08T22:11:00.000Z")
+    expect(metadata.configFingerprint).not.toBe("unknown")
+    expect(readFileSync).toHaveBeenCalledWith("/mock/logging.json", "utf-8")
+  })
+
   it("changes config fingerprint when tracked config content changes", () => {
     const files = new Map<string, string>([
       ["/mock/repo/package.json", JSON.stringify({ version: "1.2.3" })],
@@ -195,6 +249,7 @@ describe("runtime metadata", () => {
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
       getAgentBundlesRoot: () => "/mock/bundles",
+      getAgentDaemonLoggingConfigPath: () => "/mock/bundles/slugger.ouro/state/daemon/logging.json",
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
     vi.doMock("fs", () => ({
@@ -218,6 +273,7 @@ describe("runtime metadata", () => {
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
       getAgentBundlesRoot: () => "/mock/bundles",
+      getAgentDaemonLoggingConfigPath: () => "/mock/bundles/slugger.ouro/state/daemon/logging.json",
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
     vi.doMock("fs", () => ({
@@ -243,6 +299,7 @@ describe("runtime metadata", () => {
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
       getAgentBundlesRoot: () => "/mock/bundles",
+      getAgentDaemonLoggingConfigPath: () => "/mock/bundles/slugger.ouro/state/daemon/logging.json",
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
     vi.doMock("fs", () => ({
@@ -295,6 +352,7 @@ describe("runtime metadata", () => {
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
       getAgentBundlesRoot: () => "/mock/bundles",
+      getAgentDaemonLoggingConfigPath: () => "/mock/bundles/slugger.ouro/state/daemon/logging.json",
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
     vi.doMock("fs", () => ({
@@ -348,6 +406,7 @@ describe("runtime metadata", () => {
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
       getAgentBundlesRoot: () => "/mock/bundles",
+      getAgentDaemonLoggingConfigPath: () => "/mock/bundles/slugger.ouro/state/daemon/logging.json",
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
     vi.doMock("fs", () => ({

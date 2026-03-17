@@ -1,7 +1,7 @@
-import * as os from "os"
 import * as path from "path"
 import { formatTerminalEntry, type LogEvent } from "../../nerves"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { getAgentDaemonLogsDir } from "../identity"
 
 const LEVEL_COLORS: Record<string, string> = {
   debug: "\x1b[2m",
@@ -16,6 +16,7 @@ export interface TailLogsOptions {
   agentFilter?: string
   writer?: (text: string) => void
   homeDir?: string
+  agentName?: string
   existsSync?: (target: string) => boolean
   readdirSync?: (target: string) => string[]
   readFileSync?: (target: string, encoding: "utf-8") => string
@@ -23,14 +24,15 @@ export interface TailLogsOptions {
   unwatchFile?: (target: string) => void
 }
 
-export function discoverLogFiles(options: Pick<TailLogsOptions, "homeDir" | "existsSync" | "readdirSync" | "agentFilter">): string[] {
+export function discoverLogFiles(options: Pick<TailLogsOptions, "homeDir" | "agentName" | "existsSync" | "readdirSync" | "agentFilter">): string[] {
   /* v8 ignore start -- integration: default DI stubs for real OS @preserve */
-  const homeDir = options.homeDir ?? os.homedir()
   const existsSync = options.existsSync ?? (() => false)
   const readdirSync = options.readdirSync ?? (() => [])
   /* v8 ignore stop */
 
-  const logDir = path.join(homeDir, ".agentstate", "daemon", "logs")
+  const logDir = options.homeDir
+    ? path.join(options.homeDir, "AgentBundles", `${options.agentName ?? "slugger"}.ouro`, "state", "daemon", "logs")
+    : getAgentDaemonLogsDir(options.agentName)
   const files: string[] = []
 
   if (existsSync(logDir)) {
