@@ -65,7 +65,7 @@ describe("daemon runtime logging", () => {
     expect(stderrChunks.join("")).not.toContain("INFO [daemon] ndjson only")
   })
 
-  it("falls back to terminal+ndjson defaults when config is missing or invalid", async () => {
+  it("uses quiet ndjson defaults for ouro when config is missing", async () => {
     tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-logging-"))
 
     const stderrChunks: string[] = []
@@ -76,7 +76,7 @@ describe("daemon runtime logging", () => {
 
     configureDaemonRuntimeLogger("ouro", { homeDir: tmpRoot })
     emitNervesEvent({
-      level: "warn",
+      level: "info",
       component: "daemon",
       event: "daemon.default_sink_test",
       message: "default sinks",
@@ -87,9 +87,41 @@ describe("daemon runtime logging", () => {
     await waitFor(() => fs.existsSync(logFile))
     const body = fs.readFileSync(logFile, "utf-8")
     expect(body).toContain("\"event\":\"daemon.default_sink_test\"")
-    expect(stderrChunks.join("")).toContain("WARN [daemon] default sinks")
+    expect(stderrChunks.join("")).not.toContain("INFO [daemon] default sinks")
 
     stderrSpy.mockRestore()
+  })
+
+  it("treats the legacy shared-default logging config as process defaults for ouro", async () => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-logging-"))
+    const configPath = path.join(tmpRoot, ".agentstate", "daemon", "logging.json")
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ level: "info", sinks: ["terminal", "ndjson"] }, null, 2) + "\n",
+      "utf-8",
+    )
+
+    const stderrChunks: string[] = []
+    vi.spyOn(process.stderr, "write").mockImplementation((chunk: any) => {
+      stderrChunks.push(String(chunk))
+      return true
+    })
+
+    configureDaemonRuntimeLogger("ouro", { homeDir: tmpRoot })
+    emitNervesEvent({
+      level: "info",
+      component: "daemon",
+      event: "daemon.legacy_shared_default",
+      message: "legacy shared default",
+      meta: {},
+    })
+
+    const logFile = path.join(tmpRoot, ".agentstate", "daemon", "logs", "ouro.ndjson")
+    await waitFor(() => fs.existsSync(logFile))
+    const body = fs.readFileSync(logFile, "utf-8")
+    expect(body).toContain("\"event\":\"daemon.legacy_shared_default\"")
+    expect(stderrChunks.join("")).not.toContain("INFO [daemon] legacy shared default")
   })
 
   it("falls back when logging config JSON is not an object", async () => {

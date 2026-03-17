@@ -2,11 +2,19 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.58",
+      "version": "0.1.0-alpha.59",
       "changes": [
         "Repo file edits now acquire a safe workspace before local tool writes, creating a dedicated worktree from `origin/main` when running from a clone and a scratch clone from the canonical GitHub source when running from an installed runtime.",
         "The harness now has bundle-local workspace primitives for repo work plus bundle-local daemon logs, daemon logging config, message routing storage, and tool caches instead of leaning on `~/.agentstate` paths.",
         "Coverage/test-run artifacts and related runtime expectations now use the new non-`~/.agentstate` locations, and daemon/tool tests cover the safe workspace decision table and the bundle-local path migration."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.58",
+      "changes": [
+        "Normal `ouro` and `ouro-bot` CLI entrypoints now stay quiet by default in the terminal while still writing runtime NDJSON logs, and explicit logging overrides still work.",
+        "Interactive pasted input now clears every echoed row before re-rendering its bold summary, so multi-line instructions stay legible instead of colliding with prompt redraws and streaming output.",
+        "Wrapped CLI text now prefers whitespace breaks for ordinary words and only splits a word mid-line when that single word is wider than the terminal."
       ]
     },
     {
