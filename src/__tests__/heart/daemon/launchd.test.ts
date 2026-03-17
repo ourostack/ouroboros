@@ -36,6 +36,7 @@ describe("launchd daemon management", () => {
       existsFile: (p: string) => fs.existsSync(p),
       mkdirp: (dir: string) => fs.mkdirSync(dir, { recursive: true }),
       homeDir: tmpHome,
+      userUid: 501,
       ...overrides,
     }
   }
@@ -152,7 +153,7 @@ describe("launchd daemon management", () => {
       expect(fs.existsSync(logDir)).toBe(true)
     })
 
-    it("writes plist file and calls launchctl load", () => {
+    it("writes plist file and calls launchctl bootstrap", () => {
       const deps = makeDeps()
 
       installLaunchAgent(deps, defaultPlistOptions)
@@ -163,11 +164,11 @@ describe("launchd daemon management", () => {
       expect(content).toContain("<plist version=\"1.0\">")
 
       expect(deps.exec).toHaveBeenCalledWith(
-        expect.stringContaining("launchctl load"),
+        expect.stringContaining("launchctl bootstrap gui/501"),
       )
     })
 
-    it("unloads existing plist before loading new one (idempotent install)", () => {
+    it("boots out existing plist before bootstrapping new one (idempotent install)", () => {
       const deps = makeDeps()
 
       // Pre-install a plist
@@ -176,18 +177,18 @@ describe("launchd daemon management", () => {
 
       installLaunchAgent(deps, defaultPlistOptions)
 
-      // Should call unload first (best effort), then load
+      // Should call bootout first (best effort), then bootstrap
       expect(deps.exec).toHaveBeenCalledWith(
-        expect.stringContaining("launchctl unload"),
+        expect.stringContaining("launchctl bootout gui/501"),
       )
       expect(deps.exec).toHaveBeenCalledWith(
-        expect.stringContaining("launchctl load"),
+        expect.stringContaining("launchctl bootstrap gui/501"),
       )
     })
 
-    it("handles launchctl unload failure gracefully during idempotent install", () => {
+    it("handles launchctl bootout failure gracefully during idempotent install", () => {
       const exec = vi.fn().mockImplementation((cmd: string) => {
-        if (cmd.includes("unload")) throw new Error("not loaded")
+        if (cmd.includes("bootout")) throw new Error("not loaded")
       })
       const deps = makeDeps({ exec })
 
@@ -211,7 +212,7 @@ describe("launchd daemon management", () => {
   })
 
   describe("uninstallLaunchAgent", () => {
-    it("calls launchctl unload and removes plist file", () => {
+    it("calls launchctl bootout and removes plist file", () => {
       const deps = makeDeps()
       const plistPath = path.join(launchAgentsDir, `${DAEMON_PLIST_LABEL}.plist`)
       fs.writeFileSync(plistPath, "test-plist", "utf-8")
@@ -219,7 +220,7 @@ describe("launchd daemon management", () => {
       uninstallLaunchAgent(deps)
 
       expect(deps.exec).toHaveBeenCalledWith(
-        expect.stringContaining("launchctl unload"),
+        expect.stringContaining("launchctl bootout gui/501"),
       )
       expect(fs.existsSync(plistPath)).toBe(false)
     })
@@ -230,7 +231,7 @@ describe("launchd daemon management", () => {
       expect(() => uninstallLaunchAgent(deps)).not.toThrow()
     })
 
-    it("handles launchctl unload failure gracefully", () => {
+    it("handles launchctl bootout failure gracefully", () => {
       const exec = vi.fn().mockImplementation(() => {
         throw new Error("not loaded")
       })

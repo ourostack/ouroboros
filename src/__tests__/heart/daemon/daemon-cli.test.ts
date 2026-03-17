@@ -2306,6 +2306,84 @@ describe("ensureDaemonRunning", () => {
     expect(deps.startDaemonProcess).toHaveBeenCalledWith("/tmp/ouro-test.sock")
   })
 
+  it("passes runtime path and config drift signals into the daemon runtime sync check", async () => {
+    vi.resetModules()
+    const ensureCurrentDaemonRuntime = vi.fn(async () => ({
+      alreadyRunning: false,
+      message: "restarted drifted daemon",
+    }))
+    vi.doMock("../../../heart/daemon/runtime-metadata", () => ({
+      getRuntimeMetadata: () => ({
+        version: "0.1.0-alpha.20",
+        lastUpdated: "2026-03-09T11:00:00.000Z",
+        repoRoot: "/Users/arimendelow/Projects/ouroboros-agent-harness-bb-health-status",
+        configFingerprint: "cfg-local",
+      }),
+    }))
+    vi.doMock("../../../heart/daemon/daemon-runtime-sync", () => ({
+      ensureCurrentDaemonRuntime,
+    }))
+
+    const { ensureDaemonRunning } = await import("../../../heart/daemon/daemon-cli")
+    vi.doUnmock("../../../heart/daemon/daemon-runtime-sync")
+    vi.doUnmock("../../../heart/daemon/runtime-metadata")
+
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({
+        ok: true,
+        summary: "running",
+        data: {
+          overview: {
+            daemon: "running",
+            health: "ok",
+            socketPath: "/tmp/ouro-test.sock",
+            version: "0.1.0-alpha.20",
+            lastUpdated: "2026-03-09T11:00:00.000Z",
+            repoRoot: "/Users/arimendelow/Projects/ouroboros-agent-harness-cross-chat-bridge-orchestration",
+            configFingerprint: "cfg-running",
+            workerCount: 0,
+            senseCount: 0,
+          },
+          senses: [],
+          workers: [],
+        },
+      })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 777 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+    }
+
+    const result = await ensureDaemonRunning(deps)
+    const syncDeps = ensureCurrentDaemonRuntime.mock.calls[0]?.[0] as {
+      localLastUpdated?: string
+      localRepoRoot?: string
+      localConfigFingerprint?: string
+      fetchRunningRuntimeMetadata?: () => Promise<unknown>
+    }
+
+    expect(result).toEqual({
+      alreadyRunning: false,
+      message: "restarted drifted daemon",
+    })
+    expect(ensureCurrentDaemonRuntime).toHaveBeenCalledWith(expect.objectContaining({
+      socketPath: "/tmp/ouro-test.sock",
+      localVersion: "0.1.0-alpha.20",
+      localLastUpdated: "2026-03-09T11:00:00.000Z",
+      localRepoRoot: "/Users/arimendelow/Projects/ouroboros-agent-harness-bb-health-status",
+      localConfigFingerprint: "cfg-local",
+    }))
+    await expect(syncDeps.fetchRunningRuntimeMetadata?.()).resolves.toEqual({
+      version: "0.1.0-alpha.20",
+      lastUpdated: "2026-03-09T11:00:00.000Z",
+      repoRoot: "/Users/arimendelow/Projects/ouroboros-agent-harness-cross-chat-bridge-orchestration",
+      configFingerprint: "cfg-running",
+    })
+  })
+
   it("keeps a running daemon when version verification fails", async () => {
     vi.resetModules()
     vi.doMock("../../../heart/daemon/runtime-metadata", () => ({

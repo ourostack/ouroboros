@@ -2,6 +2,13 @@ import { describe, expect, it, vi } from "vitest"
 
 import { getRuntimeMetadata } from "../../../heart/daemon/runtime-metadata"
 
+function mockDirent(name: string, isDirectory: boolean): import("fs").Dirent {
+  return {
+    name,
+    isDirectory: () => isDirectory,
+  } as unknown as import("fs").Dirent
+}
+
 describe("runtime metadata", () => {
   it("reads version and last-updated from package.json and git", () => {
     const metadata = getRuntimeMetadata({
@@ -11,10 +18,12 @@ describe("runtime metadata", () => {
       execFileSync: vi.fn(() => "2026-03-08T22:11:00.000Z\n") as unknown as typeof import("child_process").execFileSync,
     })
 
-    expect(metadata).toEqual({
+    expect(metadata).toEqual(expect.objectContaining({
       version: "1.2.3",
       lastUpdated: "2026-03-08T22:11:00.000Z",
-    })
+      repoRoot: "/mock/repo",
+    }))
+    expect(metadata.configFingerprint).toMatch(/^[a-f0-9]{64}$/)
   })
 
   it("falls back to package.json mtime when git metadata is unavailable", () => {
@@ -27,10 +36,12 @@ describe("runtime metadata", () => {
       }) as unknown as typeof import("child_process").execFileSync,
     })
 
-    expect(metadata).toEqual({
+    expect(metadata).toEqual(expect.objectContaining({
       version: "1.2.3",
       lastUpdated: "2026-03-08T23:00:00.000Z",
-    })
+      repoRoot: "/mock/repo",
+    }))
+    expect(metadata.configFingerprint).toMatch(/^[a-f0-9]{64}$/)
   })
 
   it("returns unknown values when neither package metadata nor timestamps are readable", () => {
@@ -47,10 +58,12 @@ describe("runtime metadata", () => {
       }) as unknown as typeof import("child_process").execFileSync,
     })
 
-    expect(metadata).toEqual({
+    expect(metadata).toEqual(expect.objectContaining({
       version: "unknown",
       lastUpdated: "unknown",
-    })
+      repoRoot: "/mock/repo",
+    }))
+    expect(metadata.configFingerprint).toMatch(/^[a-f0-9]{64}$/)
   })
 
   it("returns unknown when package.json has a non-string version", () => {
@@ -62,6 +75,108 @@ describe("runtime metadata", () => {
     })
 
     expect(metadata.version).toBe("unknown")
+  })
+
+  it("changes config fingerprint when tracked config content changes", () => {
+    const files = new Map<string, string>([
+      ["/mock/repo/package.json", JSON.stringify({ version: "1.2.3" })],
+      ["/mock/bundles/slugger.ouro/agent.json", JSON.stringify({ provider: "anthropic" })],
+      ["/mock/secrets/slugger/secrets.json", JSON.stringify({ providers: { anthropic: { setupToken: "token-a" } } })],
+      ["/mock/logging.json", JSON.stringify({ daemon: "info" })],
+    ])
+
+    const readFileSync = vi.fn((target: string) => {
+      const value = files.get(target)
+      if (!value) throw new Error(`missing ${target}`)
+      return value
+    }) as unknown as typeof import("fs").readFileSync
+    const readdirSync = vi.fn((target: string) => {
+      if (target === "/mock/bundles") {
+        return [
+          mockDirent("slugger.ouro", true),
+          mockDirent("notes", true),
+          mockDirent("README.md", false),
+        ]
+      }
+      if (target === "/mock/secrets") {
+        return [
+          mockDirent("slugger", true),
+          mockDirent("misc.txt", false),
+        ]
+      }
+      return []
+    }) as unknown as typeof import("fs").readdirSync
+    const existsSync = vi.fn((target: string) => files.has(target)) as unknown as typeof import("fs").existsSync
+
+    const deps = {
+      repoRoot: "/mock/repo",
+      bundlesRoot: "/mock/bundles",
+      secretsRoot: "/mock/secrets",
+      daemonLoggingPath: "/mock/logging.json",
+      readFileSync,
+      readdirSync,
+      existsSync,
+      statSync: vi.fn(() => ({ mtime: new Date("2026-03-08T23:00:00.000Z") })) as unknown as typeof import("fs").statSync,
+      execFileSync: vi.fn(() => "2026-03-08T22:11:00.000Z\n") as unknown as typeof import("child_process").execFileSync,
+    }
+
+    const first = getRuntimeMetadata(deps)
+    files.set("/mock/secrets/slugger/secrets.json", JSON.stringify({ providers: { anthropic: { setupToken: "token-b" } } }))
+    const second = getRuntimeMetadata(deps)
+
+    expect(first).toEqual(expect.objectContaining({
+      version: "1.2.3",
+      lastUpdated: "2026-03-08T22:11:00.000Z",
+      repoRoot: "/mock/repo",
+    }))
+    expect(first.configFingerprint).not.toBe(second.configFingerprint)
+  })
+
+  it("hashes missing and unreadable tracked config files without crashing", () => {
+    const files = new Map<string, string>([
+      ["/mock/repo/package.json", JSON.stringify({ version: "1.2.3" })],
+      ["/mock/bundles/slugger.ouro/agent.json", JSON.stringify({ provider: "anthropic" })],
+    ])
+
+    const readFileSync = vi.fn((target: string) => {
+      if (target === "/mock/secrets/slugger/secrets.json") {
+        throw new Error("permission denied")
+      }
+      const value = files.get(target)
+      if (!value) throw new Error(`missing ${target}`)
+      return value
+    }) as unknown as typeof import("fs").readFileSync
+    const readdirSync = vi.fn((target: string) => {
+      if (target === "/mock/bundles") return [mockDirent("slugger.ouro", true)]
+      if (target === "/mock/secrets") return [mockDirent("slugger", true)]
+      throw new Error(`unexpected readdir ${target}`)
+    }) as unknown as typeof import("fs").readdirSync
+    const existsSync = vi.fn((target: string) =>
+      target === "/mock/logging.json"
+        ? false
+        : target === "/mock/secrets/slugger/secrets.json"
+          ? true
+          : files.has(target),
+    ) as unknown as typeof import("fs").existsSync
+
+    const metadata = getRuntimeMetadata({
+      repoRoot: "/mock/repo",
+      bundlesRoot: "/mock/bundles",
+      secretsRoot: "/mock/secrets",
+      daemonLoggingPath: "/mock/logging.json",
+      readFileSync,
+      readdirSync,
+      existsSync,
+      statSync: vi.fn(() => ({ mtime: new Date("2026-03-08T23:00:00.000Z") })) as unknown as typeof import("fs").statSync,
+      execFileSync: vi.fn(() => "2026-03-08T22:11:00.000Z\n") as unknown as typeof import("child_process").execFileSync,
+    })
+
+    expect(metadata).toEqual(expect.objectContaining({
+      version: "1.2.3",
+      lastUpdated: "2026-03-08T22:11:00.000Z",
+      repoRoot: "/mock/repo",
+    }))
+    expect(metadata.configFingerprint).toMatch(/^[a-f0-9]{64}$/)
   })
 
   it("returns unknown when package.json version is blank after trimming", () => {
@@ -79,6 +194,7 @@ describe("runtime metadata", () => {
     vi.resetModules()
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
+      getAgentBundlesRoot: () => "/mock/bundles",
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
     vi.doMock("fs", () => ({
@@ -92,6 +208,33 @@ describe("runtime metadata", () => {
     expect(metadata).toEqual({
       version: "unknown",
       lastUpdated: "2026-03-08T23:15:00.000Z",
+      repoRoot: "/mock/repo",
+      configFingerprint: "unknown",
+    })
+  })
+
+  it("returns unknown lastUpdated when stat helpers are unavailable", async () => {
+    vi.resetModules()
+    vi.doMock("../../../heart/identity", () => ({
+      getRepoRoot: () => "/mock/repo",
+      getAgentBundlesRoot: () => "/mock/bundles",
+    }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+    vi.doMock("fs", () => ({
+      readFileSync: vi.fn(() => JSON.stringify({ version: "1.2.3" })),
+      readdirSync: vi.fn(() => []),
+      existsSync: vi.fn(() => false),
+    }))
+    vi.doMock("child_process", () => ({}))
+
+    const { getRuntimeMetadata: getWithMocks } = await import("../../../heart/daemon/runtime-metadata")
+    const metadata = getWithMocks()
+
+    expect(metadata).toEqual({
+      version: "1.2.3",
+      lastUpdated: "unknown",
+      repoRoot: "/mock/repo",
+      configFingerprint: expect.any(String),
     })
   })
 
@@ -99,6 +242,7 @@ describe("runtime metadata", () => {
     vi.resetModules()
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
+      getAgentBundlesRoot: () => "/mock/bundles",
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
     vi.doMock("fs", () => ({
@@ -115,6 +259,116 @@ describe("runtime metadata", () => {
     expect(metadata).toEqual({
       version: "unknown",
       lastUpdated: "2026-03-08T23:20:00.000Z",
+      repoRoot: "/mock/repo",
+      configFingerprint: "unknown",
     })
+  })
+
+  it("skips home-relative config targets when homedir is unavailable", async () => {
+    vi.resetModules()
+    const readFileSync = vi.fn((target: string) => {
+      if (target === "/mock/repo/package.json") {
+        return JSON.stringify({ version: "1.2.3" })
+      }
+      if (target === "/mock/bundles/slugger.ouro/agent.json") {
+        return JSON.stringify({ provider: "anthropic" })
+      }
+      throw new Error(`missing ${target}`)
+    })
+    const readdirSync = vi.fn((target: string) => {
+      if (target === "/mock/bundles") {
+        return [mockDirent("slugger.ouro", true)]
+      }
+      return []
+    })
+    const existsSync = vi.fn((target: string) => target === "/mock/bundles/slugger.ouro/agent.json")
+
+    vi.doMock("os", async () => {
+      const actual = await vi.importActual<typeof import("os")>("os")
+      return {
+        ...actual,
+        homedir: () => {
+          throw new Error("home unavailable")
+        },
+      }
+    })
+    vi.doMock("../../../heart/identity", () => ({
+      getRepoRoot: () => "/mock/repo",
+      getAgentBundlesRoot: () => "/mock/bundles",
+    }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+    vi.doMock("fs", () => ({
+      readFileSync,
+      readdirSync,
+      existsSync,
+      statSync: vi.fn(() => ({ mtime: new Date("2026-03-08T23:20:00.000Z") })),
+    }))
+    vi.doMock("child_process", () => ({
+      execFileSync: vi.fn(() => "2026-03-08T22:11:00.000Z\n"),
+    }))
+
+    const { getRuntimeMetadata: getWithMocks } = await import("../../../heart/daemon/runtime-metadata")
+    const metadata = getWithMocks()
+
+    expect(metadata).toEqual({
+      version: "1.2.3",
+      lastUpdated: "2026-03-08T22:11:00.000Z",
+      repoRoot: "/mock/repo",
+      configFingerprint: expect.any(String),
+    })
+    expect(readdirSync).toHaveBeenCalledTimes(1)
+    expect(readdirSync).toHaveBeenCalledWith("/mock/bundles", { withFileTypes: true })
+  })
+
+  it("skips home-relative config targets when os.homedir is not exported", async () => {
+    vi.resetModules()
+    const readFileSync = vi.fn((target: string) => {
+      if (target === "/mock/repo/package.json") {
+        return JSON.stringify({ version: "1.2.3" })
+      }
+      if (target === "/mock/bundles/slugger.ouro/agent.json") {
+        return JSON.stringify({ provider: "anthropic" })
+      }
+      throw new Error(`missing ${target}`)
+    })
+    const readdirSync = vi.fn((target: string) => {
+      if (target === "/mock/bundles") {
+        return [mockDirent("slugger.ouro", true)]
+      }
+      return []
+    })
+    const existsSync = vi.fn((target: string) => target === "/mock/bundles/slugger.ouro/agent.json")
+
+    vi.doMock("os", async () => {
+      const actual = await vi.importActual<typeof import("os")>("os")
+      return Object.fromEntries(
+        Object.entries(actual).filter(([key]) => key !== "homedir"),
+      )
+    })
+    vi.doMock("../../../heart/identity", () => ({
+      getRepoRoot: () => "/mock/repo",
+      getAgentBundlesRoot: () => "/mock/bundles",
+    }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+    vi.doMock("fs", () => ({
+      readFileSync,
+      readdirSync,
+      existsSync,
+      statSync: vi.fn(() => ({ mtime: new Date("2026-03-08T23:20:00.000Z") })),
+    }))
+    vi.doMock("child_process", () => ({
+      execFileSync: vi.fn(() => "2026-03-08T22:11:00.000Z\n"),
+    }))
+
+    const { getRuntimeMetadata: getWithMocks } = await import("../../../heart/daemon/runtime-metadata")
+    const metadata = getWithMocks()
+
+    expect(metadata).toEqual({
+      version: "1.2.3",
+      lastUpdated: "2026-03-08T22:11:00.000Z",
+      repoRoot: "/mock/repo",
+      configFingerprint: expect.any(String),
+    })
+    expect(readdirSync).toHaveBeenCalledWith("/mock/bundles", { withFileTypes: true })
   })
 })

@@ -15,15 +15,66 @@ function withProcessPlatform(platform: NodeJS.Platform): () => void {
 }
 
 describe("daemon CLI default dependency branches", () => {
+  it("passes removable launchd deps and falls back to uid 0 when getuid is unavailable", async () => {
+    vi.resetModules()
+
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-boot-deps-"))
+    const restorePlatform = withProcessPlatform("darwin")
+    const originalGetuid = Object.getOwnPropertyDescriptor(process, "getuid")
+    const installLaunchAgent = vi.fn((deps: any) => {
+      const removablePath = path.join(tempHome, "remove-me")
+      fs.writeFileSync(removablePath, "x", "utf-8")
+      deps.removeFile(removablePath)
+      expect(fs.existsSync(removablePath)).toBe(false)
+      expect(deps.userUid).toBe(0)
+    })
+
+    try {
+      Object.defineProperty(process, "getuid", { value: undefined, configurable: true })
+      vi.doMock("net", () => ({ createConnection: vi.fn() }))
+      vi.doMock("child_process", () => ({ spawn: vi.fn(), execSync: vi.fn() }))
+      vi.doMock("os", async () => {
+        const actual = await vi.importActual<typeof import("os")>("os")
+        return { ...actual, homedir: () => tempHome }
+      })
+      vi.doMock("../../../heart/daemon/launchd", async () => {
+        const actual = await vi.importActual<typeof import("../../../heart/daemon/launchd")>("../../../heart/daemon/launchd")
+        return { ...actual, installLaunchAgent }
+      })
+      vi.doMock("../../../heart/identity", () => ({
+        getRepoRoot: () => "/mock/repo",
+        getAgentBundlesRoot: () => "/mock/AgentBundles",
+      }))
+      vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+
+      const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+      deps.ensureDaemonBootPersistence?.("/tmp/daemon.sock")
+
+      expect(installLaunchAgent).toHaveBeenCalledOnce()
+    } finally {
+      vi.doUnmock("../../../heart/daemon/launchd")
+      restorePlatform()
+      if (originalGetuid) {
+        Object.defineProperty(process, "getuid", originalGetuid)
+      } else {
+        Reflect.deleteProperty(process, "getuid")
+      }
+      fs.rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
   it("persists a launch agent plist on darwin via default boot persistence", async () => {
     vi.resetModules()
 
     const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-boot-persist-"))
     const restorePlatform = withProcessPlatform("darwin")
+    const execSync = vi.fn()
 
     try {
       vi.doMock("net", () => ({ createConnection: vi.fn() }))
-      vi.doMock("child_process", () => ({ spawn: vi.fn() }))
+      vi.doMock("child_process", () => ({ spawn: vi.fn(), execSync }))
       vi.doMock("os", async () => {
         const actual = await vi.importActual<typeof import("os")>("os")
         return { ...actual, homedir: () => tempHome }
@@ -49,6 +100,53 @@ describe("daemon CLI default dependency branches", () => {
       expect(plist).toContain("/mock/repo/dist/heart/daemon/daemon-entry.js")
       expect(plist).toContain("<key>RunAtLoad</key>")
       expect(plist).toContain(path.join(logDir, "ouro-daemon-stdout.log"))
+      expect(execSync).toHaveBeenCalledWith(
+        expect.stringContaining("launchctl bootstrap gui/"),
+        { stdio: "ignore" },
+      )
+    } finally {
+      restorePlatform()
+      fs.rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
+  it("reloads an existing launch agent plist on darwin via default boot persistence", async () => {
+    vi.resetModules()
+
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-boot-reload-"))
+    const restorePlatform = withProcessPlatform("darwin")
+    const execSync = vi.fn()
+
+    try {
+      const plistPath = path.join(tempHome, "Library", "LaunchAgents", "bot.ouro.daemon.plist")
+      fs.mkdirSync(path.dirname(plistPath), { recursive: true })
+      fs.writeFileSync(plistPath, "old-plist", "utf-8")
+
+      vi.doMock("net", () => ({ createConnection: vi.fn() }))
+      vi.doMock("child_process", () => ({ spawn: vi.fn(), execSync }))
+      vi.doMock("os", async () => {
+        const actual = await vi.importActual<typeof import("os")>("os")
+        return { ...actual, homedir: () => tempHome }
+      })
+      vi.doMock("../../../heart/identity", () => ({
+        getRepoRoot: () => "/mock/repo",
+        getAgentBundlesRoot: () => "/mock/AgentBundles",
+      }))
+      vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+
+      const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+      deps.ensureDaemonBootPersistence?.("/tmp/daemon.sock")
+
+      expect(execSync).toHaveBeenCalledWith(
+        expect.stringContaining("launchctl bootout gui/"),
+        { stdio: "ignore" },
+      )
+      expect(execSync).toHaveBeenCalledWith(
+        expect.stringContaining("launchctl bootstrap gui/"),
+        { stdio: "ignore" },
+      )
     } finally {
       restorePlatform()
       fs.rmSync(tempHome, { recursive: true, force: true })
@@ -61,10 +159,11 @@ describe("daemon CLI default dependency branches", () => {
     const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-boot-warn-"))
     const restorePlatform = withProcessPlatform("darwin")
     const emitNervesEvent = vi.fn()
+    const execSync = vi.fn()
 
     try {
       vi.doMock("net", () => ({ createConnection: vi.fn() }))
-      vi.doMock("child_process", () => ({ spawn: vi.fn() }))
+      vi.doMock("child_process", () => ({ spawn: vi.fn(), execSync }))
       vi.doMock("os", async () => {
         const actual = await vi.importActual<typeof import("os")>("os")
         return { ...actual, homedir: () => tempHome }
@@ -109,7 +208,7 @@ describe("daemon CLI default dependency branches", () => {
 
     try {
       vi.doMock("net", () => ({ createConnection: vi.fn() }))
-      vi.doMock("child_process", () => ({ spawn: vi.fn() }))
+      vi.doMock("child_process", () => ({ spawn: vi.fn(), execSync: vi.fn() }))
       vi.doMock("fs", async () => {
         const actual = await vi.importActual<typeof import("fs")>("fs")
         return { ...actual, writeFileSync, mkdirSync }

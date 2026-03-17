@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.54",
+      "changes": [
+        "Disk-backed runtime config now reloads from agent and secrets files instead of being held behind stale process-level caches, so config changes are picked up truthfully.",
+        "`ouro up` now treats runtime drift as a real restart trigger, including repo-root drift, config-fingerprint drift, and stale launchd boot persistence after branch/worktree changes.",
+        "BlueBubbles status now prefers fresh runtime health over stale managed-process crash snapshots, preventing false whole-sense `error` reports when the live channel is actually healthy."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.53",
       "changes": [
         "Daemon plist now inherits PATH from the installing process, so child agent spawns can find node regardless of launchd's minimal default environment.",

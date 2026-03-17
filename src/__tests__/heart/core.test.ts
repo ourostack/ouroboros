@@ -328,6 +328,56 @@ describe("getProviderDisplayLabel", () => {
     expect(getProviderDisplayLabel()).toBe("azure openai (gpt-4.1, model: gpt-4.1)")
   })
 
+  it("falls back to default in the azure provider label when deployment is blank", async () => {
+    vi.resetModules()
+    vi.doMock("../../heart/providers/azure", () => ({
+      createAzureProviderRuntime: () => ({
+        id: "azure",
+        model: "gpt-4.1",
+        client: {},
+        resetTurnState: vi.fn(),
+        appendToolOutput: vi.fn(),
+        streamTurn: vi.fn(),
+      }),
+    }))
+
+    try {
+      await setupConfig({
+        provider: "azure",
+        providers: {
+          azure: {
+            deployment: "",
+            modelName: "gpt-4.1",
+            apiKey: "azure-key",
+            endpoint: "https://example.openai.azure.com",
+          },
+        },
+      })
+      const { getProviderDisplayLabel, resetProviderRuntime } = await import("../../heart/core")
+      resetProviderRuntime()
+      expect(getProviderDisplayLabel()).toBe("azure openai (default, model: gpt-4.1)")
+    } finally {
+      vi.doUnmock("../../heart/providers/azure")
+    }
+  })
+
+  it("falls back to unknown in the azure provider label when modelName is blank", async () => {
+    await setupConfig({
+      provider: "azure",
+      providers: {
+        azure: {
+          deployment: "gpt-4.1",
+          modelName: "",
+          apiKey: "azure-key",
+          endpoint: "https://example.openai.azure.com",
+        },
+      },
+    })
+    const { getProviderDisplayLabel, resetProviderRuntime } = await import("../../heart/core")
+    resetProviderRuntime()
+    expect(getProviderDisplayLabel()).toBe("azure openai (gpt-4.1, model: unknown)")
+  })
+
   it("formats the anthropic provider label", async () => {
     await setupConfig({ providers: { anthropic: { model: "claude-sonnet", setupToken: makeAnthropicSetupToken() } } })
     const { getProviderDisplayLabel, resetProviderRuntime } = await import("../../heart/core")
@@ -347,6 +397,38 @@ describe("getProviderDisplayLabel", () => {
     const { getProviderDisplayLabel, resetProviderRuntime } = await import("../../heart/core")
     resetProviderRuntime()
     expect(getProviderDisplayLabel()).toBe("openai codex (gpt-5-codex)")
+  })
+
+  it.each([
+    [
+      "anthropic",
+      {
+        provider: "anthropic",
+        providers: { anthropic: { model: "", setupToken: makeAnthropicSetupToken() } },
+      },
+      "anthropic (unknown)",
+    ],
+    [
+      "minimax",
+      {
+        provider: "minimax",
+        providers: { minimax: { model: "", apiKey: "minimax-key" } },
+      },
+      "minimax (unknown)",
+    ],
+    [
+      "openai-codex",
+      {
+        provider: "openai-codex",
+        providers: { "openai-codex": { model: "", oauthAccessToken: makeOpenAICodexAccessToken() } },
+      },
+      "openai codex (unknown)",
+    ],
+  ] as const)("falls back to unknown in the %s provider label when model is blank", async (_provider, configPatch, expectedLabel) => {
+    await setupConfig(configPatch as any)
+    const { getProviderDisplayLabel, resetProviderRuntime } = await import("../../heart/core")
+    resetProviderRuntime()
+    expect(getProviderDisplayLabel()).toBe(expectedLabel)
   })
 })
 
@@ -7943,39 +8025,28 @@ describe("createSummarize", () => {
   })
 })
 
-describe("resetProviderRuntime", () => {
-  it("clears cached provider so next access re-creates from current config", async () => {
+describe("provider runtime freshness", () => {
+  it("re-creates the provider runtime when the selected model changes", async () => {
     vi.resetModules()
     await setupMinimax("key-1", "model-1")
     const core = await import("../../heart/core")
 
-    // First access: creates provider runtime for minimax
-    const model1 = core.getModel()
-    expect(model1).toBe("model-1")
-
-    // Change config to a different model
-    await setupMinimax("key-2", "model-2")
-
-    // Without reset, cached provider still returns old model
     expect(core.getModel()).toBe("model-1")
 
-    // After reset, next access picks up new config
-    core.resetProviderRuntime()
+    await setupMinimax("key-2", "model-2")
+
     expect(core.getModel()).toBe("model-2")
   })
 
-  it("after reset, provider picks up new config values", async () => {
+  it("switches provider when agent config changes without explicit reset", async () => {
     vi.resetModules()
     await setupMinimax("key-a", "model-a")
     const core = await import("../../heart/core")
 
     expect(core.getProvider()).toBe("minimax")
 
-    // Switch provider via config mock
     await setupAzure("az-key", "https://test.openai.azure.com", "dep-1", "gpt-5.4-chat")
 
-    // Reset provider runtime so it re-creates
-    core.resetProviderRuntime()
     expect(core.getProvider()).toBe("azure")
   })
 })

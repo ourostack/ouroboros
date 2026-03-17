@@ -170,7 +170,7 @@ function defaultRuntimeConfig(): OuroborosConfig {
   }
 }
 
-let _cachedConfig: OuroborosConfig | null = null
+let _runtimeConfigOverride: DeepPartial<OuroborosConfig> | null = null
 let _testContextOverride: ContextConfig | null = null
 
 function resolveConfigPath(): string {
@@ -196,16 +196,6 @@ function deepMerge(defaults: Record<string, unknown>, partial: Record<string, un
 }
 
 export function loadConfig(): OuroborosConfig {
-  if (_cachedConfig) {
-    emitNervesEvent({
-      event: "config.load",
-      component: "config/identity",
-      message: "config loaded from cache",
-      meta: { source: "cache" },
-    })
-    return _cachedConfig
-  }
-
   const configPath = resolveConfigPath()
 
   // Auto-create config directory if it doesn't exist
@@ -271,10 +261,16 @@ export function loadConfig(): OuroborosConfig {
     })
   }
 
-  _cachedConfig = deepMerge(
+  const mergedConfig = deepMerge(
     defaultRuntimeConfig() as unknown as Record<string, unknown>,
     sanitizedFileData,
   ) as unknown as OuroborosConfig
+  const config = _runtimeConfigOverride
+    ? deepMerge(
+      mergedConfig as unknown as Record<string, unknown>,
+      _runtimeConfigOverride as unknown as Record<string, unknown>,
+    ) as unknown as OuroborosConfig
+    : mergedConfig
   emitNervesEvent({
     event: "config.load",
     component: "config/identity",
@@ -282,13 +278,14 @@ export function loadConfig(): OuroborosConfig {
     meta: {
       source: "disk",
       used_defaults_only: Object.keys(fileData).length === 0,
+      override_applied: _runtimeConfigOverride !== null,
     },
   })
-  return _cachedConfig
+  return config
 }
 
 export function resetConfigCache(): void {
-  _cachedConfig = null
+  _runtimeConfigOverride = null
   _testContextOverride = null
 }
 
@@ -297,7 +294,6 @@ export type DeepPartial<T> = {
 }
 
 export function patchRuntimeConfig(partial: DeepPartial<OuroborosConfig>): void {
-  loadConfig() // ensure _cachedConfig exists
   const contextPatch = partial.context as Partial<ContextConfig> | undefined
   if (contextPatch) {
     const base = _testContextOverride ?? DEFAULT_AGENT_CONTEXT
@@ -306,10 +302,10 @@ export function patchRuntimeConfig(partial: DeepPartial<OuroborosConfig>): void 
       contextPatch as unknown as Record<string, unknown>,
     ) as unknown as ContextConfig
   }
-  _cachedConfig = deepMerge(
-    _cachedConfig as unknown as Record<string, unknown>,
+  _runtimeConfigOverride = deepMerge(
+    (_runtimeConfigOverride ?? {}) as unknown as Record<string, unknown>,
     partial as unknown as Record<string, unknown>,
-  ) as unknown as OuroborosConfig
+  ) as unknown as DeepPartial<OuroborosConfig>
 }
 
 export function getAzureConfig(): AzureProviderConfig {

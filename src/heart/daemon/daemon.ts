@@ -127,6 +127,8 @@ interface DaemonStatusOverview {
   socketPath: string
   version: string
   lastUpdated: string
+  repoRoot: string
+  configFingerprint: string
   workerCount: number
   senseCount: number
   entryPath: string

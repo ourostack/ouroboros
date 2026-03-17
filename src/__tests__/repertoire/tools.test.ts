@@ -258,6 +258,52 @@ describe("execTool", () => {
     expect(result).toContain("perplexityApiKey not configured")
   })
 
+  it("web_search picks up updated integrations config between calls without resetConfigCache()", async () => {
+    let secretsReads = 0
+    vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => {
+      if (String(filePath).endsWith("/tmp/.agentsecrets/testagent/secrets.json")) {
+        secretsReads += 1
+        return JSON.stringify({
+          integrations: {
+            perplexityApiKey: secretsReads === 1 ? "" : "fresh-key",
+          },
+        })
+      }
+      return ""
+    })
+
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        results: [
+          { title: "Result 1", url: "https://example.com", snippet: "A test result" },
+        ],
+      }),
+    })
+    vi.stubGlobal("fetch", mockFetch)
+
+    try {
+      const tools = await import("../../repertoire/tools")
+
+      const firstResult = await tools.execTool("web_search", { query: "test" })
+      expect(firstResult).toContain("perplexityApiKey not configured")
+
+      const secondResult = await tools.execTool("web_search", { query: "test" })
+      expect(secondResult).toContain("Result 1")
+      expect(mockFetch).toHaveBeenCalledWith(
+        "https://api.perplexity.ai/search",
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Authorization: "Bearer fresh-key",
+          }),
+        }),
+      )
+      expect(secretsReads).toBe(2)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it("web_search returns error on non-ok response", async () => {
     vi.resetModules()
     const config = await import("../../heart/config")

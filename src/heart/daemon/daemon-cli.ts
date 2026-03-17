@@ -1,4 +1,4 @@
-import { spawn } from "child_process"
+import { execSync, spawn } from "child_process"
 import { randomUUID } from "crypto"
 import * as fs from "fs"
 import * as os from "os"
@@ -36,7 +36,7 @@ import { getTaskModule } from "../../repertoire/tasks"
 import { parseInnerDialogSession, formatThoughtTurns, getInnerDialogSessionPath, followThoughts } from "./thoughts"
 import type { TaskModule } from "../../repertoire/tasks/types"
 import { syncGlobalOuroBotWrapper as defaultSyncGlobalOuroBotWrapper } from "./ouro-bot-global-installer"
-import { writeLaunchAgentPlist, type LaunchdWriteDeps } from "./launchd"
+import { installLaunchAgent, type LaunchdDeps } from "./launchd"
 import { DEFAULT_DAEMON_SOCKET_PATH, sendDaemonCommand, checkDaemonSocketAlive } from "./socket-client"
 import { listSessionActivity } from "../session-activity"
 
@@ -109,6 +109,8 @@ interface StatusOverviewRow {
   socketPath: string
   version: string
   lastUpdated: string
+  repoRoot: string
+  configFingerprint: string
   workerCount: number
   senseCount: number
   entryPath: string
@@ -165,6 +167,8 @@ function parseStatusPayload(data: unknown): StatusPayload | null {
     socketPath: stringField((overview as Record<string, unknown>).socketPath) ?? "unknown",
     version: stringField((overview as Record<string, unknown>).version) ?? "unknown",
     lastUpdated: stringField((overview as Record<string, unknown>).lastUpdated) ?? "unknown",
+    repoRoot: stringField((overview as Record<string, unknown>).repoRoot) ?? "unknown",
+    configFingerprint: stringField((overview as Record<string, unknown>).configFingerprint) ?? "unknown",
     workerCount: numberField((overview as Record<string, unknown>).workerCount) ?? 0,
     senseCount: numberField((overview as Record<string, unknown>).senseCount) ?? 0,
     entryPath: stringField((overview as Record<string, unknown>).entryPath) ?? "unknown",
@@ -286,14 +290,34 @@ export async function ensureDaemonRunning(deps: OuroCliDeps): Promise<EnsureDaem
   const alive = await deps.checkSocketAlive(deps.socketPath)
   if (alive) {
     const localRuntime = getRuntimeMetadata()
+    let runningRuntimePromise: Promise<{
+      version: string
+      lastUpdated: string
+      repoRoot: string
+      configFingerprint: string
+    }> | null = null
+    const fetchRunningRuntimeMetadata = async () => {
+      runningRuntimePromise ??= (async () => {
+        const status = await deps.sendCommand(deps.socketPath, { kind: "daemon.status" })
+        const payload = parseStatusPayload(status.data)
+        return {
+          version: payload?.overview.version ?? "unknown",
+          lastUpdated: payload?.overview.lastUpdated ?? "unknown",
+          repoRoot: payload?.overview.repoRoot ?? "unknown",
+          configFingerprint: payload?.overview.configFingerprint ?? "unknown",
+        }
+      })()
+      return runningRuntimePromise
+    }
+
     return ensureCurrentDaemonRuntime({
       socketPath: deps.socketPath,
       localVersion: localRuntime.version,
-      fetchRunningVersion: async () => {
-        const status = await deps.sendCommand(deps.socketPath, { kind: "daemon.status" })
-        const payload = parseStatusPayload(status.data)
-        return payload?.overview.version ?? "unknown"
-      },
+      localLastUpdated: localRuntime.lastUpdated,
+      localRepoRoot: localRuntime.repoRoot,
+      localConfigFingerprint: localRuntime.configFingerprint,
+      fetchRunningVersion: async () => (await fetchRunningRuntimeMetadata()).version,
+      fetchRunningRuntimeMetadata,
       stopDaemon: async () => {
         await deps.sendCommand(deps.socketPath, { kind: "daemon.stop" })
       },
@@ -363,6 +387,8 @@ function buildStoppedStatusPayload(socketPath: string): StatusPayload {
       socketPath,
       version: metadata.version,
       lastUpdated: metadata.lastUpdated,
+      repoRoot: metadata.repoRoot,
+      configFingerprint: metadata.configFingerprint,
       workerCount: 0,
       senseCount: 0,
       entryPath: path.join(repoRoot, "dist", "heart", "daemon", "daemon-entry.js"),
@@ -815,10 +841,14 @@ function defaultEnsureDaemonBootPersistence(socketPath: string): void {
   }
 
   const homeDir = os.homedir()
-  const launchdDeps: LaunchdWriteDeps = {
+  const launchdDeps: LaunchdDeps = {
+    exec: (cmd) => { execSync(cmd, { stdio: "ignore" }) },
     writeFile: (filePath, content) => fs.writeFileSync(filePath, content, "utf-8"),
+    removeFile: (filePath) => fs.rmSync(filePath, { force: true }),
+    existsFile: (filePath) => fs.existsSync(filePath),
     mkdirp: (dir) => fs.mkdirSync(dir, { recursive: true }),
     homeDir,
+    userUid: process.getuid?.() ?? 0,
   }
 
   const entryPath = path.join(getRepoRoot(), "dist", "heart", "daemon", "daemon-entry.js")
@@ -835,7 +865,7 @@ function defaultEnsureDaemonBootPersistence(socketPath: string): void {
   }
 
   const logDir = path.join(homeDir, ".agentstate", "daemon", "logs")
-  writeLaunchAgentPlist(launchdDeps, {
+  installLaunchAgent(launchdDeps, {
     nodePath: process.execPath,
     entryPath,
     socketPath,
