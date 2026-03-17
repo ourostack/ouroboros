@@ -1,3 +1,5 @@
+import { emitNervesEvent } from "../nerves/runtime"
+
 function splitLongWord(word: string, width: number): string[] {
   const chunks: string[] = []
   for (let index = 0; index < word.length; index += width) {
@@ -68,6 +70,18 @@ export function formatEchoedInputSummary(input: string, cols: number): string {
   const summary = `> ${inputLines[0]}${inputLines.length > 1 ? ` (+${inputLines.length - 1} lines)` : ""}`
   const wrappedSummary = wrapCliText(summary, cols)
   const echoRows = countEchoedInputRows(input, cols)
+
+  emitNervesEvent({
+    component: "senses",
+    event: "senses.cli_echo_summary_formatted",
+    message: "formatted echoed cli input summary",
+    meta: {
+      cols,
+      echo_rows: echoRows,
+      input_line_count: inputLines.length,
+      wrapped_line_count: wrappedSummary.length,
+    },
+  })
 
   let output = `\x1b[${echoRows}A`
   for (let i = 0; i < echoRows; i += 1) {
