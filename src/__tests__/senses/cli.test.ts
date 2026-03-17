@@ -958,3 +958,127 @@ describe("createDebouncedLines", () => {
     expect(collected).toEqual(["x", "y"])
   })
 })
+
+describe("CLI adapter - echoed input summary wrapping", () => {
+  it("preserves explicit blank lines when wrapping echoed input summaries", async () => {
+    vi.resetModules()
+    const agent = await import("../../senses/cli")
+
+    expect((agent as any).wrapCliText("alpha\n\nbeta", 10)).toEqual(["alpha", "", "beta"])
+  })
+
+  it("wraps long echoed input summaries at whitespace", async () => {
+    vi.resetModules()
+    const agent = await import("../../senses/cli")
+
+    expect(
+      (agent as any).wrapCliText(
+        "> otherwise we'll accidentally keep working in some random feature branch when we shouldn't",
+        24,
+      ),
+    ).toEqual([
+      "> otherwise we'll",
+      "accidentally keep",
+      "working in some random",
+      "feature branch when we",
+      "shouldn't",
+    ])
+  })
+
+  it("splits a leading long word only when it cannot fit on one line", async () => {
+    vi.resetModules()
+    const agent = await import("../../senses/cli")
+
+    expect((agent as any).wrapCliText("supercalifragilistic", 6)).toEqual(["superc", "alifra", "gilist", "ic"])
+  })
+
+  it("splits a later long word after flushing the current wrapped line", async () => {
+    vi.resetModules()
+    const agent = await import("../../senses/cli")
+
+    expect((agent as any).wrapCliText("alpha supercalifragilistic", 6)).toEqual([
+      "alpha",
+      "superc",
+      "alifra",
+      "gilist",
+      "ic",
+    ])
+  })
+
+  it("formats echoed input summary by clearing every echoed row before writing the wrapped summary", async () => {
+    vi.resetModules()
+    const agent = await import("../../senses/cli")
+
+    const rendered = (agent as any).formatEchoedInputSummary("alpha beta gamma\ndelta epsilon", 12)
+    expect(rendered).toContain("\x1b[4A")
+    expect((rendered.match(/\x1b\[K/g) ?? []).length).toBe(4)
+    expect(rendered).toContain("alpha beta")
+    expect(rendered).toContain("gamma")
+    expect(rendered).toContain("(+1")
+    expect(rendered).toContain("lines)")
+  })
+
+  it("formats a single-row echoed input summary without an extra upward jump", async () => {
+    vi.resetModules()
+    const agent = await import("../../senses/cli")
+
+    const rendered = (agent as any).formatEchoedInputSummary("short", 20)
+    expect(rendered).toContain("\x1b[1A")
+    expect(rendered).toContain("\r\x1b[K")
+    expect(rendered).not.toContain("\x1b[0A")
+    expect(rendered).toContain("\x1b[1m> short\x1b[0m")
+  })
+
+  it("runCliSession uses the wrapped echoed input summary for pasted multi-line input", async () => {
+    vi.resetModules()
+
+    const stdoutChunks: string[] = []
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation((chunk: any) => {
+      stdoutChunks.push(String(chunk))
+      return true
+    })
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+
+    const originalColumns = process.stdout.columns
+    Object.defineProperty(process.stdout, "columns", { value: 24, configurable: true })
+
+    let closeHandler: (() => void) | undefined
+    const rl = {
+      pause: vi.fn(),
+      resume: vi.fn(),
+      on: vi.fn((event: string, handler: () => void) => {
+        if (event === "close") closeHandler = handler
+        return rl
+      }),
+      close: vi.fn(() => closeHandler?.()),
+      async *[Symbol.asyncIterator]() {
+        yield "otherwise we'll accidentally keep working in some random feature branch when we shouldn't"
+      },
+    }
+
+    vi.doMock("readline", () => ({
+      createInterface: vi.fn(() => rl),
+    }))
+
+    const agent = await import("../../senses/cli")
+    await agent.runCliSession({
+      agentName: "testagent",
+      banner: false,
+      disableCommands: true,
+      pasteDebounceMs: 0,
+      messages: [{ role: "system", content: "test system" }],
+      runTurn: async () => ({ usage: undefined }),
+    })
+
+    const output = stdoutChunks.join("")
+    expect(output).toContain("some random\nfeature branch")
+
+    if (originalColumns === undefined) {
+      delete (process.stdout as Partial<NodeJS.WriteStream>).columns
+    } else {
+      Object.defineProperty(process.stdout, "columns", { value: originalColumns, configurable: true })
+    }
+    stdoutSpy.mockRestore()
+    stderrSpy.mockRestore()
+  })
+})

@@ -27,6 +27,9 @@ import { acquireSessionLock, SessionLockError } from "./session-lock"
 import { applyPendingUpdates, registerUpdateHook } from "../heart/daemon/update-hooks"
 import { bundleMetaHook } from "../heart/daemon/hooks/bundle-meta"
 import { getPackageVersion } from "../mind/bundle-manifest"
+import { formatEchoedInputSummary } from "./cli-layout"
+
+export { formatEchoedInputSummary, wrapCliText } from "./cli-layout"
 
 /**
  * Format pending messages as content-prefix strings for injection into
@@ -642,14 +645,9 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
         }
       }
 
-      // Re-style the echoed input lines
+      // Re-style the echoed input lines without leaving wrapped paste remnants behind.
       const cols = process.stdout.columns || 80
-      const inputLines = input.split("\n")
-      let echoRows = 0
-      for (const line of inputLines) {
-        echoRows += Math.ceil((2 + line.length) / cols)
-      }
-      process.stdout.write(`\x1b[${echoRows}A\x1b[K` + `\x1b[1m> ${inputLines[0]}${inputLines.length > 1 ? ` (+${inputLines.length - 1} lines)` : ""}\x1b[0m\n\n`)
+      process.stdout.write(formatEchoedInputSummary(input, cols))
 
       addHistory(history, input)
 

@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.58",
+      "changes": [
+        "Normal `ouro` and `ouro-bot` CLI entrypoints now stay quiet by default in the terminal while still writing runtime NDJSON logs, and explicit logging overrides still work.",
+        "Interactive pasted input now clears every echoed row before re-rendering its bold summary, so multi-line instructions stay legible instead of colliding with prompt redraws and streaming output.",
+        "Wrapped CLI text now prefers whitespace breaks for ordinary words and only splits a word mid-line when that single word is wider than the terminal."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.57",
       "changes": [
         "Explicit `ouro chat <agent>` now launches the local interactive chat flow instead of just printing the daemon's connection acknowledgement and exiting.",
