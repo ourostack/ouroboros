@@ -108,7 +108,7 @@ describe("daemon runtime logging", () => {
       return true
     })
 
-    configureDaemonRuntimeLogger("ouro", { homeDir: tmpRoot })
+    configureDaemonRuntimeLogger("ouro", { homeDir: tmpRoot, configPath, agentName: "slugger" })
     emitNervesEvent({
       level: "info",
       component: "daemon",
@@ -117,7 +117,7 @@ describe("daemon runtime logging", () => {
       meta: {},
     })
 
-    const logFile = path.join(tmpRoot, ".agentstate", "daemon", "logs", "ouro.ndjson")
+    const logFile = path.join(tmpRoot, "AgentBundles", "slugger.ouro", "state", "daemon", "logs", "ouro.ndjson")
     await waitFor(() => fs.existsSync(logFile))
     const body = fs.readFileSync(logFile, "utf-8")
     expect(body).toContain("\"event\":\"daemon.legacy_shared_default\"")

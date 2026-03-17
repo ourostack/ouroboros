@@ -195,6 +195,7 @@ describe("runtime metadata", () => {
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
       getAgentBundlesRoot: () => "/mock/bundles",
+      getAgentDaemonLoggingConfigPath: () => "/mock/bundles/slugger.ouro/state/daemon/logging.json",
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
     vi.doMock("fs", () => ({
@@ -218,6 +219,7 @@ describe("runtime metadata", () => {
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
       getAgentBundlesRoot: () => "/mock/bundles",
+      getAgentDaemonLoggingConfigPath: () => "/mock/bundles/slugger.ouro/state/daemon/logging.json",
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
     vi.doMock("fs", () => ({
@@ -243,6 +245,7 @@ describe("runtime metadata", () => {
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
       getAgentBundlesRoot: () => "/mock/bundles",
+      getAgentDaemonLoggingConfigPath: () => "/mock/bundles/slugger.ouro/state/daemon/logging.json",
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
     vi.doMock("fs", () => ({
@@ -295,6 +298,7 @@ describe("runtime metadata", () => {
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
       getAgentBundlesRoot: () => "/mock/bundles",
+      getAgentDaemonLoggingConfigPath: () => "/mock/bundles/slugger.ouro/state/daemon/logging.json",
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
     vi.doMock("fs", () => ({
@@ -348,6 +352,7 @@ describe("runtime metadata", () => {
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
       getAgentBundlesRoot: () => "/mock/bundles",
+      getAgentDaemonLoggingConfigPath: () => "/mock/bundles/slugger.ouro/state/daemon/logging.json",
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
     vi.doMock("fs", () => ({
