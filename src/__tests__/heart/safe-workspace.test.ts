@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
+import { emitNervesEvent } from "../../nerves/runtime"
 import {
   ensureSafeRepoWorkspace,
   getActiveSafeWorkspaceSelection,
@@ -254,6 +255,7 @@ describe("safe workspace acquisition", () => {
   })
 
   it("falls back to stdout details when git fails without stderr", () => {
+    emitNervesEvent({ component: "workspace", event: "workspace.test_safe_stdout_fallback", message: "safe workspace stdout fallback test", meta: {} })
     expect(() =>
       ensureSafeRepoWorkspace({
         repoRoot: "/repo",
@@ -275,6 +277,7 @@ describe("safe workspace acquisition", () => {
   })
 
   it("falls back to exit status when git fails without stderr or stdout", () => {
+    emitNervesEvent({ component: "workspace", event: "workspace.test_safe_exit_fallback", message: "safe workspace exit fallback test", meta: {} })
     expect(() =>
       ensureSafeRepoWorkspace({
         repoRoot: "/repo",
@@ -464,6 +467,7 @@ describe("safe workspace acquisition", () => {
   })
 
   it("covers spawn errors, repo-root path mapping, and clone cleanup skip", () => {
+    emitNervesEvent({ component: "workspace", event: "workspace.test_safe_spawn_error", message: "safe workspace spawn error test", meta: {} })
     const exitHandlers: Array<() => void> = []
     vi.spyOn(process, "on").mockImplementation(((event: string, listener: () => void) => {
       if (event === "exit") exitHandlers.push(listener)
