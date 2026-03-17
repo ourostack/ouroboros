@@ -1809,6 +1809,12 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     return message
   }
 
+  if (command.kind === "chat.connect" && deps.startChat) {
+    await ensureDaemonRunning(deps)
+    await deps.startChat(command.agent)
+    return ""
+  }
+
   if (command.kind === "hatch.start") {
     // Route through adoption specialist when no explicit hatch args were provided
     const hasExplicitHatchArgs = !!(command.agentName || command.humanName || command.provider || command.credentials)
