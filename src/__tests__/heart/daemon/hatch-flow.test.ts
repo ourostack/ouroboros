@@ -4,6 +4,7 @@ import * as path from "path"
 
 import { afterEach, describe, expect, it } from "vitest"
 
+import { runRuntimeAuthFlow } from "../../../heart/daemon/auth-flow"
 import { runHatchFlow } from "../../../heart/daemon/hatch-flow"
 
 function makeTempDir(prefix: string): string {
@@ -300,6 +301,68 @@ describe("hatch flow", () => {
 
     expect(resultPath).toBe(path.join(secretsRoot, "ReturnTest", "secrets.json"))
     expect(fs.existsSync(resultPath)).toBe(true)
+  })
+
+  it("writes the same secrets shape as runtime auth for anthropic and openai-codex", async () => {
+    const homeDir = makeTempDir("hatch-runtime-auth-home")
+    const hatchSecretsRoot = makeTempDir("hatch-runtime-auth-secrets")
+    cleanup.push(homeDir, hatchSecretsRoot)
+
+    const { writeSecretsFile } = await import("../../../heart/daemon/hatch-flow")
+
+    fs.mkdirSync(path.join(homeDir, ".codex"), { recursive: true })
+    fs.writeFileSync(
+      path.join(homeDir, ".codex", "auth.json"),
+      `${JSON.stringify({ tokens: { access_token: "oauth-token-runtime" } }, null, 2)}\n`,
+      "utf8",
+    )
+
+    const anthropicAgent = "AnthropicShared"
+    await runRuntimeAuthFlow(
+      {
+        agentName: anthropicAgent,
+        provider: "anthropic",
+        promptInput: async () => `sk-ant-oat01-${"a".repeat(90)}`,
+      },
+      {
+        homeDir,
+        spawnSync: (() => ({ status: 0 })) as any,
+      },
+    )
+    const anthropicRuntime = JSON.parse(
+      fs.readFileSync(path.join(homeDir, ".agentsecrets", anthropicAgent, "secrets.json"), "utf8"),
+    ) as Record<string, unknown>
+    const anthropicHatchPath = writeSecretsFile(
+      anthropicAgent,
+      "anthropic",
+      { setupToken: `sk-ant-oat01-${"a".repeat(90)}` },
+      hatchSecretsRoot,
+    )
+    const anthropicHatch = JSON.parse(fs.readFileSync(anthropicHatchPath, "utf8")) as Record<string, unknown>
+    expect(anthropicHatch).toEqual(anthropicRuntime)
+
+    const codexAgent = "CodexShared"
+    await runRuntimeAuthFlow(
+      {
+        agentName: codexAgent,
+        provider: "openai-codex",
+      },
+      {
+        homeDir,
+        spawnSync: (() => ({ status: 0 })) as any,
+      },
+    )
+    const codexRuntime = JSON.parse(
+      fs.readFileSync(path.join(homeDir, ".agentsecrets", codexAgent, "secrets.json"), "utf8"),
+    ) as Record<string, unknown>
+    const codexHatchPath = writeSecretsFile(
+      codexAgent,
+      "openai-codex",
+      { oauthAccessToken: "oauth-token-runtime" },
+      hatchSecretsRoot,
+    )
+    const codexHatch = JSON.parse(fs.readFileSync(codexHatchPath, "utf8")) as Record<string, unknown>
+    expect(codexHatch).toEqual(codexRuntime)
   })
 
   it("uses default home, source, and target paths when optional deps are omitted", async () => {

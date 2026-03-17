@@ -76,7 +76,24 @@ Verify:
 - `~/AgentBundles/Hatchling.ouro/bundle-meta.json`
 - canonical psyche/task/skill/state directories exist
 
-## 4. Daemon Messaging Smoke
+## 4. Provider Auth Recovery Smoke
+
+When a provider needs first-time setup, reauth, or a deliberate switch, use the
+installed runtime path instead of repo-local scripts:
+
+```bash
+ouro auth --agent Hatchling
+ouro auth --agent Hatchling --provider openai-codex
+```
+
+Expected:
+
+- `ouro auth --agent Hatchling` reauths the provider already selected in `~/AgentBundles/Hatchling.ouro/agent.json`
+- `--provider <provider>` is optional and meant for an explicit provider add/switch
+- an explicit provider override updates `agent.json` so the newly authenticated provider becomes live runtime truth
+- if a session already failed, the follow-up move is to retry the failed `ouro` command or reconnect the session
+
+## 5. Daemon Messaging Smoke
 
 From another terminal:
 
@@ -90,7 +107,7 @@ Expected:
 - `ouro msg` queues or delivers through the daemon cleanly
 - `ouro poke` triggers task work for that agent
 
-## 5. Sense Smoke
+## 6. Sense Smoke
 
 ### CLI
 
@@ -111,7 +128,7 @@ If Teams is enabled and configured:
 - `ouro status` should show `Teams` as `ready` or `running`
 - the adapter should respond without boot-introducing itself
 
-## 6. Logs And Shutdown
+## 7. Logs And Shutdown
 
 ```bash
 ouro logs
@@ -125,7 +142,7 @@ Expected:
 - `ouro stop` shuts down cleanly
 - `ouro status` shows the stopped state clearly instead of raw socket errors
 
-## 7. Repo-Code Validation
+## 8. Repo-Code Validation
 
 For runtime code changes inside the repo:
 
@@ -161,6 +178,26 @@ ouro status
 ```
 
 If the daemon is not running, status should describe that plainly rather than surfacing raw socket noise.
+
+### A provider says to reauthenticate
+
+Run:
+
+```bash
+ouro auth --agent <agent>
+```
+
+Use this only when you need to authenticate or reauthenticate the provider already
+selected in `agent.json`.
+
+If you are deliberately adding or switching providers, run:
+
+```bash
+ouro auth --agent <agent> --provider <provider>
+```
+
+After reauth succeeds, retry the failed `ouro` command or reconnect the session that
+already errored.
 
 ### A sense shows `needs_config`
 

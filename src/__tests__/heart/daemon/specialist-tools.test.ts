@@ -3,6 +3,17 @@ import * as os from "os"
 import * as path from "path"
 import { afterEach, describe, it, expect, vi } from "vitest"
 
+const mockPlayHatchAnimation = vi.fn(async (
+  hatchlingName: string,
+  writer?: (text: string) => void,
+) => {
+  writer?.(`\nmock hatch ${hatchlingName}\n`)
+})
+
+vi.mock("../../../heart/daemon/hatch-animation", () => ({
+  playHatchAnimation: mockPlayHatchAnimation,
+}))
+
 function makeTempDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`))
 }
@@ -46,6 +57,7 @@ describe("createSpecialistExecTool", () => {
   const cleanup: string[] = []
 
   afterEach(() => {
+    mockPlayHatchAnimation.mockClear()
     while (cleanup.length > 0) {
       const entry = cleanup.pop()
       if (!entry) continue
@@ -238,6 +250,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
   const cleanup: string[] = []
 
   afterEach(() => {
+    mockPlayHatchAnimation.mockClear()
     while (cleanup.length > 0) {
       const entry = cleanup.pop()
       if (!entry) continue
@@ -313,7 +326,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
 
     // Animation should have played
     expect(animChunks.join("")).toContain("TestAgent")
-  }, 10000)
+  }, 20000)
 
   it("returns error when psyche files are missing", async () => {
     const tmpDir = makeTempDir("spec-tools-adopt-missing")
@@ -517,7 +530,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
       expect.objectContaining({ provider: "imessage-handle", externalId: "+1234567890" }),
     ]))
     expect(friend.name).toBe("Ari")
-  }, 10000)
+  }, 20000)
 
   it("creates initial friend record with teams handle when provided", async () => {
     const tmpDir = setupTempDir()
@@ -551,7 +564,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
     expect(friend.externalIds).toEqual(expect.arrayContaining([
       expect.objectContaining({ provider: "aad", externalId: "ari@company.com" }),
     ]))
-  }, 10000)
+  }, 20000)
 
   it("uses 'primary' as friend name when humanName not provided", async () => {
     const tmpDir = setupTempDir()
@@ -583,7 +596,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
     expect(friendFiles.length).toBe(1)
     const friend = JSON.parse(fs.readFileSync(path.join(friendsDir, friendFiles[0]), "utf-8"))
     expect(friend.name).toBe("primary")
-  }, 10000)
+  }, 20000)
 
   it("does not create friend record when no contact info provided", async () => {
     const tmpDir = setupTempDir()

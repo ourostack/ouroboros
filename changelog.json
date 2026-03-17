@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.56",
+      "changes": [
+        "The installed runtime now supports `ouro auth --agent <name>` as the normal provider auth and reauth path, with `--provider <provider>` available for explicit provider add/switch flows.",
+        "Anthropic and OpenAI Codex hatch/signup now share the same runtime auth backbone as later reauth, so first-time setup and recovery follow one consistent mental model.",
+        "Provider auth failures now point at the supported `ouro auth` recovery path and tell you what to do after reauth, including retrying the failed `ouro` command or reconnecting the errored session."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.55",
       "changes": [
         "Memory fact dedup now catches paraphrased duplicates via cosine similarity on existing embeddings, so semantically equivalent facts no longer slip past the word-overlap check.",

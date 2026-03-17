@@ -31,11 +31,11 @@ function getOpenAICodexOAuthInstructions(): string {
   const agentName = getOpenAICodexAgentNameForGuidance();
   return [
     "Fix:",
-    `  1. Run \`npm run auth:openai-codex -- --agent ${agentName}\``,
-    "     (or run `codex login` and set the OAuth token manually)",
+    `  1. Run \`ouro auth --agent ${agentName}\``,
     `  2. Open ${getOpenAICodexSecretsPathForGuidance()}`,
     "  3. Confirm providers.openai-codex.oauthAccessToken is set",
     "  4. This provider uses chatgpt.com/backend-api/codex/responses (not api.openai.com/responses).",
+    "  5. After reauth, retry the failed ouro command or reconnect this session.",
   ].join("\n");
 }
 

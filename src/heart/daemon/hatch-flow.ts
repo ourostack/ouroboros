@@ -4,6 +4,7 @@ import * as path from "path"
 import { buildDefaultAgentTemplate, type AgentProvider } from "../identity"
 import { slugify } from "../config"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { writeProviderCredentials } from "./auth-flow"
 import {
   getRepoSpecialistIdentitiesDir,
   getSpecialistIdentitySourceDir,
@@ -67,82 +68,13 @@ function validateCredentials(provider: AgentProvider, credentials: HatchCredenti
   }
 }
 
-function buildSecretsTemplate(): Record<string, unknown> {
-  return {
-    providers: {
-      azure: {
-        modelName: "gpt-4o-mini",
-        apiKey: "",
-        endpoint: "",
-        deployment: "",
-        apiVersion: "2025-04-01-preview",
-      },
-      minimax: {
-        model: "minimax-text-01",
-        apiKey: "",
-      },
-      anthropic: {
-        model: "claude-opus-4-6",
-        setupToken: "",
-      },
-      "openai-codex": {
-        model: "gpt-5.4",
-        oauthAccessToken: "",
-      },
-    },
-    teams: {
-      clientId: "",
-      clientSecret: "",
-      tenantId: "",
-    },
-    oauth: {
-      graphConnectionName: "graph",
-      adoConnectionName: "ado",
-      githubConnectionName: "",
-    },
-    teamsChannel: {
-      skipConfirmation: true,
-      port: 3978,
-    },
-    integrations: {
-      perplexityApiKey: "",
-      openaiEmbeddingsApiKey: "",
-    },
-  }
-}
-
 export function writeSecretsFile(
   agentName: string,
   provider: AgentProvider,
   credentials: HatchCredentialsInput,
   secretsRoot: string,
 ): string {
-  const secrets = buildSecretsTemplate() as {
-    providers: {
-      azure: { apiKey: string; endpoint: string; deployment: string }
-      minimax: { apiKey: string }
-      anthropic: { setupToken: string }
-      "openai-codex": { oauthAccessToken: string }
-    }
-  }
-
-  if (provider === "anthropic") {
-    secrets.providers.anthropic.setupToken = credentials.setupToken!.trim()
-  } else if (provider === "openai-codex") {
-    secrets.providers["openai-codex"].oauthAccessToken = credentials.oauthAccessToken!.trim()
-  } else if (provider === "minimax") {
-    secrets.providers.minimax.apiKey = credentials.apiKey!.trim()
-  } else {
-    secrets.providers.azure.apiKey = credentials.apiKey!.trim()
-    secrets.providers.azure.endpoint = credentials.endpoint!.trim()
-    secrets.providers.azure.deployment = credentials.deployment!.trim()
-  }
-
-  const secretsDir = path.join(secretsRoot, agentName)
-  fs.mkdirSync(secretsDir, { recursive: true })
-  const secretsPath = path.join(secretsDir, "secrets.json")
-  fs.writeFileSync(secretsPath, `${JSON.stringify(secrets, null, 2)}\n`, "utf-8")
-  return secretsPath
+  return writeProviderCredentials(agentName, provider, credentials, { secretsRoot }).secretsPath
 }
 
 function writeReadme(dir: string, purpose: string): void {

@@ -36,10 +36,10 @@ function getAnthropicSetupTokenInstructions(): string {
   const agentName = getAnthropicAgentNameForGuidance();
   return [
     "Fix:",
-    `  1. Run \`npm run auth:claude-setup-token -- --agent ${agentName}\``,
-    "     (or run `claude setup-token` and paste the token manually)",
+    `  1. Run \`ouro auth --agent ${agentName}\``,
     `  2. Open ${getAnthropicSecretsPathForGuidance()}`,
     "  3. Confirm providers.anthropic.setupToken is set",
+    "  4. After reauth, retry the failed ouro command or reconnect this session.",
   ].join("\n");
 }
 

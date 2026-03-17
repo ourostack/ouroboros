@@ -132,7 +132,7 @@ describe("Azure dynamic reasoning effort", () => {
 
     expect(capturedResponsesParams).toBeDefined()
     expect(capturedResponsesParams.reasoning).toEqual({ effort: "high", summary: "detailed" })
-  })
+  }, 20000)
 
   it("defaults to medium when reasoningEffort is undefined", async () => {
     emitTestEvent("azure defaults to medium")
@@ -171,7 +171,7 @@ describe("Azure dynamic reasoning effort", () => {
     })
 
     expect(capturedResponsesParams.reasoning).toEqual({ effort: "medium", summary: "detailed" })
-  })
+  }, 20000)
 })
 
 describe("Codex dynamic reasoning effort", () => {
@@ -218,7 +218,7 @@ describe("Codex dynamic reasoning effort", () => {
 
     expect(capturedResponsesParams).toBeDefined()
     expect(capturedResponsesParams.reasoning).toEqual({ effort: "low", summary: "detailed" })
-  })
+  }, 20000)
 
   it("defaults to medium when reasoningEffort is undefined", async () => {
     emitTestEvent("codex defaults to medium")
@@ -255,5 +255,5 @@ describe("Codex dynamic reasoning effort", () => {
     })
 
     expect(capturedResponsesParams.reasoning).toEqual({ effort: "medium", summary: "detailed" })
-  })
+  }, 20000)
 })

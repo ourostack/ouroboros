@@ -39,12 +39,21 @@ import { syncGlobalOuroBotWrapper as defaultSyncGlobalOuroBotWrapper } from "./o
 import { installLaunchAgent, type LaunchdDeps } from "./launchd"
 import { DEFAULT_DAEMON_SOCKET_PATH, sendDaemonCommand, checkDaemonSocketAlive } from "./socket-client"
 import { listSessionActivity } from "../session-activity"
+import {
+  resolveHatchCredentials,
+  readAgentConfigForAgent,
+  runRuntimeAuthFlow as defaultRunRuntimeAuthFlow,
+  writeAgentProviderSelection,
+  type RuntimeAuthInput,
+  type RuntimeAuthResult,
+} from "./auth-flow"
 
 export type OuroCliCommand =
   | { kind: "daemon.up" }
   | { kind: "daemon.stop" }
   | { kind: "daemon.status" }
   | { kind: "daemon.logs" }
+  | { kind: "auth.run"; agent: string; provider?: AgentProvider }
   | { kind: "chat.connect"; agent: string }
   | { kind: "message.send"; from: string; to: string; content: string; sessionId?: string; taskRef?: string }
   | { kind: "task.poke"; agent: string; taskId: string }
@@ -78,6 +87,7 @@ export interface OuroCliDeps {
   listDiscoveredAgents?: () => Promise<string[]> | string[]
   runHatchFlow?: (input: HatchFlowInput) => Promise<HatchFlowResult>
   runAdoptionSpecialist?: () => Promise<string | null>
+  runAuthFlow?: (input: RuntimeAuthInput) => Promise<RuntimeAuthResult>
   promptInput?: (question: string) => Promise<string>
   registerOuroBundleType?: () => Promise<unknown> | unknown
   installOuroCommand?: () => OuroPathInstallResult
@@ -352,6 +362,7 @@ function usage(): string {
     "  ouro [up]",
     "  ouro stop|down|status|logs|hatch",
     "  ouro -v|--version",
+    "  ouro auth --agent <name> [--provider <provider>]",
     "  ouro chat <agent>",
     "  ouro msg --to <agent> [--session <id>] [--task <ref>] <message>",
     "  ouro poke <agent> --task <task-id>",
@@ -637,6 +648,22 @@ function parseTaskCommand(args: string[]): OuroCliCommand {
   throw new Error(`Usage\n${usage()}`)
 }
 
+function parseAuthCommand(args: string[]): OuroCliCommand {
+  const { agent, rest } = extractAgentFlag(args)
+  let provider: AgentProvider | undefined
+  for (let i = 0; i < rest.length; i += 1) {
+    if (rest[i] === "--provider") {
+      const value = rest[i + 1]
+      if (!isAgentProvider(value)) throw new Error(`Usage\n${usage()}`)
+      provider = value
+      i += 1
+      continue
+    }
+  }
+  if (!agent) throw new Error(`Usage\n${usage()}`)
+  return provider ? { kind: "auth.run", agent, provider } : { kind: "auth.run", agent }
+}
+
 function parseReminderCommand(args: string[]): OuroCliCommand {
   const { agent, rest: cleaned } = extractAgentFlag(args)
   const [sub, ...rest] = cleaned
@@ -764,6 +791,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "status") return { kind: "daemon.status" }
   if (head === "logs") return { kind: "daemon.logs" }
   if (head === "hatch") return parseHatchCommand(args.slice(1))
+  if (head === "auth") return parseAuthCommand(args.slice(1))
   if (head === "task") return parseTaskCommand(args.slice(1))
   if (head === "reminder") return parseReminderCommand(args.slice(1))
   if (head === "friend") return parseFriendCommand(args.slice(1))
@@ -1170,6 +1198,7 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     runHatchFlow: defaultRunHatchFlow,
     promptInput: defaultPromptInput,
     runAdoptionSpecialist: defaultRunAdoptionSpecialist,
+    runAuthFlow: defaultRunRuntimeAuthFlow,
     registerOuroBundleType: defaultRegisterOuroBundleUti,
     installOuroCommand: defaultInstallOuroCommand,
     syncGlobalOuroBotWrapper: defaultSyncGlobalOuroBotWrapper,
@@ -1197,7 +1226,8 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
 }
 
 type ThoughtsCliCommand = Extract<OuroCliCommand, { kind: "thoughts" }>
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "hatch.start" } | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand>): DaemonCommand {
+type AuthCliCommand = Extract<OuroCliCommand, { kind: "auth.run" }>
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "hatch.start" } | AuthCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand>): DaemonCommand {
   return command
 }
 
@@ -1211,21 +1241,13 @@ async function resolveHatchInput(command: Extract<OuroCliCommand, { kind: "hatch
     throw new Error(`Usage\n${usage()}`)
   }
 
-  const credentials: HatchCredentialsInput = { ...(command.credentials ?? {}) }
-  if (providerRaw === "anthropic" && !credentials.setupToken && prompt) {
-    credentials.setupToken = await prompt("Anthropic setup-token: ")
-  }
-  if (providerRaw === "openai-codex" && !credentials.oauthAccessToken && prompt) {
-    credentials.oauthAccessToken = await prompt("OpenAI Codex OAuth token: ")
-  }
-  if (providerRaw === "minimax" && !credentials.apiKey && prompt) {
-    credentials.apiKey = await prompt("MiniMax API key: ")
-  }
-  if (providerRaw === "azure") {
-    if (!credentials.apiKey && prompt) credentials.apiKey = await prompt("Azure API key: ")
-    if (!credentials.endpoint && prompt) credentials.endpoint = await prompt("Azure endpoint: ")
-    if (!credentials.deployment && prompt) credentials.deployment = await prompt("Azure deployment: ")
-  }
+  const credentials = await resolveHatchCredentials({
+    agentName,
+    provider: providerRaw,
+    credentials: command.credentials,
+    promptInput: prompt,
+    runAuthFlow: deps.runAuthFlow,
+  })
 
   return {
     agentName,
@@ -1672,6 +1694,22 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     const message = await executeFriendCommand(command, store)
     deps.writeStdout(message)
     return message
+  }
+
+  // ── auth (local, no daemon socket needed) ──
+  if (command.kind === "auth.run") {
+    const provider = command.provider ?? readAgentConfigForAgent(command.agent).config.provider
+    const authRunner = deps.runAuthFlow ?? defaultRunRuntimeAuthFlow
+    const result = await authRunner({
+      agentName: command.agent,
+      provider,
+      promptInput: deps.promptInput,
+    })
+    if (command.provider) {
+      writeAgentProviderSelection(command.agent, command.provider)
+    }
+    deps.writeStdout(result.message)
+    return result.message
   }
 
   // ── whoami (local, no daemon socket needed) ──

@@ -3705,9 +3705,12 @@ describe("anthropic setup-token provider contract", () => {
         (c: any[]) => c[0]?.event === "engine.provider_init_error",
       )?.[0]?.message ?? ""
       expect(msg).toContain("no setup-token credential was found")
-      expect(msg).toContain("claude setup-token")
+      expect(msg).toContain("ouro auth --agent testagent")
       expect(msg).toContain("/tmp/.agentsecrets/testagent/secrets.json")
       expect(msg).toContain("providers.anthropic.setupToken")
+      expect(msg).toContain("retry the failed ouro command or reconnect this session")
+      expect(msg).not.toContain("npm run auth:claude-setup-token")
+      expect(msg).not.toContain("--provider")
     } finally {
       mockExit.mockRestore()
     }
@@ -3738,7 +3741,7 @@ describe("anthropic setup-token provider contract", () => {
         (c: any[]) => c[0]?.event === "engine.provider_init_error",
       )?.[0]?.message ?? ""
       expect(msg).toContain("model/setupToken is incomplete")
-      expect(msg).toContain("claude setup-token")
+      expect(msg).toContain("ouro auth --agent testagent")
       expect(msg).toContain("/tmp/.agentsecrets/testagent/secrets.json")
       expect(msg).toContain("providers.anthropic.setupToken")
     } finally {
@@ -3919,6 +3922,180 @@ describe("anthropic setup-token provider contract", () => {
     expect(Array.isArray((params as any).tools)).toBe(true)
   })
 
+  it("preserves Anthropic thinking signatures and redacted thinking blocks in output order", async () => {
+    vi.resetModules()
+    vi.mocked(execSync).mockReturnValue(JSON.stringify({
+      claudeAiOauth: {
+        accessToken: makeAnthropicSetupToken(),
+        expiresAt: Date.now() + 60_000,
+      },
+    }) as any)
+    vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
+    await setupConfig({
+      providers: {
+        anthropic: {
+          model: "claude-opus-4-6",
+          setupToken: makeAnthropicSetupToken(),
+        },
+      },
+    })
+
+    mockAnthropicMessagesCreate.mockResolvedValue(makeAnthropicEventStream([
+      {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "thinking" },
+      },
+      {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "thinking_delta", thinking: "reasoning body" },
+      },
+      {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "signature_delta", signature: "sig_123" },
+      },
+      {
+        type: "content_block_start",
+        index: 1,
+        content_block: { type: "redacted_thinking", data: "ciphertext" },
+      },
+    ]))
+
+    const reasoningChunk = vi.fn()
+    const core = await import("../../heart/core")
+    const runtime = (core as any).createProviderRegistry().resolve()
+    const result = await runtime.streamTurn({
+      messages: [{ role: "user", content: "hi" }],
+      activeTools: [],
+      callbacks: {
+        onModelStart: vi.fn(),
+        onModelStreamStart: vi.fn(),
+        onTextChunk: vi.fn(),
+        onReasoningChunk: reasoningChunk,
+        onToolStart: vi.fn(),
+        onToolEnd: vi.fn(),
+        onError: vi.fn(),
+      },
+      signal: new AbortController().signal,
+    })
+
+    expect(reasoningChunk).toHaveBeenCalledWith("reasoning body")
+    expect(result.outputItems).toEqual([
+      { type: "thinking", thinking: "reasoning body", signature: "sig_123" },
+      { type: "redacted_thinking", data: "ciphertext" },
+    ])
+  })
+
+  it("restores persisted Anthropic thinking blocks before text and tool blocks", async () => {
+    const { toAnthropicMessages } = await import("../../heart/providers/anthropic")
+
+    const result = toAnthropicMessages([
+      {
+        role: "assistant",
+        content: "visible text",
+        tool_calls: [
+          {
+            id: "call0",
+            type: "function",
+            function: { name: "read_file", arguments: "{\"path\":\"notes.md\"}" },
+          },
+        ],
+        _thinking_blocks: [
+          { type: "thinking", thinking: "private chain", signature: "sig_abc" },
+          { type: "redacted_thinking", data: "opaque_blob" },
+        ],
+      } as any,
+    ])
+
+    expect(result).toEqual({
+      system: undefined,
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "private chain", signature: "sig_abc" },
+            { type: "redacted_thinking", data: "opaque_blob" },
+            { type: "text", text: "visible text" },
+            {
+              type: "tool_use",
+              id: "call0",
+              name: "read_file",
+              input: { path: "notes.md" },
+            },
+          ],
+        },
+      ],
+    })
+  })
+
+  it("uses Anthropic fallback defaults for unknown models and empty thinking payload fields", async () => {
+    vi.resetModules()
+    vi.mocked(execSync).mockReturnValue(JSON.stringify({
+      claudeAiOauth: {
+        accessToken: makeAnthropicSetupToken(),
+        expiresAt: Date.now() + 60_000,
+      },
+    }) as any)
+    vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
+    await setupConfig({
+      providers: {
+        anthropic: {
+          model: "claude-unknown-preview",
+          setupToken: makeAnthropicSetupToken(),
+        },
+      },
+    })
+
+    mockAnthropicMessagesCreate.mockResolvedValue(makeAnthropicEventStream([
+      {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "thinking" },
+      },
+      {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "signature_delta" },
+      },
+      {
+        type: "content_block_delta",
+        index: 99,
+        delta: { type: "signature_delta", signature: "ignored" },
+      },
+      {
+        type: "content_block_start",
+        index: 1,
+        content_block: { type: "redacted_thinking" },
+      },
+    ]))
+
+    const core = await import("../../heart/core")
+    const runtime = (core as any).createProviderRegistry().resolve()
+    const result = await runtime.streamTurn({
+      messages: [{ role: "user", content: "hi" }],
+      activeTools: [],
+      callbacks: {
+        onModelStart: vi.fn(),
+        onModelStreamStart: vi.fn(),
+        onTextChunk: vi.fn(),
+        onReasoningChunk: vi.fn(),
+        onToolStart: vi.fn(),
+        onToolEnd: vi.fn(),
+        onError: vi.fn(),
+      },
+      signal: new AbortController().signal,
+    })
+
+    const [params] = mockAnthropicMessagesCreate.mock.calls[0]
+    expect((params as any).max_tokens).toBe(16384)
+    expect(result.outputItems).toEqual([
+      { type: "thinking", thinking: "", signature: "" },
+      { type: "redacted_thinking", data: "" },
+    ])
+  })
+
   it("handles Anthropic tool argument merge/reset/fallback delta paths", async () => {
     vi.resetModules()
     vi.mocked(execSync).mockReturnValue(JSON.stringify({
@@ -4082,7 +4259,7 @@ describe("anthropic setup-token provider contract", () => {
         activeTools: [],
         callbacks,
       }),
-    ).rejects.toThrow("claude setup-token")
+    ).rejects.toThrow(/ouro auth --agent testagent[\s\S]*retry the failed ouro command or reconnect this session/)
   })
 
   it("wraps Anthropic auth failures from streaming events with setup-token guidance", async () => {
@@ -4435,7 +4612,10 @@ describe("openai-codex oauth provider contract", () => {
       expect(msg).toContain("openai-codex")
       expect(msg).toContain("oauthAccessToken")
       expect(msg).toContain("secrets.json")
-      expect(msg).toContain("codex login")
+      expect(msg).toContain("ouro auth --agent testagent")
+      expect(msg).toContain("retry the failed ouro command or reconnect this session")
+      expect(msg).not.toContain("npm run auth:openai-codex")
+      expect(msg).not.toContain("--provider")
     } finally {
       mockExit.mockRestore()
     }
@@ -4475,7 +4655,7 @@ describe("openai-codex oauth provider contract", () => {
         activeTools: [],
         callbacks,
       }),
-    ).rejects.toThrow(/OpenAI Codex authentication failed[\s\S]*codex login/)
+    ).rejects.toThrow(/OpenAI Codex authentication failed[\s\S]*ouro auth --agent testagent[\s\S]*retry the failed ouro command or reconnect this session/)
   })
 
   it("wraps openai-codex auth failures detected from error message markers", async () => {

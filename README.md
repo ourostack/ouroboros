@@ -96,6 +96,17 @@ Task docs do not live in this repo anymore. Planning and doing docs live in the 
   - `running`
   - `error`
 
+When a model provider needs first-time setup, reauth, or an explicit switch, use:
+
+```bash
+ouro auth --agent <name>
+ouro auth --agent <name> --provider <provider>
+```
+
+The default form reauths the provider already selected in `agent.json`. The explicit
+`--provider` form is for adding or switching providers, and it updates `agent.json`
+to use the newly authenticated provider.
+
 ## Quickstart
 
 ### Use The Published Runtime
@@ -134,6 +145,8 @@ ouro up
 ouro status
 ouro logs
 ouro stop
+ouro auth --agent <name>
+ouro auth --agent <name> --provider <provider>
 ouro hatch
 ouro chat <agent>
 ouro msg --to <agent> [--session <id>] [--task <ref>] <message>
