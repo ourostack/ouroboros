@@ -44,6 +44,8 @@ describe("daemon CLI default dependency branches", () => {
       vi.doMock("../../../heart/identity", () => ({
         getRepoRoot: () => "/mock/repo",
         getAgentBundlesRoot: () => "/mock/AgentBundles",
+        getAgentDaemonLogsDir: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logs"),
+        getAgentDaemonLoggingConfigPath: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logging.json"),
       }))
       vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
 
@@ -82,6 +84,8 @@ describe("daemon CLI default dependency branches", () => {
       vi.doMock("../../../heart/identity", () => ({
         getRepoRoot: () => "/mock/repo",
         getAgentBundlesRoot: () => "/mock/AgentBundles",
+        getAgentDaemonLogsDir: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logs"),
+        getAgentDaemonLoggingConfigPath: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logging.json"),
       }))
       vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
 
@@ -91,7 +95,7 @@ describe("daemon CLI default dependency branches", () => {
       deps.ensureDaemonBootPersistence?.("/tmp/daemon.sock")
 
       const plistPath = path.join(tempHome, "Library", "LaunchAgents", "bot.ouro.daemon.plist")
-      const logDir = path.join(tempHome, ".agentstate", "daemon", "logs")
+      const logDir = path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logs")
       expect(fs.existsSync(plistPath)).toBe(true)
       expect(fs.existsSync(logDir)).toBe(true)
 
@@ -131,6 +135,8 @@ describe("daemon CLI default dependency branches", () => {
       vi.doMock("../../../heart/identity", () => ({
         getRepoRoot: () => "/mock/repo",
         getAgentBundlesRoot: () => "/mock/AgentBundles",
+        getAgentDaemonLogsDir: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logs"),
+        getAgentDaemonLoggingConfigPath: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logging.json"),
       }))
       vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
 
@@ -171,6 +177,8 @@ describe("daemon CLI default dependency branches", () => {
       vi.doMock("../../../heart/identity", () => ({
         getRepoRoot: () => "/mock/repo",
         getAgentBundlesRoot: () => "/mock/AgentBundles",
+        getAgentDaemonLogsDir: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logs"),
+        getAgentDaemonLoggingConfigPath: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logging.json"),
       }))
       vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
 
@@ -225,6 +233,8 @@ describe("daemon CLI default dependency branches", () => {
       vi.doMock("../../../heart/identity", () => ({
         getRepoRoot: () => "/mock/repo",
         getAgentBundlesRoot: () => "/mock/AgentBundles",
+        getAgentDaemonLogsDir: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logs"),
+        getAgentDaemonLoggingConfigPath: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logging.json"),
       }))
       vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
 
@@ -261,6 +271,8 @@ describe("daemon CLI default dependency branches", () => {
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
       getAgentBundlesRoot: () => "/mock/AgentBundles",
+      getAgentDaemonLogsDir: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logs",
+      getAgentDaemonLoggingConfigPath: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logging.json",
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
     vi.doMock("fs", () => ({
@@ -300,6 +312,8 @@ describe("daemon CLI default dependency branches", () => {
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
       getAgentBundlesRoot: () => "/mock/AgentBundles",
+      getAgentDaemonLogsDir: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logs",
+      getAgentDaemonLoggingConfigPath: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logging.json",
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
     vi.doMock("fs", () => ({
@@ -340,6 +354,8 @@ describe("daemon CLI default dependency branches", () => {
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
       getAgentBundlesRoot: () => "/mock/AgentBundles",
+      getAgentDaemonLogsDir: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logs",
+      getAgentDaemonLoggingConfigPath: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logging.json",
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
     vi.doMock("fs", () => ({ existsSync: vi.fn(() => false), unlinkSync: vi.fn() }))
@@ -363,6 +379,8 @@ describe("daemon CLI default dependency branches", () => {
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
       getAgentBundlesRoot: () => "/mock/AgentBundles",
+      getAgentDaemonLogsDir: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logs",
+      getAgentDaemonLoggingConfigPath: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logging.json",
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
     vi.doMock("fs", () => ({
@@ -418,6 +436,8 @@ describe("daemon CLI default dependency branches", () => {
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
       getAgentBundlesRoot: () => "/mock/AgentBundles",
+      getAgentDaemonLogsDir: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logs",
+      getAgentDaemonLoggingConfigPath: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logging.json",
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
     vi.doMock("fs", () => ({ existsSync, unlinkSync }))
@@ -456,6 +476,8 @@ describe("daemon CLI default dependency branches", () => {
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
       getAgentBundlesRoot: () => "/mock/AgentBundles",
+      getAgentDaemonLogsDir: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logs",
+      getAgentDaemonLoggingConfigPath: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logging.json",
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
     vi.doMock("fs", () => ({ existsSync: vi.fn(() => false), unlinkSync: vi.fn() }))
@@ -473,6 +495,8 @@ describe("daemon CLI default dependency branches", () => {
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
       getAgentBundlesRoot: () => "/mock/AgentBundles",
+      getAgentDaemonLogsDir: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logs",
+      getAgentDaemonLoggingConfigPath: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logging.json",
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
     vi.doMock("fs", () => ({ existsSync: vi.fn(() => false), unlinkSync: vi.fn() }))
@@ -515,6 +539,8 @@ describe("daemon CLI default dependency branches", () => {
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
       getAgentBundlesRoot: () => "/mock/AgentBundles",
+      getAgentDaemonLogsDir: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logs",
+      getAgentDaemonLoggingConfigPath: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logging.json",
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
 
@@ -551,6 +577,8 @@ describe("daemon CLI default dependency branches", () => {
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
       getAgentBundlesRoot: () => "/mock/AgentBundles",
+      getAgentDaemonLogsDir: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logs",
+      getAgentDaemonLoggingConfigPath: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logging.json",
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
 
@@ -587,6 +615,8 @@ describe("daemon CLI default dependency branches", () => {
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
       getAgentBundlesRoot: () => "/mock/AgentBundles",
+      getAgentDaemonLogsDir: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logs",
+      getAgentDaemonLoggingConfigPath: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logging.json",
     }))
     vi.doMock("../../../heart/daemon/subagent-installer", () => ({ installSubagentsForAvailableCli }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
@@ -622,6 +652,8 @@ describe("daemon CLI default dependency branches", () => {
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
       getAgentBundlesRoot: () => "/mock/AgentBundles",
+      getAgentDaemonLogsDir: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logs",
+      getAgentDaemonLoggingConfigPath: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logging.json",
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
     vi.doMock("fs", () => ({ existsSync: vi.fn(() => false), unlinkSync: vi.fn() }))
@@ -664,6 +696,8 @@ describe("daemon CLI default dependency branches", () => {
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
       getAgentBundlesRoot: () => "/mock/AgentBundles",
+      getAgentDaemonLogsDir: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logs",
+      getAgentDaemonLoggingConfigPath: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logging.json",
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
     vi.doMock("fs", () => ({ existsSync: vi.fn(() => false), unlinkSync: vi.fn() }))
@@ -695,6 +729,8 @@ describe("daemon CLI default dependency branches", () => {
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
       getAgentBundlesRoot: () => "/mock/AgentBundles",
+      getAgentDaemonLogsDir: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logs",
+      getAgentDaemonLoggingConfigPath: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logging.json",
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
     vi.doMock("fs", () => ({ existsSync: vi.fn(() => false), unlinkSync: vi.fn() }))
@@ -743,6 +779,8 @@ describe("daemon CLI default dependency branches", () => {
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
       getAgentBundlesRoot: () => "/mock/AgentBundles",
+      getAgentDaemonLogsDir: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logs",
+      getAgentDaemonLoggingConfigPath: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logging.json",
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
     vi.doMock("fs", () => ({
@@ -779,6 +817,8 @@ describe("daemon CLI default dependency branches", () => {
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
       getAgentBundlesRoot: () => "/mock/AgentBundles",
+      getAgentDaemonLogsDir: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logs",
+      getAgentDaemonLoggingConfigPath: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logging.json",
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
     vi.doMock("fs", async () => {
@@ -839,6 +879,8 @@ describe("daemon CLI default dependency branches", () => {
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
       getAgentBundlesRoot: () => tmpBundlesRoot,
+      getAgentDaemonLogsDir: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logs",
+      getAgentDaemonLoggingConfigPath: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logging.json",
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
 
@@ -886,6 +928,8 @@ describe("daemon CLI default dependency branches", () => {
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
       getAgentBundlesRoot: () => tmpBundlesRoot,
+      getAgentDaemonLogsDir: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logs",
+      getAgentDaemonLoggingConfigPath: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logging.json",
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
 
@@ -943,6 +987,8 @@ describe("daemon CLI default dependency branches", () => {
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
       getAgentBundlesRoot: () => tmpBundlesRoot,
+      getAgentDaemonLogsDir: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logs",
+      getAgentDaemonLoggingConfigPath: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logging.json",
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
 
@@ -1004,6 +1050,8 @@ describe("daemon CLI default dependency branches", () => {
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
       getAgentBundlesRoot: () => tmpBundlesRoot,
+      getAgentDaemonLogsDir: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logs",
+      getAgentDaemonLoggingConfigPath: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logging.json",
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
 
@@ -1042,6 +1090,8 @@ describe("daemon CLI default dependency branches", () => {
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
       getAgentBundlesRoot: () => "/mock/AgentBundles",
+      getAgentDaemonLogsDir: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logs",
+      getAgentDaemonLoggingConfigPath: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logging.json",
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
     vi.doMock("fs", () => ({ existsSync: vi.fn(() => false), unlinkSync: vi.fn(), readdirSync: vi.fn(() => []) }))
@@ -1080,6 +1130,8 @@ describe("daemon CLI default dependency branches", () => {
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
       getAgentBundlesRoot: () => tmpBundlesRoot,
+      getAgentDaemonLogsDir: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logs",
+      getAgentDaemonLoggingConfigPath: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logging.json",
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
 
@@ -1115,6 +1167,8 @@ describe("daemon CLI default dependency branches", () => {
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
       getAgentBundlesRoot: () => "/mock/AgentBundles",
+      getAgentDaemonLogsDir: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logs",
+      getAgentDaemonLoggingConfigPath: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logging.json",
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
 
@@ -1132,6 +1186,8 @@ describe("daemon CLI default dependency branches", () => {
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
       getAgentBundlesRoot: () => "/mock/AgentBundles",
+      getAgentDaemonLogsDir: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logs",
+      getAgentDaemonLoggingConfigPath: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logging.json",
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
     vi.doMock("fs", () => ({ existsSync: vi.fn(() => false), unlinkSync: vi.fn() }))
@@ -1158,6 +1214,8 @@ describe("daemon CLI default dependency branches", () => {
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
       getAgentBundlesRoot: () => "/mock/AgentBundles",
+      getAgentDaemonLogsDir: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logs",
+      getAgentDaemonLoggingConfigPath: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logging.json",
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
 

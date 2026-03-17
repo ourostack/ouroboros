@@ -9,6 +9,7 @@ import type { Integration, ResolvedContext, FriendRecord } from "../mind/friends
 import type { FriendStore } from "../mind/friends/store";
 import { emitNervesEvent } from "../nerves/runtime";
 import { getAgentRoot, getAgentName } from "../heart/identity";
+import { resolveSafeRepoPath } from "../heart/safe-workspace";
 import { requestInnerWake } from "../heart/daemon/socket-client";
 import { extractThoughtResponseFromMessages, formatSurfacedValue, getInnerDialogSessionPath, readInnerDialogStatus } from "../heart/daemon/thoughts";
 import { createBridgeManager, formatBridgeStatus } from "../heart/bridges/manager";
@@ -82,6 +83,10 @@ function buildContextDiff(lines: string[], changeStart: number, changeEnd: numbe
     result.push(`${prefix} ${lineNum} | ${lines[i]}`)
   }
   return result.join("\n")
+}
+
+function resolveLocalToolPath(targetPath: string): string {
+  return resolveSafeRepoPath({ requestedPath: targetPath }).resolvedPath
 }
 
 const NO_SESSION_FOUND_MESSAGE = "no session found for that friend/channel/key combination."
@@ -222,8 +227,9 @@ export const baseToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: (a) => {
-      const content = fs.readFileSync(a.path, "utf-8")
-      editFileReadTracker.add(a.path)
+      const resolvedPath = resolveLocalToolPath(a.path)
+      const content = fs.readFileSync(resolvedPath, "utf-8")
+      editFileReadTracker.add(resolvedPath)
       const offset = a.offset ? parseInt(a.offset, 10) : undefined
       const limit = a.limit ? parseInt(a.limit, 10) : undefined
       if (offset === undefined && limit === undefined) return content
@@ -247,8 +253,9 @@ export const baseToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: (a) => {
-      fs.mkdirSync(path.dirname(a.path), { recursive: true })
-      fs.writeFileSync(a.path, a.content, "utf-8")
+      const resolvedPath = resolveLocalToolPath(a.path)
+      fs.mkdirSync(path.dirname(resolvedPath), { recursive: true })
+      fs.writeFileSync(resolvedPath, a.content, "utf-8")
       return "ok"
     },
   },
@@ -271,13 +278,14 @@ export const baseToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: (a) => {
-      if (!editFileReadTracker.has(a.path)) {
+      const resolvedPath = resolveLocalToolPath(a.path)
+      if (!editFileReadTracker.has(resolvedPath)) {
         return `error: you must read the file with read_file before editing it. call read_file on ${a.path} first.`
       }
 
       let content: string
       try {
-        content = fs.readFileSync(a.path, "utf-8")
+        content = fs.readFileSync(resolvedPath, "utf-8")
       } catch (e) {
         return `error: could not read file: ${e instanceof Error ? e.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(e)}`
       }
@@ -303,7 +311,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
       // Single unique match -- replace
       const idx = occurrences[0]
       const updated = content.slice(0, idx) + a.new_string + content.slice(idx + a.old_string.length)
-      fs.writeFileSync(a.path, updated, "utf-8")
+      fs.writeFileSync(resolvedPath, updated, "utf-8")
 
       // Build contextual diff
       const lines = updated.split("\n")
@@ -332,7 +340,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: (a) => {
-      const cwd = a.cwd || process.cwd()
+      const cwd = a.cwd ? resolveLocalToolPath(a.cwd) : process.cwd()
       const matches = fg.globSync(a.pattern, { cwd, dot: true })
       return matches.sort().join("\n")
     },
@@ -357,7 +365,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: (a) => {
-      const targetPath = a.path
+      const targetPath = resolveLocalToolPath(a.path)
       const regex = new RegExp(a.pattern)
       const contextLines = parseInt(a.context_lines || "0", 10)
       const includeGlob = a.include || undefined

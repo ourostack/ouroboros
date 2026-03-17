@@ -1,5 +1,4 @@
 import * as fs from "fs"
-import * as os from "os"
 import * as path from "path"
 
 import {
@@ -10,6 +9,7 @@ import {
   type LogSink,
 } from "../../nerves"
 import { emitNervesEvent, setRuntimeLogger } from "../../nerves/runtime"
+import { getAgentDaemonLoggingConfigPath, getAgentDaemonLogsDir, getAgentName } from "../identity"
 
 export type RuntimeSink = "terminal" | "ndjson"
 
@@ -20,6 +20,7 @@ export interface RuntimeLoggingConfig {
 
 export interface ConfigureDaemonRuntimeLoggerOptions {
   homeDir?: string
+  agentName?: string
   configPath?: string
 }
 
@@ -64,19 +65,35 @@ function resolveRuntimeLoggingConfig(configPath: string, processName: RuntimePro
   }
 }
 
+function resolveAgentNameForPaths(explicit?: string): string {
+  if (explicit && explicit.trim().length > 0) return explicit.trim()
+  try {
+    return getAgentName()
+  } catch {
+    return "slugger"
+  }
+}
+
 export function configureDaemonRuntimeLogger(
   processName: RuntimeProcessName,
   options: ConfigureDaemonRuntimeLoggerOptions = {},
 ): void {
-  const homeDir = options.homeDir ?? os.homedir()
-  const configPath = options.configPath ?? path.join(homeDir, ".agentstate", "daemon", "logging.json")
+  const agentName = resolveAgentNameForPaths(options.agentName)
+  const configPath = options.configPath
+    ?? (options.homeDir
+      ? path.join(options.homeDir, "AgentBundles", `${agentName}.ouro`, "state", "daemon", "logging.json")
+      : getAgentDaemonLoggingConfigPath(agentName))
   const config = resolveRuntimeLoggingConfig(configPath, processName)
+
+  const logsDir = options.homeDir
+    ? path.join(options.homeDir, "AgentBundles", `${agentName}.ouro`, "state", "daemon", "logs")
+    : getAgentDaemonLogsDir(agentName)
 
   const sinks: LogSink[] = config.sinks.map((sinkName) => {
     if (sinkName === "terminal") {
       return createTerminalSink()
     }
-    const ndjsonPath = path.join(homeDir, ".agentstate", "daemon", "logs", `${processName}.ndjson`)
+    const ndjsonPath = path.join(logsDir, `${processName}.ndjson`)
     return createNdjsonFileSink(ndjsonPath)
   })
 

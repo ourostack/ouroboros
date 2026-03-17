@@ -631,7 +631,7 @@ describe("BlueBubbles media hydration", () => {
     expect(fetchImpl).toHaveBeenCalledOnce()
     expect(modelFetchImpl).toHaveBeenCalledOnce()
     expect(execFile).toHaveBeenCalledWith("brew", ["install", "whisper-cpp"], expect.any(Object), expect.any(Function))
-    expect(mkdir).toHaveBeenCalledWith("/Users/test/.agentstate/tools/whisper-cpp/models", { recursive: true })
+    expect(mkdir).toHaveBeenCalledWith("/Users/test/AgentBundles/slugger.ouro/state/tools/whisper-cpp/models", { recursive: true })
     expect(writeFile).toHaveBeenNthCalledWith(
       1,
       "/tmp/ouro-bb-audio-123/Voice Note.m4a",
@@ -639,7 +639,7 @@ describe("BlueBubbles media hydration", () => {
     )
     expect(writeFile).toHaveBeenNthCalledWith(
       2,
-      "/Users/test/.agentstate/tools/whisper-cpp/models/ggml-base.en.bin",
+      "/Users/test/AgentBundles/slugger.ouro/state/tools/whisper-cpp/models/ggml-base.en.bin",
       Buffer.from("model-bytes"),
     )
     expect(execFile).toHaveBeenCalledWith(
@@ -652,7 +652,7 @@ describe("BlueBubbles media hydration", () => {
       "/opt/homebrew/opt/whisper-cpp/bin/whisper-cli",
       expect.arrayContaining([
         "-m",
-        "/Users/test/.agentstate/tools/whisper-cpp/models/ggml-base.en.bin",
+        "/Users/test/AgentBundles/slugger.ouro/state/tools/whisper-cpp/models/ggml-base.en.bin",
         "-f",
         "/tmp/ouro-bb-audio-123/Voice Note.wav",
       ]),
@@ -717,7 +717,7 @@ describe("BlueBubbles media hydration", () => {
     expect(execFile).not.toHaveBeenCalledWith("brew", ["install", "whisper-cpp"], expect.any(Object), expect.any(Function))
     expect(execFile).toHaveBeenCalledWith(
       "/opt/homebrew/opt/whisper-cpp/bin/whisper-cli",
-      expect.arrayContaining(["-m", "/Users/test/.agentstate/tools/whisper-cpp/models/ggml-base.en.bin"]),
+      expect.arrayContaining(["-m", "/Users/test/AgentBundles/slugger.ouro/state/tools/whisper-cpp/models/ggml-base.en.bin"]),
       expect.any(Object),
       expect.any(Function),
     )

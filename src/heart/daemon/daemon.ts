@@ -529,7 +529,7 @@ export class OuroDaemon {
           ok: true,
           summary: "logs: use `ouro logs` to tail daemon and agent output",
           message: "log streaming available via ouro logs",
-          data: { logDir: "~/.agentstate/daemon/logs" },
+          data: { logDir: "~/AgentBundles/<agent>.ouro/state/daemon/logs" },
         }
       case "agent.start":
         await this.processManager.startAgent(command.agent)

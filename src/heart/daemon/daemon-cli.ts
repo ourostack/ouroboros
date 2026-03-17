@@ -3,7 +3,7 @@ import { randomUUID } from "crypto"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
-import { getAgentBundlesRoot, getAgentName, getAgentRoot, getRepoRoot, type AgentProvider } from "../identity"
+import { getAgentBundlesRoot, getAgentDaemonLogsDir, getAgentName, getAgentRoot, getRepoRoot, type AgentProvider } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { FileFriendStore } from "../../mind/friends/store-file"
 import type { FriendStore } from "../../mind/friends/store"
@@ -892,7 +892,7 @@ function defaultEnsureDaemonBootPersistence(socketPath: string): void {
     })
   }
 
-  const logDir = path.join(homeDir, ".agentstate", "daemon", "logs")
+  const logDir = getAgentDaemonLogsDir()
   installLaunchAgent(launchdDeps, {
     nodePath: process.execPath,
     entryPath,

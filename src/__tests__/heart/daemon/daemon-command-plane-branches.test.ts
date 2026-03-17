@@ -195,7 +195,7 @@ describe("daemon command plane branches", () => {
     const logs = await daemon.handleCommand({ kind: "daemon.logs" })
     expect(logs.ok).toBe(true)
     expect(logs.summary).toContain("logs")
-    expect(logs.data).toEqual({ logDir: "~/.agentstate/daemon/logs" })
+    expect(logs.data).toEqual({ logDir: "~/AgentBundles/<agent>.ouro/state/daemon/logs" })
 
     const chat = await daemon.handleCommand({ kind: "chat.connect", agent: "slugger" })
     expect(chat.ok).toBe(true)

@@ -136,6 +136,27 @@ describe("agent paths", () => {
     expect(getAgentSecretsPath()).toBe(path.join(os.homedir(), ".agentsecrets", "slugger", "secrets.json"))
   })
 
+  it("derives bundle-local daemon, tool, and workspace roots", async () => {
+    process.argv = ["node", "cli-entry.js", "--agent", "slugger"]
+    const {
+      getAgentDaemonLoggingConfigPath,
+      getAgentDaemonLogsDir,
+      getAgentMessagesRoot,
+      getAgentRepoWorkspacesRoot,
+      getAgentToolsRoot,
+      HARNESS_CANONICAL_REPO_URL,
+      resetIdentity,
+    } = await import("../../heart/identity")
+    resetIdentity()
+
+    expect(HARNESS_CANONICAL_REPO_URL).toBe("https://github.com/ouroborosbot/ouroboros.git")
+    expect(getAgentDaemonLoggingConfigPath()).toBe(path.join(os.homedir(), "AgentBundles", "slugger.ouro", "state", "daemon", "logging.json"))
+    expect(getAgentDaemonLogsDir()).toBe(path.join(os.homedir(), "AgentBundles", "slugger.ouro", "state", "daemon", "logs"))
+    expect(getAgentMessagesRoot()).toBe(path.join(os.homedir(), "AgentBundles", "slugger.ouro", "state", "messages"))
+    expect(getAgentRepoWorkspacesRoot()).toBe(path.join(os.homedir(), "AgentBundles", "slugger.ouro", "state", "workspaces"))
+    expect(getAgentToolsRoot()).toBe(path.join(os.homedir(), "AgentBundles", "slugger.ouro", "state", "tools"))
+  })
+
   it("accepts explicit agent name for secrets path", async () => {
     const { getAgentSecretsPath } = await import("../../heart/identity")
     expect(getAgentSecretsPath("ouroboros")).toBe(path.join(os.homedir(), ".agentsecrets", "ouroboros", "secrets.json"))

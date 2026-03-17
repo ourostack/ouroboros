@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs"
 import { join } from "path"
-import { homedir } from "os"
+import { tmpdir } from "os"
 
 export const REPO_SLUG = "ouroboros-agent-harness"
 
@@ -12,7 +12,7 @@ export interface TestRunInfo {
 }
 
 export function getTestRunsRoot(repoSlug: string = REPO_SLUG): string {
-  return join(homedir(), ".agentstate", "test-runs", repoSlug)
+  return join(tmpdir(), "ouroboros-test-runs", repoSlug)
 }
 
 export function createRunId(now: Date = new Date()): string {

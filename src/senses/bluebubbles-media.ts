@@ -4,6 +4,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import OpenAI from "openai"
 import { emitNervesEvent } from "../nerves/runtime"
+import { getAgentToolsRoot } from "../heart/identity"
 import type { BlueBubblesAttachmentSummary } from "./bluebubbles-model"
 
 type BlueBubblesConfig = {
@@ -64,7 +65,7 @@ const AUDIO_INPUT_FORMAT_BY_EXTENSION: Record<string, "mp3" | "wav"> = {
 const WHISPER_CPP_FORMULA = "whisper-cpp"
 const WHISPER_CPP_MODEL_NAME = "ggml-base.en.bin"
 const WHISPER_CPP_MODEL_URL = `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${WHISPER_CPP_MODEL_NAME}`
-const WHISPER_CPP_TOOLS_DIR = path.join(os.homedir(), ".agentstate", "tools", "whisper-cpp")
+const WHISPER_CPP_TOOLS_DIR = path.join(getAgentToolsRoot(), "whisper-cpp")
 const WHISPER_CPP_MODELS_DIR = path.join(WHISPER_CPP_TOOLS_DIR, "models")
 const WHISPER_CPP_MODEL_PATH = path.join(WHISPER_CPP_MODELS_DIR, WHISPER_CPP_MODEL_NAME)
 

@@ -3,7 +3,7 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import * as childProcess from "child_process"
-import { getAgentBundlesRoot, getRepoRoot } from "../identity"
+import { getAgentBundlesRoot, getAgentDaemonLoggingConfigPath, getRepoRoot } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 
 export interface RuntimeMetadata {
@@ -187,7 +187,7 @@ export function getRuntimeMetadata(deps: RuntimeMetadataDeps = {}): RuntimeMetad
   const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
   const homeDir = readHomeDir()
   const secretsRoot = deps.secretsRoot ?? (homeDir ? path.join(homeDir, ".agentsecrets") : null)
-  const daemonLoggingPath = deps.daemonLoggingPath ?? (homeDir ? path.join(homeDir, ".agentstate", "daemon", "logging.json") : null)
+  const daemonLoggingPath = deps.daemonLoggingPath ?? getAgentDaemonLoggingConfigPath()
   const readFileSyncImpl = deps.readFileSync ?? optionalFunction<typeof fs.readFileSync>(fs, "readFileSync")?.bind(fs) ?? null
   const statSyncImpl = deps.statSync ?? optionalFunction<typeof fs.statSync>(fs, "statSync")?.bind(fs) ?? null
   const readdirSyncImpl = deps.readdirSync ?? optionalFunction<typeof fs.readdirSync>(fs, "readdirSync")?.bind(fs) ?? null
