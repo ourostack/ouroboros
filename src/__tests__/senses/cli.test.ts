@@ -960,6 +960,13 @@ describe("createDebouncedLines", () => {
 })
 
 describe("CLI adapter - echoed input summary wrapping", () => {
+  it("preserves explicit blank lines when wrapping echoed input summaries", async () => {
+    vi.resetModules()
+    const agent = await import("../../senses/cli")
+
+    expect((agent as any).wrapCliText("alpha\n\nbeta", 10)).toEqual(["alpha", "", "beta"])
+  })
+
   it("wraps long echoed input summaries at whitespace", async () => {
     vi.resetModules()
     const agent = await import("../../senses/cli")
@@ -978,6 +985,26 @@ describe("CLI adapter - echoed input summary wrapping", () => {
     ])
   })
 
+  it("splits a leading long word only when it cannot fit on one line", async () => {
+    vi.resetModules()
+    const agent = await import("../../senses/cli")
+
+    expect((agent as any).wrapCliText("supercalifragilistic", 6)).toEqual(["superc", "alifra", "gilist", "ic"])
+  })
+
+  it("splits a later long word after flushing the current wrapped line", async () => {
+    vi.resetModules()
+    const agent = await import("../../senses/cli")
+
+    expect((agent as any).wrapCliText("alpha supercalifragilistic", 6)).toEqual([
+      "alpha",
+      "superc",
+      "alifra",
+      "gilist",
+      "ic",
+    ])
+  })
+
   it("formats echoed input summary by clearing every echoed row before writing the wrapped summary", async () => {
     vi.resetModules()
     const agent = await import("../../senses/cli")
@@ -989,6 +1016,17 @@ describe("CLI adapter - echoed input summary wrapping", () => {
     expect(rendered).toContain("gamma")
     expect(rendered).toContain("(+1")
     expect(rendered).toContain("lines)")
+  })
+
+  it("formats a single-row echoed input summary without an extra upward jump", async () => {
+    vi.resetModules()
+    const agent = await import("../../senses/cli")
+
+    const rendered = (agent as any).formatEchoedInputSummary("short", 20)
+    expect(rendered).toContain("\x1b[1A")
+    expect(rendered).toContain("\r\x1b[K")
+    expect(rendered).not.toContain("\x1b[0A")
+    expect(rendered).toContain("\x1b[1m> short\x1b[0m")
   })
 
   it("runCliSession uses the wrapped echoed input summary for pasted multi-line input", async () => {
