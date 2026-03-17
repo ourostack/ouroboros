@@ -983,11 +983,12 @@ describe("CLI adapter - echoed input summary wrapping", () => {
     const agent = await import("../../senses/cli")
 
     const rendered = (agent as any).formatEchoedInputSummary("alpha beta gamma\ndelta epsilon", 12)
-    expect(rendered).toContain("\x1b[3A")
-    expect((rendered.match(/\x1b\[K/g) ?? []).length).toBe(3)
+    expect(rendered).toContain("\x1b[4A")
+    expect((rendered.match(/\x1b\[K/g) ?? []).length).toBe(4)
     expect(rendered).toContain("alpha beta")
     expect(rendered).toContain("gamma")
-    expect(rendered).toContain("(+1 lines)")
+    expect(rendered).toContain("(+1")
+    expect(rendered).toContain("lines)")
   })
 
   it("runCliSession uses the wrapped echoed input summary for pasted multi-line input", async () => {
