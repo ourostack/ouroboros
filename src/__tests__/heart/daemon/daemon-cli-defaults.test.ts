@@ -510,7 +510,6 @@ describe("daemon CLI default dependency branches", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
     }
 
     const okOnly = await runOuroCli(["status"], {
@@ -599,36 +598,6 @@ describe("daemon CLI default dependency branches", () => {
       expect.stringContaining("\"content\":\"hello again\""),
       "utf-8",
     )
-  })
-
-  it("wires default subagent installer through repo-root detection", async () => {
-    vi.resetModules()
-
-    const installSubagentsForAvailableCli = vi.fn(async () => ({
-      claudeInstalled: 0,
-      codexInstalled: 0,
-      notes: [],
-    }))
-
-    vi.doMock("net", () => ({ createConnection: vi.fn() }))
-    vi.doMock("child_process", () => ({ spawn: vi.fn() }))
-    vi.doMock("../../../heart/identity", () => ({
-      getRepoRoot: () => "/mock/repo",
-      getAgentBundlesRoot: () => "/mock/AgentBundles",
-      getAgentDaemonLogsDir: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logs",
-      getAgentDaemonLoggingConfigPath: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logging.json",
-    }))
-    vi.doMock("../../../heart/daemon/subagent-installer", () => ({ installSubagentsForAvailableCli }))
-    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
-    vi.doMock("fs", () => ({ existsSync: vi.fn(() => false), unlinkSync: vi.fn() }))
-
-    const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
-    const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
-    await deps.installSubagents()
-
-    expect(installSubagentsForAvailableCli).toHaveBeenCalledWith({
-      repoRoot: "/mock/repo",
-    })
   })
 
   it("rejects empty non-stop responses from default sendCommand", async () => {
@@ -751,7 +720,7 @@ describe("daemon CLI default dependency branches", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
     })
 
     expect(statusResult).toContain("| Daemon       | stopped")
@@ -767,7 +736,7 @@ describe("daemon CLI default dependency branches", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
     })).rejects.toThrow("daemon unreachable")
   })
 
@@ -803,7 +772,7 @@ describe("daemon CLI default dependency branches", () => {
       checkSocketAlive: vi.fn(async () => false),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
     })
 
     expect(result).toBe("daemon not running")
@@ -840,7 +809,7 @@ describe("daemon CLI default dependency branches", () => {
       checkSocketAlive: vi.fn(async () => false),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
     })).rejects.toThrow("mystery failure")
   })
 
@@ -1229,7 +1198,7 @@ describe("daemon CLI default dependency branches", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       listDiscoveredAgents: undefined,
     })
 

@@ -1,6 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
-import { getAgentRoot, getRepoRoot } from "../heart/identity";
+import { getAgentRoot } from "../heart/identity";
 import { emitNervesEvent } from "../nerves/runtime";
 
 // Skills live in {agentRoot}/skills/ directory
@@ -11,11 +11,6 @@ export function getSkillsDir(): string {
 // Protocol mirror files live in {agentRoot}/skills/protocols/.
 function getProtocolMirrorDir(): string {
   return path.join(getSkillsDir(), "protocols");
-}
-
-// Canonical protocol source lives in {repoRoot}/subagents/.
-function getCanonicalProtocolsDir(): string {
-  return path.join(getRepoRoot(), "subagents");
 }
 
 function listMarkdownBasenames(dir: string): string[] {
@@ -39,9 +34,8 @@ export function listSkills(): string[] {
   });
   const baseSkills = listMarkdownBasenames(getSkillsDir());
   const protocolMirrors = listMarkdownBasenames(getProtocolMirrorDir());
-  const canonicalProtocols = listMarkdownBasenames(getCanonicalProtocolsDir());
 
-  const skills = [...new Set([...baseSkills, ...protocolMirrors, ...canonicalProtocols])].sort();
+  const skills = [...new Set([...baseSkills, ...protocolMirrors])].sort();
   emitNervesEvent({
     event: "repertoire.load_end",
     component: "repertoire",
@@ -60,7 +54,6 @@ export function loadSkill(skillName: string): string {
   });
   const directSkillPath = path.join(getSkillsDir(), `${skillName}.md`);
   const protocolMirrorPath = path.join(getProtocolMirrorDir(), `${skillName}.md`);
-  const canonicalProtocolPath = path.join(getCanonicalProtocolsDir(), `${skillName}.md`);
 
   let resolvedPath: string | null = null;
 
@@ -72,22 +65,6 @@ export function loadSkill(skillName: string): string {
   else if (fs.existsSync(protocolMirrorPath)) {
     resolvedPath = protocolMirrorPath;
   }
-  // 3) Canonical protocol fallback.
-  else if (fs.existsSync(canonicalProtocolPath)) {
-    emitNervesEvent({
-      level: "warn",
-      event: "repertoire.error",
-      component: "repertoire",
-      message: "protocol mirror missing; using canonical fallback",
-      meta: {
-        operation: "loadSkill",
-        skill: skillName,
-        mirrorPath: protocolMirrorPath,
-        canonicalPath: canonicalProtocolPath,
-      },
-    });
-    resolvedPath = canonicalProtocolPath;
-  }
 
   if (!resolvedPath) {
     emitNervesEvent({
@@ -98,14 +75,13 @@ export function loadSkill(skillName: string): string {
       meta: {
         operation: "loadSkill",
         skill: skillName,
-        checkedPaths: [directSkillPath, protocolMirrorPath, canonicalProtocolPath],
+        checkedPaths: [directSkillPath, protocolMirrorPath],
       },
     });
     throw new Error(
       `skill '${skillName}' not found in:\n` +
       `- ${directSkillPath}\n` +
-      `- ${protocolMirrorPath}\n` +
-      `- ${canonicalProtocolPath}`
+      `- ${protocolMirrorPath}`
     );
   }
 

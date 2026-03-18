@@ -515,7 +515,7 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
     }
 
     const shortResult = await runOuroCli(["-v"], deps)
@@ -529,11 +529,6 @@ describe("ouro CLI execution", () => {
   })
 
   it("starts daemon on `up` when socket is not live", async () => {
-    const installSubagents = vi.fn(async () => ({
-      claudeInstalled: 0,
-      codexInstalled: 0,
-      notes: [],
-    }))
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
       sendCommand: vi.fn(),
@@ -542,13 +537,11 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => false),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents,
     }
 
     const result = await runOuroCli(["up"], deps)
 
     expect(result).toContain("daemon started")
-    expect(installSubagents).toHaveBeenCalledTimes(1)
     expect(deps.startDaemonProcess).toHaveBeenCalledWith("/tmp/ouro-test.sock")
     expect(deps.sendCommand).not.toHaveBeenCalled()
   })
@@ -581,7 +574,7 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       runAuthFlow,
     } as OuroCliDeps & {
       runAuthFlow: typeof runAuthFlow
@@ -630,7 +623,7 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       runAuthFlow,
     } as OuroCliDeps & {
       runAuthFlow: typeof runAuthFlow
@@ -683,7 +676,7 @@ describe("ouro CLI execution", () => {
         checkSocketAlive: vi.fn(async () => true),
         cleanupStaleSocket: vi.fn(),
         fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-        installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+  
         promptInput: vi.fn(async () => ""),
       }
 
@@ -704,11 +697,6 @@ describe("ouro CLI execution", () => {
   })
 
   it("is idempotent for `up` when daemon already running", async () => {
-    const installSubagents = vi.fn(async () => ({
-      claudeInstalled: 0,
-      codexInstalled: 0,
-      notes: [],
-    }))
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
       sendCommand: vi.fn(),
@@ -717,13 +705,11 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents,
     }
 
     const result = await runOuroCli(["up"], deps)
 
     expect(result).toContain("already running")
-    expect(installSubagents).toHaveBeenCalledTimes(1)
     expect(deps.startDaemonProcess).not.toHaveBeenCalled()
     expect(deps.sendCommand).toHaveBeenCalledWith("/tmp/ouro-test.sock", { kind: "daemon.status" })
   })
@@ -739,7 +725,7 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => false),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       registerOuroBundleType,
       ensureDaemonBootPersistence,
     }
@@ -762,7 +748,7 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => false),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       registerOuroBundleType,
     }
 
@@ -784,7 +770,7 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => false),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       ensureDaemonBootPersistence,
     }
 
@@ -806,7 +792,7 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => false),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       ensureDaemonBootPersistence,
     }
 
@@ -825,7 +811,7 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
     }
 
     const result = await runOuroCli(["status"], deps)
@@ -854,7 +840,7 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
     }
 
     const result = await runOuroCli(["status"], deps)
@@ -928,7 +914,7 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
     }
 
     const result = await runOuroCli(["status"], deps)
@@ -980,7 +966,7 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
     }
 
     const result = await runOuroCli(["status"], deps)
@@ -1035,7 +1021,7 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
     }
 
     const result = await runOuroCli(["status"], deps)
@@ -1069,7 +1055,7 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
     }
 
     const result = await runOuroCli(["status"], deps)
@@ -1094,7 +1080,7 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
     }
 
     const result = await runOuroCli(["status"], deps)
@@ -1125,7 +1111,7 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
     }
 
     const result = await runOuroCli(["status"], deps)
@@ -1163,7 +1149,7 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
     }
 
     const result = await runOuroCli(["status"], deps)
@@ -1194,7 +1180,7 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
     }
 
     const result = await runOuroCli(["status"], deps)
@@ -1232,7 +1218,7 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
     }
 
     const result = await runOuroCli(["status"], deps)
@@ -1249,7 +1235,7 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       listDiscoveredAgents: vi.fn(async () => []),
     } as OuroCliDeps & {
       listDiscoveredAgents: () => Promise<string[]>
@@ -1272,7 +1258,7 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       listDiscoveredAgents: vi.fn(async () => ["slugger"]),
     } as OuroCliDeps & {
       listDiscoveredAgents: () => Promise<string[]>
@@ -1295,7 +1281,7 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       listDiscoveredAgents: vi.fn(async () => ["ouroboros", "slugger"]),
     } as OuroCliDeps & {
       listDiscoveredAgents: () => Promise<string[]>
@@ -1309,46 +1295,6 @@ describe("ouro CLI execution", () => {
     expect(deps.sendCommand).not.toHaveBeenCalled()
   })
 
-  it("continues `up` flow when subagent install throws", async () => {
-    const deps: OuroCliDeps = {
-      socketPath: "/tmp/ouro-test.sock",
-      sendCommand: vi.fn(),
-      startDaemonProcess: vi.fn(async () => ({ pid: 777 })),
-      writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => false),
-      cleanupStaleSocket: vi.fn(),
-      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => {
-        throw new Error("install exploded")
-      }),
-    }
-
-    const result = await runOuroCli(["up"], deps)
-
-    expect(result).toContain("daemon started")
-    expect(deps.startDaemonProcess).toHaveBeenCalledTimes(1)
-  })
-
-  it("continues `up` flow when subagent install throws a non-Error value", async () => {
-    const deps: OuroCliDeps = {
-      socketPath: "/tmp/ouro-test.sock",
-      sendCommand: vi.fn(),
-      startDaemonProcess: vi.fn(async () => ({ pid: 778 })),
-      writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => false),
-      cleanupStaleSocket: vi.fn(),
-      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => {
-        throw "install exploded string"
-      }),
-    }
-
-    const result = await runOuroCli(["up"], deps)
-
-    expect(result).toContain("daemon started")
-    expect(deps.startDaemonProcess).toHaveBeenCalledTimes(1)
-  })
-
   it("routes msg command through daemon socket", async () => {
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
@@ -1358,7 +1304,7 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
     }
 
     await runOuroCli(["msg", "--to", "slugger", "hi"], deps)
@@ -1402,7 +1348,7 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       friendStore: mockFriendStore as any,
     }
 
@@ -1433,7 +1379,7 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/AgentBundles/slugger.ouro/inbox/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
     }
 
     const result = await runOuroCli(["msg", "--to", "slugger", "hi"], deps)
@@ -1466,7 +1412,7 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => false),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       registerOuroBundleType: vi.fn(async () => ({ attempted: true, registered: true })),
       runHatchFlow,
       promptInput,
@@ -1516,7 +1462,7 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => false),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       registerOuroBundleType: vi.fn(async () => ({ attempted: true, registered: true })),
       runHatchFlow,
       promptInput,
@@ -1566,7 +1512,7 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => false),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       registerOuroBundleType: vi.fn(async () => ({ attempted: true, registered: true })),
       runHatchFlow,
       promptInput,
@@ -1622,7 +1568,7 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => false),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       registerOuroBundleType: vi.fn(async () => ({ attempted: true, registered: true })),
       runHatchFlow,
       runAuthFlow,
@@ -1685,7 +1631,7 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => false),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       registerOuroBundleType: vi.fn(async () => ({ attempted: true, registered: true })),
       runHatchFlow,
       runAuthFlow,
@@ -1731,7 +1677,7 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       registerOuroBundleType: vi.fn(async () => ({ attempted: true, registered: true })),
       runHatchFlow: vi.fn(async () => ({
         bundleRoot: "/tmp/unused",
@@ -1754,7 +1700,7 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       registerOuroBundleType: vi.fn(async () => ({ attempted: true, registered: true })),
       runHatchFlow: vi.fn(async () => ({
         bundleRoot: "/tmp/unused",
@@ -1784,7 +1730,7 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       registerOuroBundleType: vi.fn(async () => ({ attempted: true, registered: true })),
       runHatchFlow,
       promptInput,
@@ -1823,7 +1769,7 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => false),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       registerOuroBundleType: vi.fn(async () => {
         throw "registration failed string"
       }),
@@ -1849,9 +1795,6 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => false),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => {
-        throw "install failed string"
-      }),
       registerOuroBundleType: vi.fn(async () => ({ attempted: true, registered: true })),
       runHatchFlow,
     } as OuroCliDeps & {
@@ -1887,7 +1830,7 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       registerOuroBundleType: vi.fn(async () => ({ attempted: true, registered: true })),
       runHatchFlow,
     } as OuroCliDeps & {
@@ -1925,7 +1868,7 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => false),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       registerOuroBundleType: vi.fn(async () => ({ attempted: true, registered: true })),
       runHatchFlow,
     } as OuroCliDeps & {
@@ -1956,7 +1899,7 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       runHatchFlow: undefined,
     }
 
@@ -2000,9 +1943,6 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => false),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => {
-        throw new Error("install failed")
-      }),
       registerOuroBundleType: vi.fn(async () => ({ attempted: true, registered: true })),
       runHatchFlow,
       promptInput,
@@ -2053,7 +1993,7 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => false),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       registerOuroBundleType: vi.fn(async () => ({ attempted: true, registered: true })),
       runHatchFlow,
     } as OuroCliDeps & {
@@ -2100,7 +2040,7 @@ describe("multi-agent prompt, agent-name shortcut, and help", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       listDiscoveredAgents: vi.fn(async () => ["ouroboros", "slugger"]),
       startChat,
       promptInput,
@@ -2127,7 +2067,7 @@ describe("multi-agent prompt, agent-name shortcut, and help", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       listDiscoveredAgents: vi.fn(async () => ["ouroboros", "slugger"]),
       startChat,
     } as OuroCliDeps & {
@@ -2150,7 +2090,7 @@ describe("multi-agent prompt, agent-name shortcut, and help", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       listDiscoveredAgents: vi.fn(async () => ["ouroboros"]),
       startChat,
     } as OuroCliDeps & {
@@ -2172,7 +2112,7 @@ describe("multi-agent prompt, agent-name shortcut, and help", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       listDiscoveredAgents: vi.fn(async () => ["ouroboros", "slugger"]),
       startChat,
       promptInput,
@@ -2198,7 +2138,7 @@ describe("multi-agent prompt, agent-name shortcut, and help", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       listDiscoveredAgents: vi.fn(async () => ["ouroboros", "slugger"]),
       startChat,
       promptInput,
@@ -2220,7 +2160,7 @@ describe("multi-agent prompt, agent-name shortcut, and help", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
     }
 
     await expect(runOuroCli(["unknown-cmd"], deps)).rejects.toThrow("Unknown command")
@@ -2235,7 +2175,7 @@ describe("multi-agent prompt, agent-name shortcut, and help", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
     }
 
     const result = await runOuroCli(["--help"], deps)
@@ -2255,7 +2195,7 @@ describe("ouro --help completeness (H10)", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
     }
   }
 
@@ -2331,7 +2271,7 @@ describe("single agent → chat via startChat", () => {
       checkSocketAlive: vi.fn(async () => false),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       listDiscoveredAgents: vi.fn(async () => ["slugger"]),
       startChat,
     } as OuroCliDeps & {
@@ -2358,7 +2298,7 @@ describe("single agent → chat via startChat", () => {
       checkSocketAlive: vi.fn(async () => false),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       listDiscoveredAgents: vi.fn(async () => ["slugger"]),
       startChat,
     } as OuroCliDeps & {
@@ -2384,7 +2324,7 @@ describe("single agent → chat via startChat", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       listDiscoveredAgents: vi.fn(async () => ["slugger"]),
       startChat,
     } as OuroCliDeps & {
@@ -2408,7 +2348,7 @@ describe("single agent → chat via startChat", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       listDiscoveredAgents: vi.fn(async () => ["slugger"]),
     } as OuroCliDeps & {
       listDiscoveredAgents: () => Promise<string[]>
@@ -2441,7 +2381,7 @@ describe("hatch → auto-chat", () => {
       checkSocketAlive: vi.fn(async () => false),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       registerOuroBundleType: vi.fn(async () => ({ attempted: true, registered: true })),
       runHatchFlow,
       startChat,
@@ -2483,7 +2423,7 @@ describe("hatch → auto-chat", () => {
       checkSocketAlive: vi.fn(async () => false),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       registerOuroBundleType: vi.fn(async () => ({ attempted: true, registered: true })),
       runHatchFlow,
       startChat,
@@ -2524,7 +2464,7 @@ describe("hatch → auto-chat", () => {
       checkSocketAlive: vi.fn(async () => false),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       registerOuroBundleType: vi.fn(async () => ({ attempted: true, registered: true })),
       runHatchFlow,
     } as OuroCliDeps & {
@@ -2559,7 +2499,7 @@ describe("ensureDaemonRunning", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
     }
 
     const result = await ensureDaemonRunning(deps)
@@ -2615,7 +2555,7 @@ describe("ensureDaemonRunning", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
     }
 
     const result = await ensureDaemonRunning(deps)
@@ -2678,7 +2618,7 @@ describe("ensureDaemonRunning", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
     }
 
     const result = await ensureDaemonRunning(deps)
@@ -2729,7 +2669,7 @@ describe("ensureDaemonRunning", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
     }
 
     const result = await ensureDaemonRunning(deps)
@@ -2775,7 +2715,7 @@ describe("ensureDaemonRunning", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
     }
 
     const result = await ensureDaemonRunning(deps)
@@ -2806,7 +2746,7 @@ describe("ensureDaemonRunning", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
     }
 
     const result = await ensureDaemonRunning(deps)
@@ -2861,7 +2801,7 @@ describe("ensureDaemonRunning", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
     }
 
     const result = await ensureDaemonRunning(deps)
@@ -2917,7 +2857,7 @@ describe("ensureDaemonRunning", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
     }
 
     const result = await ensureDaemonRunning(deps)
@@ -2938,7 +2878,7 @@ describe("ensureDaemonRunning", () => {
       checkSocketAlive: vi.fn(async () => false),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
     }
 
     const result = await ensureDaemonRunning(deps)
@@ -2961,7 +2901,7 @@ describe("ensureDaemonRunning", () => {
       checkSocketAlive: vi.fn(async () => false),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
     }
 
     const result = await ensureDaemonRunning(deps)
@@ -2980,7 +2920,7 @@ describe("ensureDaemonRunning", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       tailLogs,
     }
 
@@ -3000,7 +2940,7 @@ describe("ensureDaemonRunning", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
     }
 
     await runOuroCli(["logs"], deps)
@@ -3024,7 +2964,7 @@ describe("specialist integration (zero agents -> adoption specialist)", () => {
       checkSocketAlive: vi.fn(async () => false),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       listDiscoveredAgents: vi.fn(async () => []),
       runAdoptionSpecialist,
       startChat,
@@ -3048,7 +2988,7 @@ describe("specialist integration (zero agents -> adoption specialist)", () => {
       checkSocketAlive: vi.fn(async () => false),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       registerOuroBundleType: vi.fn(async () => ({ attempted: true, registered: true })),
       listDiscoveredAgents: vi.fn(async () => []),
       runAdoptionSpecialist,
@@ -3058,7 +2998,6 @@ describe("specialist integration (zero agents -> adoption specialist)", () => {
     await runOuroCli([], deps)
 
     expect(runAdoptionSpecialist).toHaveBeenCalledTimes(1)
-    expect(deps.installSubagents).toHaveBeenCalledTimes(1)
     expect(deps.registerOuroBundleType).toHaveBeenCalledTimes(1)
     expect(deps.startDaemonProcess).toHaveBeenCalled()
     expect(startChat).toHaveBeenCalledWith("MyNewBot")
@@ -3075,7 +3014,7 @@ describe("specialist integration (zero agents -> adoption specialist)", () => {
       checkSocketAlive: vi.fn(async () => false),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       listDiscoveredAgents: vi.fn(async () => []),
       runAdoptionSpecialist,
       startChat,
@@ -3085,8 +3024,6 @@ describe("specialist integration (zero agents -> adoption specialist)", () => {
 
     expect(runAdoptionSpecialist).toHaveBeenCalledTimes(1)
     expect(startChat).not.toHaveBeenCalled()
-    // System setup runs BEFORE the specialist, so installSubagents is called even if specialist aborts
-    expect(deps.installSubagents).toHaveBeenCalledTimes(1)
     expect(deps.startDaemonProcess).not.toHaveBeenCalled()
     expect(result).toBe("")
   })
@@ -3114,10 +3051,6 @@ describe("specialist integration (zero agents -> adoption specialist)", () => {
       checkSocketAlive: vi.fn(async () => false),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => {
-        callOrder.push("installSubagents")
-        return { claudeInstalled: 0, codexInstalled: 0, notes: [] }
-      }),
       listDiscoveredAgents: vi.fn(async () => []),
       runAdoptionSpecialist,
       installOuroCommand,
@@ -3132,7 +3065,6 @@ describe("specialist integration (zero agents -> adoption specialist)", () => {
     // System setup should happen before the specialist
     expect(callOrder.indexOf("installOuroCommand")).toBeLessThan(callOrder.indexOf("runAdoptionSpecialist"))
     expect(callOrder.indexOf("syncGlobalOuroBotWrapper")).toBeLessThan(callOrder.indexOf("runAdoptionSpecialist"))
-    expect(callOrder.indexOf("installSubagents")).toBeLessThan(callOrder.indexOf("runAdoptionSpecialist"))
   })
 
   it("handles installOuroCommand failure gracefully during system setup", async () => {
@@ -3147,7 +3079,7 @@ describe("specialist integration (zero agents -> adoption specialist)", () => {
       checkSocketAlive: vi.fn(async () => false),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       listDiscoveredAgents: vi.fn(async () => []),
       runAdoptionSpecialist,
       installOuroCommand,
@@ -3174,7 +3106,7 @@ describe("specialist integration (zero agents -> adoption specialist)", () => {
       checkSocketAlive: vi.fn(async () => false),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       listDiscoveredAgents: vi.fn(async () => []),
       runAdoptionSpecialist,
       syncGlobalOuroBotWrapper,
@@ -3205,7 +3137,7 @@ describe("specialist integration (zero agents -> adoption specialist)", () => {
       checkSocketAlive: vi.fn(async () => false),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       registerOuroBundleType: vi.fn(async () => ({ attempted: true, registered: true })),
       runAdoptionSpecialist,
       runHatchFlow,
@@ -3239,7 +3171,7 @@ describe("specialist integration (zero agents -> adoption specialist)", () => {
       checkSocketAlive: vi.fn(async () => false),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       registerOuroBundleType: vi.fn(async () => ({ attempted: true, registered: true })),
       runAdoptionSpecialist,
       startChat,
@@ -3249,33 +3181,6 @@ describe("specialist integration (zero agents -> adoption specialist)", () => {
 
     expect(runAdoptionSpecialist).toHaveBeenCalledTimes(1)
     expect(startChat).toHaveBeenCalledWith("HatchedViaSpecialist")
-    expect(deps.installSubagents).toHaveBeenCalledTimes(1)
-    expect(result).toBe("")
-  })
-
-  it("continues gracefully when subagent install fails during bare ouro hatch specialist flow", async () => {
-    const runAdoptionSpecialist = vi.fn(async () => "HatchSubagentFail")
-    const startChat = vi.fn(async () => {})
-    const deps: OuroCliDeps = {
-      socketPath: "/tmp/ouro-test.sock",
-      sendCommand: vi.fn(async () => ({ ok: true })),
-      startDaemonProcess: vi.fn(async () => ({ pid: 77 })),
-      writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => false),
-      cleanupStaleSocket: vi.fn(),
-      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => {
-        throw new Error("subagent install failed in hatch path")
-      }),
-      registerOuroBundleType: vi.fn(async () => ({ attempted: true, registered: true })),
-      runAdoptionSpecialist,
-      startChat,
-    }
-
-    const result = await runOuroCli(["hatch"], deps)
-
-    expect(runAdoptionSpecialist).toHaveBeenCalledTimes(1)
-    expect(startChat).toHaveBeenCalledWith("HatchSubagentFail")
     expect(result).toBe("")
   })
 
@@ -3289,7 +3194,7 @@ describe("specialist integration (zero agents -> adoption specialist)", () => {
       checkSocketAlive: vi.fn(async () => false),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       registerOuroBundleType: vi.fn(async () => ({ attempted: true, registered: true })),
       runAdoptionSpecialist,
       // No startChat provided
@@ -3298,7 +3203,6 @@ describe("specialist integration (zero agents -> adoption specialist)", () => {
     const result = await runOuroCli(["hatch"], deps)
 
     expect(runAdoptionSpecialist).toHaveBeenCalledTimes(1)
-    expect(deps.installSubagents).toHaveBeenCalledTimes(1)
     expect(result).toBe("")
   })
 
@@ -3312,15 +3216,13 @@ describe("specialist integration (zero agents -> adoption specialist)", () => {
       checkSocketAlive: vi.fn(async () => false),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       runAdoptionSpecialist,
     }
 
     const result = await runOuroCli(["hatch"], deps)
 
     expect(runAdoptionSpecialist).toHaveBeenCalledTimes(1)
-    // System setup runs BEFORE the specialist, so installSubagents is called even if specialist aborts
-    expect(deps.installSubagents).toHaveBeenCalledTimes(1)
     expect(result).toBe("")
   })
 
@@ -3334,7 +3236,7 @@ describe("specialist integration (zero agents -> adoption specialist)", () => {
       checkSocketAlive: vi.fn(async () => false),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       registerOuroBundleType: vi.fn(async () => ({ attempted: true, registered: true })),
       listDiscoveredAgents: vi.fn(async () => []),
       runAdoptionSpecialist,
@@ -3344,35 +3246,8 @@ describe("specialist integration (zero agents -> adoption specialist)", () => {
     const result = await runOuroCli([], deps)
 
     expect(runAdoptionSpecialist).toHaveBeenCalledTimes(1)
-    expect(deps.installSubagents).toHaveBeenCalledTimes(1)
     expect(deps.startDaemonProcess).toHaveBeenCalled()
     expect(result).toBe("")
-  })
-
-  it("continues subagent install failure gracefully after specialist hatch", async () => {
-    const runAdoptionSpecialist = vi.fn(async () => "FailInstallBot")
-    const startChat = vi.fn(async () => {})
-    const deps: OuroCliDeps = {
-      socketPath: "/tmp/ouro-test.sock",
-      sendCommand: vi.fn(async () => ({ ok: true })),
-      startDaemonProcess: vi.fn(async () => ({ pid: 55 })),
-      writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => false),
-      cleanupStaleSocket: vi.fn(),
-      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => {
-        throw new Error("subagent install failed")
-      }),
-      registerOuroBundleType: vi.fn(async () => ({ attempted: true, registered: true })),
-      listDiscoveredAgents: vi.fn(async () => []),
-      runAdoptionSpecialist,
-      startChat,
-    }
-
-    await runOuroCli([], deps)
-
-    expect(runAdoptionSpecialist).toHaveBeenCalledTimes(1)
-    expect(startChat).toHaveBeenCalledWith("FailInstallBot")
   })
 })
 
@@ -3668,7 +3543,7 @@ describe("ouro task CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       taskModule: mockTaskModule as any,
       ...overrides,
     }
@@ -3913,7 +3788,7 @@ describe("ouro reminder CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       taskModule: mockTaskModule as any,
       ...overrides,
     }
@@ -4006,7 +3881,7 @@ describe("ouro friend CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       ...overrides,
     }
   }
@@ -4450,7 +4325,7 @@ describe("ouro whoami and session list CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       ...overrides,
     }
   }
@@ -4693,7 +4568,7 @@ describe("--agent flag CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       ...overrides,
     }
   }
@@ -4859,7 +4734,7 @@ describe("ouro thoughts CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
+
       ...overrides,
     }
   }

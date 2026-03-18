@@ -12,7 +12,6 @@ vi.mock("fs", () => ({
 // Mock identity -- skills will use getAgentRoot() for skills directory
 vi.mock("../../heart/identity", () => ({
   getAgentRoot: vi.fn(() => "/mock/repo/testagent"),
-  getRepoRoot: vi.fn(() => "/mock/repo"),
 }))
 
 import * as fs from "fs"
@@ -79,18 +78,34 @@ describe("skills - listSkills", () => {
     expect(fs.existsSync).toHaveBeenCalledWith(expectedDir)
   })
 
-  it("includes canonical subagent protocols when protocol mirrors are absent", async () => {
+  it("merges base skills and protocol mirrors into a deduplicated sorted list", async () => {
     vi.mocked(fs.existsSync).mockImplementation((p) =>
-      p === "/mock/repo/testagent/skills" || p === "/mock/repo/subagents",
+      p === "/mock/repo/testagent/skills" || p === "/mock/repo/testagent/skills/protocols",
     )
     vi.mocked(fs.readdirSync).mockImplementation((p) => {
-      if (p === "/mock/repo/testagent/skills") return ["self-edit.md"] as any
-      if (p === "/mock/repo/subagents") return ["work-merger.md", "work-planner.md"] as any
+      if (p === "/mock/repo/testagent/skills") return ["self-edit.md", "shared.md"] as any
+      if (p === "/mock/repo/testagent/skills/protocols") return ["shared.md", "work-planner.md"] as any
       return [] as any
     })
 
     const { listSkills } = await import("../../repertoire/skills")
-    expect(listSkills()).toEqual(["self-edit", "work-merger", "work-planner"])
+    expect(listSkills()).toEqual(["self-edit", "shared", "work-planner"])
+  })
+
+  it("does not read from any canonical subagents directory", async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p) =>
+      p === "/mock/repo/testagent/skills",
+    )
+    vi.mocked(fs.readdirSync).mockImplementation((p) => {
+      if (p === "/mock/repo/testagent/skills") return ["skill-a.md"] as any
+      return [] as any
+    })
+
+    const { listSkills } = await import("../../repertoire/skills")
+    listSkills()
+    // Should only check skills dir and protocols dir, never subagents
+    const calledPaths = vi.mocked(fs.existsSync).mock.calls.map(c => c[0])
+    expect(calledPaths).not.toContainEqual(expect.stringContaining("subagents"))
   })
 })
 
@@ -143,17 +158,13 @@ describe("skills - loadSkill", () => {
     expect(fs.existsSync).toHaveBeenCalledWith(expectedPath)
   })
 
-  it("prefers bundle protocol mirror over canonical subagent protocol", async () => {
+  it("falls back to protocol mirror when direct skill path is missing", async () => {
     vi.mocked(fs.existsSync).mockImplementation((p) =>
-      p === "/mock/repo/testagent/skills/protocols/work-planner.md" ||
-      p === "/mock/repo/subagents/work-planner.md",
+      p === "/mock/repo/testagent/skills/protocols/work-planner.md",
     )
     vi.mocked(fs.readFileSync).mockImplementation((p) => {
       if (p === "/mock/repo/testagent/skills/protocols/work-planner.md") {
         return "mirror planner protocol" as any
-      }
-      if (p === "/mock/repo/subagents/work-planner.md") {
-        return "canonical planner protocol" as any
       }
       return "" as any
     })
@@ -162,25 +173,18 @@ describe("skills - loadSkill", () => {
     expect(loadSkill("work-planner")).toBe("mirror planner protocol")
   })
 
-  it("falls back to canonical subagent protocol when mirror is missing", async () => {
-    vi.mocked(fs.existsSync).mockImplementation((p) => p === "/mock/repo/subagents/work-doer.md")
-    vi.mocked(fs.readFileSync).mockImplementation((p) => {
-      if (p === "/mock/repo/subagents/work-doer.md") {
-        return "canonical doer protocol" as any
-      }
-      return "" as any
-    })
-
-    const { loadSkill } = await import("../../repertoire/skills")
-    expect(loadSkill("work-doer")).toBe("canonical doer protocol")
-  })
-
-  it("throws with mirror and canonical paths when protocol is missing in both locations", async () => {
+  it("throws listing only 2 checked paths when skill is not found", async () => {
     vi.mocked(fs.existsSync).mockReturnValue(false)
 
     const { loadSkill } = await import("../../repertoire/skills")
+    expect(() => loadSkill("work-merger")).toThrow("/mock/repo/testagent/skills/work-merger.md")
     expect(() => loadSkill("work-merger")).toThrow("/mock/repo/testagent/skills/protocols/work-merger.md")
-    expect(() => loadSkill("work-merger")).toThrow("/mock/repo/subagents/work-merger.md")
+    // Must NOT reference canonical subagents path
+    expect(() => {
+      try { loadSkill("work-merger") } catch (e: any) {
+        if (e.message.includes("subagents")) throw new Error("should not reference subagents")
+      }
+    }).not.toThrow()
   })
 })
 

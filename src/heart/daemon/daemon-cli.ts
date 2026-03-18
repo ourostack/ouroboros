@@ -11,7 +11,7 @@ import { isIdentityProvider, type IdentityProvider, type TrustLevel } from "../.
 import type { DaemonCommand, DaemonResponse } from "./daemon"
 import { registerOuroBundleUti as defaultRegisterOuroBundleUti } from "./ouro-uti"
 import { installOuroCommand as defaultInstallOuroCommand, type OuroPathInstallResult } from "./ouro-path-installer"
-import { installSubagentsForAvailableCli, type SubagentInstallResult } from "./subagent-installer"
+import { ensureSkillManagement as defaultEnsureSkillManagement } from "./skill-management-installer"
 import {
   runHatchFlow as defaultRunHatchFlow,
   type HatchCredentialsInput,
@@ -83,7 +83,6 @@ export interface OuroCliDeps {
   checkSocketAlive: (socketPath: string) => Promise<boolean>
   cleanupStaleSocket: (socketPath: string) => void
   fallbackPendingMessage: (command: Extract<DaemonCommand, { kind: "message.send" }>) => string
-  installSubagents: () => Promise<SubagentInstallResult>
   listDiscoveredAgents?: () => Promise<string[]> | string[]
   runHatchFlow?: (input: HatchFlowInput) => Promise<HatchFlowResult>
   runAdoptionSpecialist?: () => Promise<string | null>
@@ -92,6 +91,7 @@ export interface OuroCliDeps {
   registerOuroBundleType?: () => Promise<unknown> | unknown
   installOuroCommand?: () => OuroPathInstallResult
   syncGlobalOuroBotWrapper?: () => Promise<unknown> | unknown
+  ensureSkillManagement?: () => Promise<void>
   ensureDaemonBootPersistence?: (socketPath: string) => Promise<void> | void
   startChat?: (agentName: string) => Promise<void>
   tailLogs?: (options?: { follow?: boolean; lines?: number; agentFilter?: string }) => () => void
@@ -902,12 +902,6 @@ function defaultEnsureDaemonBootPersistence(socketPath: string): void {
   })
 }
 
-async function defaultInstallSubagents(): Promise<SubagentInstallResult> {
-  return installSubagentsForAvailableCli({
-    repoRoot: getRepoRoot(),
-  })
-}
-
 async function defaultPromptInput(question: string): Promise<string> {
   const readline = await import("readline/promises")
   const rl = readline.createInterface({
@@ -1193,7 +1187,6 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     checkSocketAlive: checkDaemonSocketAlive,
     cleanupStaleSocket: defaultCleanupStaleSocket,
     fallbackPendingMessage: defaultFallbackPendingMessage,
-    installSubagents: defaultInstallSubagents,
     listDiscoveredAgents: defaultListDiscoveredAgents,
     runHatchFlow: defaultRunHatchFlow,
     promptInput: defaultPromptInput,
@@ -1202,6 +1195,7 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     registerOuroBundleType: defaultRegisterOuroBundleUti,
     installOuroCommand: defaultInstallOuroCommand,
     syncGlobalOuroBotWrapper: defaultSyncGlobalOuroBotWrapper,
+    ensureSkillManagement: defaultEnsureSkillManagement,
     ensureDaemonBootPersistence: defaultEnsureDaemonBootPersistence,
     /* v8 ignore next 3 -- integration: launches interactive CLI session @preserve */
     startChat: async (agentName: string) => {
@@ -1304,17 +1298,19 @@ async function performSystemSetup(deps: OuroCliDeps): Promise<void> {
     }
   }
 
-  // Install subagents (claude/codex skills)
-  try {
-    await deps.installSubagents()
-  } catch (error) {
-    emitNervesEvent({
-      level: "warn",
-      component: "daemon",
-      event: "daemon.subagent_install_error",
-      message: "subagent auto-install failed",
-      meta: { error: error instanceof Error ? error.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(error) },
-    })
+  // Ensure skill-management skill is available
+  if (deps.ensureSkillManagement) {
+    try {
+      await deps.ensureSkillManagement()
+    } catch (error) {
+      emitNervesEvent({
+        level: "warn",
+        component: "daemon",
+        event: "daemon.system_setup_skill_management_error",
+        message: "failed to ensure skill-management skill",
+        meta: { error: error instanceof Error ? error.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(error) },
+      })
+    }
   }
 
   // Register .ouro bundle type (UTI on macOS)

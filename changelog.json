@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.61",
+      "changes": [
+        "Workflow skills (work-planner, work-doer, work-merger) migrated to the shared ouroboros-skills repo at github.com/ouroborosbot/ouroboros-skills.",
+        "Removed the subagent-installer. Skills are now installed via the skill-management bootstrap skill or manual download.",
+        "Skills loading simplified from 3-source to 2-source model. Canonical-protocol fallback to subagents/ removed.",
+        "New ensureSkillManagement() auto-installs the skill-management bootstrap skill from the shared repo on ouro up."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.60",
       "changes": [
         "Azure OpenAI provider now supports DefaultAzureCredential for managed identity auth in production and az-login auth for local dev, with API key as an optional fallback.",

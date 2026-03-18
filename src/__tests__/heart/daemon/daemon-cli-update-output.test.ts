@@ -28,7 +28,6 @@ function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
     checkSocketAlive: vi.fn(async () => false),
     cleanupStaleSocket: vi.fn(),
     fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-    installSubagents: vi.fn(async () => ({ claudeInstalled: 0, codexInstalled: 0, notes: [] })),
     ...overrides,
   }
 }

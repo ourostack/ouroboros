@@ -48,7 +48,7 @@ Other important top-level paths:
 - `AdoptionSpecialist.ouro/`
   Packaged specialist bundle used by `ouro hatch`.
 - `subagents/`
-  Source-of-truth workflow definitions for planner/doer/merger.
+  Workflow skills have moved to [github.com/ouroborosbot/ouroboros-skills](https://github.com/ouroborosbot/ouroboros-skills). Use the skill-management skill for installation and updates.
 - `scripts/teams-sense/`
   Operator scripts for the Teams deployment path.
 - `docs/`

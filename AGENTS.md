@@ -42,7 +42,17 @@ Do not create agent-specific task directories inside this repo.
 - **Codex app**: Use skills by name: `$work-planner`, `$work-doer`, and `$work-merger`.
   - Skills are turn-scoped in practice, so re-invoke `$work-planner` on each planning/conversion turn.
   - `work-planner` already enforces `NEEDS_REVIEW` and hard-stop behavior; do not bypass it.
-- **Claude Code**: Use sub-agents from `~/.claude/agents/` (`work-planner`, `work-doer`, `work-merger`).
+- **Claude Code**: Skills are installed from `github.com/ouroborosbot/ouroboros-skills` into `~/.claude/skills/` (`work-planner`, `work-doer`, `work-merger`).
+
+### Skill Freshness
+
+Before starting work, check that locally installed skills are up to date:
+
+1. Fetch the manifest from `https://raw.githubusercontent.com/ouroborosbot/ouroboros-skills/main/manifest.json`.
+2. Compare the manifest against the local `_registry.json` in your skills directory.
+3. If any skill's commit SHA is stale, update it using the skill-management workflow before proceeding.
+
+This replaces the old pattern of diffing against `subagents/*.md` files in this repo. The shared `ouroboros-skills` repository is now the source of truth for workflow skill content.
 
 ### Gate Flow
 
