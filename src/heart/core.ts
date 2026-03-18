@@ -66,8 +66,8 @@ function getProviderRuntimeFingerprint(): string {
   const provider = loadAgentConfig().provider;
   switch (provider) {
     case "azure": {
-      const { apiKey, endpoint, deployment, modelName, apiVersion } = getAzureConfig();
-      return JSON.stringify({ provider, apiKey, endpoint, deployment, modelName, apiVersion });
+      const { apiKey, endpoint, deployment, modelName, apiVersion, managedIdentityClientId } = getAzureConfig();
+      return JSON.stringify({ provider, apiKey, endpoint, deployment, modelName, apiVersion, managedIdentityClientId });
     }
     case "anthropic": {
       const { model, setupToken } = getAnthropicConfig();

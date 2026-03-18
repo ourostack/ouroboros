@@ -10,10 +10,11 @@ import { emitNervesEvent } from "../nerves/runtime"
 
 export interface AzureProviderConfig {
   modelName: string
-  apiKey: string
+  apiKey?: string
   endpoint: string
   deployment: string
   apiVersion: string
+  managedIdentityClientId?: string
 }
 
 export interface MinimaxProviderConfig {
@@ -100,6 +101,7 @@ const DEFAULT_SECRETS_TEMPLATE: Omit<OuroborosConfig, "context"> = {
       endpoint: "",
       deployment: "",
       apiVersion: "2025-04-01-preview",
+      managedIdentityClientId: "",
     },
     minimax: {
       model: "",

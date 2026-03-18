@@ -384,6 +384,66 @@ describe("getAzureConfig", () => {
     expect(azure.apiVersion).toBe("2025-04-01-preview")
   })
 
+  it("returns apiKey as empty string when secrets.json has apiKey: ''", async () => {
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+      providers: { azure: { apiKey: "" } },
+    }))
+
+    const { getAzureConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    const azure = getAzureConfig()
+
+    expect(azure.apiKey).toBe("")
+  })
+
+  it("returns apiKey as populated when secrets.json has a real key", async () => {
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+      providers: { azure: { apiKey: "real-key-123" } },
+    }))
+
+    const { getAzureConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    const azure = getAzureConfig()
+
+    expect(azure.apiKey).toBe("real-key-123")
+  })
+
+  it("returns apiKey as empty string from default when secrets.json omits apiKey field entirely", async () => {
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+      providers: { azure: { endpoint: "https://example.openai.azure.com" } },
+    }))
+
+    const { getAzureConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    const azure = getAzureConfig()
+
+    expect(azure.apiKey).toBe("")
+  })
+
+  it("returns managedIdentityClientId when present in azure config", async () => {
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+      providers: { azure: { managedIdentityClientId: "c404d5a9-1234-5678-abcd-ef0123456789" } },
+    }))
+
+    const { getAzureConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    const azure = getAzureConfig()
+
+    expect(azure.managedIdentityClientId).toBe("c404d5a9-1234-5678-abcd-ef0123456789")
+  })
+
+  it("returns managedIdentityClientId as empty string from default when omitted", async () => {
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+      providers: { azure: { apiKey: "some-key" } },
+    }))
+
+    const { getAzureConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    const azure = getAzureConfig()
+
+    expect(azure.managedIdentityClientId).toBe("")
+  })
+
 })
 
 describe("getMinimaxConfig", () => {
