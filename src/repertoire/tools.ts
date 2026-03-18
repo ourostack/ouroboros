@@ -1,14 +1,23 @@
 import type OpenAI from "openai";
-import { baseToolDefinitions } from "./tools-base";
+import { baseToolDefinitions, editFileReadTracker } from "./tools-base";
 import type { ToolContext, ToolDefinition } from "./tools-base";
 import { teamsToolDefinitions, summarizeTeamsArgs } from "./tools-teams";
 import { bluebubblesToolDefinitions } from "./tools-bluebubbles";
 import { adoSemanticToolDefinitions } from "./ado-semantic";
 import { githubToolDefinitions, summarizeGithubArgs } from "./tools-github";
-import { isTrustedLevel, type ChannelCapabilities, type ResolvedContext } from "../mind/friends/types";
-import { isRemoteChannel } from "../mind/friends/channel";
+import type { ChannelCapabilities, ResolvedContext } from "../mind/friends/types";
 import { emitNervesEvent } from "../nerves/runtime";
 import type { ProviderCapability } from "../heart/core";
+import { guardInvocation } from "./guardrails";
+import { getAgentRoot } from "../heart/identity";
+
+function safeGetAgentRoot(): string | undefined {
+  try {
+    return getAgentRoot()
+  } catch {
+    return undefined
+  }
+}
 
 // Re-export types and constants used by the rest of the codebase
 export { tools, finalAnswerTool } from "./tools-base";
@@ -16,34 +25,10 @@ export type { ToolContext, ToolHandler, ToolDefinition } from "./tools-base";
 
 // All tool definitions in a single registry
 const allDefinitions: ToolDefinition[] = [...baseToolDefinitions, ...bluebubblesToolDefinitions, ...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions];
-/** Tool names blocked for untrusted remote contexts. Shared with prompt.ts for restriction messaging. */
-export const REMOTE_BLOCKED_LOCAL_TOOLS = new Set(["shell", "read_file", "write_file", "edit_file", "glob", "grep"]);
 
-function isTrustedRemoteContext(context?: Pick<ResolvedContext, "friend" | "channel">): boolean {
-  if (!context?.friend || !isRemoteChannel(context.channel)) return false;
-  return isTrustedLevel(context.friend.trustLevel);
-}
-
-function shouldBlockLocalTools(
-  capabilities?: ChannelCapabilities,
-  context?: Pick<ResolvedContext, "friend" | "channel">,
-): boolean {
-  if (!isRemoteChannel(capabilities)) return false;
-  return !isTrustedRemoteContext(context);
-}
-
-function blockedLocalToolMessage(): string {
-  return "I can't do that because my trust level with you isn't high enough for local shell/file operations. Ask me for a remote-safe alternative (Graph/ADO/web), or run that operation from CLI.";
-}
-
-function baseToolsForCapabilities(
-  capabilities?: ChannelCapabilities,
-  context?: Pick<ResolvedContext, "friend" | "channel">,
-): OpenAI.ChatCompletionFunctionTool[] {
+function baseToolsForCapabilities(): OpenAI.ChatCompletionFunctionTool[] {
   // Use baseToolDefinitions at call time so dynamically-added tools are included
-  const currentTools = baseToolDefinitions.map((d) => d.tool);
-  if (!shouldBlockLocalTools(capabilities, context)) return currentTools;
-  return currentTools.filter((tool) => !REMOTE_BLOCKED_LOCAL_TOOLS.has(tool.function.name));
+  return baseToolDefinitions.map((d) => d.tool);
 }
 
 // Apply a single tool preference to a tool schema, returning a new object.
@@ -79,10 +64,10 @@ function filterByCapability(
 export function getToolsForChannel(
   capabilities?: ChannelCapabilities,
   toolPreferences?: Record<string, string>,
-  context?: Pick<ResolvedContext, "friend" | "channel">,
+  _context?: Pick<ResolvedContext, "friend" | "channel">,
   providerCapabilities?: ReadonlySet<ProviderCapability>,
 ): OpenAI.ChatCompletionFunctionTool[] {
-  const baseTools = baseToolsForCapabilities(capabilities, context);
+  const baseTools = baseToolsForCapabilities();
   const bluebubblesTools = capabilities?.channel === "bluebubbles"
     ? bluebubblesToolDefinitions.map((d) => d.tool)
     : [];
@@ -150,16 +135,22 @@ export async function execTool(name: string, args: Record<string, string>, ctx?:
     return `unknown: ${name}`;
   }
 
-  if (shouldBlockLocalTools(ctx?.context?.channel, ctx?.context) && REMOTE_BLOCKED_LOCAL_TOOLS.has(name)) {
-    const message = blockedLocalToolMessage();
+  // Guardrail check: structural + trust-level
+  const guardContext = {
+    readPaths: editFileReadTracker,
+    trustLevel: ctx?.context?.friend?.trustLevel,
+    agentRoot: safeGetAgentRoot(),
+  }
+  const guardResult = guardInvocation(name, args, guardContext)
+  if (!guardResult.allowed) {
     emitNervesEvent({
       level: "warn",
-      event: "tool.error",
+      event: "tool.guardrail_block",
       component: "tools",
-      message: "blocked local tool in remote channel",
-      meta: { name, channel: ctx?.context?.channel?.channel },
+      message: "guardrail blocked tool execution",
+      meta: { name, reason: guardResult.reason },
     });
-    return message;
+    return guardResult.reason
   }
 
   try {

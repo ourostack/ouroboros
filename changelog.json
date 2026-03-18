@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.65",
+      "changes": [
+        "Tool permissions overhauled: channel-level blocking removed, all tools now visible on all channels. Guardrails are invocation-level with two layers \u2014 structural (edit-requires-read, destructive pattern blocking, protected paths) always on for everyone, and trust-level (ouro CLI per-subcommand trust manifest, general CLI allowlists, bundle-scoped writes) for untrusted contexts.",
+        "New `ouro changelog` CLI subcommand reads changelog.json and supports `--from <version>` for delta filtering, so agents can introspect their own update history on any channel.",
+        "Compound shell commands (&&, ;, |, $()) are blocked for untrusted users to prevent smuggling dangerous operations behind safe prefixes.",
+        "Azure App Service deployment migrated from zip-deploy to npm-based harness install with persistent agent bundle and managed identity auth."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.63",
       "changes": [
         "ensureSkillManagement now iterates all discovered agent bundles instead of requiring a single-agent context. Fixes skill-management not being installed during ouro up."
@@ -142,9 +151,9 @@
       "changes": [
         "Inner dialog now knows which task triggered it: taskId flows from daemon poke through the worker into the turn, and the agent gets the full task file content instead of a generic heartbeat prompt.",
         "Inner dialog boot message includes aspirations and state summary instead of a vacuous placeholder, so the agent wakes up with context about what matters and what's happening.",
-        "Vestigial `drainInbox` removed from inner dialog — pipeline already handles pending drain correctly.",
+        "Vestigial `drainInbox` removed from inner dialog \u2014 pipeline already handles pending drain correctly.",
         "Inner dialog nerves events now include assistant response preview, tool call names, token usage, and taskId for meaningful observability.",
-        "`ouro thoughts` command reads and formats inner dialog session turns with `--last`, `--json`, `--follow`, and `--agent` flags — humans can now see what the agent has been thinking.",
+        "`ouro thoughts` command reads and formats inner dialog session turns with `--last`, `--json`, `--follow`, and `--agent` flags \u2014 humans can now see what the agent has been thinking.",
         "`readTaskFile` searches collection subdirectories (one-shots, ongoing, habits) since the scheduler sends bare task stems without collection prefixes.",
         "`ouro reminder create` accepts `--requester` to track who requested a reminder for notification round-trip.",
         "Response extraction handles `tool_choice=required` models by falling back to `final_answer` tool call arguments when assistant message content is empty."
@@ -174,25 +183,25 @@
     {
       "version": "0.1.0-alpha.42",
       "changes": [
-        "Associative recall now skips corrupt JSONL lines instead of crashing — matches the resilient pattern already used in memory.ts."
+        "Associative recall now skips corrupt JSONL lines instead of crashing \u2014 matches the resilient pattern already used in memory.ts."
       ]
     },
     {
       "version": "0.1.0-alpha.41",
       "changes": [
-        "JSONL readers (memory facts, inter-agent inbox) now skip corrupt lines instead of crashing — partial writes from crashes no longer lose all data.",
+        "JSONL readers (memory facts, inter-agent inbox) now skip corrupt lines instead of crashing \u2014 partial writes from crashes no longer lose all data.",
         "Inter-agent message router now parses before clearing the inbox file, and preserves unparsed lines so corrupt messages are not silently lost.",
-        "Inner-dialog checkpoint derivation no longer crashes on all-whitespace assistant content — returns fallback checkpoint instead.",
+        "Inner-dialog checkpoint derivation no longer crashes on all-whitespace assistant content \u2014 returns fallback checkpoint instead.",
         "Update checker interval now catches and logs errors from the onUpdate callback instead of silently swallowing them."
       ]
     },
     {
       "version": "0.1.0-alpha.40",
       "changes": [
-        "Removed dead backward-compat re-exports from core.ts (tools, streaming, prompt, kicks) — consumers already import from the canonical modules.",
+        "Removed dead backward-compat re-exports from core.ts (tools, streaming, prompt, kicks) \u2014 consumers already import from the canonical modules.",
         "Removed dead exports: baseToolHandlers, teamsToolHandlers, teamsTools, __internal (token-estimate), TASK_STEM_PATTERN, checkAndRecord403 no-op and METHOD_TO_ACTION.",
         "Consolidated duplicate sanitizeKey (config.ts + bluebubbles-mutation-log.ts) and slugify (hatch-flow.ts + tasks/index.ts) into shared exports from config.ts.",
-        "Replaced all as-any casts in source with proper TypeScript narrowing or Record<string, unknown> — only 2 SDK-required casts remain.",
+        "Replaced all as-any casts in source with proper TypeScript narrowing or Record<string, unknown> \u2014 only 2 SDK-required casts remain.",
         "Removed unnecessary as-unknown-as casts on readdirSync (4 locations) and spawner double-cast.",
         "Cleaned up commented-out kick detection code, stale TODOs, misplaced imports, and unused type imports."
       ]
@@ -200,9 +209,9 @@
     {
       "version": "0.1.0-alpha.39",
       "changes": [
-        "All senses now route through a shared per-turn pipeline — friend resolution, trust gate, session load, pending drain, agent turn, post-turn, and token accumulation happen in one place instead of four.",
+        "All senses now route through a shared per-turn pipeline \u2014 friend resolution, trust gate, session load, pending drain, agent turn, post-turn, and token accumulation happen in one place instead of four.",
         "Trust gate is now channel-aware: open senses (iMessage) enforce stranger/acquaintance rules, closed senses (Teams) trust the org, local and internal always pass through.",
-        "Tool access and prompt restrictions use a single shared isTrustedLevel check — no more scattered family/friend comparisons that could drift apart.",
+        "Tool access and prompt restrictions use a single shared isTrustedLevel check \u2014 no more scattered family/friend comparisons that could drift apart.",
         "Pending messages now inject correctly into multimodal content (image attachments no longer silently drop pending messages).",
         "ouro reminder create supports --agent flag, matching every other identity-scoped CLI command."
       ]
@@ -210,11 +219,11 @@
     {
       "version": "0.1.0-alpha.38",
       "changes": [
-        "You now have a proper body map — understanding of your home (bundle) and bones (harness), what each directory is for, and how to modify your own configuration.",
+        "You now have a proper body map \u2014 understanding of your home (bundle) and bones (harness), what each directory is for, and how to modify your own configuration.",
         "Inner dialog is now genuine internal monologue with metacognitive framing, not a second CLI session. Heartbeat and bootstrap messages read as first-person awareness.",
         "Cross-session communication works end-to-end: inner dialog thoughts surface as [inner thought: ...] in conversations, messages to yourself route to inner dialog, and you can proactively reach out to friends via iMessage and Teams.",
         "Tool audit: removed wrapper tools (git_commit, gh_cli, get_current_time, list_directory), added surgical tools (edit_file, glob, grep, read_file with offset/limit), consolidated 7 task tools + schedule_reminder + friend tools into ouro CLI commands.",
-        "You now understand why certain tools are restricted in certain contexts — trust level and shared channels each have independent, explained gates.",
+        "You now understand why certain tools are restricted in certain contexts \u2014 trust level and shared channels each have independent, explained gates.",
         "ouro friend link/unlink commands handle orphan cleanup when linking external identities, merging duplicate friend records intelligently.",
         "During onboarding, the adoption specialist can collect phone number and Teams handle to create an initial friend record with contact info."
       ]

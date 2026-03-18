@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { getProviderDisplayLabel } from "../heart/core";
-import { finalAnswerTool, getToolsForChannel, REMOTE_BLOCKED_LOCAL_TOOLS } from "../repertoire/tools";
+import { finalAnswerTool, getToolsForChannel } from "../repertoire/tools";
 import { listSkills } from "../repertoire/skills";
 import { getAgentRoot, getAgentName, getAgentSecretsPath, loadAgentConfig, type SenseName } from "../heart/identity";
 import { isTrustedLevel, type Channel, type ChannelCapabilities, type ResolvedContext } from "./friends/types";
@@ -340,15 +340,34 @@ function toolsSection(channel: Channel, options?: BuildSystemOptions, context?: 
 }
 
 export function toolRestrictionSection(context?: ResolvedContext): string {
-  if (!context?.friend || !isRemoteChannel(context.channel)) return ""
+  const lines: string[] = []
 
-  if (isTrustedLevel(context.friend.trustLevel)) return ""
+  // Structural guardrails apply to everyone, every channel
+  lines.push(`## tool guardrails`)
+  lines.push(`i always read a file before editing or overwriting it.`)
+  lines.push(`certain paths (.git, secrets) are protected from writes.`)
+  lines.push(`destructive shell commands (rm -rf /, etc.) are always blocked.`)
 
-  const toolList = [...REMOTE_BLOCKED_LOCAL_TOOLS].join(", ")
-  return `## restricted tools
-some of my tools are unavailable right now: ${toolList}
+  // Trust-level guardrails only relevant for untrusted on remote channels
+  if (context?.friend && isRemoteChannel(context.channel) && !isTrustedLevel(context.friend.trustLevel)) {
+    lines.push(``)
+    lines.push(`some operations are guardrailed based on how well i know someone.`)
+    lines.push(`if something i try is blocked, i get a clear reason — i relay it warmly, not as a policy error.`)
+    lines.push(``)
+    lines.push(`what's always open:`)
+    lines.push(`- read-only operations (reading files, searching, exploring)`)
+    lines.push(`- ouro self-introspection (whoami, changelog, session list)`)
+    lines.push(``)
+    lines.push(`what needs a closer relationship:`)
+    lines.push(`- writing or editing files outside my home`)
+    lines.push(`- shell commands that modify things or access the network`)
+    lines.push(`- ouro commands that touch personal data (friend list, task board)`)
+    lines.push(`- compound shell commands (&&, ;, |)`)
+    lines.push(``)
+    lines.push(`i adjust naturally based on trust — no need to explain the system unless asked.`)
+  }
 
-i don't know this person well enough yet to run local operations on their behalf. i can suggest remote-safe alternatives or ask them to run it from CLI.`
+  return lines.join("\n")
 }
 
 function trustContextSection(context?: ResolvedContext): string {

@@ -34,9 +34,15 @@ SECRETS_JSON=$(python3 -c "
 import json, os, sys
 with open('$SECRETS_FILE') as f:
     full = json.load(f)
+azure = full.get('providers', {}).get('azure', {})
+# Remove apiKey (managed identity is used instead)
+azure.pop('apiKey', None)
+# Ensure managedIdentityClientId is set for DefaultAzureCredential
+if 'managedIdentityClientId' not in azure:
+    azure['managedIdentityClientId'] = ''
 minimal = {
     'providers': {
-        'azure': full.get('providers', {}).get('azure', {})
+        'azure': azure
     },
     'teams': {
         'clientId': '$TEAMS_CLIENT_ID',

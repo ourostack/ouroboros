@@ -31,7 +31,7 @@ import { ensureCurrentDaemonRuntime } from "./daemon-runtime-sync"
 import { listEnabledBundleAgents } from "./agent-discovery"
 import { applyPendingUpdates, registerUpdateHook } from "./update-hooks"
 import { bundleMetaHook } from "./hooks/bundle-meta"
-import { getPackageVersion } from "../../mind/bundle-manifest"
+import { getChangelogPath, getPackageVersion } from "../../mind/bundle-manifest"
 import { getTaskModule } from "../../repertoire/tasks"
 import { parseInnerDialogSession, formatThoughtTurns, getInnerDialogSessionPath, followThoughts } from "./thoughts"
 import type { TaskModule } from "../../repertoire/tasks/types"
@@ -73,6 +73,7 @@ export type OuroCliCommand =
   | { kind: "friend.create"; name: string; trustLevel?: string; agent?: string }
   | { kind: "friend.link"; agent: string; friendId: string; provider: IdentityProvider; externalId: string }
   | { kind: "friend.unlink"; agent: string; friendId: string; provider: IdentityProvider; externalId: string }
+  | { kind: "changelog"; from?: string; agent?: string }
   | { kind: "hatch.start"; agentName?: string; humanName?: string; provider?: AgentProvider; credentials?: HatchCredentialsInput; migrationPath?: string }
 
 export interface OuroCliDeps {
@@ -99,6 +100,7 @@ export interface OuroCliDeps {
   friendStore?: FriendStore
   whoamiInfo?: () => { agentName: string; homePath: string; bonesVersion: string }
   scanSessions?: () => Promise<SessionEntry[]>
+  getChangelogPath?: () => string
 }
 
 export interface SessionEntry {
@@ -800,6 +802,16 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
     return { kind: "whoami", ...(agent ? { agent } : {}) }
   }
   if (head === "session") return parseSessionCommand(args.slice(1))
+  if (head === "changelog") {
+    const sliced = args.slice(1)
+    const { agent, rest: remaining } = extractAgentFlag(sliced)
+    let from: string | undefined
+    const fromIdx = remaining.indexOf("--from")
+    if (fromIdx !== -1 && remaining[fromIdx + 1]) {
+      from = remaining[fromIdx + 1]
+    }
+    return { kind: "changelog", ...(from ? { from } : {}), ...(agent ? { agent } : {}) }
+  }
   if (head === "thoughts") return parseThoughtsCommand(args.slice(1))
   if (head === "chat") {
     if (!second) throw new Error(`Usage\n${usage()}`)
@@ -1221,7 +1233,8 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
 
 type ThoughtsCliCommand = Extract<OuroCliCommand, { kind: "thoughts" }>
 type AuthCliCommand = Extract<OuroCliCommand, { kind: "auth.run" }>
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "hatch.start" } | AuthCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand>): DaemonCommand {
+type ChangelogCliCommand = Extract<OuroCliCommand, { kind: "changelog" }>
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "hatch.start" } | AuthCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand>): DaemonCommand {
   return command
 }
 
@@ -1744,6 +1757,44 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       return message
     }
     /* v8 ignore stop */
+  }
+
+  // ── changelog (local, no daemon socket needed) ──
+  if (command.kind === "changelog") {
+    try {
+      const changelogPath = deps.getChangelogPath
+        ? deps.getChangelogPath()
+        : getChangelogPath()
+      const raw = fs.readFileSync(changelogPath, "utf-8")
+      const entries = JSON.parse(raw) as Array<{ version: string; date?: string; changes?: string[] }>
+      let filtered = entries
+      if (command.from) {
+        const fromVersion = command.from
+        filtered = entries.filter((e) => e.version > fromVersion)
+      }
+      if (filtered.length === 0) {
+        const message = "no changelog entries found."
+        deps.writeStdout(message)
+        return message
+      }
+      const lines: string[] = []
+      for (const entry of filtered) {
+        lines.push(`## ${entry.version}${entry.date ? ` (${entry.date})` : ""}`)
+        if (entry.changes) {
+          for (const change of entry.changes) {
+            lines.push(`- ${change}`)
+          }
+        }
+        lines.push("")
+      }
+      const message = lines.join("\n").trim()
+      deps.writeStdout(message)
+      return message
+    } catch {
+      const message = "no changelog entries found."
+      deps.writeStdout(message)
+      return message
+    }
   }
 
   // ── thoughts (local, no daemon socket needed) ──

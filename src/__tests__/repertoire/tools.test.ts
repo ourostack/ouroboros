@@ -834,30 +834,27 @@ describe("getToolsForChannel with ChannelCapabilities", () => {
     }
     const result = getToolsForChannel(teamsCaps)
     const names = result.map((t: any) => t.function.name)
-    const blockedLocalTools = new Set(["read_file", "write_file", "shell", "edit_file", "glob", "grep"])
-    // Exclude blocked local tools AND capability-gated tools (set_reasoning_effort) from base count
+    // Exclude capability-gated tools (set_reasoning_effort) from base count
     const capabilityGatedTools = new Set(["set_reasoning_effort"])
-    const remoteBaseCount = tools.filter((t: any) => !blockedLocalTools.has(t.function.name) && !capabilityGatedTools.has(t.function.name)).length
-    // Teams channel should exclude blocked local tools
-    expect(names).not.toContain("read_file")
-    expect(names).not.toContain("write_file")
-    expect(names).not.toContain("shell")
+    const baseCount = tools.filter((t: any) => !capabilityGatedTools.has(t.function.name)).length
+    // All base tools now returned (no channel-level blocking)
+    expect(names).toContain("read_file")
+    expect(names).toContain("write_file")
+    expect(names).toContain("shell")
     // Removed tools should not be present at all
     expect(names).not.toContain("git_commit")
     expect(names).not.toContain("gh_cli")
     expect(names).not.toContain("list_directory")
     expect(names).not.toContain("get_current_time")
-    // But still include safe base tools
+    // Integration tools
     expect(names).toContain("graph_query")
     expect(names).toContain("graph_mutate")
     expect(names).toContain("graph_profile")
     expect(names).toContain("graph_docs")
-    // Should have ado tools
     expect(names).toContain("ado_query")
     expect(names).toContain("ado_mutate")
     expect(names).toContain("ado_work_items")
     expect(names).toContain("ado_docs")
-    // Should have semantic ado tools
     expect(names).toContain("ado_backlog_list")
     expect(names).toContain("ado_create_epic")
     expect(names).toContain("ado_create_issue")
@@ -865,9 +862,9 @@ describe("getToolsForChannel with ChannelCapabilities", () => {
     expect(names).toContain("ado_restructure_backlog")
     expect(names).toContain("ado_validate_structure")
     expect(names).toContain("ado_preview_changes")
-    // remote-safe base tools + 8 teams tools + 11 semantic ado tools + 1 teams_send_message (no integration gate)
     expect(names).toContain("teams_send_message")
-    expect(result.length).toBe(remoteBaseCount + 20)
+    // base tools + 8 teams tools + 11 semantic ado tools + 1 teams_send_message
+    expect(result.length).toBe(baseCount + 20)
   })
 
   it("returns base + graph-only tools when only graph integration", async () => {
@@ -884,9 +881,8 @@ describe("getToolsForChannel with ChannelCapabilities", () => {
     }
     const result = getToolsForChannel(caps)
     const names = result.map((t: any) => t.function.name)
-    const blockedLocalTools = new Set(["read_file", "write_file", "shell", "edit_file", "glob", "grep"])
     const capabilityGatedTools = new Set(["set_reasoning_effort"])
-    const remoteBaseCount = tools.filter((t: any) => !blockedLocalTools.has(t.function.name) && !capabilityGatedTools.has(t.function.name)).length
+    const baseCount = tools.filter((t: any) => !capabilityGatedTools.has(t.function.name)).length
     // Should have graph tools
     expect(names).toContain("graph_query")
     expect(names).toContain("graph_mutate")
@@ -897,8 +893,8 @@ describe("getToolsForChannel with ChannelCapabilities", () => {
     expect(names).not.toContain("ado_mutate")
     expect(names).not.toContain("ado_work_items")
     expect(names).not.toContain("ado_docs")
-    // remote-safe base tools + 4 graph tools + 1 teams_send_message (no integration gate)
-    expect(result.length).toBe(remoteBaseCount + 5)
+    // base tools + 4 graph tools + 1 teams_send_message
+    expect(result.length).toBe(baseCount + 5)
   })
 
   it("returns base + ado-only tools when only ado integration", async () => {
@@ -915,9 +911,8 @@ describe("getToolsForChannel with ChannelCapabilities", () => {
     }
     const result = getToolsForChannel(caps)
     const names = result.map((t: any) => t.function.name)
-    const blockedLocalTools = new Set(["read_file", "write_file", "shell", "edit_file", "glob", "grep"])
     const capabilityGatedTools = new Set(["set_reasoning_effort"])
-    const remoteBaseCount = tools.filter((t: any) => !blockedLocalTools.has(t.function.name) && !capabilityGatedTools.has(t.function.name)).length
+    const baseCount = tools.filter((t: any) => !capabilityGatedTools.has(t.function.name)).length
     // Should have ado tools
     expect(names).toContain("ado_query")
     expect(names).toContain("ado_mutate")
@@ -930,8 +925,8 @@ describe("getToolsForChannel with ChannelCapabilities", () => {
     expect(names).not.toContain("graph_docs")
     // Should have semantic ado tools
     expect(names).toContain("ado_backlog_list")
-    // remote-safe base tools + 4 ado tools + 11 semantic ado tools + 1 teams_send_message (no integration gate)
-    expect(result.length).toBe(remoteBaseCount + 16)
+    // base tools + 4 ado tools + 11 semantic ado tools + 1 teams_send_message
+    expect(result.length).toBe(baseCount + 16)
   })
 })
 
@@ -1174,7 +1169,7 @@ describe("tool access trust-level alignment (D1b Rule 1)", () => {
 
   const blockedToolNames = ["shell", "read_file", "write_file", "edit_file", "glob", "grep"]
 
-  it("blocks local tools for acquaintance on remote channel", async () => {
+  it("returns all tools for acquaintance on remote channel (guardrails at exec time)", async () => {
     vi.resetModules()
     const { getToolsForChannel } = await import("../../repertoire/tools")
     const friend = makeFriend("acquaintance")
@@ -1182,11 +1177,11 @@ describe("tool access trust-level alignment (D1b Rule 1)", () => {
     const result = getToolsForChannel(bbCaps, undefined, context)
     const names = result.map((t: any) => t.function.name)
     for (const tool of blockedToolNames) {
-      expect(names).not.toContain(tool)
+      expect(names).toContain(tool)
     }
   })
 
-  it("blocks local tools for stranger on remote channel", async () => {
+  it("returns all tools for stranger on remote channel (guardrails at exec time)", async () => {
     vi.resetModules()
     const { getToolsForChannel } = await import("../../repertoire/tools")
     const friend = makeFriend("stranger")
@@ -1194,7 +1189,7 @@ describe("tool access trust-level alignment (D1b Rule 1)", () => {
     const result = getToolsForChannel(bbCaps, undefined, context)
     const names = result.map((t: any) => t.function.name)
     for (const tool of blockedToolNames) {
-      expect(names).not.toContain(tool)
+      expect(names).toContain(tool)
     }
   })
 
@@ -1264,7 +1259,7 @@ describe("tool access trust-level alignment (D1b Rule 1)", () => {
     }
   })
 
-  it("execTool blocks read_file for acquaintance on remote channel", async () => {
+  it("execTool allows read_file for acquaintance on remote channel (no channel blocking)", async () => {
     vi.resetModules()
     vi.mocked(fs.readFileSync).mockReturnValue("file content")
     const { execTool } = await import("../../repertoire/tools")
@@ -1276,7 +1271,7 @@ describe("tool access trust-level alignment (D1b Rule 1)", () => {
       },
     }
     const result = await execTool("read_file", { path: "/tmp/test.txt" }, ctx)
-    expect(result).toContain("can't")
+    expect(result).toBe("file content")
   })
 
   it("execTool allows read_file for family in group chat on remote channel", async () => {
@@ -1297,8 +1292,9 @@ describe("tool access trust-level alignment (D1b Rule 1)", () => {
     expect(result).toBe("file content")
   })
 
-  it("blocked tool message references trust level, not group chat", async () => {
+  it("execTool allows read_file for stranger on remote channel (no channel blocking)", async () => {
     vi.resetModules()
+    vi.mocked(fs.readFileSync).mockReturnValue("file content")
     const { execTool } = await import("../../repertoire/tools")
     const ctx = {
       signin: vi.fn(),
@@ -1308,9 +1304,7 @@ describe("tool access trust-level alignment (D1b Rule 1)", () => {
       },
     }
     const result = await execTool("read_file", { path: "/tmp/test.txt" }, ctx)
-    expect(result).not.toContain("multiple people")
-    expect(result).not.toContain("shared remote channel")
-    expect(result).toContain("trust")
+    expect(result).toBe("file content")
   })
 })
 
@@ -1345,9 +1339,9 @@ describe("ToolContext shape", () => {
         },
       },
     }
-    // Teams context should deny local file operations
+    // Channel-level blocking removed — execTool now allows all tools
     const result = await execTool("read_file", { path: "/tmp/test.txt" }, ctx)
-    expect(result).toContain("I can't do that")
+    expect(result).toBe("file content")
   })
 
   it("ToolContext does NOT have adoOrganizations field", async () => {
@@ -2023,17 +2017,17 @@ describe("getToolsForChannel includes docs tools", () => {
     }
     const teamsTools = getToolsForChannel(teamsCaps)
     const names = teamsTools.map((t: any) => t.function.name)
-    const blockedLocalTools = new Set(["read_file", "write_file", "shell", "edit_file", "glob", "grep"])
     const capabilityGatedTools = new Set(["set_reasoning_effort"])
-    const remoteBaseCount = tools.filter((t: any) => !blockedLocalTools.has(t.function.name) && !capabilityGatedTools.has(t.function.name)).length
+    const baseCount = tools.filter((t: any) => !capabilityGatedTools.has(t.function.name)).length
     expect(names).toContain("graph_docs")
     expect(names).toContain("ado_docs")
     // Should have semantic ado tools
     expect(names).toContain("ado_backlog_list")
-    expect(names).not.toContain("read_file")
-    expect(names).not.toContain("shell")
-    // remote-safe base tools + 8 teams tools (4 generic + 2 aliases + 2 docs) + 11 semantic ado tools + 1 teams_send_message
-    expect(teamsTools.length).toBe(remoteBaseCount + 20)
+    // All base tools now present (no channel-level blocking)
+    expect(names).toContain("read_file")
+    expect(names).toContain("shell")
+    // base tools + 8 teams tools (4 generic + 2 aliases + 2 docs) + 11 semantic ado tools + 1 teams_send_message
+    expect(teamsTools.length).toBe(baseCount + 20)
   })
 
   it("cli channel does NOT include graph_docs or ado_docs", async () => {
@@ -2604,7 +2598,7 @@ describe("github tool registration", () => {
     expect(summarizeArgs("file_ouroboros_bug", {})).toBe("")
   })
 
-  it("file_ouroboros_bug is NOT in REMOTE_BLOCKED_LOCAL_TOOLS", async () => {
+  it("file_ouroboros_bug executes on remote channel (no channel-level blocking)", async () => {
     vi.resetModules()
     const { execTool } = await import("../../repertoire/tools")
     // If it were blocked, calling it in a remote context would return "can't do that from here"

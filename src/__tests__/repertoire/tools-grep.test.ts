@@ -141,12 +141,12 @@ describe("grep tool", () => {
     expect(result).not.toContain("gamma")
   })
 
-  // --- REMOTE_BLOCKED_LOCAL_TOOLS ---
+  // --- tool availability ---
 
-  it("is in REMOTE_BLOCKED_LOCAL_TOOLS (filtered from remote channel tool lists)", () => {
+  it("is available in all channel tool lists (guardrails handle safety at exec time)", () => {
     const tools = getToolsForChannel(getChannelCapabilities("teams"))
     const names = tools.map((t) => t.function.name)
-    expect(names).not.toContain("grep")
+    expect(names).toContain("grep")
   })
 
   // --- Edge cases ---

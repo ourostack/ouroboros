@@ -374,11 +374,11 @@ describe("pipeline integration — full UX/AX scenarios", () => {
       expect(input.postTurn).toHaveBeenCalledTimes(1)
       expect(input.accumulateFriendTokens).toHaveBeenCalledTimes(1)
 
-      // But tools are restricted — acquaintance on remote channel gets no local tools
+      // All tools returned in tool list (guardrails at exec time, not channel-level blocking)
       const toolsAvailable = getToolsForChannel(caps, undefined, context)
       const toolNames = toolsAvailable.map((t) => t.function.name)
       for (const localTool of LOCAL_TOOL_NAMES) {
-        expect(toolNames).not.toContain(localTool)
+        expect(toolNames).toContain(localTool)
       }
     })
   })
@@ -443,11 +443,11 @@ describe("pipeline integration — full UX/AX scenarios", () => {
       expect(input.runAgent).toHaveBeenCalledTimes(1)
       expect(input.postTurn).toHaveBeenCalledTimes(1)
 
-      // Tools restricted — stranger on remote channel gets no local tools
+      // All tools returned in tool list (guardrails at exec time, not channel-level blocking)
       const toolsAvailable = getToolsForChannel(caps, undefined, context)
       const toolNames = toolsAvailable.map((t) => t.function.name)
       for (const localTool of LOCAL_TOOL_NAMES) {
-        expect(toolNames).not.toContain(localTool)
+        expect(toolNames).toContain(localTool)
       }
     })
   })
@@ -601,16 +601,17 @@ describe("pipeline integration — full UX/AX scenarios", () => {
       isGroupChat?: boolean
       groupHasFamilyMember?: boolean
     }> = [
+      // All tools are now always returned in the tool list (guardrails at exec time, not channel-level blocking)
       { label: "family on BB", trustLevel: "family", channel: "bluebubbles", expectAllowed: true, expectLocalTools: true },
       { label: "friend on BB", trustLevel: "friend", channel: "bluebubbles", expectAllowed: true, expectLocalTools: true },
-      { label: "acquaintance on BB 1:1", trustLevel: "acquaintance", channel: "bluebubbles", expectAllowed: false, expectLocalTools: false },
-      { label: "stranger on BB", trustLevel: "stranger", channel: "bluebubbles", expectAllowed: false, expectLocalTools: false },
+      { label: "acquaintance on BB 1:1", trustLevel: "acquaintance", channel: "bluebubbles", expectAllowed: false, expectLocalTools: true },
+      { label: "stranger on BB", trustLevel: "stranger", channel: "bluebubbles", expectAllowed: false, expectLocalTools: true },
       { label: "family on Teams", trustLevel: "family", channel: "teams", expectAllowed: true, expectLocalTools: true },
-      { label: "stranger on Teams", trustLevel: "stranger", channel: "teams", expectAllowed: true, expectLocalTools: false },
-      { label: "acquaintance on Teams", trustLevel: "acquaintance", channel: "teams", expectAllowed: true, expectLocalTools: false },
+      { label: "stranger on Teams", trustLevel: "stranger", channel: "teams", expectAllowed: true, expectLocalTools: true },
+      { label: "acquaintance on Teams", trustLevel: "acquaintance", channel: "teams", expectAllowed: true, expectLocalTools: true },
       { label: "family on CLI", trustLevel: "family", channel: "cli", expectAllowed: true, expectLocalTools: true },
       { label: "stranger on CLI", trustLevel: "stranger", channel: "cli", expectAllowed: true, expectLocalTools: true },
-      { label: "acquaintance in BB group+family", trustLevel: "acquaintance", channel: "bluebubbles", expectAllowed: true, expectLocalTools: false, isGroupChat: true, groupHasFamilyMember: true },
+      { label: "acquaintance in BB group+family", trustLevel: "acquaintance", channel: "bluebubbles", expectAllowed: true, expectLocalTools: true, isGroupChat: true, groupHasFamilyMember: true },
     ]
 
     for (const s of scenarios) {

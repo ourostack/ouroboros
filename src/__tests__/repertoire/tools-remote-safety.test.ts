@@ -6,37 +6,132 @@ import { execTool, getToolsForChannel } from "../../repertoire/tools"
 import type { ToolContext } from "../../repertoire/tools"
 import { getChannelCapabilities } from "../../mind/friends/channel"
 
-describe("remote channel tool safety", () => {
-  it("does not expose local cli/file tools to remote channel tool lists", () => {
+describe("remote channel tool safety — post-guardrail model", () => {
+  it("REMOTE_BLOCKED_LOCAL_TOOLS export no longer exists", async () => {
+    const toolsModule = await import("../../repertoire/tools")
+    expect("REMOTE_BLOCKED_LOCAL_TOOLS" in toolsModule).toBe(false)
+  })
+
+  it("shouldBlockLocalTools function no longer exists", async () => {
+    const toolsModule = await import("../../repertoire/tools") as any
+    expect(toolsModule.shouldBlockLocalTools).toBeUndefined()
+  })
+
+  it("blockedLocalToolMessage function no longer exists", async () => {
+    const toolsModule = await import("../../repertoire/tools") as any
+    expect(toolsModule.blockedLocalToolMessage).toBeUndefined()
+  })
+
+  it("baseToolsForCapabilities returns all base tools regardless of channel/context (teams)", () => {
     const tools = getToolsForChannel(getChannelCapabilities("teams"))
     const names = tools.map((t) => t.function.name)
 
-    expect(names).not.toContain("shell")
-    expect(names).not.toContain("read_file")
-    expect(names).not.toContain("write_file")
-    // git_commit and gh_cli have been fully removed from base tools, not just blocked
-    expect(names).not.toContain("git_commit")
-    expect(names).not.toContain("gh_cli")
+    // All base tools should be present — no longer filtered
+    expect(names).toContain("shell")
+    expect(names).toContain("read_file")
+    expect(names).toContain("write_file")
+    expect(names).toContain("edit_file")
+    expect(names).toContain("glob")
+    expect(names).toContain("grep")
   })
 
-  it("file_ouroboros_bug appears in Teams tool list (integration tool, not blocked)", () => {
-    const tools = getToolsForChannel(getChannelCapabilities("teams"))
-    const names = tools.map((t) => t.function.name)
-
-    expect(names).toContain("file_ouroboros_bug")
-  })
-
-  it("does not expose local cli/file tools to bluebubbles tool lists", () => {
+  it("baseToolsForCapabilities returns all base tools regardless of channel/context (bluebubbles)", () => {
     const tools = getToolsForChannel(getChannelCapabilities("bluebubbles"))
     const names = tools.map((t) => t.function.name)
 
-    expect(names).not.toContain("shell")
-    expect(names).not.toContain("read_file")
-    expect(names).not.toContain("write_file")
-    // git_commit and gh_cli have been fully removed from base tools
-    expect(names).not.toContain("git_commit")
-    expect(names).not.toContain("gh_cli")
+    expect(names).toContain("shell")
+    expect(names).toContain("read_file")
+    expect(names).toContain("write_file")
+    expect(names).toContain("edit_file")
+    expect(names).toContain("glob")
+    expect(names).toContain("grep")
   })
+
+  it("baseToolsForCapabilities returns all base tools for untrusted stranger context", () => {
+    const tools = getToolsForChannel(
+      getChannelCapabilities("bluebubbles"),
+      undefined,
+      {
+        friend: {
+          id: "friend-4",
+          name: "Unknown",
+          trustLevel: "stranger",
+          externalIds: [{ provider: "imessage-handle", externalId: "unknown@example.com", linkedAt: "2026-03-08T00:00:00.000Z" }],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          createdAt: "2026-03-08T00:00:00.000Z",
+          updatedAt: "2026-03-08T00:00:00.000Z",
+          schemaVersion: 1,
+        },
+        channel: getChannelCapabilities("bluebubbles"),
+      },
+    )
+    const names = tools.map((t) => t.function.name)
+
+    // Even strangers get all tools in the tool list — guardrails handle safety at exec time
+    expect(names).toContain("shell")
+    expect(names).toContain("read_file")
+    expect(names).toContain("write_file")
+  })
+
+  it("execTool does not block tools based on REMOTE_BLOCKED_LOCAL_TOOLS (shell reaches handler)", async () => {
+    // A shell call on a remote untrusted context should reach the handler
+    // (not return the old blockedLocalToolMessage).
+    // We test by running a simple echo — if it reaches the handler, we get the echo output.
+    const remoteContext = {
+      signin: async () => undefined,
+      context: {
+        friend: {
+          id: "friend-1",
+          name: "Test Friend",
+          trustLevel: "stranger",
+          externalIds: [],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          schemaVersion: 1,
+        },
+        channel: getChannelCapabilities("teams"),
+      },
+    } as unknown as ToolContext
+
+    const result = await execTool("shell", { command: "echo hello" }, remoteContext)
+
+    // Should NOT contain the old blocked message
+    expect(result.toLowerCase()).not.toContain("can't do that")
+    expect(result.toLowerCase()).not.toContain("trust level")
+    // Should contain the actual command output
+    expect(result.trim()).toBe("hello")
+  })
+
+  it("toolRestrictionSection does not mention blocked tools or return old restriction text", async () => {
+    const { toolRestrictionSection } = await import("../../mind/prompt")
+    const result = toolRestrictionSection({
+      friend: {
+        id: "friend-1",
+        name: "Test",
+        trustLevel: "stranger",
+        externalIds: [],
+        tenantMemberships: [],
+        toolPreferences: {},
+        notes: {},
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        schemaVersion: 1,
+      },
+      channel: getChannelCapabilities("bluebubbles"),
+    })
+
+    // Should not contain the old "restricted tools" heading or tool listing
+    expect(result).not.toContain("restricted tools")
+    expect(result).not.toContain("some of my tools are unavailable")
+    expect(result).not.toContain("shell, read_file, write_file")
+  })
+
+  // --- keep existing trusted-context tests that still make sense ---
 
   it("exposes local tools for trusted one-to-one bluebubbles contexts", () => {
     const tools = getToolsForChannel(
@@ -63,35 +158,6 @@ describe("remote channel tool safety", () => {
     expect(names).toContain("shell")
     expect(names).toContain("read_file")
     expect(names).toContain("write_file")
-    // git_commit and gh_cli have been fully removed from base tools
-    expect(names).not.toContain("git_commit")
-    expect(names).not.toContain("gh_cli")
-  })
-
-  it("allows local tools for family in group bluebubbles contexts (trust-level only)", () => {
-    const tools = getToolsForChannel(
-      getChannelCapabilities("bluebubbles"),
-      undefined,
-      {
-        friend: {
-          id: "group-1",
-          name: "Consciousness TBD",
-          trustLevel: "family",
-          externalIds: [{ provider: "imessage-handle", externalId: "group:any;+;group-guid", linkedAt: "2026-03-08T00:00:00.000Z" }],
-          tenantMemberships: [],
-          toolPreferences: {},
-          notes: {},
-          createdAt: "2026-03-08T00:00:00.000Z",
-          updatedAt: "2026-03-08T00:00:00.000Z",
-          schemaVersion: 1,
-        },
-        channel: getChannelCapabilities("bluebubbles"),
-      },
-    )
-    const names = tools.map((t) => t.function.name)
-
-    expect(names).toContain("shell")
-    expect(names).toContain("read_file")
   })
 
   it("exposes local tools for trusted one-to-one teams contexts", () => {
@@ -120,177 +186,11 @@ describe("remote channel tool safety", () => {
     expect(names).toContain("read_file")
   })
 
-  it("treats missing externalIds as a non-shared trusted remote context", () => {
-    const tools = getToolsForChannel(
-      getChannelCapabilities("bluebubbles"),
-      undefined,
-      {
-        friend: {
-          id: "friend-4",
-          name: "Casey",
-          trustLevel: "family",
-          tenantMemberships: [],
-          toolPreferences: {},
-          notes: {},
-          createdAt: "2026-03-08T00:00:00.000Z",
-          updatedAt: "2026-03-08T00:00:00.000Z",
-          schemaVersion: 1,
-        },
-        channel: getChannelCapabilities("bluebubbles"),
-      },
-    )
+  it("file_ouroboros_bug appears in Teams tool list (integration tool, not blocked)", () => {
+    const tools = getToolsForChannel(getChannelCapabilities("teams"))
     const names = tools.map((t) => t.function.name)
 
-    expect(names).toContain("shell")
-    expect(names).toContain("read_file")
-  })
-
-  it("treats undefined trustLevel as friend (backward compat — legacy friends keep tool access)", () => {
-    const tools = getToolsForChannel(
-      getChannelCapabilities("bluebubbles"),
-      undefined,
-      {
-        friend: {
-          id: "friend-legacy",
-          name: "Legacy Friend",
-          // trustLevel intentionally omitted — pre-trust-level friend records
-          externalIds: [],
-          tenantMemberships: [],
-          toolPreferences: {},
-          notes: {},
-          createdAt: "2026-01-01T00:00:00.000Z",
-          updatedAt: "2026-01-01T00:00:00.000Z",
-          schemaVersion: 1,
-        } as any,
-        channel: getChannelCapabilities("bluebubbles"),
-      },
-    )
-    const names = tools.map((t) => t.function.name)
-
-    expect(names).toContain("shell")
-    expect(names).toContain("read_file")
-  })
-
-  it("allows local tools for family in teams conversations (trust-level only)", () => {
-    const tools = getToolsForChannel(
-      getChannelCapabilities("teams"),
-      undefined,
-      {
-        friend: {
-          id: "friend-3",
-          name: "Project Group",
-          trustLevel: "family",
-          externalIds: [{ provider: "teams-conversation", externalId: "19:conversation-id", linkedAt: "2026-03-08T00:00:00.000Z" }],
-          tenantMemberships: [],
-          toolPreferences: {},
-          notes: {},
-          createdAt: "2026-03-08T00:00:00.000Z",
-          updatedAt: "2026-03-08T00:00:00.000Z",
-          schemaVersion: 1,
-        },
-        channel: getChannelCapabilities("teams"),
-      },
-    )
-    const names = tools.map((t) => t.function.name)
-
-    expect(names).toContain("shell")
-    expect(names).toContain("read_file")
-  })
-
-  it("returns explanatory denial messaging when remote context attempts local shell execution", async () => {
-    const remoteContext = {
-      signin: async () => undefined,
-      context: {
-        identity: {
-          id: "friend-1",
-          displayName: "Test Friend",
-          externalIds: [],
-          tenantMemberships: [],
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          schemaVersion: 1,
-        },
-        channel: getChannelCapabilities("teams"),
-        memory: null,
-      },
-    } as unknown as ToolContext
-
-    const result = await execTool("shell", { command: "echo hello" }, remoteContext)
-
-    expect(result.toLowerCase()).toContain("can't do that")
-    expect(result.toLowerCase()).toContain("trust")
-  })
-
-  it("returns explanatory denial messaging when bluebubbles context attempts local shell execution", async () => {
-    const remoteContext = {
-      signin: async () => undefined,
-      context: {
-        friend: {
-          id: "friend-1",
-          name: "Test Friend",
-          trustLevel: "stranger",
-          externalIds: [],
-          tenantMemberships: [],
-          toolPreferences: {},
-          notes: {},
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          schemaVersion: 1,
-        },
-        channel: getChannelCapabilities("bluebubbles"),
-      },
-    } as unknown as ToolContext
-
-    const result = await execTool("shell", { command: "echo hello" }, remoteContext)
-
-    expect(result.toLowerCase()).toContain("can't do that")
-    expect(result.toLowerCase()).toContain("trust")
-  })
-
-  it("keeps local tools blocked for stranger one-to-one bluebubbles contexts", async () => {
-    const tools = getToolsForChannel(
-      getChannelCapabilities("bluebubbles"),
-      undefined,
-      {
-        friend: {
-          id: "friend-4",
-          name: "Unknown",
-          trustLevel: "stranger",
-          externalIds: [{ provider: "imessage-handle", externalId: "unknown@example.com", linkedAt: "2026-03-08T00:00:00.000Z" }],
-          tenantMemberships: [],
-          toolPreferences: {},
-          notes: {},
-          createdAt: "2026-03-08T00:00:00.000Z",
-          updatedAt: "2026-03-08T00:00:00.000Z",
-          schemaVersion: 1,
-        },
-        channel: getChannelCapabilities("bluebubbles"),
-      },
-    )
-
-    expect(tools.map((t) => t.function.name)).not.toContain("shell")
-
-    const result = await execTool("shell", { command: "echo hello" }, {
-      signin: async () => undefined,
-      context: {
-        friend: {
-          id: "friend-4",
-          name: "Unknown",
-          trustLevel: "stranger",
-          externalIds: [{ provider: "imessage-handle", externalId: "unknown@example.com", linkedAt: "2026-03-08T00:00:00.000Z" }],
-          tenantMemberships: [],
-          toolPreferences: {},
-          notes: {},
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          schemaVersion: 1,
-        },
-        channel: getChannelCapabilities("bluebubbles"),
-      },
-    } as unknown as ToolContext)
-
-    expect(result.toLowerCase()).toContain("can't do that")
-    expect(result.toLowerCase()).toContain("trust")
+    expect(names).toContain("file_ouroboros_bug")
   })
 
   it("allows local file reads for trusted one-to-one bluebubbles contexts", async () => {
@@ -322,5 +222,142 @@ describe("remote channel tool safety", () => {
     } finally {
       fs.unlinkSync(filePath)
     }
+  })
+})
+
+describe("execTool guardrail wiring", () => {
+  it("execTool calls guardInvocation and returns reason when blocked", async () => {
+    // edit_file without prior read should be blocked by structural guardrail
+    const ctx = {
+      signin: async () => undefined,
+      context: {
+        friend: {
+          id: "friend-1",
+          name: "Test",
+          trustLevel: "family",
+          externalIds: [],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          schemaVersion: 1,
+        },
+        channel: getChannelCapabilities("teams"),
+      },
+    } as unknown as ToolContext
+
+    const result = await execTool("edit_file", { path: "/some/unread/file.ts", old_string: "x", new_string: "y" }, ctx)
+    // Should get a guardrail block reason, not a handler error
+    expect(result).toMatch(/read.*file/i)
+  })
+
+  it("execTool allows tool when guardInvocation returns allowed", async () => {
+    const filePath = path.join(os.tmpdir(), `guardrail-test-${Date.now()}.txt`)
+    fs.writeFileSync(filePath, "original content", "utf8")
+
+    const ctx = {
+      signin: async () => undefined,
+      context: {
+        friend: {
+          id: "friend-1",
+          name: "Test",
+          trustLevel: "family",
+          externalIds: [],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          schemaVersion: 1,
+        },
+        channel: getChannelCapabilities("cli"),
+      },
+    } as unknown as ToolContext
+
+    try {
+      // First read the file (populates editFileReadTracker via handler)
+      await execTool("read_file", { path: filePath }, ctx)
+      // Now edit should work
+      const result = await execTool("edit_file", { path: filePath, old_string: "original", new_string: "modified" }, ctx)
+      expect(result).not.toMatch(/read.*file.*first/i)
+    } finally {
+      fs.unlinkSync(filePath)
+    }
+  })
+
+  it("execTool emits nerves event when guardrail blocks", async () => {
+    // We can verify indirectly: the block message should be returned
+    const ctx = {
+      signin: async () => undefined,
+      context: {
+        friend: {
+          id: "friend-1",
+          name: "Test",
+          trustLevel: "acquaintance",
+          externalIds: [],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          schemaVersion: 1,
+        },
+        channel: getChannelCapabilities("teams"),
+      },
+    } as unknown as ToolContext
+
+    // Acquaintance trying npm install should be trust-blocked
+    const result = await execTool("shell", { command: "npm install" }, ctx)
+    expect(result).toMatch(/friend|vouch|closer/i)
+  })
+
+  it("trust level flows from ctx.context.friend.trustLevel into guard context", async () => {
+    // stranger trying shell mutation should be blocked
+    const ctx = {
+      signin: async () => undefined,
+      context: {
+        friend: {
+          id: "friend-1",
+          name: "Stranger",
+          trustLevel: "stranger",
+          externalIds: [],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          schemaVersion: 1,
+        },
+        channel: getChannelCapabilities("teams"),
+      },
+    } as unknown as ToolContext
+
+    const result = await execTool("shell", { command: "git commit -m test" }, ctx)
+    expect(result).toMatch(/friend|vouch|closer/i)
+  })
+
+  it("destructive shell blocked even for trusted friend (structural guardrail)", async () => {
+    const ctx = {
+      signin: async () => undefined,
+      context: {
+        friend: {
+          id: "friend-1",
+          name: "Family",
+          trustLevel: "family",
+          externalIds: [],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          schemaVersion: 1,
+        },
+        channel: getChannelCapabilities("cli"),
+      },
+    } as unknown as ToolContext
+
+    const result = await execTool("shell", { command: "rm -rf /" }, ctx)
+    expect(result).toMatch(/dangerous/i)
   })
 })

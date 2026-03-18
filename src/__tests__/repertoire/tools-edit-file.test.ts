@@ -178,14 +178,13 @@ describe("edit_file tool", () => {
     expect(result2).toContain("must read")
   })
 
-  // --- REMOTE_BLOCKED_LOCAL_TOOLS ---
+  // --- tool availability ---
 
-  it("is in REMOTE_BLOCKED_LOCAL_TOOLS", () => {
-    // Verify that edit_file is filtered from remote channel tool lists
+  it("is available in all channel tool lists (guardrails handle safety at exec time)", () => {
     const tools = getToolsForChannel(getChannelCapabilities("teams"))
     const names = tools.map((t) => t.function.name)
 
-    expect(names).not.toContain("edit_file")
+    expect(names).toContain("edit_file")
   })
 
   // --- Edge cases ---

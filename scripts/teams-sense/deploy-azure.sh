@@ -2,6 +2,12 @@
 set -euo pipefail
 
 # Deploy Ouroboros to Azure App Service
+#
+# Architecture:
+#   - Harness code comes from npm (@ouro.bot/cli@alpha), installed on startup
+#   - Agent bundle is uploaded separately to /home/AgentBundles/ouroboros.ouro/
+#   - This script provisions infrastructure and uploads the startup script
+#
 # Usage: bash scripts/teams-sense/deploy-azure.sh
 #
 # Required env vars (or edit defaults below):
@@ -15,6 +21,7 @@ APP_NAME="${AZURE_APP_NAME:-ouroboros-bot}"
 BOT_NAME="${AZURE_BOT_NAME:?Set AZURE_BOT_NAME}"
 MI_NAME="${AZURE_MI_NAME:?Set AZURE_MI_NAME}"
 NODE_VERSION="22-lts"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "==> Setting subscription"
 az account set --subscription "$SUB"
@@ -41,11 +48,19 @@ az webapp identity assign \
   --resource-group "$RG" \
   --identities "$MI_ID"
 
+echo "==> Uploading startup script to /home/startup.sh"
+az webapp deploy \
+  --name "$APP_NAME" \
+  --resource-group "$RG" \
+  --src-path "$SCRIPT_DIR/startup.sh" \
+  --target-path /home/startup.sh \
+  --type static
+
 echo "==> Configuring startup command"
 az webapp config set \
   --name "$APP_NAME" \
   --resource-group "$RG" \
-  --startup-file "bash scripts/teams-sense/startup.sh"
+  --startup-file "bash /home/startup.sh"
 
 echo "==> Enabling always-on"
 az webapp config set \
@@ -59,20 +74,13 @@ az bot update \
   --resource-group "$RG" \
   --endpoint "https://${APP_NAME}.azurewebsites.net/api/messages"
 
-echo "==> Building project"
-npm run build
-
-echo "==> Deploying code"
-az webapp up \
-  --name "$APP_NAME" \
-  --resource-group "$RG" \
-  --runtime "NODE|$NODE_VERSION"
-
 echo ""
-echo "Done! App Service deployed."
+echo "Done! Infrastructure provisioned."
 echo "Messaging endpoint: https://${APP_NAME}.azurewebsites.net/api/messages"
 echo ""
 echo "Remaining steps:"
-echo "  1. Set secrets: bash scripts/teams-sense/set-app-secrets.sh"
-echo "  2. Upload manifest zip to Teams Admin Center"
-echo "  3. Message @Ouroboros in Teams"
+echo "  1. Upload agent bundle to /home/AgentBundles/ouroboros.ouro/"
+echo "  2. Set secrets: bash scripts/teams-sense/set-app-secrets.sh"
+echo "  3. Restart the app: az webapp restart --name $APP_NAME --resource-group $RG"
+echo "  4. Upload manifest zip to Teams Admin Center"
+echo "  5. Message @Ouroboros in Teams"

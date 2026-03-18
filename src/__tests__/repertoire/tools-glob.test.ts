@@ -90,12 +90,12 @@ describe("glob tool", () => {
     expect(lines[2]).toContain("charlie.ts")
   })
 
-  // --- REMOTE_BLOCKED_LOCAL_TOOLS ---
+  // --- tool availability ---
 
-  it("is in REMOTE_BLOCKED_LOCAL_TOOLS (filtered from remote channel tool lists)", () => {
+  it("is available in all channel tool lists (guardrails handle safety at exec time)", () => {
     const tools = getToolsForChannel(getChannelCapabilities("teams"))
     const names = tools.map((t) => t.function.name)
-    expect(names).not.toContain("glob")
+    expect(names).toContain("glob")
   })
 
   // --- Defaults ---
