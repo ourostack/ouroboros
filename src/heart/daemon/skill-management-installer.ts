@@ -14,9 +14,14 @@ export async function ensureSkillManagement(): Promise<void> {
     return
   }
 
+  // eslint-disable-next-line no-console -- terminal UX: visible install status
+  console.log("installing skill-management from ouroboros-skills...")
+
   try {
     const response = await fetch(SKILL_MANAGEMENT_URL)
     if (!response.ok) {
+      // eslint-disable-next-line no-console -- terminal UX: visible install status
+      console.error(`✗ failed to fetch skill-management (HTTP ${response.status})`)
       emitNervesEvent({
         level: "warn",
         component: "daemon",
@@ -30,7 +35,11 @@ export async function ensureSkillManagement(): Promise<void> {
     const content = await response.text()
     fs.mkdirSync(skillsDir, { recursive: true })
     fs.writeFileSync(targetPath, content, "utf-8")
+    // eslint-disable-next-line no-console -- terminal UX: visible install status
+    console.log("✓ installed skill-management")
   } catch (error) {
+    // eslint-disable-next-line no-console -- terminal UX: visible install status
+    console.error(`✗ failed to install skill-management: ${error instanceof Error ? error.message : String(error)}`)
     emitNervesEvent({
       level: "warn",
       component: "daemon",

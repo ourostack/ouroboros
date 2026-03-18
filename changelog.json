@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.62",
+      "changes": [
+        "ensureSkillManagement now prints to stdout on install/failure instead of only emitting silent nerves events."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.61",
       "changes": [
         "Workflow skills (work-planner, work-doer, work-merger) migrated to the shared ouroboros-skills repo at github.com/ouroborosbot/ouroboros-skills.",
