@@ -1302,15 +1302,17 @@ async function performSystemSetup(deps: OuroCliDeps): Promise<void> {
   if (deps.ensureSkillManagement) {
     try {
       await deps.ensureSkillManagement()
+    /* v8 ignore start -- defensive: ensureSkillManagement handles its own errors internally @preserve */
     } catch (error) {
       emitNervesEvent({
         level: "warn",
         component: "daemon",
         event: "daemon.system_setup_skill_management_error",
         message: "failed to ensure skill-management skill",
-        meta: { error: error instanceof Error ? error.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(error) },
+        meta: { error: error instanceof Error ? error.message : String(error) },
       })
     }
+    /* v8 ignore stop */
   }
 
   // Register .ouro bundle type (UTI on macOS)

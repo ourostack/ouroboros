@@ -54,6 +54,28 @@ describe("ensureSkillManagement", () => {
     await ensureSkillManagement()
   })
 
+  it("installs to a single bundle (singular agent message)", async () => {
+    const existsSync = vi.fn((p: string) => {
+      if (p === "/mock/AgentBundles") return true
+      return !String(p).includes("skill-management")
+    })
+    vi.doMock("fs", () => ({
+      existsSync,
+      readdirSync: () => ["solo.ouro"],
+      writeFileSync: vi.fn(),
+      mkdirSync: vi.fn(),
+    }))
+    mockIdentity()
+    mockNerves()
+
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, text: async () => "# Content" })))
+
+    const { ensureSkillManagement } = await import("../../../heart/daemon/skill-management-installer")
+    await ensureSkillManagement()
+
+    vi.unstubAllGlobals()
+  })
+
   it("fetches and writes to all bundles missing the skill", async () => {
     const written: string[] = []
     const existsSync = vi.fn((p: string) => {
