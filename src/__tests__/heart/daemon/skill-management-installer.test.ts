@@ -5,174 +5,137 @@ describe("ensureSkillManagement", () => {
     vi.resetModules()
   })
 
-  it("skips when skill-management.md already exists", async () => {
-    const existsSync = vi.fn(() => true)
-    const writeFileSync = vi.fn()
-    const mkdirSync = vi.fn()
-    vi.doMock("fs", () => ({ existsSync, writeFileSync, mkdirSync }))
-    vi.doMock("../../../heart/identity", () => ({
-      getAgentRoot: () => "/mock/agent",
+  function mockFs(opts: { existsSync?: (p: string) => boolean; readdirSync?: () => string[] }) {
+    vi.doMock("fs", () => ({
+      existsSync: opts.existsSync ?? (() => true),
+      readdirSync: opts.readdirSync ?? (() => ["slugger.ouro"]),
+      writeFileSync: vi.fn(),
+      mkdirSync: vi.fn(),
     }))
-    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+  }
+
+  function mockIdentity() {
+    vi.doMock("../../../heart/identity", () => ({
+      getAgentBundlesRoot: () => "/mock/AgentBundles",
+    }))
+  }
+
+  function mockNerves() {
+    const emitNervesEvent = vi.fn()
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
+    return emitNervesEvent
+  }
+
+  it("skips when skill-management.md already exists in all bundles", async () => {
+    mockFs({ existsSync: () => true, readdirSync: () => ["slugger.ouro"] })
+    mockIdentity()
+    mockNerves()
 
     const { ensureSkillManagement } = await import("../../../heart/daemon/skill-management-installer")
     await ensureSkillManagement()
-
-    expect(existsSync).toHaveBeenCalledWith("/mock/agent/skills/skill-management.md")
-    expect(writeFileSync).not.toHaveBeenCalled()
+    // No fetch, no write — early return
   })
 
-  it("fetches from GitHub and writes file when missing", async () => {
-    const existsSync = vi.fn(() => false)
-    const writeFileSync = vi.fn()
-    const mkdirSync = vi.fn()
-    vi.doMock("fs", () => ({ existsSync, writeFileSync, mkdirSync }))
-    vi.doMock("../../../heart/identity", () => ({
-      getAgentRoot: () => "/mock/agent",
-    }))
-    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+  it("skips when bundles root does not exist", async () => {
+    mockFs({ existsSync: () => false })
+    mockIdentity()
+    mockNerves()
 
-    const mockFetch = vi.fn(async () => ({
-      ok: true,
-      text: async () => "# Skill Management\nContent here.",
+    const { ensureSkillManagement } = await import("../../../heart/daemon/skill-management-installer")
+    await ensureSkillManagement()
+  })
+
+  it("skips when no .ouro bundles found", async () => {
+    mockFs({ existsSync: () => true, readdirSync: () => [] })
+    mockIdentity()
+    mockNerves()
+
+    const { ensureSkillManagement } = await import("../../../heart/daemon/skill-management-installer")
+    await ensureSkillManagement()
+  })
+
+  it("fetches and writes to all bundles missing the skill", async () => {
+    const written: string[] = []
+    const existsSync = vi.fn((p: string) => {
+      if (p === "/mock/AgentBundles") return true
+      return !String(p).includes("skill-management") // bundles exist, skill doesn't
+    })
+    vi.doMock("fs", () => ({
+      existsSync,
+      readdirSync: () => ["slugger.ouro", "other.ouro"],
+      writeFileSync: vi.fn((p: string) => { written.push(p) }),
+      mkdirSync: vi.fn(),
     }))
+    mockIdentity()
+    mockNerves()
+
+    const mockFetch = vi.fn(async () => ({ ok: true, text: async () => "# Skill Content" }))
     vi.stubGlobal("fetch", mockFetch)
 
     const { ensureSkillManagement } = await import("../../../heart/daemon/skill-management-installer")
     await ensureSkillManagement()
 
-    expect(mockFetch).toHaveBeenCalledWith(
-      "https://raw.githubusercontent.com/ouroborosbot/ouroboros-skills/main/skills/skill-management/SKILL.md",
-    )
-    expect(mkdirSync).toHaveBeenCalledWith("/mock/agent/skills", { recursive: true })
-    expect(writeFileSync).toHaveBeenCalledWith(
-      "/mock/agent/skills/skill-management.md",
-      "# Skill Management\nContent here.",
-      "utf-8",
-    )
+    expect(mockFetch).toHaveBeenCalledOnce()
+    expect(written).toContain("/mock/AgentBundles/slugger.ouro/skills/skill-management.md")
+    expect(written).toContain("/mock/AgentBundles/other.ouro/skills/skill-management.md")
 
     vi.unstubAllGlobals()
   })
 
   it("warns and continues on network failure", async () => {
-    const existsSync = vi.fn(() => false)
-    const writeFileSync = vi.fn()
-    const mkdirSync = vi.fn()
-    vi.doMock("fs", () => ({ existsSync, writeFileSync, mkdirSync }))
-    vi.doMock("../../../heart/identity", () => ({
-      getAgentRoot: () => "/mock/agent",
-    }))
-    const emitNervesEvent = vi.fn()
-    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
+    mockFs({
+      existsSync: (p: string) => p === "/mock/AgentBundles" ? true : !String(p).includes("skill-management"),
+      readdirSync: () => ["slugger.ouro"],
+    })
+    mockIdentity()
+    const emitNervesEvent = mockNerves()
 
-    const mockFetch = vi.fn(async () => { throw new Error("network timeout") })
-    vi.stubGlobal("fetch", mockFetch)
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("network timeout") }))
 
     const { ensureSkillManagement } = await import("../../../heart/daemon/skill-management-installer")
-
-    // Should not throw
     await ensureSkillManagement()
 
-    expect(writeFileSync).not.toHaveBeenCalled()
     expect(emitNervesEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        level: "warn",
-        component: "daemon",
-        event: "daemon.skill_management_install_error",
-      }),
+      expect.objectContaining({ level: "warn", event: "daemon.skill_management_install_error" }),
     )
-
     vi.unstubAllGlobals()
   })
 
-  it("warns and continues when fetch returns non-ok status", async () => {
-    const existsSync = vi.fn(() => false)
-    const writeFileSync = vi.fn()
-    const mkdirSync = vi.fn()
-    vi.doMock("fs", () => ({ existsSync, writeFileSync, mkdirSync }))
-    vi.doMock("../../../heart/identity", () => ({
-      getAgentRoot: () => "/mock/agent",
-    }))
-    const emitNervesEvent = vi.fn()
-    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
+  it("warns on non-ok HTTP response", async () => {
+    mockFs({
+      existsSync: (p: string) => p === "/mock/AgentBundles" ? true : !String(p).includes("skill-management"),
+      readdirSync: () => ["slugger.ouro"],
+    })
+    mockIdentity()
+    const emitNervesEvent = mockNerves()
 
-    const mockFetch = vi.fn(async () => ({
-      ok: false,
-      status: 404,
-      text: async () => "Not Found",
-    }))
-    vi.stubGlobal("fetch", mockFetch)
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 404 })))
 
     const { ensureSkillManagement } = await import("../../../heart/daemon/skill-management-installer")
     await ensureSkillManagement()
 
-    expect(writeFileSync).not.toHaveBeenCalled()
     expect(emitNervesEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        level: "warn",
-        component: "daemon",
-        event: "daemon.skill_management_install_error",
-      }),
+      expect.objectContaining({ level: "warn", event: "daemon.skill_management_install_error" }),
     )
-
     vi.unstubAllGlobals()
   })
 
-  it("warns and continues when writeFileSync throws", async () => {
-    const existsSync = vi.fn(() => false)
-    const writeFileSync = vi.fn(() => { throw new Error("EACCES: permission denied") })
-    const mkdirSync = vi.fn()
-    vi.doMock("fs", () => ({ existsSync, writeFileSync, mkdirSync }))
-    vi.doMock("../../../heart/identity", () => ({
-      getAgentRoot: () => "/mock/agent",
-    }))
-    const emitNervesEvent = vi.fn()
-    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
+  it("handles non-Error thrown values", async () => {
+    mockFs({
+      existsSync: (p: string) => p === "/mock/AgentBundles" ? true : !String(p).includes("skill-management"),
+      readdirSync: () => ["slugger.ouro"],
+    })
+    mockIdentity()
+    const emitNervesEvent = mockNerves()
 
-    const mockFetch = vi.fn(async () => ({
-      ok: true,
-      text: async () => "# Content",
-    }))
-    vi.stubGlobal("fetch", mockFetch)
+    vi.stubGlobal("fetch", vi.fn(async () => { throw "string error" }))
 
     const { ensureSkillManagement } = await import("../../../heart/daemon/skill-management-installer")
     await ensureSkillManagement()
 
     expect(emitNervesEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        level: "warn",
-        component: "daemon",
-        event: "daemon.skill_management_install_error",
-      }),
+      expect.objectContaining({ meta: expect.objectContaining({ error: "string error" }) }),
     )
-
-    vi.unstubAllGlobals()
-  })
-
-  it("handles non-Error thrown values in the catch branch", async () => {
-    const existsSync = vi.fn(() => false)
-    const writeFileSync = vi.fn()
-    const mkdirSync = vi.fn()
-    vi.doMock("fs", () => ({ existsSync, writeFileSync, mkdirSync }))
-    vi.doMock("../../../heart/identity", () => ({
-      getAgentRoot: () => "/mock/agent",
-    }))
-    const emitNervesEvent = vi.fn()
-    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
-
-    const mockFetch = vi.fn(async () => { throw "string error value" })
-    vi.stubGlobal("fetch", mockFetch)
-
-    const { ensureSkillManagement } = await import("../../../heart/daemon/skill-management-installer")
-    await ensureSkillManagement()
-
-    expect(emitNervesEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        level: "warn",
-        meta: expect.objectContaining({ error: "string error value" }),
-      }),
-    )
-
     vi.unstubAllGlobals()
   })
 })

@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.63",
+      "changes": [
+        "ensureSkillManagement now iterates all discovered agent bundles instead of requiring a single-agent context. Fixes skill-management not being installed during ouro up."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.62",
       "changes": [
         "ensureSkillManagement now prints to stdout on install/failure instead of only emitting silent nerves events."

@@ -1,18 +1,26 @@
 import * as fs from "fs"
 import * as path from "path"
-import { getAgentRoot } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { getAgentBundlesRoot } from "../identity"
 
 const SKILL_MANAGEMENT_URL =
   "https://raw.githubusercontent.com/ouroborosbot/ouroboros-skills/main/skills/skill-management/SKILL.md"
 
 export async function ensureSkillManagement(): Promise<void> {
-  const skillsDir = path.join(getAgentRoot(), "skills")
-  const targetPath = path.join(skillsDir, "skill-management.md")
+  const bundlesRoot = getAgentBundlesRoot()
+  if (!fs.existsSync(bundlesRoot)) return
 
-  if (fs.existsSync(targetPath)) {
-    return
-  }
+  // Find all agent bundles
+  const entries = fs.readdirSync(bundlesRoot).filter(e => e.endsWith(".ouro"))
+  if (entries.length === 0) return
+
+  // Check if ANY bundle is missing the skill
+  const missing = entries.filter(e => {
+    const targetPath = path.join(bundlesRoot, e, "skills", "skill-management.md")
+    return !fs.existsSync(targetPath)
+  })
+
+  if (missing.length === 0) return
 
   // eslint-disable-next-line no-console -- terminal UX: visible install status
   console.log("installing skill-management from ouroboros-skills...")
@@ -33,10 +41,16 @@ export async function ensureSkillManagement(): Promise<void> {
     }
 
     const content = await response.text()
-    fs.mkdirSync(skillsDir, { recursive: true })
-    fs.writeFileSync(targetPath, content, "utf-8")
+
+    for (const bundle of missing) {
+      const skillsDir = path.join(bundlesRoot, bundle, "skills")
+      const targetPath = path.join(skillsDir, "skill-management.md")
+      fs.mkdirSync(skillsDir, { recursive: true })
+      fs.writeFileSync(targetPath, content, "utf-8")
+    }
+
     // eslint-disable-next-line no-console -- terminal UX: visible install status
-    console.log("✓ installed skill-management")
+    console.log(`✓ installed skill-management (${missing.length} agent${missing.length > 1 ? "s" : ""})`)
   } catch (error) {
     // eslint-disable-next-line no-console -- terminal UX: visible install status
     console.error(`✗ failed to install skill-management: ${error instanceof Error ? error.message : String(error)}`)
