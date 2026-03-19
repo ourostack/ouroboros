@@ -20,7 +20,7 @@ function safeGetAgentRoot(): string | undefined {
 }
 
 // Re-export types and constants used by the rest of the codebase
-export { tools, finalAnswerTool } from "./tools-base";
+export { tools, finalAnswerTool, noResponseTool } from "./tools-base";
 export type { ToolContext, ToolHandler, ToolDefinition } from "./tools-base";
 
 // All tool definitions in a single registry

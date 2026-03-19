@@ -362,7 +362,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     ...(mustResolveBeforeHandoff ? { mustResolveBeforeHandoff: true } : {}),
     ...(typeof lastFriendActivityAt === "string" ? { lastFriendActivityAt } : {}),
   }
-  const nextState = result.outcome === "complete" || result.outcome === "blocked" || result.outcome === "superseded"
+  const nextState = result.outcome === "complete" || result.outcome === "blocked" || result.outcome === "superseded" || result.outcome === "no_response"
     ? (typeof lastFriendActivityAt === "string"
       ? { lastFriendActivityAt }
       : undefined)

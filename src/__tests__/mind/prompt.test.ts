@@ -3153,3 +3153,133 @@ describe("mixedTrustGroupSection", () => {
     expect(result).toMatch(/who.*talking|who.*asking|depend/i)
   })
 })
+
+describe("groupChatParticipationSection", () => {
+  beforeEach(() => {
+    vi.resetModules()
+    setAgentProvider("minimax")
+  })
+
+  function makeFriendForGroup(overrides: Partial<{ trustLevel: string }> = {}) {
+    return {
+      id: "uuid-1",
+      name: "TestFriend",
+      externalIds: [{ provider: "local" as const, externalId: "test", linkedAt: "2026-01-01T00:00:00.000Z" }],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: {},
+      totalTokens: 0,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      schemaVersion: 1,
+      trustLevel: overrides.trustLevel ?? "friend",
+    }
+  }
+
+  function makeChannelCaps(channel: string, senseType: string) {
+    return {
+      channel,
+      senseType,
+      availableIntegrations: [] as any[],
+      supportsMarkdown: false,
+      supportsStreaming: true,
+      supportsRichCards: false,
+      maxMessageLength: Infinity,
+    }
+  }
+
+  it("returns non-empty string containing no_response when isGroupChat is true on remote channel", async () => {
+    const { groupChatParticipationSection } = await import("../../mind/prompt")
+    const ctx = {
+      friend: makeFriendForGroup(),
+      channel: makeChannelCaps("bluebubbles", "open"),
+      isGroupChat: true,
+    }
+    const result = groupChatParticipationSection(ctx as any)
+    expect(result).not.toBe("")
+    expect(result).toContain("no_response")
+  })
+
+  it("returns empty string when isGroupChat is false", async () => {
+    const { groupChatParticipationSection } = await import("../../mind/prompt")
+    const ctx = {
+      friend: makeFriendForGroup(),
+      channel: makeChannelCaps("bluebubbles", "open"),
+      isGroupChat: false,
+    }
+    const result = groupChatParticipationSection(ctx as any)
+    expect(result).toBe("")
+  })
+
+  it("returns empty string when isGroupChat is undefined", async () => {
+    const { groupChatParticipationSection } = await import("../../mind/prompt")
+    const ctx = {
+      friend: makeFriendForGroup(),
+      channel: makeChannelCaps("bluebubbles", "open"),
+    }
+    const result = groupChatParticipationSection(ctx as any)
+    expect(result).toBe("")
+  })
+
+  it("returns empty string for CLI channel even when isGroupChat is true", async () => {
+    const { groupChatParticipationSection } = await import("../../mind/prompt")
+    const ctx = {
+      friend: makeFriendForGroup(),
+      channel: makeChannelCaps("cli", "local"),
+      isGroupChat: true,
+    }
+    const result = groupChatParticipationSection(ctx as any)
+    expect(result).toBe("")
+  })
+
+  it("returns empty string for inner channel", async () => {
+    const { groupChatParticipationSection } = await import("../../mind/prompt")
+    const ctx = {
+      friend: makeFriendForGroup(),
+      channel: makeChannelCaps("inner", "internal"),
+      isGroupChat: true,
+    }
+    const result = groupChatParticipationSection(ctx as any)
+    expect(result).toBe("")
+  })
+
+  it("mentions intentionality, reactions, and when to stay silent", async () => {
+    const { groupChatParticipationSection } = await import("../../mind/prompt")
+    const ctx = {
+      friend: makeFriendForGroup(),
+      channel: makeChannelCaps("bluebubbles", "open"),
+      isGroupChat: true,
+    }
+    const result = groupChatParticipationSection(ctx as any)
+    // Must mention reactions/tapbacks
+    expect(result).toMatch(/reaction|tapback/i)
+    // Must mention silence or not responding
+    expect(result).toMatch(/silent|silence|quiet/i)
+    // Must mention no_response
+    expect(result).toMatch(/no_response/)
+    // Must mention sole tool call rule
+    expect(result).toMatch(/only tool call|sole/i)
+  })
+
+  it("returns empty string when context is undefined", async () => {
+    const { groupChatParticipationSection } = await import("../../mind/prompt")
+    expect(groupChatParticipationSection(undefined)).toBe("")
+  })
+
+  it("buildSystem includes group chat participation section when isGroupChat is true on remote channel", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const ctx = {
+      friend: makeFriendForGroup(),
+      channel: makeChannelCaps("bluebubbles", "open"),
+      isGroupChat: true,
+    }
+    const result = await buildSystem("bluebubbles", undefined, ctx as any)
+    expect(result).toContain("no_response")
+    expect(result).toMatch(/reaction|tapback/i)
+  })
+})

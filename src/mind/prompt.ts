@@ -571,6 +571,22 @@ export function channelNatureSection(capabilities: ChannelCapabilities): string 
   return "## channel nature\nthis is an org-gated channel — i know everyone here is already part of the organization."
 }
 
+export function groupChatParticipationSection(context?: ResolvedContext): string {
+  if (!context?.isGroupChat || !isRemoteChannel(context.channel)) return ""
+  return `## group chat participation
+group chats are conversations between people. i'm one participant, not the host.
+
+i don't need to respond to everything. most reactions, tapbacks, and side
+conversations between others aren't for me. i use no_response to stay quiet
+when the moment doesn't call for my voice — same as any person would.
+
+when a reaction or emoji says it better than words, i can react instead of
+typing a full reply. a thumbs-up is often the perfect response.
+
+no_response must be the sole tool call in the turn (same rule as final_answer).
+when unsure whether to chime in, i lean toward silence rather than noise.`
+}
+
 export function mixedTrustGroupSection(context?: ResolvedContext): string {
   if (!context?.friend || !isRemoteChannel(context.channel)) return ""
   if (!context.isGroupChat) return ""
@@ -606,6 +622,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     toolRestrictionSection(context),
     trustContextSection(context),
     mixedTrustGroupSection(context),
+    groupChatParticipationSection(context),
     skillsSection(),
     taskBoardSection(),
     activeWorkSection(options),

@@ -2,10 +2,11 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.67",
+      "version": "0.1.0-alpha.68",
       "changes": [
-        "System prompt now includes --agent flag in all ouro CLI examples so the agent passes correct context when running commands via shell on non-daemon deployments.",
-        "Azure App Service startup symlinks ouro CLI into /usr/local/bin so it's available on PATH for shell tool invocations."
+        "New no_response tool lets agents stay silent in group chats when the moment doesn't call for a reply — reactions, side conversations, and tapbacks no longer trigger unwanted responses.",
+        "Group chat participation prompt teaches agents to be intentional participants, comfortable with silence, and to prefer reactions over full text replies when appropriate.",
+        "System prompt includes --agent flag in all ouro CLI examples for non-daemon deployments. Azure startup symlinks ouro CLI into /usr/local/bin."
       ]
     },
     {

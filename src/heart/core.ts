@@ -7,7 +7,7 @@ import {
   getOpenAICodexConfig,
 } from "./config";
 import { loadAgentConfig } from "./identity";
-import { execTool, summarizeArgs, finalAnswerTool, getToolsForChannel, isConfirmationRequired } from "../repertoire/tools";
+import { execTool, summarizeArgs, finalAnswerTool, noResponseTool, getToolsForChannel, isConfirmationRequired } from "../repertoire/tools";
 import type { ToolContext } from "../repertoire/tools";
 import { getChannelCapabilities } from "../mind/friends/channel";
 import type { AssistantMessageWithReasoning, ResponseItem } from "./streaming";
@@ -232,7 +232,8 @@ export type RunAgentOutcome =
   | "blocked"
   | "superseded"
   | "aborted"
-  | "errored";
+  | "errored"
+  | "no_response";
 
 type FinalAnswerIntent = "complete" | "blocked" | "direct_reply";
 
@@ -522,7 +523,9 @@ export async function runAgent(
     // so the model can signal completion. With tool_choice: required, the
     // model must call a tool every turn — final_answer is how it exits.
     // Overridable via options.toolChoiceRequired = false (e.g. CLI).
-    const activeTools = toolChoiceRequired ? [...baseTools, finalAnswerTool] : baseTools;
+    const activeTools = toolChoiceRequired
+      ? [...baseTools, ...(currentContext?.isGroupChat ? [noResponseTool] : []), finalAnswerTool]
+      : baseTools;
     const steeringFollowUps = options?.drainSteeringFollowUps?.() ?? [];
     if (steeringFollowUps.length > 0) {
       const hasSupersedingFollowUp = steeringFollowUps.some((followUp) => followUp.effect === "clear_and_supersede");
@@ -654,13 +657,43 @@ export async function runAgent(
           continue;
         }
 
+        // Check for no_response sole call: intercept before tool execution
+        const isSoleNoResponse = result.toolCalls.length === 1 && result.toolCalls[0].name === "no_response";
+        if (isSoleNoResponse) {
+          let reason: string | undefined;
+          try {
+            const parsed = JSON.parse(result.toolCalls[0].arguments);
+            if (typeof parsed?.reason === "string") reason = parsed.reason;
+          } catch { /* ignore */ }
+          emitNervesEvent({
+            component: "engine",
+            event: "engine.no_response",
+            message: "agent declined to respond in group chat",
+            meta: { ...(reason ? { reason } : {}) },
+          });
+          messages.push(msg);
+          const silenced = "(silenced)";
+          messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: silenced });
+          providerRuntime.appendToolOutput(result.toolCalls[0].id, silenced);
+          outcome = "no_response";
+          done = true;
+          continue;
+        }
+
         messages.push(msg);
-        // SHARED: execute tools (final_answer in mixed calls is rejected inline)
+        // SHARED: execute tools (final_answer and no_response in mixed calls are rejected inline)
         for (const tc of result.toolCalls) {
           if (signal?.aborted) break;
           // Intercept final_answer in mixed call: reject it
           if (tc.name === "final_answer") {
             const rejection = "rejected: final_answer must be the only tool call. Finish your work first, then call final_answer alone.";
+            messages.push({ role: "tool", tool_call_id: tc.id, content: rejection });
+            providerRuntime.appendToolOutput(tc.id, rejection);
+            continue;
+          }
+          // Intercept no_response in mixed call: reject it
+          if (tc.name === "no_response") {
+            const rejection = "rejected: no_response must be the only tool call. call no_response alone when you want to stay silent.";
             messages.push({ role: "tool", tool_call_id: tc.id, content: rejection });
             providerRuntime.appendToolOutput(tc.id, rejection);
             continue;
