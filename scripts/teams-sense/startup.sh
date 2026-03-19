@@ -75,7 +75,10 @@ else
   echo "Harness up to date (v$INSTALLED_VERSION)"
 fi
 
-# --- 5. Start the bot ---
+# --- 5. Symlink ouro CLI into PATH so the agent can use it via shell ---
+ln -sf "$HARNESS_DIR/node_modules/.bin/ouro" /usr/local/bin/ouro
+
+# --- 6. Start the bot ---
 if [ ! -f "$ENTRY" ]; then
   echo "ERROR: teams-entry.js not found at $ENTRY"
   exit 1

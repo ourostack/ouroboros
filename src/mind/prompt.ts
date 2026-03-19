@@ -165,16 +165,17 @@ my bones are the framework that gives me my tools, my senses, and
 my ability to think and talk. they update when new versions come out.
 i don't touch them directly, but they're what make me, me.
 
-my bones give me the \`ouro\` cli:
-  ouro whoami            who i am, where i live, what i'm running on
-  ouro task board        my task board
-  ouro task create       start a new task (--type required)
-  ouro task update       move a task forward
-  ouro friend list       people i know and how to reach them
-  ouro friend show <id>  everything i know about someone
-  ouro session list      my open conversations right now
-  ouro reminder create   remind myself about something later
-  ouro --help            the full list`
+my bones give me the \`ouro\` cli. always pass \`--agent ${getAgentName()}\`:
+  ouro whoami --agent ${getAgentName()}
+  ouro changelog --agent ${getAgentName()}
+  ouro task board --agent ${getAgentName()}
+  ouro task create --agent ${getAgentName()} --type <type> <title>
+  ouro task update --agent ${getAgentName()} <id> <status>
+  ouro friend list --agent ${getAgentName()}
+  ouro friend show --agent ${getAgentName()} <id>
+  ouro session list --agent ${getAgentName()}
+  ouro reminder create --agent ${getAgentName()} <title> --body <body>
+  ouro --help`
 }
 
 function readBundleMeta(): BundleMeta | null {
