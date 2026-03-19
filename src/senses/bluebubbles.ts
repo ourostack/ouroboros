@@ -406,13 +406,15 @@ function createBlueBubblesCallbacks(
   client: BlueBubblesClient,
   chat: BlueBubblesChatRef,
   replyTarget: BlueBubblesReplyTargetController,
+  isGroupChat: boolean,
 ): BlueBubblesCallbacks {
   let textBuffer = ""
   const phrases = getPhrases()
   const activity = createDebugActivityController({
     thinkingPhrases: phrases.thinking,
     followupPhrases: phrases.followup,
-    startTypingOnModelStart: true,
+    startTypingOnModelStart: !isGroupChat,
+    startTypingOnFirstTextChunk: isGroupChat,
     suppressInitialModelStatus: true,
     suppressFollowupPhraseStatus: true,
     transport: {
@@ -705,6 +707,7 @@ async function handleBlueBubblesNormalizedEvent(
       client,
       event.chat,
       replyTarget,
+      event.chat.isGroup,
     )
     const controller = new AbortController()
 

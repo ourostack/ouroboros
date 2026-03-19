@@ -14,6 +14,7 @@ export interface DebugActivityOptions {
   followupPhrases: readonly string[]
   transport: DebugActivityTransport
   startTypingOnModelStart?: boolean
+  startTypingOnFirstTextChunk?: boolean
   suppressInitialModelStatus?: boolean
   suppressFollowupPhraseStatus?: boolean
   onTransportError?: (operation: string, error: unknown) => void
@@ -141,7 +142,13 @@ export function createDebugActivityController(options: DebugActivityOptions): De
     },
 
     onTextChunk(text: string): void {
-      if (!text || !hadToolRun || followupShown) {
+      if (!text) {
+        return
+      }
+      if (!hadToolRun && options.startTypingOnFirstTextChunk) {
+        startTypingNow()
+      }
+      if (!hadToolRun || followupShown) {
         return
       }
       followupShown = true
