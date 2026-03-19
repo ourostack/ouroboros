@@ -2,9 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.66",
+      "changes": [
+        "The ouro PATH shim now uses npx --prefer-online to always check the npm registry before using cached packages. Prevents stale npx cache from serving old runtime versions on ouro up."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.65",
       "changes": [
-        "Tool permissions overhauled: channel-level blocking removed, all tools now visible on all channels. Guardrails are invocation-level with two layers \u2014 structural (edit-requires-read, destructive pattern blocking, protected paths) always on for everyone, and trust-level (ouro CLI per-subcommand trust manifest, general CLI allowlists, bundle-scoped writes) for untrusted contexts.",
+        "Tool permissions overhauled: channel-level blocking removed, all tools now visible on all channels. Guardrails are invocation-level with two layers — structural (edit-requires-read, destructive pattern blocking, protected paths) always on for everyone, and trust-level (ouro CLI per-subcommand trust manifest, general CLI allowlists, bundle-scoped writes) for untrusted contexts.",
         "New `ouro changelog` CLI subcommand reads changelog.json and supports `--from <version>` for delta filtering, so agents can introspect their own update history on any channel.",
         "Compound shell commands (&&, ;, |, $()) are blocked for untrusted users to prevent smuggling dangerous operations behind safe prefixes.",
         "Azure App Service deployment migrated from zip-deploy to npm-based harness install with persistent agent bundle and managed identity auth."
