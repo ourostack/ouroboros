@@ -5467,10 +5467,10 @@ describe("Teams adapter - context kernel wiring (Unit 1Hc)", () => {
 
     await teams.handleTeamsMessage("hello", mockStream as any, "conv-123", teamsContext)
 
-    // buildSystem should be called with channel, options, and resolved context
+    // buildSystem should be called with channel, options (may include mcpManager), and resolved context
     expect(buildSystem).toHaveBeenCalledWith(
       "teams",
-      undefined,
+      expect.objectContaining({ mcpManager: undefined }),
       expect.objectContaining({
         friend: expect.objectContaining({ name: "Test User" }),
         channel: expect.objectContaining({ channel: "teams" }),

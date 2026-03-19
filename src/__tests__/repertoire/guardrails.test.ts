@@ -670,3 +670,55 @@ describe("guardInvocation — trust-level guardrails", () => {
     expect(result.allowed).toBe(false)
   })
 })
+
+describe("OURO_CLI_TRUST_MANIFEST — MCP entries", () => {
+  beforeEach(() => {
+    vi.resetModules()
+  })
+
+  it("includes 'mcp list' at acquaintance level", async () => {
+    const { OURO_CLI_TRUST_MANIFEST } = await import("../../repertoire/guardrails")
+    expect(OURO_CLI_TRUST_MANIFEST["mcp list"]).toBe("acquaintance")
+  })
+
+  it("includes 'mcp call' at friend level", async () => {
+    const { OURO_CLI_TRUST_MANIFEST } = await import("../../repertoire/guardrails")
+    expect(OURO_CLI_TRUST_MANIFEST["mcp call"]).toBe("friend")
+  })
+
+  it("acquaintance: ouro mcp list allowed", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const result = guardInvocation("shell", { command: "ouro mcp list" }, {
+      readPaths: new Set(),
+      trustLevel: "acquaintance",
+    })
+    expect(result.allowed).toBe(true)
+  })
+
+  it("stranger: ouro mcp list denied", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const result = guardInvocation("shell", { command: "ouro mcp list" }, {
+      readPaths: new Set(),
+      trustLevel: "stranger",
+    })
+    expect(result.allowed).toBe(false)
+  })
+
+  it("friend: ouro mcp call ado get_items allowed", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const result = guardInvocation("shell", { command: "ouro mcp call ado get_items" }, {
+      readPaths: new Set(),
+      trustLevel: "friend",
+    })
+    expect(result.allowed).toBe(true)
+  })
+
+  it("acquaintance: ouro mcp call ado get_items denied", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const result = guardInvocation("shell", { command: "ouro mcp call ado get_items" }, {
+      readPaths: new Set(),
+      trustLevel: "acquaintance",
+    })
+    expect(result.allowed).toBe(false)
+  })
+})

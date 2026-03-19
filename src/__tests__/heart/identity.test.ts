@@ -688,6 +688,84 @@ describe("resetIdentity", () => {
   })
 })
 
+describe("mcpServers config", () => {
+  beforeEach(() => {
+    vi.resetModules()
+    process.argv = ["node", "cli-entry.js", "--agent", "ouroboros"]
+  })
+
+  it("leaves mcpServers undefined when absent from agent.json (backward compat)", async () => {
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        version: 1,
+        enabled: true,
+        provider: "anthropic",
+        phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+      }),
+    )
+
+    const { loadAgentConfig, resetIdentity } = await import("../../heart/identity")
+    resetIdentity()
+    const config = loadAgentConfig()
+
+    expect(config.mcpServers).toBeUndefined()
+  })
+
+  it("parses mcpServers with valid entries", async () => {
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        version: 1,
+        enabled: true,
+        provider: "anthropic",
+        phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+        mcpServers: {
+          ado: {
+            command: "npx",
+            args: ["-y", "@anthropic/mcp-server-ado"],
+            env: { ADO_TOKEN: "tok123" },
+          },
+          mail: {
+            command: "/usr/local/bin/mail-server",
+          },
+        },
+      }),
+    )
+
+    const { loadAgentConfig, resetIdentity } = await import("../../heart/identity")
+    resetIdentity()
+    const config = loadAgentConfig()
+
+    expect(config.mcpServers).toEqual({
+      ado: {
+        command: "npx",
+        args: ["-y", "@anthropic/mcp-server-ado"],
+        env: { ADO_TOKEN: "tok123" },
+      },
+      mail: {
+        command: "/usr/local/bin/mail-server",
+      },
+    })
+  })
+
+  it("parses mcpServers when empty object", async () => {
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        version: 1,
+        enabled: true,
+        provider: "anthropic",
+        phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+        mcpServers: {},
+      }),
+    )
+
+    const { loadAgentConfig, resetIdentity } = await import("../../heart/identity")
+    resetIdentity()
+    const config = loadAgentConfig()
+
+    expect(config.mcpServers).toEqual({})
+  })
+})
+
 describe("setAgentConfigOverride", () => {
   beforeEach(() => {
     vi.resetModules()

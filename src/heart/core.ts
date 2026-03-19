@@ -16,6 +16,7 @@ import type { TurnResult } from "./streaming";
 import type { UsageData } from "../mind/context";
 import { trimMessages } from "../mind/context";
 import { buildSystem } from "../mind/prompt";
+import type { McpManager } from "../repertoire/mcp-manager";
 import type { Channel } from "../mind/prompt";
 import { injectAssociativeRecall } from "../mind/associative-recall";
 import { createAnthropicProviderRuntime } from "./providers/anthropic";
@@ -225,6 +226,7 @@ export interface RunAgentOptions {
   setMustResolveBeforeHandoff?: (value: boolean) => void;
   tools?: OpenAI.ChatCompletionFunctionTool[];
   execTool?: (name: string, args: Record<string, string>, ctx?: ToolContext) => Promise<string>;
+  mcpManager?: McpManager;
 }
 
 export type RunAgentOutcome =

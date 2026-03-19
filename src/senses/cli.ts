@@ -13,6 +13,7 @@ import { getPendingDir, drainDeferredReturns, drainPending, type PendingMessage 
 import type { UsageData } from "../mind/context"
 import { createCommandRegistry, registerDefaultCommands, parseSlashCommand, getToolChoiceRequired } from "./commands"
 import { getAgentName, setAgentName, getAgentRoot, getAgentBundlesRoot, loadAgentConfig } from "../heart/identity"
+import { getSharedMcpManager } from "../repertoire/mcp-manager"
 import { createTraceId } from "../nerves"
 import { FileFriendStore } from "../mind/friends/store-file"
 import { FriendResolver } from "../mind/friends/resolver"
@@ -767,9 +768,10 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
   // Load existing session or start fresh
   const existing = loadSession(sessPath)
   let sessionState = existing?.state
+  const mcpManager = await getSharedMcpManager() ?? undefined
   const sessionMessages: OpenAI.ChatCompletionMessageParam[] = existing?.messages && existing.messages.length > 0
     ? existing.messages
-    : [{ role: "system", content: await buildSystem("cli", undefined, resolvedContext) }]
+    : [{ role: "system", content: await buildSystem("cli", { mcpManager }, resolvedContext) }]
 
   // Per-turn pipeline input: CLI capabilities and pending dir
   const cliCapabilities = getChannelCapabilities("cli")
@@ -819,6 +821,7 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
           runAgentOptions: {
             toolChoiceRequired: getToolChoiceRequired(),
             traceId: createTraceId(),
+            mcpManager,
           },
         })
 

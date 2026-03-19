@@ -6,6 +6,7 @@ import { runAgent, type ChannelCallbacks, type CompletionMetadata } from "../hea
 import { getAgentName, getAgentRoot } from "../heart/identity"
 import { loadSession, postTurn, type UsageData } from "../mind/context"
 import { buildSystem } from "../mind/prompt"
+import { getSharedMcpManager } from "../repertoire/mcp-manager"
 import { findNonCanonicalBundlePaths } from "../mind/bundle-manifest"
 import {
   drainPending,
@@ -442,13 +443,14 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
   const selfFriend = createSelfFriend(agentName)
   const selfContext: ResolvedContext = { friend: selfFriend, channel: innerCapabilities }
 
+  const mcpManager = await getSharedMcpManager() ?? undefined
   const sessionLoader = {
     loadOrCreate: async () => {
       if (existingMessages.length > 0) {
         return { messages: existingMessages, sessionPath: sessionFilePath }
       }
       // Fresh session: build system prompt
-      const systemPrompt = await buildSystem("inner", { toolChoiceRequired: true })
+      const systemPrompt = await buildSystem("inner", { toolChoiceRequired: true, mcpManager })
       return {
         messages: [{ role: "system" as const, content: systemPrompt }],
         sessionPath: sessionFilePath,
@@ -481,6 +483,7 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
       traceId,
       toolChoiceRequired: true,
       skipConfirmation: true,
+      mcpManager,
     },
   })
   await routeDelegatedCompletion(agentRoot, agentName, result.completion, result.drainedPending, now().getTime())

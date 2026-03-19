@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.69",
+      "changes": [
+        "Generic MCP client: ouroboros agents can now connect to any MCP server (e.g., agency mcp ado, agency mcp mail) configured in agent.json. Zero new dependencies — pure JSON-RPC over stdio.",
+        "New `ouro mcp list` and `ouro mcp call` CLI commands route through the daemon socket to persistent MCP connections, so agents use shared server instances instead of spawning fresh ones per call.",
+        "MCP tools are injected into the agent's system prompt on startup, so agents know what external capabilities are available without a discovery step.",
+        "Trust manifest: `mcp list` requires acquaintance trust, `mcp call` requires friend trust."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.68",
       "changes": [
         "New no_response tool lets agents stay silent in group chats when the moment doesn't call for a reply — reactions, side conversations, and tapbacks no longer trigger unwanted responses.",

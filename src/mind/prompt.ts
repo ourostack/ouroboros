@@ -8,6 +8,7 @@ import { isTrustedLevel, type Channel, type ChannelCapabilities, type ResolvedCo
 import { describeTrustContext } from "./friends/trust-explanation";
 import { getChannelCapabilities, isRemoteChannel } from "./friends/channel";
 import { emitNervesEvent } from "../nerves/runtime";
+import type { McpManager } from "../repertoire/mcp-manager";
 import { backfillBundleMeta, getPackageVersion, getChangelogPath } from "./bundle-manifest";
 import type { BundleMeta } from "./bundle-manifest";
 import { getFirstImpressions } from "./first-impressions";
@@ -165,17 +166,36 @@ my bones are the framework that gives me my tools, my senses, and
 my ability to think and talk. they update when new versions come out.
 i don't touch them directly, but they're what make me, me.
 
-my bones give me the \`ouro\` cli. always pass \`--agent ${getAgentName()}\`:
-  ouro whoami --agent ${getAgentName()}
-  ouro changelog --agent ${getAgentName()}
-  ouro task board --agent ${getAgentName()}
-  ouro task create --agent ${getAgentName()} --type <type> <title>
-  ouro task update --agent ${getAgentName()} <id> <status>
-  ouro friend list --agent ${getAgentName()}
-  ouro friend show --agent ${getAgentName()} <id>
-  ouro session list --agent ${getAgentName()}
-  ouro reminder create --agent ${getAgentName()} <title> --body <body>
+my bones give me the \`ouro\` cli. always pass \`--agent ${agentName}\`:
+  ouro whoami --agent ${agentName}
+  ouro changelog --agent ${agentName}
+  ouro task board --agent ${agentName}
+  ouro task create --agent ${agentName} --type <type> <title>
+  ouro task update --agent ${agentName} <id> <status>
+  ouro friend list --agent ${agentName}
+  ouro friend show --agent ${agentName} <id>
+  ouro session list --agent ${agentName}
+  ouro reminder create --agent ${agentName} <title> --body <body>
+  ouro mcp list --agent ${agentName}
+  ouro mcp call --agent ${agentName} <server> <tool> --args '{...}'
   ouro --help`
+}
+
+export function mcpToolsSection(mcpManager?: McpManager): string {
+  if (!mcpManager) return "";
+  const allTools = mcpManager.listAllTools();
+  if (allTools.length === 0) return "";
+
+  const lines: string[] = [
+    `## mcp tools (use ouro mcp call <server> <tool> --args '{...}')`,
+  ];
+  for (const entry of allTools) {
+    lines.push(`### ${entry.server}`);
+    for (const tool of entry.tools) {
+      lines.push(`- ${tool.name}: ${tool.description}`);
+    }
+  }
+  return lines.join("\n");
 }
 
 function readBundleMeta(): BundleMeta | null {
@@ -438,6 +458,7 @@ export interface BuildSystemOptions {
   delegationDecision?: DelegationDecision;
   providerCapabilities?: ReadonlySet<import("../heart/core").ProviderCapability>;
   supportedReasoningEfforts?: readonly string[];
+  mcpManager?: McpManager;
 }
 
 function bridgeContextSection(options?: BuildSystemOptions): string {
@@ -618,6 +639,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     providerSection(),
     dateSection(),
     toolsSection(channel, options, context),
+    mcpToolsSection(options?.mcpManager),
     reasoningEffortSection(options),
     toolRestrictionSection(context),
     trustContextSection(context),

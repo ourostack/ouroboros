@@ -15,6 +15,7 @@ import { TRUSTED_LEVELS, type FriendRecord } from "../mind/friends/types"
 import { getChannelCapabilities } from "../mind/friends/channel"
 import { getPendingDir, drainDeferredReturns, drainPending } from "../mind/pending"
 import { buildSystem } from "../mind/prompt"
+import { getSharedMcpManager } from "../repertoire/mcp-manager"
 import { getPhrases } from "../mind/phrases"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { BlueBubblesReplyTargetSelection } from "../repertoire/tools-base"
@@ -645,10 +646,11 @@ async function handleBlueBubblesNormalizedEvent(
   return withSharedTurnLock("bluebubbles", sessPath, async () => {
     // Pre-load session inside the turn lock so same-chat deliveries cannot race on stale trunk state.
     const existing = resolvedDeps.loadSession(sessPath)
+    const mcpManager = await getSharedMcpManager() ?? undefined
     const sessionMessages: OpenAI.ChatCompletionMessageParam[] =
       existing?.messages && existing.messages.length > 0
         ? existing.messages
-        : [{ role: "system", content: await resolvedDeps.buildSystem("bluebubbles", undefined, context) }]
+        : [{ role: "system", content: await resolvedDeps.buildSystem("bluebubbles", { mcpManager }, context) }]
 
     if (event.kind === "message") {
       const agentName = resolvedDeps.getAgentName()
@@ -764,6 +766,7 @@ async function handleBlueBubblesNormalizedEvent(
         postTurn: resolvedDeps.postTurn,
         accumulateFriendTokens: resolvedDeps.accumulateFriendTokens,
         signal: controller.signal,
+        runAgentOptions: { mcpManager },
       })
 
       // ── Handle gate result ────────────────────────────────────────

@@ -669,7 +669,7 @@ describe("BlueBubbles sense runtime", () => {
     )
     expect(mocks.buildSystem).toHaveBeenCalledWith(
       "bluebubbles",
-      undefined,
+      expect.objectContaining({ mcpManager: undefined }),
       expect.objectContaining({
         friend: expect.objectContaining({ id: "friend-uuid" }),
         channel: expect.objectContaining({ channel: "bluebubbles" }),

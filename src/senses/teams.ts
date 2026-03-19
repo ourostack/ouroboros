@@ -22,6 +22,7 @@ import { FriendResolver } from "../mind/friends/resolver"
 import { accumulateFriendTokens } from "../mind/friends/tokens"
 import { createTurnCoordinator } from "../heart/turn-coordinator"
 import { getAgentRoot, getAgentName } from "../heart/identity"
+import { getSharedMcpManager } from "../repertoire/mcp-manager"
 import { buildProgressStory, renderProgressStory } from "../heart/progress-story"
 import * as http from "http"
 import * as path from "path"
@@ -542,6 +543,7 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
   } : {}
 
   let currentText = text
+  const mcpManager = await getSharedMcpManager() ?? undefined
 
   while (true) {
     let drainedSteeringFollowUps: Array<{ text: string; effect?: SteeringFollowUpEffect }> = []
@@ -550,6 +552,7 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
     const agentOptions: RunAgentOptions = {
       traceId,
       toolContext: teamsToolContext as ToolContext,
+      mcpManager,
       drainSteeringFollowUps: () => {
         drainedSteeringFollowUps = _turnCoordinator.drainFollowUps(turnKey)
           .map(({ text: followUpText, effect }) => ({ text: followUpText, effect }))
@@ -572,7 +575,7 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
           const existing = loadSession(sessPath)
           const messages: OpenAI.ChatCompletionMessageParam[] = existing?.messages && existing.messages.length > 0
             ? existing.messages
-            : [{ role: "system", content: await buildSystem("teams", undefined, resolvedContext) }]
+            : [{ role: "system", content: await buildSystem("teams", { mcpManager }, resolvedContext) }]
           repairOrphanedToolCalls(messages)
           return { messages, sessionPath: sessPath, state: existing?.state }
         },

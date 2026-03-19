@@ -158,6 +158,8 @@ export const OURO_CLI_TRUST_MANIFEST: Record<string, TrustLevel> = {
   "friend show": "friend",
   "friend create": "friend",
   "reminder create": "friend",
+  "mcp list": "acquaintance",
+  "mcp call": "friend",
 }
 
 // --- trust level comparison ---

@@ -74,6 +74,8 @@ export type OuroCliCommand =
   | { kind: "friend.link"; agent: string; friendId: string; provider: IdentityProvider; externalId: string }
   | { kind: "friend.unlink"; agent: string; friendId: string; provider: IdentityProvider; externalId: string }
   | { kind: "changelog"; from?: string; agent?: string }
+  | { kind: "mcp.list" }
+  | { kind: "mcp.call"; server: string; tool: string; args?: string }
   | { kind: "hatch.start"; agentName?: string; humanName?: string; provider?: AgentProvider; credentials?: HatchCredentialsInput; migrationPath?: string }
 
 export interface OuroCliDeps {
@@ -383,6 +385,8 @@ function usage(): string {
     "  ouro friend unlink <agent> --friend <id> --provider <p> --external-id <eid>",
     "  ouro whoami [--agent <name>]",
     "  ouro session list [--agent <name>]",
+    "  ouro mcp list",
+    "  ouro mcp call <server> <tool> [--args '{...}']",
   ].join("\n")
 }
 
@@ -784,6 +788,26 @@ function parseFriendCommand(args: string[]): OuroCliCommand {
   throw new Error(`Usage\n${usage()}`)
 }
 
+function parseMcpCommand(args: string[]): OuroCliCommand {
+  const [sub, ...rest] = args
+  if (!sub) throw new Error(`Usage\n${usage()}`)
+
+  if (sub === "list") return { kind: "mcp.list" }
+
+  if (sub === "call") {
+    const server = rest[0]
+    const tool = rest[1]
+    if (!server || !tool) throw new Error(`Usage\n${usage()}`)
+
+    const argsIdx = rest.indexOf("--args")
+    const mcpArgs = argsIdx !== -1 && rest[argsIdx + 1] ? rest[argsIdx + 1] : undefined
+
+    return { kind: "mcp.call", server, tool, ...(mcpArgs ? { args: mcpArgs } : {}) }
+  }
+
+  throw new Error(`Usage\n${usage()}`)
+}
+
 export function parseOuroCommand(args: string[]): OuroCliCommand {
   const [head, second] = args
   if (!head) return { kind: "daemon.up" }
@@ -797,6 +821,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "task") return parseTaskCommand(args.slice(1))
   if (head === "reminder") return parseReminderCommand(args.slice(1))
   if (head === "friend") return parseFriendCommand(args.slice(1))
+  if (head === "mcp") return parseMcpCommand(args.slice(1))
   if (head === "whoami") {
     const { agent } = extractAgentFlag(args.slice(1))
     return { kind: "whoami", ...(agent ? { agent } : {}) }
@@ -1229,6 +1254,32 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
       }))
     },
   }
+}
+
+type McpListCliCommand = Extract<OuroCliCommand, { kind: "mcp.list" }>
+type McpCallCliCommand = Extract<OuroCliCommand, { kind: "mcp.call" }>
+
+function formatMcpResponse(command: McpListCliCommand | McpCallCliCommand, response: DaemonResponse): string {
+  if (command.kind === "mcp.list") {
+    const allTools = response.data as Array<{ server: string; tools: Array<{ name: string; description: string }> }> | undefined
+    if (!allTools || allTools.length === 0) {
+      return response.message ?? "no tools available from connected MCP servers"
+    }
+    const lines: string[] = []
+    for (const entry of allTools) {
+      lines.push(`[${entry.server}]`)
+      for (const tool of entry.tools) {
+        lines.push(`  ${tool.name}: ${tool.description}`)
+      }
+    }
+    return lines.join("\n")
+  }
+  // mcp.call
+  const result = response.data as { content: Array<{ type: string; text: string }> } | undefined
+  if (!result) {
+    return response.message ?? "no result"
+  }
+  return result.content.map((c) => c.text).join("\n")
 }
 
 type ThoughtsCliCommand = Extract<OuroCliCommand, { kind: "thoughts" }>
@@ -1664,6 +1715,27 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   if (command.kind === "daemon.logs" && deps.tailLogs) {
     deps.tailLogs()
     return ""
+  }
+
+  // ── mcp subcommands (routed through daemon socket) ──
+  if (command.kind === "mcp.list" || command.kind === "mcp.call") {
+    const daemonCommand = toDaemonCommand(command)
+    let response: DaemonResponse
+    try {
+      response = await deps.sendCommand(deps.socketPath, daemonCommand)
+    } catch {
+      const message = "daemon unavailable — start with `ouro up` first"
+      deps.writeStdout(message)
+      return message
+    }
+    if (!response.ok) {
+      const message = response.error ?? "unknown error"
+      deps.writeStdout(message)
+      return message
+    }
+    const message = formatMcpResponse(command, response)
+    deps.writeStdout(message)
+    return message
   }
 
   // ── task subcommands (local, no daemon socket needed) ──

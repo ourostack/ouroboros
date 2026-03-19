@@ -18,6 +18,12 @@ export interface AgentSensesConfig {
   bluebubbles: AgentSenseConfig
 }
 
+export interface McpServerConfig {
+  command: string
+  args?: string[]
+  env?: Record<string, string>
+}
+
 export interface AgentConfig {
   version: number
   enabled: boolean
@@ -31,6 +37,7 @@ export interface AgentConfig {
     sinks?: LogSinkType[]
   }
   senses?: AgentSensesConfig
+  mcpServers?: Record<string, McpServerConfig>
   phrases: {
     thinking: string[]
     tool: string[]
@@ -375,13 +382,14 @@ export function loadAgentConfig(): AgentConfig {
     )
   }
 
-  const config = {
+  const config: AgentConfig = {
     version,
     enabled,
     provider,
     context: parsed.context as AgentConfig["context"] | undefined,
     logging: parsed.logging as AgentConfig["logging"] | undefined,
     senses: normalizeSenses(parsed.senses, configFile),
+    mcpServers: parsed.mcpServers as Record<string, McpServerConfig> | undefined,
     phrases: parsed.phrases as AgentConfig["phrases"],
   }
   emitNervesEvent({
