@@ -722,3 +722,56 @@ describe("OURO_CLI_TRUST_MANIFEST — MCP entries", () => {
     expect(result.allowed).toBe(false)
   })
 })
+
+describe("OURO_CLI_TRUST_MANIFEST — auth entries", () => {
+  it("auth is family trust", async () => {
+    const { OURO_CLI_TRUST_MANIFEST } = await import("../../repertoire/guardrails")
+    expect(OURO_CLI_TRUST_MANIFEST.auth).toBe("family")
+  })
+
+  it("auth verify is family trust", async () => {
+    const { OURO_CLI_TRUST_MANIFEST } = await import("../../repertoire/guardrails")
+    expect(OURO_CLI_TRUST_MANIFEST["auth verify"]).toBe("family")
+  })
+
+  it("auth switch is family trust", async () => {
+    const { OURO_CLI_TRUST_MANIFEST } = await import("../../repertoire/guardrails")
+    expect(OURO_CLI_TRUST_MANIFEST["auth switch"]).toBe("family")
+  })
+
+  it("family: ouro auth --agent foo --provider github-copilot allowed", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const result = guardInvocation("shell", { command: "ouro auth --agent foo --provider github-copilot" }, {
+      readPaths: new Set(),
+      trustLevel: "family",
+    })
+    expect(result.allowed).toBe(true)
+  })
+
+  it("family: ouro auth verify --agent foo allowed", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const result = guardInvocation("shell", { command: "ouro auth verify --agent foo" }, {
+      readPaths: new Set(),
+      trustLevel: "family",
+    })
+    expect(result.allowed).toBe(true)
+  })
+
+  it("family: ouro auth switch --agent foo --provider github-copilot allowed", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const result = guardInvocation("shell", { command: "ouro auth switch --agent foo --provider github-copilot" }, {
+      readPaths: new Set(),
+      trustLevel: "family",
+    })
+    expect(result.allowed).toBe(true)
+  })
+
+  it("acquaintance: ouro auth --agent foo denied", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const result = guardInvocation("shell", { command: "ouro auth --agent foo" }, {
+      readPaths: new Set(),
+      trustLevel: "acquaintance",
+    })
+    expect(result.allowed).toBe(false)
+  })
+})

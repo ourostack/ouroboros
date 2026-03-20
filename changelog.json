@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.70",
+      "changes": [
+        "New github-copilot LLM provider: use GitHub Copilot as model backend via `gh auth` token. Claude models route to /chat/completions, GPT models to /responses. Endpoint auto-discovered from your Copilot enterprise plan.",
+        "Auth decoupled from switching: `ouro auth --provider X` now stores credentials only. Use `ouro auth switch --provider X` to change the active provider, and `ouro auth verify` to check which stored providers have valid credentials.",
+        "Agents can now manage their own auth: `ouro auth`, `ouro auth verify`, and `ouro auth switch` are in the system prompt and gated at family trust level. Auth error messages include actionable recovery guidance.",
+        "Fix: `ouro --agent <name> <command>` now works correctly when --agent is the first argument."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.69",
       "changes": [
         "Generic MCP client: ouroboros agents can now connect to any MCP server (e.g., agency mcp ado, agency mcp mail) configured in agent.json. Zero new dependencies — pure JSON-RPC over stdio.",

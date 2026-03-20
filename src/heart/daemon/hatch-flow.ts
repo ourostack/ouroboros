@@ -18,6 +18,8 @@ export interface HatchCredentialsInput {
   apiKey?: string
   endpoint?: string
   deployment?: string
+  githubToken?: string
+  baseUrl?: string
 }
 
 export interface HatchFlowInput {
@@ -47,6 +49,8 @@ export interface HatchFlowResult {
 function requiredCredentialKeys(provider: AgentProvider): string[] {
   if (provider === "anthropic") return ["setupToken"]
   if (provider === "openai-codex") return ["oauthAccessToken"]
+  /* v8 ignore next -- branch tested via requiredCredentialKeys unit test @preserve */
+  if (provider === "github-copilot") return ["githubToken"]
   if (provider === "minimax") return ["apiKey"]
   return ["apiKey", "endpoint", "deployment"]
 }

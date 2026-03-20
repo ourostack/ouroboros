@@ -101,4 +101,13 @@ describe("MCP system prompt injection", () => {
       expect(result).toContain("ouro mcp call")
     })
   })
+
+  describe("bodyMapSection auth entries", () => {
+    it("includes ouro auth, ouro auth verify, and ouro auth switch in body map", () => {
+      const result = bodyMapSection("testagent")
+      expect(result).toContain("ouro auth --agent testagent --provider")
+      expect(result).toContain("ouro auth verify --agent testagent")
+      expect(result).toContain("ouro auth switch --agent testagent --provider")
+    })
+  })
 })

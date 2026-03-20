@@ -176,6 +176,9 @@ my bones give me the \`ouro\` cli. always pass \`--agent ${agentName}\`:
   ouro friend show --agent ${agentName} <id>
   ouro session list --agent ${agentName}
   ouro reminder create --agent ${agentName} <title> --body <body>
+  ouro auth --agent ${agentName} --provider <provider>
+  ouro auth verify --agent ${agentName} [--provider <provider>]
+  ouro auth switch --agent ${agentName} --provider <provider>
   ouro mcp list --agent ${agentName}
   ouro mcp call --agent ${agentName} <server> <tool> --args '{...}'
   ouro --help`

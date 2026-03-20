@@ -87,6 +87,21 @@ describe("ouro CLI parsing", () => {
     })
   })
 
+  it("strips leading --agent flag and parses underlying command", () => {
+    expect(parseOuroCommand(["--agent", "ouroboros", "status"])).toEqual({
+      kind: "daemon.status",
+    })
+    expect(parseOuroCommand(["--agent", "ouroboros", "mcp", "list"])).toEqual({
+      kind: "mcp.list",
+    })
+    expect(parseOuroCommand(["--agent", "ouroboros", "whoami"])).toEqual({
+      kind: "whoami",
+    })
+    expect(parseOuroCommand(["--agent", "ouroboros"])).toEqual({
+      kind: "daemon.up",
+    })
+  })
+
   it("parses auth commands and rejects malformed auth input", () => {
     expect(parseOuroCommand(["auth", "--agent", "slugger"])).toEqual({
       kind: "auth.run",
@@ -106,6 +121,24 @@ describe("ouro CLI parsing", () => {
 
     expect(() => parseOuroCommand(["auth"])).toThrow("ouro auth --agent <name> [--provider <provider>]")
     expect(() => parseOuroCommand(["auth", "--agent", "slugger", "--provider", "not-real"])).toThrow("Usage")
+  })
+
+  it("parses auth verify and auth switch subcommands", () => {
+    expect(parseOuroCommand(["auth", "verify", "--agent", "foo"])).toEqual({
+      kind: "auth.verify",
+      agent: "foo",
+    })
+    expect(parseOuroCommand(["auth", "verify", "--agent", "foo", "--provider", "azure"])).toEqual({
+      kind: "auth.verify",
+      agent: "foo",
+      provider: "azure",
+    })
+    expect(parseOuroCommand(["auth", "switch", "--agent", "foo", "--provider", "github-copilot"])).toEqual({
+      kind: "auth.switch",
+      agent: "foo",
+      provider: "github-copilot",
+    })
+    expect(() => parseOuroCommand(["auth", "switch", "--agent", "foo"])).toThrow()
   })
 
   it("parses chat, message, and poke commands", () => {
@@ -594,8 +627,8 @@ describe("ouro CLI execution", () => {
     }
   })
 
-  it("switches the agent provider after explicit auth override succeeds", async () => {
-    const agentName = `auth-switch-${Date.now()}`
+  it("ouro auth --provider stores credentials without switching provider", async () => {
+    const agentName = `auth-store-${Date.now()}`
     const agentRoot = path.join(os.homedir(), "AgentBundles", `${agentName}.ouro`)
     const agentConfigPath = path.join(agentRoot, "agent.json")
     fs.mkdirSync(agentRoot, { recursive: true })
@@ -637,8 +670,9 @@ describe("ouro CLI execution", () => {
         agentName,
         provider: "openai-codex",
       }))
+      // Behavior change: auth stores credentials but does NOT switch
       const updated = JSON.parse(fs.readFileSync(agentConfigPath, "utf-8")) as { provider: string }
-      expect(updated.provider).toBe("openai-codex")
+      expect(updated.provider).toBe("anthropic")
       expect(deps.sendCommand).not.toHaveBeenCalled()
     } finally {
       fs.rmSync(agentRoot, { recursive: true, force: true })
@@ -693,6 +727,112 @@ describe("ouro CLI execution", () => {
     } finally {
       vi.doUnmock("../../../heart/daemon/auth-flow")
       vi.resetModules()
+    }
+  })
+
+  it("ouro auth --provider stores credentials but does NOT switch provider", async () => {
+    const agentName = `auth-no-switch-${Date.now()}`
+    const agentRoot = path.join(os.homedir(), "AgentBundles", `${agentName}.ouro`)
+    const agentConfigPath = path.join(agentRoot, "agent.json")
+    fs.mkdirSync(agentRoot, { recursive: true })
+    fs.writeFileSync(
+      agentConfigPath,
+      JSON.stringify({
+        version: 1, enabled: true, provider: "anthropic",
+        phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
+      }, null, 2) + "\n",
+      "utf-8",
+    )
+    const runAuthFlow = vi.fn(async () => ({ message: `authenticated ${agentName} with github-copilot` }))
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({ ok: true, message: "ok" })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      runAuthFlow,
+    } as OuroCliDeps & { runAuthFlow: typeof runAuthFlow }
+    try {
+      await runOuroCli(["auth", "--agent", agentName, "--provider", "github-copilot"], deps)
+      const updated = JSON.parse(fs.readFileSync(agentConfigPath, "utf-8")) as { provider: string }
+      expect(updated.provider).toBe("anthropic")
+    } finally {
+      fs.rmSync(agentRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("ouro auth verify reports provider status", async () => {
+    const agentName = `auth-verify-${Date.now()}`
+    const agentRoot = path.join(os.homedir(), "AgentBundles", `${agentName}.ouro`)
+    fs.mkdirSync(agentRoot, { recursive: true })
+    fs.writeFileSync(
+      path.join(agentRoot, "agent.json"),
+      JSON.stringify({
+        version: 1, enabled: true, provider: "anthropic",
+        phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
+      }, null, 2) + "\n",
+      "utf-8",
+    )
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({ ok: true, message: "ok" })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    }
+    try {
+      const result = await runOuroCli(["auth", "verify", "--agent", agentName], deps)
+      expect(typeof result).toBe("string")
+      expect(result).toContain("anthropic")
+    } finally {
+      fs.rmSync(agentRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("ouro auth switch updates provider in agent.json", async () => {
+    const agentName = `auth-switch-new-${Date.now()}`
+    const agentRoot = path.join(os.homedir(), "AgentBundles", `${agentName}.ouro`)
+    const agentConfigPath = path.join(agentRoot, "agent.json")
+    fs.mkdirSync(agentRoot, { recursive: true })
+    const secretsDir = path.join(os.homedir(), ".agentsecrets", agentName)
+    fs.mkdirSync(secretsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(secretsDir, "secrets.json"),
+      JSON.stringify({
+        providers: { "github-copilot": { model: "claude-sonnet-4.6", githubToken: "ghp_test", baseUrl: "https://api.test.com" } },
+      }, null, 2) + "\n",
+      "utf-8",
+    )
+    fs.writeFileSync(
+      agentConfigPath,
+      JSON.stringify({
+        version: 1, enabled: true, provider: "anthropic",
+        phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
+      }, null, 2) + "\n",
+      "utf-8",
+    )
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({ ok: true, message: "ok" })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    }
+    try {
+      const result = await runOuroCli(["auth", "switch", "--agent", agentName, "--provider", "github-copilot"], deps)
+      expect(result).toContain("switched")
+      expect(result).toContain("github-copilot")
+      const updated = JSON.parse(fs.readFileSync(agentConfigPath, "utf-8")) as { provider: string }
+      expect(updated.provider).toBe("github-copilot")
+    } finally {
+      fs.rmSync(agentRoot, { recursive: true, force: true })
+      fs.rmSync(secretsDir, { recursive: true, force: true })
     }
   })
 

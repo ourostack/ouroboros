@@ -3,7 +3,7 @@ import * as os from "os"
 import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
 
-export type AgentProvider = "azure" | "minimax" | "anthropic" | "openai-codex"
+export type AgentProvider = "azure" | "minimax" | "anthropic" | "openai-codex" | "github-copilot"
 export type SenseName = "cli" | "teams" | "bluebubbles"
 
 export type LogLevel = "debug" | "info" | "warn" | "error"
@@ -324,7 +324,8 @@ export function loadAgentConfig(): AgentConfig {
     rawProvider !== "azure" &&
     rawProvider !== "minimax" &&
     rawProvider !== "anthropic" &&
-    rawProvider !== "openai-codex"
+    rawProvider !== "openai-codex" &&
+    rawProvider !== "github-copilot"
   ) {
     emitNervesEvent({
       level: "error",
@@ -337,7 +338,7 @@ export function loadAgentConfig(): AgentConfig {
       },
     })
     throw new Error(
-      `agent.json at ${configFile} must include provider: "azure", "minimax", "anthropic", or "openai-codex".`,
+      `agent.json at ${configFile} must include provider: "azure", "minimax", "anthropic", "openai-codex", or "github-copilot".`,
     )
   }
   const provider: AgentProvider = rawProvider

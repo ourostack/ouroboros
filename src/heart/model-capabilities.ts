@@ -18,6 +18,14 @@ export const MODEL_CAPABILITIES: Record<string, ModelCapabilities> = {
     thinkingFormat: "anthropic",
     maxOutputTokens: 64000,
   },
+  "claude-opus-4.6": {
+    reasoningEffort: ["low", "medium", "high", "max"],
+    maxOutputTokens: 128000,
+  },
+  "claude-sonnet-4.6": {
+    reasoningEffort: ["low", "medium", "high"],
+    maxOutputTokens: 64000,
+  },
   "gpt-5.4": {
     reasoningEffort: ["low", "medium", "high"],
     phase: true,

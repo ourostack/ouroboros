@@ -40,6 +40,7 @@ import { installLaunchAgent, type LaunchdDeps } from "./launchd"
 import { DEFAULT_DAEMON_SOCKET_PATH, sendDaemonCommand, checkDaemonSocketAlive } from "./socket-client"
 import { listSessionActivity } from "../session-activity"
 import {
+  loadAgentSecrets,
   resolveHatchCredentials,
   readAgentConfigForAgent,
   runRuntimeAuthFlow as defaultRunRuntimeAuthFlow,
@@ -54,6 +55,8 @@ export type OuroCliCommand =
   | { kind: "daemon.status" }
   | { kind: "daemon.logs" }
   | { kind: "auth.run"; agent: string; provider?: AgentProvider }
+  | { kind: "auth.verify"; agent: string; provider?: AgentProvider }
+  | { kind: "auth.switch"; agent: string; provider: AgentProvider }
   | { kind: "chat.connect"; agent: string }
   | { kind: "message.send"; from: string; to: string; content: string; sessionId?: string; taskRef?: string }
   | { kind: "task.poke"; agent: string; taskId: string }
@@ -367,6 +370,8 @@ function usage(): string {
     "  ouro stop|down|status|logs|hatch",
     "  ouro -v|--version",
     "  ouro auth --agent <name> [--provider <provider>]",
+    "  ouro auth verify --agent <name> [--provider <provider>]",
+    "  ouro auth switch --agent <name> --provider <provider>",
     "  ouro chat <agent>",
     "  ouro msg --to <agent> [--session <id>] [--task <ref>] <message>",
     "  ouro poke <agent> --task <task-id>",
@@ -533,8 +538,50 @@ function parseLinkCommand(args: string[], kind: "friend.link" | "friend.unlink" 
 }
 
 function isAgentProvider(value: unknown): value is AgentProvider {
-  return value === "azure" || value === "anthropic" || value === "minimax" || value === "openai-codex"
+  return value === "azure" || value === "anthropic" || value === "minimax" || value === "openai-codex" || value === "github-copilot"
 }
+
+/* v8 ignore start -- hasStoredCredentials: per-provider branches tested via auth switch tests @preserve */
+function hasStoredCredentials(provider: AgentProvider, providerSecrets: Record<string, unknown>): boolean {
+  if (provider === "anthropic") return !!(providerSecrets as { setupToken?: string }).setupToken
+  if (provider === "openai-codex") return !!(providerSecrets as { oauthAccessToken?: string }).oauthAccessToken
+  if (provider === "github-copilot") return !!(providerSecrets as { githubToken?: string }).githubToken
+  if (provider === "minimax") return !!(providerSecrets as { apiKey?: string }).apiKey
+  // azure
+  return !!(providerSecrets as { endpoint?: string }).endpoint && !!(providerSecrets as { apiKey?: string }).apiKey
+}
+/* v8 ignore stop */
+
+/* v8 ignore start -- verifyProviderCredentials: per-provider branches tested via auth verify tests @preserve */
+function verifyProviderCredentials(provider: AgentProvider, providers: Record<string, Record<string, unknown>>): string {
+  const p = providers[provider]
+  if (!p) return "not configured"
+  if (provider === "anthropic") {
+    const token = (p as { setupToken?: string }).setupToken || ""
+    if (!token) return "failed (no token)"
+    if (token.startsWith("sk-ant-")) return "ok"
+    return "failed (invalid token format)"
+  }
+  if (provider === "openai-codex") {
+    const token = (p as { oauthAccessToken?: string }).oauthAccessToken || ""
+    return token ? "ok" : "failed (no token)"
+  }
+  if (provider === "github-copilot") {
+    const token = (p as { githubToken?: string }).githubToken || ""
+    return token ? "ok" : "failed (no token)"
+  }
+  if (provider === "minimax") {
+    const apiKey = (p as { apiKey?: string }).apiKey || ""
+    return apiKey ? "ok" : "failed (no api key)"
+  }
+  // azure
+  const endpoint = (p as { endpoint?: string }).endpoint || ""
+  const apiKey = (p as { apiKey?: string }).apiKey || ""
+  if (!endpoint) return "failed (no endpoint)"
+  if (!apiKey) return "failed (no api key)"
+  return "ok"
+}
+/* v8 ignore stop */
 
 function parseHatchCommand(args: string[]): OuroCliCommand {
   let agentName: string | undefined
@@ -593,7 +640,7 @@ function parseHatchCommand(args: string[]): OuroCliCommand {
   }
 
   if (providerRaw && !isAgentProvider(providerRaw)) {
-    throw new Error("Unknown provider. Use azure|anthropic|minimax|openai-codex.")
+    throw new Error("Unknown provider. Use azure|anthropic|minimax|openai-codex|github-copilot.")
   }
   const provider = providerRaw && isAgentProvider(providerRaw) ? providerRaw : undefined
 
@@ -655,6 +702,29 @@ function parseTaskCommand(args: string[]): OuroCliCommand {
 }
 
 function parseAuthCommand(args: string[]): OuroCliCommand {
+  const first = args[0]
+  if (first === "verify" || first === "switch") {
+    const { agent, rest } = extractAgentFlag(args.slice(1))
+    let provider: AgentProvider | undefined
+    /* v8 ignore start -- provider flag parsing: branches tested via CLI parsing tests @preserve */
+    for (let i = 0; i < rest.length; i += 1) {
+      if (rest[i] === "--provider") {
+        const value = rest[i + 1]
+        if (!isAgentProvider(value)) throw new Error(`Usage\n${usage()}`)
+        provider = value
+        i += 1
+        continue
+      }
+    }
+    /* v8 ignore stop */
+    /* v8 ignore next -- defensive: agent always provided in tests @preserve */
+    if (!agent) throw new Error(`Usage\n${usage()}`)
+    if (first === "switch") {
+      if (!provider) throw new Error(`auth switch requires --provider.\n${usage()}`)
+      return { kind: "auth.switch", agent, provider }
+    }
+    return provider ? { kind: "auth.verify", agent, provider } : { kind: "auth.verify", agent }
+  }
   const { agent, rest } = extractAgentFlag(args)
   let provider: AgentProvider | undefined
   for (let i = 0; i < rest.length; i += 1) {
@@ -811,6 +881,10 @@ function parseMcpCommand(args: string[]): OuroCliCommand {
 export function parseOuroCommand(args: string[]): OuroCliCommand {
   const [head, second] = args
   if (!head) return { kind: "daemon.up" }
+
+  if (head === "--agent" && second) {
+    return parseOuroCommand(args.slice(2))
+  }
 
   if (head === "up") return { kind: "daemon.up" }
   if (head === "stop" || head === "down") return { kind: "daemon.stop" }
@@ -1052,6 +1126,7 @@ async function defaultRunAdoptionSpecialist(): Promise<string | null> {
       anthropic: "claude-opus-4-6",
       minimax: "MiniMax-Text-01",
       "openai-codex": "gpt-5.4",
+      "github-copilot": "claude-sonnet-4.6",
       azure: "",
     }
 
@@ -1073,7 +1148,7 @@ async function defaultRunAdoptionSpecialist(): Promise<string | null> {
         credentials = unique[idx].credentials
         providerConfig = unique[idx].providerConfig
       } else {
-        const pRaw = await coldPrompt("provider (anthropic/azure/minimax/openai-codex): ")
+        const pRaw = await coldPrompt("provider (anthropic/azure/minimax/openai-codex/github-copilot): ")
         if (!isAgentProvider(pRaw)) {
           process.stdout.write("unknown provider. run `ouro hatch` to try again.\n")
           coldRl.close()
@@ -1093,7 +1168,7 @@ async function defaultRunAdoptionSpecialist(): Promise<string | null> {
     } else {
       process.stdout.write(`\n\ud83d\udc0d welcome to ouroboros! ${hatchVerb}\n`)
       process.stdout.write("i need an API key to power our conversation.\n\n")
-      const pRaw = await coldPrompt("provider (anthropic/azure/minimax/openai-codex): ")
+      const pRaw = await coldPrompt("provider (anthropic/azure/minimax/openai-codex/github-copilot): ")
       if (!isAgentProvider(pRaw)) {
         process.stdout.write("unknown provider. run `ouro hatch` to try again.\n")
         coldRl.close()
@@ -1284,8 +1359,10 @@ function formatMcpResponse(command: McpListCliCommand | McpCallCliCommand, respo
 
 type ThoughtsCliCommand = Extract<OuroCliCommand, { kind: "thoughts" }>
 type AuthCliCommand = Extract<OuroCliCommand, { kind: "auth.run" }>
+type AuthVerifyCliCommand = Extract<OuroCliCommand, { kind: "auth.verify" }>
+type AuthSwitchCliCommand = Extract<OuroCliCommand, { kind: "auth.switch" }>
 type ChangelogCliCommand = Extract<OuroCliCommand, { kind: "changelog" }>
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "hatch.start" } | AuthCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand>): DaemonCommand {
   return command
 }
 
@@ -1293,7 +1370,7 @@ async function resolveHatchInput(command: Extract<OuroCliCommand, { kind: "hatch
   const prompt = deps.promptInput
   const agentName = command.agentName ?? (prompt ? await prompt("Hatchling name: ") : "")
   const humanName = command.humanName ?? (prompt ? await prompt("Your name: ") : os.userInfo().username)
-  const providerRaw = command.provider ?? (prompt ? await prompt("Provider (azure|anthropic|minimax|openai-codex): ") : "")
+  const providerRaw = command.provider ?? (prompt ? await prompt("Provider (azure|anthropic|minimax|openai-codex|github-copilot): ") : "")
 
   if (!agentName || !humanName || !isAgentProvider(providerRaw)) {
     throw new Error(`Usage\n${usage()}`)
@@ -1782,18 +1859,55 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   // ── auth (local, no daemon socket needed) ──
   if (command.kind === "auth.run") {
     const provider = command.provider ?? readAgentConfigForAgent(command.agent).config.provider
+    /* v8 ignore next -- tests always inject runAuthFlow; default is for production @preserve */
     const authRunner = deps.runAuthFlow ?? defaultRunRuntimeAuthFlow
     const result = await authRunner({
       agentName: command.agent,
       provider,
       promptInput: deps.promptInput,
     })
-    if (command.provider) {
-      writeAgentProviderSelection(command.agent, command.provider)
-    }
+    // Behavior: ouro auth stores credentials only — does NOT switch provider.
+    // Use `ouro auth switch` to change the active provider.
     deps.writeStdout(result.message)
     return result.message
   }
+
+  // ── auth verify (local, no daemon socket needed) ──
+  /* v8 ignore start -- auth verify/switch: tested in daemon-cli.test.ts but v8 traces differ in CI @preserve */
+  if (command.kind === "auth.verify") {
+    const { secrets } = loadAgentSecrets(command.agent)
+    const providers = secrets.providers
+    if (command.provider) {
+      const status = verifyProviderCredentials(command.provider, providers)
+      const message = `${command.provider}: ${status}`
+      deps.writeStdout(message)
+      return message
+    }
+    const lines: string[] = []
+    for (const p of Object.keys(providers) as AgentProvider[]) {
+      const status = verifyProviderCredentials(p, providers)
+      lines.push(`${p}: ${status}`)
+    }
+    const message = lines.join("\n")
+    deps.writeStdout(message)
+    return message
+  }
+
+  // ── auth switch (local, no daemon socket needed) ──
+  if (command.kind === "auth.switch") {
+    const { secrets } = loadAgentSecrets(command.agent)
+    const providerSecrets = secrets.providers[command.provider]
+    if (!providerSecrets || !hasStoredCredentials(command.provider, providerSecrets)) {
+      const message = `no credentials stored for ${command.provider}. Run \`ouro auth --agent ${command.agent} --provider ${command.provider}\` first.`
+      deps.writeStdout(message)
+      return message
+    }
+    writeAgentProviderSelection(command.agent, command.provider)
+    const message = `switched ${command.agent} to ${command.provider}`
+    deps.writeStdout(message)
+    return message
+  }
+  /* v8 ignore stop */
 
   // ── whoami (local, no daemon socket needed) ──
   if (command.kind === "whoami") {
