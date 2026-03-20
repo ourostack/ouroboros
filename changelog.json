@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.76",
+      "changes": [
+        "Fix: CLI chat terminal logging now filters to warn/error only — info-level nerves logs go to ndjson file only, keeping the interactive TUI clean.",
+        "Fix: Streamed model output now wraps at word boundaries instead of mid-word. A new StreamingWordWrapper buffers partial lines and breaks at spaces when approaching terminal width.",
+        "New: `ouro up` now prints 'ouro updated to <version> (was <previous>)' when npx downloads a newer CLI binary, separate from the agent bundle update message.",
+        "Fix: Spinner/log interleave verified — terminal sink reads pause/resume hooks at call time, not creation time, so the filterSink wrapper in CLI logging does not break spinner coordination."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.75",
       "changes": [
         "Inner dialog is now experienced as private thinking, not system dispatch. go_inward tool lets the agent take a thread inward atomically, with a pipeline-generated handoff packet framed as self-directed thought.",

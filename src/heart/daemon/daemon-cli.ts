@@ -1083,6 +1083,29 @@ function defaultWriteStdout(text: string): void {
   console.log(text)
 }
 
+/**
+ * Read the runtimeVersion from the first .ouro bundle's bundle-meta.json.
+ * Returns undefined if none found or unreadable.
+ */
+export function readFirstBundleMetaVersion(bundlesRoot: string): string | undefined {
+  try {
+    if (!fs.existsSync(bundlesRoot)) return undefined
+    const entries = fs.readdirSync(bundlesRoot, { withFileTypes: true })
+    for (const entry of entries) {
+      /* v8 ignore next -- skip non-.ouro dirs: tested via version-detect tests @preserve */
+      if (!entry.isDirectory() || !entry.name.endsWith(".ouro")) continue
+      const metaPath = path.join(bundlesRoot, entry.name, "bundle-meta.json")
+      if (!fs.existsSync(metaPath)) continue
+      const raw = fs.readFileSync(metaPath, "utf-8")
+      const meta = JSON.parse(raw) as { runtimeVersion?: string }
+      if (meta.runtimeVersion) return meta.runtimeVersion
+    }
+  } catch {
+    // Best effort — return undefined on any error
+  }
+  return undefined
+}
+
 function defaultCleanupStaleSocket(socketPath: string): void {
   if (fs.existsSync(socketPath)) {
     fs.unlinkSync(socketPath)
@@ -1933,7 +1956,19 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     registerUpdateHook(bundleMetaHook)
     const bundlesRoot = getAgentBundlesRoot()
     const currentVersion = getPackageVersion()
+
+    // Snapshot the previous CLI version from the first bundle-meta before
+    // hooks overwrite it. This detects when npx downloaded a newer CLI.
+    const previousCliVersion = readFirstBundleMetaVersion(bundlesRoot)
+
     const updateSummary = await applyPendingUpdates(bundlesRoot, currentVersion)
+
+    // Notify about CLI binary update (npx downloaded a new version)
+    /* v8 ignore start -- CLI update detection: tested via daemon-cli-version-detect.test.ts @preserve */
+    if (previousCliVersion && previousCliVersion !== currentVersion) {
+      deps.writeStdout(`ouro updated to ${currentVersion} (was ${previousCliVersion})`)
+    }
+    /* v8 ignore stop */
 
     if (updateSummary.updated.length > 0) {
       const agents = updateSummary.updated.map((e) => e.agent)

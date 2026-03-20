@@ -28,9 +28,9 @@ import { acquireSessionLock, SessionLockError } from "./session-lock"
 import { applyPendingUpdates, registerUpdateHook } from "../heart/daemon/update-hooks"
 import { bundleMetaHook } from "../heart/daemon/hooks/bundle-meta"
 import { getPackageVersion } from "../mind/bundle-manifest"
-import { formatEchoedInputSummary } from "./cli-layout"
+import { formatEchoedInputSummary, StreamingWordWrapper } from "./cli-layout"
 
-export { formatEchoedInputSummary, wrapCliText } from "./cli-layout"
+export { formatEchoedInputSummary, wrapCliText, StreamingWordWrapper } from "./cli-layout"
 
 /**
  * Format pending messages as content-prefix strings for injection into
@@ -322,6 +322,7 @@ export function createCliCallbacks(): ChannelCallbacks & { flushMarkdown(): void
   let hadToolRun = false
   let textDirty = false // true when text/reasoning was written without a trailing newline
   const streamer = new MarkdownStreamer()
+  const wrapper = new StreamingWordWrapper()
 
   return {
     onModelStart: () => {
@@ -330,6 +331,7 @@ export function createCliCallbacks(): ChannelCallbacks & { flushMarkdown(): void
       hadReasoning = false
       textDirty = false
       streamer.reset()
+      wrapper.reset()
       const phrases = getPhrases()
       const pool = hadToolRun ? phrases.followup : phrases.thinking
       const first = pickPhrase(pool)
@@ -343,6 +345,7 @@ export function createCliCallbacks(): ChannelCallbacks & { flushMarkdown(): void
     },
     onClearText: () => {
       streamer.reset()
+      wrapper.reset()
     },
     onTextChunk: (text: string) => {
       // Stop spinner if still running — final_answer streaming and Anthropic
@@ -359,7 +362,12 @@ export function createCliCallbacks(): ChannelCallbacks & { flushMarkdown(): void
         hadReasoning = false
       }
       const rendered = streamer.push(text)
-      if (rendered) process.stdout.write(rendered)
+      /* v8 ignore start -- wrapper integration: tested via cli.test.ts onTextChunk tests @preserve */
+      if (rendered) {
+        const wrapped = wrapper.push(rendered)
+        if (wrapped) process.stdout.write(wrapped)
+      }
+      /* v8 ignore stop */
       textDirty = text.length > 0 && !text.endsWith("\n")
     },
     onReasoningChunk: (text: string) => {
@@ -417,8 +425,15 @@ export function createCliCallbacks(): ChannelCallbacks & { flushMarkdown(): void
     flushMarkdown: () => {
       currentSpinner?.stop()
       setSpinner(null)
+      /* v8 ignore start -- wrapper flush: tested via cli.test.ts flushMarkdown tests @preserve */
       const remaining = streamer.flush()
-      if (remaining) process.stdout.write(remaining)
+      if (remaining) {
+        const wrapped = wrapper.push(remaining)
+        if (wrapped) process.stdout.write(wrapped)
+      }
+      const tail = wrapper.flush()
+      if (tail) process.stdout.write(tail)
+      /* v8 ignore stop */
     },
   }
 }

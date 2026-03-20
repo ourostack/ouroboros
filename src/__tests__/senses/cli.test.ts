@@ -358,7 +358,7 @@ describe("CLI adapter - onReasoningChunk and onTextChunk rendering", () => {
   let stdoutChunks: string[]
   let stdoutSpy: ReturnType<typeof vi.spyOn>
   let stderrSpy: ReturnType<typeof vi.spyOn>
-  let callbacks: ChannelCallbacks
+  let callbacks: ChannelCallbacks & { flushMarkdown(): void }
 
   beforeEach(async () => {
     stdoutChunks = []
@@ -379,13 +379,15 @@ describe("CLI adapter - onReasoningChunk and onTextChunk rendering", () => {
     vi.restoreAllMocks()
   })
 
-  it("onTextChunk streams text to stdout immediately", () => {
+  it("onTextChunk streams text to stdout (flushed via wrapper)", () => {
     callbacks.onTextChunk("hello world")
+    callbacks.flushMarkdown()
     expect(stdoutChunks.join("")).toBe("hello world")
   })
 
   it("onTextChunk applies markdown rendering", () => {
     callbacks.onTextChunk("hello **world**")
+    callbacks.flushMarkdown()
     expect(stdoutChunks.join("")).toBe("hello \x1b[1mworld\x1b[22m")
   })
 
@@ -400,6 +402,7 @@ describe("CLI adapter - onReasoningChunk and onTextChunk rendering", () => {
   it("reasoning then content: \\n separator before text on stdout", () => {
     callbacks.onReasoningChunk("thinking")
     callbacks.onTextChunk("answer")
+    callbacks.flushMarkdown()
     const output = stdoutChunks.join("")
     expect(output).toContain("\x1b[2mthinking\x1b[0m")
     expect(output).toContain("\nanswer")
@@ -407,6 +410,7 @@ describe("CLI adapter - onReasoningChunk and onTextChunk rendering", () => {
 
   it("text-only response has no reasoning separator", () => {
     callbacks.onTextChunk("just text")
+    callbacks.flushMarkdown()
     const output = stdoutChunks.join("")
     expect(output).toBe("just text")
   })
@@ -415,6 +419,7 @@ describe("CLI adapter - onReasoningChunk and onTextChunk rendering", () => {
     callbacks.onReasoningChunk("step1")
     callbacks.onReasoningChunk("step2")
     callbacks.onTextChunk("answer")
+    callbacks.flushMarkdown()
     const output = stdoutChunks.join("")
     // Reasoning chunks: "\x1b[2mstep1\x1b[0m\x1b[2mstep2\x1b[0m"
     // Then separator "\n" then "answer"
@@ -447,6 +452,7 @@ describe("CLI adapter - onReasoningChunk and onTextChunk rendering", () => {
 
   it("content-only: no dim codes on stdout", () => {
     callbacks.onTextChunk("just text")
+    callbacks.flushMarkdown()
     const output = stdoutChunks.join("")
     expect(output).toBe("just text")
     expect(output).not.toContain("\x1b[2m")
@@ -956,6 +962,104 @@ describe("createDebouncedLines", () => {
       collected.push(input)
     }
     expect(collected).toEqual(["x", "y"])
+  })
+})
+
+describe("StreamingWordWrapper", () => {
+  let StreamingWordWrapper: typeof import("../../senses/cli").StreamingWordWrapper
+
+  beforeEach(async () => {
+    vi.resetModules()
+    const mod = await import("../../senses/cli")
+    StreamingWordWrapper = mod.StreamingWordWrapper
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it("passes short text through without wrapping", () => {
+    const w = new StreamingWordWrapper(40)
+    const out = w.push("hello world")
+    // Short text stays in buffer until newline or flush
+    expect(out).toBe("")
+    expect(w.flush()).toBe("hello world")
+  })
+
+  it("wraps at word boundary when line exceeds width", () => {
+    const w = new StreamingWordWrapper(10)
+    const out = w.push("hello world today")
+    // "hello world" is 11 chars, wraps before "world" (on 'd' of world, col > 10)
+    // then "world today" wraps again
+    const full = out + w.flush()
+    expect(full).toContain("\n")
+    // Should not break "hello" or "world" mid-word
+    const lines = full.split("\n")
+    expect(lines.every(l => !l.includes("hell\n") && !l.includes("worl\n"))).toBe(true)
+  })
+
+  it("preserves explicit newlines", () => {
+    const w = new StreamingWordWrapper(80)
+    const out = w.push("line one\nline two")
+    const full = out + w.flush()
+    expect(full).toBe("line one\nline two")
+  })
+
+  it("handles character-by-character input", () => {
+    const w = new StreamingWordWrapper(10)
+    let out = ""
+    for (const ch of "hello world foo") {
+      out += w.push(ch)
+    }
+    out += w.flush()
+    // "hello world" would wrap: "hello" then "world foo"
+    expect(out).toContain("\n")
+    // Should break at word boundary
+    const lines = out.split("\n")
+    expect(lines[0]).toBe("hello")
+  })
+
+  it("hard wraps words longer than width", () => {
+    const w = new StreamingWordWrapper(5)
+    let out = ""
+    out += w.push("abcdefghij")
+    out += w.flush()
+    // 10-char word in 5-col terminal: hard wrap after 5 chars
+    expect(out).toContain("\n")
+    expect(out.split("\n")[0]).toBe("abcde")
+  })
+
+  it("ignores ANSI escapes for width calculation", () => {
+    const w = new StreamingWordWrapper(10)
+    // The ANSI codes are zero-width, so "bold" is only 4 visible chars
+    let out = ""
+    out += w.push("\x1b[1mbold\x1b[22m text")
+    out += w.flush()
+    // visible: "bold text" = 9 chars, fits in 10 cols
+    expect(out).not.toContain("\n")
+    expect(out).toContain("\x1b[1m")
+  })
+
+  it("reset clears state for new turn", () => {
+    const w = new StreamingWordWrapper(10)
+    w.push("partial")
+    w.reset()
+    const out = w.push("fresh") + w.flush()
+    expect(out).toBe("fresh")
+    expect(out).not.toContain("partial")
+  })
+
+  it("drops space at wrap point", () => {
+    const w = new StreamingWordWrapper(5)
+    let out = ""
+    out += w.push("abc defgh")
+    out += w.flush()
+    const lines = out.split("\n")
+    // "abc d" is 5 chars, then on 'e' col becomes 6 > 5, wraps at space after "abc"
+    // Actually: "abc " is 4 visible, then "d" makes it 5, then "e" is col 6 and "d" starts new line
+    // Let me trace: a(1) b(2) c(3) ' '(4) d(5) e(6 > 5, break at lastSpace=3 -> "abc\n" + "de..."
+    expect(lines[0]).toBe("abc")
+    expect(lines[1]).toBe("defgh")
   })
 })
 
