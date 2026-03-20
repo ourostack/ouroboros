@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.83",
+      "changes": [
+        "Visible OODA loop substrate: persistent return obligations now surface where work is happening, whether the agent is still investigating, and what still needs to come back to the originating session.",
+        "Coding-session provenance now carries the originating human-facing session and obligation through spawn, persistence, and feedback, so hidden coding work is legible in active work instead of disappearing behind a tool session.",
+        "Runtime closure is explicit after self-fix updates: `ouro up` now prints a changelog follow-up command, and the runtime prompt reminds the agent to report that it updated and review what changed before treating the loop as closed."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.82",
       "changes": [
         "Fix: Wire default implementations for CLI update flow. `ouro up` now actually checks the npm registry for newer versions, installs them, and re-execs. Previously the update check deps were declared but never wired in createDefaultOuroCliDeps. Also wires rollback and versions command defaults."

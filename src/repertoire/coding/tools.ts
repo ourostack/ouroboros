@@ -2,6 +2,8 @@ import type OpenAI from "openai"
 
 import { attachCodingSessionFeedback, formatCodingTail, getCodingSessionManager } from "./index"
 import type { ToolContext } from "../tools-base"
+import { getAgentRoot } from "../../heart/identity"
+import { advanceObligation, findPendingObligationForOrigin } from "../../heart/obligations"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { CodingRunner, CodingSessionRequest } from "./types"
 
@@ -141,6 +143,18 @@ export const codingToolDefinitions = [
         taskRef,
       }
 
+      if (ctx?.currentSession && ctx.currentSession.channel !== "inner") {
+        request.originSession = {
+          friendId: ctx.currentSession.friendId,
+          channel: ctx.currentSession.channel,
+          key: ctx.currentSession.key,
+        }
+        const obligation = findPendingObligationForOrigin(getAgentRoot(), request.originSession)
+        if (obligation) {
+          request.obligationId = obligation.id
+        }
+      }
+
       const scopeFile = optionalArg(args, "scopeFile")
       if (scopeFile) request.scopeFile = scopeFile
       const stateFile = optionalArg(args, "stateFile")
@@ -148,6 +162,15 @@ export const codingToolDefinitions = [
 
       const manager = getCodingSessionManager()
       const session = await manager.spawnSession(request)
+      if (session.obligationId) {
+        advanceObligation(getAgentRoot(), session.obligationId, {
+          status: "investigating",
+          currentSurface: { kind: "coding", label: `${session.runner} ${session.id}` },
+          latestNote: session.originSession
+            ? `coding session started for ${session.originSession.channel}/${session.originSession.key}`
+            : "coding session started",
+        })
+      }
       if (args.runner === "codex" && args.taskRef) {
         emitNervesEvent({
           component: "repertoire",

@@ -1,3 +1,5 @@
+import { getAgentRoot } from "../../heart/identity"
+import { advanceObligation } from "../../heart/obligations"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { CodingSession, CodingSessionUpdate } from "./types"
 
@@ -51,7 +53,10 @@ function lastMeaningfulLine(text: string | undefined): string | null {
 }
 
 function formatSessionLabel(session: CodingSession): string {
-  return `${session.runner} ${session.id}`
+  const origin = session.originSession
+    ? ` for ${session.originSession.channel}/${session.originSession.key}`
+    : ""
+  return `${session.runner} ${session.id}${origin}`
 }
 
 function isSafeProgressSnippet(snippet: string): boolean {
@@ -96,6 +101,44 @@ function formatUpdateMessage(update: CodingSessionUpdate): string | null {
       return `${label} killed`
     case "spawned":
       return `${label} started`
+  }
+}
+
+function obligationNoteFromUpdate(update: CodingSessionUpdate): string | null {
+  const snippet = pickUpdateSnippet(update)
+  switch (update.kind) {
+    case "spawned":
+      return update.session.originSession
+        ? `coding session started for ${update.session.originSession.channel}/${update.session.originSession.key}`
+        : "coding session started"
+    case "progress":
+      return snippet ? `coding session progress: ${snippet}` : null
+    case "waiting_input":
+      return snippet ? `coding session waiting: ${snippet}` : "coding session waiting for input"
+    case "stalled":
+      return snippet ? `coding session stalled: ${snippet}` : "coding session stalled"
+    case "completed":
+      return snippet
+        ? `coding session completed: ${snippet}; merge/update still pending`
+        : "coding session completed; merge/update still pending"
+    case "failed":
+      return snippet ? `coding session failed: ${snippet}` : "coding session failed"
+    case "killed":
+      return "coding session killed"
+  }
+}
+
+function syncObligationFromUpdate(update: CodingSessionUpdate): void {
+  const obligationId = update.session.obligationId
+  if (!obligationId) return
+  try {
+    advanceObligation(getAgentRoot(), obligationId, {
+      status: "investigating",
+      currentSurface: { kind: "coding", label: `${update.session.runner} ${update.session.id}` },
+      latestNote: obligationNoteFromUpdate(update) ?? undefined,
+    })
+  } catch {
+    // Detached feedback should still reach the human even if obligation sync is unavailable.
   }
 }
 
@@ -144,8 +187,11 @@ export function attachCodingSessionFeedback(
     })
   }
 
-  sendMessage(formatUpdateMessage({ kind: "spawned", session }))
+  const spawnedUpdate = { kind: "spawned", session } as const
+  syncObligationFromUpdate(spawnedUpdate)
+  sendMessage(formatUpdateMessage(spawnedUpdate))
   unsubscribe = manager.subscribe(session.id, async (update) => {
+    syncObligationFromUpdate(update)
     sendMessage(formatUpdateMessage(update))
     if (TERMINAL_UPDATE_KINDS.has(update.kind)) {
       closed = true

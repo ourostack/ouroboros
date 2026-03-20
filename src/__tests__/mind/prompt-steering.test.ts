@@ -169,6 +169,31 @@ describe("centerOfGravitySteeringSection", () => {
     expect(result).toContain("go_inward")
   })
 
+  it("returns steering for inward-work when a persistent obligation is actively being worked", () => {
+    const frame = makeMinimalFrame({
+      centerOfGravity: "inward-work",
+      pendingObligations: [
+        {
+          id: "ob-1",
+          origin: { friendId: "alex", channel: "bluebubbles", key: "chat" },
+          content: "fix the return loop",
+          status: "investigating",
+          currentSurface: { kind: "coding", label: "codex coding-001" },
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:01:00Z",
+        },
+      ],
+      inner: {
+        status: "idle",
+        hasPending: false,
+        job: makeIdleJob({ status: "idle" }),
+      },
+    })
+    const result = centerOfGravitySteeringSection("cli", { activeWorkFrame: frame })
+    expect(result).toContain("already working on something i owe")
+    expect(result).toContain("codex coding-001")
+  })
+
   it("returns steering for shared-work", () => {
     const frame = makeMinimalFrame({
       centerOfGravity: "shared-work",
@@ -194,5 +219,31 @@ describe("centerOfGravitySteeringSection", () => {
   it("emits at least one nerves event reference", () => {
     // Satisfies the every-test-emits audit rule
     expect(emitNervesEvent).toBeDefined()
+  })
+})
+
+describe("obligation steering helpers", () => {
+  it("returns null when no frame is available", async () => {
+    const { findActivePersistentObligation } = await import("../../mind/obligation-steering")
+    expect(findActivePersistentObligation(undefined)).toBeNull()
+  })
+
+  it("returns an empty string when no obligation is active", async () => {
+    const { renderActiveObligationSteering } = await import("../../mind/obligation-steering")
+    expect(renderActiveObligationSteering(null)).toBe("")
+  })
+
+  it("renders active obligation steering even when the work surface is unknown", async () => {
+    const { renderActiveObligationSteering } = await import("../../mind/obligation-steering")
+    const result = renderActiveObligationSteering({
+      id: "ob-1",
+      origin: { friendId: "alex", channel: "bluebubbles", key: "chat" },
+      content: "finish the return loop",
+      status: "waiting_for_merge",
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:01:00Z",
+    })
+    expect(result).toContain("already working on something i owe alex")
+    expect(result).not.toContain("right now that work is happening in")
   })
 })

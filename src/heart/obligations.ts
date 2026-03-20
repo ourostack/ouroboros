@@ -2,13 +2,28 @@ import * as fs from "fs"
 import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
 
+export type ObligationStatus =
+  | "pending"
+  | "investigating"
+  | "waiting_for_merge"
+  | "updating_runtime"
+  | "fulfilled"
+
+export interface ObligationSurface {
+  kind: "session" | "coding" | "merge" | "runtime"
+  label: string
+}
+
 export interface Obligation {
   id: string
   origin: { friendId: string; channel: string; key: string }
   bridgeId?: string
   content: string
-  status: "pending" | "fulfilled"
+  status: ObligationStatus
   createdAt: string
+  updatedAt?: string
+  currentSurface?: ObligationSurface
+  latestNote?: string
   fulfilledAt?: string
 }
 
@@ -26,10 +41,19 @@ function generateId(): string {
   return `${timestamp}-${random}`
 }
 
+export function isOpenObligationStatus(status: ObligationStatus): boolean {
+  return status !== "fulfilled"
+}
+
+export function isOpenObligation(obligation: Obligation): boolean {
+  return isOpenObligationStatus(obligation.status)
+}
+
 export function createObligation(
   agentRoot: string,
   input: Omit<Obligation, "id" | "createdAt" | "status">,
 ): Obligation {
+  const now = new Date().toISOString()
   const id = generateId()
   const obligation: Obligation = {
     id,
@@ -37,7 +61,8 @@ export function createObligation(
     ...(input.bridgeId ? { bridgeId: input.bridgeId } : {}),
     content: input.content,
     status: "pending",
-    createdAt: new Date().toISOString(),
+    createdAt: now,
+    updatedAt: now,
   }
 
   const dir = obligationsDir(agentRoot)
@@ -90,10 +115,18 @@ export function readObligations(agentRoot: string): Obligation[] {
 }
 
 export function readPendingObligations(agentRoot: string): Obligation[] {
-  return readObligations(agentRoot).filter((ob) => ob.status === "pending")
+  return readObligations(agentRoot).filter(isOpenObligation)
 }
 
-export function fulfillObligation(agentRoot: string, obligationId: string): void {
+export function advanceObligation(
+  agentRoot: string,
+  obligationId: string,
+  update: {
+    status?: ObligationStatus
+    currentSurface?: ObligationSurface
+    latestNote?: string
+  },
+): void {
   const filePath = obligationFilePath(agentRoot, obligationId)
   let obligation: Obligation
   try {
@@ -103,9 +136,50 @@ export function fulfillObligation(agentRoot: string, obligationId: string): void
     return
   }
 
-  obligation.status = "fulfilled"
-  obligation.fulfilledAt = new Date().toISOString()
+  const previousStatus = obligation.status
+  if (update.status) {
+    obligation.status = update.status
+    if (update.status === "fulfilled") {
+      obligation.fulfilledAt = new Date().toISOString()
+    }
+  }
+  if (update.currentSurface) {
+    obligation.currentSurface = update.currentSurface
+  }
+  if (typeof update.latestNote === "string") {
+    obligation.latestNote = update.latestNote
+  }
+  obligation.updatedAt = new Date().toISOString()
   fs.writeFileSync(filePath, JSON.stringify(obligation, null, 2), "utf-8")
+
+  emitNervesEvent({
+    component: "engine",
+    event: "engine.obligation_advanced",
+    message: "obligation advanced",
+    meta: {
+      obligationId,
+      previousStatus,
+      status: obligation.status,
+      friendId: obligation.origin.friendId,
+      channel: obligation.origin.channel,
+      key: obligation.origin.key,
+      surfaceKind: obligation.currentSurface?.kind ?? null,
+      surfaceLabel: obligation.currentSurface?.label ?? null,
+    },
+  })
+}
+
+export function fulfillObligation(agentRoot: string, obligationId: string): void {
+  advanceObligation(agentRoot, obligationId, { status: "fulfilled" })
+
+  const filePath = obligationFilePath(agentRoot, obligationId)
+  let obligation: Obligation
+  try {
+    const raw = fs.readFileSync(filePath, "utf-8")
+    obligation = JSON.parse(raw) as Obligation
+  } catch {
+    return
+  }
 
   emitNervesEvent({
     component: "engine",

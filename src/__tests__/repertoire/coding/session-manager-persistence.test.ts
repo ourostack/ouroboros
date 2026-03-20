@@ -89,6 +89,40 @@ describe("coding session manager persistence", () => {
     expect(parsed.records[0].request.parentAgent).toBe("default")
   })
 
+  it("persists origin-session provenance and obligation linkage on spawn", async () => {
+    const writeFileSync = vi.fn()
+    const mkdirSync = vi.fn()
+
+    const manager = new CodingSessionManager({
+      spawnProcess: vi.fn(() => new FakeProcess(101)),
+      nowIso: () => "2026-03-07T00:00:00.000Z",
+      stateFilePath: "/tmp/coding-persist-provenance.json",
+      existsSync: () => false,
+      readFileSync: () => "",
+      writeFileSync,
+      mkdirSync,
+    })
+
+    const session = await manager.spawnSession({
+      runner: "claude",
+      workdir: "/tmp/project",
+      prompt: "do work",
+      taskRef: "task-1",
+      originSession: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+      obligationId: "ob-1",
+    } as any)
+
+    expect((session as any).originSession).toEqual({ friendId: "ari", channel: "bluebubbles", key: "chat" })
+    expect((session as any).obligationId).toBe("ob-1")
+
+    const [, payload] = writeFileSync.mock.calls.at(-1) as [string, string]
+    const parsed = JSON.parse(payload)
+    expect(parsed.records[0].request.originSession).toEqual({ friendId: "ari", channel: "bluebubbles", key: "chat" })
+    expect(parsed.records[0].request.obligationId).toBe("ob-1")
+    expect(parsed.records[0].session.originSession).toEqual({ friendId: "ari", channel: "bluebubbles", key: "chat" })
+    expect(parsed.records[0].session.obligationId).toBe("ob-1")
+  })
+
   it("rehydrates persisted sessions and advances sequence", async () => {
     const persisted = {
       sequence: 3,
@@ -142,6 +176,61 @@ describe("coding session manager persistence", () => {
       taskRef: "task-4",
     })
     expect(spawned.id).toBe("coding-004")
+  })
+
+  it("rehydrates origin-session provenance and obligation linkage", () => {
+    const persisted = {
+      sequence: 1,
+      records: [
+        {
+          request: {
+            runner: "codex",
+            workdir: "/tmp/repo",
+            prompt: "resume",
+            taskRef: "task-1",
+            sessionId: "coding-001",
+            parentAgent: "slugger",
+            originSession: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+            obligationId: "ob-1",
+          },
+          session: {
+            id: "coding-001",
+            runner: "codex",
+            workdir: "/tmp/repo",
+            taskRef: "task-1",
+            status: "running",
+            pid: 4242,
+            startedAt: "2026-03-07T00:00:00.000Z",
+            lastActivityAt: "2026-03-07T00:00:00.000Z",
+            endedAt: null,
+            restartCount: 0,
+            lastExitCode: null,
+            lastSignal: null,
+            failure: null,
+            originSession: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+            obligationId: "ob-1",
+          },
+        },
+      ],
+    }
+
+    const manager = new CodingSessionManager({
+      spawnProcess: vi.fn(() => new FakeProcess(5000)),
+      nowIso: () => "2026-03-07T00:05:00.000Z",
+      stateFilePath: "/tmp/coding-rehydrate-provenance.json",
+      existsSync: () => true,
+      readFileSync: () => JSON.stringify(persisted),
+      writeFileSync: vi.fn(),
+      mkdirSync: vi.fn(),
+      pidAlive: () => true,
+    })
+
+    expect((manager.getSession("coding-001") as any)?.originSession).toEqual({
+      friendId: "ari",
+      channel: "bluebubbles",
+      key: "chat",
+    })
+    expect((manager.getSession("coding-001") as any)?.obligationId).toBe("ob-1")
   })
 
   it("marks stale running sessions as failed during restore", () => {

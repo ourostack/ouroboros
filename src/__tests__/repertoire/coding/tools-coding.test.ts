@@ -8,7 +8,17 @@ vi.mock("../../../repertoire/coding", () => ({
   ),
 }))
 
+vi.mock("../../../heart/identity", () => ({
+  getAgentRoot: vi.fn(() => "/Users/test/AgentBundles/slugger.ouro"),
+}))
+
+vi.mock("../../../heart/obligations", () => ({
+  findPendingObligationForOrigin: vi.fn(),
+  advanceObligation: vi.fn(),
+}))
+
 import { attachCodingSessionFeedback, formatCodingTail, getCodingSessionManager } from "../../../repertoire/coding"
+import { advanceObligation, findPendingObligationForOrigin } from "../../../heart/obligations"
 
 describe("coding tool contracts", () => {
   const manager = {
@@ -28,6 +38,9 @@ describe("coding tool contracts", () => {
     vi.mocked(getCodingSessionManager).mockReturnValue(manager as unknown as ReturnType<typeof getCodingSessionManager>)
     vi.mocked(attachCodingSessionFeedback).mockReset()
     vi.mocked(formatCodingTail).mockClear()
+    vi.mocked(findPendingObligationForOrigin).mockReset()
+    vi.mocked(findPendingObligationForOrigin).mockReturnValue(undefined)
+    vi.mocked(advanceObligation).mockReset()
     manager.spawnSession.mockReset()
     manager.getSession.mockReset()
     manager.listSessions.mockReset()
@@ -160,6 +173,170 @@ describe("coding tool contracts", () => {
 
     expect(attachCodingSessionFeedback).toHaveBeenCalledWith(manager, expect.objectContaining({ id: "coding-777" }), feedback)
     expect(JSON.parse(result)).toMatchObject({ id: "coding-777", runner: "codex" })
+  })
+
+  it("coding_spawn threads current-session provenance and obligation linkage into the coding session", async () => {
+    vi.mocked(findPendingObligationForOrigin).mockReturnValue({
+      id: "ob-1",
+      origin: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+      content: "fix the loop",
+      status: "pending",
+      createdAt: "2026-03-20T00:00:00.000Z",
+    } as any)
+    manager.spawnSession.mockResolvedValue({
+      id: "coding-778",
+      runner: "codex",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      taskRef: "task-778",
+      status: "running",
+      stdoutTail: "",
+      stderrTail: "",
+      pid: 4321,
+      startedAt: "2026-03-05T23:50:00.000Z",
+      lastActivityAt: "2026-03-05T23:50:00.000Z",
+      endedAt: null,
+      restartCount: 0,
+      lastExitCode: null,
+      lastSignal: null,
+      failure: null,
+      originSession: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+      obligationId: "ob-1",
+    })
+
+    await execTool(
+      "coding_spawn",
+      {
+        runner: "codex",
+        workdir: "/Users/test/AgentWorkspaces/ouroboros",
+        prompt: "execute",
+        taskRef: "task-778",
+      },
+      {
+        currentSession: {
+          friendId: "ari",
+          channel: "bluebubbles",
+          key: "chat",
+          sessionPath: "/tmp/state/sessions/ari/bluebubbles/chat.json",
+        },
+      },
+    )
+
+    expect(manager.spawnSession).toHaveBeenCalledWith({
+      runner: "codex",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      prompt: "execute",
+      taskRef: "task-778",
+      originSession: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+      obligationId: "ob-1",
+    })
+    expect(advanceObligation).toHaveBeenCalledWith(
+      "/Users/test/AgentBundles/slugger.ouro",
+      "ob-1",
+      expect.objectContaining({
+        status: "investigating",
+        currentSurface: { kind: "coding", label: "codex coding-778" },
+      }),
+    )
+  })
+
+  it("coding_spawn keeps origin provenance even when no pending obligation exists yet", async () => {
+    manager.spawnSession.mockResolvedValue({
+      id: "coding-779",
+      runner: "claude",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      taskRef: "task-779",
+      status: "running",
+      stdoutTail: "",
+      stderrTail: "",
+      pid: 4321,
+      startedAt: "2026-03-05T23:50:00.000Z",
+      lastActivityAt: "2026-03-05T23:50:00.000Z",
+      endedAt: null,
+      restartCount: 0,
+      lastExitCode: null,
+      lastSignal: null,
+      failure: null,
+      originSession: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+    })
+
+    await execTool(
+      "coding_spawn",
+      {
+        runner: "claude",
+        workdir: "/Users/test/AgentWorkspaces/ouroboros",
+        prompt: "execute",
+        taskRef: "task-779",
+      },
+      {
+        currentSession: {
+          friendId: "ari",
+          channel: "bluebubbles",
+          key: "chat",
+          sessionPath: "/tmp/state/sessions/ari/bluebubbles/chat.json",
+        },
+      },
+    )
+
+    expect(manager.spawnSession).toHaveBeenCalledWith({
+      runner: "claude",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      prompt: "execute",
+      taskRef: "task-779",
+      originSession: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+    })
+    expect(advanceObligation).not.toHaveBeenCalled()
+  })
+
+  it("coding_spawn uses a generic start note when a linked obligation has no origin session on the returned session", async () => {
+    vi.mocked(findPendingObligationForOrigin).mockReturnValue({
+      id: "ob-2",
+      origin: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+      content: "fix the loop",
+      status: "pending",
+      createdAt: "2026-03-20T00:00:00.000Z",
+    } as any)
+    manager.spawnSession.mockResolvedValue({
+      id: "coding-780",
+      runner: "codex",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      taskRef: "task-780",
+      status: "running",
+      stdoutTail: "",
+      stderrTail: "",
+      pid: 4321,
+      startedAt: "2026-03-05T23:50:00.000Z",
+      lastActivityAt: "2026-03-05T23:50:00.000Z",
+      endedAt: null,
+      restartCount: 0,
+      lastExitCode: null,
+      lastSignal: null,
+      failure: null,
+      obligationId: "ob-2",
+    })
+
+    await execTool(
+      "coding_spawn",
+      {
+        runner: "codex",
+        workdir: "/Users/test/AgentWorkspaces/ouroboros",
+        prompt: "execute",
+        taskRef: "task-780",
+      },
+      {
+        currentSession: {
+          friendId: "ari",
+          channel: "bluebubbles",
+          key: "chat",
+          sessionPath: "/tmp/state/sessions/ari/bluebubbles/chat.json",
+        },
+      },
+    )
+
+    expect(advanceObligation).toHaveBeenCalledWith(
+      "/Users/test/AgentBundles/slugger.ouro",
+      "ob-2",
+      expect.objectContaining({ latestNote: "coding session started" }),
+    )
   })
 
   it("coding_spawn omits blank optional args", async () => {

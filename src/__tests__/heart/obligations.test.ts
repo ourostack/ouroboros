@@ -8,6 +8,7 @@ import {
   readPendingObligations,
   fulfillObligation,
   findPendingObligationForOrigin,
+  advanceObligation,
 } from "../../heart/obligations"
 
 describe("obligations store", () => {
@@ -107,6 +108,19 @@ describe("obligations store", () => {
       expect(pending[0].content).toBe("pending two")
     })
 
+    it("keeps investigating obligations in the active set", () => {
+      const ob = createObligation(tmpDir, { origin: sampleOrigin, content: "debug the loop" })
+      advanceObligation(tmpDir, ob.id, {
+        status: "investigating",
+        currentSurface: { kind: "coding", label: "codex coding-001" },
+      })
+
+      const pending = readPendingObligations(tmpDir)
+      expect(pending).toHaveLength(1)
+      expect(pending[0].status).toBe("investigating")
+      expect(pending[0].currentSurface).toEqual({ kind: "coding", label: "codex coding-001" })
+    })
+
     it("returns empty array when all are fulfilled", () => {
       const ob = createObligation(tmpDir, { origin: sampleOrigin, content: "done" })
       fulfillObligation(tmpDir, ob.id)
@@ -135,6 +149,37 @@ describe("obligations store", () => {
       const all = readObligations(tmpDir)
       expect(all).toHaveLength(1)
       expect(all[0].status).toBe("pending")
+    })
+  })
+
+  describe("advanceObligation", () => {
+    it("updates lifecycle state, current surface, and updatedAt", () => {
+      const ob = createObligation(tmpDir, { origin: sampleOrigin, content: "fix the visible loop" })
+      advanceObligation(tmpDir, ob.id, {
+        status: "waiting_for_merge",
+        currentSurface: { kind: "merge", label: "PR #999" },
+        latestNote: "checks green, ready to merge",
+      })
+
+      const all = readObligations(tmpDir)
+      expect(all).toHaveLength(1)
+      expect(all[0].status).toBe("waiting_for_merge")
+      expect(all[0].currentSurface).toEqual({ kind: "merge", label: "PR #999" })
+      expect(all[0].latestNote).toBe("checks green, ready to merge")
+      expect(all[0].updatedAt).toBeTruthy()
+    })
+
+    it("can update note without changing status or surface", () => {
+      const ob = createObligation(tmpDir, { origin: sampleOrigin, content: "keep Ari posted" })
+      advanceObligation(tmpDir, ob.id, {
+        latestNote: "still tracing the issue",
+      })
+
+      const all = readObligations(tmpDir)
+      expect(all[0].status).toBe("pending")
+      expect(all[0].currentSurface).toBeUndefined()
+      expect(all[0].latestNote).toBe("still tracing the issue")
+      expect(all[0].updatedAt).toBeTruthy()
     })
   })
 
@@ -167,6 +212,18 @@ describe("obligations store", () => {
 
       const found = findPendingObligationForOrigin(tmpDir, sampleOrigin)
       expect(found).toBeUndefined()
+    })
+
+    it("returns active investigating obligations for the origin", () => {
+      const ob = createObligation(tmpDir, { origin: sampleOrigin, content: "follow the coding session" })
+      advanceObligation(tmpDir, ob.id, {
+        status: "investigating",
+        currentSurface: { kind: "coding", label: "codex coding-001" },
+      })
+
+      const found = findPendingObligationForOrigin(tmpDir, sampleOrigin)
+      expect(found).toBeDefined()
+      expect(found!.status).toBe("investigating")
     })
   })
 })

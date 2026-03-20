@@ -44,6 +44,13 @@ export function getPreviousVersion(deps: Pick<OuroVersionManagerDeps, "homeDir" 
   }
 }
 
+export function buildChangelogCommand(previousVersion: string | null, currentVersion: string | null): string | null {
+  if (!previousVersion || !currentVersion || previousVersion === currentVersion) {
+    return null
+  }
+  return `ouro changelog --from ${previousVersion}`
+}
+
 export function listInstalledVersions(deps: Pick<OuroVersionManagerDeps, "homeDir" | "readdirSync">): string[] {
   const cliHome = getOuroCliHome(deps.homeDir)
   /* v8 ignore next -- dep default: tests always inject @preserve */

@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { getProviderDisplayLabel } from "../heart/core";
+import { buildChangelogCommand } from "../heart/daemon/ouro-version-manager";
 import { finalAnswerTool, getToolsForChannel } from "../repertoire/tools";
 import { listSkills } from "../repertoire/skills";
 import { getAgentRoot, getAgentName, getAgentSecretsPath, loadAgentConfig, type SenseName } from "../heart/identity";
@@ -17,6 +18,7 @@ import { listSessionActivity, type SessionActivityQuery } from "../heart/session
 import { formatActiveWorkFrame, type ActiveWorkFrame } from "../heart/active-work";
 import type { DelegationDecision } from "../heart/delegation";
 import { deriveCommitments } from "../heart/commitments";
+import { findActivePersistentObligation, renderActiveObligationSteering } from "./obligation-steering";
 
 // Lazy-loaded psyche text cache
 let _psycheCache: {
@@ -252,6 +254,11 @@ export function runtimeInfoSection(channel: Channel): string {
   const bundleMeta = readBundleMeta()
   if (bundleMeta?.previousRuntimeVersion && bundleMeta.previousRuntimeVersion !== currentVersion) {
     lines.push(`previously: ${bundleMeta.previousRuntimeVersion}`)
+    const changelogCommand = buildChangelogCommand(bundleMeta.previousRuntimeVersion, currentVersion)
+    /* v8 ignore next -- buildChangelogCommand is non-null when previous/current runtime versions differ @preserve */
+    if (changelogCommand) {
+      lines.push(`if i'm closing a self-fix loop, i should tell them i updated and review changes with \`${changelogCommand}\`.`)
+    }
   }
 
   lines.push(`changelog available at: ${getChangelogPath()}`);
@@ -492,8 +499,13 @@ export function centerOfGravitySteeringSection(channel: Channel, options?: Build
   if (cog === "local-turn") return ""
 
   const job = frame.inner?.job
+  const activeObligation = findActivePersistentObligation(frame)
 
   if (cog === "inward-work") {
+    if (activeObligation) {
+      return renderActiveObligationSteering(activeObligation)
+    }
+
     if (job?.status === "queued" || job?.status === "running") {
       const originClause = job.origin
         ? ` ${job.origin.friendName ?? job.origin.friendId} asked about something and i wanted to give it real thought before responding.`

@@ -11,7 +11,7 @@ import { isIdentityProvider, type IdentityProvider, type TrustLevel } from "../.
 import type { DaemonCommand, DaemonResponse } from "./daemon"
 import { registerOuroBundleUti as defaultRegisterOuroBundleUti } from "./ouro-uti"
 import { installOuroCommand as defaultInstallOuroCommand, type OuroPathInstallResult } from "./ouro-path-installer"
-import { getCurrentVersion, getPreviousVersion, listInstalledVersions, installVersion, activateVersion, ensureLayout, getOuroCliHome } from "./ouro-version-manager"
+import { getCurrentVersion, getPreviousVersion, listInstalledVersions, installVersion, activateVersion, ensureLayout, getOuroCliHome, buildChangelogCommand } from "./ouro-version-manager"
 import { ensureSkillManagement as defaultEnsureSkillManagement } from "./skill-management-installer"
 import {
   runHatchFlow as defaultRunHatchFlow,
@@ -2022,6 +2022,11 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
           await deps.installCliVersion!(updateResult.latestVersion)
           deps.activateCliVersion!(updateResult.latestVersion)
           deps.writeStdout(`ouro updated to ${updateResult.latestVersion} (was ${currentVersion})`)
+          const changelogCommand = buildChangelogCommand(currentVersion, updateResult.latestVersion)
+          /* v8 ignore next -- buildChangelogCommand is non-null when an actual newer version is installed @preserve */
+          if (changelogCommand) {
+            deps.writeStdout(`review changes with: ${changelogCommand}`)
+          }
           pendingReExec = true
         }
       /* v8 ignore start -- update check error: tested via daemon-cli-update-flow.test.ts @preserve */
@@ -2071,6 +2076,11 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     /* v8 ignore start -- CLI update detection: tested via daemon-cli-version-detect.test.ts @preserve */
     if (previousCliVersion && previousCliVersion !== currentVersion) {
       deps.writeStdout(`ouro updated to ${currentVersion} (was ${previousCliVersion})`)
+      const changelogCommand = buildChangelogCommand(previousCliVersion, currentVersion)
+      /* v8 ignore next -- buildChangelogCommand is non-null when previous/current runtime versions differ @preserve */
+      if (changelogCommand) {
+        deps.writeStdout(`review changes with: ${changelogCommand}`)
+      }
     }
     /* v8 ignore stop */
 

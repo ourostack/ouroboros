@@ -230,6 +230,54 @@ describe("deriveCommitments", () => {
     expect(result.committedTo).toContain("i owe bob: architecture review")
   })
 
+  it("includes active obligation status and work surface in committedTo", () => {
+    const obligations = [
+      {
+        id: "ob-1",
+        origin: { friendId: "alex", channel: "cli", key: "session" },
+        content: "visible ooda loop",
+        status: "investigating" as const,
+        currentSurface: { kind: "coding", label: "codex coding-001" },
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:01:00Z",
+      },
+    ]
+    const result = deriveCommitments(makeFrame(), makeIdleJob(), obligations)
+    expect(result.committedTo).toContain("i owe alex: visible ooda loop (investigating in codex coding-001)")
+    expect(result.completionCriteria).toContain("close my active obligation loops")
+  })
+
+  it("includes advanced obligation status even when no work surface is known", () => {
+    const obligations = [
+      {
+        id: "ob-1",
+        origin: { friendId: "alex", channel: "cli", key: "session" },
+        content: "land the visible fix",
+        status: "waiting_for_merge" as const,
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:01:00Z",
+      },
+    ]
+    const result = deriveCommitments(makeFrame(), makeIdleJob(), obligations)
+    expect(result.committedTo).toContain("i owe alex: land the visible fix (waiting for merge)")
+  })
+
+  it("skips fulfilled persistent obligations", () => {
+    const obligations = [
+      {
+        id: "ob-1",
+        origin: { friendId: "alex", channel: "cli", key: "session" },
+        content: "already closed",
+        status: "fulfilled" as const,
+        createdAt: "2026-01-01T00:00:00Z",
+        fulfilledAt: "2026-01-01T00:01:00Z",
+      },
+    ]
+    const result = deriveCommitments(makeFrame(), makeIdleJob(), obligations)
+    expect(result.committedTo).toEqual([])
+    expect(result.completionCriteria).toEqual(["fulfill my outstanding obligations"])
+  })
+
   it("omits obligation section when pendingObligations is empty", () => {
     const result = deriveCommitments(makeFrame(), makeIdleJob(), [])
     expect(result.committedTo).not.toContainEqual(expect.stringContaining("i owe"))

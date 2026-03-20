@@ -1222,6 +1222,36 @@ describe("runtimeInfoSection", () => {
     expect(result).toContain("previously: 0.0.8")
   })
 
+  it("includes explicit update-closure guidance when the runtime recently changed", async () => {
+    const bundleMeta = {
+      runtimeVersion: "0.0.9",
+      bundleSchemaVersion: 1,
+      lastUpdated: "2025-01-01T00:00:00Z",
+      previousRuntimeVersion: "0.0.8",
+    }
+    vi.mocked(fs.readFileSync).mockImplementation((filePath: any, _encoding?: any) => {
+      const p = String(filePath)
+      if (p.endsWith("bundle-meta.json")) return JSON.stringify(bundleMeta)
+      if (p.endsWith("SOUL.md")) return MOCK_SOUL
+      if (p.endsWith("IDENTITY.md")) return MOCK_IDENTITY
+      if (p.endsWith("LORE.md")) return MOCK_LORE
+      if (p.endsWith("TACIT.md")) return MOCK_TACIT_KNOWLEDGE
+      if (p.endsWith("ASPIRATIONS.md")) return MOCK_ASPIRATIONS
+      if (p.endsWith("secrets.json")) return JSON.stringify({})
+      if (p.endsWith("package.json")) return MOCK_PACKAGE_JSON
+      return ""
+    })
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { runtimeInfoSection, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = runtimeInfoSection("cli")
+    expect(result).toContain("if i'm closing a self-fix loop")
+    expect(result).toContain("ouro changelog --from 0.0.8")
+  })
+
   it("omits 'previously' line when previousRuntimeVersion is absent (first boot)", async () => {
     const bundleMeta = {
       runtimeVersion: "0.0.9",

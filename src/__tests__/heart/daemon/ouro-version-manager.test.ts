@@ -63,6 +63,19 @@ describe("ouro-version-manager", () => {
     })
   })
 
+  describe("buildChangelogCommand", () => {
+    it("returns ouro changelog command when current and previous versions differ", async () => {
+      const { buildChangelogCommand } = await import("../../../heart/daemon/ouro-version-manager")
+      expect(buildChangelogCommand("0.1.0-alpha.79", "0.1.0-alpha.80")).toBe("ouro changelog --from 0.1.0-alpha.79")
+    })
+
+    it("returns null when previous version is missing or unchanged", async () => {
+      const { buildChangelogCommand } = await import("../../../heart/daemon/ouro-version-manager")
+      expect(buildChangelogCommand(null, "0.1.0-alpha.80")).toBeNull()
+      expect(buildChangelogCommand("0.1.0-alpha.80", "0.1.0-alpha.80")).toBeNull()
+    })
+  })
+
   describe("listInstalledVersions", () => {
     it("reads versions/ directory and returns entries", async () => {
       const { listInstalledVersions } = await import("../../../heart/daemon/ouro-version-manager")

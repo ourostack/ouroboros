@@ -76,6 +76,7 @@ function isPidAlive(pid: number): boolean {
 function cloneSession(session: CodingSession): CodingSession {
   return {
     ...session,
+    originSession: session.originSession ? { ...session.originSession } : undefined,
     stdoutTail: session.stdoutTail,
     stderrTail: session.stderrTail,
     failure: session.failure
@@ -190,6 +191,8 @@ export class CodingSessionManager {
       runner: normalizedRequest.runner,
       workdir: normalizedRequest.workdir,
       taskRef: normalizedRequest.taskRef,
+      originSession: normalizedRequest.originSession ? { ...normalizedRequest.originSession } : undefined,
+      obligationId: normalizedRequest.obligationId,
       scopeFile: normalizedRequest.scopeFile,
       stateFile: normalizedRequest.stateFile,
       status: "spawning",
@@ -565,13 +568,17 @@ export class CodingSessionManager {
 
       const normalizedRequest: CodingSessionRequest = {
         ...request,
+        originSession: request.originSession ? { ...request.originSession } : undefined,
         sessionId: request.sessionId ?? session.id,
+        obligationId: request.obligationId,
         parentAgent: request.parentAgent ?? this.agentName,
       }
 
       const normalizedSession: CodingSession = {
         ...session,
         taskRef: session.taskRef ?? normalizedRequest.taskRef,
+        originSession: session.originSession ?? normalizedRequest.originSession,
+        obligationId: session.obligationId ?? normalizedRequest.obligationId,
         failure: session.failure ?? null,
         stdoutTail: session.stdoutTail ?? session.failure?.stdoutTail ?? "",
         stderrTail: session.stderrTail ?? session.failure?.stderrTail ?? "",

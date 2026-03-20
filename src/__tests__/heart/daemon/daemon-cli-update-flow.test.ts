@@ -114,4 +114,19 @@ describe("ouro up: CLI update flow", () => {
     // reExec called with ["up"] — the original args
     expect(reExec).toHaveBeenCalledWith(["up"])
   })
+
+  it("prints a changelog follow-up command when a newer version is installed", async () => {
+    const reExec = vi.fn(() => { throw new Error("__REEXEC__") }) as unknown as (args: string[]) => never
+    const deps = makeDeps({
+      checkForCliUpdate: vi.fn(async () => ({ available: true, latestVersion: "0.1.0-alpha.90" })),
+      installCliVersion: vi.fn(async () => {}),
+      activateCliVersion: vi.fn(),
+      getCurrentCliVersion: vi.fn(() => "0.1.0-alpha.80"),
+      reExecFromNewVersion: reExec,
+    })
+
+    await expect(runOuroCli(["up"], deps)).rejects.toThrow("__REEXEC__")
+
+    expect(deps.writeStdout).toHaveBeenCalledWith("review changes with: ouro changelog --from 0.1.0-alpha.80")
+  })
 })

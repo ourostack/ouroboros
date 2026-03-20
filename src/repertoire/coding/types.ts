@@ -1,5 +1,11 @@
 export type CodingRunner = "claude" | "codex"
 
+export interface CodingSessionOrigin {
+  friendId: string
+  channel: string
+  key: string
+}
+
 export type CodingSessionStatus =
   | "spawning"
   | "running"
@@ -14,6 +20,8 @@ export interface CodingSessionRequest {
   workdir: string
   prompt: string
   taskRef?: string
+  originSession?: CodingSessionOrigin
+  obligationId?: string
   sessionId?: string
   parentAgent?: string
   scopeFile?: string
@@ -37,6 +45,8 @@ export interface CodingSession {
   runner: CodingRunner
   workdir: string
   taskRef?: string
+  originSession?: CodingSessionOrigin
+  obligationId?: string
   scopeFile?: string
   stateFile?: string
   status: CodingSessionStatus

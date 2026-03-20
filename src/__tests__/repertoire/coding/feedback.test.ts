@@ -1,6 +1,15 @@
 import { describe, expect, it, vi } from "vitest"
 
+vi.mock("../../../heart/identity", () => ({
+  getAgentRoot: vi.fn(() => "/Users/test/AgentBundles/slugger.ouro"),
+}))
+
+vi.mock("../../../heart/obligations", () => ({
+  advanceObligation: vi.fn(),
+}))
+
 import { attachCodingSessionFeedback, formatCodingTail } from "../../../repertoire/coding/feedback"
+import { advanceObligation } from "../../../heart/obligations"
 import type { CodingSession, CodingSessionUpdate } from "../../../repertoire/coding/types"
 
 function makeSession(overrides: Partial<CodingSession> = {}): CodingSession {
@@ -364,5 +373,175 @@ describe("coding feedback relay", () => {
 
     expect(target.send).toHaveBeenNthCalledWith(1, "codex coding-001 started")
     expect(target.send).toHaveBeenNthCalledWith(2, "codex coding-001 completed: done")
+  })
+
+  it("includes the originating live session in feedback messages when coding work belongs to a return loop", async () => {
+    let listener: ((update: CodingSessionUpdate) => void | Promise<void>) | undefined
+    const manager = {
+      subscribe: vi.fn((_sessionId: string, cb: (update: CodingSessionUpdate) => void | Promise<void>) => {
+        listener = cb
+        return () => undefined
+      }),
+    }
+    const target = { send: vi.fn().mockResolvedValue(undefined) }
+    const session = makeSession() as CodingSession & {
+      originSession?: { friendId: string; channel: string; key: string }
+      obligationId?: string
+    }
+    session.originSession = { friendId: "ari", channel: "bluebubbles", key: "chat" }
+    session.obligationId = "ob-1"
+
+    attachCodingSessionFeedback(manager, session as CodingSession, target)
+    await Promise.resolve()
+
+    expect(target.send).toHaveBeenCalledWith("codex coding-001 for bluebubbles/chat started")
+
+    await listener?.({
+      kind: "completed",
+      session: {
+        ...(session as CodingSession),
+        status: "completed",
+        stdoutTail: "opened PR #123",
+        pid: null,
+        endedAt: "2026-03-05T23:55:00.000Z",
+      },
+    })
+    await Promise.resolve()
+
+    expect(target.send).toHaveBeenLastCalledWith("codex coding-001 for bluebubbles/chat completed: opened PR #123")
+  })
+
+  it("updates obligation notes for progress, waiting, stalled, failed, and killed coding states", async () => {
+    let listener: ((update: CodingSessionUpdate) => void | Promise<void>) | undefined
+    const manager = {
+      subscribe: vi.fn((_sessionId: string, cb: (update: CodingSessionUpdate) => void | Promise<void>) => {
+        listener = cb
+        return () => undefined
+      }),
+    }
+    const target = { send: vi.fn().mockResolvedValue(undefined) }
+    const session = makeSession() as CodingSession & { obligationId?: string }
+    session.obligationId = "ob-2"
+
+    vi.mocked(advanceObligation).mockClear()
+    attachCodingSessionFeedback(manager, session as CodingSession, target)
+    await Promise.resolve()
+
+    await listener?.({
+      kind: "progress",
+      session: { ...(session as CodingSession), stdoutTail: "thinking" },
+      stream: "stdout",
+      text: "thinking",
+    })
+    await listener?.({
+      kind: "waiting_input",
+      session: { ...(session as CodingSession), status: "waiting_input" },
+    })
+    await listener?.({
+      kind: "stalled",
+      session: { ...(session as CodingSession), status: "stalled" },
+    })
+    await listener?.({
+      kind: "failed",
+      session: { ...(session as CodingSession), status: "failed", pid: null, endedAt: "2026-03-05T23:55:00.000Z" },
+    })
+    await listener?.({
+      kind: "killed",
+      session: { ...(session as CodingSession), status: "killed", pid: null, endedAt: "2026-03-05T23:56:00.000Z" },
+    })
+    await Promise.resolve()
+
+    expect(advanceObligation).toHaveBeenCalledWith(
+      "/Users/test/AgentBundles/slugger.ouro",
+      "ob-2",
+      expect.objectContaining({ latestNote: "coding session progress: thinking" }),
+    )
+    expect(advanceObligation).toHaveBeenCalledWith(
+      "/Users/test/AgentBundles/slugger.ouro",
+      "ob-2",
+      expect.objectContaining({ latestNote: "coding session waiting for input" }),
+    )
+    expect(advanceObligation).toHaveBeenCalledWith(
+      "/Users/test/AgentBundles/slugger.ouro",
+      "ob-2",
+      expect.objectContaining({ latestNote: "coding session stalled" }),
+    )
+    expect(advanceObligation).toHaveBeenCalledWith(
+      "/Users/test/AgentBundles/slugger.ouro",
+      "ob-2",
+      expect.objectContaining({ latestNote: "coding session failed" }),
+    )
+    expect(advanceObligation).toHaveBeenCalledWith(
+      "/Users/test/AgentBundles/slugger.ouro",
+      "ob-2",
+      expect.objectContaining({ latestNote: "coding session killed" }),
+    )
+  })
+
+  it("covers snippet and no-snippet obligation note branches during feedback syncing", async () => {
+    let listener: ((update: CodingSessionUpdate) => void | Promise<void>) | undefined
+    const manager = {
+      subscribe: vi.fn((_sessionId: string, cb: (update: CodingSessionUpdate) => void | Promise<void>) => {
+        listener = cb
+        return () => undefined
+      }),
+    }
+    const target = { send: vi.fn().mockResolvedValue(undefined) }
+    const session = makeSession() as CodingSession & { obligationId?: string }
+    session.obligationId = "ob-3"
+
+    vi.mocked(advanceObligation).mockClear()
+    attachCodingSessionFeedback(manager, session as CodingSession, target)
+    await Promise.resolve()
+
+    await listener?.({
+      kind: "progress",
+      session: { ...(session as CodingSession) },
+      stream: "stdout",
+      text: "OpenAI Codex v0.104.0\n--------\n",
+    })
+    await listener?.({
+      kind: "waiting_input",
+      session: { ...(session as CodingSession), status: "waiting_input", stdoutTail: "need approval" },
+    })
+    await listener?.({
+      kind: "stalled",
+      session: { ...(session as CodingSession), status: "stalled", stderrTail: "still indexing" },
+    })
+    await listener?.({
+      kind: "completed",
+      session: { ...(session as CodingSession), status: "completed", pid: null, endedAt: "2026-03-05T23:55:00.000Z" },
+    })
+    await listener?.({
+      kind: "failed",
+      session: { ...(session as CodingSession), status: "failed", stderrTail: "apply_patch blew up", pid: null, endedAt: "2026-03-05T23:56:00.000Z" },
+    })
+    await Promise.resolve()
+
+    expect(advanceObligation).toHaveBeenCalledWith(
+      "/Users/test/AgentBundles/slugger.ouro",
+      "ob-3",
+      expect.objectContaining({ latestNote: undefined }),
+    )
+    expect(advanceObligation).toHaveBeenCalledWith(
+      "/Users/test/AgentBundles/slugger.ouro",
+      "ob-3",
+      expect.objectContaining({ latestNote: "coding session waiting: need approval" }),
+    )
+    expect(advanceObligation).toHaveBeenCalledWith(
+      "/Users/test/AgentBundles/slugger.ouro",
+      "ob-3",
+      expect.objectContaining({ latestNote: "coding session stalled: still indexing" }),
+    )
+    expect(advanceObligation).toHaveBeenCalledWith(
+      "/Users/test/AgentBundles/slugger.ouro",
+      "ob-3",
+      expect.objectContaining({ latestNote: "coding session completed; merge/update still pending" }),
+    )
+    expect(advanceObligation).toHaveBeenCalledWith(
+      "/Users/test/AgentBundles/slugger.ouro",
+      "ob-3",
+      expect.objectContaining({ latestNote: "coding session failed: apply_patch blew up" }),
+    )
   })
 })

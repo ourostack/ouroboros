@@ -64,6 +64,26 @@ describe("commitmentsSection", () => {
     expect(result).toContain("- i told them i'd naming")
   })
 
+  it("surfaces active obligation status and work surface in the prompt section", () => {
+    const result = commitmentsSection({
+      activeWorkFrame: makeFrame({
+        pendingObligations: [
+          {
+            id: "ob-1",
+            origin: { friendId: "alex", channel: "bluebubbles", key: "chat" },
+            content: "make the loop visible",
+            status: "investigating",
+            currentSurface: { kind: "coding", label: "codex coding-001" },
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:01:00Z",
+          },
+        ],
+      }),
+    })
+    expect(result).toContain("## my commitments")
+    expect(result).toContain("i owe alex: make the loop visible (investigating in codex coding-001)")
+  })
+
   it("emits nerves event reference", () => {
     expect(emitNervesEvent).toBeDefined()
   })

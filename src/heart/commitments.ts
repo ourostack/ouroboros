@@ -1,12 +1,25 @@
 import type { ActiveWorkFrame } from "./active-work"
 import type { InnerJob } from "./daemon/thoughts"
-import type { Obligation } from "./obligations"
+import { isOpenObligationStatus, type Obligation } from "./obligations"
 import { emitNervesEvent } from "../nerves/runtime"
 
 export interface CommitmentsFrame {
   committedTo: string[]
   completionCriteria: string[]
   safeToIgnore: string[]
+}
+
+function describeActiveObligation(obligation: Obligation): string {
+  if (obligation.status === "pending") {
+    return `i owe ${obligation.origin.friendId}: ${obligation.content}`
+  }
+
+  const surface = obligation.currentSurface?.label
+  const statusText = obligation.status.replaceAll("_", " ")
+  if (surface) {
+    return `i owe ${obligation.origin.friendId}: ${obligation.content} (${statusText} in ${surface})`
+  }
+  return `i owe ${obligation.origin.friendId}: ${obligation.content} (${statusText})`
 }
 
 export function deriveCommitments(
@@ -20,10 +33,16 @@ export function deriveCommitments(
 
   // Persistent obligations from the obligation store
   if (pendingObligations && pendingObligations.length > 0) {
+    let hasAdvancedObligation = false
     for (const ob of pendingObligations) {
-      committedTo.push(`i owe ${ob.origin.friendId}: ${ob.content}`)
+      if (!isOpenObligationStatus(ob.status)) continue
+      committedTo.push(describeActiveObligation(ob))
+      if (ob.status !== "pending") hasAdvancedObligation = true
     }
     completionCriteria.push("fulfill my outstanding obligations")
+    if (hasAdvancedObligation) {
+      completionCriteria.push("close my active obligation loops")
+    }
   }
 
   // Obligation (from current turn -- kept for backward compat)

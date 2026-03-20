@@ -4,7 +4,7 @@ import type { BoardResult } from "../repertoire/tasks/types"
 import { bridgeStateLabel } from "./bridges/state-machine"
 import type { BridgeRecord } from "./bridges/store"
 import type { InnerJob } from "./daemon/thoughts"
-import type { Obligation } from "./obligations"
+import { isOpenObligationStatus, type Obligation } from "./obligations"
 import type { SessionActivityRecord } from "./session-activity"
 import { formatTargetSessionCandidates, type TargetSessionCandidate } from "./target-resolution"
 
@@ -109,6 +109,24 @@ function hasSharedObligationPressure(input: Pick<BuildActiveWorkFrameInput, "cur
     || summarizeLiveTasks(input.taskBoard).length > 0
 }
 
+function activeObligationCount(obligations: Obligation[] | undefined): number {
+  return (obligations ?? []).filter((ob) => isOpenObligationStatus(ob.status)).length
+}
+
+function formatObligationSurface(obligation: Obligation): string {
+  if (!obligation.currentSurface?.label) return ""
+  switch (obligation.status) {
+    case "investigating":
+      return ` (working in ${obligation.currentSurface.label})`
+    case "waiting_for_merge":
+      return ` (waiting at ${obligation.currentSurface.label})`
+    case "updating_runtime":
+      return ` (updating via ${obligation.currentSurface.label})`
+    default:
+      return ` (${obligation.currentSurface.label})`
+  }
+}
+
 export function suggestBridgeForActiveWork(input: BridgeSuggestionInput): BridgeSuggestion | null {
   const targetCandidates = (input.targetCandidates ?? [])
     .filter((candidate) => {
@@ -176,9 +194,10 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
 
   const liveTaskNames = summarizeLiveTasks(input.taskBoard)
   const activeBridgePresent = input.bridges.some(isActiveBridge)
+  const openObligations = activeObligationCount(input.pendingObligations)
   const centerOfGravity: CenterOfGravityMode = activeBridgePresent
     ? "shared-work"
-    : (input.inner.status === "running" || input.inner.hasPending || input.mustResolveBeforeHandoff)
+    : (input.inner.status === "running" || input.inner.hasPending || input.mustResolveBeforeHandoff || openObligations > 0)
       ? "inward-work"
       : "local-turn"
 
@@ -220,6 +239,7 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
       bridges: frame.bridges.length,
       liveTasks: frame.taskPressure.liveTaskNames.length,
       liveSessions: frame.friendActivity.otherLiveSessionsForCurrentFriend.length,
+      pendingObligations: openObligations,
       hasBridgeSuggestion: frame.bridgeSuggestion !== null,
     },
   })
@@ -297,6 +317,20 @@ export function formatActiveWorkFrame(frame: ActiveWorkFrame): string {
   if (targetCandidatesBlock) {
     lines.push("")
     lines.push(targetCandidatesBlock)
+  }
+
+  if ((frame.pendingObligations ?? []).length > 0) {
+    lines.push("")
+    lines.push("## return obligations")
+    for (const obligation of frame.pendingObligations) {
+      if (!isOpenObligationStatus(obligation.status)) continue
+      let obligationLine =
+        `- [${obligation.status}] ${obligation.origin.friendId}/${obligation.origin.channel}/${obligation.origin.key}: ${obligation.content}${formatObligationSurface(obligation)}`
+      if (obligation.latestNote?.trim()) {
+        obligationLine += `\n  latest: ${obligation.latestNote.trim()}`
+      }
+      lines.push(obligationLine)
+    }
   }
 
   // Bridge suggestion

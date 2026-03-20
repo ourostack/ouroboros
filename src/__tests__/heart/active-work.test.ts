@@ -1416,6 +1416,508 @@ describe("delegation router", () => {
     expect(rendered).toContain("i still owe them an answer")
   })
 
+  it("treats active obligations as inward-work pressure even when inner job is idle", async () => {
+    const { buildActiveWorkFrame, formatActiveWorkFrame } = await import("../../heart/active-work")
+
+    const frame = buildActiveWorkFrame({
+      currentSession: {
+        friendId: "friend-1",
+        channel: "bluebubbles",
+        key: "chat",
+        sessionPath: "/tmp/state/sessions/friend-1/bluebubbles/chat.json",
+      },
+      mustResolveBeforeHandoff: false,
+      inner: {
+        status: "idle",
+        hasPending: false,
+        job: {
+          status: "idle" as const,
+          content: null,
+          origin: null,
+          mode: "reflect" as const,
+          obligationStatus: null,
+          surfacedResult: null,
+          queuedAt: null,
+          startedAt: null,
+          surfacedAt: null,
+        },
+      },
+      bridges: [],
+      pendingObligations: [
+        {
+          id: "ob-1",
+          origin: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
+          content: "close the loop on the fix",
+          status: "investigating" as const,
+          currentSurface: { kind: "coding", label: "codex coding-001" },
+          createdAt: "2026-03-20T15:00:00.000Z",
+          updatedAt: "2026-03-20T15:05:00.000Z",
+        },
+      ],
+      taskBoard: {
+        compact: "",
+        activeBridges: [],
+        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [] },
+      },
+      friendActivity: [],
+    })
+
+    expect(frame.centerOfGravity).toBe("inward-work")
+
+    const rendered = formatActiveWorkFrame(frame)
+    expect(rendered).toContain("## return obligations")
+    expect(rendered).toContain("[investigating] friend-1/bluebubbles/chat: close the loop on the fix")
+    expect(rendered).toContain("working in codex coding-001")
+  })
+
+  it("renders queued inner thought content when present", async () => {
+    const { formatActiveWorkFrame } = await import("../../heart/active-work")
+
+    const rendered = formatActiveWorkFrame({
+      currentSession: null,
+      currentObligation: null,
+      mustResolveBeforeHandoff: false,
+      centerOfGravity: "inward-work",
+      inner: {
+        status: "idle",
+        hasPending: true,
+        contentSnippet: "trace the return path",
+        job: {
+          status: "queued" as const,
+          content: "trace the return path",
+          origin: null,
+          mode: "reflect" as const,
+          obligationStatus: null,
+          surfacedResult: null,
+          queuedAt: "2026-03-20T16:00:00.000Z",
+          startedAt: null,
+          surfacedAt: null,
+        },
+      },
+      bridges: [],
+      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+      friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
+      pendingObligations: [],
+      bridgeSuggestion: null,
+    } as any)
+
+    expect(rendered).toContain("i have a thought queued up for private attention")
+    expect(rendered).toContain("it's about: \"trace the return path\"")
+  })
+
+  it("renders queued inner thought without content enrichment when no snippet is known", async () => {
+    const { formatActiveWorkFrame } = await import("../../heart/active-work")
+
+    const rendered = formatActiveWorkFrame({
+      currentSession: null,
+      currentObligation: null,
+      mustResolveBeforeHandoff: false,
+      centerOfGravity: "inward-work",
+      inner: {
+        status: "idle",
+        hasPending: true,
+        job: {
+          status: "queued" as const,
+          content: null,
+          origin: null,
+          mode: "reflect" as const,
+          obligationStatus: null,
+          surfacedResult: null,
+          queuedAt: "2026-03-20T16:00:00.000Z",
+          startedAt: null,
+          surfacedAt: null,
+        },
+      },
+      bridges: [],
+      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+      friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
+      pendingObligations: [],
+      bridgeSuggestion: null,
+    } as any)
+
+    expect(rendered).toContain("i have a thought queued up for private attention")
+    expect(rendered).not.toContain("it's about:")
+  })
+
+  it("renders running inner thought with origin and pending-answer pressure", async () => {
+    const { formatActiveWorkFrame } = await import("../../heart/active-work")
+
+    const rendered = formatActiveWorkFrame({
+      currentSession: null,
+      currentObligation: null,
+      mustResolveBeforeHandoff: false,
+      centerOfGravity: "inward-work",
+      inner: {
+        status: "running",
+        hasPending: false,
+        obligationPending: true,
+        job: {
+          status: "running" as const,
+          content: "trace the loop",
+          origin: { friendId: "alex", channel: "bluebubbles", key: "chat", friendName: "Alex" },
+          mode: "reflect" as const,
+          obligationStatus: "pending",
+          surfacedResult: null,
+          queuedAt: "2026-03-20T16:00:00.000Z",
+          startedAt: "2026-03-20T16:01:00.000Z",
+          surfacedAt: null,
+        },
+      },
+      bridges: [],
+      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+      friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
+      pendingObligations: [],
+      bridgeSuggestion: null,
+    } as any)
+
+    expect(rendered).toContain("Alex asked about something and i wanted to give it real thought")
+    expect(rendered).toContain("i still owe them an answer")
+  })
+
+  it("renders running inner thought without origin-specific enrichment when no origin is known", async () => {
+    const { formatActiveWorkFrame } = await import("../../heart/active-work")
+
+    const rendered = formatActiveWorkFrame({
+      currentSession: null,
+      currentObligation: null,
+      mustResolveBeforeHandoff: false,
+      centerOfGravity: "inward-work",
+      inner: {
+        status: "running",
+        hasPending: false,
+        obligationPending: false,
+        job: {
+          status: "running" as const,
+          content: "trace the loop",
+          origin: null,
+          mode: "reflect" as const,
+          obligationStatus: null,
+          surfacedResult: null,
+          queuedAt: "2026-03-20T16:00:00.000Z",
+          startedAt: "2026-03-20T16:01:00.000Z",
+          surfacedAt: null,
+        },
+      },
+      bridges: [],
+      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+      friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
+      pendingObligations: [],
+      bridgeSuggestion: null,
+    } as any)
+
+    expect(rendered).toContain("i'm thinking through something privately right now.")
+    expect(rendered).not.toContain("asked about something")
+    expect(rendered).not.toContain("i still owe them an answer")
+  })
+
+  it("renders surfaced inner result without an attached summary when nothing surfaced yet", async () => {
+    const { formatActiveWorkFrame } = await import("../../heart/active-work")
+
+    const rendered = formatActiveWorkFrame({
+      currentSession: null,
+      currentObligation: null,
+      mustResolveBeforeHandoff: false,
+      centerOfGravity: "inward-work",
+      inner: {
+        status: "idle",
+        hasPending: false,
+        job: {
+          status: "surfaced" as const,
+          content: "finished tracing",
+          origin: null,
+          mode: "reflect" as const,
+          obligationStatus: null,
+          surfacedResult: null,
+          queuedAt: null,
+          startedAt: "2026-03-20T16:00:00.000Z",
+          surfacedAt: "2026-03-20T16:05:00.000Z",
+        },
+      },
+      bridges: [],
+      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+      friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
+      pendingObligations: [],
+      bridgeSuggestion: null,
+    } as any)
+
+    expect(rendered).toContain("i finished thinking about something privately. i should bring my answer back.")
+    expect(rendered).not.toContain("what i came to:")
+  })
+
+  it("renders surfaced inner result and non-investigating obligation surfaces", async () => {
+    const { formatActiveWorkFrame } = await import("../../heart/active-work")
+
+    const rendered = formatActiveWorkFrame({
+      currentSession: null,
+      currentObligation: null,
+      mustResolveBeforeHandoff: false,
+      centerOfGravity: "inward-work",
+      inner: {
+        status: "idle",
+        hasPending: false,
+        job: {
+          status: "surfaced" as const,
+          content: "finished tracing",
+          origin: null,
+          mode: "reflect" as const,
+          obligationStatus: null,
+          surfacedResult: "the fix is in the runtime handoff and needs to be merged before re-observing",
+          queuedAt: null,
+          startedAt: "2026-03-20T16:00:00.000Z",
+          surfacedAt: "2026-03-20T16:05:00.000Z",
+        },
+      },
+      bridges: [],
+      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+      friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
+      pendingObligations: [
+        {
+          id: "ob-merge",
+          origin: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
+          content: "land the fix",
+          status: "waiting_for_merge" as const,
+          currentSurface: { kind: "merge", label: "PR #120" },
+          createdAt: "2026-03-20T16:00:00.000Z",
+          updatedAt: "2026-03-20T16:04:00.000Z",
+        },
+        {
+          id: "ob-update",
+          origin: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
+          content: "restart onto latest runtime",
+          status: "updating_runtime" as const,
+          currentSurface: { kind: "runtime", label: "ouro up" },
+          createdAt: "2026-03-20T16:00:00.000Z",
+          updatedAt: "2026-03-20T16:05:00.000Z",
+        },
+      ],
+      bridgeSuggestion: null,
+    } as any)
+
+    expect(rendered).toContain("i finished thinking about something privately. i should bring my answer back.")
+    expect(rendered).toContain("what i came to: the fix is in the runtime handoff and needs to be merged before re-observing")
+    expect(rendered).toContain("[waiting_for_merge] friend-1/bluebubbles/chat: land the fix (waiting at PR #120)")
+    expect(rendered).toContain("[updating_runtime] friend-1/bluebubbles/chat: restart onto latest runtime (updating via ouro up)")
+  })
+
+  it("uses the default obligation surface label for open statuses without a specialized formatter", async () => {
+    const { formatActiveWorkFrame } = await import("../../heart/active-work")
+
+    const rendered = formatActiveWorkFrame({
+      currentSession: null,
+      currentObligation: null,
+      mustResolveBeforeHandoff: false,
+      centerOfGravity: "inward-work",
+      inner: {
+        status: "idle",
+        hasPending: false,
+        job: {
+          status: "idle" as const,
+          content: null,
+          origin: null,
+          mode: "reflect" as const,
+          obligationStatus: null,
+          surfacedResult: null,
+          queuedAt: null,
+          startedAt: null,
+          surfacedAt: null,
+        },
+      },
+      bridges: [],
+      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+      friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
+      pendingObligations: [
+        {
+          id: "ob-pending",
+          origin: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
+          content: "keep the scratchpad visible",
+          status: "pending" as const,
+          currentSurface: { kind: "session", label: "cli notes" },
+          createdAt: "2026-03-20T16:00:00.000Z",
+          updatedAt: "2026-03-20T16:01:00.000Z",
+        },
+      ],
+      bridgeSuggestion: null,
+    } as any)
+
+    expect(rendered).toContain("[pending] friend-1/bluebubbles/chat: keep the scratchpad visible (cli notes)")
+  })
+
+  it("omits the obligation suffix when no current surface label is known", async () => {
+    const { formatActiveWorkFrame } = await import("../../heart/active-work")
+
+    const rendered = formatActiveWorkFrame({
+      currentSession: null,
+      currentObligation: null,
+      mustResolveBeforeHandoff: false,
+      centerOfGravity: "inward-work",
+      inner: {
+        status: "idle",
+        hasPending: false,
+        job: {
+          status: "idle" as const,
+          content: null,
+          origin: null,
+          mode: "reflect" as const,
+          obligationStatus: null,
+          surfacedResult: null,
+          queuedAt: null,
+          startedAt: null,
+          surfacedAt: null,
+        },
+      },
+      bridges: [],
+      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+      friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
+      pendingObligations: [
+        {
+          id: "ob-pending",
+          origin: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
+          content: "keep the scratchpad visible",
+          status: "pending" as const,
+          createdAt: "2026-03-20T16:00:00.000Z",
+          updatedAt: "2026-03-20T16:01:00.000Z",
+        },
+      ],
+      bridgeSuggestion: null,
+    } as any)
+
+    expect(rendered).toContain("[pending] friend-1/bluebubbles/chat: keep the scratchpad visible")
+    expect(rendered).not.toContain("(cli notes)")
+  })
+
+  it("keeps coding-session completion visibly open when merge or runtime closure is still pending", async () => {
+    const { formatActiveWorkFrame } = await import("../../heart/active-work")
+
+    const rendered = formatActiveWorkFrame({
+      currentSession: null,
+      currentObligation: null,
+      mustResolveBeforeHandoff: false,
+      centerOfGravity: "inward-work",
+      inner: {
+        status: "idle",
+        hasPending: false,
+        job: {
+          status: "idle" as const,
+          content: null,
+          origin: null,
+          mode: "reflect" as const,
+          obligationStatus: null,
+          surfacedResult: null,
+          queuedAt: null,
+          startedAt: null,
+          surfacedAt: null,
+        },
+      },
+      bridges: [],
+      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+      friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
+      pendingObligations: [
+        {
+          id: "ob-coding",
+          origin: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
+          content: "carry the self-fix back",
+          status: "investigating" as const,
+          currentSurface: { kind: "coding", label: "codex coding-001" },
+          latestNote: "coding session completed; merge/update still pending",
+          createdAt: "2026-03-20T16:00:00.000Z",
+          updatedAt: "2026-03-20T16:01:00.000Z",
+        },
+      ],
+      bridgeSuggestion: null,
+    } as any)
+
+    expect(rendered).toContain("[investigating] friend-1/bluebubbles/chat: carry the self-fix back (working in codex coding-001)")
+    expect(rendered).toContain("latest: coding session completed; merge/update still pending")
+  })
+
+  it("truncates long surfaced inner results and skips fulfilled obligations in the return block", async () => {
+    const { formatActiveWorkFrame } = await import("../../heart/active-work")
+    const longResult = "x".repeat(140)
+
+    const rendered = formatActiveWorkFrame({
+      currentSession: {
+        friendId: "friend-1",
+        channel: "cli",
+        key: "session",
+        sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+      },
+      currentObligation: "close the loop",
+      mustResolveBeforeHandoff: false,
+      centerOfGravity: "inward-work",
+      inner: {
+        status: "idle",
+        hasPending: false,
+        job: {
+          status: "surfaced" as const,
+          content: "finished tracing",
+          origin: null,
+          mode: "reflect" as const,
+          obligationStatus: null,
+          surfacedResult: longResult,
+          queuedAt: null,
+          startedAt: "2026-03-20T16:00:00.000Z",
+          surfacedAt: "2026-03-20T16:05:00.000Z",
+        },
+      },
+      bridges: [],
+      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+      friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
+      pendingObligations: [
+        {
+          id: "ob-open",
+          origin: { friendId: "friend-1", channel: "cli", key: "session" },
+          content: "bring the fix back",
+          status: "waiting_for_merge" as const,
+          currentSurface: { kind: "merge", label: "PR #123" },
+          createdAt: "2026-03-20T16:00:00.000Z",
+          updatedAt: "2026-03-20T16:01:00.000Z",
+        },
+        {
+          id: "ob-closed",
+          origin: { friendId: "friend-1", channel: "cli", key: "session" },
+          content: "already done",
+          status: "fulfilled" as const,
+          createdAt: "2026-03-20T15:00:00.000Z",
+          fulfilledAt: "2026-03-20T15:10:00.000Z",
+        },
+      ],
+      bridgeSuggestion: {
+        kind: "begin-new",
+        reason: "shared-work-candidate",
+        objectiveHint: "keep the loop aligned",
+        targetSession: {
+          friendId: "friend-1",
+          friendName: "Ari",
+          channel: "bluebubbles",
+          key: "chat",
+          sessionPath: "/tmp/state/sessions/friend-1/bluebubbles/chat.json",
+          snapshot: "recent focus: waiting on the fix",
+          trust: {
+            level: "friend",
+            basis: "direct",
+            summary: "trusted",
+            why: "same person",
+            permits: ["shared coordination"],
+            constraints: [],
+          },
+          delivery: {
+            mode: "queue_only",
+            reason: "needs explicit cross-chat authorization",
+          },
+          lastActivityAt: "2026-03-20T16:06:00.000Z",
+          lastActivityMs: Date.parse("2026-03-20T16:06:00.000Z"),
+          activitySource: "friend-facing",
+        },
+      },
+      targetCandidates: [],
+    } as any)
+
+    expect(rendered).toContain(`what i came to: ${"x".repeat(117)}...`)
+    expect(rendered).toContain("[waiting_for_merge] friend-1/cli/session: bring the fix back (waiting at PR #123)")
+    expect(rendered).not.toContain("already done")
+    expect(rendered).toContain("this work touches my conversation on bluebubbles/chat too")
+  })
+
   it("renders basic inner status without enrichment when origin is absent", async () => {
     const { formatActiveWorkFrame } = await import("../../heart/active-work")
 
