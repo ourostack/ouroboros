@@ -11,6 +11,7 @@ import { isIdentityProvider, type IdentityProvider, type TrustLevel } from "../.
 import type { DaemonCommand, DaemonResponse } from "./daemon"
 import { registerOuroBundleUti as defaultRegisterOuroBundleUti } from "./ouro-uti"
 import { installOuroCommand as defaultInstallOuroCommand, type OuroPathInstallResult } from "./ouro-path-installer"
+import { getCurrentVersion, installVersion, activateVersion, ensureLayout, getOuroCliHome } from "./ouro-version-manager"
 import { ensureSkillManagement as defaultEnsureSkillManagement } from "./skill-management-installer"
 import {
   runHatchFlow as defaultRunHatchFlow,
@@ -103,6 +104,7 @@ export interface OuroCliDeps {
   promptInput?: (question: string) => Promise<string>
   registerOuroBundleType?: () => Promise<unknown> | unknown
   installOuroCommand?: () => OuroPathInstallResult
+  ensureCurrentVersionInstalled?: () => void
   syncGlobalOuroBotWrapper?: () => Promise<unknown> | unknown
   ensureSkillManagement?: () => Promise<void>
   ensureDaemonBootPersistence?: (socketPath: string) => Promise<void> | void
@@ -1488,6 +1490,20 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     runAuthFlow: defaultRunRuntimeAuthFlow,
     registerOuroBundleType: defaultRegisterOuroBundleUti,
     installOuroCommand: defaultInstallOuroCommand,
+    /* v8 ignore start -- self-healing: ensures versioned layout has current version installed @preserve */
+    ensureCurrentVersionInstalled: () => {
+      const currentVersion = getCurrentVersion({})
+      if (currentVersion) return // Already installed and linked
+      const version = getPackageVersion()
+      ensureLayout({})
+      const cliHome = getOuroCliHome()
+      const versionEntry = path.join(cliHome, "versions", version, "node_modules", "@ouro.bot", "cli", "dist", "heart", "daemon", "ouro-entry.js")
+      if (!fs.existsSync(versionEntry)) {
+        installVersion(version, {})
+      }
+      activateVersion(version, {})
+    },
+    /* v8 ignore stop */
     syncGlobalOuroBotWrapper: defaultSyncGlobalOuroBotWrapper,
     ensureSkillManagement: defaultEnsureSkillManagement,
     ensureDaemonBootPersistence: defaultEnsureDaemonBootPersistence,
@@ -1611,6 +1627,23 @@ async function performSystemSetup(deps: OuroCliDeps): Promise<void> {
         event: "daemon.system_setup_ouro_cmd_error",
         message: "failed to install ouro command to PATH",
         meta: { error: error instanceof Error ? error.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(error) },
+      })
+    }
+  }
+
+  // Self-healing: ensure current version is installed in ~/.ouro-cli/ layout.
+  // Handles the case where the wrapper exists but CurrentVersion is missing
+  // (e.g., first run after migration from old npx wrapper).
+  if (deps.ensureCurrentVersionInstalled) {
+    try {
+      deps.ensureCurrentVersionInstalled()
+    } catch (error) {
+      emitNervesEvent({
+        level: "warn",
+        component: "daemon",
+        event: "daemon.system_setup_version_install_error",
+        message: "failed to ensure current version installed",
+        meta: { error: error instanceof Error ? error.message : /* v8 ignore next -- defensive @preserve */ String(error) },
       })
     }
   }
