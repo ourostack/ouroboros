@@ -139,6 +139,23 @@ describe("ouro CLI parsing", () => {
       provider: "github-copilot",
     })
     expect(() => parseOuroCommand(["auth", "switch", "--agent", "foo"])).toThrow()
+
+    // --switch and --verify flag forms (Bug 1: user typed --switch instead of switch)
+    expect(parseOuroCommand(["auth", "--switch", "--agent", "foo", "--provider", "github-copilot"])).toEqual({
+      kind: "auth.switch",
+      agent: "foo",
+      provider: "github-copilot",
+    })
+    expect(parseOuroCommand(["auth", "--verify", "--agent", "foo"])).toEqual({
+      kind: "auth.verify",
+      agent: "foo",
+    })
+    expect(parseOuroCommand(["auth", "--verify", "--agent", "foo", "--provider", "azure"])).toEqual({
+      kind: "auth.verify",
+      agent: "foo",
+      provider: "azure",
+    })
+    expect(() => parseOuroCommand(["auth", "--switch", "--agent", "foo"])).toThrow("auth switch requires --provider")
   })
 
   it("parses chat, message, and poke commands", () => {
@@ -830,6 +847,189 @@ describe("ouro CLI execution", () => {
       expect(result).toContain("github-copilot")
       const updated = JSON.parse(fs.readFileSync(agentConfigPath, "utf-8")) as { provider: string }
       expect(updated.provider).toBe("github-copilot")
+    } finally {
+      fs.rmSync(agentRoot, { recursive: true, force: true })
+      fs.rmSync(secretsDir, { recursive: true, force: true })
+    }
+  })
+
+  it("ouro auth --switch flag form updates provider in agent.json", async () => {
+    const agentName = `auth-flag-switch-${Date.now()}`
+    const agentRoot = path.join(os.homedir(), "AgentBundles", `${agentName}.ouro`)
+    const agentConfigPath = path.join(agentRoot, "agent.json")
+    fs.mkdirSync(agentRoot, { recursive: true })
+    const secretsDir = path.join(os.homedir(), ".agentsecrets", agentName)
+    fs.mkdirSync(secretsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(secretsDir, "secrets.json"),
+      JSON.stringify({
+        providers: { "github-copilot": { model: "claude-sonnet-4.6", githubToken: "ghp_test", baseUrl: "https://api.test.com" } },
+      }, null, 2) + "\n",
+      "utf-8",
+    )
+    fs.writeFileSync(
+      agentConfigPath,
+      JSON.stringify({
+        version: 1, enabled: true, provider: "openai-codex",
+        phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
+      }, null, 2) + "\n",
+      "utf-8",
+    )
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({ ok: true, message: "ok" })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    }
+    try {
+      const result = await runOuroCli(["auth", "--switch", "--agent", agentName, "--provider", "github-copilot"], deps)
+      expect(result).toContain("switched")
+      expect(result).toContain("github-copilot")
+      const updated = JSON.parse(fs.readFileSync(agentConfigPath, "utf-8")) as { provider: string }
+      expect(updated.provider).toBe("github-copilot")
+    } finally {
+      fs.rmSync(agentRoot, { recursive: true, force: true })
+      fs.rmSync(secretsDir, { recursive: true, force: true })
+    }
+  })
+
+  it("ouro auth verify makes HTTP call for github-copilot", async () => {
+    const agentName = `auth-verify-ghcp-${Date.now()}`
+    const agentRoot = path.join(os.homedir(), "AgentBundles", `${agentName}.ouro`)
+    const secretsDir = path.join(os.homedir(), ".agentsecrets", agentName)
+    fs.mkdirSync(agentRoot, { recursive: true })
+    fs.mkdirSync(secretsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(agentRoot, "agent.json"),
+      JSON.stringify({
+        version: 1, enabled: true, provider: "github-copilot",
+        phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
+      }, null, 2) + "\n",
+      "utf-8",
+    )
+    fs.writeFileSync(
+      path.join(secretsDir, "secrets.json"),
+      JSON.stringify({
+        providers: { "github-copilot": { model: "claude-sonnet-4.6", githubToken: "ghp_valid_token", baseUrl: "https://api.test.com" } },
+      }, null, 2) + "\n",
+      "utf-8",
+    )
+    const mockFetch = vi.fn(async () => ({ ok: true, status: 200 })) as unknown as typeof fetch
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({ ok: true, message: "ok" })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      fetchImpl: mockFetch,
+    }
+    try {
+      const result = await runOuroCli(["auth", "verify", "--agent", agentName, "--provider", "github-copilot"], deps)
+      expect(result).toBe("github-copilot: ok")
+      expect(mockFetch).toHaveBeenCalledWith(
+        "https://api.github.com/copilot_internal/user",
+        { headers: { Authorization: "Bearer ghp_valid_token" } },
+      )
+    } finally {
+      fs.rmSync(agentRoot, { recursive: true, force: true })
+      fs.rmSync(secretsDir, { recursive: true, force: true })
+    }
+  })
+
+  it("ouro auth verify reports HTTP failure for github-copilot", async () => {
+    const agentName = `auth-verify-ghcp-fail-${Date.now()}`
+    const agentRoot = path.join(os.homedir(), "AgentBundles", `${agentName}.ouro`)
+    const secretsDir = path.join(os.homedir(), ".agentsecrets", agentName)
+    fs.mkdirSync(agentRoot, { recursive: true })
+    fs.mkdirSync(secretsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(agentRoot, "agent.json"),
+      JSON.stringify({
+        version: 1, enabled: true, provider: "github-copilot",
+        phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
+      }, null, 2) + "\n",
+      "utf-8",
+    )
+    fs.writeFileSync(
+      path.join(secretsDir, "secrets.json"),
+      JSON.stringify({
+        providers: { "github-copilot": { model: "claude-sonnet-4.6", githubToken: "ghp_expired", baseUrl: "https://api.test.com" } },
+      }, null, 2) + "\n",
+      "utf-8",
+    )
+    const mockFetch = vi.fn(async () => ({ ok: false, status: 401 })) as unknown as typeof fetch
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({ ok: true, message: "ok" })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      fetchImpl: mockFetch,
+    }
+    try {
+      const result = await runOuroCli(["auth", "verify", "--agent", agentName, "--provider", "github-copilot"], deps)
+      expect(result).toBe("github-copilot: failed (HTTP 401)")
+    } finally {
+      fs.rmSync(agentRoot, { recursive: true, force: true })
+      fs.rmSync(secretsDir, { recursive: true, force: true })
+    }
+  })
+
+  it("ouro auth verify checks all providers when no --provider given", async () => {
+    const agentName = `auth-verify-all-${Date.now()}`
+    const agentRoot = path.join(os.homedir(), "AgentBundles", `${agentName}.ouro`)
+    const secretsDir = path.join(os.homedir(), ".agentsecrets", agentName)
+    fs.mkdirSync(agentRoot, { recursive: true })
+    fs.mkdirSync(secretsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(agentRoot, "agent.json"),
+      JSON.stringify({
+        version: 1, enabled: true, provider: "anthropic",
+        phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
+      }, null, 2) + "\n",
+      "utf-8",
+    )
+    fs.writeFileSync(
+      path.join(secretsDir, "secrets.json"),
+      JSON.stringify({
+        providers: {
+          azure: { endpoint: "https://az.test.com", apiKey: "az-key" },
+          minimax: { apiKey: "" },
+          anthropic: { setupToken: "sk-ant-abc" },
+          "openai-codex": { oauthAccessToken: "tok" },
+          "github-copilot": { githubToken: "ghp_test", baseUrl: "https://api.test.com" },
+        },
+      }, null, 2) + "\n",
+      "utf-8",
+    )
+    const mockFetch = vi.fn(async () => ({ ok: true, status: 200 })) as unknown as typeof fetch
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({ ok: true, message: "ok" })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      fetchImpl: mockFetch,
+    }
+    try {
+      const result = await runOuroCli(["auth", "verify", "--agent", agentName], deps)
+      expect(result).toContain("azure: ok")
+      expect(result).toContain("minimax: failed (no api key)")
+      expect(result).toContain("anthropic: ok")
+      expect(result).toContain("openai-codex: ok")
+      expect(result).toContain("github-copilot: ok")
+      // Verify it checked all 5 providers
+      const lines = (result as string).split("\n")
+      expect(lines.length).toBe(5)
     } finally {
       fs.rmSync(agentRoot, { recursive: true, force: true })
       fs.rmSync(secretsDir, { recursive: true, force: true })

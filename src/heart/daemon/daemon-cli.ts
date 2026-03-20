@@ -106,6 +106,7 @@ export interface OuroCliDeps {
   whoamiInfo?: () => { agentName: string; homePath: string; bonesVersion: string }
   scanSessions?: () => Promise<SessionEntry[]>
   getChangelogPath?: () => string
+  fetchImpl?: typeof fetch
 }
 
 export interface SessionEntry {
@@ -553,7 +554,11 @@ function hasStoredCredentials(provider: AgentProvider, providerSecrets: Record<s
 /* v8 ignore stop */
 
 /* v8 ignore start -- verifyProviderCredentials: per-provider branches tested via auth verify tests @preserve */
-function verifyProviderCredentials(provider: AgentProvider, providers: Record<string, Record<string, unknown>>): string {
+async function verifyProviderCredentials(
+  provider: AgentProvider,
+  providers: Record<string, Record<string, unknown>>,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string> {
   const p = providers[provider]
   if (!p) return "not configured"
   if (provider === "anthropic") {
@@ -568,7 +573,15 @@ function verifyProviderCredentials(provider: AgentProvider, providers: Record<st
   }
   if (provider === "github-copilot") {
     const token = (p as { githubToken?: string }).githubToken || ""
-    return token ? "ok" : "failed (no token)"
+    if (!token) return "failed (no token)"
+    try {
+      const response = await fetchImpl("https://api.github.com/copilot_internal/user", {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      return response.ok ? "ok" : `failed (HTTP ${response.status})`
+    } catch (error) {
+      return `failed (${(error as Error).message})`
+    }
   }
   if (provider === "minimax") {
     const apiKey = (p as { apiKey?: string }).apiKey || ""
@@ -703,7 +716,9 @@ function parseTaskCommand(args: string[]): OuroCliCommand {
 
 function parseAuthCommand(args: string[]): OuroCliCommand {
   const first = args[0]
-  if (first === "verify" || first === "switch") {
+  // Support both positional (`auth switch`) and flag (`auth --switch`) forms
+  if (first === "verify" || first === "switch" || first === "--verify" || first === "--switch") {
+    const subcommand = first.replace(/^--/, "")
     const { agent, rest } = extractAgentFlag(args.slice(1))
     let provider: AgentProvider | undefined
     /* v8 ignore start -- provider flag parsing: branches tested via CLI parsing tests @preserve */
@@ -719,7 +734,7 @@ function parseAuthCommand(args: string[]): OuroCliCommand {
     /* v8 ignore stop */
     /* v8 ignore next -- defensive: agent always provided in tests @preserve */
     if (!agent) throw new Error(`Usage\n${usage()}`)
-    if (first === "switch") {
+    if (subcommand === "switch") {
       if (!provider) throw new Error(`auth switch requires --provider.\n${usage()}`)
       return { kind: "auth.switch", agent, provider }
     }
@@ -1877,15 +1892,16 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   if (command.kind === "auth.verify") {
     const { secrets } = loadAgentSecrets(command.agent)
     const providers = secrets.providers
+    const fetchFn = deps.fetchImpl ?? fetch
     if (command.provider) {
-      const status = verifyProviderCredentials(command.provider, providers)
+      const status = await verifyProviderCredentials(command.provider, providers, fetchFn)
       const message = `${command.provider}: ${status}`
       deps.writeStdout(message)
       return message
     }
     const lines: string[] = []
     for (const p of Object.keys(providers) as AgentProvider[]) {
-      const status = verifyProviderCredentials(p, providers)
+      const status = await verifyProviderCredentials(p, providers, fetchFn)
       lines.push(`${p}: ${status}`)
     }
     const message = lines.join("\n")
