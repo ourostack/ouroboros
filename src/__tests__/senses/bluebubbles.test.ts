@@ -1516,6 +1516,50 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.setTyping.mock.invocationCallOrder[0]).toBeLessThan(mocks.sendText.mock.invocationCallOrder[0])
   })
 
+  it("treats group chat tool progress as reply commitment before final text", async () => {
+    mocks.runAgent.mockImplementationOnce(async (_messages: any, callbacks: any) => {
+      callbacks.onModelStart()
+      expect(mocks.markChatRead).not.toHaveBeenCalled()
+      expect(mocks.setTyping).not.toHaveBeenCalled()
+
+      callbacks.onToolStart("query_session", {})
+      await flushAsyncWork()
+
+      expect(mocks.sendText).toHaveBeenCalledWith(
+        expect.objectContaining({
+          chat: expect.objectContaining({ chatGuid: "any;+;35820e69c97c459992d29a334f412979" }),
+          text: "shared work: processing\nrunning query_session...",
+        }),
+      )
+      expect(mocks.markChatRead).toHaveBeenCalledTimes(1)
+      expect(mocks.setTyping).toHaveBeenCalledWith(
+        expect.objectContaining({ chatGuid: "any;+;35820e69c97c459992d29a334f412979" }),
+        true,
+      )
+
+      callbacks.onTextChunk("got it")
+      return {
+        usage: {
+          input_tokens: 10,
+          output_tokens: 5,
+          reasoning_tokens: 0,
+          total_tokens: 15,
+        },
+      }
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(groupThreadPayload)
+
+    const toolStatusCall = mocks.sendText.mock.calls.find((call: any[]) => call[0]?.text === "shared work: processing\nrunning query_session...")
+    const finalReplyCall = mocks.sendText.mock.calls.find((call: any[]) => call[0]?.text === "got it")
+
+    expect(toolStatusCall).toBeTruthy()
+    expect(finalReplyCall).toBeTruthy()
+    expect(mocks.markChatRead.mock.invocationCallOrder[0]).toBeLessThan(finalReplyCall[0].chat ? mocks.sendText.mock.invocationCallOrder[mocks.sendText.mock.calls.indexOf(finalReplyCall)] : Number.MAX_SAFE_INTEGER)
+    expect(mocks.setTyping.mock.invocationCallOrder[0]).toBeLessThan(finalReplyCall[0].chat ? mocks.sendText.mock.invocationCallOrder[mocks.sendText.mock.calls.indexOf(finalReplyCall)] : Number.MAX_SAFE_INTEGER)
+  })
+
   it("uses group chat identity rather than sender handle instability for group sessions", async () => {
     mocks.resolveContext.mockResolvedValueOnce({
       friend: {
