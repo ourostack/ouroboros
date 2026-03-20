@@ -3,6 +3,8 @@ import { emitNervesEvent } from "../nerves/runtime"
 import type { BoardResult } from "../repertoire/tasks/types"
 import { bridgeStateLabel } from "./bridges/state-machine"
 import type { BridgeRecord } from "./bridges/store"
+import type { InnerJob } from "./daemon/thoughts"
+import type { Obligation } from "./obligations"
 import type { SessionActivityRecord } from "./session-activity"
 import { formatTargetSessionCandidates, type TargetSessionCandidate } from "./target-resolution"
 
@@ -35,6 +37,10 @@ export interface ActiveWorkFrame {
   inner: {
     status: "idle" | "running"
     hasPending: boolean
+    origin?: { friendId: string; channel: string; key: string }
+    contentSnippet?: string
+    obligationPending?: boolean
+    job: InnerJob
   }
   bridges: BridgeRecord[]
   taskPressure: {
@@ -46,6 +52,7 @@ export interface ActiveWorkFrame {
     freshestForCurrentFriend: SessionActivityRecord | null
     otherLiveSessionsForCurrentFriend: SessionActivityRecord[]
   }
+  pendingObligations: Obligation[]
   targetCandidates?: TargetSessionCandidate[]
   bridgeSuggestion: BridgeSuggestion | null
 }
@@ -56,6 +63,7 @@ interface BuildActiveWorkFrameInput {
   mustResolveBeforeHandoff: boolean
   inner: ActiveWorkFrame["inner"]
   bridges: BridgeRecord[]
+  pendingObligations?: Obligation[]
   taskBoard: BoardResult
   friendActivity: SessionActivityRecord[]
   targetCandidates?: TargetSessionCandidate[]
@@ -122,7 +130,7 @@ export function suggestBridgeForActiveWork(input: BridgeSuggestionInput): Bridge
     .sort((a, b) => {
       return b.lastActivityMs - a.lastActivityMs
     })
-  if (!hasSharedObligationPressure(input) || targetCandidates.length !== 1) {
+  if (!hasSharedObligationPressure(input) || targetCandidates.length === 0) {
     return null
   }
   const targetSession = targetCandidates[0]
@@ -190,6 +198,7 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
       freshestForCurrentFriend: friendSessions[0] ?? null,
       otherLiveSessionsForCurrentFriend: friendSessions,
     },
+    pendingObligations: input.pendingObligations ?? [],
     targetCandidates: input.targetCandidates ?? [],
     bridgeSuggestion: suggestBridgeForActiveWork({
       currentSession: input.currentSession,
@@ -219,38 +228,69 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
 }
 
 export function formatActiveWorkFrame(frame: ActiveWorkFrame): string {
-  const lines = ["## active work"]
+  const lines = ["## what i'm holding"]
 
+  // Session line
   if (frame.currentSession) {
-    lines.push(`current session: ${formatSessionLabel(frame.currentSession)}`)
+    let sessionLine = `i'm in a conversation on ${formatSessionLabel(frame.currentSession)}.`
+    if (typeof frame.currentObligation === "string" && frame.currentObligation.trim().length > 0) {
+      sessionLine += ` i told them i'd ${frame.currentObligation.trim()}.`
+    } else if (frame.mustResolveBeforeHandoff) {
+      sessionLine += " i need to finish what i started here before moving on."
+    }
+    lines.push("")
+    lines.push(sessionLine)
+  } else {
+    lines.push("")
+    lines.push("i'm not in a conversation right now.")
   }
-  lines.push(`center: ${frame.centerOfGravity}`)
 
-  if (typeof frame.currentObligation === "string" && frame.currentObligation.trim().length > 0) {
-    lines.push(`obligation: ${frame.currentObligation.trim()}`)
+  // Inner status block
+  const job = frame.inner?.job
+  if (job) {
+    if (job.status === "queued") {
+      let queuedLine = "i have a thought queued up for private attention."
+      if (frame.inner?.contentSnippet) {
+        queuedLine += `\nit's about: "${frame.inner.contentSnippet}"`
+      }
+      lines.push("")
+      lines.push(queuedLine)
+    } else if (job.status === "running") {
+      const originName = job.origin?.friendName ?? job.origin?.friendId
+      let runningLine = originName
+        ? `i'm thinking through something privately right now. ${originName} asked about something and i wanted to give it real thought.`
+        : "i'm thinking through something privately right now."
+      if (frame.inner?.obligationPending) {
+        runningLine += "\ni still owe them an answer."
+      }
+      lines.push("")
+      lines.push(runningLine)
+    } else if (job.status === "surfaced") {
+      let surfacedLine = "i finished thinking about something privately. i should bring my answer back."
+      if (job.surfacedResult) {
+        const truncated = job.surfacedResult.length > 120 ? job.surfacedResult.slice(0, 117) + "..." : job.surfacedResult
+        surfacedLine += `\nwhat i came to: ${truncated}`
+      }
+      lines.push("")
+      lines.push(surfacedLine)
+    }
+    // idle, returned, abandoned: omitted
   }
 
-  if (frame.mustResolveBeforeHandoff) {
-    lines.push("handoff pressure: must resolve before handoff")
-  }
-
-  const innerStatus = frame.inner?.status ?? "idle"
-  const innerHasPending = frame.inner?.hasPending === true
-  lines.push(`inner status: ${innerStatus}${innerHasPending ? " (pending queued)" : ""}`)
-
+  // Task pressure
   if ((frame.taskPressure?.liveTaskNames ?? []).length > 0) {
-    lines.push(`live tasks: ${frame.taskPressure.liveTaskNames.join(", ")}`)
+    lines.push("")
+    lines.push(`i'm also tracking: ${frame.taskPressure.liveTaskNames.join(", ")}.`)
   }
 
+  // Bridges
   if ((frame.bridges ?? []).length > 0) {
     const bridgeLabels = frame.bridges.map((bridge) => `${bridge.id} [${bridgeStateLabel(bridge)}]`)
-    lines.push(`bridges: ${bridgeLabels.join(", ")}`)
+    lines.push("")
+    lines.push(`i have shared work spanning sessions: ${bridgeLabels.join(", ")}.`)
   }
 
-  if (frame.friendActivity?.freshestForCurrentFriend) {
-    lines.push(`freshest friend-facing session: ${formatSessionLabel(frame.friendActivity.freshestForCurrentFriend)}`)
-  }
-
+  // Target candidates (keep factual format)
   const targetCandidatesBlock = frame.targetCandidates && frame.targetCandidates.length > 0
     ? formatTargetSessionCandidates(frame.targetCandidates)
     : ""
@@ -259,14 +299,13 @@ export function formatActiveWorkFrame(frame: ActiveWorkFrame): string {
     lines.push(targetCandidatesBlock)
   }
 
+  // Bridge suggestion
   if (frame.bridgeSuggestion) {
-    if (frame.bridgeSuggestion.kind === "attach-existing") {
-      lines.push(
-        `suggested bridge: attach ${frame.bridgeSuggestion.bridgeId} -> ${formatSessionLabel(frame.bridgeSuggestion.targetSession)}`,
-      )
+    lines.push("")
+    if (frame.bridgeSuggestion.kind === "begin-new") {
+      lines.push(`this work touches my conversation on ${formatSessionLabel(frame.bridgeSuggestion.targetSession)} too -- i should connect these threads.`)
     } else {
-      lines.push(`suggested bridge: begin -> ${formatSessionLabel(frame.bridgeSuggestion.targetSession)}`)
-      lines.push(`bridge objective hint: ${frame.bridgeSuggestion.objectiveHint}`)
+      lines.push(`this work relates to bridge ${frame.bridgeSuggestion.bridgeId} -- i should connect ${formatSessionLabel(frame.bridgeSuggestion.targetSession)} to it.`)
     }
   }
 

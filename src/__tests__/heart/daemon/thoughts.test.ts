@@ -727,6 +727,113 @@ describe("thoughts", () => {
       fs.rmSync(dir, { recursive: true, force: true })
     })
 
+    it("includes origin info when pending messages have delegatedFrom", async () => {
+      const thoughts = await import("../../../heart/daemon/thoughts")
+
+      const status = thoughts.deriveInnerDialogStatus(
+        [{
+          from: "testagent",
+          content: "think about penguins",
+          timestamp: 1,
+          delegatedFrom: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
+        }],
+        [],
+      )
+      expect(status.origin).toEqual({
+        friendId: "friend-1",
+        channel: "bluebubbles",
+        key: "chat",
+      })
+    })
+
+    it("includes contentSnippet from first pending message", async () => {
+      const thoughts = await import("../../../heart/daemon/thoughts")
+
+      const status = thoughts.deriveInnerDialogStatus(
+        [{
+          from: "testagent",
+          content: "think about penguins and their formal attire",
+          timestamp: 1,
+          delegatedFrom: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
+        }],
+        [],
+      )
+      expect(status.contentSnippet).toBe("think about penguins and their formal attire")
+    })
+
+    it("truncates contentSnippet to 80 chars", async () => {
+      const thoughts = await import("../../../heart/daemon/thoughts")
+
+      const longContent = "a".repeat(100)
+      const status = thoughts.deriveInnerDialogStatus(
+        [{
+          from: "testagent",
+          content: longContent,
+          timestamp: 1,
+          delegatedFrom: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
+        }],
+        [],
+      )
+      expect(status.contentSnippet!.length).toBeLessThanOrEqual(80)
+    })
+
+    it("sets obligationPending when pending messages have obligationStatus 'pending'", async () => {
+      const thoughts = await import("../../../heart/daemon/thoughts")
+
+      const status = thoughts.deriveInnerDialogStatus(
+        [{
+          from: "testagent",
+          content: "think about penguins",
+          timestamp: 1,
+          delegatedFrom: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
+          obligationStatus: "pending",
+        }],
+        [],
+      )
+      expect(status.obligationPending).toBe(true)
+    })
+
+    it("does not set origin or obligationPending when pending messages lack delegatedFrom", async () => {
+      const thoughts = await import("../../../heart/daemon/thoughts")
+
+      const status = thoughts.deriveInnerDialogStatus(
+        [{ from: "testagent", content: "plain thought", timestamp: 1 }],
+        [],
+      )
+      expect(status.origin).toBeUndefined()
+      expect(status.obligationPending).toBeUndefined()
+    })
+
+    it("renders origin info in formatInnerDialogStatus", async () => {
+      const thoughts = await import("../../../heart/daemon/thoughts")
+
+      const formatted = thoughts.formatInnerDialogStatus({
+        queue: "queued to inner/dialog",
+        wake: "awaiting inner session",
+        processing: "pending",
+        surfaced: "nothing yet",
+        origin: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
+        contentSnippet: "think about penguins",
+        obligationPending: true,
+      })
+      expect(formatted).toContain("origin: friend-1/bluebubbles/chat")
+      expect(formatted).toContain("think about penguins")
+      expect(formatted).toContain("obligation: pending")
+    })
+
+    it("omits origin line from formatInnerDialogStatus when origin is absent", async () => {
+      const thoughts = await import("../../../heart/daemon/thoughts")
+
+      const formatted = thoughts.formatInnerDialogStatus({
+        queue: "clear",
+        wake: "idle",
+        processing: "idle",
+        surfaced: "nothing recent",
+      })
+      expect(formatted).not.toContain("origin:")
+      expect(formatted).not.toContain("obligation:")
+    })
+
     it("accepts lastCompletedAt when runtime metadata is otherwise idle", async () => {
       const thoughts = await import("../../../heart/daemon/thoughts")
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "thoughts-runtime-"))

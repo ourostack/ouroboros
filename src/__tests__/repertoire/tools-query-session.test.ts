@@ -453,11 +453,7 @@ describe("query_session tool", () => {
       mode: "status",
     })
 
-    expect(result).toBe([
-      "inner work: queued",
-      "queued to inner/dialog",
-      "wake: awaiting inner session",
-    ].join("\n"))
+    expect(result).toBe("i've queued this thought for private attention. it'll come up when my inner dialog is free.")
   })
 
   it("surfaces the latest processed preview in status mode without dumping the full transcript", async () => {
@@ -486,10 +482,8 @@ describe("query_session tool", () => {
       mode: "status",
     })
 
-    expect(result).toBe([
-      "inner work: completed",
-      "formal little blokes.",
-    ].join("\n"))
+    expect(result).toContain("thought about this privately and came to something")
+    expect(result).toContain("formal little blokes")
   })
 
   it("reports live processing when runtime state says an inner turn is still running", async () => {
@@ -532,10 +526,7 @@ describe("query_session tool", () => {
       mode: "status",
     })
 
-    expect(result).toBe([
-      "inner work: processing",
-      "wake: in progress",
-    ].join("\n"))
+    expect(result).toBe("i'm working through this privately right now.")
   })
 
   it("reports queued-behind-active-turn when pending work exists during a running inner turn", async () => {
@@ -587,11 +578,7 @@ describe("query_session tool", () => {
       mode: "status",
     })
 
-    expect(result).toBe([
-      "inner work: queued",
-      "queued to inner/dialog",
-      "wake: queued behind active turn",
-    ].join("\n"))
+    expect(result).toBe("i've queued this thought for private attention. it'll come up when my inner dialog is free.")
   })
 
   it("reports completed idle status when nothing recent has surfaced", async () => {
@@ -612,8 +599,8 @@ describe("query_session tool", () => {
       mode: "status",
     })
 
-    expect(result).toContain("inner work: completed")
-    expect(result).toContain("nothing recent")
+    expect(result).toContain("thought about this privately")
+    expect(result).toContain("bring it back when the time is right")
   })
 
   it("rejects status mode for non-self sessions instead of pretending it can inspect them", async () => {

@@ -249,12 +249,17 @@ describe("buildSystem", () => {
       {
         activeWorkFrame: {
           centerOfGravity: "shared-work",
+          currentSession: { friendId: "friend-1", channel: "teams", key: "conv-1", sessionPath: "/tmp/s.json" },
           currentObligation: "carry Ari across cli and teams",
+          inner: { status: "idle", hasPending: false, job: { status: "idle", content: null, origin: null, mode: "reflect", obligationStatus: null, surfacedResult: null, queuedAt: null, startedAt: null, surfacedAt: null } },
+          bridges: [],
+          taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
           friendActivity: {
             freshestForCurrentFriend: {
               channel: "cli",
               key: "session",
             },
+            otherLiveSessionsForCurrentFriend: [],
           },
           bridgeSuggestion: {
             kind: "attach-existing",
@@ -270,11 +275,9 @@ describe("buildSystem", () => {
       makeOnboardingContext() as any,
     )
 
-    expect(result).toContain("## active work")
-    expect(result).toContain("center: shared-work")
-    expect(result).toContain("obligation: carry Ari across cli and teams")
-    expect(result).toContain("freshest friend-facing session: cli/session")
-    expect(result).toContain("suggested bridge: attach bridge-1 -> cli/session")
+    expect(result).toContain("## what i'm holding")
+    expect(result).toContain("i told them i'd carry Ari across cli and teams.")
+    expect(result).toContain("relates to bridge bridge-1")
   })
 
   it("makes current trust context and candidate target chats explicit enough to reason about", async () => {
@@ -432,10 +435,9 @@ describe("buildSystem", () => {
       makeOnboardingContext() as any,
     )
 
-    expect(result).toContain("## delegation hint")
-    expect(result).toContain("target: delegate-inward")
-    expect(result).toContain("reasons: explicit_reflection, cross_session")
-    expect(result).toContain("outward closure: required")
+    expect(result).toContain("## what i'm sensing about this conversation")
+    expect(result).toContain("Something here calls for reflection")
+    expect(result).toContain("say something outward before going inward")
   })
 
   it("includes lore section", async () => {
@@ -2589,9 +2591,9 @@ describe("buildSystem with context", () => {
       },
     } as any)
 
-    expect(result).toContain("## delegation hint")
-    expect(result).toContain("reasons: cross_session, task_state")
-    expect(result).toContain("outward closure: required")
+    expect(result).toContain("## what i'm sensing about this conversation")
+    expect(result).toContain("This touches other conversations")
+    expect(result).toContain("say something outward before going inward")
   })
 
   it("buildSystem renders empty delegation reasons as none and optional closure as not required", async () => {
@@ -2610,8 +2612,9 @@ describe("buildSystem with context", () => {
       },
     } as any)
 
-    expect(result).toContain("reasons: none")
-    expect(result).toContain("outward closure: not required")
+    // fast-path target returns empty string, no delegation hint in prompt
+    expect(result).not.toContain("## what i'm sensing")
+    expect(result).not.toContain("delegation hint")
   })
 
   it("buildSystem('inner') includes inner dialog loop orientation", async () => {

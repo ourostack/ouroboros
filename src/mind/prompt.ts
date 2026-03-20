@@ -16,6 +16,7 @@ import { getTaskModule } from "../repertoire/tasks";
 import { listSessionActivity, type SessionActivityQuery } from "../heart/session-activity";
 import { formatActiveWorkFrame, type ActiveWorkFrame } from "../heart/active-work";
 import type { DelegationDecision } from "../heart/delegation";
+import { deriveCommitments } from "../heart/commitments";
 
 // Lazy-loaded psyche text cache
 let _psycheCache: {
@@ -174,11 +175,19 @@ my bones give me the \`ouro\` cli. always pass \`--agent ${agentName}\`:
   ouro task update --agent ${agentName} <id> <status>
   ouro friend list --agent ${agentName}
   ouro friend show --agent ${agentName} <id>
+  ouro friend update --agent ${agentName} <id> --trust <level>
   ouro session list --agent ${agentName}
   ouro reminder create --agent ${agentName} <title> --body <body>
+  ouro config model --agent ${agentName} <model-name>
+  ouro config models --agent ${agentName}
+  ouro auth --agent ${agentName} --provider <provider>
+  ouro auth verify --agent ${agentName} [--provider <provider>]
+  ouro auth switch --agent ${agentName} --provider <provider>
   ouro mcp list --agent ${agentName}
   ouro mcp call --agent ${agentName} <server> <tool> --args '{...}'
-  ouro --help`
+  ouro --help
+
+provider/model changes via \`ouro config model\` or \`ouro auth switch\` take effect on the next turn automatically — no restart needed.`
 }
 
 export function mcpToolsSection(mcpManager?: McpManager): string {
@@ -473,15 +482,94 @@ function activeWorkSection(options?: BuildSystemOptions): string {
   return formatActiveWorkFrame(options.activeWorkFrame)
 }
 
-function delegationHintSection(options?: BuildSystemOptions): string {
+export function centerOfGravitySteeringSection(channel: Channel, options?: BuildSystemOptions): string {
+  if (channel === "inner") return ""
+  const frame = options?.activeWorkFrame
+  if (!frame) return ""
+  const cog = frame.centerOfGravity
+  if (cog === "local-turn") return ""
+
+  const job = frame.inner?.job
+
+  if (cog === "inward-work") {
+    if (job?.status === "queued" || job?.status === "running") {
+      const originClause = job.origin
+        ? ` ${job.origin.friendName ?? job.origin.friendId} asked about something and i wanted to give it real thought before responding.`
+        : ""
+      const obligationClause = job.obligationStatus === "pending"
+        ? "\ni still owe them an answer."
+        : ""
+      return `## where my attention is
+i'm thinking through something privately right now.${originClause}${obligationClause}
+
+if this conversation connects to that inner work, i can weave them together.
+if it's separate, i can be fully present here -- my inner work will wait.`
+    }
+
+    /* v8 ignore start -- surfaced/idle/shared branches tested in prompt-steering.test.ts; CI module caching prevents attribution @preserve */
+    if (job?.status === "surfaced") {
+      const originClause = job.origin
+        ? ` this started when ${job.origin.friendName ?? job.origin.friendId} asked about something.`
+        : ""
+      return `## where my attention is
+i've been thinking privately and reached something.${originClause}
+
+i should bring my answer back to the conversation it came from.`
+    }
+
+    return `## where my attention is
+i have unfinished work that needs attention before i move on.
+
+i can take it inward with go_inward to think privately, or address it directly here.`
+  }
+
+  if (cog === "shared-work") {
+    /* v8 ignore stop */
+    return `## where my attention is
+this work touches multiple conversations -- i'm holding threads across sessions.
+
+i should keep the different sides aligned. what i learn here may matter there, and vice versa.`
+  }
+
+  /* v8 ignore next -- unreachable: all center-of-gravity modes covered above @preserve */
+  return ""
+}
+
+export function commitmentsSection(options?: BuildSystemOptions): string {
+  if (!options?.activeWorkFrame) return ""
+  const job = options.activeWorkFrame.inner?.job
+  if (!job) return ""
+  const commitments = deriveCommitments(options.activeWorkFrame, job, options.activeWorkFrame.pendingObligations)
+  if (commitments.committedTo.length === 0) return ""
+  return `## my commitments\n${commitments.committedTo.map((c) => `- ${c}`).join("\n")}`
+}
+
+const DELEGATION_REASON_PROSE_HINT: Record<import("../heart/delegation").DelegationReason, string> = {
+  explicit_reflection: "something here calls for reflection",
+  cross_session: "this touches other conversations i'm in",
+  bridge_state: "there's shared work spanning sessions",
+  task_state: "this relates to tasks i'm tracking",
+  non_fast_path_tool: "this needs more than a simple reply",
+  unresolved_obligation: "i have an unresolved commitment from earlier",
+}
+
+export function delegationHintSection(options?: BuildSystemOptions): string {
   if (!options?.delegationDecision) return ""
-  const lines = [
-    "## delegation hint",
-    `target: ${options.delegationDecision.target}`,
-    `reasons: ${options.delegationDecision.reasons.length > 0 ? options.delegationDecision.reasons.join(", ") : "none"}`,
-    `outward closure: ${options.delegationDecision.outwardClosureRequired ? "required" : "not required"}`,
-  ]
-  return lines.join("\n")
+  if (options.delegationDecision.target === "fast-path") return ""
+
+  const reasons = options.delegationDecision.reasons
+  if (reasons.length === 0) return ""
+
+  const reasonProse = reasons
+    .map((r) => DELEGATION_REASON_PROSE_HINT[r])
+    .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+    .join(". ")
+
+  const closureLine = options.delegationDecision.outwardClosureRequired
+    ? "\ni should make sure to say something outward before going inward."
+    : ""
+
+  return `## what i'm sensing about this conversation\n${reasonProse}.${closureLine}`
 }
 
 function reasoningEffortSection(options?: BuildSystemOptions): string {
@@ -648,6 +736,8 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     skillsSection(),
     taskBoardSection(),
     activeWorkSection(options),
+    centerOfGravitySteeringSection(channel, options),
+    commitmentsSection(options),
     delegationHintSection(options),
     bridgeContextSection(options),
     buildSessionSummary({

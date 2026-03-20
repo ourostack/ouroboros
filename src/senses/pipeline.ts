@@ -18,11 +18,12 @@ import { getAgentName, getAgentRoot } from "../heart/identity"
 import { getTaskModule } from "../repertoire/tasks"
 import { listSessionActivity } from "../heart/session-activity"
 import type { SessionActivityRecord } from "../heart/session-activity"
-import { buildActiveWorkFrame } from "../heart/active-work"
+import { buildActiveWorkFrame, type ActiveWorkFrame } from "../heart/active-work"
 import { decideDelegation } from "../heart/delegation"
 import { listTargetSessionCandidates } from "../heart/target-resolution"
-import { readInnerDialogStatus, getInnerDialogSessionPath } from "../heart/daemon/thoughts"
+import { readInnerDialogRawData, deriveInnerDialogStatus, deriveInnerJob, getInnerDialogSessionPath } from "../heart/daemon/thoughts"
 import { getInnerDialogPendingDir } from "../mind/pending"
+import { readPendingObligations } from "../heart/obligations"
 import type { BoardResult } from "../repertoire/tasks/types"
 
 // ── Input / Output types ──────────────────────────────────────────
@@ -131,20 +132,40 @@ function emptyTaskBoard(): BoardResult {
   }
 }
 
-function readInnerWorkState(): { status: "idle" | "running"; hasPending: boolean } {
+function readInnerWorkState(): ActiveWorkFrame["inner"] {
+  const defaultJob = {
+    status: "idle" as const,
+    content: null,
+    origin: null,
+    mode: "reflect" as const,
+    obligationStatus: null,
+    surfacedResult: null,
+    queuedAt: null,
+    startedAt: null,
+    surfacedAt: null,
+  }
   try {
     const agentRoot = getAgentRoot()
     const pendingDir = getInnerDialogPendingDir(getAgentName())
     const sessionPath = getInnerDialogSessionPath(agentRoot)
-    const status = readInnerDialogStatus(sessionPath, pendingDir)
+    const { pendingMessages, turns, runtimeState } = readInnerDialogRawData(sessionPath, pendingDir)
+    const dialogStatus = deriveInnerDialogStatus(pendingMessages, turns, runtimeState)
+    const job = deriveInnerJob(pendingMessages, turns, runtimeState)
+    // Derive obligationPending from both the pending message field and the obligation store
+    const storeObligationPending = readPendingObligations(agentRoot).length > 0
     return {
-      status: status.processing === "started" ? "running" : "idle",
-      hasPending: status.queue !== "clear",
+      status: dialogStatus.processing === "started" ? "running" : "idle",
+      hasPending: dialogStatus.queue !== "clear",
+      origin: dialogStatus.origin,
+      contentSnippet: dialogStatus.contentSnippet,
+      obligationPending: dialogStatus.obligationPending || storeObligationPending,
+      job,
     }
   } catch {
     return {
       status: "idle",
       hasPending: false,
+      job: defaultJob,
     }
   }
 }
@@ -261,12 +282,19 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   } catch {
     targetCandidates = []
   }
+  let pendingObligations: import("../heart/obligations").Obligation[] = []
+  try {
+    pendingObligations = readPendingObligations(getAgentRoot())
+  } catch {
+    pendingObligations = []
+  }
   const activeWorkFrame = buildActiveWorkFrame({
     currentSession,
     currentObligation,
     mustResolveBeforeHandoff,
     inner: readInnerWorkState(),
     bridges: activeBridges,
+    pendingObligations,
     taskBoard: (() => {
       try {
         return getTaskModule().getBoard()

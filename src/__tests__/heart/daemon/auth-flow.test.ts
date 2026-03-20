@@ -6,8 +6,10 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { emitNervesEvent } from "../../../nerves/runtime"
 import {
+  collectRuntimeAuthCredentials,
   readAgentConfigForAgent,
   resolveHatchCredentials,
+  writeAgentModel,
   writeProviderCredentials,
   runRuntimeAuthFlow,
   writeAgentProviderSelection,
@@ -586,5 +588,258 @@ describe("runtime auth flow", () => {
       deployment: "prompt-deployment",
     })
     expect(promptInput).not.toHaveBeenCalledWith("Azure API key: ")
+  })
+})
+
+// --- Unit 3a: github-copilot auth flow tests ---
+
+describe("github-copilot auth flow", () => {
+  it("collectRuntimeAuthCredentials reads GH_TOKEN env var first", async () => {
+    emitTestEvent("github-copilot GH_TOKEN env")
+    const homeDir = makeTempDir("auth-flow-home-ghcopilot-env")
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ endpoints: { api: "https://api.copilot.example.com" } }),
+    })
+    vi.stubGlobal("fetch", mockFetch)
+    vi.stubEnv("GH_TOKEN", "ghp_from_env")
+
+    try {
+      const creds = await collectRuntimeAuthCredentials(
+        { agentName: "CopilotBot", provider: "github-copilot" },
+        { homeDir },
+      )
+      expect(creds.githubToken).toBe("ghp_from_env")
+      expect(creds.baseUrl).toBe("https://api.copilot.example.com")
+      expect(mockFetch).toHaveBeenCalledWith(
+        "https://api.github.com/copilot_internal/user",
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Authorization: "Bearer ghp_from_env",
+          }),
+        }),
+      )
+    } finally {
+      vi.unstubAllEnvs()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it("collectRuntimeAuthCredentials falls back to gh auth token", async () => {
+    emitTestEvent("github-copilot gh auth token")
+    const homeDir = makeTempDir("auth-flow-home-ghcopilot-gh")
+    const spawnSync = vi.fn().mockReturnValue({
+      status: 0,
+      stdout: "ghp_from_gh_cli\n",
+    })
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ endpoints: { api: "https://api.copilot.test.com" } }),
+    })
+    vi.stubGlobal("fetch", mockFetch)
+    vi.stubEnv("GH_TOKEN", "")
+
+    try {
+      const creds = await collectRuntimeAuthCredentials(
+        { agentName: "CopilotBot2", provider: "github-copilot" },
+        { homeDir, spawnSync: spawnSync as any },
+      )
+      expect(spawnSync).toHaveBeenCalledWith("gh", ["auth", "token"], { encoding: "utf8" })
+      expect(creds.githubToken).toBe("ghp_from_gh_cli")
+      expect(creds.baseUrl).toBe("https://api.copilot.test.com")
+    } finally {
+      vi.unstubAllEnvs()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it("collectRuntimeAuthCredentials falls back to gh auth login", async () => {
+    emitTestEvent("github-copilot gh auth login fallback")
+    const homeDir = makeTempDir("auth-flow-home-ghcopilot-login")
+    let loginCalled = false
+    const spawnSync = vi.fn().mockImplementation((cmd: string, args: string[]) => {
+      if (args[0] === "auth" && args[1] === "token" && !loginCalled) {
+        return { status: 1, stdout: "" }
+      }
+      if (args[0] === "auth" && args[1] === "login") {
+        loginCalled = true
+        return { status: 0 }
+      }
+      if (args[0] === "auth" && args[1] === "token" && loginCalled) {
+        return { status: 0, stdout: "ghp_from_login\n" }
+      }
+      return { status: 1 }
+    })
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ endpoints: { api: "https://api.copilot.login.com" } }),
+    })
+    vi.stubGlobal("fetch", mockFetch)
+    vi.stubEnv("GH_TOKEN", "")
+
+    try {
+      const creds = await collectRuntimeAuthCredentials(
+        { agentName: "CopilotBot3", provider: "github-copilot" },
+        { homeDir, spawnSync: spawnSync as any },
+      )
+      expect(spawnSync).toHaveBeenCalledWith("gh", ["auth", "login"], { stdio: "inherit" })
+      expect(creds.githubToken).toBe("ghp_from_login")
+      expect(creds.baseUrl).toBe("https://api.copilot.login.com")
+    } finally {
+      vi.unstubAllEnvs()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it("collectRuntimeAuthCredentials throws if gh auth login fails", async () => {
+    emitTestEvent("github-copilot gh auth login failure")
+    const homeDir = makeTempDir("auth-flow-home-ghcopilot-fail")
+    const spawnSync = vi.fn().mockImplementation((_cmd: string, args: string[]) => {
+      if (args[0] === "auth" && args[1] === "token") {
+        return { status: 1, stdout: "" }
+      }
+      if (args[0] === "auth" && args[1] === "login") {
+        return { status: 1 }
+      }
+      return { status: 1 }
+    })
+    vi.stubEnv("GH_TOKEN", "")
+
+    try {
+      await expect(
+        collectRuntimeAuthCredentials(
+          { agentName: "CopilotFail", provider: "github-copilot" },
+          { homeDir, spawnSync: spawnSync as any },
+        ),
+      ).rejects.toThrow(/gh auth login/)
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it("collectRuntimeAuthCredentials throws if endpoint discovery fails", async () => {
+    emitTestEvent("github-copilot endpoint discovery failure")
+    const homeDir = makeTempDir("auth-flow-home-ghcopilot-disco-fail")
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 403,
+    })
+    vi.stubGlobal("fetch", mockFetch)
+    vi.stubEnv("GH_TOKEN", "ghp_test")
+
+    try {
+      await expect(
+        collectRuntimeAuthCredentials(
+          { agentName: "CopilotDisco", provider: "github-copilot" },
+          { homeDir },
+        ),
+      ).rejects.toThrow(/endpoint discovery/)
+    } finally {
+      vi.unstubAllEnvs()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it("applyCredentials and writeProviderCredentials for github-copilot", () => {
+    emitTestEvent("github-copilot writeProviderCredentials")
+    const homeDir = makeTempDir("auth-flow-home-ghcopilot-write")
+    const secretsRoot = path.join(homeDir, ".agentsecrets")
+    const { secretsPath, secrets } = writeProviderCredentials(
+      "CopilotWrite",
+      "github-copilot",
+      { githubToken: "ghp_written", baseUrl: "https://api.written.com" },
+      { secretsRoot },
+    )
+    expect(secretsPath).toBeTruthy()
+    expect(secrets.providers["github-copilot"].githubToken).toBe("ghp_written")
+    expect(secrets.providers["github-copilot"].baseUrl).toBe("https://api.written.com")
+  })
+
+  it("resolveHatchCredentials for github-copilot delegates to runAuthFlow", async () => {
+    emitTestEvent("github-copilot resolveHatchCredentials")
+    const mockRunAuthFlow = vi.fn().mockResolvedValue({
+      agentName: "CopilotHatch",
+      provider: "github-copilot",
+      secretsPath: "/mock/secrets.json",
+      message: "ok",
+      credentials: { githubToken: "ghp_hatched", baseUrl: "https://api.hatched.com" },
+    })
+    const creds = await resolveHatchCredentials({
+      agentName: "CopilotHatch",
+      provider: "github-copilot",
+      runAuthFlow: mockRunAuthFlow as any,
+    })
+    expect(mockRunAuthFlow).toHaveBeenCalled()
+    expect(creds.githubToken).toBe("ghp_hatched")
+    expect(creds.baseUrl).toBe("https://api.hatched.com")
+  })
+
+  it("readAgentConfigForAgent accepts github-copilot", () => {
+    emitTestEvent("github-copilot readAgentConfigForAgent")
+    const bundlesRoot = makeTempDir("auth-flow-ghcopilot-config")
+    writeAgentConfig(bundlesRoot, "CopilotConfig", "github-copilot")
+    const { config } = readAgentConfigForAgent("CopilotConfig", bundlesRoot)
+    expect(config.provider).toBe("github-copilot")
+  })
+})
+
+describe("writeAgentModel", () => {
+  it("updates model for anthropic provider", () => {
+    emitTestEvent("writeAgentModel anthropic")
+    const bundlesRoot = makeTempDir("auth-flow-model-anthropic")
+    const homeDir = makeTempDir("auth-flow-model-home-anthropic")
+    writeAgentConfig(bundlesRoot, "ModelTest", "anthropic")
+
+    // Seed initial secrets
+    const secretsDir = path.join(homeDir, ".agentsecrets", "ModelTest")
+    fs.mkdirSync(secretsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(secretsDir, "secrets.json"),
+      JSON.stringify({ providers: { anthropic: { model: "claude-opus-4-6", setupToken: "tok" } } }),
+    )
+
+    const result = writeAgentModel("ModelTest", "claude-sonnet-4.6", { bundlesRoot, homeDir })
+    expect(result.provider).toBe("anthropic")
+    expect(result.previousModel).toBe("claude-opus-4-6")
+
+    const updated = JSON.parse(fs.readFileSync(result.secretsPath, "utf8")) as any
+    expect(updated.providers.anthropic.model).toBe("claude-sonnet-4.6")
+  })
+
+  it("updates modelName for azure provider", () => {
+    emitTestEvent("writeAgentModel azure")
+    const bundlesRoot = makeTempDir("auth-flow-model-azure")
+    const homeDir = makeTempDir("auth-flow-model-home-azure")
+    writeAgentConfig(bundlesRoot, "AzureModel", "azure")
+
+    const secretsDir = path.join(homeDir, ".agentsecrets", "AzureModel")
+    fs.mkdirSync(secretsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(secretsDir, "secrets.json"),
+      JSON.stringify({ providers: { azure: { modelName: "gpt-4o-mini", apiKey: "k", endpoint: "e", deployment: "d", apiVersion: "v" } } }),
+    )
+
+    const result = writeAgentModel("AzureModel", "gpt-5", { bundlesRoot, homeDir })
+    expect(result.provider).toBe("azure")
+    expect(result.previousModel).toBe("gpt-4o-mini")
+
+    const updated = JSON.parse(fs.readFileSync(result.secretsPath, "utf8")) as any
+    expect(updated.providers.azure.modelName).toBe("gpt-5")
+  })
+
+  it("handles empty previous model", () => {
+    emitTestEvent("writeAgentModel empty previous")
+    const bundlesRoot = makeTempDir("auth-flow-model-empty")
+    const homeDir = makeTempDir("auth-flow-model-home-empty")
+    writeAgentConfig(bundlesRoot, "EmptyModel", "minimax")
+
+    // No secrets file — will create from defaults
+    const result = writeAgentModel("EmptyModel", "minimax-text-02", { bundlesRoot, homeDir })
+    expect(result.provider).toBe("minimax")
+    // Default model from template
+    expect(result.previousModel).toBe("minimax-text-01")
+
+    const updated = JSON.parse(fs.readFileSync(result.secretsPath, "utf8")) as any
+    expect(updated.providers.minimax.model).toBe("minimax-text-02")
   })
 })

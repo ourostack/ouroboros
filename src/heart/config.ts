@@ -32,6 +32,12 @@ export interface OpenAICodexProviderConfig {
   oauthAccessToken: string
 }
 
+export interface GithubCopilotProviderConfig {
+  model: string
+  githubToken: string
+  baseUrl: string
+}
+
 export interface TeamsConfig {
   clientId: string
   clientSecret: string
@@ -80,6 +86,7 @@ export interface OuroborosConfig {
     minimax: MinimaxProviderConfig
     anthropic: AnthropicProviderConfig
     "openai-codex": OpenAICodexProviderConfig
+    "github-copilot": GithubCopilotProviderConfig
   }
   teams: TeamsConfig
   teamsSecondary: TeamsConfig
@@ -114,6 +121,11 @@ const DEFAULT_SECRETS_TEMPLATE: Omit<OuroborosConfig, "context"> = {
     "openai-codex": {
       model: "gpt-5.4",
       oauthAccessToken: "",
+    },
+    "github-copilot": {
+      model: "claude-sonnet-4.6",
+      githubToken: "",
+      baseUrl: "",
     },
   },
   teams: {
@@ -160,6 +172,7 @@ function defaultRuntimeConfig(): OuroborosConfig {
       minimax: { ...DEFAULT_SECRETS_TEMPLATE.providers.minimax },
       anthropic: { ...DEFAULT_SECRETS_TEMPLATE.providers.anthropic },
       "openai-codex": { ...DEFAULT_SECRETS_TEMPLATE.providers["openai-codex"] },
+      "github-copilot": { ...DEFAULT_SECRETS_TEMPLATE.providers["github-copilot"] },
     },
     teams: { ...DEFAULT_SECRETS_TEMPLATE.teams },
     teamsSecondary: { ...DEFAULT_SECRETS_TEMPLATE.teamsSecondary },
@@ -328,6 +341,11 @@ export function getAnthropicConfig(): AnthropicProviderConfig {
 export function getOpenAICodexConfig(): OpenAICodexProviderConfig {
   const config = loadConfig()
   return { ...config.providers["openai-codex"] }
+}
+
+export function getGithubCopilotConfig(): GithubCopilotProviderConfig {
+  const config = loadConfig()
+  return { ...config.providers["github-copilot"] }
 }
 
 export function getTeamsConfig(): TeamsConfig {

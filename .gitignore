@@ -5,3 +5,4 @@ coverage/
 manifest.zip
 manifest.*.zip
 .azure/
+.claude/

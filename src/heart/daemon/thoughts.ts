@@ -24,6 +24,9 @@ export interface InnerDialogStatus {
   wake: string
   processing: string
   surfaced: string
+  origin?: { friendId: string; channel: string; key: string }
+  contentSnippet?: string
+  obligationPending?: boolean
 }
 
 export interface InnerDialogRuntimeState {
@@ -31,6 +34,20 @@ export interface InnerDialogRuntimeState {
   reason?: "boot" | "heartbeat" | "instinct"
   startedAt?: string
   lastCompletedAt?: string
+}
+
+export type InnerJobStatus = "idle" | "queued" | "running" | "surfaced" | "returned" | "abandoned"
+
+export interface InnerJob {
+  status: InnerJobStatus
+  content: string | null
+  origin: { friendId: string; channel: string; key: string; friendName?: string } | null
+  mode: "reflect" | "plan" | "relay"
+  obligationStatus: "pending" | "fulfilled" | null
+  surfacedResult: string | null
+  queuedAt: number | null
+  startedAt: string | null
+  surfacedAt: string | null
 }
 
 function contentToText(content: unknown): string {
@@ -138,8 +155,25 @@ export function formatSurfacedValue(text: string, maxLength = 120): string {
   return `"${firstLine.slice(0, maxLength - 3)}..."`
 }
 
+function extractEnrichedFields(
+  pendingMessages: Array<Pick<PendingMessage, "content" | "timestamp" | "from" | "delegatedFrom" | "obligationStatus">>,
+): Pick<InnerDialogStatus, "origin" | "contentSnippet" | "obligationPending"> {
+  const delegated = pendingMessages.find((msg) => msg.delegatedFrom)
+  if (!delegated?.delegatedFrom) return {}
+  const snippet = delegated.content.length > 80 ? delegated.content.slice(0, 77) + "..." : delegated.content
+  return {
+    origin: {
+      friendId: delegated.delegatedFrom.friendId,
+      channel: delegated.delegatedFrom.channel,
+      key: delegated.delegatedFrom.key,
+    },
+    contentSnippet: snippet,
+    ...(delegated.obligationStatus === "pending" ? { obligationPending: true } : {}),
+  }
+}
+
 export function deriveInnerDialogStatus(
-  pendingMessages: Array<Pick<PendingMessage, "content" | "timestamp" | "from">>,
+  pendingMessages: Array<Pick<PendingMessage, "content" | "timestamp" | "from" | "delegatedFrom" | "obligationStatus">>,
   turns: ThoughtTurn[],
   runtimeState?: InnerDialogRuntimeState | null,
 ): InnerDialogStatus {
@@ -150,6 +184,7 @@ export function deriveInnerDialogStatus(
         wake: "queued behind active turn",
         processing: "pending",
         surfaced: "nothing yet",
+        ...extractEnrichedFields(pendingMessages),
       }
     }
 
@@ -167,6 +202,7 @@ export function deriveInnerDialogStatus(
       wake: "awaiting inner session",
       processing: "pending",
       surfaced: "nothing yet",
+      ...extractEnrichedFields(pendingMessages),
     }
   }
 
@@ -191,13 +227,126 @@ export function deriveInnerDialogStatus(
   }
 }
 
+export function deriveInnerJob(
+  pendingMessages: Array<Pick<PendingMessage, "content" | "timestamp" | "from" | "delegatedFrom" | "obligationStatus"> & { mode?: "reflect" | "plan" | "relay" }>,
+  turns: ThoughtTurn[],
+  runtimeState?: InnerDialogRuntimeState | null,
+): InnerJob {
+  const isRunning = runtimeState?.status === "running"
+  const delegated = pendingMessages.find((msg) => msg.delegatedFrom)
+  const enriched = extractEnrichedFields(pendingMessages)
+  const pendingMode = delegated && "mode" in delegated && delegated.mode ? delegated.mode : "reflect"
+
+  const origin = enriched.origin ?? null
+  const content = delegated?.content ?? null
+  const obligationStatus = delegated?.obligationStatus ?? null
+  const queuedAt = delegated?.timestamp ?? null
+
+  if (isRunning) {
+    emitNervesEvent({
+      component: "engine",
+      event: "engine.inner_job_derive",
+      message: "derived inner job state",
+      meta: { status: "running", mode: pendingMode, hasOrigin: origin !== null, hasObligation: obligationStatus !== null },
+    })
+    return {
+      status: "running",
+      content,
+      origin,
+      mode: pendingMode,
+      obligationStatus,
+      surfacedResult: null,
+      queuedAt,
+      startedAt: runtimeState?.startedAt ?? null,
+      surfacedAt: null,
+    }
+  }
+
+  if (pendingMessages.length > 0) {
+    emitNervesEvent({
+      component: "engine",
+      event: "engine.inner_job_derive",
+      message: "derived inner job state",
+      meta: { status: "queued", mode: pendingMode, hasOrigin: origin !== null, hasObligation: obligationStatus !== null },
+    })
+    return {
+      status: "queued",
+      content,
+      origin,
+      mode: pendingMode,
+      obligationStatus,
+      surfacedResult: null,
+      queuedAt,
+      startedAt: null,
+      surfacedAt: null,
+    }
+  }
+
+  // No pending, not running -- check for surfaced result
+  const latestProcessedPendingTurn = [...turns]
+    .reverse()
+    .find((turn) => extractPendingPromptMessages(turn.prompt).length > 0)
+
+  if (latestProcessedPendingTurn) {
+    const surfacedResult = extractThoughtResponseFromMessages([
+      { role: "assistant", content: latestProcessedPendingTurn.response },
+    ])
+    emitNervesEvent({
+      component: "engine",
+      event: "engine.inner_job_derive",
+      message: "derived inner job state",
+      meta: { status: "surfaced", mode: "reflect", hasOrigin: false, hasObligation: false },
+    })
+    return {
+      status: "surfaced",
+      content: null,
+      origin: null,
+      mode: "reflect",
+      obligationStatus: null,
+      /* v8 ignore next -- defensive: surfacedResult fallback @preserve */
+      surfacedResult: surfacedResult || null,
+      queuedAt: null,
+      startedAt: null,
+      surfacedAt: null,
+    }
+  }
+
+  emitNervesEvent({
+    component: "engine",
+    event: "engine.inner_job_derive",
+    message: "derived inner job state",
+    meta: { status: "idle", mode: "reflect", hasOrigin: false, hasObligation: false },
+  })
+  return {
+    status: "idle",
+    content: null,
+    origin: null,
+    mode: "reflect",
+    obligationStatus: null,
+    surfacedResult: null,
+    queuedAt: null,
+    startedAt: null,
+    surfacedAt: null,
+  }
+}
+
 export function formatInnerDialogStatus(status: InnerDialogStatus): string {
-  return [
+  const lines = [
     `queue: ${status.queue}`,
     `wake: ${status.wake}`,
     `processing: ${status.processing}`,
     `surfaced: ${status.surfaced}`,
-  ].join("\n")
+  ]
+  if (status.origin) {
+    lines.push(`origin: ${status.origin.friendId}/${status.origin.channel}/${status.origin.key}`)
+  }
+  if (status.contentSnippet) {
+    lines.push(`asked: ${status.contentSnippet}`)
+  }
+  if (status.obligationPending) {
+    lines.push("obligation: pending")
+  }
+  return lines.join("\n")
 }
 
 /** Extract text from a final_answer tool call's arguments. */
@@ -362,6 +511,18 @@ export function readInnerDialogStatus(sessionPath: string, pendingDir: string, r
   const turns = parseInnerDialogSession(sessionPath)
   const runtimeState = readInnerDialogRuntimeState(runtimePath)
   return deriveInnerDialogStatus(pendingMessages, turns, runtimeState)
+}
+
+export function readInnerDialogRawData(sessionPath: string, pendingDir: string): {
+  pendingMessages: PendingMessage[]
+  turns: ThoughtTurn[]
+  runtimeState: InnerDialogRuntimeState | null
+} {
+  const runtimePath = getInnerDialogRuntimeStatePath(sessionPath)
+  const pendingMessages = readPendingMessagesForStatus(pendingDir)
+  const turns = parseInnerDialogSession(sessionPath)
+  const runtimeState = readInnerDialogRuntimeState(runtimePath)
+  return { pendingMessages, turns, runtimeState }
 }
 
 /**

@@ -53,6 +53,11 @@ vi.mock("../../senses/teams", () => ({
     mockSendProactiveTeamsMessageToSession(...args),
 }))
 
+const mockEmitNervesEvent = vi.fn()
+vi.mock("../../nerves/runtime", () => ({
+  emitNervesEvent: (...args: any[]) => mockEmitNervesEvent(...args),
+}))
+
 vi.mock("../../heart/identity", () => ({
   getAgentRoot: vi.fn(() => "/mock/agent-root"),
   getAgentName: vi.fn(() => "testagent"),
@@ -76,6 +81,7 @@ beforeEach(() => {
   mockSendProactiveBlueBubblesMessageToSession.mockReset()
   mockSendProactiveTeamsMessageToSession.mockReset()
   mockRequestInnerWake.mockResolvedValue(null)
+  mockEmitNervesEvent.mockReset()
 })
 
 describe("send_message tool", () => {
@@ -797,11 +803,7 @@ describe("send_message tool", () => {
 
       expect(mockRequestInnerWake).toHaveBeenCalledWith("testagent")
       expect(mockRunInnerDialogTurn).not.toHaveBeenCalled()
-      expect(result).toBe([
-        "inner work: queued",
-        "queued to inner/dialog",
-        "wake: daemon requested",
-      ].join("\n"))
+      expect(result).toBe("i've queued this thought for private attention. it'll come up when my inner dialog is free.")
     })
 
     it("falls back to an immediate inner turn when daemon wake rejects", async () => {
@@ -984,6 +986,102 @@ describe("send_message tool", () => {
       expect(result).toContain("queued to inner/dialog")
       expect(result).toContain("wake: inline fallback")
       expect(result).toContain("no outward result")
+    })
+
+    it("sets obligationStatus to 'pending' on the envelope when self-routing with delegatedFrom", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      await tool.handler({
+        friendId: "self",
+        channel: "bluebubbles",
+        content: "think this through",
+      }, {
+        currentSession: {
+          friendId: "friend-uuid-1",
+          channel: "bluebubbles",
+          key: "chat",
+          sessionPath: "/mock/agent-root/state/sessions/friend-uuid-1/bluebubbles/chat.json",
+        },
+        activeBridges: [],
+      } as any)
+
+      const written = JSON.parse(vi.mocked(fs.writeFileSync).mock.calls[0][1] as string)
+      expect(written.obligationStatus).toBe("pending")
+    })
+
+    it("does NOT set obligationStatus when self-routing without delegatedFrom", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      await tool.handler({
+        friendId: "self",
+        channel: "inner",
+        content: "private thought",
+      }, {
+        currentSession: {
+          friendId: "self",
+          channel: "inner",
+          key: "dialog",
+          sessionPath: "/mock/agent-root/state/sessions/self/inner/dialog.json",
+        },
+      } as any)
+
+      const written = JSON.parse(vi.mocked(fs.writeFileSync).mock.calls[0][1] as string)
+      expect(written.obligationStatus).toBeUndefined()
+    })
+
+    it("emits repertoire.obligation_created nerves event when obligation is created", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      await tool.handler({
+        friendId: "self",
+        channel: "bluebubbles",
+        content: "reflect on this",
+      }, {
+        currentSession: {
+          friendId: "friend-uuid-1",
+          channel: "bluebubbles",
+          key: "chat",
+          sessionPath: "/mock/agent-root/state/sessions/friend-uuid-1/bluebubbles/chat.json",
+        },
+        activeBridges: [],
+      } as any)
+
+      const obligationEvent = mockEmitNervesEvent.mock.calls.find(
+        (call: any[]) => call[0]?.event === "repertoire.obligation_created",
+      )
+      expect(obligationEvent).toBeDefined()
+      expect(obligationEvent![0].component).toBe("repertoire")
+      expect(obligationEvent![0].meta).toEqual(expect.objectContaining({
+        friendId: "friend-uuid-1",
+        channel: "bluebubbles",
+        key: "chat",
+      }))
+    })
+
+    it("does NOT emit obligation_created when self-routing without delegatedFrom", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      await tool.handler({
+        friendId: "self",
+        channel: "inner",
+        content: "private thought",
+      }, {
+        currentSession: {
+          friendId: "self",
+          channel: "inner",
+          key: "dialog",
+          sessionPath: "/mock/agent-root/state/sessions/self/inner/dialog.json",
+        },
+      } as any)
+
+      const obligationEvent = mockEmitNervesEvent.mock.calls.find(
+        (call: any[]) => call[0]?.event === "repertoire.obligation_created",
+      )
+      expect(obligationEvent).toBeUndefined()
     })
 
     it("defers the inline fallback to a microtask when already in inner dialog", async () => {

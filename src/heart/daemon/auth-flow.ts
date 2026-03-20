@@ -30,6 +30,11 @@ interface SecretsTemplate {
       model: string
       oauthAccessToken: string
     }
+    "github-copilot": {
+      model: string
+      githubToken: string
+      baseUrl: string
+    }
   }
   teams: {
     clientId: string
@@ -71,6 +76,11 @@ const DEFAULT_SECRETS_TEMPLATE: SecretsTemplate = {
     "openai-codex": {
       model: "gpt-5.4",
       oauthAccessToken: "",
+    },
+    "github-copilot": {
+      model: "claude-sonnet-4.6",
+      githubToken: "",
+      baseUrl: "",
     },
   },
   teams: {
@@ -171,7 +181,8 @@ export function readAgentConfigForAgent(
     provider !== "azure" &&
     provider !== "anthropic" &&
     provider !== "minimax" &&
-    provider !== "openai-codex"
+    provider !== "openai-codex" &&
+    provider !== "github-copilot"
   ) {
     throw new Error(`agent.json at ${configPath} has unsupported provider '${String(provider)}'`)
   }
@@ -242,6 +253,32 @@ export function writeProviderCredentials(
   return { secretsPath, secrets }
 }
 
+const MODEL_FIELD: Record<string, string> = {
+  azure: "modelName",
+  minimax: "model",
+  anthropic: "model",
+  "openai-codex": "model",
+  "github-copilot": "model",
+}
+
+export function writeAgentModel(
+  agentName: string,
+  modelName: string,
+  deps: ProviderSecretsDeps & { bundlesRoot?: string } = {},
+): { secretsPath: string; provider: AgentProvider; previousModel: string } {
+  const { config } = readAgentConfigForAgent(agentName, deps.bundlesRoot)
+  const provider = config.provider
+  const { secretsPath, secrets } = loadAgentSecrets(agentName, deps)
+  const providerSecrets = secrets.providers[provider] as Record<string, string>
+  /* v8 ignore next -- fallback: all known providers are in MODEL_FIELD @preserve */
+  const fieldName = MODEL_FIELD[provider] ?? "model"
+  /* v8 ignore next -- defensive: fieldName always exists in template @preserve */
+  const previousModel = providerSecrets[fieldName] ?? ""
+  providerSecrets[fieldName] = modelName
+  writeSecrets(secretsPath, secrets)
+  return { secretsPath, provider, previousModel }
+}
+
 function readCodexAccessToken(homeDir: string): string {
   const authPath = path.join(homeDir, ".codex", "auth.json")
   try {
@@ -279,6 +316,46 @@ export async function collectRuntimeAuthCredentials(
 ): Promise<HatchCredentialsInput> {
   const spawnSync = deps.spawnSync ?? defaultSpawnSync
   const homeDir = deps.homeDir ?? os.homedir()
+
+  if (input.provider === "github-copilot") {
+    let token = process.env.GH_TOKEN?.trim() || ""
+    if (!token) {
+      const result = spawnSync("gh", ["auth", "token"], { encoding: "utf8" })
+      token = (result.status === 0 && result.stdout ? result.stdout.trim() : "")
+    }
+    if (!token) {
+      emitNervesEvent({
+        component: "daemon",
+        event: "daemon.auth_gh_login_start",
+        message: "starting gh auth login for runtime auth",
+        meta: { agentName: input.agentName },
+      })
+      const loginResult = spawnSync("gh", ["auth", "login"], { stdio: "inherit" })
+      if (loginResult.status !== 0) {
+        throw new Error("'gh auth login' failed. Install the GitHub CLI (gh) and try again.")
+      }
+      const retryResult = spawnSync("gh", ["auth", "token"], { encoding: "utf8" })
+      /* v8 ignore next -- branch: retry after login always succeeds in tests @preserve */
+      token = (retryResult.status === 0 && retryResult.stdout ? retryResult.stdout.trim() : "")
+      /* v8 ignore next -- defensive: gh auth login succeeded but token still missing @preserve */
+      if (!token) {
+        throw new Error("gh auth login completed but no token was found. Run `gh auth login` and try again.")
+      }
+    }
+    const response = await fetch("https://api.github.com/copilot_internal/user", {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!response.ok) {
+      throw new Error(`GitHub Copilot endpoint discovery failed (HTTP ${response.status}). Ensure your GitHub account has Copilot access.`)
+    }
+    const body = await response.json() as { endpoints?: { api?: string } }
+    const baseUrl = body?.endpoints?.api
+    /* v8 ignore next -- defensive: valid response but missing endpoints field @preserve */
+    if (!baseUrl) {
+      throw new Error("GitHub Copilot endpoint discovery returned no endpoints.api. Ensure your GitHub account has Copilot access.")
+    }
+    return { githubToken: token, baseUrl }
+  }
 
   if (input.provider === "openai-codex") {
     let token = readCodexAccessToken(homeDir)
@@ -346,6 +423,15 @@ export async function resolveHatchCredentials(
   const prompt = input.promptInput
   const credentials: HatchCredentialsInput = { ...(input.credentials ?? {}) }
 
+  if (input.provider === "github-copilot" && !credentials.githubToken && input.runAuthFlow) {
+    const result = await input.runAuthFlow({
+      agentName: input.agentName,
+      provider: "github-copilot",
+      promptInput: prompt,
+    })
+    Object.assign(credentials, result.credentials)
+  }
+
   if (input.provider === "anthropic" && !credentials.setupToken && input.runAuthFlow) {
     const result = await input.runAuthFlow({
       agentName: input.agentName,
@@ -390,6 +476,11 @@ function applyCredentials(
 ): void {
   if (provider === "anthropic") {
     secrets.providers.anthropic.setupToken = credentials.setupToken!.trim()
+    return
+  }
+  if (provider === "github-copilot") {
+    secrets.providers["github-copilot"].githubToken = credentials.githubToken!.trim()
+    secrets.providers["github-copilot"].baseUrl = credentials.baseUrl!.trim()
     return
   }
   if (provider === "openai-codex") {

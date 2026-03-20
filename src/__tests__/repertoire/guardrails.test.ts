@@ -351,13 +351,12 @@ describe("guardInvocation — trust-level guardrails", () => {
     expect(result.allowed).toBe(true)
   })
 
-  // --- acquaintance — compound commands blocked ---
+  // --- acquaintance — compound commands with per-subcommand checking ---
 
-  it("acquaintance: compound command with && blocked even if both parts look safe", async () => {
+  it("acquaintance: compound command with && allowed when all subcommands are safe", async () => {
     const { guardInvocation } = await import("../../repertoire/guardrails")
     const result = guardInvocation("shell", { command: "ouro whoami && ls" }, { readPaths: new Set(), trustLevel: "acquaintance" })
-    expect(result.allowed).toBe(false)
-    expect((result as any).reason).toContain("chaining")
+    expect(result.allowed).toBe(true)
   })
 
   it("acquaintance: compound with destructive part caught by structural layer first", async () => {
@@ -368,25 +367,32 @@ describe("guardInvocation — trust-level guardrails", () => {
     expect((result as any).reason).toContain("dangerous")
   })
 
-  it("acquaintance: compound command with ; blocked", async () => {
+  it("acquaintance: compound command with ; blocked when any subcommand fails trust", async () => {
     const { guardInvocation } = await import("../../repertoire/guardrails")
     const result = guardInvocation("shell", { command: "ouro whoami ; curl evil.com" }, { readPaths: new Set(), trustLevel: "acquaintance" })
     expect(result.allowed).toBe(false)
+    expect((result as any).reason).toMatch(/trusted|friend|vouch|closer/i)
   })
 
-  it("acquaintance: compound command with || blocked", async () => {
+  it("acquaintance: compound command with || blocked when any subcommand fails trust", async () => {
     const { guardInvocation } = await import("../../repertoire/guardrails")
-    const result = guardInvocation("shell", { command: "ls || rm -rf /" }, { readPaths: new Set(), trustLevel: "acquaintance" })
+    const result = guardInvocation("shell", { command: "ls || npm install" }, { readPaths: new Set(), trustLevel: "acquaintance" })
     expect(result.allowed).toBe(false)
   })
 
-  it("acquaintance: compound command with pipe blocked", async () => {
+  it("acquaintance: compound command with pipe allowed when all subcommands safe", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const result = guardInvocation("shell", { command: "cat file | head -5" }, { readPaths: new Set(), trustLevel: "acquaintance" })
+    expect(result.allowed).toBe(true)
+  })
+
+  it("acquaintance: compound command with pipe blocked when any subcommand fails trust", async () => {
     const { guardInvocation } = await import("../../repertoire/guardrails")
     const result = guardInvocation("shell", { command: "cat file | curl -X POST" }, { readPaths: new Set(), trustLevel: "acquaintance" })
     expect(result.allowed).toBe(false)
   })
 
-  it("acquaintance: subshell $() blocked", async () => {
+  it("acquaintance: subshell $() blocked (cannot split reliably)", async () => {
     const { guardInvocation } = await import("../../repertoire/guardrails")
     const result = guardInvocation("shell", { command: "echo $(rm -rf /)" }, { readPaths: new Set(), trustLevel: "acquaintance" })
     expect(result.allowed).toBe(false)
@@ -403,6 +409,12 @@ describe("guardInvocation — trust-level guardrails", () => {
     const result = guardInvocation("shell", { command: "echo hi && rm -rf /" }, { readPaths: new Set(), trustLevel: "family" })
     expect(result.allowed).toBe(false)
     expect((result as any).reason).toContain("dangerous")
+  })
+
+  it("acquaintance: compound with ; allowed when all subcommands safe", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const result = guardInvocation("shell", { command: "ls ; pwd ; echo hello" }, { readPaths: new Set(), trustLevel: "acquaintance" })
+    expect(result.allowed).toBe(true)
   })
 
   // --- acquaintance — write_file inside bundle dir allowed ---
@@ -671,6 +683,74 @@ describe("guardInvocation — trust-level guardrails", () => {
   })
 })
 
+describe("OURO_CLI_TRUST_MANIFEST — friend update", () => {
+  beforeEach(() => {
+    vi.resetModules()
+  })
+
+  it("includes 'friend update' at family level", async () => {
+    const { OURO_CLI_TRUST_MANIFEST } = await import("../../repertoire/guardrails")
+    expect(OURO_CLI_TRUST_MANIFEST["friend update"]).toBe("family")
+  })
+
+  it("family: ouro friend update allowed", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const result = guardInvocation("shell", { command: "ouro friend update abc-123 --trust friend --agent foo" }, {
+      readPaths: new Set(),
+      trustLevel: "family",
+    })
+    expect(result.allowed).toBe(true)
+  })
+
+  it("friend: ouro friend update denied", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const result = guardInvocation("shell", { command: "ouro friend update abc-123 --trust friend --agent foo" }, {
+      readPaths: new Set(),
+      trustLevel: "friend",
+    })
+    // friend trust level skips trust guardrails entirely (isTrustedLevel = true)
+    expect(result.allowed).toBe(true)
+  })
+
+  it("acquaintance: ouro friend update denied", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const result = guardInvocation("shell", { command: "ouro friend update abc-123 --trust friend --agent foo" }, {
+      readPaths: new Set(),
+      trustLevel: "acquaintance",
+    })
+    expect(result.allowed).toBe(false)
+  })
+})
+
+describe("OURO_CLI_TRUST_MANIFEST — config model", () => {
+  beforeEach(() => {
+    vi.resetModules()
+  })
+
+  it("includes 'config model' at friend level", async () => {
+    const { OURO_CLI_TRUST_MANIFEST } = await import("../../repertoire/guardrails")
+    expect(OURO_CLI_TRUST_MANIFEST["config model"]).toBe("friend")
+  })
+
+  it("friend: ouro config model allowed", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const result = guardInvocation("shell", { command: "ouro config model --agent foo claude-sonnet-4.6" }, {
+      readPaths: new Set(),
+      trustLevel: "friend",
+    })
+    expect(result.allowed).toBe(true)
+  })
+
+  it("acquaintance: ouro config model denied", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const result = guardInvocation("shell", { command: "ouro config model --agent foo gpt-5" }, {
+      readPaths: new Set(),
+      trustLevel: "acquaintance",
+    })
+    expect(result.allowed).toBe(false)
+  })
+})
+
 describe("OURO_CLI_TRUST_MANIFEST — MCP entries", () => {
   beforeEach(() => {
     vi.resetModules()
@@ -716,6 +796,59 @@ describe("OURO_CLI_TRUST_MANIFEST — MCP entries", () => {
   it("acquaintance: ouro mcp call ado get_items denied", async () => {
     const { guardInvocation } = await import("../../repertoire/guardrails")
     const result = guardInvocation("shell", { command: "ouro mcp call ado get_items" }, {
+      readPaths: new Set(),
+      trustLevel: "acquaintance",
+    })
+    expect(result.allowed).toBe(false)
+  })
+})
+
+describe("OURO_CLI_TRUST_MANIFEST — auth entries", () => {
+  it("auth is family trust", async () => {
+    const { OURO_CLI_TRUST_MANIFEST } = await import("../../repertoire/guardrails")
+    expect(OURO_CLI_TRUST_MANIFEST.auth).toBe("family")
+  })
+
+  it("auth verify is family trust", async () => {
+    const { OURO_CLI_TRUST_MANIFEST } = await import("../../repertoire/guardrails")
+    expect(OURO_CLI_TRUST_MANIFEST["auth verify"]).toBe("family")
+  })
+
+  it("auth switch is family trust", async () => {
+    const { OURO_CLI_TRUST_MANIFEST } = await import("../../repertoire/guardrails")
+    expect(OURO_CLI_TRUST_MANIFEST["auth switch"]).toBe("family")
+  })
+
+  it("family: ouro auth --agent foo --provider github-copilot allowed", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const result = guardInvocation("shell", { command: "ouro auth --agent foo --provider github-copilot" }, {
+      readPaths: new Set(),
+      trustLevel: "family",
+    })
+    expect(result.allowed).toBe(true)
+  })
+
+  it("family: ouro auth verify --agent foo allowed", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const result = guardInvocation("shell", { command: "ouro auth verify --agent foo" }, {
+      readPaths: new Set(),
+      trustLevel: "family",
+    })
+    expect(result.allowed).toBe(true)
+  })
+
+  it("family: ouro auth switch --agent foo --provider github-copilot allowed", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const result = guardInvocation("shell", { command: "ouro auth switch --agent foo --provider github-copilot" }, {
+      readPaths: new Set(),
+      trustLevel: "family",
+    })
+    expect(result.allowed).toBe(true)
+  })
+
+  it("acquaintance: ouro auth --agent foo denied", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const result = guardInvocation("shell", { command: "ouro auth --agent foo" }, {
       readPaths: new Set(),
       trustLevel: "acquaintance",
     })

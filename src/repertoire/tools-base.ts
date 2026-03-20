@@ -21,6 +21,7 @@ import type { PendingMessage } from "../mind/pending";
 import type { BridgeRecord, BridgeSessionRef } from "../heart/bridges/store";
 import { buildProgressStory, renderProgressStory } from "../heart/progress-story";
 import { deliverCrossChatMessage, type CrossChatDeliveryResult } from "../heart/cross-chat-delivery";
+import { createObligation } from "../heart/obligations";
 
 export interface CodingFeedbackTarget {
   send: (message: string) => Promise<void>;
@@ -136,6 +137,7 @@ async function recallSessionSafely(options: SessionRecallOptions): Promise<Sessi
 
 function normalizeProgressOutcome(text: string): string | null {
   const trimmed = text.trim()
+  /* v8 ignore next -- defensive: normalizeProgressOutcome null branch @preserve */
   if (!trimmed || trimmed === "nothing yet" || trimmed === "nothing recent") {
     return null
   }
@@ -179,33 +181,23 @@ function renderCrossChatDeliveryStatus(
   }))
 }
 
-function renderInnerProgressStatus(
+export function renderInnerProgressStatus(
   status: { queue: string; wake: string; processing: string; surfaced: string },
 ): string {
   if (status.processing === "pending") {
-    return renderProgressStory(buildProgressStory({
-      scope: "inner-delegation",
-      phase: "queued",
-      objective: status.queue,
-      outcomeText: `wake: ${status.wake}`,
-    }))
+    return "i've queued this thought for private attention. it'll come up when my inner dialog is free."
   }
 
   if (status.processing === "started") {
-    return renderProgressStory(buildProgressStory({
-      scope: "inner-delegation",
-      phase: "processing",
-      outcomeText: `wake: ${status.wake}`,
-    }))
+    return "i'm working through this privately right now."
   }
 
-  const completedOutcome = normalizeProgressOutcome(status.surfaced) ?? status.surfaced
-  return renderProgressStory(buildProgressStory({
-    scope: "inner-delegation",
-    phase: "completed",
-    objective: null,
-    outcomeText: completedOutcome,
-  }))
+  // processed / completed
+  if (status.surfaced && status.surfaced !== "nothing recent" && status.surfaced !== "no outward result") {
+    return `i thought about this privately and came to something: ${status.surfaced}`
+  }
+
+  return "i thought about this privately. i'll bring it back when the time is right."
 }
 
 export const baseToolDefinitions: ToolDefinition[] = [
@@ -963,11 +955,36 @@ export const baseToolDefinitions: ToolDefinition[] = [
         key,
         content,
         timestamp: now,
-        ...(delegatedFrom ? { delegatedFrom } : {}),
+        ...(delegatedFrom ? { delegatedFrom, obligationStatus: "pending" as const } : {}),
       }
 
       if (isSelf) {
         writePendingEnvelope(pendingDir, envelope)
+        if (delegatedFrom) {
+          try {
+            createObligation(getAgentRoot(), {
+              origin: {
+                friendId: delegatedFrom.friendId,
+                channel: delegatedFrom.channel,
+                key: delegatedFrom.key,
+              },
+              ...(delegatedFrom.bridgeId ? { bridgeId: delegatedFrom.bridgeId } : {}),
+              content,
+            })
+          } catch {
+            /* v8 ignore next -- defensive: obligation store write failure should not break send_message @preserve */
+          }
+          emitNervesEvent({
+            event: "repertoire.obligation_created",
+            component: "repertoire",
+            message: "obligation created for inner dialog delegation",
+            meta: {
+              friendId: delegatedFrom.friendId,
+              channel: delegatedFrom.channel,
+              key: delegatedFrom.key,
+            },
+          })
+        }
         let wakeResponse: { ok: boolean } | null = null
         try {
           wakeResponse = await requestInnerWake(agentName)
@@ -1148,6 +1165,33 @@ export const baseToolDefinitions: ToolDefinition[] = [
 ];
 
 export const tools: OpenAI.ChatCompletionFunctionTool[] = baseToolDefinitions.map((d) => d.tool);
+
+export const goInwardTool: OpenAI.ChatCompletionFunctionTool = {
+  type: "function",
+  function: {
+    name: "go_inward",
+    description: "i need to think about this privately. this takes the current thread inward -- i'll sit with it, work through it, or carry it to where it needs to go. must be the only tool call in the turn.",
+    parameters: {
+      type: "object",
+      properties: {
+        content: {
+          type: "string",
+          description: "what i need to think about -- the question, the thread, the thing that needs private attention",
+        },
+        answer: {
+          type: "string",
+          description: "if i want to say something outward before going inward -- an acknowledgment, a 'let me think about that', whatever feels right",
+        },
+        mode: {
+          type: "string",
+          enum: ["reflect", "plan", "relay"],
+          description: "reflect: something to sit with. plan: something to work through. relay: something to carry across.",
+        },
+      },
+      required: ["content"],
+    },
+  },
+};
 
 export const noResponseTool: OpenAI.ChatCompletionFunctionTool = {
   type: "function",

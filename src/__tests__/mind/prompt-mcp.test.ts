@@ -101,4 +101,28 @@ describe("MCP system prompt injection", () => {
       expect(result).toContain("ouro mcp call")
     })
   })
+
+  describe("bodyMapSection auth entries", () => {
+    it("includes ouro auth, ouro auth verify, and ouro auth switch in body map", () => {
+      const result = bodyMapSection("testagent")
+      expect(result).toContain("ouro auth --agent testagent --provider")
+      expect(result).toContain("ouro auth verify --agent testagent")
+      expect(result).toContain("ouro auth switch --agent testagent --provider")
+    })
+  })
+
+  describe("bodyMapSection config models entry", () => {
+    it("includes ouro config models in body map", () => {
+      const result = bodyMapSection("testagent")
+      expect(result).toContain("ouro config models --agent testagent")
+    })
+  })
+
+  describe("bodyMapSection auto-refresh note", () => {
+    it("includes note that model/provider changes take effect automatically", () => {
+      const result = bodyMapSection("testagent")
+      expect(result).toContain("take effect on the next turn automatically")
+      expect(result).toContain("no restart needed")
+    })
+  })
 })

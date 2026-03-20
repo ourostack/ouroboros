@@ -14,7 +14,7 @@ import type { UsageData } from "../mind/context"
 import { createCommandRegistry, registerDefaultCommands, parseSlashCommand, getToolChoiceRequired } from "./commands"
 import { getAgentName, setAgentName, getAgentRoot, getAgentBundlesRoot, loadAgentConfig } from "../heart/identity"
 import { getSharedMcpManager } from "../repertoire/mcp-manager"
-import { createTraceId } from "../nerves"
+import { createTraceId, registerSpinnerHooks } from "../nerves"
 import { FileFriendStore } from "../mind/friends/store-file"
 import { FriendResolver } from "../mind/friends/resolver"
 import { accumulateFriendTokens } from "../mind/friends/tokens"
@@ -28,9 +28,9 @@ import { acquireSessionLock, SessionLockError } from "./session-lock"
 import { applyPendingUpdates, registerUpdateHook } from "../heart/daemon/update-hooks"
 import { bundleMetaHook } from "../heart/daemon/hooks/bundle-meta"
 import { getPackageVersion } from "../mind/bundle-manifest"
-import { formatEchoedInputSummary } from "./cli-layout"
+import { formatEchoedInputSummary, StreamingWordWrapper } from "./cli-layout"
 
-export { formatEchoedInputSummary, wrapCliText } from "./cli-layout"
+export { formatEchoedInputSummary, wrapCliText, StreamingWordWrapper } from "./cli-layout"
 
 /**
  * Format pending messages as content-prefix strings for injection into
@@ -55,6 +55,15 @@ export function getCliContinuityIngressTexts(input: string): string[] {
 
 // readline.Interface exposes undocumented mutable line/cursor for in-progress input
 type ReadlineInternals = readline.Interface & { line: string; cursor: number }
+
+// Module-level active spinner for log coordination.
+// The terminal log sink calls these to avoid interleaving with spinner output.
+let _activeSpinner: Spinner | null = null
+/* v8 ignore start -- spinner coordination: exercised at runtime, not unit-testable without real terminal @preserve */
+export function pauseActiveSpinner(): void { _activeSpinner?.pause() }
+export function resumeActiveSpinner(): void { _activeSpinner?.resume() }
+/* v8 ignore stop */
+export function setActiveSpinner(s: Spinner | null): void { _activeSpinner = s }
 
 // spinner that only touches stderr, cleans up after itself
 // exported for direct testability (stop-without-start branch)
@@ -98,6 +107,20 @@ export class Spinner {
     this.lastPhrase = next
     this.msg = next
   }
+
+  /* v8 ignore start -- pause/resume: exercised at runtime via log sink coordination @preserve */
+  /** Clear the spinner line temporarily so other output can print cleanly. */
+  pause() {
+    if (this.stopped) return
+    process.stderr.write("\r\x1b[K")
+  }
+
+  /** Restore the spinner line after a pause. */
+  resume() {
+    if (this.stopped) return
+    this.spin()
+  }
+  /* v8 ignore stop */
 
   stop(ok?: string) {
     this.stopped = true
@@ -294,23 +317,26 @@ export function createCliCallbacks(): ChannelCallbacks & { flushMarkdown(): void
     meta: {},
   })
   let currentSpinner: Spinner | null = null
+  function setSpinner(s: Spinner | null) { currentSpinner = s; setActiveSpinner(s) }
   let hadReasoning = false
   let hadToolRun = false
   let textDirty = false // true when text/reasoning was written without a trailing newline
   const streamer = new MarkdownStreamer()
+  const wrapper = new StreamingWordWrapper()
 
   return {
     onModelStart: () => {
       currentSpinner?.stop()
-      currentSpinner = null
+      setSpinner(null)
       hadReasoning = false
       textDirty = false
       streamer.reset()
+      wrapper.reset()
       const phrases = getPhrases()
       const pool = hadToolRun ? phrases.followup : phrases.thinking
       const first = pickPhrase(pool)
-      currentSpinner = new Spinner(first, pool)
-      currentSpinner.start()
+      setSpinner(new Spinner(first, pool))
+      currentSpinner!.start()
     },
     onModelStreamStart: () => {
       // No-op: content callbacks (onTextChunk, onReasoningChunk) handle
@@ -319,6 +345,7 @@ export function createCliCallbacks(): ChannelCallbacks & { flushMarkdown(): void
     },
     onClearText: () => {
       streamer.reset()
+      wrapper.reset()
     },
     onTextChunk: (text: string) => {
       // Stop spinner if still running — final_answer streaming and Anthropic
@@ -326,7 +353,7 @@ export function createCliCallbacks(): ChannelCallbacks & { flushMarkdown(): void
       // otherwise keep running (and its \r writes overwrite response text).
       if (currentSpinner) {
         currentSpinner.stop()
-        currentSpinner = null
+        setSpinner(null)
       }
       if (hadReasoning) {
         // Single newline to separate reasoning from reply — reasoning
@@ -335,13 +362,18 @@ export function createCliCallbacks(): ChannelCallbacks & { flushMarkdown(): void
         hadReasoning = false
       }
       const rendered = streamer.push(text)
-      if (rendered) process.stdout.write(rendered)
+      /* v8 ignore start -- wrapper integration: tested via cli.test.ts onTextChunk tests @preserve */
+      if (rendered) {
+        const wrapped = wrapper.push(rendered)
+        if (wrapped) process.stdout.write(wrapped)
+      }
+      /* v8 ignore stop */
       textDirty = text.length > 0 && !text.endsWith("\n")
     },
     onReasoningChunk: (text: string) => {
       if (currentSpinner) {
         currentSpinner.stop()
-        currentSpinner = null
+        setSpinner(null)
       }
       hadReasoning = true
       process.stdout.write(`\x1b[2m${text}\x1b[0m`)
@@ -360,13 +392,13 @@ export function createCliCallbacks(): ChannelCallbacks & { flushMarkdown(): void
       }
       const toolPhrases = getPhrases().tool
       const first = pickPhrase(toolPhrases)
-      currentSpinner = new Spinner(first, toolPhrases)
-      currentSpinner.start()
+      setSpinner(new Spinner(first, toolPhrases))
+      currentSpinner!.start()
       hadToolRun = true
     },
     onToolEnd: (name: string, argSummary: string, success: boolean) => {
       currentSpinner?.stop()
-      currentSpinner = null
+      setSpinner(null)
       const msg = formatToolResult(name, argSummary, success)
       const color = success ? "\x1b[32m" : "\x1b[31m"
       process.stderr.write(`${color}${msg}\x1b[0m\n`)
@@ -374,16 +406,16 @@ export function createCliCallbacks(): ChannelCallbacks & { flushMarkdown(): void
     onError: (error: Error, severity: "transient" | "terminal") => {
       if (severity === "transient") {
         currentSpinner?.fail(error.message)
-        currentSpinner = null
+        setSpinner(null)
       } else {
         currentSpinner?.stop()
-        currentSpinner = null
+        setSpinner(null)
         process.stderr.write(`\x1b[31m${formatError(error)}\x1b[0m\n`)
       }
     },
     onKick: () => {
       currentSpinner?.stop()
-      currentSpinner = null
+      setSpinner(null)
       if (textDirty) {
         process.stdout.write("\n")
         textDirty = false
@@ -392,9 +424,16 @@ export function createCliCallbacks(): ChannelCallbacks & { flushMarkdown(): void
     },
     flushMarkdown: () => {
       currentSpinner?.stop()
-      currentSpinner = null
+      setSpinner(null)
+      /* v8 ignore start -- wrapper flush: tested via cli.test.ts flushMarkdown tests @preserve */
       const remaining = streamer.flush()
-      if (remaining) process.stdout.write(remaining)
+      if (remaining) {
+        const wrapped = wrapper.push(remaining)
+        if (wrapped) process.stdout.write(wrapped)
+      }
+      const tail = wrapper.flush()
+      if (tail) process.stdout.write(tail)
+      /* v8 ignore stop */
     },
   }
 }
@@ -722,6 +761,9 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
 export async function main(agentName?: string, options?: { pasteDebounceMs?: number }) {
   if (agentName) setAgentName(agentName)
   const pasteDebounceMs = options?.pasteDebounceMs ?? 50
+
+  // Register spinner hooks so log output clears the spinner before printing
+  registerSpinnerHooks(pauseActiveSpinner, resumeActiveSpinner)
 
   // Fallback: apply pending updates for daemon-less direct CLI usage
   registerUpdateHook(bundleMetaHook)

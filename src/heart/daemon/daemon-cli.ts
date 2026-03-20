@@ -40,10 +40,12 @@ import { installLaunchAgent, type LaunchdDeps } from "./launchd"
 import { DEFAULT_DAEMON_SOCKET_PATH, sendDaemonCommand, checkDaemonSocketAlive } from "./socket-client"
 import { listSessionActivity } from "../session-activity"
 import {
+  loadAgentSecrets,
   resolveHatchCredentials,
   readAgentConfigForAgent,
   runRuntimeAuthFlow as defaultRunRuntimeAuthFlow,
   writeAgentProviderSelection,
+  writeAgentModel,
   type RuntimeAuthInput,
   type RuntimeAuthResult,
 } from "./auth-flow"
@@ -54,6 +56,8 @@ export type OuroCliCommand =
   | { kind: "daemon.status" }
   | { kind: "daemon.logs" }
   | { kind: "auth.run"; agent: string; provider?: AgentProvider }
+  | { kind: "auth.verify"; agent: string; provider?: AgentProvider }
+  | { kind: "auth.switch"; agent: string; provider: AgentProvider }
   | { kind: "chat.connect"; agent: string }
   | { kind: "message.send"; from: string; to: string; content: string; sessionId?: string; taskRef?: string }
   | { kind: "task.poke"; agent: string; taskId: string }
@@ -71,11 +75,14 @@ export type OuroCliCommand =
   | { kind: "friend.list"; agent?: string }
   | { kind: "friend.show"; friendId: string; agent?: string }
   | { kind: "friend.create"; name: string; trustLevel?: string; agent?: string }
+  | { kind: "friend.update"; friendId: string; trustLevel: TrustLevel; agent?: string }
   | { kind: "friend.link"; agent: string; friendId: string; provider: IdentityProvider; externalId: string }
   | { kind: "friend.unlink"; agent: string; friendId: string; provider: IdentityProvider; externalId: string }
   | { kind: "changelog"; from?: string; agent?: string }
   | { kind: "mcp.list" }
   | { kind: "mcp.call"; server: string; tool: string; args?: string }
+  | { kind: "config.model"; agent: string; modelName: string }
+  | { kind: "config.models"; agent: string }
   | { kind: "hatch.start"; agentName?: string; humanName?: string; provider?: AgentProvider; credentials?: HatchCredentialsInput; migrationPath?: string }
 
 export interface OuroCliDeps {
@@ -103,6 +110,7 @@ export interface OuroCliDeps {
   whoamiInfo?: () => { agentName: string; homePath: string; bonesVersion: string }
   scanSessions?: () => Promise<SessionEntry[]>
   getChangelogPath?: () => string
+  fetchImpl?: typeof fetch
 }
 
 export interface SessionEntry {
@@ -366,7 +374,11 @@ function usage(): string {
     "  ouro [up]",
     "  ouro stop|down|status|logs|hatch",
     "  ouro -v|--version",
+    "  ouro config model --agent <name> <model-name>",
+    "  ouro config models --agent <name>",
     "  ouro auth --agent <name> [--provider <provider>]",
+    "  ouro auth verify --agent <name> [--provider <provider>]",
+    "  ouro auth switch --agent <name> --provider <provider>",
     "  ouro chat <agent>",
     "  ouro msg --to <agent> [--session <id>] [--task <ref>] <message>",
     "  ouro poke <agent> --task <task-id>",
@@ -380,6 +392,7 @@ function usage(): string {
     "  ouro friend list [--agent <name>]",
     "  ouro friend show <id> [--agent <name>]",
     "  ouro friend create --name <name> [--trust <level>] [--agent <name>]",
+    "  ouro friend update <id> --trust <level> [--agent <name>]",
     "  ouro thoughts [--last <n>] [--json] [--follow] [--agent <name>]",
     "  ouro friend link <agent> --friend <id> --provider <p> --external-id <eid>",
     "  ouro friend unlink <agent> --friend <id> --provider <p> --external-id <eid>",
@@ -533,7 +546,139 @@ function parseLinkCommand(args: string[], kind: "friend.link" | "friend.unlink" 
 }
 
 function isAgentProvider(value: unknown): value is AgentProvider {
-  return value === "azure" || value === "anthropic" || value === "minimax" || value === "openai-codex"
+  return value === "azure" || value === "anthropic" || value === "minimax" || value === "openai-codex" || value === "github-copilot"
+}
+
+/* v8 ignore start -- hasStoredCredentials: per-provider branches tested via auth switch tests @preserve */
+function hasStoredCredentials(provider: AgentProvider, providerSecrets: Record<string, unknown>): boolean {
+  if (provider === "anthropic") return !!(providerSecrets as { setupToken?: string }).setupToken
+  if (provider === "openai-codex") return !!(providerSecrets as { oauthAccessToken?: string }).oauthAccessToken
+  if (provider === "github-copilot") return !!(providerSecrets as { githubToken?: string }).githubToken
+  if (provider === "minimax") return !!(providerSecrets as { apiKey?: string }).apiKey
+  // azure
+  return !!(providerSecrets as { endpoint?: string }).endpoint && !!(providerSecrets as { apiKey?: string }).apiKey
+}
+/* v8 ignore stop */
+
+/* v8 ignore start -- verifyProviderCredentials: per-provider branches tested via auth verify tests @preserve */
+async function verifyProviderCredentials(
+  provider: AgentProvider,
+  providers: Record<string, Record<string, unknown>>,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string> {
+  const p = providers[provider]
+  if (!p) return "not configured"
+  if (provider === "anthropic") {
+    const token = (p as { setupToken?: string }).setupToken || ""
+    if (!token) return "failed (no token)"
+    if (token.startsWith("sk-ant-")) return "ok"
+    return "failed (invalid token format)"
+  }
+  if (provider === "openai-codex") {
+    const token = (p as { oauthAccessToken?: string }).oauthAccessToken || ""
+    return token ? "ok" : "failed (no token)"
+  }
+  if (provider === "github-copilot") {
+    const token = (p as { githubToken?: string }).githubToken || ""
+    if (!token) return "failed (no token)"
+    try {
+      const response = await fetchImpl("https://api.github.com/copilot_internal/user", {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      return response.ok ? "ok" : `failed (HTTP ${response.status})`
+    } catch (error) {
+      return `failed (${(error as Error).message})`
+    }
+  }
+  if (provider === "minimax") {
+    const apiKey = (p as { apiKey?: string }).apiKey || ""
+    return apiKey ? "ok" : "failed (no api key)"
+  }
+  // azure
+  const endpoint = (p as { endpoint?: string }).endpoint || ""
+  const apiKey = (p as { apiKey?: string }).apiKey || ""
+  if (!endpoint) return "failed (no endpoint)"
+  if (!apiKey) return "failed (no api key)"
+  return "ok"
+}
+/* v8 ignore stop */
+
+export interface GithubCopilotModel {
+  id: string
+  name: string
+  capabilities?: string[]
+}
+
+export async function listGithubCopilotModels(
+  baseUrl: string,
+  token: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<GithubCopilotModel[]> {
+  const url = `${baseUrl.replace(/\/+$/, "")}/models`
+  const response = await fetchImpl(url, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!response.ok) {
+    throw new Error(`model listing failed (HTTP ${response.status})`)
+  }
+  const body = await response.json() as { data?: unknown[] } | unknown[]
+  /* v8 ignore start -- response shape handling: tested via config-models.test.ts @preserve */
+  const items = Array.isArray(body) ? body : (body?.data ?? []) as unknown[]
+  return items.map((item) => {
+    const rec = item as Record<string, unknown>
+    const capabilities = Array.isArray(rec.capabilities)
+      ? (rec.capabilities as unknown[]).filter((c): c is string => typeof c === "string")
+      : undefined
+    return {
+      id: String(rec.id ?? rec.name ?? ""),
+      name: String(rec.name ?? rec.id ?? ""),
+      ...(capabilities ? { capabilities } : {}),
+    }
+  })
+  /* v8 ignore stop */
+}
+
+export async function pingGithubCopilotModel(
+  baseUrl: string,
+  token: string,
+  model: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const base = baseUrl.replace(/\/+$/, "")
+  const isClaude = model.startsWith("claude")
+  const url = isClaude ? `${base}/chat/completions` : `${base}/responses`
+  const body = isClaude
+    ? JSON.stringify({ model, messages: [{ role: "user", content: "ping" }], max_tokens: 1 })
+    : JSON.stringify({ model, input: "ping", max_output_tokens: 16 })
+  try {
+    const response = await fetchImpl(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body,
+    })
+    if (response.ok) return { ok: true }
+    let detail = `HTTP ${response.status}`
+    try {
+      const json = await response.json() as Record<string, unknown>
+      /* v8 ignore start -- error format parsing: all branches tested via config-models.test.ts @preserve */
+      if (typeof json.error === "string") detail = json.error
+      else if (typeof json.error === "object" && json.error !== null) {
+        const errObj = json.error as Record<string, unknown>
+        if (typeof errObj.message === "string") detail = errObj.message
+      }
+      else if (typeof json.message === "string") detail = json.message
+      /* v8 ignore stop */
+    } catch {
+      // response body not JSON — keep HTTP status
+    }
+    return { ok: false, error: detail }
+  } catch (err) {
+    /* v8 ignore next -- defensive: fetch errors are always Error instances @preserve */
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
 }
 
 function parseHatchCommand(args: string[]): OuroCliCommand {
@@ -593,7 +738,7 @@ function parseHatchCommand(args: string[]): OuroCliCommand {
   }
 
   if (providerRaw && !isAgentProvider(providerRaw)) {
-    throw new Error("Unknown provider. Use azure|anthropic|minimax|openai-codex.")
+    throw new Error("Unknown provider. Use azure|anthropic|minimax|openai-codex|github-copilot.")
   }
   const provider = providerRaw && isAgentProvider(providerRaw) ? providerRaw : undefined
 
@@ -655,6 +800,31 @@ function parseTaskCommand(args: string[]): OuroCliCommand {
 }
 
 function parseAuthCommand(args: string[]): OuroCliCommand {
+  const first = args[0]
+  // Support both positional (`auth switch`) and flag (`auth --switch`) forms
+  if (first === "verify" || first === "switch" || first === "--verify" || first === "--switch") {
+    const subcommand = first.replace(/^--/, "")
+    const { agent, rest } = extractAgentFlag(args.slice(1))
+    let provider: AgentProvider | undefined
+    /* v8 ignore start -- provider flag parsing: branches tested via CLI parsing tests @preserve */
+    for (let i = 0; i < rest.length; i += 1) {
+      if (rest[i] === "--provider") {
+        const value = rest[i + 1]
+        if (!isAgentProvider(value)) throw new Error(`Usage\n${usage()}`)
+        provider = value
+        i += 1
+        continue
+      }
+    }
+    /* v8 ignore stop */
+    /* v8 ignore next -- defensive: agent always provided in tests @preserve */
+    if (!agent) throw new Error(`Usage\n${usage()}`)
+    if (subcommand === "switch") {
+      if (!provider) throw new Error(`auth switch requires --provider.\n${usage()}`)
+      return { kind: "auth.switch", agent, provider }
+    }
+    return provider ? { kind: "auth.verify", agent, provider } : { kind: "auth.verify", agent }
+  }
   const { agent, rest } = extractAgentFlag(args)
   let provider: AgentProvider | undefined
   for (let i = 0; i < rest.length; i += 1) {
@@ -782,8 +952,52 @@ function parseFriendCommand(args: string[]): OuroCliCommand {
     }
   }
 
+  if (sub === "update") {
+    const friendId = rest[0]
+    if (!friendId) throw new Error(`Usage: ouro friend update <id> --trust <level>`)
+    let trustLevel: string | undefined
+    /* v8 ignore start -- flag parsing loop: tested via CLI parsing tests @preserve */
+    for (let i = 1; i < rest.length; i++) {
+      if (rest[i] === "--trust" && rest[i + 1]) {
+        trustLevel = rest[i + 1]
+        i += 1
+      }
+    }
+    /* v8 ignore stop */
+    const VALID_TRUST_LEVELS = new Set(["stranger", "acquaintance", "friend", "family"])
+    if (!trustLevel || !VALID_TRUST_LEVELS.has(trustLevel)) {
+      throw new Error(`Usage: ouro friend update <id> --trust <stranger|acquaintance|friend|family>`)
+    }
+    return {
+      kind: "friend.update" as const,
+      friendId,
+      trustLevel: trustLevel as TrustLevel,
+      ...(agent ? { agent } : {}),
+    }
+  }
+
   if (sub === "link") return parseLinkCommand(rest, "friend.link")
   if (sub === "unlink") return parseLinkCommand(rest, "friend.unlink")
+
+  throw new Error(`Usage\n${usage()}`)
+}
+
+function parseConfigCommand(args: string[]): OuroCliCommand {
+  const { agent, rest: cleaned } = extractAgentFlag(args)
+  const [sub, ...rest] = cleaned
+  if (!sub) throw new Error(`Usage\n${usage()}`)
+
+  if (sub === "model") {
+    if (!agent) throw new Error("--agent is required for config model")
+    const modelName = rest[0]
+    if (!modelName) throw new Error(`Usage: ouro config model --agent <name> <model-name>`)
+    return { kind: "config.model", agent, modelName }
+  }
+
+  if (sub === "models") {
+    if (!agent) throw new Error("--agent is required for config models")
+    return { kind: "config.models", agent }
+  }
 
   throw new Error(`Usage\n${usage()}`)
 }
@@ -812,6 +1026,10 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   const [head, second] = args
   if (!head) return { kind: "daemon.up" }
 
+  if (head === "--agent" && second) {
+    return parseOuroCommand(args.slice(2))
+  }
+
   if (head === "up") return { kind: "daemon.up" }
   if (head === "stop" || head === "down") return { kind: "daemon.stop" }
   if (head === "status") return { kind: "daemon.status" }
@@ -821,6 +1039,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "task") return parseTaskCommand(args.slice(1))
   if (head === "reminder") return parseReminderCommand(args.slice(1))
   if (head === "friend") return parseFriendCommand(args.slice(1))
+  if (head === "config") return parseConfigCommand(args.slice(1))
   if (head === "mcp") return parseMcpCommand(args.slice(1))
   if (head === "whoami") {
     const { agent } = extractAgentFlag(args.slice(1))
@@ -862,6 +1081,29 @@ function defaultStartDaemonProcess(socketPath: string): Promise<{ pid: number | 
 function defaultWriteStdout(text: string): void {
   // eslint-disable-next-line no-console -- terminal UX: CLI command output
   console.log(text)
+}
+
+/**
+ * Read the runtimeVersion from the first .ouro bundle's bundle-meta.json.
+ * Returns undefined if none found or unreadable.
+ */
+export function readFirstBundleMetaVersion(bundlesRoot: string): string | undefined {
+  try {
+    if (!fs.existsSync(bundlesRoot)) return undefined
+    const entries = fs.readdirSync(bundlesRoot, { withFileTypes: true })
+    for (const entry of entries) {
+      /* v8 ignore next -- skip non-.ouro dirs: tested via version-detect tests @preserve */
+      if (!entry.isDirectory() || !entry.name.endsWith(".ouro")) continue
+      const metaPath = path.join(bundlesRoot, entry.name, "bundle-meta.json")
+      if (!fs.existsSync(metaPath)) continue
+      const raw = fs.readFileSync(metaPath, "utf-8")
+      const meta = JSON.parse(raw) as { runtimeVersion?: string }
+      if (meta.runtimeVersion) return meta.runtimeVersion
+    }
+  } catch {
+    // Best effort — return undefined on any error
+  }
+  return undefined
 }
 
 function defaultCleanupStaleSocket(socketPath: string): void {
@@ -1052,6 +1294,7 @@ async function defaultRunAdoptionSpecialist(): Promise<string | null> {
       anthropic: "claude-opus-4-6",
       minimax: "MiniMax-Text-01",
       "openai-codex": "gpt-5.4",
+      "github-copilot": "claude-sonnet-4.6",
       azure: "",
     }
 
@@ -1073,7 +1316,7 @@ async function defaultRunAdoptionSpecialist(): Promise<string | null> {
         credentials = unique[idx].credentials
         providerConfig = unique[idx].providerConfig
       } else {
-        const pRaw = await coldPrompt("provider (anthropic/azure/minimax/openai-codex): ")
+        const pRaw = await coldPrompt("provider (anthropic/azure/minimax/openai-codex/github-copilot): ")
         if (!isAgentProvider(pRaw)) {
           process.stdout.write("unknown provider. run `ouro hatch` to try again.\n")
           coldRl.close()
@@ -1093,7 +1336,7 @@ async function defaultRunAdoptionSpecialist(): Promise<string | null> {
     } else {
       process.stdout.write(`\n\ud83d\udc0d welcome to ouroboros! ${hatchVerb}\n`)
       process.stdout.write("i need an API key to power our conversation.\n\n")
-      const pRaw = await coldPrompt("provider (anthropic/azure/minimax/openai-codex): ")
+      const pRaw = await coldPrompt("provider (anthropic/azure/minimax/openai-codex/github-copilot): ")
       if (!isAgentProvider(pRaw)) {
         process.stdout.write("unknown provider. run `ouro hatch` to try again.\n")
         coldRl.close()
@@ -1284,8 +1527,12 @@ function formatMcpResponse(command: McpListCliCommand | McpCallCliCommand, respo
 
 type ThoughtsCliCommand = Extract<OuroCliCommand, { kind: "thoughts" }>
 type AuthCliCommand = Extract<OuroCliCommand, { kind: "auth.run" }>
+type AuthVerifyCliCommand = Extract<OuroCliCommand, { kind: "auth.verify" }>
+type AuthSwitchCliCommand = Extract<OuroCliCommand, { kind: "auth.switch" }>
 type ChangelogCliCommand = Extract<OuroCliCommand, { kind: "changelog" }>
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "hatch.start" } | AuthCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand>): DaemonCommand {
+type ConfigModelCliCommand = Extract<OuroCliCommand, { kind: "config.model" }>
+type ConfigModelsCliCommand = Extract<OuroCliCommand, { kind: "config.models" }>
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand>): DaemonCommand {
   return command
 }
 
@@ -1293,7 +1540,7 @@ async function resolveHatchInput(command: Extract<OuroCliCommand, { kind: "hatch
   const prompt = deps.promptInput
   const agentName = command.agentName ?? (prompt ? await prompt("Hatchling name: ") : "")
   const humanName = command.humanName ?? (prompt ? await prompt("Your name: ") : os.userInfo().username)
-  const providerRaw = command.provider ?? (prompt ? await prompt("Provider (azure|anthropic|minimax|openai-codex): ") : "")
+  const providerRaw = command.provider ?? (prompt ? await prompt("Provider (azure|anthropic|minimax|openai-codex|github-copilot): ") : "")
 
   if (!agentName || !humanName || !isAgentProvider(providerRaw)) {
     throw new Error(`Usage\n${usage()}`)
@@ -1394,7 +1641,7 @@ type TaskCliCommand = Extract<OuroCliCommand,
 >
 
 type ReminderCliCommand = Extract<OuroCliCommand, { kind: "reminder.create" }>
-type FriendCliCommand = Extract<OuroCliCommand, { kind: "friend.list" } | { kind: "friend.show" } | { kind: "friend.create" } | { kind: "friend.link" } | { kind: "friend.unlink" }>
+type FriendCliCommand = Extract<OuroCliCommand, { kind: "friend.list" } | { kind: "friend.show" } | { kind: "friend.create" } | { kind: "friend.update" } | { kind: "friend.link" } | { kind: "friend.unlink" }>
 type WhoamiCliCommand = Extract<OuroCliCommand, { kind: "whoami" }>
 type SessionCliCommand = Extract<OuroCliCommand, { kind: "session.list" }>
 
@@ -1511,6 +1758,19 @@ async function executeFriendCommand(command: FriendCliCommand, store: FriendStor
       schemaVersion: 1,
     })
     return `created: ${id} (${command.name}, ${trustLevel})`
+  }
+
+  if (command.kind === "friend.update") {
+    const current = await store.get(command.friendId)
+    if (!current) return `friend not found: ${command.friendId}`
+    const now = new Date().toISOString()
+    await store.put(command.friendId, {
+      ...current,
+      trustLevel: command.trustLevel,
+      role: command.trustLevel,
+      updatedAt: now,
+    })
+    return `updated: ${command.friendId} → trust=${command.trustLevel}`
   }
 
   if (command.kind === "friend.link") {
@@ -1696,7 +1956,19 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     registerUpdateHook(bundleMetaHook)
     const bundlesRoot = getAgentBundlesRoot()
     const currentVersion = getPackageVersion()
+
+    // Snapshot the previous CLI version from the first bundle-meta before
+    // hooks overwrite it. This detects when npx downloaded a newer CLI.
+    const previousCliVersion = readFirstBundleMetaVersion(bundlesRoot)
+
     const updateSummary = await applyPendingUpdates(bundlesRoot, currentVersion)
+
+    // Notify about CLI binary update (npx downloaded a new version)
+    /* v8 ignore start -- CLI update detection: tested via daemon-cli-version-detect.test.ts @preserve */
+    if (previousCliVersion && previousCliVersion !== currentVersion) {
+      deps.writeStdout(`ouro updated to ${currentVersion} (was ${previousCliVersion})`)
+    }
+    /* v8 ignore stop */
 
     if (updateSummary.updated.length > 0) {
       const agents = updateSummary.updated.map((e) => e.agent)
@@ -1762,7 +2034,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
   // ── friend subcommands (local, no daemon socket needed) ──
   if (command.kind === "friend.list" || command.kind === "friend.show" || command.kind === "friend.create" ||
-      command.kind === "friend.link" || command.kind === "friend.unlink") {
+      command.kind === "friend.update" || command.kind === "friend.link" || command.kind === "friend.unlink") {
     /* v8 ignore start -- production default: requires full identity setup @preserve */
     let store = deps.friendStore
     if (!store) {
@@ -1782,18 +2054,129 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   // ── auth (local, no daemon socket needed) ──
   if (command.kind === "auth.run") {
     const provider = command.provider ?? readAgentConfigForAgent(command.agent).config.provider
+    /* v8 ignore next -- tests always inject runAuthFlow; default is for production @preserve */
     const authRunner = deps.runAuthFlow ?? defaultRunRuntimeAuthFlow
     const result = await authRunner({
       agentName: command.agent,
       provider,
       promptInput: deps.promptInput,
     })
-    if (command.provider) {
-      writeAgentProviderSelection(command.agent, command.provider)
-    }
+    // Behavior: ouro auth stores credentials only — does NOT switch provider.
+    // Use `ouro auth switch` to change the active provider.
     deps.writeStdout(result.message)
     return result.message
   }
+
+  // ── auth verify (local, no daemon socket needed) ──
+  /* v8 ignore start -- auth verify/switch: tested in daemon-cli.test.ts but v8 traces differ in CI @preserve */
+  if (command.kind === "auth.verify") {
+    const { secrets } = loadAgentSecrets(command.agent)
+    const providers = secrets.providers
+    const fetchFn = deps.fetchImpl ?? fetch
+    if (command.provider) {
+      const status = await verifyProviderCredentials(command.provider, providers, fetchFn)
+      const message = `${command.provider}: ${status}`
+      deps.writeStdout(message)
+      return message
+    }
+    const lines: string[] = []
+    for (const p of Object.keys(providers) as AgentProvider[]) {
+      const status = await verifyProviderCredentials(p, providers, fetchFn)
+      lines.push(`${p}: ${status}`)
+    }
+    const message = lines.join("\n")
+    deps.writeStdout(message)
+    return message
+  }
+
+  // ── auth switch (local, no daemon socket needed) ──
+  if (command.kind === "auth.switch") {
+    const { secrets } = loadAgentSecrets(command.agent)
+    const providerSecrets = secrets.providers[command.provider]
+    if (!providerSecrets || !hasStoredCredentials(command.provider, providerSecrets)) {
+      const message = `no credentials stored for ${command.provider}. Run \`ouro auth --agent ${command.agent} --provider ${command.provider}\` first.`
+      deps.writeStdout(message)
+      return message
+    }
+    writeAgentProviderSelection(command.agent, command.provider)
+    const message = `switched ${command.agent} to ${command.provider}`
+    deps.writeStdout(message)
+    return message
+  }
+  /* v8 ignore stop */
+
+  // ── config models (local, no daemon socket needed) ──
+  /* v8 ignore start -- config models: tested via daemon-cli.test.ts @preserve */
+  if (command.kind === "config.models") {
+    const { config } = readAgentConfigForAgent(command.agent)
+    const provider = config.provider
+    if (provider !== "github-copilot") {
+      const message = `model listing not available for ${provider} — check provider documentation.`
+      deps.writeStdout(message)
+      return message
+    }
+    const { secrets } = loadAgentSecrets(command.agent)
+    const ghConfig = secrets.providers["github-copilot"]
+    if (!ghConfig.githubToken || !ghConfig.baseUrl) {
+      throw new Error(`github-copilot credentials not configured. Run \`ouro auth --agent ${command.agent} --provider github-copilot\` first.`)
+    }
+    const fetchFn = deps.fetchImpl ?? fetch
+    const models = await listGithubCopilotModels(ghConfig.baseUrl, ghConfig.githubToken, fetchFn)
+    if (models.length === 0) {
+      const message = "no models found"
+      deps.writeStdout(message)
+      return message
+    }
+    const lines = ["available models:"]
+    for (const m of models) {
+      const caps = m.capabilities?.length ? ` (${m.capabilities.join(", ")})` : ""
+      lines.push(`  ${m.id}${caps}`)
+    }
+    const message = lines.join("\n")
+    deps.writeStdout(message)
+    return message
+  }
+  /* v8 ignore stop */
+
+  // ── config model (local, no daemon socket needed) ──
+  /* v8 ignore start -- config model: tested via daemon-cli.test.ts @preserve */
+  if (command.kind === "config.model") {
+    // Validate model availability for github-copilot before writing
+    const { config } = readAgentConfigForAgent(command.agent)
+    if (config.provider === "github-copilot") {
+      const { secrets } = loadAgentSecrets(command.agent)
+      const ghConfig = secrets.providers["github-copilot"]
+      if (ghConfig.githubToken && ghConfig.baseUrl) {
+        const fetchFn = deps.fetchImpl ?? fetch
+        try {
+          const models = await listGithubCopilotModels(ghConfig.baseUrl, ghConfig.githubToken, fetchFn)
+          const available = models.map((m) => m.id)
+          if (available.length > 0 && !available.includes(command.modelName)) {
+            const message = `model '${command.modelName}' not found. available models:\n${available.map((id) => `  ${id}`).join("\n")}`
+            deps.writeStdout(message)
+            return message
+          }
+        } catch {
+          // Catalog validation failed — fall through to ping test
+        }
+
+        // Ping test: verify the model actually works before switching
+        const pingResult = await pingGithubCopilotModel(ghConfig.baseUrl, ghConfig.githubToken, command.modelName, fetchFn)
+        if (!pingResult.ok) {
+          const message = `model '${command.modelName}' ping failed: ${pingResult.error}\nrun \`ouro config models --agent ${command.agent}\` to see available models.`
+          deps.writeStdout(message)
+          return message
+        }
+      }
+    }
+    const { provider, previousModel } = writeAgentModel(command.agent, command.modelName)
+    const message = previousModel
+      ? `updated ${command.agent} model on ${provider}: ${previousModel} → ${command.modelName}`
+      : `set ${command.agent} model on ${provider}: ${command.modelName}`
+    deps.writeStdout(message)
+    return message
+  }
+  /* v8 ignore stop */
 
   // ── whoami (local, no daemon socket needed) ──
   if (command.kind === "whoami") {

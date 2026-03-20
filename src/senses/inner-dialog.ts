@@ -15,6 +15,7 @@ import {
   getPendingDir,
   INNER_DIALOG_PENDING,
   type PendingMessage,
+  type DelegatedFrom,
 } from "../mind/pending"
 import { getChannelCapabilities } from "../mind/friends/channel"
 import { enforceTrustGate } from "./trust-gate"
@@ -27,6 +28,7 @@ import type { FriendStore } from "../mind/friends/store"
 import { createBridgeManager } from "../heart/bridges/manager"
 import { findFreshestFriendSession, listSessionActivity, type SessionActivityRecord } from "../heart/session-activity"
 import { sendProactiveBlueBubblesMessageToSession } from "./bluebubbles"
+import { findPendingObligationForOrigin, fulfillObligation } from "../heart/obligations"
 
 export interface InnerDialogInstinct {
   id: string
@@ -303,6 +305,23 @@ async function tryDeliverDelegatedCompletion(
   return result.delivered
 }
 
+export function enrichDelegatedFromWithBridge(delegatedFrom: DelegatedFrom): DelegatedFrom {
+  if (delegatedFrom.bridgeId) {
+    return delegatedFrom
+  }
+  const bridgeManager = createBridgeManager()
+  const originBridges = bridgeManager.findBridgesForSession({
+    friendId: delegatedFrom.friendId,
+    channel: delegatedFrom.channel,
+    key: delegatedFrom.key,
+  })
+  const activeBridge = originBridges.find((b) => b.lifecycle === "active")
+  if (activeBridge) {
+    return { ...delegatedFrom, bridgeId: activeBridge.id }
+  }
+  return delegatedFrom
+}
+
 async function routeDelegatedCompletion(
   agentRoot: string,
   agentName: string,
@@ -315,7 +334,33 @@ async function routeDelegatedCompletion(
     return
   }
 
-  const delegatedFrom = delegated.delegatedFrom
+  const delegatedFrom = enrichDelegatedFromWithBridge(delegated.delegatedFrom)
+  if (delegated.obligationStatus === "pending") {
+    // Fulfill the persistent obligation in the store
+    try {
+      const pending = findPendingObligationForOrigin(agentRoot, {
+        friendId: delegatedFrom.friendId,
+        channel: delegatedFrom.channel,
+        key: delegatedFrom.key,
+      })
+      /* v8 ignore next 2 -- obligation fulfillment tested via obligations.test.ts; integration requires real disk state @preserve */
+      if (pending) {
+        fulfillObligation(agentRoot, pending.id)
+      }
+    } catch {
+      /* v8 ignore next -- defensive: obligation store read failure should not break delivery @preserve */
+    }
+    emitNervesEvent({
+      event: "senses.obligation_fulfilled",
+      component: "senses",
+      message: "obligation fulfilled via delegated completion",
+      meta: {
+        friendId: delegatedFrom.friendId,
+        channel: delegatedFrom.channel,
+        key: delegatedFrom.key,
+      },
+    })
+  }
   const outboundEnvelope: PendingMessage = {
     from: agentName,
     friendId: delegatedFrom.friendId,

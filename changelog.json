@@ -2,9 +2,73 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.77",
+      "changes": [
+        "New: Persistent obligation store (state/obligations/*.json). Obligations survive pending message consumption so the agent always knows what it owes and to whom.",
+        "Obligations are created when send_message delegates to self or go_inward fires with a return address, and fulfilled when routeDelegatedCompletion delivers the answer.",
+        "The commitments frame now reads pending obligations from the store, giving the agent an accurate view of outstanding commitments across all sessions.",
+        "readInnerWorkState derives obligationPending from both pending messages and the obligation store, ensuring obligations are visible even after the inner dialog queue drains."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.76",
+      "changes": [
+        "Fix: CLI chat terminal logging now filters to warn/error only — info-level nerves logs go to ndjson file only, keeping the interactive TUI clean.",
+        "Fix: Streamed model output now wraps at word boundaries instead of mid-word. A new StreamingWordWrapper buffers partial lines and breaks at spaces when approaching terminal width.",
+        "New: `ouro up` now prints 'ouro updated to <version> (was <previous>)' when npx downloads a newer CLI binary, separate from the agent bundle update message.",
+        "Fix: Spinner/log interleave verified — terminal sink reads pause/resume hooks at call time, not creation time, so the filterSink wrapper in CLI logging does not break spinner coordination."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.75",
+      "changes": [
+        "Inner dialog is now experienced as private thinking, not system dispatch. go_inward tool lets the agent take a thread inward atomically, with a pipeline-generated handoff packet framed as self-directed thought.",
+        "Return obligations are enforced: the agent cannot move on from a conversation without addressing what it promised. Rejection messages orient rather than punish.",
+        "Center-of-gravity steering: the system prompt tells the agent where its attention is in selfhood language, not dashboard labels.",
+        "All status rendering rewritten from telemetry to self-awareness: \"what i'm holding\" replaces \"active work\", \"where my attention is\" replaces \"center of gravity\", \"what i'm sensing\" replaces \"delegation hint\".",
+        "New query_commitments tool: the agent can ask itself \"what am I holding right now?\" and get genuine self-reflection.",
+        "Bridge suggestions trigger earlier when multi-session pressure is detected. Inward completions automatically inherit bridge context for return routing.",
+        "Inner dialog modes (reflect/plan/relay) give the agent awareness of what kind of thinking it's doing.",
+        "Canonical InnerJob type with lifecycle (idle/queued/running/surfaced) replaces reconstructed status."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.73",
+      "changes": [
+        "New `ouro config models --agent <name>` command: list available models for the current provider. For github-copilot, queries the models API; other providers show a static message.",
+        "Fix: `ouro config model` now validates model availability for github-copilot before writing, showing available models if the requested one isn't found.",
+        "Fix: system prompt now tells the agent that model/provider changes take effect on the next turn automatically (no restart needed)."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.72",
+      "changes": [
+        "Fix: Compound shell commands (&&, ;, |, ||) are now checked per-subcommand for untrusted users instead of blanket-blocked. Safe compound commands like `ls && pwd` are allowed; only commands containing an untrusted subcommand are denied.",
+        "New `ouro config model --agent <name> <model-name>` command: change the active model for any provider. Reads provider from agent.json, updates the model field in secrets.json. Gated at friend trust level.",
+        "New `ouro friend update <id> --trust <level>` command: change an existing friend's trust level (stranger, acquaintance, friend, family). Gated at family trust level."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.71",
+      "changes": [
+        "Fix: `ouro auth switch` now works with both `ouro auth switch --agent X --provider Y` and `ouro auth --switch --agent X --provider Y` syntax.",
+        "Fix: `ouro auth verify` now makes a real API call for github-copilot (GET copilot_internal/user) instead of only checking token format.",
+        "Fix: `ouro auth --verify` flag form also accepted alongside positional `verify` subcommand."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.70",
+      "changes": [
+        "New github-copilot LLM provider: use GitHub Copilot as model backend via `gh auth` token. Claude models route to /chat/completions, GPT models to /responses. Endpoint auto-discovered from your Copilot enterprise plan.",
+        "Auth decoupled from switching: `ouro auth --provider X` now stores credentials only. Use `ouro auth switch --provider X` to change the active provider, and `ouro auth verify` to check which stored providers have valid credentials.",
+        "Agents can now manage their own auth: `ouro auth`, `ouro auth verify`, and `ouro auth switch` are in the system prompt and gated at family trust level. Auth error messages include actionable recovery guidance.",
+        "Fix: `ouro --agent <name> <command>` now works correctly when --agent is the first argument."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.69",
       "changes": [
-        "Generic MCP client: ouroboros agents can now connect to any MCP server (e.g., agency mcp ado, agency mcp mail) configured in agent.json. Zero new dependencies — pure JSON-RPC over stdio.",
+        "Generic MCP client: ouroboros agents can now connect to any MCP server (e.g., agency mcp ado, agency mcp mail) configured in agent.json. Zero new dependencies \u2014 pure JSON-RPC over stdio.",
         "New `ouro mcp list` and `ouro mcp call` CLI commands route through the daemon socket to persistent MCP connections, so agents use shared server instances instead of spawning fresh ones per call.",
         "MCP tools are injected into the agent's system prompt on startup, so agents know what external capabilities are available without a discovery step.",
         "Trust manifest: `mcp list` requires acquaintance trust, `mcp call` requires friend trust."
@@ -13,7 +77,7 @@
     {
       "version": "0.1.0-alpha.68",
       "changes": [
-        "New no_response tool lets agents stay silent in group chats when the moment doesn't call for a reply — reactions, side conversations, and tapbacks no longer trigger unwanted responses.",
+        "New no_response tool lets agents stay silent in group chats when the moment doesn't call for a reply \u2014 reactions, side conversations, and tapbacks no longer trigger unwanted responses.",
         "Group chat participation prompt teaches agents to be intentional participants, comfortable with silence, and to prefer reactions over full text replies when appropriate.",
         "System prompt includes --agent flag in all ouro CLI examples for non-daemon deployments. Azure startup symlinks ouro CLI into /usr/local/bin."
       ]
@@ -27,7 +91,7 @@
     {
       "version": "0.1.0-alpha.65",
       "changes": [
-        "Tool permissions overhauled: channel-level blocking removed, all tools now visible on all channels. Guardrails are invocation-level with two layers — structural (edit-requires-read, destructive pattern blocking, protected paths) always on for everyone, and trust-level (ouro CLI per-subcommand trust manifest, general CLI allowlists, bundle-scoped writes) for untrusted contexts.",
+        "Tool permissions overhauled: channel-level blocking removed, all tools now visible on all channels. Guardrails are invocation-level with two layers \u2014 structural (edit-requires-read, destructive pattern blocking, protected paths) always on for everyone, and trust-level (ouro CLI per-subcommand trust manifest, general CLI allowlists, bundle-scoped writes) for untrusted contexts.",
         "New `ouro changelog` CLI subcommand reads changelog.json and supports `--from <version>` for delta filtering, so agents can introspect their own update history on any channel.",
         "Compound shell commands (&&, ;, |, $()) are blocked for untrusted users to prevent smuggling dangerous operations behind safe prefixes.",
         "Azure App Service deployment migrated from zip-deploy to npm-based harness install with persistent agent bundle and managed identity auth."

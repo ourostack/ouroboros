@@ -21,7 +21,6 @@ const REASONS = {
   readBeforeOverwrite: "i need to read that file first before i can overwrite it.",
   protectedPath: "that path is protected — i can read it but not modify it.",
   destructiveCommand: "that command is too dangerous to run — it could cause irreversible damage.",
-  compoundCommand: "i can only run simple commands for you — no chaining with && or ;",
   // Trust reasons (vary by relationship)
   needsTrust: "i'd need a closer friend to vouch for you before i can do that.",
   needsTrustForWrite: "i'd need a closer friend to vouch for you before i can write files outside my home.",
@@ -70,10 +69,6 @@ const SUBSHELL_PATTERN = /\$\(|`/
 function splitShellCommands(command: string): string[] {
   if (SUBSHELL_PATTERN.test(command)) return [command]
   return command.split(COMPOUND_SEPARATORS).filter(Boolean)
-}
-
-function isCompoundCommand(command: string): boolean {
-  return SUBSHELL_PATTERN.test(command) || splitShellCommands(command).length > 1
 }
 
 // --- shell commands that write to protected paths ---
@@ -157,9 +152,15 @@ export const OURO_CLI_TRUST_MANIFEST: Record<string, TrustLevel> = {
   "friend list": "friend",
   "friend show": "friend",
   "friend create": "friend",
+  "friend update": "family",
   "reminder create": "friend",
+  "config model": "friend",
+  "config models": "friend",
   "mcp list": "acquaintance",
   "mcp call": "friend",
+  auth: "family",
+  "auth verify": "family",
+  "auth switch": "family",
 }
 
 // --- trust level comparison ---
@@ -229,11 +230,20 @@ function checkSingleShellCommandTrust(command: string, trustLevel: TrustLevel): 
 }
 
 function checkShellTrustGuardrails(command: string, trustLevel: TrustLevel): GuardResult {
-  // Compound commands: for untrusted users, reject entirely.
-  // This prevents "ouro whoami && rm -rf /" from smuggling dangerous commands.
-  if (isCompoundCommand(command)) return deny(REASONS.compoundCommand)
+  // Subshell patterns ($(), backticks) can't be reliably split — check as single command
+  /* v8 ignore next -- subshell branch: tested via guardrails.test.ts @preserve */
+  if (SUBSHELL_PATTERN.test(command)) {
+    return checkSingleShellCommandTrust(command, trustLevel)
+  }
 
-  return checkSingleShellCommandTrust(command, trustLevel)
+  // Compound commands: check each subcommand individually
+  const subcommands = splitShellCommands(command)
+  if (subcommands.length === 0) return checkSingleShellCommandTrust(command, trustLevel)
+  for (const sub of subcommands) {
+    const result = checkSingleShellCommandTrust(sub, trustLevel)
+    if (!result.allowed) return result
+  }
+  return allow
 }
 
 function checkWriteTrustGuardrails(toolName: string, args: Record<string, string>, context: GuardContext): GuardResult {

@@ -20,7 +20,7 @@ function safeGetAgentRoot(): string | undefined {
 }
 
 // Re-export types and constants used by the rest of the codebase
-export { tools, finalAnswerTool, noResponseTool } from "./tools-base";
+export { tools, finalAnswerTool, noResponseTool, goInwardTool } from "./tools-base";
 export type { ToolContext, ToolHandler, ToolDefinition } from "./tools-base";
 
 // All tool definitions in a single registry
@@ -119,7 +119,7 @@ export async function execTool(name: string, args: Record<string, string>, ctx?:
     event: "tool.start",
     component: "tools",
     message: "tool execution started",
-    meta: { name },
+    meta: { name, ...(name === "shell" && args.command ? { command: args.command } : {}) },
   });
 
   // Look up from combined registry
