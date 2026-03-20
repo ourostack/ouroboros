@@ -103,18 +103,30 @@ export function formatTerminalEntry(entry: LogEvent): string {
   return `${formatTerminalTime(entry.ts)} ${level} [${entry.component}] ${entry.message}${formatTerminalMeta(entry.meta)}`
 }
 
+// Spinner coordination: the CLI sense registers these so log output
+// doesn't interleave with the active spinner animation.
+let _pauseSpinner: (() => void) | null = null
+let _resumeSpinner: (() => void) | null = null
+export function registerSpinnerHooks(pause: () => void, resume: () => void): void {
+  _pauseSpinner = pause
+  _resumeSpinner = resume
+}
+
 export function createTerminalSink(
   write: (chunk: string) => unknown = (chunk) => process.stderr.write(chunk),
   colorize = true,
 ): LogSink {
   return (entry: LogEvent): void => {
+    _pauseSpinner?.()
     const line = formatTerminalEntry(entry)
     if (!colorize) {
       write(`${line}\n`)
+      _resumeSpinner?.()
       return
     }
     const prefix = LEVEL_COLORS[entry.level]
     write(`${prefix}${line}\x1b[0m\n`)
+    _resumeSpinner?.()
   }
 }
 

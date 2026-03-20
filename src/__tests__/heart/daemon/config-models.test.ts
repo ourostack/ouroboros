@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { emitNervesEvent } from "../../../nerves/runtime"
 import {
   listGithubCopilotModels,
+  pingGithubCopilotModel,
   runOuroCli,
   type OuroCliDeps,
 } from "../../../heart/daemon/daemon-cli"
@@ -56,6 +57,21 @@ function makeMockFetch(body: unknown, status = 200): typeof fetch {
     status,
     json: async () => body,
   })) as unknown as typeof fetch
+}
+
+/** Returns a fetch mock that serves different responses based on call order. */
+function makeMockFetchSequence(responses: Array<{ body: unknown; status?: number }>): typeof fetch {
+  let callIndex = 0
+  return (async () => {
+    const idx = callIndex < responses.length ? callIndex : responses.length - 1
+    callIndex++
+    const { body, status = 200 } = responses[idx]
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      json: async () => body,
+    }
+  }) as unknown as typeof fetch
 }
 
 function makeCliDeps(overrides: Partial<OuroCliDeps> = {}): OuroCliDeps {
@@ -227,7 +243,7 @@ describe("ouro config model validation for github-copilot", () => {
     secretsSpy.mockRestore()
   })
 
-  it("allows model that is in the available list", async () => {
+  it("allows model that is in the available list and ping succeeds", async () => {
     emitTestEvent("config model validation accept")
     const bundlesRoot = makeTempDir("config-model-valid")
     const homeDir = makeTempDir("config-model-valid-home")
@@ -246,8 +262,13 @@ describe("ouro config model validation for github-copilot", () => {
     const secretsSpy = vi.spyOn(identity, "getAgentSecretsPath")
       .mockReturnValue(path.join(homeDir, ".agentsecrets", "ValidAgent2", "secrets.json"))
 
-    const body = [{ id: "gpt-4o", name: "GPT-4o" }, { id: "claude-sonnet-4.6", name: "Claude Sonnet 4.6" }]
-    const deps = makeCliDeps({ fetchImpl: makeMockFetch(body) })
+    const catalogBody = [{ id: "gpt-4o", name: "GPT-4o" }, { id: "claude-sonnet-4.6", name: "Claude Sonnet 4.6" }]
+    const deps = makeCliDeps({
+      fetchImpl: makeMockFetchSequence([
+        { body: catalogBody },       // catalog GET /models
+        { body: { id: "resp-1" } },  // ping POST succeeds
+      ]),
+    })
     const result = await runOuroCli(["config", "model", "--agent", "ValidAgent2", "claude-sonnet-4.6"], deps)
 
     expect(result).toContain("updated ValidAgent2 model")
@@ -257,7 +278,7 @@ describe("ouro config model validation for github-copilot", () => {
     secretsSpy.mockRestore()
   })
 
-  it("falls through when fetch fails during validation", async () => {
+  it("rejects when ping fails with network error", async () => {
     emitTestEvent("config model validation fetch fail")
     const bundlesRoot = makeTempDir("config-model-fetchfail")
     const homeDir = makeTempDir("config-model-fetchfail-home")
@@ -280,9 +301,44 @@ describe("ouro config model validation for github-copilot", () => {
     const deps = makeCliDeps({ fetchImpl: failingFetch })
     const result = await runOuroCli(["config", "model", "--agent", "FetchFail", "any-model"], deps)
 
-    // Should succeed despite fetch failure — falls through
-    expect(result).toContain("updated FetchFail model")
-    expect(result).toContain("any-model")
+    // Ping fails — model switch is rejected
+    expect(result).toContain("ping failed")
+    expect(result).toContain("network error")
+
+    bundlesSpy.mockRestore()
+    secretsSpy.mockRestore()
+  })
+
+  it("rejects when ping returns HTTP error", async () => {
+    emitTestEvent("config model ping http error")
+    const bundlesRoot = makeTempDir("config-model-ping-http")
+    const homeDir = makeTempDir("config-model-ping-http-home")
+    writeAgentConfig(bundlesRoot, "PingFail", "github-copilot")
+    seedSecrets(homeDir, "PingFail", {
+      providers: {
+        "github-copilot": {
+          model: "old-model",
+          githubToken: "ghp_test",
+          baseUrl: "https://api.copilot.example.com",
+        },
+      },
+    })
+
+    const bundlesSpy = vi.spyOn(identity, "getAgentBundlesRoot").mockReturnValue(bundlesRoot)
+    const secretsSpy = vi.spyOn(identity, "getAgentSecretsPath")
+      .mockReturnValue(path.join(homeDir, ".agentsecrets", "PingFail", "secrets.json"))
+
+    const deps = makeCliDeps({
+      fetchImpl: makeMockFetchSequence([
+        { body: [{ id: "gpt-4o", name: "GPT-4o" }] },                              // catalog OK
+        { body: { error: { message: "model not supported" } }, status: 403 },       // ping 403
+      ]),
+    })
+    const result = await runOuroCli(["config", "model", "--agent", "PingFail", "gpt-4o"], deps)
+
+    expect(result).toContain("ping failed")
+    expect(result).toContain("model not supported")
+    expect(result).toContain("ouro config models")
 
     bundlesSpy.mockRestore()
     secretsSpy.mockRestore()
@@ -310,5 +366,85 @@ describe("ouro config model validation for github-copilot", () => {
 
     bundlesSpy.mockRestore()
     secretsSpy.mockRestore()
+  })
+})
+
+describe("pingGithubCopilotModel", () => {
+  it("returns ok for successful ping", async () => {
+    emitTestEvent("pingGithubCopilotModel success")
+    const mockFetch = makeMockFetch({ id: "resp-1" })
+    const result = await pingGithubCopilotModel("https://api.example.com", "tok", "gpt-4o", mockFetch)
+    expect(result).toEqual({ ok: true })
+  })
+
+  it("uses /chat/completions for claude models", async () => {
+    emitTestEvent("pingGithubCopilotModel claude endpoint")
+    let requestedUrl = ""
+    let requestedBody = ""
+    const mockFetch = (async (url: string, init: RequestInit) => {
+      requestedUrl = url as string
+      requestedBody = init?.body as string
+      return { ok: true, status: 200, json: async () => ({}) }
+    }) as unknown as typeof fetch
+    await pingGithubCopilotModel("https://api.example.com", "tok", "claude-sonnet-4.6", mockFetch)
+    expect(requestedUrl).toBe("https://api.example.com/chat/completions")
+    expect(JSON.parse(requestedBody)).toMatchObject({ model: "claude-sonnet-4.6", max_tokens: 1 })
+  })
+
+  it("uses /responses for non-claude models", async () => {
+    emitTestEvent("pingGithubCopilotModel gpt endpoint")
+    let requestedUrl = ""
+    let requestedBody = ""
+    const mockFetch = (async (url: string, init: RequestInit) => {
+      requestedUrl = url as string
+      requestedBody = init?.body as string
+      return { ok: true, status: 200, json: async () => ({}) }
+    }) as unknown as typeof fetch
+    await pingGithubCopilotModel("https://api.example.com", "tok", "gpt-4o", mockFetch)
+    expect(requestedUrl).toBe("https://api.example.com/responses")
+    expect(JSON.parse(requestedBody)).toMatchObject({ model: "gpt-4o", input: "ping", max_output_tokens: 16 })
+  })
+
+  it("returns error detail from JSON error response", async () => {
+    emitTestEvent("pingGithubCopilotModel error json")
+    const mockFetch = makeMockFetch({ error: { message: "model not available" } }, 403)
+    const result = await pingGithubCopilotModel("https://api.example.com", "tok", "gpt-4o", mockFetch)
+    expect(result).toEqual({ ok: false, error: "model not available" })
+  })
+
+  it("returns error string from flat error field", async () => {
+    emitTestEvent("pingGithubCopilotModel error string")
+    const mockFetch = makeMockFetch({ error: "forbidden" }, 403)
+    const result = await pingGithubCopilotModel("https://api.example.com", "tok", "gpt-4o", mockFetch)
+    expect(result).toEqual({ ok: false, error: "forbidden" })
+  })
+
+  it("returns HTTP status when response body is not JSON", async () => {
+    emitTestEvent("pingGithubCopilotModel non-json error")
+    const mockFetch = (async () => ({
+      ok: false,
+      status: 500,
+      json: async () => { throw new Error("not json") },
+    })) as unknown as typeof fetch
+    const result = await pingGithubCopilotModel("https://api.example.com", "tok", "gpt-4o", mockFetch)
+    expect(result).toEqual({ ok: false, error: "HTTP 500" })
+  })
+
+  it("returns network error message on fetch failure", async () => {
+    emitTestEvent("pingGithubCopilotModel network error")
+    const mockFetch = (async () => { throw new Error("ECONNREFUSED") }) as unknown as typeof fetch
+    const result = await pingGithubCopilotModel("https://api.example.com", "tok", "gpt-4o", mockFetch)
+    expect(result).toEqual({ ok: false, error: "ECONNREFUSED" })
+  })
+
+  it("strips trailing slashes from baseUrl", async () => {
+    emitTestEvent("pingGithubCopilotModel trailing slash")
+    let requestedUrl = ""
+    const mockFetch = (async (url: string) => {
+      requestedUrl = url as string
+      return { ok: true, status: 200, json: async () => ({}) }
+    }) as unknown as typeof fetch
+    await pingGithubCopilotModel("https://api.example.com/", "tok", "gpt-4o", mockFetch)
+    expect(requestedUrl).toBe("https://api.example.com/responses")
   })
 })

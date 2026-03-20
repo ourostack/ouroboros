@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.74",
+      "changes": [
+        "Fix: `ouro config model` now pings the model with a tiny API call before switching, rejecting the change if the model returns an error (403, not supported, etc.)."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.73",
       "changes": [
         "New `ouro config models --agent <name>` command: list available models for the current provider. For github-copilot, queries the models API; other providers show a static message.",
