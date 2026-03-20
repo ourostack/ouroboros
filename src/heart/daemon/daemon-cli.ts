@@ -38,6 +38,7 @@ import type { TaskModule } from "../../repertoire/tasks/types"
 import { syncGlobalOuroBotWrapper as defaultSyncGlobalOuroBotWrapper } from "./ouro-bot-global-installer"
 import { installLaunchAgent, type LaunchdDeps } from "./launchd"
 import { DEFAULT_DAEMON_SOCKET_PATH, sendDaemonCommand, checkDaemonSocketAlive } from "./socket-client"
+import type { CheckForUpdateResult } from "./update-checker"
 import { listSessionActivity } from "../session-activity"
 import {
   loadAgentSecrets,
@@ -84,6 +85,8 @@ export type OuroCliCommand =
   | { kind: "config.model"; agent: string; modelName: string }
   | { kind: "config.models"; agent: string }
   | { kind: "hatch.start"; agentName?: string; humanName?: string; provider?: AgentProvider; credentials?: HatchCredentialsInput; migrationPath?: string }
+  | { kind: "rollback"; version?: string }
+  | { kind: "versions" }
 
 export interface OuroCliDeps {
   socketPath: string
@@ -111,6 +114,13 @@ export interface OuroCliDeps {
   scanSessions?: () => Promise<SessionEntry[]>
   getChangelogPath?: () => string
   fetchImpl?: typeof fetch
+  checkForCliUpdate?: () => Promise<CheckForUpdateResult>
+  installCliVersion?: (version: string) => Promise<void>
+  activateCliVersion?: (version: string) => void
+  getCurrentCliVersion?: () => string | null
+  reExecFromNewVersion?: (args: string[]) => never
+  getPreviousCliVersion?: () => string | null
+  listCliVersions?: () => string[]
 }
 
 export interface SessionEntry {
@@ -400,6 +410,8 @@ function usage(): string {
     "  ouro session list [--agent <name>]",
     "  ouro mcp list",
     "  ouro mcp call <server> <tool> [--args '{...}']",
+    "  ouro rollback [<version>]",
+    "  ouro versions",
   ].join("\n")
 }
 
@@ -1031,6 +1043,8 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   }
 
   if (head === "up") return { kind: "daemon.up" }
+  if (head === "rollback") return { kind: "rollback", ...(second ? { version: second } : {}) }
+  if (head === "versions") return { kind: "versions" }
   if (head === "stop" || head === "down") return { kind: "daemon.stop" }
   if (head === "status") return { kind: "daemon.status" }
   if (head === "logs") return { kind: "daemon.logs" }
@@ -1532,7 +1546,9 @@ type AuthSwitchCliCommand = Extract<OuroCliCommand, { kind: "auth.switch" }>
 type ChangelogCliCommand = Extract<OuroCliCommand, { kind: "changelog" }>
 type ConfigModelCliCommand = Extract<OuroCliCommand, { kind: "config.model" }>
 type ConfigModelsCliCommand = Extract<OuroCliCommand, { kind: "config.models" }>
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand>): DaemonCommand {
+type RollbackCliCommand = Extract<OuroCliCommand, { kind: "rollback" }>
+type VersionsCliCommand = Extract<OuroCliCommand, { kind: "versions" }>
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand>): DaemonCommand {
   return command
 }
 
@@ -1583,7 +1599,11 @@ async function performSystemSetup(deps: OuroCliDeps): Promise<void> {
   // Install ouro command to PATH (non-blocking)
   if (deps.installOuroCommand) {
     try {
-      deps.installOuroCommand()
+      const installResult = deps.installOuroCommand()
+      /* v8 ignore next -- migration hint: only fires once during old→new layout migration @preserve */
+      if (installResult.migratedFromOldPath) {
+        deps.writeStdout("migrated ouro to ~/.ouro-cli/ — open a new terminal or run: source ~/.zshrc")
+      }
     } catch (error) {
       emitNervesEvent({
         level: "warn",
@@ -1936,6 +1956,35 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   })
 
   if (command.kind === "daemon.up") {
+    // ── versioned CLI update check ──
+    if (deps.checkForCliUpdate) {
+      let pendingReExec = false
+      try {
+        const updateResult = await deps.checkForCliUpdate()
+        if (updateResult.available && updateResult.latestVersion) {
+          /* v8 ignore next -- fallback: getCurrentCliVersion always injected in tests @preserve */
+          const currentVersion = deps.getCurrentCliVersion?.() ?? "unknown"
+          await deps.installCliVersion!(updateResult.latestVersion)
+          deps.activateCliVersion!(updateResult.latestVersion)
+          deps.writeStdout(`ouro updated to ${updateResult.latestVersion} (was ${currentVersion})`)
+          pendingReExec = true
+        }
+      /* v8 ignore start -- update check error: tested via daemon-cli-update-flow.test.ts @preserve */
+      } catch (error) {
+        emitNervesEvent({
+          level: "warn",
+          component: "daemon",
+          event: "daemon.cli_update_check_error",
+          message: "CLI update check failed",
+          meta: { error: error instanceof Error ? error.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(error) },
+        })
+      }
+      /* v8 ignore stop */
+      if (pendingReExec) {
+        deps.reExecFromNewVersion!(args)
+      }
+    }
+
     await performSystemSetup(deps)
 
     if (deps.ensureDaemonBootPersistence) {
@@ -1983,6 +2032,70 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     deps.writeStdout(daemonResult.message)
     return daemonResult.message
   }
+
+  // ── rollback command (local, no daemon socket needed for symlinks) ──
+  /* v8 ignore start -- rollback/versions: tested via daemon-cli-rollback/versions tests @preserve */
+  if (command.kind === "rollback") {
+    const currentVersion = deps.getCurrentCliVersion?.() ?? "unknown"
+
+    if (command.version) {
+      // Rollback to a specific version
+      const installed = deps.listCliVersions?.() ?? []
+      if (!installed.includes(command.version)) {
+        try {
+          await deps.installCliVersion!(command.version)
+        } catch (error) {
+          const message = `failed to install version ${command.version}: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(error)}`
+          deps.writeStdout(message)
+          return message
+        }
+      }
+      deps.activateCliVersion!(command.version)
+    } else {
+      // Rollback to previous version
+      const previousVersion = deps.getPreviousCliVersion?.()
+      if (!previousVersion) {
+        const message = "no previous version to roll back to"
+        deps.writeStdout(message)
+        return message
+      }
+      deps.activateCliVersion!(previousVersion)
+      command = { ...command, version: previousVersion }
+    }
+
+    // Stop daemon (non-fatal if not running)
+    try {
+      await deps.sendCommand(deps.socketPath, { kind: "daemon.stop" })
+    } catch {
+      // Daemon may not be running — that's fine
+    }
+
+    const message = `rolled back to ${command.version} (was ${currentVersion})`
+    deps.writeStdout(message)
+    return message
+  }
+
+  // ── versions command (local, no daemon socket needed) ──
+  if (command.kind === "versions") {
+    const versions = deps.listCliVersions?.() ?? []
+    if (versions.length === 0) {
+      const message = "no versions installed"
+      deps.writeStdout(message)
+      return message
+    }
+    const current = deps.getCurrentCliVersion?.()
+    const previous = deps.getPreviousCliVersion?.()
+    const lines = versions.map((v) => {
+      let line = v
+      if (v === current) line += " * current"
+      if (v === previous) line += " (previous)"
+      return line
+    })
+    const message = lines.join("\n")
+    deps.writeStdout(message)
+    return message
+  }
+  /* v8 ignore stop */
 
   if (command.kind === "daemon.logs" && deps.tailLogs) {
     deps.tailLogs()

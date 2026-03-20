@@ -185,6 +185,8 @@ my bones give me the \`ouro\` cli. always pass \`--agent ${agentName}\`:
   ouro auth switch --agent ${agentName} --provider <provider>
   ouro mcp list --agent ${agentName}
   ouro mcp call --agent ${agentName} <server> <tool> --args '{...}'
+  ouro versions --agent ${agentName}
+  ouro rollback --agent ${agentName} [<version>]
   ouro --help
 
 provider/model changes via \`ouro config model\` or \`ouro auth switch\` take effect on the next turn automatically — no restart needed.`

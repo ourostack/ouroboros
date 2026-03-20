@@ -855,3 +855,55 @@ describe("OURO_CLI_TRUST_MANIFEST — auth entries", () => {
     expect(result.allowed).toBe(false)
   })
 })
+
+describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
+  beforeEach(() => {
+    vi.resetModules()
+  })
+
+  it("rollback is family trust", async () => {
+    const { OURO_CLI_TRUST_MANIFEST } = await import("../../repertoire/guardrails")
+    expect(OURO_CLI_TRUST_MANIFEST.rollback).toBe("family")
+  })
+
+  it("versions is acquaintance trust", async () => {
+    const { OURO_CLI_TRUST_MANIFEST } = await import("../../repertoire/guardrails")
+    expect(OURO_CLI_TRUST_MANIFEST.versions).toBe("acquaintance")
+  })
+
+  it("family: ouro rollback allowed", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const result = guardInvocation("shell", { command: "ouro rollback" }, {
+      readPaths: new Set(),
+      trustLevel: "family",
+    })
+    expect(result.allowed).toBe(true)
+  })
+
+  it("friend: ouro rollback denied", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const result = guardInvocation("shell", { command: "ouro rollback" }, {
+      readPaths: new Set(),
+      trustLevel: "acquaintance",
+    })
+    expect(result.allowed).toBe(false)
+  })
+
+  it("acquaintance: ouro versions allowed", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const result = guardInvocation("shell", { command: "ouro versions" }, {
+      readPaths: new Set(),
+      trustLevel: "acquaintance",
+    })
+    expect(result.allowed).toBe(true)
+  })
+
+  it("stranger: ouro versions denied", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const result = guardInvocation("shell", { command: "ouro versions" }, {
+      readPaths: new Set(),
+      trustLevel: "stranger",
+    })
+    expect(result.allowed).toBe(false)
+  })
+})

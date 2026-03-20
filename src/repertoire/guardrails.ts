@@ -161,6 +161,8 @@ export const OURO_CLI_TRUST_MANIFEST: Record<string, TrustLevel> = {
   auth: "family",
   "auth verify": "family",
   "auth switch": "family",
+  rollback: "family",
+  versions: "acquaintance",
 }
 
 // --- trust level comparison ---

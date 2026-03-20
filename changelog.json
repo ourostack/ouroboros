@@ -2,8 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.78",
+      "version": "0.1.0-alpha.79",
       "changes": [
+        "New: Versioned CLI directory layout (~/.ouro-cli/) replaces npx-based ouro wrapper. Explicit version management, rollback support, and deterministic updates.",
+        "New: `ouro up` now checks the registry for newer CLI versions, installs them into ~/.ouro-cli/versions/, activates via symlink flip, and re-execs — no more silent npx downloads.",
+        "New: `ouro rollback [<version>]` swaps CurrentVersion/previous symlinks, stops the daemon. With a version arg, installs if needed then activates.",
+        "New: `ouro versions` lists cached CLI versions with * current and (previous) markers.",
+        "Migration: On first run, old ~/.local/bin/ouro wrapper is removed, old PATH entry cleaned from shell profile, new ~/.ouro-cli/bin added to PATH.",
+        "Trust manifest: rollback requires family trust, versions requires acquaintance.",
         "Fix: BlueBubbles group chats no longer start typing just because the model turn began. Group chats stay visually quiet until the agent has committed to replying.",
         "Tool/progress updates now count as reply commitment in BlueBubbles group chats, so read/typing can begin before final user-facing text without regressing back to model-start typing.",
         "Silent group-chat turns remain fully quiet: when the agent chooses no_response, the inbound message still reaches the model but the chat is not marked read, never types, and never sends a message."
