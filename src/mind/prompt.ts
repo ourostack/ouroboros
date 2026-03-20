@@ -178,12 +178,15 @@ my bones give me the \`ouro\` cli. always pass \`--agent ${agentName}\`:
   ouro session list --agent ${agentName}
   ouro reminder create --agent ${agentName} <title> --body <body>
   ouro config model --agent ${agentName} <model-name>
+  ouro config models --agent ${agentName}
   ouro auth --agent ${agentName} --provider <provider>
   ouro auth verify --agent ${agentName} [--provider <provider>]
   ouro auth switch --agent ${agentName} --provider <provider>
   ouro mcp list --agent ${agentName}
   ouro mcp call --agent ${agentName} <server> <tool> --args '{...}'
-  ouro --help`
+  ouro --help
+
+provider/model changes via \`ouro config model\` or \`ouro auth switch\` take effect on the next turn automatically — no restart needed.`
 }
 
 export function mcpToolsSection(mcpManager?: McpManager): string {

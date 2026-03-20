@@ -82,6 +82,7 @@ export type OuroCliCommand =
   | { kind: "mcp.list" }
   | { kind: "mcp.call"; server: string; tool: string; args?: string }
   | { kind: "config.model"; agent: string; modelName: string }
+  | { kind: "config.models"; agent: string }
   | { kind: "hatch.start"; agentName?: string; humanName?: string; provider?: AgentProvider; credentials?: HatchCredentialsInput; migrationPath?: string }
 
 export interface OuroCliDeps {
@@ -374,6 +375,7 @@ function usage(): string {
     "  ouro stop|down|status|logs|hatch",
     "  ouro -v|--version",
     "  ouro config model --agent <name> <model-name>",
+    "  ouro config models --agent <name>",
     "  ouro auth --agent <name> [--provider <provider>]",
     "  ouro auth verify --agent <name> [--provider <provider>]",
     "  ouro auth switch --agent <name> --provider <provider>",
@@ -600,6 +602,41 @@ async function verifyProviderCredentials(
   return "ok"
 }
 /* v8 ignore stop */
+
+export interface GithubCopilotModel {
+  id: string
+  name: string
+  capabilities?: string[]
+}
+
+export async function listGithubCopilotModels(
+  baseUrl: string,
+  token: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<GithubCopilotModel[]> {
+  const url = `${baseUrl.replace(/\/+$/, "")}/models`
+  const response = await fetchImpl(url, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!response.ok) {
+    throw new Error(`model listing failed (HTTP ${response.status})`)
+  }
+  const body = await response.json() as { data?: unknown[] } | unknown[]
+  /* v8 ignore start -- response shape handling: tested via config-models.test.ts @preserve */
+  const items = Array.isArray(body) ? body : (body?.data ?? []) as unknown[]
+  return items.map((item) => {
+    const rec = item as Record<string, unknown>
+    const capabilities = Array.isArray(rec.capabilities)
+      ? (rec.capabilities as unknown[]).filter((c): c is string => typeof c === "string")
+      : undefined
+    return {
+      id: String(rec.id ?? rec.name ?? ""),
+      name: String(rec.name ?? rec.id ?? ""),
+      ...(capabilities ? { capabilities } : {}),
+    }
+  })
+  /* v8 ignore stop */
+}
 
 function parseHatchCommand(args: string[]): OuroCliCommand {
   let agentName: string | undefined
@@ -912,6 +949,11 @@ function parseConfigCommand(args: string[]): OuroCliCommand {
     const modelName = rest[0]
     if (!modelName) throw new Error(`Usage: ouro config model --agent <name> <model-name>`)
     return { kind: "config.model", agent, modelName }
+  }
+
+  if (sub === "models") {
+    if (!agent) throw new Error("--agent is required for config models")
+    return { kind: "config.models", agent }
   }
 
   throw new Error(`Usage\n${usage()}`)
@@ -1423,7 +1465,8 @@ type AuthVerifyCliCommand = Extract<OuroCliCommand, { kind: "auth.verify" }>
 type AuthSwitchCliCommand = Extract<OuroCliCommand, { kind: "auth.switch" }>
 type ChangelogCliCommand = Extract<OuroCliCommand, { kind: "changelog" }>
 type ConfigModelCliCommand = Extract<OuroCliCommand, { kind: "config.model" }>
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand>): DaemonCommand {
+type ConfigModelsCliCommand = Extract<OuroCliCommand, { kind: "config.models" }>
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand>): DaemonCommand {
   return command
 }
 
@@ -1984,9 +2027,62 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   }
   /* v8 ignore stop */
 
+  // ── config models (local, no daemon socket needed) ──
+  /* v8 ignore start -- config models: tested via daemon-cli.test.ts @preserve */
+  if (command.kind === "config.models") {
+    const { config } = readAgentConfigForAgent(command.agent)
+    const provider = config.provider
+    if (provider !== "github-copilot") {
+      const message = `model listing not available for ${provider} — check provider documentation.`
+      deps.writeStdout(message)
+      return message
+    }
+    const { secrets } = loadAgentSecrets(command.agent)
+    const ghConfig = secrets.providers["github-copilot"]
+    if (!ghConfig.githubToken || !ghConfig.baseUrl) {
+      throw new Error(`github-copilot credentials not configured. Run \`ouro auth --agent ${command.agent} --provider github-copilot\` first.`)
+    }
+    const fetchFn = deps.fetchImpl ?? fetch
+    const models = await listGithubCopilotModels(ghConfig.baseUrl, ghConfig.githubToken, fetchFn)
+    if (models.length === 0) {
+      const message = "no models found"
+      deps.writeStdout(message)
+      return message
+    }
+    const lines = ["available models:"]
+    for (const m of models) {
+      const caps = m.capabilities?.length ? ` (${m.capabilities.join(", ")})` : ""
+      lines.push(`  ${m.id}${caps}`)
+    }
+    const message = lines.join("\n")
+    deps.writeStdout(message)
+    return message
+  }
+  /* v8 ignore stop */
+
   // ── config model (local, no daemon socket needed) ──
   /* v8 ignore start -- config model: tested via daemon-cli.test.ts @preserve */
   if (command.kind === "config.model") {
+    // Validate model availability for github-copilot before writing
+    const { config } = readAgentConfigForAgent(command.agent)
+    if (config.provider === "github-copilot") {
+      const { secrets } = loadAgentSecrets(command.agent)
+      const ghConfig = secrets.providers["github-copilot"]
+      if (ghConfig.githubToken && ghConfig.baseUrl) {
+        const fetchFn = deps.fetchImpl ?? fetch
+        try {
+          const models = await listGithubCopilotModels(ghConfig.baseUrl, ghConfig.githubToken, fetchFn)
+          const available = models.map((m) => m.id)
+          if (available.length > 0 && !available.includes(command.modelName)) {
+            const message = `model '${command.modelName}' not found. available models:\n${available.map((id) => `  ${id}`).join("\n")}`
+            deps.writeStdout(message)
+            return message
+          }
+        } catch {
+          // Validation failed — fall through and write anyway
+        }
+      }
+    }
     const { provider, previousModel } = writeAgentModel(command.agent, command.modelName)
     const message = previousModel
       ? `updated ${command.agent} model on ${provider}: ${previousModel} → ${command.modelName}`

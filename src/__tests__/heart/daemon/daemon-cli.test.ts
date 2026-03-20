@@ -5487,6 +5487,17 @@ describe("ouro config model", () => {
       modelName: "claude-sonnet-4.6",
     })
   })
+
+  it("parses config models command", () => {
+    expect(parseOuroCommand(["config", "models", "--agent", "slugger"])).toEqual({
+      kind: "config.models",
+      agent: "slugger",
+    })
+  })
+
+  it("rejects config models without --agent", () => {
+    expect(() => parseOuroCommand(["config", "models"])).toThrow("--agent")
+  })
 })
 
 describe("OURO_CLI_TRUST_MANIFEST", () => {
@@ -5498,6 +5509,7 @@ describe("OURO_CLI_TRUST_MANIFEST", () => {
     expect(OURO_CLI_TRUST_MANIFEST["friend list"]).toBe("friend")
     expect(OURO_CLI_TRUST_MANIFEST["session list"]).toBe("acquaintance")
     expect(OURO_CLI_TRUST_MANIFEST["config model"]).toBe("friend")
+    expect(OURO_CLI_TRUST_MANIFEST["config models"]).toBe("friend")
     expect(OURO_CLI_TRUST_MANIFEST["friend update"]).toBe("family")
   })
 })
