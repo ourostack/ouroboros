@@ -1484,7 +1484,7 @@ describe("BlueBubbles sense runtime", () => {
     )
   })
 
-  it("starts group chat typing only after the model begins a real reply", async () => {
+  it("starts group chat typing only after the agent commits to replying", async () => {
     mocks.runAgent.mockImplementationOnce(async (_messages: any, callbacks: any) => {
       callbacks.onModelStart()
       expect(mocks.markChatRead).not.toHaveBeenCalled()
