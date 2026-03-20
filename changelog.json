@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.80",
+      "changes": [
+        "Bootstrap package (npx ouro.bot) now installs into ~/.ouro-cli/ versioned layout directly. No more silent npx updates — every install and update is logged. Cleans up old ~/.local/bin/ouro wrapper."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.79",
       "changes": [
         "New: Versioned CLI directory layout (~/.ouro-cli/) replaces npx-based ouro wrapper. Explicit version management, rollback support, and deterministic updates.",
