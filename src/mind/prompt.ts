@@ -539,7 +539,7 @@ export function commitmentsSection(options?: BuildSystemOptions): string {
   if (!options?.activeWorkFrame) return ""
   const job = options.activeWorkFrame.inner?.job
   if (!job) return ""
-  const commitments = deriveCommitments(options.activeWorkFrame, job)
+  const commitments = deriveCommitments(options.activeWorkFrame, job, options.activeWorkFrame.pendingObligations)
   if (commitments.committedTo.length === 0) return ""
   return `## my commitments\n${commitments.committedTo.map((c) => `- ${c}`).join("\n")}`
 }

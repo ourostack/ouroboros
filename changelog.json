@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.77",
+      "changes": [
+        "New: Persistent obligation store (state/obligations/*.json). Obligations survive pending message consumption so the agent always knows what it owes and to whom.",
+        "Obligations are created when send_message delegates to self or go_inward fires with a return address, and fulfilled when routeDelegatedCompletion delivers the answer.",
+        "The commitments frame now reads pending obligations from the store, giving the agent an accurate view of outstanding commitments across all sessions.",
+        "readInnerWorkState derives obligationPending from both pending messages and the obligation store, ensuring obligations are visible even after the inner dialog queue drains."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.76",
       "changes": [
         "Fix: CLI chat terminal logging now filters to warn/error only — info-level nerves logs go to ndjson file only, keeping the interactive TUI clean.",

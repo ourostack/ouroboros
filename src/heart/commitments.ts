@@ -1,5 +1,6 @@
 import type { ActiveWorkFrame } from "./active-work"
 import type { InnerJob } from "./daemon/thoughts"
+import type { Obligation } from "./obligations"
 import { emitNervesEvent } from "../nerves/runtime"
 
 export interface CommitmentsFrame {
@@ -11,12 +12,21 @@ export interface CommitmentsFrame {
 export function deriveCommitments(
   activeWorkFrame: ActiveWorkFrame,
   innerJob: InnerJob,
+  pendingObligations?: Obligation[],
 ): CommitmentsFrame {
   const committedTo: string[] = []
   const completionCriteria: string[] = []
   const safeToIgnore: string[] = []
 
-  // Obligation
+  // Persistent obligations from the obligation store
+  if (pendingObligations && pendingObligations.length > 0) {
+    for (const ob of pendingObligations) {
+      committedTo.push(`i owe ${ob.origin.friendId}: ${ob.content}`)
+    }
+    completionCriteria.push("fulfill my outstanding obligations")
+  }
+
+  // Obligation (from current turn -- kept for backward compat)
   if (typeof activeWorkFrame.currentObligation === "string" && activeWorkFrame.currentObligation.trim().length > 0) {
     committedTo.push(`i told them i'd ${activeWorkFrame.currentObligation.trim()}`)
   }

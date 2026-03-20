@@ -31,8 +31,9 @@ import type { DelegationDecision, DelegationReason } from "./delegation";
 import type { InnerJob } from "./daemon/thoughts";
 import { getInnerDialogPendingDir, queuePendingMessage } from "../mind/pending";
 import type { PendingMessage } from "../mind/pending";
-import { getAgentName } from "./identity";
+import { getAgentName, getAgentRoot } from "./identity";
 import { requestInnerWake } from "./daemon/socket-client";
+import { createObligation } from "./obligations";
 
 export type ProviderId = "azure" | "anthropic" | "minimax" | "openai-codex" | "github-copilot";
 
@@ -831,6 +832,20 @@ export async function runAgent(
             } : {}),
           };
           queuePendingMessage(pendingDir, envelope);
+          if (currentSession && !isInnerChannel) {
+            try {
+              createObligation(getAgentRoot(), {
+                origin: {
+                  friendId: currentSession.friendId,
+                  channel: currentSession.channel,
+                  key: currentSession.key,
+                },
+                content,
+              })
+            } catch {
+              /* v8 ignore next -- defensive: obligation store write failure should not break go_inward @preserve */
+            }
+          }
           try { await requestInnerWake(getAgentName()); } catch { /* daemon may not be running */ }
 
           sawGoInward = true;

@@ -23,6 +23,7 @@ import { decideDelegation } from "../heart/delegation"
 import { listTargetSessionCandidates } from "../heart/target-resolution"
 import { readInnerDialogRawData, deriveInnerDialogStatus, deriveInnerJob, getInnerDialogSessionPath } from "../heart/daemon/thoughts"
 import { getInnerDialogPendingDir } from "../mind/pending"
+import { readPendingObligations } from "../heart/obligations"
 import type { BoardResult } from "../repertoire/tasks/types"
 
 // ── Input / Output types ──────────────────────────────────────────
@@ -150,12 +151,14 @@ function readInnerWorkState(): ActiveWorkFrame["inner"] {
     const { pendingMessages, turns, runtimeState } = readInnerDialogRawData(sessionPath, pendingDir)
     const dialogStatus = deriveInnerDialogStatus(pendingMessages, turns, runtimeState)
     const job = deriveInnerJob(pendingMessages, turns, runtimeState)
+    // Derive obligationPending from both the pending message field and the obligation store
+    const storeObligationPending = readPendingObligations(agentRoot).length > 0
     return {
       status: dialogStatus.processing === "started" ? "running" : "idle",
       hasPending: dialogStatus.queue !== "clear",
       origin: dialogStatus.origin,
       contentSnippet: dialogStatus.contentSnippet,
-      obligationPending: dialogStatus.obligationPending,
+      obligationPending: dialogStatus.obligationPending || storeObligationPending,
       job,
     }
   } catch {
@@ -279,12 +282,19 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   } catch {
     targetCandidates = []
   }
+  let pendingObligations: import("../heart/obligations").Obligation[] = []
+  try {
+    pendingObligations = readPendingObligations(getAgentRoot())
+  } catch {
+    pendingObligations = []
+  }
   const activeWorkFrame = buildActiveWorkFrame({
     currentSession,
     currentObligation,
     mustResolveBeforeHandoff,
     inner: readInnerWorkState(),
     bridges: activeBridges,
+    pendingObligations,
     taskBoard: (() => {
       try {
         return getTaskModule().getBoard()

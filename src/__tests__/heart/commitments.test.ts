@@ -192,6 +192,55 @@ describe("deriveCommitments", () => {
   it("emits nerves event reference", () => {
     expect(emitNervesEvent).toBeDefined()
   })
+
+  it("includes persistent obligations in committedTo", () => {
+    const obligations = [
+      {
+        id: "ob-1",
+        origin: { friendId: "alex", channel: "cli", key: "session" },
+        content: "think about naming conventions",
+        status: "pending" as const,
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+    ]
+    const result = deriveCommitments(makeFrame(), makeIdleJob(), obligations)
+    expect(result.committedTo).toContain("i owe alex: think about naming conventions")
+    expect(result.completionCriteria).toContain("fulfill my outstanding obligations")
+  })
+
+  it("includes multiple persistent obligations in committedTo", () => {
+    const obligations = [
+      {
+        id: "ob-1",
+        origin: { friendId: "alex", channel: "cli", key: "session" },
+        content: "naming conventions",
+        status: "pending" as const,
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: "ob-2",
+        origin: { friendId: "bob", channel: "teams", key: "session" },
+        content: "architecture review",
+        status: "pending" as const,
+        createdAt: "2026-01-01T00:01:00Z",
+      },
+    ]
+    const result = deriveCommitments(makeFrame(), makeIdleJob(), obligations)
+    expect(result.committedTo).toContain("i owe alex: naming conventions")
+    expect(result.committedTo).toContain("i owe bob: architecture review")
+  })
+
+  it("omits obligation section when pendingObligations is empty", () => {
+    const result = deriveCommitments(makeFrame(), makeIdleJob(), [])
+    expect(result.committedTo).not.toContainEqual(expect.stringContaining("i owe"))
+    expect(result.completionCriteria).not.toContain("fulfill my outstanding obligations")
+  })
+
+  it("omits obligation section when pendingObligations is undefined", () => {
+    const result = deriveCommitments(makeFrame(), makeIdleJob())
+    expect(result.committedTo).not.toContainEqual(expect.stringContaining("i owe"))
+    expect(result.completionCriteria).not.toContain("fulfill my outstanding obligations")
+  })
 })
 
 describe("formatCommitments", () => {

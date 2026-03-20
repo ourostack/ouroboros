@@ -21,6 +21,7 @@ import type { PendingMessage } from "../mind/pending";
 import type { BridgeRecord, BridgeSessionRef } from "../heart/bridges/store";
 import { buildProgressStory, renderProgressStory } from "../heart/progress-story";
 import { deliverCrossChatMessage, type CrossChatDeliveryResult } from "../heart/cross-chat-delivery";
+import { createObligation } from "../heart/obligations";
 
 export interface CodingFeedbackTarget {
   send: (message: string) => Promise<void>;
@@ -960,6 +961,19 @@ export const baseToolDefinitions: ToolDefinition[] = [
       if (isSelf) {
         writePendingEnvelope(pendingDir, envelope)
         if (delegatedFrom) {
+          try {
+            createObligation(getAgentRoot(), {
+              origin: {
+                friendId: delegatedFrom.friendId,
+                channel: delegatedFrom.channel,
+                key: delegatedFrom.key,
+              },
+              ...(delegatedFrom.bridgeId ? { bridgeId: delegatedFrom.bridgeId } : {}),
+              content,
+            })
+          } catch {
+            /* v8 ignore next -- defensive: obligation store write failure should not break send_message @preserve */
+          }
           emitNervesEvent({
             event: "repertoire.obligation_created",
             component: "repertoire",

@@ -4,6 +4,7 @@ import type { BoardResult } from "../repertoire/tasks/types"
 import { bridgeStateLabel } from "./bridges/state-machine"
 import type { BridgeRecord } from "./bridges/store"
 import type { InnerJob } from "./daemon/thoughts"
+import type { Obligation } from "./obligations"
 import type { SessionActivityRecord } from "./session-activity"
 import { formatTargetSessionCandidates, type TargetSessionCandidate } from "./target-resolution"
 
@@ -51,6 +52,7 @@ export interface ActiveWorkFrame {
     freshestForCurrentFriend: SessionActivityRecord | null
     otherLiveSessionsForCurrentFriend: SessionActivityRecord[]
   }
+  pendingObligations: Obligation[]
   targetCandidates?: TargetSessionCandidate[]
   bridgeSuggestion: BridgeSuggestion | null
 }
@@ -61,6 +63,7 @@ interface BuildActiveWorkFrameInput {
   mustResolveBeforeHandoff: boolean
   inner: ActiveWorkFrame["inner"]
   bridges: BridgeRecord[]
+  pendingObligations?: Obligation[]
   taskBoard: BoardResult
   friendActivity: SessionActivityRecord[]
   targetCandidates?: TargetSessionCandidate[]
@@ -195,6 +198,7 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
       freshestForCurrentFriend: friendSessions[0] ?? null,
       otherLiveSessionsForCurrentFriend: friendSessions,
     },
+    pendingObligations: input.pendingObligations ?? [],
     targetCandidates: input.targetCandidates ?? [],
     bridgeSuggestion: suggestBridgeForActiveWork({
       currentSession: input.currentSession,
