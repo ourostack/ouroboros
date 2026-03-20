@@ -119,7 +119,7 @@ export async function execTool(name: string, args: Record<string, string>, ctx?:
     event: "tool.start",
     component: "tools",
     message: "tool execution started",
-    meta: { name },
+    meta: { name, ...(name === "shell" && args.command ? { command: args.command } : {}) },
   });
 
   // Look up from combined registry

@@ -9,6 +9,7 @@ import {
   collectRuntimeAuthCredentials,
   readAgentConfigForAgent,
   resolveHatchCredentials,
+  writeAgentModel,
   writeProviderCredentials,
   runRuntimeAuthFlow,
   writeAgentProviderSelection,
@@ -779,5 +780,66 @@ describe("github-copilot auth flow", () => {
     writeAgentConfig(bundlesRoot, "CopilotConfig", "github-copilot")
     const { config } = readAgentConfigForAgent("CopilotConfig", bundlesRoot)
     expect(config.provider).toBe("github-copilot")
+  })
+})
+
+describe("writeAgentModel", () => {
+  it("updates model for anthropic provider", () => {
+    emitTestEvent("writeAgentModel anthropic")
+    const bundlesRoot = makeTempDir("auth-flow-model-anthropic")
+    const homeDir = makeTempDir("auth-flow-model-home-anthropic")
+    writeAgentConfig(bundlesRoot, "ModelTest", "anthropic")
+
+    // Seed initial secrets
+    const secretsDir = path.join(homeDir, ".agentsecrets", "ModelTest")
+    fs.mkdirSync(secretsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(secretsDir, "secrets.json"),
+      JSON.stringify({ providers: { anthropic: { model: "claude-opus-4-6", setupToken: "tok" } } }),
+    )
+
+    const result = writeAgentModel("ModelTest", "claude-sonnet-4.6", { bundlesRoot, homeDir })
+    expect(result.provider).toBe("anthropic")
+    expect(result.previousModel).toBe("claude-opus-4-6")
+
+    const updated = JSON.parse(fs.readFileSync(result.secretsPath, "utf8")) as any
+    expect(updated.providers.anthropic.model).toBe("claude-sonnet-4.6")
+  })
+
+  it("updates modelName for azure provider", () => {
+    emitTestEvent("writeAgentModel azure")
+    const bundlesRoot = makeTempDir("auth-flow-model-azure")
+    const homeDir = makeTempDir("auth-flow-model-home-azure")
+    writeAgentConfig(bundlesRoot, "AzureModel", "azure")
+
+    const secretsDir = path.join(homeDir, ".agentsecrets", "AzureModel")
+    fs.mkdirSync(secretsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(secretsDir, "secrets.json"),
+      JSON.stringify({ providers: { azure: { modelName: "gpt-4o-mini", apiKey: "k", endpoint: "e", deployment: "d", apiVersion: "v" } } }),
+    )
+
+    const result = writeAgentModel("AzureModel", "gpt-5", { bundlesRoot, homeDir })
+    expect(result.provider).toBe("azure")
+    expect(result.previousModel).toBe("gpt-4o-mini")
+
+    const updated = JSON.parse(fs.readFileSync(result.secretsPath, "utf8")) as any
+    expect(updated.providers.azure.modelName).toBe("gpt-5")
+  })
+
+  it("handles empty previous model", () => {
+    emitTestEvent("writeAgentModel empty previous")
+    const bundlesRoot = makeTempDir("auth-flow-model-empty")
+    const homeDir = makeTempDir("auth-flow-model-home-empty")
+    writeAgentConfig(bundlesRoot, "EmptyModel", "minimax")
+
+    // No secrets file — will create from defaults
+    const result = writeAgentModel("EmptyModel", "minimax-text-02", { bundlesRoot, homeDir })
+    expect(result.provider).toBe("minimax")
+    // Default model from template
+    expect(result.previousModel).toBe("minimax-text-01")
+
+    const updated = JSON.parse(fs.readFileSync(result.secretsPath, "utf8")) as any
+    expect(updated.providers.minimax.model).toBe("minimax-text-02")
   })
 })

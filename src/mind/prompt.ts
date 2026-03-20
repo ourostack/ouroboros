@@ -174,8 +174,10 @@ my bones give me the \`ouro\` cli. always pass \`--agent ${agentName}\`:
   ouro task update --agent ${agentName} <id> <status>
   ouro friend list --agent ${agentName}
   ouro friend show --agent ${agentName} <id>
+  ouro friend update --agent ${agentName} <id> --trust <level>
   ouro session list --agent ${agentName}
   ouro reminder create --agent ${agentName} <title> --body <body>
+  ouro config model --agent ${agentName} <model-name>
   ouro auth --agent ${agentName} --provider <provider>
   ouro auth verify --agent ${agentName} [--provider <provider>]
   ouro auth switch --agent ${agentName} --provider <provider>

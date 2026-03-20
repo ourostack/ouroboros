@@ -253,6 +253,32 @@ export function writeProviderCredentials(
   return { secretsPath, secrets }
 }
 
+const MODEL_FIELD: Record<string, string> = {
+  azure: "modelName",
+  minimax: "model",
+  anthropic: "model",
+  "openai-codex": "model",
+  "github-copilot": "model",
+}
+
+export function writeAgentModel(
+  agentName: string,
+  modelName: string,
+  deps: ProviderSecretsDeps & { bundlesRoot?: string } = {},
+): { secretsPath: string; provider: AgentProvider; previousModel: string } {
+  const { config } = readAgentConfigForAgent(agentName, deps.bundlesRoot)
+  const provider = config.provider
+  const { secretsPath, secrets } = loadAgentSecrets(agentName, deps)
+  const providerSecrets = secrets.providers[provider] as Record<string, string>
+  /* v8 ignore next -- fallback: all known providers are in MODEL_FIELD @preserve */
+  const fieldName = MODEL_FIELD[provider] ?? "model"
+  /* v8 ignore next -- defensive: fieldName always exists in template @preserve */
+  const previousModel = providerSecrets[fieldName] ?? ""
+  providerSecrets[fieldName] = modelName
+  writeSecrets(secretsPath, secrets)
+  return { secretsPath, provider, previousModel }
+}
+
 function readCodexAccessToken(homeDir: string): string {
   const authPath = path.join(homeDir, ".codex", "auth.json")
   try {

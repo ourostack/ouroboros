@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.72",
+      "changes": [
+        "Fix: Compound shell commands (&&, ;, |, ||) are now checked per-subcommand for untrusted users instead of blanket-blocked. Safe compound commands like `ls && pwd` are allowed; only commands containing an untrusted subcommand are denied.",
+        "New `ouro config model --agent <name> <model-name>` command: change the active model for any provider. Reads provider from agent.json, updates the model field in secrets.json. Gated at friend trust level.",
+        "New `ouro friend update <id> --trust <level>` command: change an existing friend's trust level (stranger, acquaintance, friend, family). Gated at family trust level."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.71",
       "changes": [
         "Fix: `ouro auth switch` now works with both `ouro auth switch --agent X --provider Y` and `ouro auth --switch --agent X --provider Y` syntax.",
