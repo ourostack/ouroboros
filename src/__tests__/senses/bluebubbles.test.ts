@@ -710,6 +710,38 @@ describe("BlueBubbles sense runtime", () => {
     )
   })
 
+  it("keeps group no_response turns model-visible while leaving typing off", async () => {
+    mocks.runAgent.mockImplementationOnce(async (_messages: any, callbacks: any) => {
+      callbacks.onModelStart()
+      return {
+        outcome: "no_response",
+        usage: {
+          input_tokens: 10,
+          output_tokens: 1,
+          reasoning_tokens: 0,
+          total_tokens: 11,
+        },
+      }
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    const result = await bluebubbles.handleBlueBubblesEvent(groupThreadPayload)
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        handled: true,
+        notifiedAgent: true,
+        kind: "message",
+      }),
+    )
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
+    expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+    expect(mocks.markChatRead).not.toHaveBeenCalled()
+    expect(mocks.setTyping).not.toHaveBeenCalled()
+    expect(mocks.sendText).not.toHaveBeenCalled()
+    expect(mocks.postTurn).toHaveBeenCalledTimes(1)
+  })
+
   it("routes top-level and threaded DM turns into the same persisted chat trunk", async () => {
     const bluebubbles = await import("../../senses/bluebubbles")
 
@@ -1450,6 +1482,82 @@ describe("BlueBubbles sense runtime", () => {
         text: "got it",
       }),
     )
+  })
+
+  it("starts group chat typing only after the agent commits to replying", async () => {
+    mocks.runAgent.mockImplementationOnce(async (_messages: any, callbacks: any) => {
+      callbacks.onModelStart()
+      expect(mocks.markChatRead).not.toHaveBeenCalled()
+      expect(mocks.setTyping).not.toHaveBeenCalled()
+      callbacks.onTextChunk("got it")
+      return {
+        usage: {
+          input_tokens: 10,
+          output_tokens: 5,
+          reasoning_tokens: 0,
+          total_tokens: 15,
+        },
+      }
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(groupThreadPayload)
+
+    expect(mocks.markChatRead).toHaveBeenCalledTimes(1)
+    expect(mocks.markChatRead).toHaveBeenCalledWith(
+      expect.objectContaining({ chatGuid: "any;+;35820e69c97c459992d29a334f412979" }),
+    )
+    expect(mocks.setTyping).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ chatGuid: "any;+;35820e69c97c459992d29a334f412979" }),
+      true,
+    )
+    expect(mocks.markChatRead.mock.invocationCallOrder[0]).toBeLessThan(mocks.sendText.mock.invocationCallOrder[0])
+    expect(mocks.setTyping.mock.invocationCallOrder[0]).toBeLessThan(mocks.sendText.mock.invocationCallOrder[0])
+  })
+
+  it("treats group chat tool progress as reply commitment before final text", async () => {
+    mocks.runAgent.mockImplementationOnce(async (_messages: any, callbacks: any) => {
+      callbacks.onModelStart()
+      expect(mocks.markChatRead).not.toHaveBeenCalled()
+      expect(mocks.setTyping).not.toHaveBeenCalled()
+
+      callbacks.onToolStart("query_session", {})
+      await flushAsyncWork()
+
+      expect(mocks.sendText).toHaveBeenCalledWith(
+        expect.objectContaining({
+          chat: expect.objectContaining({ chatGuid: "any;+;35820e69c97c459992d29a334f412979" }),
+          text: "shared work: processing\nrunning query_session...",
+        }),
+      )
+      expect(mocks.markChatRead).toHaveBeenCalledTimes(1)
+      expect(mocks.setTyping).toHaveBeenCalledWith(
+        expect.objectContaining({ chatGuid: "any;+;35820e69c97c459992d29a334f412979" }),
+        true,
+      )
+
+      callbacks.onTextChunk("got it")
+      return {
+        usage: {
+          input_tokens: 10,
+          output_tokens: 5,
+          reasoning_tokens: 0,
+          total_tokens: 15,
+        },
+      }
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(groupThreadPayload)
+
+    const toolStatusCall = mocks.sendText.mock.calls.find((call: any[]) => call[0]?.text === "shared work: processing\nrunning query_session...")
+    const finalReplyCall = mocks.sendText.mock.calls.find((call: any[]) => call[0]?.text === "got it")
+
+    expect(toolStatusCall).toBeTruthy()
+    expect(finalReplyCall).toBeTruthy()
+    expect(mocks.markChatRead.mock.invocationCallOrder[0]).toBeLessThan(finalReplyCall[0].chat ? mocks.sendText.mock.invocationCallOrder[mocks.sendText.mock.calls.indexOf(finalReplyCall)] : Number.MAX_SAFE_INTEGER)
+    expect(mocks.setTyping.mock.invocationCallOrder[0]).toBeLessThan(finalReplyCall[0].chat ? mocks.sendText.mock.invocationCallOrder[mocks.sendText.mock.calls.indexOf(finalReplyCall)] : Number.MAX_SAFE_INTEGER)
   })
 
   it("uses group chat identity rather than sender handle instability for group sessions", async () => {

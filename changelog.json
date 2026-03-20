@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.78",
+      "changes": [
+        "Fix: BlueBubbles group chats no longer start typing just because the model turn began. Group chats stay visually quiet until the agent has committed to replying.",
+        "Tool/progress updates now count as reply commitment in BlueBubbles group chats, so read/typing can begin before final user-facing text without regressing back to model-start typing.",
+        "Silent group-chat turns remain fully quiet: when the agent chooses no_response, the inbound message still reaches the model but the chat is not marked read, never types, and never sends a message."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.77",
       "changes": [
         "New: Persistent obligation store (state/obligations/*.json). Obligations survive pending message consumption so the agent always knows what it owes and to whom.",
