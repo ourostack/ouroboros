@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.82",
+      "changes": [
+        "Fix: Wire default implementations for CLI update flow. `ouro up` now actually checks the npm registry for newer versions, installs them, and re-execs. Previously the update check deps were declared but never wired in createDefaultOuroCliDeps. Also wires rollback and versions command defaults."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.81",
       "changes": [
         "Fix: Self-healing versioned CLI layout. When `ouro up` runs via the old npx path for the first time, performSystemSetup now detects that CurrentVersion is missing and installs the current version into ~/.ouro-cli/versions/. Prevents 'ouro not installed' error after migration."

@@ -11,7 +11,7 @@ import { isIdentityProvider, type IdentityProvider, type TrustLevel } from "../.
 import type { DaemonCommand, DaemonResponse } from "./daemon"
 import { registerOuroBundleUti as defaultRegisterOuroBundleUti } from "./ouro-uti"
 import { installOuroCommand as defaultInstallOuroCommand, type OuroPathInstallResult } from "./ouro-path-installer"
-import { getCurrentVersion, installVersion, activateVersion, ensureLayout, getOuroCliHome } from "./ouro-version-manager"
+import { getCurrentVersion, getPreviousVersion, listInstalledVersions, installVersion, activateVersion, ensureLayout, getOuroCliHome } from "./ouro-version-manager"
 import { ensureSkillManagement as defaultEnsureSkillManagement } from "./skill-management-installer"
 import {
   runHatchFlow as defaultRunHatchFlow,
@@ -1502,6 +1502,28 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
         installVersion(version, {})
       }
       activateVersion(version, {})
+    },
+    /* v8 ignore stop */
+    /* v8 ignore start -- CLI version management defaults: integration code @preserve */
+    checkForCliUpdate: async () => {
+      const { checkForUpdate } = await import("./update-checker")
+      return checkForUpdate(getPackageVersion(), {
+        fetchRegistryJson: async () => {
+          const res = await fetch("https://registry.npmjs.org/@ouro.bot/cli")
+          return res.json()
+        },
+        distTag: "alpha",
+      })
+    },
+    installCliVersion: async (version: string) => { installVersion(version, {}) },
+    activateCliVersion: (version: string) => { activateVersion(version, {}) },
+    getCurrentCliVersion: () => getCurrentVersion({}),
+    getPreviousCliVersion: () => getPreviousVersion({}),
+    listCliVersions: () => listInstalledVersions({}),
+    reExecFromNewVersion: (reArgs: string[]) => {
+      const entry = path.join(getOuroCliHome(), "CurrentVersion", "node_modules", "@ouro.bot", "cli", "dist", "heart", "daemon", "ouro-entry.js")
+      require("child_process").execFileSync("node", [entry, ...reArgs], { stdio: "inherit" })
+      process.exit(0)
     },
     /* v8 ignore stop */
     syncGlobalOuroBotWrapper: defaultSyncGlobalOuroBotWrapper,
