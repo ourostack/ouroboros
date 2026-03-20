@@ -922,11 +922,10 @@ describe("handleInboundTurn", () => {
       const getInnerDialogPendingDirSpy = vi.spyOn(pending, "getInnerDialogPendingDir").mockReturnValue("/tmp/pending/inner")
       const getInnerDialogSessionPathSpy = vi.spyOn(daemonThoughts, "getInnerDialogSessionPath")
         .mockReturnValue("/tmp/AgentBundles/slugger.ouro/state/sessions/self/inner/dialog.json")
-      const readInnerDialogStatusSpy = vi.spyOn(daemonThoughts, "readInnerDialogStatus").mockReturnValue({
-        queue: "clear",
-        wake: "in progress",
-        processing: "started",
-        surfaced: "nothing yet",
+      const readInnerDialogRawDataSpy = vi.spyOn(daemonThoughts, "readInnerDialogRawData").mockReturnValue({
+        pendingMessages: [],
+        turns: [],
+        runtimeState: { status: "running" },
       })
       const input = makeInput()
 
@@ -934,15 +933,15 @@ describe("handleInboundTurn", () => {
 
       const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
       const options = runAgentCall[4] as RunAgentOptions
-      expect((options as any).activeWorkFrame.inner).toEqual({
-        status: "running",
-        hasPending: false,
-      })
+      expect((options as any).activeWorkFrame.inner.status).toBe("running")
+      expect((options as any).activeWorkFrame.inner.hasPending).toBe(false)
+      expect((options as any).activeWorkFrame.inner.job).toBeDefined()
+      expect((options as any).activeWorkFrame.inner.job.status).toBe("running")
       expect(getAgentRootSpy).toHaveBeenCalled()
       expect(getAgentNameSpy).toHaveBeenCalled()
       expect(getInnerDialogPendingDirSpy).toHaveBeenCalledWith("slugger")
       expect(getInnerDialogSessionPathSpy).toHaveBeenCalledWith("/tmp/AgentBundles/slugger.ouro")
-      expect(readInnerDialogStatusSpy).toHaveBeenCalledWith(
+      expect(readInnerDialogRawDataSpy).toHaveBeenCalledWith(
         "/tmp/AgentBundles/slugger.ouro/state/sessions/self/inner/dialog.json",
         "/tmp/pending/inner",
       )

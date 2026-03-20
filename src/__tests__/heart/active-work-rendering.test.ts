@@ -1,0 +1,256 @@
+import { describe, it, expect, vi, beforeAll } from "vitest"
+
+vi.mock("../../nerves/runtime", () => ({
+  emitNervesEvent: vi.fn(),
+}))
+
+import { emitNervesEvent } from "../../nerves/runtime"
+import type { ActiveWorkFrame } from "../../heart/active-work"
+import type { InnerJob } from "../../heart/daemon/thoughts"
+
+function makeIdleJob(overrides: Partial<InnerJob> = {}): InnerJob {
+  return {
+    status: "idle",
+    content: null,
+    origin: null,
+    mode: "reflect",
+    obligationStatus: null,
+    surfacedResult: null,
+    queuedAt: null,
+    startedAt: null,
+    surfacedAt: null,
+    ...overrides,
+  }
+}
+
+function makeFrame(overrides: Partial<ActiveWorkFrame> = {}): ActiveWorkFrame {
+  return {
+    currentSession: { friendId: "friend-1", channel: "cli" as any, key: "session", sessionPath: "/tmp/s.json" },
+    currentObligation: null,
+    mustResolveBeforeHandoff: false,
+    centerOfGravity: "local-turn",
+    inner: { status: "idle", hasPending: false, job: makeIdleJob() },
+    bridges: [],
+    taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+    friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
+    bridgeSuggestion: null,
+    ...overrides,
+  }
+}
+
+describe("formatActiveWorkFrame (selfhood framing)", () => {
+  let formatActiveWorkFrame: (frame: ActiveWorkFrame) => string
+
+  beforeAll(async () => {
+    const mod = await import("../../heart/active-work")
+    formatActiveWorkFrame = mod.formatActiveWorkFrame
+  })
+
+  it("renders minimal frame with session line only", () => {
+    const result = formatActiveWorkFrame(makeFrame())
+    expect(result).toContain("## what i'm holding")
+    expect(result).toContain("i'm in a conversation on cli/session.")
+    expect(result).not.toContain("obligation")
+  })
+
+  it("renders obligation appended to session line", () => {
+    const result = formatActiveWorkFrame(makeFrame({
+      currentObligation: "think about naming",
+    }))
+    expect(result).toContain("i told them i'd think about naming.")
+  })
+
+  it("renders running inner job with origin and obligation", () => {
+    const result = formatActiveWorkFrame(makeFrame({
+      inner: {
+        status: "running",
+        hasPending: false,
+        origin: { friendId: "alex", channel: "teams", key: "session1" },
+        contentSnippet: "naming conventions",
+        obligationPending: true,
+        job: makeIdleJob({
+          status: "running",
+          origin: { friendId: "alex", channel: "teams", key: "session1", friendName: "Alex" },
+          obligationStatus: "pending",
+        }),
+      },
+    }))
+    expect(result).toContain("thinking through something privately")
+    expect(result).toContain("Alex asked about something")
+    expect(result).toContain("i still owe them an answer")
+  })
+
+  it("renders running inner job without origin", () => {
+    const result = formatActiveWorkFrame(makeFrame({
+      inner: {
+        status: "running",
+        hasPending: false,
+        job: makeIdleJob({
+          status: "running",
+          origin: null,
+        }),
+      },
+    }))
+    expect(result).toContain("thinking through something privately right now.")
+    expect(result).not.toContain("asked about something")
+  })
+
+  it("renders surfaced inner job without surfacedResult", () => {
+    const result = formatActiveWorkFrame(makeFrame({
+      inner: {
+        status: "idle",
+        hasPending: false,
+        job: makeIdleJob({
+          status: "surfaced",
+          surfacedResult: null,
+        }),
+      },
+    }))
+    expect(result).toContain("finished thinking about something privately")
+    expect(result).not.toContain("what i came to:")
+  })
+
+  it("renders queued inner job without content snippet", () => {
+    const result = formatActiveWorkFrame(makeFrame({
+      inner: {
+        status: "idle",
+        hasPending: true,
+        job: makeIdleJob({ status: "queued" }),
+      },
+    }))
+    expect(result).toContain("thought queued up for private attention")
+    expect(result).not.toContain("it's about:")
+  })
+
+  it("renders surfaced inner job with long surfacedResult (truncated)", () => {
+    const longResult = "a".repeat(150)
+    const result = formatActiveWorkFrame(makeFrame({
+      inner: {
+        status: "idle",
+        hasPending: false,
+        job: makeIdleJob({
+          status: "surfaced",
+          surfacedResult: longResult,
+        }),
+      },
+    }))
+    expect(result).toContain("what i came to:")
+    expect(result).toContain("...")
+    expect(result).not.toContain(longResult)
+  })
+
+  it("renders queued inner job with content snippet", () => {
+    const result = formatActiveWorkFrame(makeFrame({
+      inner: {
+        status: "idle",
+        hasPending: true,
+        contentSnippet: "naming conventions",
+        job: makeIdleJob({
+          status: "queued",
+          content: "naming conventions",
+        }),
+      },
+    }))
+    expect(result).toContain("thought queued up for private attention")
+    expect(result).toContain('it\'s about: "naming conventions"')
+  })
+
+  it("renders surfaced inner job", () => {
+    const result = formatActiveWorkFrame(makeFrame({
+      inner: {
+        status: "idle",
+        hasPending: false,
+        job: makeIdleJob({
+          status: "surfaced",
+          surfacedResult: "naming should be consistent across modules",
+        }),
+      },
+    }))
+    expect(result).toContain("finished thinking about something privately")
+    expect(result).toContain("bring my answer back")
+    expect(result).toContain("what i came to:")
+  })
+
+  it("renders bridges", () => {
+    const result = formatActiveWorkFrame(makeFrame({
+      bridges: [{
+        id: "bridge-1",
+        objective: "keep aligned",
+        summary: "same work",
+        lifecycle: "active",
+        runtime: "idle",
+        createdAt: "2026-01-01",
+        updatedAt: "2026-01-01",
+        attachedSessions: [],
+      }],
+    }))
+    expect(result).toContain("shared work spanning sessions")
+    expect(result).toContain("bridge-1")
+  })
+
+  it("renders bridge suggestion begin-new", () => {
+    const result = formatActiveWorkFrame(makeFrame({
+      bridgeSuggestion: {
+        kind: "begin-new",
+        targetSession: {
+          friendId: "friend-1",
+          friendName: "Ari",
+          channel: "cli",
+          key: "session",
+          sessionPath: "/tmp/s.json",
+          snapshot: "",
+          trust: { level: "friend", basis: "direct", summary: "", why: "", permits: [], constraints: [] },
+          delivery: { mode: "direct", reason: "" },
+          lastActivityAt: "",
+          lastActivityMs: 0,
+          activitySource: "friend-facing",
+        },
+        objectiveHint: "keep aligned",
+        reason: "shared-work-candidate",
+      },
+    }))
+    expect(result).toContain("should connect these threads")
+  })
+
+  it("renders bridge suggestion attach-existing", () => {
+    const result = formatActiveWorkFrame(makeFrame({
+      bridgeSuggestion: {
+        kind: "attach-existing",
+        bridgeId: "bridge-1",
+        targetSession: {
+          friendId: "friend-1",
+          friendName: "Ari",
+          channel: "cli",
+          key: "session",
+          sessionPath: "/tmp/s.json",
+          snapshot: "",
+          trust: { level: "friend", basis: "direct", summary: "", why: "", permits: [], constraints: [] },
+          delivery: { mode: "direct", reason: "" },
+          lastActivityAt: "",
+          lastActivityMs: 0,
+          activitySource: "friend-facing",
+        },
+        reason: "shared-work-candidate",
+      },
+    }))
+    expect(result).toContain("relates to bridge bridge-1")
+  })
+
+  it("renders live tasks", () => {
+    const result = formatActiveWorkFrame(makeFrame({
+      taskPressure: { compactBoard: "", liveTaskNames: ["shared-relay", "daily-standup"], activeBridges: [] },
+    }))
+    expect(result).toContain("also tracking: shared-relay, daily-standup")
+  })
+
+  it("renders 'not in a conversation' when no currentSession", () => {
+    const result = formatActiveWorkFrame(makeFrame({
+      currentSession: null,
+    }))
+    expect(result).toContain("not in a conversation right now")
+  })
+
+  it("emits nerves event reference", () => {
+    expect(emitNervesEvent).toBeDefined()
+  })
+})

@@ -83,6 +83,7 @@ vi.mock("../../heart/session-activity", () => ({
 vi.mock("../../heart/bridges/manager", () => ({
   createBridgeManager: () => ({
     getBridge: (...args: any[]) => mockGetBridge(...args),
+    findBridgesForSession: () => [],
   }),
 }))
 
@@ -985,6 +986,48 @@ describe("inner dialog runtime", () => {
     const routedPayload = JSON.parse(fs.readFileSync(path.join(cliPendingDir, routedFiles[0]), "utf8"))
     expect(routedPayload.content).toBe("cli still got it")
     expect(fs.existsSync(bluebubblesPendingDir)).toBe(false)
+  })
+
+  it("emits senses.obligation_fulfilled nerves event when routeDelegatedCompletion routes a delegated completion", async () => {
+    const deferredDir = path.join(agentRoot, "state", "pending-returns", "friend-1")
+    mockGetDeferredReturnDir.mockReturnValue(deferredDir)
+    mockHandleInboundTurn.mockResolvedValue({
+      resolvedContext: { friend: { id: "self", name: "test-agent" }, channel: innerCapabilities },
+      gateResult: { allowed: true },
+      usage: undefined,
+      sessionPath: sessionFile,
+      messages: [{ role: "assistant", content: "obligation result" }],
+      completion: { answer: "obligation result", intent: "complete" },
+      drainedPending: [
+        {
+          from: "test-agent",
+          content: "reflect on penguins",
+          timestamp: 1709900001,
+          delegatedFrom: {
+            friendId: "friend-1",
+            channel: "bluebubbles",
+            key: "chat",
+          },
+          obligationStatus: "pending",
+        },
+      ],
+    })
+
+    await runInnerDialogTurn({
+      reason: "heartbeat",
+      now: () => new Date("2026-03-13T20:10:00.000Z"),
+    })
+
+    const fulfillmentEvent = mockEmitNervesEvent.mock.calls.find(
+      (call: any[]) => call[0]?.event === "senses.obligation_fulfilled",
+    )
+    expect(fulfillmentEvent).toBeDefined()
+    expect(fulfillmentEvent![0].component).toBe("senses")
+    expect(fulfillmentEvent![0].meta).toEqual(expect.objectContaining({
+      friendId: "friend-1",
+      channel: "bluebubbles",
+      key: "chat",
+    }))
   })
 
   it("passes bootstrap user message with aspirations on fresh session", async () => {

@@ -2,9 +2,16 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.74",
+      "version": "0.1.0-alpha.75",
       "changes": [
-        "Fix: `ouro config model` now pings the model with a tiny API call before switching, rejecting the change if the model returns an error (403, not supported, etc.)."
+        "Inner dialog is now experienced as private thinking, not system dispatch. go_inward tool lets the agent take a thread inward atomically, with a pipeline-generated handoff packet framed as self-directed thought.",
+        "Return obligations are enforced: the agent cannot move on from a conversation without addressing what it promised. Rejection messages orient rather than punish.",
+        "Center-of-gravity steering: the system prompt tells the agent where its attention is in selfhood language, not dashboard labels.",
+        "All status rendering rewritten from telemetry to self-awareness: \"what i'm holding\" replaces \"active work\", \"where my attention is\" replaces \"center of gravity\", \"what i'm sensing\" replaces \"delegation hint\".",
+        "New query_commitments tool: the agent can ask itself \"what am I holding right now?\" and get genuine self-reflection.",
+        "Bridge suggestions trigger earlier when multi-session pressure is detected. Inward completions automatically inherit bridge context for return routing.",
+        "Inner dialog modes (reflect/plan/relay) give the agent awareness of what kind of thinking it's doing.",
+        "Canonical InnerJob type with lifecycle (idle/queued/running/surfaced) replaces reconstructed status."
       ]
     },
     {
@@ -43,7 +50,7 @@
     {
       "version": "0.1.0-alpha.69",
       "changes": [
-        "Generic MCP client: ouroboros agents can now connect to any MCP server (e.g., agency mcp ado, agency mcp mail) configured in agent.json. Zero new dependencies — pure JSON-RPC over stdio.",
+        "Generic MCP client: ouroboros agents can now connect to any MCP server (e.g., agency mcp ado, agency mcp mail) configured in agent.json. Zero new dependencies \u2014 pure JSON-RPC over stdio.",
         "New `ouro mcp list` and `ouro mcp call` CLI commands route through the daemon socket to persistent MCP connections, so agents use shared server instances instead of spawning fresh ones per call.",
         "MCP tools are injected into the agent's system prompt on startup, so agents know what external capabilities are available without a discovery step.",
         "Trust manifest: `mcp list` requires acquaintance trust, `mcp call` requires friend trust."
@@ -52,7 +59,7 @@
     {
       "version": "0.1.0-alpha.68",
       "changes": [
-        "New no_response tool lets agents stay silent in group chats when the moment doesn't call for a reply — reactions, side conversations, and tapbacks no longer trigger unwanted responses.",
+        "New no_response tool lets agents stay silent in group chats when the moment doesn't call for a reply \u2014 reactions, side conversations, and tapbacks no longer trigger unwanted responses.",
         "Group chat participation prompt teaches agents to be intentional participants, comfortable with silence, and to prefer reactions over full text replies when appropriate.",
         "System prompt includes --agent flag in all ouro CLI examples for non-daemon deployments. Azure startup symlinks ouro CLI into /usr/local/bin."
       ]
@@ -66,7 +73,7 @@
     {
       "version": "0.1.0-alpha.65",
       "changes": [
-        "Tool permissions overhauled: channel-level blocking removed, all tools now visible on all channels. Guardrails are invocation-level with two layers — structural (edit-requires-read, destructive pattern blocking, protected paths) always on for everyone, and trust-level (ouro CLI per-subcommand trust manifest, general CLI allowlists, bundle-scoped writes) for untrusted contexts.",
+        "Tool permissions overhauled: channel-level blocking removed, all tools now visible on all channels. Guardrails are invocation-level with two layers \u2014 structural (edit-requires-read, destructive pattern blocking, protected paths) always on for everyone, and trust-level (ouro CLI per-subcommand trust manifest, general CLI allowlists, bundle-scoped writes) for untrusted contexts.",
         "New `ouro changelog` CLI subcommand reads changelog.json and supports `--from <version>` for delta filtering, so agents can introspect their own update history on any channel.",
         "Compound shell commands (&&, ;, |, $()) are blocked for untrusted users to prevent smuggling dangerous operations behind safe prefixes.",
         "Azure App Service deployment migrated from zip-deploy to npm-based harness install with persistent agent bundle and managed identity auth."

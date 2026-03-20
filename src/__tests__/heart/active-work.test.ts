@@ -349,10 +349,9 @@ describe("active work frame", () => {
     })
 
     const rendered = formatActiveWorkFrame(frame)
-    expect(rendered).toContain("## active work")
-    expect(rendered).toContain("center: local-turn")
-    expect(rendered).toContain("obligation: keep Ari aligned across chats")
-    expect(rendered).toContain("freshest friend-facing session: cli/session")
+    expect(rendered).toContain("## what i'm holding")
+    expect(rendered).toContain("i'm in a conversation on")
+    expect(rendered).toContain("i told them i'd keep Ari aligned across chats.")
   })
 
   it("falls back gracefully when formatting a sparse frame with optional runtime sections absent", async () => {
@@ -366,11 +365,9 @@ describe("active work frame", () => {
       bridgeSuggestion: null,
     } as any)
 
-    expect(rendered).toContain("## active work")
-    expect(rendered).toContain("center: local-turn")
-    expect(rendered).toContain("inner status: idle")
-    expect(rendered).not.toContain("live tasks:")
-    expect(rendered).not.toContain("bridges:")
+    expect(rendered).toContain("## what i'm holding")
+    expect(rendered).toContain("not in a conversation right now")
+    expect(rendered).not.toContain("tracking:")
   })
 
   it("surfaces explicit target-candidate detail when the frame already has candidate truth", async () => {
@@ -572,8 +569,7 @@ describe("active work frame", () => {
     })
 
     const rendered = formatActiveWorkFrame(frame)
-    expect(rendered).toContain("suggested bridge: begin -> cli/session")
-    expect(rendered).toContain("bridge objective hint: keep this shared work aligned")
+    expect(rendered).toContain("should connect these threads")
   })
 
   it("can suggest a bridge from live task pressure even when there is no obligation text", async () => {
@@ -741,8 +737,8 @@ describe("active work frame", () => {
     expect(frame.bridgeSuggestion).toBeNull()
 
     const rendered = formatActiveWorkFrame(frame)
-    expect(rendered).toContain("handoff pressure: must resolve before handoff")
-    expect(rendered).toContain("bridges: bridge-1 [active-idle]")
+    expect(rendered).toContain("i told them i'd keep Ari aligned across chats.")
+    expect(rendered).toContain("shared work spanning sessions: bridge-1 [active-idle]")
   })
 
   it("formats sparse inward work without a current session and shows pending inner state cleanly", async () => {
@@ -774,11 +770,8 @@ describe("active work frame", () => {
     expect(frame.friendActivity.freshestForCurrentFriend).toBeNull()
 
     const rendered = formatActiveWorkFrame(frame)
-    expect(rendered).toContain("center: inward-work")
-    expect(rendered).toContain("inner status: idle (pending queued)")
-    expect(rendered).not.toContain("current session:")
-    expect(rendered).not.toContain("freshest friend-facing session:")
-    expect(rendered).not.toContain("obligation:")
+    expect(rendered).toContain("## what i'm holding")
+    expect(rendered).toContain("not in a conversation right now")
   })
 
   it("exports a shared bridge suggestion helper that ignores already-covered sessions and only suggests other live surfaces", async () => {
@@ -936,10 +929,10 @@ describe("active work frame", () => {
         otherLiveSessionsForCurrentFriend: [],
       },
       bridgeSuggestion: suggestion,
-    })).toContain("suggested bridge: attach bridge-1 -> cli/session")
+    })).toContain("relates to bridge bridge-1")
   })
 
-  it("refuses to auto-suggest when more than one non-blocked cross-relationship target candidate is live", async () => {
+  it("suggests bridge when multiple non-blocked cross-relationship target candidates are live (picks freshest)", async () => {
     const { buildActiveWorkFrame } = await import("../../heart/active-work")
 
     const frame = buildActiveWorkFrame({
@@ -1018,7 +1011,8 @@ describe("active work frame", () => {
       ],
     } as any)
 
-    expect(frame.bridgeSuggestion).toBeNull()
+    expect(frame.bridgeSuggestion).not.toBeNull()
+    expect(frame.bridgeSuggestion!.kind).toBe("begin-new")
   })
 
   it("ignores blocked and non-friend-facing candidates when evaluating bridge suggestions", async () => {
@@ -1353,5 +1347,192 @@ describe("delegation router", () => {
       reasons: [],
       outwardClosureRequired: false,
     })
+  })
+
+  it("passes through enriched inner fields (origin, contentSnippet, obligationPending) from input to frame", async () => {
+    const { buildActiveWorkFrame } = await import("../../heart/active-work")
+
+    const frame = buildActiveWorkFrame({
+      currentSession: null,
+      mustResolveBeforeHandoff: false,
+      inner: {
+        status: "running",
+        hasPending: true,
+        origin: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
+        contentSnippet: "think about penguins",
+        obligationPending: true,
+      },
+      bridges: [],
+      taskBoard: {
+        compact: "",
+        full: "",
+        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [] },
+        actionRequired: [],
+        unresolvedDependencies: [],
+        activeSessions: [],
+        activeBridges: [],
+      },
+      friendActivity: [],
+    })
+
+    expect(frame.inner.origin).toEqual({ friendId: "friend-1", channel: "bluebubbles", key: "chat" })
+    expect(frame.inner.contentSnippet).toBe("think about penguins")
+    expect(frame.inner.obligationPending).toBe(true)
+  })
+
+  it("renders enriched inner status with origin and obligation in formatActiveWorkFrame", async () => {
+    const { formatActiveWorkFrame } = await import("../../heart/active-work")
+
+    const rendered = formatActiveWorkFrame({
+      currentSession: null,
+      currentObligation: null,
+      mustResolveBeforeHandoff: false,
+      centerOfGravity: "inward-work",
+      inner: {
+        status: "running",
+        hasPending: true,
+        origin: { friendId: "alice", channel: "bluebubbles", key: "session" },
+        contentSnippet: "what should I think about this?",
+        obligationPending: true,
+        job: {
+          status: "running" as const,
+          content: "what should I think about this?",
+          origin: { friendId: "alice", channel: "bluebubbles", key: "session" },
+          mode: "reflect" as const,
+          obligationStatus: "pending" as const,
+          surfacedResult: null,
+          queuedAt: null,
+          startedAt: null,
+          surfacedAt: null,
+        },
+      },
+      bridges: [],
+      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+      friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
+      bridgeSuggestion: null,
+    } as any)
+
+    expect(rendered).toContain("thinking through something privately right now")
+    expect(rendered).toContain("i still owe them an answer")
+  })
+
+  it("renders basic inner status without enrichment when origin is absent", async () => {
+    const { formatActiveWorkFrame } = await import("../../heart/active-work")
+
+    const rendered = formatActiveWorkFrame({
+      currentSession: null,
+      currentObligation: null,
+      mustResolveBeforeHandoff: false,
+      centerOfGravity: "local-turn",
+      inner: { status: "idle", hasPending: false },
+      bridges: [],
+      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+      friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
+      bridgeSuggestion: null,
+    } as any)
+
+    expect(rendered).toContain("## what i'm holding")
+    expect(rendered).toContain("not in a conversation right now")
+  })
+})
+
+describe("ActiveWorkFrame.inner with InnerJob", () => {
+  it("buildActiveWorkFrame preserves job field from inner input", async () => {
+    const { buildActiveWorkFrame } = await import("../../heart/active-work")
+
+    const idleJob = {
+      status: "idle" as const,
+      content: null,
+      origin: null,
+      mode: "reflect" as const,
+      obligationStatus: null,
+      surfacedResult: null,
+      queuedAt: null,
+      startedAt: null,
+      surfacedAt: null,
+    }
+
+    const frame = buildActiveWorkFrame({
+      currentSession: {
+        friendId: "friend-1",
+        channel: "cli",
+        key: "session",
+        sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+      },
+      mustResolveBeforeHandoff: false,
+      inner: { status: "idle", hasPending: false, job: idleJob },
+      bridges: [],
+      taskBoard: {
+        compact: "",
+        activeBridges: [],
+        byStatus: {
+          drafting: [],
+          processing: [],
+          validating: [],
+          collaborating: [],
+          paused: [],
+          blocked: [],
+          done: [],
+        },
+      },
+      friendActivity: [],
+    })
+
+    expect(frame.inner.job).toEqual(idleJob)
+    expect(frame.inner.job.status).toBe("idle")
+  })
+
+  it("buildActiveWorkFrame preserves running InnerJob with origin", async () => {
+    const { buildActiveWorkFrame } = await import("../../heart/active-work")
+
+    const runningJob = {
+      status: "running" as const,
+      content: "think about naming conventions",
+      origin: { friendId: "alex", channel: "teams", key: "session1" },
+      mode: "plan" as const,
+      obligationStatus: "pending" as const,
+      surfacedResult: null,
+      queuedAt: 1000,
+      startedAt: "2026-01-01T00:00:00Z",
+      surfacedAt: null,
+    }
+
+    const frame = buildActiveWorkFrame({
+      currentSession: {
+        friendId: "friend-1",
+        channel: "cli",
+        key: "session",
+        sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+      },
+      mustResolveBeforeHandoff: false,
+      inner: {
+        status: "running",
+        hasPending: false,
+        origin: { friendId: "alex", channel: "teams", key: "session1" },
+        contentSnippet: "think about naming conventions",
+        obligationPending: true,
+        job: runningJob,
+      },
+      bridges: [],
+      taskBoard: {
+        compact: "",
+        activeBridges: [],
+        byStatus: {
+          drafting: [],
+          processing: [],
+          validating: [],
+          collaborating: [],
+          paused: [],
+          blocked: [],
+          done: [],
+        },
+      },
+      friendActivity: [],
+    })
+
+    expect(frame.inner.job).toEqual(runningJob)
+    expect(frame.inner.job.status).toBe("running")
+    expect(frame.inner.job.origin).toEqual({ friendId: "alex", channel: "teams", key: "session1" })
+    expect(frame.inner.job.mode).toBe("plan")
   })
 })

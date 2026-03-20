@@ -18,6 +18,8 @@ export interface PendingMessage {
   content: string
   timestamp: number
   delegatedFrom?: DelegatedFrom
+  obligationStatus?: "pending" | "fulfilled"
+  mode?: "reflect" | "plan" | "relay"
 }
 
 export function getPendingDir(agentName: string, friendId: string, channel: string, key: string): string {
@@ -54,6 +56,10 @@ function writeQueueFile(queueDir: string, message: PendingMessage): string {
   const filePath = path.join(queueDir, fileName)
   fs.writeFileSync(filePath, JSON.stringify(message, null, 2))
   return filePath
+}
+
+export function queuePendingMessage(pendingDir: string, message: PendingMessage): void {
+  writeQueueFile(pendingDir, message)
 }
 
 function drainQueue(queueDir: string): { messages: PendingMessage[]; recovered: number } {

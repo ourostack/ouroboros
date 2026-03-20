@@ -8,7 +8,7 @@ import {
   getOpenAICodexConfig,
 } from "./config";
 import { loadAgentConfig } from "./identity";
-import { execTool, summarizeArgs, finalAnswerTool, noResponseTool, getToolsForChannel, isConfirmationRequired } from "../repertoire/tools";
+import { execTool, summarizeArgs, finalAnswerTool, noResponseTool, goInwardTool, getToolsForChannel, isConfirmationRequired } from "../repertoire/tools";
 import type { ToolContext } from "../repertoire/tools";
 import { getChannelCapabilities } from "../mind/friends/channel";
 import type { AssistantMessageWithReasoning, ResponseItem } from "./streaming";
@@ -27,7 +27,12 @@ import { createOpenAICodexProviderRuntime } from "./providers/openai-codex";
 import { createGithubCopilotProviderRuntime } from "./providers/github-copilot";
 import type { SteeringFollowUpEffect } from "../senses/continuity";
 import type { ActiveWorkFrame } from "./active-work";
-import type { DelegationDecision } from "./delegation";
+import type { DelegationDecision, DelegationReason } from "./delegation";
+import type { InnerJob } from "./daemon/thoughts";
+import { getInnerDialogPendingDir, queuePendingMessage } from "../mind/pending";
+import type { PendingMessage } from "../mind/pending";
+import { getAgentName } from "./identity";
+import { requestInnerWake } from "./daemon/socket-client";
 
 export type ProviderId = "azure" | "anthropic" | "minimax" | "openai-codex" | "github-copilot";
 
@@ -247,7 +252,59 @@ export type RunAgentOutcome =
   | "superseded"
   | "aborted"
   | "errored"
-  | "no_response";
+  | "no_response"
+  | "go_inward";
+
+const DELEGATION_REASON_PROSE_HANDOFF: Record<DelegationReason, string> = {
+  explicit_reflection: "something in the conversation called for reflection",
+  cross_session: "this touches other conversations",
+  bridge_state: "there's shared work spanning sessions",
+  task_state: "there are active tasks that relate to this",
+  non_fast_path_tool: "this needs tools beyond a simple reply",
+  unresolved_obligation: "there's an unresolved commitment from an earlier conversation",
+};
+
+function buildGoInwardHandoffPacket(params: {
+  content: string
+  mode: "reflect" | "plan" | "relay"
+  delegationDecision?: DelegationDecision
+  currentSession?: { friendId: string; channel: string; key: string } | null
+  currentObligation?: string | null
+  outwardClosureRequired: boolean
+}): string {
+  const reasons = params.delegationDecision?.reasons ?? []
+  const reasonProse = reasons.length > 0
+    ? reasons.map((r) => DELEGATION_REASON_PROSE_HANDOFF[r]).join("; ")
+    : "this felt like it needed more thought"
+
+  const returnAddress = params.currentSession
+    ? `${params.currentSession.friendId}/${params.currentSession.channel}/${params.currentSession.key}`
+    : "no specific return -- just thinking"
+
+  let obligationLine: string
+  if (params.outwardClosureRequired && params.currentSession) {
+    obligationLine = `i need to come back to ${params.currentSession.friendId} with something`
+  } else {
+    obligationLine = "no obligation -- just thinking"
+  }
+
+  return [
+    "## what i need to think about",
+    params.content,
+    "",
+    "## why this came up",
+    reasonProse,
+    "",
+    "## where to bring it back",
+    returnAddress,
+    "",
+    "## what i owe",
+    obligationLine,
+    "",
+    "## thinking mode",
+    params.mode,
+  ].join("\n")
+}
 
 type FinalAnswerIntent = "complete" | "blocked" | "direct_reply";
 
@@ -272,17 +329,42 @@ function parseFinalAnswerPayload(argumentsText: string): { answer?: string; inte
   }
 }
 
-function getFinalAnswerRetryError(
+export function getFinalAnswerRetryError(
   mustResolveBeforeHandoff: boolean,
   intent: FinalAnswerIntent | undefined,
   sawSteeringFollowUp: boolean,
+  delegationDecision?: DelegationDecision,
+  sawSendMessageSelf?: boolean,
+  sawGoInward?: boolean,
+  sawQuerySession?: boolean,
+  innerJob?: InnerJob,
 ): string {
+  // 1. Delegation adherence: delegate-inward without evidence of inward action
+  if (delegationDecision?.target === "delegate-inward" && !sawSendMessageSelf && !sawGoInward && !sawQuerySession) {
+    emitNervesEvent({
+      event: "engine.delegation_adherence_rejected",
+      component: "engine",
+      message: "delegation adherence check rejected final_answer",
+      meta: {
+        target: delegationDecision.target,
+        reasons: delegationDecision.reasons,
+      },
+    });
+    return "you're reaching for a final answer, but part of you knows this needs more thought. take it inward -- go_inward will let you think privately, or send_message(self) if you just want to leave yourself a note.";
+  }
+  // 2. Pending obligation not addressed
+  if (innerJob?.obligationStatus === "pending" && !sawSendMessageSelf && !sawGoInward) {
+    return "you're still holding something from an earlier conversation -- someone is waiting for your answer. finish the thought first, or go_inward to keep working on it privately.";
+  }
+  // 3. mustResolveBeforeHandoff + missing intent
   if (mustResolveBeforeHandoff && !intent) {
     return "your final_answer is missing required intent. when you must keep going until done or blocked, call final_answer again with answer plus intent=complete, blocked, or direct_reply.";
   }
+  // 4. mustResolveBeforeHandoff + direct_reply without follow-up
   if (mustResolveBeforeHandoff && intent === "direct_reply" && !sawSteeringFollowUp) {
     return "your final_answer used intent=direct_reply without a newer steering follow-up. continue the unresolved work, or call final_answer again with intent=complete or blocked when appropriate.";
   }
+  // 5. Default malformed fallback
   return "your final_answer was incomplete or malformed. call final_answer again with your complete response.";
 }
 
@@ -508,6 +590,10 @@ export async function runAgent(
   let sawSteeringFollowUp = false;
   let mustResolveBeforeHandoffActive = options?.mustResolveBeforeHandoff === true;
   let currentReasoningEffort = "medium";
+  let sawSendMessageSelf = false;
+  let sawGoInward = false;
+  let sawQuerySession = false;
+  let sawBridgeManage = false;
 
   // Prevent MaxListenersExceeded warning — each iteration adds a listener
   try { require("events").setMaxListeners(50, signal); } catch { /* unsupported */ }
@@ -538,7 +624,7 @@ export async function runAgent(
     // model must call a tool every turn — final_answer is how it exits.
     // Overridable via options.toolChoiceRequired = false (e.g. CLI).
     const activeTools = toolChoiceRequired
-      ? [...baseTools, ...(currentContext?.isGroupChat ? [noResponseTool] : []), finalAnswerTool]
+      ? [...baseTools, goInwardTool, ...(currentContext?.isGroupChat ? [noResponseTool] : []), finalAnswerTool]
       : baseTools;
     const steeringFollowUps = options?.drainSteeringFollowUps?.() ?? [];
     if (steeringFollowUps.length > 0) {
@@ -663,7 +749,7 @@ export async function runAgent(
             // malformed. Clear any partial streamed text or noise, then push the
             // assistant msg + error tool result and let the model try again.
             callbacks.onClearText?.();
-            const retryError = getFinalAnswerRetryError(mustResolveBeforeHandoffActive, intent, sawSteeringFollowUp);
+            const retryError = getFinalAnswerRetryError(mustResolveBeforeHandoffActive, intent, sawSteeringFollowUp, options?.delegationDecision, sawSendMessageSelf, sawGoInward);
             messages.push(msg);
             messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: retryError });
             providerRuntime.appendToolOutput(result.toolCalls[0].id, retryError);
@@ -694,8 +780,79 @@ export async function runAgent(
           continue;
         }
 
+        // Check for go_inward sole call: intercept before tool execution
+        const isSoleGoInward = result.toolCalls.length === 1 && result.toolCalls[0].name === "go_inward";
+        if (isSoleGoInward) {
+          let parsedArgs: { content?: string; answer?: string; mode?: string } = {};
+          try {
+            parsedArgs = JSON.parse(result.toolCalls[0].arguments);
+          } catch { /* ignore */ }
+          /* v8 ignore next -- defensive: content always string from model @preserve */
+          const content = typeof parsedArgs.content === "string" ? parsedArgs.content : "";
+          const answer = typeof parsedArgs.answer === "string" ? parsedArgs.answer : undefined;
+          const parsedMode = parsedArgs.mode === "reflect" || parsedArgs.mode === "plan" || parsedArgs.mode === "relay"
+            ? parsedArgs.mode
+            : undefined;
+          const mode = parsedMode || "reflect";
+
+          // Emit outward answer if provided
+          if (answer) {
+            callbacks.onClearText?.();
+            callbacks.onTextChunk(answer);
+          }
+
+          // Build handoff packet and enqueue
+          const handoffContent = buildGoInwardHandoffPacket({
+            content,
+            mode,
+            delegationDecision: options?.delegationDecision,
+            currentSession: (options?.toolContext as ToolContext | undefined)?.currentSession ?? null,
+            currentObligation: options?.currentObligation ?? null,
+            outwardClosureRequired: options?.delegationDecision?.outwardClosureRequired ?? false,
+          });
+          const pendingDir = getInnerDialogPendingDir(getAgentName());
+          const currentSession = (options?.toolContext as ToolContext | undefined)?.currentSession;
+          const isInnerChannel = currentSession?.friendId === "self" && currentSession?.channel === "inner";
+          const envelope: PendingMessage = {
+            from: getAgentName(),
+            friendId: "self",
+            channel: "inner",
+            key: "dialog",
+            content: handoffContent,
+            timestamp: Date.now(),
+            mode,
+            ...(currentSession && !isInnerChannel ? {
+              delegatedFrom: {
+                friendId: currentSession.friendId,
+                channel: currentSession.channel,
+                key: currentSession.key,
+              },
+              obligationStatus: "pending" as const,
+            } : {}),
+          };
+          queuePendingMessage(pendingDir, envelope);
+          try { await requestInnerWake(getAgentName()); } catch { /* daemon may not be running */ }
+
+          sawGoInward = true;
+          messages.push(msg);
+          const ack = "(going inward)";
+          messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: ack });
+          providerRuntime.appendToolOutput(result.toolCalls[0].id, ack);
+
+          emitNervesEvent({
+            component: "engine",
+            event: "engine.go_inward",
+            message: "taking thread inward",
+            meta: { mode, hasAnswer: answer !== undefined, contentSnippet: content.slice(0, 80) },
+          });
+
+          outcome = "go_inward";
+          done = true;
+          continue;
+        }
+
         messages.push(msg);
-        // SHARED: execute tools (final_answer and no_response in mixed calls are rejected inline)
+        // SHARED: execute tools (final_answer, no_response, go_inward in mixed calls are rejected inline)
         for (const tc of result.toolCalls) {
           if (signal?.aborted) break;
           // Intercept final_answer in mixed call: reject it
@@ -712,12 +869,26 @@ export async function runAgent(
             providerRuntime.appendToolOutput(tc.id, rejection);
             continue;
           }
+          // Intercept go_inward in mixed call: reject it
+          if (tc.name === "go_inward") {
+            const rejection = "rejected: go_inward must be the only tool call. finish your other work first, then call go_inward alone.";
+            messages.push({ role: "tool", tool_call_id: tc.id, content: rejection });
+            providerRuntime.appendToolOutput(tc.id, rejection);
+            continue;
+          }
           let args: Record<string, string> = {};
           try {
             args = JSON.parse(tc.arguments);
           } catch {
             /* ignore */
           }
+          if (tc.name === "send_message" && args.friendId === "self") {
+            sawSendMessageSelf = true;
+          }
+          /* v8 ignore next -- flag tested via truth-check integration tests @preserve */
+          if (tc.name === "query_session") sawQuerySession = true;
+          /* v8 ignore next -- flag tested via truth-check integration tests @preserve */
+          if (tc.name === "bridge_manage") sawBridgeManage = true;
           const argSummary = summarizeArgs(tc.name, args);
           // Confirmation check for mutate tools
           if (isConfirmationRequired(tc.name) && !options?.skipConfirmation) {
@@ -810,7 +981,7 @@ export async function runAgent(
     trace_id: traceId,
     component: "engine",
     message: "runAgent turn completed",
-    meta: { done },
+    meta: { done, sawGoInward, sawQuerySession, sawBridgeManage },
   });
   return { usage: lastUsage, outcome, completion };
 }

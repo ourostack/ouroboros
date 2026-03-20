@@ -15,6 +15,7 @@ import {
   getPendingDir,
   INNER_DIALOG_PENDING,
   type PendingMessage,
+  type DelegatedFrom,
 } from "../mind/pending"
 import { getChannelCapabilities } from "../mind/friends/channel"
 import { enforceTrustGate } from "./trust-gate"
@@ -303,6 +304,23 @@ async function tryDeliverDelegatedCompletion(
   return result.delivered
 }
 
+export function enrichDelegatedFromWithBridge(delegatedFrom: DelegatedFrom): DelegatedFrom {
+  if (delegatedFrom.bridgeId) {
+    return delegatedFrom
+  }
+  const bridgeManager = createBridgeManager()
+  const originBridges = bridgeManager.findBridgesForSession({
+    friendId: delegatedFrom.friendId,
+    channel: delegatedFrom.channel,
+    key: delegatedFrom.key,
+  })
+  const activeBridge = originBridges.find((b) => b.lifecycle === "active")
+  if (activeBridge) {
+    return { ...delegatedFrom, bridgeId: activeBridge.id }
+  }
+  return delegatedFrom
+}
+
 async function routeDelegatedCompletion(
   agentRoot: string,
   agentName: string,
@@ -315,7 +333,19 @@ async function routeDelegatedCompletion(
     return
   }
 
-  const delegatedFrom = delegated.delegatedFrom
+  const delegatedFrom = enrichDelegatedFromWithBridge(delegated.delegatedFrom)
+  if (delegated.obligationStatus === "pending") {
+    emitNervesEvent({
+      event: "senses.obligation_fulfilled",
+      component: "senses",
+      message: "obligation fulfilled via delegated completion",
+      meta: {
+        friendId: delegatedFrom.friendId,
+        channel: delegatedFrom.channel,
+        key: delegatedFrom.key,
+      },
+    })
+  }
   const outboundEnvelope: PendingMessage = {
     from: agentName,
     friendId: delegatedFrom.friendId,
