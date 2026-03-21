@@ -167,7 +167,13 @@ export function createOpenAICodexProviderRuntime(): ProviderRuntime {
       };
       if (request.toolChoiceRequired) params.tool_choice = "required";
       try {
-        const result = await streamResponsesApi(this.client as OpenAI, params, request.callbacks, request.signal);
+        const result = await streamResponsesApi(
+          this.client as OpenAI,
+          params,
+          request.callbacks,
+          request.signal,
+          request.eagerFinalAnswerStreaming,
+        );
         for (const item of result.outputItems) nativeInput!.push(item);
         return result;
       } catch (error) {
