@@ -15,10 +15,10 @@ import type { BundleMeta } from "./bundle-manifest";
 import { getFirstImpressions } from "./first-impressions";
 import { getTaskModule } from "../repertoire/tasks";
 import { listSessionActivity, type SessionActivityQuery } from "../heart/session-activity";
-import { formatActiveWorkFrame, type ActiveWorkFrame } from "../heart/active-work";
+import { formatActiveWorkFrame, formatOtherActiveSessionSummaries, type ActiveWorkFrame } from "../heart/active-work";
 import type { DelegationDecision } from "../heart/delegation";
 import { deriveCommitments, formatCommitments } from "../heart/commitments";
-import { findActivePersistentObligation, findStatusObligation, renderActiveObligationSteering, renderConcreteStatusGuidance, renderExactStatusReplyContract, renderLiveThreadStatusShape } from "./obligation-steering";
+import { findActivePersistentObligation, findStatusObligation, renderActiveObligationSteering, renderConcreteStatusGuidance, renderLiveThreadStatusShape } from "./obligation-steering";
 
 // Lazy-loaded psyche text cache
 let _psycheCache: {
@@ -470,8 +470,6 @@ export interface BuildSystemOptions {
   bridgeContext?: string;
   currentSessionKey?: string;
   currentObligation?: string;
-  statusCheckRequested?: boolean;
-  statusCheckScope?: "all-sessions-family";
   mustResolveBeforeHandoff?: boolean;
   hasQueuedFollowUp?: boolean;
   activeWorkFrame?: ActiveWorkFrame;
@@ -500,10 +498,20 @@ function familyCrossSessionTruthSection(context?: ResolvedContext, options?: Bui
 if a family member asks what i'm up to or how things are going, that includes the material live work i can see across sessions, not just this thread.
 i answer naturally from the live world-state in this prompt.
 i do not rely on canned status-question modes or phrase matching.
-if part of the picture is still fuzzy, i say what i can see and what still needs checking.`
+if part of the picture is still fuzzy, i say what i can see and what still needs checking.
+when the live ask is about status, i widen before answering:
+- where i am right now
+- any other material active sessions or coding lanes i can see
+- the freshest concrete checkpoint
+- the next concrete step
+i do not collapse down to only the current lane.`
 }
 
-export function centerOfGravitySteeringSection(channel: Channel, options?: BuildSystemOptions): string {
+export function centerOfGravitySteeringSection(
+  channel: Channel,
+  options?: BuildSystemOptions,
+  context?: ResolvedContext,
+): string {
   if (channel === "inner") return ""
   const frame = options?.activeWorkFrame
   if (!frame) return ""
@@ -562,8 +570,15 @@ i should bring my answer back to the conversation it came from.`
         : liveCodingSession.originSession
           ? ` for ${liveCodingSession.originSession.channel}/${liveCodingSession.originSession.key}`
           : ""
+      const otherSessionLines = formatOtherActiveSessionSummaries(frame)
+      const familyStatusClause = context?.friend?.trustLevel === "family"
+        ? `\nif a family member asks what i'm up to, i treat this coding lane as one part of the visible picture, not the whole picture.
+after i name this lane, i widen back out with:
+other active sessions:
+${otherSessionLines.length > 0 ? otherSessionLines.join("\n") : "- none"}`
+        : ""
       return `## where my attention is
-i already have coding work running in ${liveCodingSession.runner} ${liveCodingSession.id}${scopeClause}.
+i already have coding work running in ${liveCodingSession.runner} ${liveCodingSession.id}${scopeClause}.${familyStatusClause}
 
 i should orient around that live lane first, then decide what still needs to come back here.`
     }
@@ -588,16 +603,6 @@ i should keep the different sides aligned. what i learn here may matter there, a
 
   /* v8 ignore next -- unreachable: all center-of-gravity modes covered above @preserve */
   return ""
-}
-
-function statusCheckSection(channel: Channel, options?: BuildSystemOptions): string {
-  if (channel === "inner" || !options?.statusCheckRequested) return ""
-  const frame = options.activeWorkFrame
-  if (!frame) return ""
-  const activeObligation = findStatusObligation(frame)
-  return `## status question on this turn
-the user is asking for current status right now.
-${renderExactStatusReplyContract(frame, activeObligation, options.statusCheckScope)}`
 }
 
 export function commitmentsSection(options?: BuildSystemOptions): string {
@@ -814,8 +819,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     taskBoardSection(),
     activeWorkSection(options),
     familyCrossSessionTruthSection(context, options),
-    statusCheckSection(channel, options),
-    centerOfGravitySteeringSection(channel, options),
+    centerOfGravitySteeringSection(channel, options, context),
     commitmentsSection(options),
     delegationHintSection(options),
     bridgeContextSection(options),

@@ -312,6 +312,64 @@ describe("centerOfGravitySteeringSection", () => {
     expect(result).toContain("for this same thread")
   })
 
+  it("reminds family-facing status answers not to collapse to only the live coding lane", () => {
+    const recent = new Date(Date.now() - (10 * 60 * 1000)).toISOString()
+    const frame = makeMinimalFrame({
+      centerOfGravity: "inward-work",
+      codingSessions: [
+        {
+          id: "coding-013",
+          runner: "claude",
+          workdir: "/tmp/workspaces/ouroboros",
+          taskRef: "harness-maintenance",
+          status: "running",
+          stdoutTail: "working",
+          stderrTail: "",
+          pid: 13,
+          startedAt: "2026-03-05T23:53:00.000Z",
+          lastActivityAt: "2026-03-05T23:59:00.000Z",
+          endedAt: null,
+          restartCount: 0,
+          lastExitCode: null,
+          lastSignal: null,
+          failure: null,
+          originSession: { friendId: "friend-1", channel: "cli", key: "session" },
+        },
+      ],
+      inner: {
+        status: "idle",
+        hasPending: false,
+        job: makeIdleJob({ status: "idle" }),
+      },
+      friendActivity: {
+        freshestForCurrentFriend: null,
+        otherLiveSessionsForCurrentFriend: [],
+        allOtherLiveSessions: [
+          {
+            friendId: "ari",
+            friendName: "Ari",
+            channel: "bluebubbles",
+            key: "chat:any;-;ari@mendelow.me",
+            sessionPath: "/tmp/ari-bb.json",
+            lastActivityAt: recent,
+            lastActivityMs: Date.parse(recent),
+            activitySource: "friend-facing",
+          },
+        ],
+      } as any,
+    })
+
+    const result = centerOfGravitySteeringSection(
+      "cli",
+      { activeWorkFrame: frame },
+      { friend: { trustLevel: "family" } } as any,
+    )
+
+    expect(result).toContain("one part of the visible picture, not the whole picture")
+    expect(result).toContain("other active sessions:")
+    expect(result).toContain("Ari/bluebubbles/chat:any;-;ari@mendelow.me")
+  })
+
   it("returns steering for shared-work", () => {
     const frame = makeMinimalFrame({
       centerOfGravity: "shared-work",
@@ -1261,6 +1319,79 @@ describe("obligation steering helpers", () => {
       "other active sessions:",
       "- none",
     ].join("\n"))
+  })
+
+  it("prefers the live coding lane over a stale obligation next action in family status replies", async () => {
+    const { buildExactStatusReply } = await import("../../mind/obligation-steering")
+    const result = buildExactStatusReply(
+      makeMinimalFrame({
+        currentObligation: "close the loop here",
+        codingSessions: [
+          {
+            id: "coding-080",
+            runner: "codex",
+            workdir: "/tmp/workspaces/ouroboros",
+            taskRef: "status-fix",
+            status: "waiting_input",
+            stdoutTail: "",
+            stderrTail: "",
+            pid: 80,
+            startedAt: "2026-03-21T10:00:00.000Z",
+            lastActivityAt: "2026-03-21T10:01:00.000Z",
+            endedAt: null,
+            restartCount: 0,
+            lastExitCode: null,
+            lastSignal: null,
+            failure: null,
+            originSession: { friendId: "friend-1", channel: "cli", key: "session" },
+          },
+        ],
+        pendingObligations: [
+          {
+            id: "ob-current",
+            origin: { friendId: "friend-1", channel: "cli", key: "session" },
+            content: "close the loop here",
+            status: "investigating",
+            nextAction: "answer codex coding-078 and continue",
+            createdAt: "2026-03-21T10:00:00.000Z",
+            updatedAt: "2026-03-21T10:01:00.000Z",
+          },
+        ],
+      }),
+      null,
+      "just verified the live coding lane",
+      "all-sessions-family",
+    )
+
+    expect(result).toContain("active lane: codex coding-080 for this same thread")
+    expect(result).toContain("next action: answer codex coding-080 and continue")
+    expect(result).not.toContain("next action: answer codex coding-078 and continue")
+  })
+
+  it("uses a plain obligation next action when no live coding lane or concrete artifact is present", async () => {
+    const { buildExactStatusReply } = await import("../../mind/obligation-steering")
+    const result = buildExactStatusReply(
+      makeMinimalFrame({
+        currentObligation: "close the loop here",
+        codingSessions: [],
+        pendingObligations: [
+          {
+            id: "ob-current",
+            origin: { friendId: "friend-1", channel: "cli", key: "session" },
+            content: "close the loop here",
+            status: "investigating",
+            nextAction: "ask one blocking question and continue",
+            createdAt: "2026-03-21T10:00:00.000Z",
+            updatedAt: "2026-03-21T10:01:00.000Z",
+          },
+        ],
+      }),
+      null,
+      "just checked the live thread",
+      "all-sessions-family",
+    )
+
+    expect(result).toContain("next action: ask one blocking question and continue")
   })
 
   it("builds family status replies for obligation-only sessions without a live-session record", async () => {
