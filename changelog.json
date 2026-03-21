@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.100",
+      "changes": [
+        "Inner-dialog instinct and task-triggered messages now suppress the fallback 'no prior checkpoint recorded' sentinel instead of leaking it into visible heartbeat chatter.",
+        "Added focused inner-dialog coverage so sentinel checkpoints stay hidden while real resume checkpoints still appear in outward messages."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.99",
       "changes": [
         "Auto-healed session-history invariant repairs and orphaned tool-result cleanup now log at info instead of warn, so routine self-repair no longer leaks noisy warning lines into the live CLI.",
