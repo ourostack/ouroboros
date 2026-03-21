@@ -1,5 +1,7 @@
 import { spawn as nodeSpawn, type ChildProcessWithoutNullStreams } from "child_process"
 import * as fs from "fs"
+import * as os from "os"
+import * as path from "path"
 
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { CodingRunner, CodingSessionRequest } from "./types"
@@ -17,6 +19,8 @@ export interface SpawnCodingDeps {
   spawnFn?: (command: string, args: string[], options: Record<string, unknown>) => CodingProcess
   existsSync?: (target: string) => boolean
   readFileSync?: (target: string, encoding: "utf-8") => string
+  homeDir?: string
+  baseEnv?: NodeJS.ProcessEnv
 }
 
 function buildCommandArgs(runner: CodingRunner, workdir: string): { command: string; args: string[] } {
@@ -39,6 +43,19 @@ function buildCommandArgs(runner: CodingRunner, workdir: string): { command: str
   return {
     command: "codex",
     args: ["exec", "--skip-git-repo-check", "--cd", workdir],
+  }
+}
+
+function buildSpawnEnv(baseEnv: NodeJS.ProcessEnv, homeDir: string): NodeJS.ProcessEnv {
+  const binDir = path.join(homeDir, ".ouro-cli", "bin")
+  const existingPath = baseEnv.PATH ?? ""
+  const pathEntries = existingPath.split(path.delimiter).filter((entry) => entry.length > 0)
+  if (!pathEntries.includes(binDir)) {
+    pathEntries.unshift(binDir)
+  }
+  return {
+    ...baseEnv,
+    PATH: pathEntries.join(path.delimiter),
   }
 }
 
@@ -69,9 +86,12 @@ export function spawnCodingProcess(request: CodingSessionRequest, deps: SpawnCod
   const spawnFn = deps.spawnFn ?? ((command: string, args: string[], options: Record<string, unknown>) => nodeSpawn(command, args, options) as CodingProcess)
   const existsSync = deps.existsSync ?? fs.existsSync
   const readFileSync = deps.readFileSync ?? fs.readFileSync
+  const homeDir = deps.homeDir ?? os.homedir()
+  const baseEnv = deps.baseEnv ?? process.env
 
   const prompt = buildPrompt(request, { existsSync, readFileSync })
   const { command, args } = buildCommandArgs(request.runner, request.workdir)
+  const env = buildSpawnEnv(baseEnv, homeDir)
 
   emitNervesEvent({
     component: "repertoire",
@@ -82,6 +102,7 @@ export function spawnCodingProcess(request: CodingSessionRequest, deps: SpawnCod
 
   const proc = spawnFn(command, args, {
     cwd: request.workdir,
+    env,
     stdio: ["pipe", "pipe", "pipe"],
   })
 
