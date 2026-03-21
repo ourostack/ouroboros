@@ -262,20 +262,43 @@ export function getActiveSafeWorkspaceSelection(): SafeWorkspaceSelection | null
   return activeSelection
 }
 
-export function ensureSafeRepoWorkspace(options: EnsureSafeWorkspaceOptions = {}): SafeWorkspaceSelection {
-  if (activeSelection) {
-    return activeSelection
-  }
+function refreshSelectionWorkspaceBranch(
+  selection: SafeWorkspaceSelection,
+  spawnSync: typeof defaultSpawnSync,
+): SafeWorkspaceSelection {
+  try {
+    if (!isGitClone(selection.workspaceRoot, spawnSync)) {
+      return selection
+    }
 
-  const repoRoot = options.repoRoot ?? getRepoRoot()
+    const liveBranch = readCurrentBranch(selection.workspaceRoot, spawnSync)
+    if (liveBranch === selection.workspaceBranch) {
+      return selection
+    }
+
+    return { ...selection, workspaceBranch: liveBranch }
+  } catch {
+    return selection
+  }
+}
+
+export function ensureSafeRepoWorkspace(options: EnsureSafeWorkspaceOptions = {}): SafeWorkspaceSelection {
   const agentName = resolveAgentName(options.agentName)
-  const canonicalRepoUrl = options.canonicalRepoUrl ?? HARNESS_CANONICAL_REPO_URL
   const workspaceBase = options.workspaceRoot ?? getAgentRepoWorkspacesRoot(agentName)
   const persistSelection = shouldPersistSelection(options)
   const spawnSync = options.spawnSync ?? defaultSpawnSync
   const existsSync = options.existsSync ?? fs.existsSync
   const mkdirSync = options.mkdirSync ?? fs.mkdirSync
   const rmSync = options.rmSync ?? fs.rmSync
+
+  if (activeSelection) {
+    const refreshed = refreshSelectionWorkspaceBranch(activeSelection, spawnSync)
+    activeSelection = refreshed
+    return refreshed
+  }
+
+  const repoRoot = options.repoRoot ?? getRepoRoot()
+  const canonicalRepoUrl = options.canonicalRepoUrl ?? HARNESS_CANONICAL_REPO_URL
   const now = options.now ?? defaultNow
   const stamp = String(now())
 
@@ -284,21 +307,23 @@ export function ensureSafeRepoWorkspace(options: EnsureSafeWorkspaceOptions = {}
   if (persistSelection) {
     const restored = loadPersistedSelection(workspaceBase, options)
     if (restored) {
-      activeSelection = restored
+      const refreshed = refreshSelectionWorkspaceBranch(restored, spawnSync)
+      activeSelection = refreshed
+      persistSelectionState(workspaceBase, refreshed, options)
       emitNervesEvent({
         component: "workspace",
         event: "workspace.safe_repo_restored",
         message: "restored safe repo workspace after runtime restart",
         meta: {
-          runtimeKind: restored.runtimeKind,
-          repoRoot: restored.repoRoot,
-          workspaceRoot: restored.workspaceRoot,
-          workspaceBranch: restored.workspaceBranch,
-          sourceBranch: restored.sourceBranch,
-          cleanupAfterMerge: restored.cleanupAfterMerge,
+          runtimeKind: refreshed.runtimeKind,
+          repoRoot: refreshed.repoRoot,
+          workspaceRoot: refreshed.workspaceRoot,
+          workspaceBranch: refreshed.workspaceBranch,
+          sourceBranch: refreshed.sourceBranch,
+          cleanupAfterMerge: refreshed.cleanupAfterMerge,
         },
       })
-      return restored
+      return refreshed
     }
   }
 

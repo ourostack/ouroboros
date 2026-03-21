@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.96",
+      "changes": [
+        "ensureSafeRepoWorkspace now re-reads the live branch from the worktree on every call and updates the in-memory and persisted selection when it has drifted, preventing stale workspaceBranch after external branch switches between coding sessions."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.95",
       "changes": [
         "CLI chats now surface coding-session feedback back into the live `ouro chat` thread, so hidden child work no longer finishes silently while the operator sees an idle prompt.",
