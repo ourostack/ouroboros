@@ -18,7 +18,7 @@ import { listSessionActivity, type SessionActivityQuery } from "../heart/session
 import { formatActiveWorkFrame, type ActiveWorkFrame } from "../heart/active-work";
 import type { DelegationDecision } from "../heart/delegation";
 import { deriveCommitments, formatCommitments } from "../heart/commitments";
-import { findActivePersistentObligation, renderActiveObligationSteering } from "./obligation-steering";
+import { findActivePersistentObligation, renderActiveObligationSteering, renderConcreteStatusGuidance } from "./obligation-steering";
 
 // Lazy-loaded psyche text cache
 let _psycheCache: {
@@ -503,7 +503,9 @@ export function centerOfGravitySteeringSection(channel: Channel, options?: Build
 
   if (cog === "inward-work") {
     if (activeObligation) {
-      return renderActiveObligationSteering(activeObligation)
+      return `${renderActiveObligationSteering(activeObligation)}
+
+${renderConcreteStatusGuidance(frame, activeObligation)}`
     }
 
     if (job?.status === "queued" || job?.status === "running") {
