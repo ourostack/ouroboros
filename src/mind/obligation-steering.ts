@@ -112,7 +112,17 @@ function formatCurrentArtifact(frame: ActiveWorkFrame, obligation: Obligation | 
 }
 
 function formatNextAction(frame: ActiveWorkFrame, obligation: Obligation | null): string {
-  if (obligation?.nextAction) return obligation.nextAction
+  const obligationHasConcreteArtifact = Boolean(obligation?.currentArtifact?.trim())
+    || obligation?.currentSurface?.kind === "merge"
+  if (obligation?.status === "waiting_for_merge") {
+    return obligation.nextAction?.trim() || `wait for checks, merge ${formatMergeArtifact(obligation)}, then update runtime`
+  }
+  if (obligation?.status === "updating_runtime") {
+    return obligation.nextAction?.trim() || "update runtime, verify version/changelog, then re-observe"
+  }
+  if (obligationHasConcreteArtifact && obligation?.nextAction?.trim()) {
+    return obligation.nextAction.trim()
+  }
   const liveCodingSession = frame.codingSessions?.[0]
   if (liveCodingSession?.status === "waiting_input") {
     return `answer ${liveCodingSession.runner} ${liveCodingSession.id} and continue`
@@ -123,12 +133,7 @@ function formatNextAction(frame: ActiveWorkFrame, obligation: Obligation | null)
   if (liveCodingSession) {
     return "finish the coding pass and bring the result back here"
   }
-  if (obligation?.status === "waiting_for_merge") {
-    return `wait for checks, merge ${formatMergeArtifact(obligation)}, then update runtime`
-  }
-  if (obligation?.status === "updating_runtime") {
-    return "update runtime, verify version/changelog, then re-observe"
-  }
+  if (obligation?.nextAction?.trim()) return obligation.nextAction.trim()
   if (obligation?.content?.trim()) {
     return `work on "${obligation.content.trim()}" and bring back a concrete artifact`
   }

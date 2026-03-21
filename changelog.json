@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.107",
+      "changes": [
+        "Family-scoped 'what are you up to?' answers now widen to the full live world-state: the current conversation, live coding lanes, other active friend-facing sessions, and any active inner holding state, instead of collapsing to just the current lane.",
+        "The runtime no longer regex-polices an exact status-answer template; family status now rides on the same live obligation and session world-state the agent already uses everywhere else, which keeps cross-session answers truthful and natural."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.106",
       "changes": [
         "Family-scoped status answers now come from the live obligation/session world-state directly instead of a regex-triggered 'status question' mode, so agents can answer naturally while still seeing all material live work across sessions.",
