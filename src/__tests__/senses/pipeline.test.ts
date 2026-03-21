@@ -1244,6 +1244,63 @@ describe("handleInboundTurn", () => {
       expect(options.activeWorkFrame?.codingSessions.map((session) => session.id)).toEqual(["coding-004"])
     })
 
+    it("keeps non-current live coding sessions available for family-wide status checks", async () => {
+      const friend = makeFriend({ trustLevel: "family" })
+      const caps = makeCapabilities({ channel: "cli", senseType: "local" as SenseType })
+      const context: ResolvedContext = { friend, channel: caps }
+      const input = makeInput({
+        channel: "cli",
+        capabilities: caps,
+        continuityIngressTexts: ["what are you doing?"],
+        friendResolver: { resolve: vi.fn().mockResolvedValue(context) },
+      })
+      mockListCodingSessions.mockReturnValue([
+        {
+          id: "coding-010",
+          runner: "codex",
+          workdir: "/tmp/repo",
+          taskRef: "current-thread-fix",
+          status: "running",
+          startedAt: "2026-03-20T17:00:00.000Z",
+          lastActivityAt: "2026-03-20T17:01:00.000Z",
+          endedAt: null,
+          restartCount: 0,
+          lastExitCode: null,
+          lastSignal: null,
+          originSession: { friendId: "friend-1", channel: "cli", key: "session" },
+        },
+        {
+          id: "coding-011",
+          runner: "claude",
+          workdir: "/tmp/repo",
+          taskRef: "bb-follow-up",
+          status: "waiting_input",
+          startedAt: "2026-03-20T17:00:00.000Z",
+          lastActivityAt: "2026-03-20T17:02:00.000Z",
+          endedAt: null,
+          restartCount: 0,
+          lastExitCode: null,
+          lastSignal: null,
+          originSession: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
+        },
+      ])
+
+      await handleInboundTurn(input)
+
+      const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
+      const options = runAgentCall[4] as RunAgentOptions & {
+        statusCheckScope?: string
+        activeWorkFrame?: {
+          codingSessions: Array<{ id: string }>
+          otherCodingSessions?: Array<{ id: string }>
+        }
+      }
+      expect(options.statusCheckRequested).toBe(true)
+      expect(options.statusCheckScope).toBe("all-sessions-family")
+      expect(options.activeWorkFrame?.codingSessions.map((session) => session.id)).toEqual(["coding-010"])
+      expect(options.activeWorkFrame?.otherCodingSessions?.map((session) => session.id)).toEqual(["coding-011"])
+    })
+
     it("falls back to an empty live coding list when the coding session manager throws", async () => {
       const input = makeInput()
       mockListCodingSessions.mockImplementation(() => {

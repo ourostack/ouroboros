@@ -52,8 +52,10 @@ export interface ActiveWorkFrame {
   friendActivity: {
     freshestForCurrentFriend: SessionActivityRecord | null
     otherLiveSessionsForCurrentFriend: SessionActivityRecord[]
+    allOtherLiveSessions?: SessionActivityRecord[]
   }
   codingSessions: CodingSession[]
+  otherCodingSessions?: CodingSession[]
   pendingObligations: Obligation[]
   targetCandidates?: TargetSessionCandidate[]
   bridgeSuggestion: BridgeSuggestion | null
@@ -66,6 +68,7 @@ interface BuildActiveWorkFrameInput {
   inner: ActiveWorkFrame["inner"]
   bridges: BridgeRecord[]
   codingSessions?: CodingSession[]
+  otherCodingSessions?: CodingSession[]
   pendingObligations?: Obligation[]
   taskBoard: BoardResult
   friendActivity: SessionActivityRecord[]
@@ -301,6 +304,9 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
   const activeBridgePresent = input.bridges.some(isActiveBridge)
   const openObligations = activeObligationCount(input.pendingObligations)
   const liveCodingSessions = input.codingSessions ?? []
+  const allOtherLiveSessions = [...input.friendActivity].sort(compareActivity)
+  const otherCodingSessions = input.otherCodingSessions ?? []
+  const pendingObligations = input.pendingObligations ?? []
   const centerOfGravity: CenterOfGravityMode = activeBridgePresent
     ? "shared-work"
     : (input.inner.status === "running" || input.inner.hasPending || input.mustResolveBeforeHandoff || openObligations > 0 || liveCodingSessions.length > 0)
@@ -322,9 +328,11 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
     friendActivity: {
       freshestForCurrentFriend: friendSessions[0] ?? null,
       otherLiveSessionsForCurrentFriend: friendSessions,
+      allOtherLiveSessions,
     },
     codingSessions: liveCodingSessions,
-    pendingObligations: input.pendingObligations ?? [],
+    otherCodingSessions,
+    pendingObligations,
     targetCandidates: input.targetCandidates ?? [],
     bridgeSuggestion: suggestBridgeForActiveWork({
       currentSession: input.currentSession,
@@ -347,6 +355,8 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
       liveTasks: frame.taskPressure.liveTaskNames.length,
       liveSessions: frame.friendActivity.otherLiveSessionsForCurrentFriend.length,
       codingSessions: frame.codingSessions.length,
+      otherLiveSessions: allOtherLiveSessions.length,
+      otherCodingSessions: otherCodingSessions.length,
       pendingObligations: openObligations,
       hasBridgeSuggestion: frame.bridgeSuggestion !== null,
     },
@@ -361,6 +371,8 @@ export function formatActiveWorkFrame(frame: ActiveWorkFrame): string {
   const activeLane = formatActiveLane(frame, primaryObligation)
   const currentArtifact = formatCurrentArtifact(frame, primaryObligation)
   const nextAction = formatNextAction(frame, primaryObligation)
+  const otherCodingSessions = frame.otherCodingSessions ?? []
+  const otherLiveSessions = frame.friendActivity?.allOtherLiveSessions ?? []
 
   // Session line
   if (frame.currentSession) {
@@ -431,6 +443,25 @@ export function formatActiveWorkFrame(frame: ActiveWorkFrame): string {
     lines.push("## live coding work")
     for (const session of frame.codingSessions) {
       lines.push(`- [${session.status}] ${formatCodingLaneLabel(session)}${describeCodingSessionScope(session, frame.currentSession)}`)
+    }
+  }
+
+  if (otherCodingSessions.length > 0) {
+    lines.push("")
+    lines.push("## other live coding work")
+    for (const session of otherCodingSessions) {
+      const origin = session.originSession
+        ? `${session.originSession.friendId}/${session.originSession.channel}/${session.originSession.key}`
+        : "another session"
+      lines.push(`- [${session.status}] ${formatCodingLaneLabel(session)} for ${origin}`)
+    }
+  }
+
+  if (otherLiveSessions.length > 0) {
+    lines.push("")
+    lines.push("## other live sessions")
+    for (const session of otherLiveSessions) {
+      lines.push(`- ${session.friendName}/${session.channel}/${session.key}`)
     }
   }
 

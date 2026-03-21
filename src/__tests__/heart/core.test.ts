@@ -6072,6 +6072,290 @@ describe("tool_choice required and final_answer", () => {
     })
   })
 
+  it("canonicalizes family status replies so they include other active sessions too", async () => {
+    let callCount = 0
+    mockCreate.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        return makeStream([
+          makeChunk(undefined, [
+            {
+              index: 0,
+              id: "call_1",
+              function: {
+                name: "final_answer",
+                arguments: JSON.stringify({
+                  answer: [
+                    "live conversation: cli/session",
+                    "active lane: this same thread",
+                    "current artifact: no artifact yet",
+                    "latest checkpoint: just checked the multi-session surface",
+                    'next action: work on "what are you doing?" and bring back a concrete artifact',
+                  ].join("\n"),
+                }),
+              },
+            },
+          ]),
+        ])
+      }
+
+      return makeStream([
+        makeChunk(undefined, [
+          {
+            index: 0,
+            id: "call_2",
+            function: {
+              name: "final_answer",
+              arguments: JSON.stringify({
+                answer: [
+                  "live conversation: cli/session",
+                  "active lane: this same thread",
+                  "current artifact: no artifact yet",
+                  "latest checkpoint: just checked the multi-session surface",
+                  'next action: work on "what are you doing?" and bring back a concrete artifact',
+                  "other active sessions:",
+                  "- placeholder",
+                ].join("\n"),
+              }),
+            },
+          },
+        ]),
+      ])
+    })
+
+    const textChunks: string[] = []
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: (text) => textChunks.push(text),
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+      onClearText: () => { textChunks.length = 0 },
+    }
+
+    const messages: any[] = [{ role: "system", content: "test" }]
+    const result = await runAgent(messages, callbacks, undefined, undefined, {
+      toolChoiceRequired: true,
+      statusCheckRequested: true,
+      statusCheckScope: "all-sessions-family",
+      activeWorkFrame: {
+        centerOfGravity: "inward-work",
+        currentSession: { friendId: "friend-1", channel: "cli", key: "session", sessionPath: "/tmp/session.json" },
+        currentObligation: "what are you doing?",
+        mustResolveBeforeHandoff: false,
+        inner: {
+          status: "idle",
+          hasPending: false,
+          job: {
+            status: "idle",
+            content: null,
+            origin: null,
+            mode: "reflect",
+            obligationStatus: null,
+            surfacedResult: null,
+            queuedAt: null,
+            startedAt: null,
+            surfacedAt: null,
+          },
+        },
+        bridges: [],
+        taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+        friendActivity: {
+          freshestForCurrentFriend: null,
+          otherLiveSessionsForCurrentFriend: [],
+          allOtherLiveSessions: [
+            {
+              friendId: "friend-1",
+              friendName: "ari",
+              channel: "bluebubbles",
+              key: "chat",
+              sessionPath: "/tmp/bb-session.json",
+              lastActivityAt: "2026-03-21T09:05:00.000Z",
+              lastActivityMs: Date.parse("2026-03-21T09:05:00.000Z"),
+              activitySource: "friend-facing",
+            },
+          ],
+        },
+        codingSessions: [],
+        otherCodingSessions: [
+          {
+            id: "coding-300",
+            runner: "codex",
+            workdir: "/tmp/workspaces/ouroboros",
+            taskRef: "bb-fix",
+            status: "running",
+            stdoutTail: "",
+            stderrTail: "",
+            pid: 300,
+            startedAt: "2026-03-21T09:00:00.000Z",
+            lastActivityAt: "2026-03-21T09:06:00.000Z",
+            endedAt: null,
+            restartCount: 0,
+            lastExitCode: null,
+            lastSignal: null,
+            failure: null,
+            originSession: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
+          },
+        ],
+        pendingObligations: [
+          {
+            id: "ob-bb",
+            origin: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
+            content: "land the bluebubbles fix",
+            status: "waiting_for_merge",
+            currentArtifact: "PR #777",
+            nextAction: "wait for checks, merge PR #777, then update runtime",
+            createdAt: "2026-03-21T09:00:00.000Z",
+            updatedAt: "2026-03-21T09:07:00.000Z",
+          },
+        ],
+        bridgeSuggestion: null,
+      },
+    } as any)
+
+    expect(callCount).toBe(2)
+    expect(textChunks).toEqual([
+      [
+        "live conversation: cli/session",
+        "active lane: this same thread",
+        "current artifact: no artifact yet",
+        "latest checkpoint: just checked the multi-session surface",
+        "next action: continue the active loop and bring the result back here",
+        "other active sessions:",
+        "- ari/bluebubbles/chat: [waiting_for_merge] codex coding-300; artifact PR #777; next wait for checks, merge PR #777, then update runtime",
+      ].join("\n"),
+    ])
+    expect((result as any).completion).toEqual({
+      answer: [
+        "live conversation: cli/session",
+        "active lane: this same thread",
+        "current artifact: no artifact yet",
+        "latest checkpoint: just checked the multi-session surface",
+        "next action: continue the active loop and bring the result back here",
+        "other active sessions:",
+        "- ari/bluebubbles/chat: [waiting_for_merge] codex coding-300; artifact PR #777; next wait for checks, merge PR #777, then update runtime",
+      ].join("\n"),
+      intent: "complete",
+    })
+  })
+
+  it("retries family status replies when the other-session header is malformed", async () => {
+    let callCount = 0
+    mockCreate.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        return makeStream([
+          makeChunk(undefined, [
+            {
+              index: 0,
+              id: "call_bad_family_header",
+              function: {
+                name: "final_answer",
+                arguments: JSON.stringify({
+                  answer: [
+                    "live conversation: cli/session",
+                    "active lane: this same thread",
+                    "current artifact: no artifact yet",
+                    "latest checkpoint: just checked the multi-session surface",
+                    "next action: continue the active loop and bring the result back here",
+                    "other sessions:",
+                    "- placeholder",
+                  ].join("\n"),
+                }),
+              },
+            },
+          ]),
+        ])
+      }
+
+      return makeStream([
+        makeChunk(undefined, [
+          {
+            index: 0,
+            id: "call_fixed_family_header",
+            function: {
+              name: "final_answer",
+              arguments: JSON.stringify({
+                answer: [
+                  "live conversation: cli/session",
+                  "active lane: this same thread",
+                  "current artifact: no artifact yet",
+                  "latest checkpoint: just checked the multi-session surface",
+                  "next action: continue the active loop and bring the result back here",
+                  "other active sessions:",
+                  "- placeholder",
+                ].join("\n"),
+              }),
+            },
+          },
+        ]),
+      ])
+    })
+
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+      onClearText: () => {},
+    }
+
+    const messages: any[] = [{ role: "system", content: "test" }]
+    await runAgent(messages, callbacks, undefined, undefined, {
+      toolChoiceRequired: true,
+      statusCheckRequested: true,
+      statusCheckScope: "all-sessions-family",
+      activeWorkFrame: {
+        centerOfGravity: "inward-work",
+        currentSession: { friendId: "friend-1", channel: "cli", key: "session", sessionPath: "/tmp/session.json" },
+        currentObligation: "what are you doing?",
+        mustResolveBeforeHandoff: false,
+        inner: {
+          status: "idle",
+          hasPending: false,
+          job: {
+            status: "idle",
+            content: null,
+            origin: null,
+            mode: "reflect",
+            obligationStatus: null,
+            surfacedResult: null,
+            queuedAt: null,
+            startedAt: null,
+            surfacedAt: null,
+          },
+        },
+        bridges: [],
+        taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+        friendActivity: {
+          freshestForCurrentFriend: null,
+          otherLiveSessionsForCurrentFriend: [],
+          allOtherLiveSessions: [],
+        },
+        codingSessions: [],
+        otherCodingSessions: [],
+        pendingObligations: [
+          {
+            id: "ob-current",
+            origin: { friendId: "friend-1", channel: "cli", key: "session" },
+            content: "what are you doing?",
+            status: "investigating",
+            createdAt: "2026-03-21T09:00:00.000Z",
+            updatedAt: "2026-03-21T09:01:00.000Z",
+          },
+        ],
+        bridgeSuggestion: null,
+      },
+    } as any)
+
+    expect(callCount).toBe(2)
+  })
+
   it("treats direct_reply as non-terminal when a newer steering follow-up exists", async () => {
     let callCount = 0
     let drainCount = 0
