@@ -2152,23 +2152,36 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     return message
   }
 
-  // ── versions command (local, no daemon socket needed) ──
+  // ── versions command (local install list + published update truth, no daemon socket needed) ──
   if (command.kind === "versions") {
     const versions = deps.listCliVersions?.() ?? []
-    if (versions.length === 0) {
-      const message = "no versions installed"
-      deps.writeStdout(message)
-      return message
-    }
     const current = deps.getCurrentCliVersion?.()
     const previous = deps.getPreviousCliVersion?.()
-    const lines = versions.map((v) => {
-      let line = v
-      if (v === current) line += " * current"
-      if (v === previous) line += " (previous)"
-      return line
-    })
-    const message = lines.join("\n")
+    const localSection = versions.length === 0
+      ? "no versions installed"
+      : versions.map((v) => {
+          let line = v
+          if (v === current) line += " * current"
+          if (v === previous) line += " (previous)"
+          return line
+        }).join("\n")
+
+    const sections = [localSection]
+    if (deps.checkForCliUpdate) {
+      try {
+        const updateResult = await deps.checkForCliUpdate()
+        if (updateResult.latestVersion) {
+          sections.push(`published alpha: ${updateResult.latestVersion} (${updateResult.available ? "update available" : "up to date"})`)
+        } else if (updateResult.error) {
+          sections.push(`published alpha: unavailable (${updateResult.error})`)
+        }
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err)
+        sections.push(`published alpha: unavailable (${reason})`)
+      }
+    }
+
+    const message = sections.join("\n\n")
     deps.writeStdout(message)
     return message
   }
