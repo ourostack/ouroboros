@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.95",
+      "changes": [
+        "CLI chats now surface coding-session feedback back into the live `ouro chat` thread, so hidden child work no longer finishes silently while the operator sees an idle prompt.",
+        "Those async coding updates are also persisted into the CLI session history, which keeps the visible return loop truthful across follow-up turns instead of losing the fact that work already came back."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.94",
       "changes": [
         "Fix stale CurrentVersion symlink not healing during `ouro up` — the daemon now detects and repairs dangling version symlinks before reading the active version.",
