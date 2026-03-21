@@ -770,6 +770,7 @@ describe("obligation steering helpers", () => {
 
   it("builds family status replies with all other live sessions and concrete next-step fallbacks", async () => {
     const { buildExactStatusReply } = await import("../../mind/obligation-steering")
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-03-21T10:15:00.000Z"))
     const frame = makeMinimalFrame({
       currentObligation: "close the loop here",
       friendActivity: {
@@ -1029,6 +1030,77 @@ describe("obligation steering helpers", () => {
     expect(result).toContain("- Quinn/cli/scratch: [active] this live thread; artifact no artifact yet; next check this session and bring back the latest concrete state")
     expect(result).toContain("- Pat/teams/group: [updating_runtime] ouro up; artifact alpha.103 installed; next update runtime, verify version/changelog, then re-observe")
     expect(result).toContain("- Ari/bluebubbles/chat: [waiting_for_merge] PR #177; artifact PR #177; next wait for checks, merge PR #177, then update runtime")
+    nowSpy.mockRestore()
+  })
+
+  it("dedupes normalized session keys and filters stale or inner-only family session noise", async () => {
+    const { buildExactStatusReply } = await import("../../mind/obligation-steering")
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-03-21T10:40:00.000Z"))
+    const frame = makeMinimalFrame({
+      friendActivity: {
+        freshestForCurrentFriend: null,
+        otherLiveSessionsForCurrentFriend: [],
+        allOtherLiveSessions: [
+          {
+            friendId: "self",
+            friendName: "slugger",
+            channel: "inner",
+            key: "dialog",
+            sessionPath: "/tmp/self-inner.json",
+            lastActivityAt: "2026-03-21T10:39:30.000Z",
+            lastActivityMs: Date.parse("2026-03-21T10:39:30.000Z"),
+            activitySource: "friend-facing",
+          },
+          {
+            friendId: "ari",
+            friendName: "Ari",
+            channel: "bluebubbles",
+            key: "chat_any;-;ari@mendelow.me",
+            sessionPath: "/tmp/ari-bb.json",
+            lastActivityAt: "2026-03-21T10:39:00.000Z",
+            lastActivityMs: Date.parse("2026-03-21T10:39:00.000Z"),
+            activitySource: "friend-facing",
+          },
+          {
+            friendId: "ari-old",
+            friendName: "Ari",
+            channel: "cli",
+            key: "session",
+            sessionPath: "/tmp/ari-old-cli.json",
+            lastActivityAt: "2026-03-21T05:46:00.000Z",
+            lastActivityMs: Date.parse("2026-03-21T05:46:00.000Z"),
+            activitySource: "friend-facing",
+          },
+        ],
+      },
+      pendingObligations: [
+        {
+          id: "ob-current",
+          origin: { friendId: "friend-1", channel: "cli", key: "session" },
+          content: "close the loop here",
+          status: "investigating",
+          createdAt: "2026-03-21T10:38:00.000Z",
+          updatedAt: "2026-03-21T10:38:00.000Z",
+        },
+        {
+          id: "ob-ari-bb",
+          origin: { friendId: "ari", channel: "bluebubbles", key: "chat:any;-;ari@mendelow.me" },
+          content: "bring the answer back there",
+          status: "investigating",
+          createdAt: "2026-03-21T10:39:10.000Z",
+          updatedAt: "2026-03-21T10:39:10.000Z",
+        },
+      ],
+    })
+
+    const result = buildExactStatusReply(frame, frame.pendingObligations?.[0] ?? null, "just checked the current thread", "all-sessions-family")
+
+    expect(result).toContain("other active sessions:")
+    expect(result).toContain("- Ari/bluebubbles/chat:any;-;ari@mendelow.me: [investigating] this live thread; artifact no artifact yet; next continue the active loop and bring the result back there")
+    expect(result).not.toContain("self/inner/dialog")
+    expect(result).not.toContain("ari-old/cli/session")
+    expect(result.match(/Ari\/bluebubbles\//g)?.length ?? 0).toBe(1)
+    nowSpy.mockRestore()
   })
 
   it("renders family status reply contract fallbacks when the current thread has no captured obligation", async () => {
