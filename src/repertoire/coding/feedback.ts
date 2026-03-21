@@ -196,7 +196,7 @@ export function attachCodingSessionFeedback(
 ): () => void {
   let lastMessage = ""
   let closed = false
-  let unsubscribe = () => {}
+  let unsubscribe: (() => void) | null = null
 
   const sendMessage = (message: string | null): void => {
     if (closed || !message || message === lastMessage) {
@@ -226,12 +226,12 @@ export function attachCodingSessionFeedback(
     await wakeInnerDialogForObligation(update)
     if (TERMINAL_UPDATE_KINDS.has(update.kind)) {
       closed = true
-      unsubscribe()
+      unsubscribe?.()
     }
   })
 
   return () => {
     closed = true
-    unsubscribe()
+    unsubscribe?.()
   }
 }
