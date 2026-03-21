@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.103",
+      "changes": [
+        "Status-check turns now answer in a fixed live-state shape that names the current conversation, active lane, artifact, latest checkpoint, and next action instead of drifting into broad mission summaries.",
+        "Those status turns now hold final streaming until the exact reply is ready and turn report-backs into same-thread obligation updates, so 'I'll report back here' comes back as a real in-thread follow-up instead of hidden background work."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.102",
       "changes": [
         "Live obligations now persist a concrete current artifact and next action, so status answers can anchor on the actual active lane, artifact, and immediate step instead of drifting into broad mission statements.",
