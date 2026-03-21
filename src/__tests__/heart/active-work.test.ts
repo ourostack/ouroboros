@@ -2561,4 +2561,89 @@ describe("ActiveWorkFrame.inner with InnerJob", () => {
     expect(frame.inner.job.origin).toEqual({ friendId: "alex", channel: "teams", key: "session1" })
     expect(frame.inner.job.mode).toBe("plan")
   })
+
+  it("renders other live sessions and other coding work with concrete fallbacks", async () => {
+    const { buildActiveWorkFrame, formatActiveWorkFrame } = await import("../../heart/active-work")
+
+    const frame = buildActiveWorkFrame({
+      currentSession: {
+        friendId: "friend-1",
+        channel: "cli",
+        key: "session",
+        sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+      },
+      mustResolveBeforeHandoff: false,
+      inner: { status: "idle", hasPending: false },
+      bridges: [],
+      taskBoard: {
+        compact: "",
+        activeBridges: [],
+        byStatus: {
+          drafting: [],
+          processing: [],
+          validating: [],
+          collaborating: [],
+          paused: [],
+          blocked: [],
+          done: [],
+        },
+      },
+      friendActivity: [
+        {
+          friendId: "friend-2",
+          friendName: "Ari",
+          channel: "bluebubbles",
+          key: "chat",
+          sessionPath: "/tmp/state/sessions/friend-2/bluebubbles/chat.json",
+          lastActivityAt: "2026-03-21T10:00:00.000Z",
+          lastActivityMs: Date.parse("2026-03-21T10:00:00.000Z"),
+          activitySource: "friend-facing",
+        },
+      ],
+      otherCodingSessions: [
+        {
+          id: "coding-020",
+          runner: "codex",
+          workdir: "/tmp/workspaces/ouroboros",
+          taskRef: "family-status",
+          status: "running" as const,
+          stdoutTail: "",
+          stderrTail: "",
+          pid: 20,
+          startedAt: "2026-03-21T09:55:00.000Z",
+          lastActivityAt: "2026-03-21T10:01:00.000Z",
+          endedAt: null,
+          restartCount: 0,
+          lastExitCode: null,
+          lastSignal: null,
+          failure: null,
+          originSession: { friendId: "friend-2", channel: "bluebubbles", key: "chat" },
+        },
+        {
+          id: "coding-021",
+          runner: "claude",
+          workdir: "/tmp/workspaces/ouroboros",
+          taskRef: "orphan-lane",
+          status: "stalled" as const,
+          stdoutTail: "",
+          stderrTail: "",
+          pid: 21,
+          startedAt: "2026-03-21T09:58:00.000Z",
+          lastActivityAt: "2026-03-21T10:02:00.000Z",
+          endedAt: null,
+          restartCount: 0,
+          lastExitCode: null,
+          lastSignal: null,
+          failure: null,
+        },
+      ],
+    })
+
+    const rendered = formatActiveWorkFrame(frame)
+    expect(rendered).toContain("## other live coding work")
+    expect(rendered).toContain("[running] codex coding-020 for friend-2/bluebubbles/chat")
+    expect(rendered).toContain("[stalled] claude coding-021 for another session")
+    expect(rendered).toContain("## other live sessions")
+    expect(rendered).toContain("- Ari/bluebubbles/chat")
+  })
 })

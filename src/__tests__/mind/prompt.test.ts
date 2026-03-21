@@ -332,6 +332,82 @@ describe("buildSystem", () => {
     expect(result).toContain("next action: <smallest concrete next step i'm taking now>")
   })
 
+  it("requires family status checks to include other active sessions after the five-line header", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const baseContext = makeOnboardingContext()
+
+    const result = await buildSystem(
+      "cli",
+      {
+        statusCheckRequested: true,
+        statusCheckScope: "all-sessions-family",
+        activeWorkFrame: {
+          centerOfGravity: "inward-work",
+          currentSession: { friendId: "uuid-1", channel: "cli", key: "session", sessionPath: "/tmp/s.json" },
+          currentObligation: "close the loop visibly",
+          mustResolveBeforeHandoff: false,
+          inner: { status: "idle", hasPending: false, job: { status: "idle", content: null, origin: null, mode: "reflect", obligationStatus: null, surfacedResult: null, queuedAt: null, startedAt: null, surfacedAt: null } },
+          bridges: [],
+          taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+          friendActivity: {
+            freshestForCurrentFriend: null,
+            otherLiveSessionsForCurrentFriend: [],
+            allOtherLiveSessions: [
+              {
+                friendId: "uuid-1",
+                friendName: "Jordan",
+                channel: "bluebubbles",
+                key: "chat",
+                sessionPath: "/tmp/bb.json",
+                lastActivityAt: "2026-03-21T09:00:00.000Z",
+                lastActivityMs: Date.parse("2026-03-21T09:00:00.000Z"),
+                activitySource: "friend-facing",
+              },
+            ],
+          },
+          codingSessions: [],
+          otherCodingSessions: [
+            {
+              id: "coding-300",
+              runner: "codex",
+              workdir: "/tmp/workspaces/ouroboros",
+              taskRef: "bb-fix",
+              status: "running",
+              stdoutTail: "",
+              stderrTail: "",
+              pid: 300,
+              startedAt: "2026-03-21T09:00:00.000Z",
+              lastActivityAt: "2026-03-21T09:01:00.000Z",
+              endedAt: null,
+              restartCount: 0,
+              lastExitCode: null,
+              lastSignal: null,
+              failure: null,
+              originSession: { friendId: "uuid-1", channel: "bluebubbles", key: "chat" },
+            },
+          ],
+          pendingObligations: [],
+          bridgeSuggestion: null,
+        },
+      } as any,
+      {
+        ...baseContext,
+        friend: {
+          ...baseContext.friend,
+          trustLevel: "family",
+        },
+      } as any,
+    )
+
+    expect(result).toContain("other active sessions:")
+    expect(result).toContain("- <session label>: <what i'm doing there right now>")
+  })
+
   it("does not render a status-check section when no active-work frame is available", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")

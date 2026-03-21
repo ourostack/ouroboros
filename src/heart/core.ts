@@ -239,6 +239,7 @@ export interface RunAgentOptions {
   currentSessionKey?: string;
   currentObligation?: string;
   statusCheckRequested?: boolean;
+  statusCheckScope?: "all-sessions-family";
   mustResolveBeforeHandoff?: boolean;
   hasQueuedFollowUp?: boolean;
   activeWorkFrame?: ActiveWorkFrame;
@@ -388,16 +389,25 @@ export function getFinalAnswerRetryError(
   return null;
 }
 
-function hasExactStatusReplyShape(answer: string): boolean {
+function hasExactStatusReplyShape(
+  answer: string,
+  statusCheckScope?: RunAgentOptions["statusCheckScope"],
+): boolean {
   const lines = answer.trimEnd().split(/\r?\n/)
-  if (lines.length !== 5) return false
-  return (
+  const hasFiveLineHeader = (
     /^live conversation:\s+\S.+$/i.test(lines[0])
     && /^active lane:\s+\S.+$/i.test(lines[1])
     && /^current artifact:\s+\S.+$/i.test(lines[2])
     && /^latest checkpoint:\s+\S.+$/i.test(lines[3])
     && /^next action:\s+\S.+$/i.test(lines[4])
   )
+  if (!hasFiveLineHeader) return false
+  if (statusCheckScope !== "all-sessions-family") {
+    return lines.length === 5
+  }
+  if (lines.length < 7) return false
+  if (!/^other active sessions:\s*$/i.test(lines[5])) return false
+  return lines.slice(6).every((line) => /^-\s+\S.+$/i.test(line))
 }
 
 function extractLatestCheckpoint(answer: string): string {
@@ -409,9 +419,10 @@ function getStatusReplyRetryError(
   answer: string | undefined,
   statusCheckRequested: boolean | undefined,
   activeWorkFrame: ActiveWorkFrame | undefined,
+  statusCheckScope?: RunAgentOptions["statusCheckScope"],
 ): string | null {
   if (!statusCheckRequested || answer == null) return null
-  if (hasExactStatusReplyShape(answer)) return null
+  if (hasExactStatusReplyShape(answer, statusCheckScope)) return null
   if (!activeWorkFrame) {
     return `the user asked for current status. call final_answer again using exactly these five non-empty lines and nothing else:
 live conversation: ...
@@ -421,8 +432,8 @@ latest checkpoint: ...
 next action: ...`
   }
   return `the user asked for current status right now.
-${renderExactStatusReplyContract(activeWorkFrame, findStatusObligation(activeWorkFrame))}
-call final_answer again using that exact five-line shape and nothing else.`
+${renderExactStatusReplyContract(activeWorkFrame, findStatusObligation(activeWorkFrame), statusCheckScope)}
+call final_answer again using that exact status shape and nothing else.`
 }
 
 // Re-export kick utilities for backward compat
@@ -786,6 +797,7 @@ export async function runAgent(
             answer,
             options?.statusCheckRequested,
             options?.activeWorkFrame,
+            options?.statusCheckScope,
           )
           const exactStatusReplyAccepted = Boolean(options?.statusCheckRequested) && !statusReplyRetryError && answer != null
           const deliveredAnswer = exactStatusReplyAccepted && options?.activeWorkFrame
@@ -793,6 +805,7 @@ export async function runAgent(
               options.activeWorkFrame,
               findStatusObligation(options.activeWorkFrame),
               extractLatestCheckpoint(answer),
+              options?.statusCheckScope,
             )
             : answer
           const validDirectReply = mustResolveBeforeHandoffActive && intent === "direct_reply" && sawSteeringFollowUp;
