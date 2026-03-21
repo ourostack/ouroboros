@@ -2,10 +2,17 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.107",
+      "version": "0.1.0-alpha.108",
       "changes": [
         "Agents now carry durable session orientation, grounded session recall, and Pi-inspired coding context packs/checkpoints into long-running work, which keeps ad-hoc answers and resumed execution anchored to the real task state instead of prompt theater.",
         "Repeated no-progress polling is now blocked by a live loop guard for coding/session status tools, so the harness stops thrashing on identical status checks and pushes the agent to act, wait meaningfully, or answer truthfully with what is known."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.107",
+      "changes": [
+        "Family-scoped 'what are you up to?' answers now widen to the full live world-state: the current conversation, live coding lanes, other active friend-facing sessions, and any active inner holding state, instead of collapsing to just the current lane.",
+        "The runtime no longer regex-polices an exact status-answer template; family status now rides on the same live obligation and session world-state the agent already uses everywhere else, which keeps cross-session answers truthful and natural."
       ]
     },
     {

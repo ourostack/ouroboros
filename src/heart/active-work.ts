@@ -233,7 +233,15 @@ function formatObligationContentNextAction(obligation: Obligation | null): strin
 }
 
 function formatNextAction(frame: ActiveWorkFrame, obligation: Obligation | null): string | null {
-  if (obligation?.nextAction?.trim()) {
+  const obligationHasConcreteArtifact = Boolean(obligation?.currentArtifact?.trim())
+    || obligation?.currentSurface?.kind === "merge"
+  if (obligation?.status === "waiting_for_merge") {
+    return obligation.nextAction?.trim() || `wait for checks, merge ${formatMergeArtifact(obligation)}, then update runtime`
+  }
+  if (obligation?.status === "updating_runtime") {
+    return obligation.nextAction?.trim() || "update runtime, verify version/changelog, then re-observe"
+  }
+  if (obligationHasConcreteArtifact && obligation?.nextAction?.trim()) {
     return obligation.nextAction.trim()
   }
   const liveCodingSession = frame.codingSessions?.[0]
@@ -246,12 +254,7 @@ function formatNextAction(frame: ActiveWorkFrame, obligation: Obligation | null)
   if (liveCodingSession) {
     return "finish the coding pass and bring the result back here"
   }
-  if (obligation?.status === "waiting_for_merge") {
-    return `wait for checks, merge ${formatMergeArtifact(obligation)}, then update runtime`
-  }
-  if (obligation?.status === "updating_runtime") {
-    return "update runtime, verify version/changelog, then re-observe"
-  }
+  if (obligation?.nextAction?.trim()) return obligation.nextAction.trim()
   if (obligation) {
     return formatObligationContentNextAction(obligation) || "continue the active loop and bring the result back here"
   }
@@ -381,10 +384,17 @@ export function formatOtherActiveSessionSummaries(frame: ActiveWorkFrame, nowMs 
       .filter((candidate) => candidate.originSession && sessionOriginKey(candidate.originSession) === originKey)
       .sort((left, right) => codingSessionTimestampMs(right) - codingSessionTimestampMs(left))[0] ?? null
     const liveSession = (frame.friendActivity?.allOtherLiveSessions ?? []).find((candidate) => sessionOriginKey(candidate) === originKey) ?? null
-    const hasFreshSessionActivity = liveSession
-      ? (nowMs - liveSession.lastActivityMs) <= RECENT_OTHER_LIVE_SESSION_WINDOW_MS
+    const hasMaterialLiveSession = liveSession
+      ? (
+        (nowMs - liveSession.lastActivityMs) <= RECENT_OTHER_LIVE_SESSION_WINDOW_MS
+        || (
+          frame.currentSession != null
+          && liveSession.friendId === frame.currentSession.friendId
+          && liveSession.channel !== frame.currentSession.channel
+        )
+      )
       : false
-    if (!obligation && !codingSession && !hasFreshSessionActivity) {
+    if (!obligation && !codingSession && !hasMaterialLiveSession) {
       return null
     }
     const timestampMs = Math.max(
