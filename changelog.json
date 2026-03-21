@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.92",
+      "changes": [
+        "Final-answer truth checks now reject `intent=complete` when a must-resolve handoff still has an active live-session return obligation and no newer follow-up proves the loop resumed.",
+        "This keeps visible operator loops open until the agent actually brings back the external-state update or reports a concrete blocker instead of going dark early."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.91",
       "changes": [
         "Fixed `ouro changelog` so it reads the shipped object-shaped changelog format (`{ versions: [...] }`) instead of falling through to 'no changelog entries found' for valid runtime releases.",

@@ -40,8 +40,7 @@ describe("getFinalAnswerRetryError with obligation and truth checks", () => {
       false,
       false,
     )
-    // Should NOT be the selfhood message
-    expect(result).not.toBe(SELFHOOD_INWARD_MSG)
+    expect(result).toBeNull()
   })
 
   it("allows delegate-inward when sawGoInward", () => {
@@ -54,7 +53,7 @@ describe("getFinalAnswerRetryError with obligation and truth checks", () => {
       true, // sawGoInward
       false,
     )
-    expect(result).not.toBe(SELFHOOD_INWARD_MSG)
+    expect(result).toBeNull()
   })
 
   it("allows delegate-inward when sawQuerySession", () => {
@@ -67,7 +66,7 @@ describe("getFinalAnswerRetryError with obligation and truth checks", () => {
       false,
       true, // sawQuerySession
     )
-    expect(result).not.toBe(SELFHOOD_INWARD_MSG)
+    expect(result).toBeNull()
   })
 
   it("rejects pending obligation with no evidence", () => {
@@ -90,6 +89,7 @@ describe("getFinalAnswerRetryError with obligation and truth checks", () => {
       false,
       false,
       false,
+      undefined,
       innerJob,
     )
     expect(result).toBe(OBLIGATION_MSG)
@@ -115,9 +115,10 @@ describe("getFinalAnswerRetryError with obligation and truth checks", () => {
       false,
       true, // sawGoInward
       false,
+      undefined,
       innerJob,
     )
-    expect(result).not.toBe(OBLIGATION_MSG)
+    expect(result).toBeNull()
   })
 
   it("allows pending obligation when sawSendMessageSelf", () => {
@@ -140,9 +141,10 @@ describe("getFinalAnswerRetryError with obligation and truth checks", () => {
       true, // sawSendMessageSelf
       false,
       false,
+      undefined,
       innerJob,
     )
-    expect(result).not.toBe(OBLIGATION_MSG)
+    expect(result).toBeNull()
   })
 
   it("does not reject when obligation is fulfilled", () => {
@@ -165,9 +167,10 @@ describe("getFinalAnswerRetryError with obligation and truth checks", () => {
       false,
       false,
       false,
+      undefined,
       innerJob,
     )
-    expect(result).not.toBe(OBLIGATION_MSG)
+    expect(result).toBeNull()
   })
 
   it("does not reject when innerJob is undefined", () => {
@@ -180,8 +183,39 @@ describe("getFinalAnswerRetryError with obligation and truth checks", () => {
       false,
       false,
       undefined,
+      undefined,
     )
-    expect(result).not.toBe(OBLIGATION_MSG)
+    expect(result).toBeNull()
+  })
+
+  it("rejects complete intent when a live return obligation is still active without newer follow-up", () => {
+    const result = getFinalAnswerRetryError(
+      true,
+      "complete",
+      false,
+      undefined,
+      false,
+      false,
+      false,
+      "bring the external-state update back here",
+      undefined,
+    )
+    expect(result).toContain("you still owe the live session a visible return")
+  })
+
+  it("allows complete intent after newer steering follow-up on the same obligation", () => {
+    const result = getFinalAnswerRetryError(
+      true,
+      "complete",
+      true,
+      undefined,
+      false,
+      false,
+      false,
+      "bring the external-state update back here",
+      undefined,
+    )
+    expect(result).toBeNull()
   })
 
   it("existing check: mustResolveBeforeHandoff + missing intent still works", () => {

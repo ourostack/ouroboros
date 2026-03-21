@@ -8447,7 +8447,7 @@ describe("getFinalAnswerRetryError delegation adherence", () => {
       { target: "delegate-inward", reasons: ["explicit_reflection"], outwardClosureRequired: true },
       true,
     )
-    expect(result).not.toContain("part of you knows this needs more thought")
+    expect(result).toBeNull()
   })
 
   it("does NOT fire delegation adherence check when target is fast-path", async () => {
@@ -8459,7 +8459,7 @@ describe("getFinalAnswerRetryError delegation adherence", () => {
       { target: "fast-path", reasons: [], outwardClosureRequired: false },
       false,
     )
-    expect(result).not.toContain("part of you knows this needs more thought")
+    expect(result).toBeNull()
   })
 
   it("uses selfhood-oriented tone in the delegation adherence message", async () => {
@@ -8478,16 +8478,16 @@ describe("getFinalAnswerRetryError delegation adherence", () => {
     expect(result).not.toContain("invalid")
   })
 
-  it("falls through to default error when delegationDecision is undefined", async () => {
+  it("returns null when no retry reason applies and delegationDecision is undefined", async () => {
     const { getFinalAnswerRetryError } = await import("../../heart/core")
     const result = getFinalAnswerRetryError(false, undefined, false, undefined, false)
-    expect(result).toContain("incomplete or malformed")
+    expect(result).toBeNull()
   })
 
-  it("falls through to default error when sawSendMessageSelf is undefined", async () => {
+  it("returns null when no retry reason applies and sawSendMessageSelf is undefined", async () => {
     const { getFinalAnswerRetryError } = await import("../../heart/core")
     const result = getFinalAnswerRetryError(false, undefined, false, undefined, undefined)
-    expect(result).toContain("incomplete or malformed")
+    expect(result).toBeNull()
   })
 
   it("does NOT fire delegation adherence when fast-path with send_message(self) called", async () => {
@@ -8499,8 +8499,7 @@ describe("getFinalAnswerRetryError delegation adherence", () => {
       { target: "fast-path", reasons: [], outwardClosureRequired: false },
       true,
     )
-    expect(result).not.toContain("part of you knows this needs more thought")
-    expect(result).toContain("incomplete or malformed")
+    expect(result).toBeNull()
   })
 
   it("delegation adherence takes priority over mustResolveBeforeHandoff", async () => {
