@@ -139,6 +139,164 @@ describe("active work frame", () => {
     expect(frame.bridgeSuggestion).toBeNull()
   })
 
+  it("treats active coding work as inward-work and surfaces the live coding lane", async () => {
+    const { buildActiveWorkFrame, formatActiveWorkFrame } = await import("../../heart/active-work")
+
+    const frame = buildActiveWorkFrame({
+      currentSession: {
+        friendId: "friend-1",
+        channel: "bluebubbles",
+        key: "chat",
+        sessionPath: "/tmp/state/sessions/friend-1/bluebubbles/chat.json",
+      },
+      mustResolveBeforeHandoff: false,
+      inner: {
+        status: "idle",
+        hasPending: false,
+        job: {
+          status: "idle" as const,
+          content: null,
+          origin: null,
+          mode: "reflect" as const,
+          obligationStatus: null,
+          surfacedResult: null,
+          queuedAt: null,
+          startedAt: null,
+          surfacedAt: null,
+        },
+      },
+      bridges: [],
+      pendingObligations: [],
+      codingSessions: [
+        {
+          id: "coding-013",
+          runner: "claude",
+          workdir: "/tmp/workspaces/ouroboros",
+          taskRef: "harness-maintenance",
+          status: "waiting_input" as const,
+          stdoutTail: "needs review",
+          stderrTail: "",
+          pid: 13,
+          startedAt: "2026-03-05T23:53:00.000Z",
+          lastActivityAt: "2026-03-05T23:59:00.000Z",
+          endedAt: null,
+          restartCount: 0,
+          lastExitCode: null,
+          lastSignal: null,
+          failure: null,
+          originSession: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
+        },
+      ],
+      taskBoard: {
+        compact: "",
+        activeBridges: [],
+        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [] },
+      },
+      friendActivity: [],
+    })
+
+    expect(frame.centerOfGravity).toBe("inward-work")
+
+    const rendered = formatActiveWorkFrame(frame)
+    expect(rendered).toContain("## live coding work")
+    expect(rendered).toContain("[waiting_input] claude coding-013")
+    expect(rendered).toContain("for this thread")
+  })
+
+  it("renders live coding work from another thread with explicit scope", async () => {
+    const { buildActiveWorkFrame, formatActiveWorkFrame } = await import("../../heart/active-work")
+
+    const frame = buildActiveWorkFrame({
+      currentSession: {
+        friendId: "friend-1",
+        channel: "bluebubbles",
+        key: "chat",
+        sessionPath: "/tmp/state/sessions/friend-1/bluebubbles/chat.json",
+      },
+      mustResolveBeforeHandoff: false,
+      inner: { status: "idle", hasPending: false },
+      bridges: [],
+      pendingObligations: [],
+      codingSessions: [
+        {
+          id: "coding-014",
+          runner: "codex",
+          workdir: "/tmp/workspaces/ouroboros",
+          taskRef: "session-surfacing",
+          status: "running" as const,
+          stdoutTail: "",
+          stderrTail: "",
+          pid: 14,
+          startedAt: "2026-03-05T23:53:00.000Z",
+          lastActivityAt: "2026-03-05T23:59:00.000Z",
+          endedAt: null,
+          restartCount: 0,
+          lastExitCode: null,
+          lastSignal: null,
+          failure: null,
+          originSession: { friendId: "friend-1", channel: "cli", key: "session" },
+        },
+      ],
+      taskBoard: {
+        compact: "",
+        activeBridges: [],
+        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [] },
+      },
+      friendActivity: [],
+    })
+
+    const rendered = formatActiveWorkFrame(frame)
+    expect(rendered).toContain("[running] codex coding-014")
+    expect(rendered).toContain("for cli/session")
+  })
+
+  it("renders live coding work without origin metadata without inventing scope", async () => {
+    const { buildActiveWorkFrame, formatActiveWorkFrame } = await import("../../heart/active-work")
+
+    const frame = buildActiveWorkFrame({
+      currentSession: {
+        friendId: "friend-1",
+        channel: "bluebubbles",
+        key: "chat",
+        sessionPath: "/tmp/state/sessions/friend-1/bluebubbles/chat.json",
+      },
+      mustResolveBeforeHandoff: false,
+      inner: { status: "idle", hasPending: false },
+      bridges: [],
+      pendingObligations: [],
+      codingSessions: [
+        {
+          id: "coding-015",
+          runner: "claude",
+          workdir: "/tmp/workspaces/ouroboros",
+          taskRef: "orphan-session",
+          status: "running" as const,
+          stdoutTail: "",
+          stderrTail: "",
+          pid: 15,
+          startedAt: "2026-03-05T23:53:00.000Z",
+          lastActivityAt: "2026-03-05T23:59:00.000Z",
+          endedAt: null,
+          restartCount: 0,
+          lastExitCode: null,
+          lastSignal: null,
+          failure: null,
+        },
+      ],
+      taskBoard: {
+        compact: "",
+        activeBridges: [],
+        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [] },
+      },
+      friendActivity: [],
+    })
+
+    const rendered = formatActiveWorkFrame(frame)
+    expect(rendered).toContain("[running] claude coding-015")
+    expect(rendered).not.toContain("for this thread")
+    expect(rendered).not.toContain("for cli/session")
+  })
+
   it("prefers friend-facing recency over a newer passive-write fallback when choosing the freshest same-friend session", async () => {
     const { buildActiveWorkFrame } = await import("../../heart/active-work")
 

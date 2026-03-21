@@ -14,6 +14,7 @@ import type { InboundTurnInput, InboundTurnResult } from "../../senses/pipeline"
 
 const mockFindBridgesForSession = vi.fn()
 const mockListTargetSessionCandidates = vi.fn()
+const mockListCodingSessions = vi.fn()
 
 vi.mock("../../heart/bridges/manager", async () => {
   const actual = await vi.importActual<typeof import("../../heart/bridges/manager")>("../../heart/bridges/manager")
@@ -30,6 +31,16 @@ vi.mock("../../heart/target-resolution", async () => {
   return {
     ...actual,
     listTargetSessionCandidates: (...args: any[]) => mockListTargetSessionCandidates(...args),
+  }
+})
+
+vi.mock("../../repertoire/coding", async () => {
+  const actual = await vi.importActual<typeof import("../../repertoire/coding")>("../../repertoire/coding")
+  return {
+    ...actual,
+    getCodingSessionManager: () => ({
+      listSessions: (...args: any[]) => mockListCodingSessions(...args),
+    }),
   }
 })
 
@@ -136,6 +147,7 @@ describe("handleInboundTurn", () => {
   beforeEach(() => {
     mockFindBridgesForSession.mockReset().mockReturnValue([])
     mockListTargetSessionCandidates.mockReset().mockResolvedValue([])
+    mockListCodingSessions.mockReset().mockReturnValue([])
   })
 
   // Step 1: friend resolution
@@ -1135,6 +1147,89 @@ describe("handleInboundTurn", () => {
       expect(msgs[0]).toEqual({ role: "system", content: "system prompt" })
       const userMsg = msgs.find(m => m.role === "user" && typeof m.content === "string" && m.content.includes("What's up?"))
       expect(userMsg).toBeTruthy()
+    })
+  })
+
+  describe("active work coding-session salience", () => {
+    it("passes only live coding sessions for the current thread into active work", async () => {
+      const input = makeInput()
+      mockListCodingSessions.mockReturnValue([
+        {
+          id: "coding-001",
+          runner: "claude",
+          workdir: "/tmp/repo",
+          taskRef: "task-1",
+          status: "completed",
+          startedAt: "2026-03-20T17:00:00.000Z",
+          lastActivityAt: "2026-03-20T17:01:00.000Z",
+          endedAt: "2026-03-20T17:02:00.000Z",
+          restartCount: 0,
+          lastExitCode: 0,
+          lastSignal: null,
+          originSession: { friendId: "friend-1", channel: "cli", key: "session" },
+        },
+        {
+          id: "coding-002",
+          runner: "claude",
+          workdir: "/tmp/repo",
+          taskRef: "task-2",
+          status: "running",
+          startedAt: "2026-03-20T17:00:00.000Z",
+          lastActivityAt: "2026-03-20T17:03:00.000Z",
+          endedAt: null,
+          restartCount: 0,
+          lastExitCode: null,
+          lastSignal: null,
+        },
+        {
+          id: "coding-003",
+          runner: "codex",
+          workdir: "/tmp/repo",
+          taskRef: "task-3",
+          status: "stalled",
+          startedAt: "2026-03-20T17:00:00.000Z",
+          lastActivityAt: "2026-03-20T17:04:00.000Z",
+          endedAt: null,
+          restartCount: 0,
+          lastExitCode: null,
+          lastSignal: null,
+          originSession: { friendId: "other-friend", channel: "cli", key: "session" },
+        },
+        {
+          id: "coding-004",
+          runner: "claude",
+          workdir: "/tmp/repo",
+          taskRef: "task-4",
+          status: "waiting_input",
+          startedAt: "2026-03-20T17:00:00.000Z",
+          lastActivityAt: "2026-03-20T17:05:00.000Z",
+          endedAt: null,
+          restartCount: 0,
+          lastExitCode: null,
+          lastSignal: null,
+          originSession: { friendId: "friend-1", channel: "cli", key: "session" },
+        },
+      ])
+
+      await handleInboundTurn(input)
+
+      const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
+      const options = runAgentCall[4] as RunAgentOptions
+      expect(options.activeWorkFrame?.centerOfGravity).toBe("inward-work")
+      expect(options.activeWorkFrame?.codingSessions.map((session) => session.id)).toEqual(["coding-004"])
+    })
+
+    it("falls back to an empty live coding list when the coding session manager throws", async () => {
+      const input = makeInput()
+      mockListCodingSessions.mockImplementation(() => {
+        throw new Error("manager exploded")
+      })
+
+      await handleInboundTurn(input)
+
+      const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
+      const options = runAgentCall[4] as RunAgentOptions
+      expect(options.activeWorkFrame?.codingSessions).toEqual([])
     })
   })
 

@@ -73,6 +73,63 @@ function findReusableCodingSession(sessions: CodingSession[], request: CodingSes
   return matches[0] ?? null
 }
 
+function isLiveCodingStatus(status: CodingSession["status"]): boolean {
+  return status === "spawning" || status === "running" || status === "waiting_input" || status === "stalled"
+}
+
+function rankCodingStatusSession(
+  session: CodingSession,
+  currentSession: NonNullable<ToolContext["currentSession"]>,
+): number {
+  return sameOriginSession(
+    {
+      friendId: currentSession.friendId,
+      channel: currentSession.channel,
+      key: currentSession.key,
+    },
+    session.originSession,
+  )
+    ? 0
+    : 1
+}
+
+function selectCodingStatusSessions(
+  sessions: CodingSession[],
+  currentSession?: ToolContext["currentSession"],
+): CodingSession[] {
+  if (sessions.length === 0) return []
+  if (!currentSession) {
+    return sessions
+  }
+
+  const activeSessions = sessions.filter((session) => isLiveCodingStatus(session.status)).sort(latestSessionFirst)
+  if (activeSessions.length > 0) {
+    return activeSessions.sort((left, right) => {
+      const rankDelta = rankCodingStatusSession(left, currentSession) - rankCodingStatusSession(right, currentSession)
+      if (rankDelta !== 0) return rankDelta
+      return latestSessionFirst(left, right)
+    })
+  }
+
+  const matchingClosedSessions = sessions
+    .filter((session) =>
+      sameOriginSession(
+        {
+          friendId: currentSession.friendId,
+          channel: currentSession.channel,
+          key: currentSession.key,
+        },
+        session.originSession,
+      ),
+    )
+    .sort(latestSessionFirst)
+  if (matchingClosedSessions.length > 0) {
+    return matchingClosedSessions
+  }
+
+  return [...sessions].sort(latestSessionFirst)
+}
+
 const codingSpawnTool: OpenAI.ChatCompletionTool = {
   type: "function",
   function: {
@@ -237,12 +294,12 @@ export const codingToolDefinitions = [
   },
   {
     tool: codingStatusTool,
-    handler: (args: Record<string, string>): string => {
+    handler: (args: Record<string, string>, ctx?: ToolContext): string => {
       emitCodingToolEvent("coding_status")
       const manager = getCodingSessionManager()
       const sessionId = requireArg(args, "sessionId")
       if (!sessionId) {
-        return JSON.stringify(manager.listSessions())
+        return JSON.stringify(selectCodingStatusSessions(manager.listSessions(), ctx?.currentSession))
       }
 
       const session = manager.getSession(sessionId)
