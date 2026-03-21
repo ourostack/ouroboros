@@ -1490,11 +1490,11 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     runAuthFlow: defaultRunRuntimeAuthFlow,
     registerOuroBundleType: defaultRegisterOuroBundleUti,
     installOuroCommand: defaultInstallOuroCommand,
-    /* v8 ignore start -- self-healing: ensures versioned layout has current version installed @preserve */
+    /* v8 ignore start -- self-healing: ensures active symlink matches running runtime version @preserve */
     ensureCurrentVersionInstalled: () => {
-      const currentVersion = getCurrentVersion({})
-      if (currentVersion) return // Already installed and linked
+      const linkedVersion = getCurrentVersion({})
       const version = getPackageVersion()
+      if (linkedVersion === version) return
       ensureLayout({})
       const cliHome = getOuroCliHome()
       const versionEntry = path.join(cliHome, "versions", version, "node_modules", "@ouro.bot", "cli", "dist", "heart", "daemon", "ouro-entry.js")
@@ -2011,6 +2011,8 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   })
 
   if (command.kind === "daemon.up") {
+    const linkedVersionBeforeUp = deps.getCurrentCliVersion?.() ?? null
+
     // ── versioned CLI update check ──
     if (deps.checkForCliUpdate) {
       let pendingReExec = false
@@ -2018,7 +2020,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         const updateResult = await deps.checkForCliUpdate()
         if (updateResult.available && updateResult.latestVersion) {
           /* v8 ignore next -- fallback: getCurrentCliVersion always injected in tests @preserve */
-          const currentVersion = deps.getCurrentCliVersion?.() ?? "unknown"
+          const currentVersion = linkedVersionBeforeUp ?? "unknown"
           await deps.installCliVersion!(updateResult.latestVersion)
           deps.activateCliVersion!(updateResult.latestVersion)
           deps.writeStdout(`ouro updated to ${updateResult.latestVersion} (was ${currentVersion})`)
@@ -2046,6 +2048,16 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     }
 
     await performSystemSetup(deps)
+
+    const linkedVersionAfterSetup = deps.getCurrentCliVersion?.() ?? null
+    const runtimeVersion = getPackageVersion()
+    if (linkedVersionBeforeUp && linkedVersionBeforeUp !== runtimeVersion && linkedVersionAfterSetup === runtimeVersion) {
+      deps.writeStdout(`ouro updated to ${runtimeVersion} (was ${linkedVersionBeforeUp})`)
+      const changelogCommand = buildChangelogCommand(linkedVersionBeforeUp, runtimeVersion)
+      if (changelogCommand) {
+        deps.writeStdout(`review changes with: ${changelogCommand}`)
+      }
+    }
 
     if (deps.ensureDaemonBootPersistence) {
       try {
