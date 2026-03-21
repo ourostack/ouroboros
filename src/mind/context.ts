@@ -238,7 +238,7 @@ export function repairSessionMessages(messages: OpenAI.ChatCompletionMessagePara
   }
 
   emitNervesEvent({
-    level: "warn",
+    level: "info",
     event: "mind.session_invariant_repair",
     component: "mind",
     message: "repaired session invariant violations",
@@ -265,7 +265,7 @@ function stripOrphanedToolResults(messages: OpenAI.ChatCompletionMessageParam[])
 
   if (removed > 0) {
     emitNervesEvent({
-      level: "warn",
+      level: "info",
       event: "mind.session_orphan_tool_result_repair",
       component: "mind",
       message: "removed orphaned tool results from session history",
@@ -285,7 +285,7 @@ export function saveSession(
   const violations = validateSessionMessages(messages)
   if (violations.length > 0) {
     emitNervesEvent({
-      level: "warn",
+      level: "info",
       event: "mind.session_invariant_violation",
       component: "mind",
       message: "session invariant violated on save",
@@ -320,7 +320,7 @@ export function loadSession(filePath: string): SessionData | null {
     const violations = validateSessionMessages(messages)
     if (violations.length > 0) {
       emitNervesEvent({
-        level: "warn",
+        level: "info",
         event: "mind.session_invariant_violation",
         component: "mind",
         message: "session invariant violated on load",
