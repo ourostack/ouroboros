@@ -56,6 +56,28 @@ export function getCliContinuityIngressTexts(input: string): string[] {
 // readline.Interface exposes undocumented mutable line/cursor for in-progress input
 type ReadlineInternals = readline.Interface & { line: string; cursor: number }
 
+const CLI_PROMPT = "\x1b[36m> \x1b[0m"
+
+export function writeCliAsyncAssistantMessage(
+  rl: readline.Interface,
+  message: string,
+  stdout: Pick<NodeJS.WriteStream, "write"> = process.stdout,
+): void {
+  const rlInt = rl as ReadlineInternals
+  const currentLine = rlInt.line ?? ""
+  const currentCursor = rlInt.cursor ?? currentLine.length
+
+  stdout.write("\r\x1b[K")
+  stdout.write(`${renderMarkdown(message)}\n`)
+  stdout.write(CLI_PROMPT)
+  if (!currentLine) return
+
+  stdout.write(currentLine)
+  if (currentCursor < currentLine.length) {
+    readline.cursorTo(process.stdout, 2 + currentCursor)
+  }
+}
+
 // Module-level active spinner for log coordination.
 // The terminal log sink calls these to avoid interleaving with spinner output.
 let _activeSpinner: Spinner | null = null
@@ -471,6 +493,11 @@ export interface RunCliSessionOptions {
   messages?: OpenAI.ChatCompletionMessageParam[];
   /** ToolContext passed through to runAgent */
   toolContext?: ToolContext;
+  /** Persist or react to assistant messages emitted asynchronously after the turn. */
+  onAsyncAssistantMessage?: (
+    messages: OpenAI.ChatCompletionMessageParam[],
+    message: OpenAI.ChatCompletionAssistantMessageParam,
+  ) => void | Promise<void>;
   /** Called before processing each input line. Return allowed:false to skip the turn. */
   onInput?: (input: string) => { allowed: boolean; reply?: string };
   /** Called after each agent turn completes (post-runAgent). */
@@ -495,6 +522,7 @@ export interface RunCliSessionOptions {
     userInput: string,
     callbacks: ChannelCallbacks & { flushMarkdown(): void },
     signal?: AbortSignal,
+    toolContext?: ToolContext,
   ) => Promise<{ usage?: UsageData }>;
 }
 
@@ -531,6 +559,22 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
   }
 
   const cliCallbacks = createCliCallbacks()
+  const effectiveToolContext: ToolContext = {
+    signin: options.toolContext?.signin ?? (async () => undefined),
+    ...options.toolContext,
+    codingFeedback: {
+      send: async (message: string) => {
+        const assistantMessage: OpenAI.ChatCompletionAssistantMessageParam = {
+          role: "assistant",
+          content: message,
+        }
+        messages.push(assistantMessage)
+        await options.onAsyncAssistantMessage?.(messages, assistantMessage)
+        writeCliAsyncAssistantMessage(rl, message)
+        await options.toolContext?.codingFeedback?.send(message)
+      },
+    },
+  }
 
   // exitOnToolCall machinery: wrap execTool to detect target tool
   let exitToolResult: unknown | undefined
@@ -562,13 +606,13 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
     if (result === "clear") {
       rlInt.line = "";
       rlInt.cursor = 0
-      process.stdout.write("\r\x1b[K\x1b[36m> \x1b[0m")
+      process.stdout.write(`\r\x1b[K${CLI_PROMPT}`)
     } else if (result === "warn") {
       rlInt.line = "";
       rlInt.cursor = 0
       process.stdout.write("\r\x1b[K")
       process.stderr.write("press Ctrl-C again to exit\n")
-      process.stdout.write("\x1b[36m> \x1b[0m")
+      process.stdout.write(CLI_PROMPT)
     } else {
       rl.close()
     }
@@ -598,7 +642,7 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
         traceId,
         tools: options.tools,
         execTool: wrappedExecTool,
-        toolContext: options.toolContext,
+        toolContext: effectiveToolContext,
       })
     } catch (err) {
       // AbortError (Ctrl-C) -- silently continue to prompt
@@ -627,13 +671,13 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
   }
 
   if (!exitToolFired) {
-    process.stdout.write("\x1b[36m> \x1b[0m")
+    process.stdout.write(CLI_PROMPT)
   }
 
   try {
     for await (const input of debouncedLines(rl)) {
       if (closed) break
-      if (!input.trim()) { process.stdout.write("\x1b[36m> \x1b[0m"); continue }
+      if (!input.trim()) { process.stdout.write(CLI_PROMPT); continue }
 
       // Optional input gate (e.g. trust gate in main)
       if (options.onInput) {
@@ -643,7 +687,7 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
             process.stdout.write(`${gate.reply}\n`)
           }
           if (closed) break
-          process.stdout.write("\x1b[36m> \x1b[0m")
+          process.stdout.write(CLI_PROMPT)
           continue
         }
       }
@@ -661,12 +705,12 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
             await options.onNewSession?.()
             // eslint-disable-next-line no-console -- terminal UX: session cleared
             console.log("session cleared")
-            process.stdout.write("\x1b[36m> \x1b[0m")
+            process.stdout.write(CLI_PROMPT)
             continue
           } else if (dispatchResult.result.action === "response") {
             // eslint-disable-next-line no-console -- terminal UX: command dispatch result
             console.log(dispatchResult.result.message || "")
-            process.stdout.write("\x1b[36m> \x1b[0m")
+            process.stdout.write(CLI_PROMPT)
             continue
           }
         }
@@ -685,7 +729,7 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
         if (options.runTurn) {
           // Pipeline-based turn: the runTurn callback handles user message assembly,
           // pending drain, trust gate, runAgent, postTurn, and token accumulation.
-          result = await options.runTurn(messages, input, cliCallbacks, currentAbort.signal)
+          result = await options.runTurn(messages, input, cliCallbacks, currentAbort.signal, effectiveToolContext)
         } else {
           // Legacy path: inline runAgent (used by adoption specialist and tests)
           const prefix = options.getContentPrefix?.()
@@ -696,7 +740,7 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
             traceId,
             tools: options.tools,
             execTool: wrappedExecTool,
-            toolContext: options.toolContext,
+            toolContext: effectiveToolContext,
           })
         }
       } catch (err) {
@@ -730,7 +774,7 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
       }
 
       if (closed) break
-      process.stdout.write("\x1b[36m> \x1b[0m")
+      process.stdout.write(CLI_PROMPT)
     }
   } finally {
     rl.close()
@@ -813,7 +857,10 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
       agentName: currentAgentName,
       pasteDebounceMs,
       messages: sessionMessages,
-      runTurn: async (messages, userInput, callbacks, signal) => {
+      onAsyncAssistantMessage: async (messages, _assistantMessage) => {
+        postTurn(messages, sessPath, undefined, undefined, sessionState)
+      },
+      runTurn: async (messages, userInput, callbacks, signal, toolContext) => {
         // Run the full per-turn pipeline: resolve -> gate -> session -> drain -> runAgent -> postTurn -> tokens
         // User message passed via input.messages so the pipeline can prepend pending messages to it.
         const result = await handleInboundTurn({
@@ -851,6 +898,7 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
             toolChoiceRequired: getToolChoiceRequired(),
             traceId: createTraceId(),
             mcpManager,
+            toolContext,
           },
         })
 
