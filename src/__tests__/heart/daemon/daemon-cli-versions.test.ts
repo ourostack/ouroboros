@@ -39,11 +39,12 @@ describe("ouro versions: parsing", () => {
 })
 
 describe("ouro versions: execution", () => {
-  it("lists versions with current and previous markers", async () => {
+  it("lists local versions and published update availability", async () => {
     const deps = makeDeps({
       listCliVersions: vi.fn(() => ["0.1.0-alpha.78", "0.1.0-alpha.79", "0.1.0-alpha.80"]),
       getCurrentCliVersion: vi.fn(() => "0.1.0-alpha.80"),
       getPreviousCliVersion: vi.fn(() => "0.1.0-alpha.79"),
+      checkForCliUpdate: vi.fn(async () => ({ available: true, latestVersion: "0.1.0-alpha.81" })),
     })
 
     const result = await runOuroCli(["versions"], deps)
@@ -53,31 +54,49 @@ describe("ouro versions: execution", () => {
     expect(result).toContain("0.1.0-alpha.79")
     expect(result).toContain("(previous)")
     expect(result).toContain("0.1.0-alpha.78")
+    expect(result).toContain("published alpha: 0.1.0-alpha.81 (update available)")
   })
 
-  it("outputs 'no versions installed' when list is empty", async () => {
-    const deps = makeDeps({
-      listCliVersions: vi.fn(() => []),
-      getCurrentCliVersion: vi.fn(() => null),
-      getPreviousCliVersion: vi.fn(() => null),
-    })
-
-    const result = await runOuroCli(["versions"], deps)
-
-    expect(result).toBe("no versions installed")
-  })
-
-  it("shows single version marked as current", async () => {
+  it("shows published version as up to date when no update is available", async () => {
     const deps = makeDeps({
       listCliVersions: vi.fn(() => ["0.1.0-alpha.80"]),
       getCurrentCliVersion: vi.fn(() => "0.1.0-alpha.80"),
       getPreviousCliVersion: vi.fn(() => null),
+      checkForCliUpdate: vi.fn(async () => ({ available: false, latestVersion: "0.1.0-alpha.80" })),
     })
 
     const result = await runOuroCli(["versions"], deps)
 
     expect(result).toContain("0.1.0-alpha.80")
     expect(result).toContain("* current")
-    expect(result).not.toContain("(previous)")
+    expect(result).toContain("published alpha: 0.1.0-alpha.80 (up to date)")
+  })
+
+  it("shows published status even when no versions are installed", async () => {
+    const deps = makeDeps({
+      listCliVersions: vi.fn(() => []),
+      getCurrentCliVersion: vi.fn(() => null),
+      getPreviousCliVersion: vi.fn(() => null),
+      checkForCliUpdate: vi.fn(async () => ({ available: true, latestVersion: "0.1.0-alpha.81" })),
+    })
+
+    const result = await runOuroCli(["versions"], deps)
+
+    expect(result).toContain("no versions installed")
+    expect(result).toContain("published alpha: 0.1.0-alpha.81 (update available)")
+  })
+
+  it("degrades cleanly when published version lookup errors", async () => {
+    const deps = makeDeps({
+      listCliVersions: vi.fn(() => ["0.1.0-alpha.80"]),
+      getCurrentCliVersion: vi.fn(() => "0.1.0-alpha.80"),
+      getPreviousCliVersion: vi.fn(() => null),
+      checkForCliUpdate: vi.fn(async () => ({ available: false, error: "registry unavailable" })),
+    })
+
+    const result = await runOuroCli(["versions"], deps)
+
+    expect(result).toContain("0.1.0-alpha.80")
+    expect(result).toContain("published alpha: unavailable (registry unavailable)")
   })
 })
