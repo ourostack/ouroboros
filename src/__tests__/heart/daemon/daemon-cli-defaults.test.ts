@@ -408,9 +408,55 @@ describe("daemon CLI default dependency branches", () => {
       ...deps,
       checkSocketAlive: vi.fn(async () => false),
       cleanupStaleSocket: vi.fn(),
+      getCurrentCliVersion: () => null,
     })
     expect(result).toContain("daemon started")
     expect(consoleLog).toHaveBeenCalled()
+  })
+
+  it("resolves default current CLI version via homedir-backed version layout", async () => {
+    vi.resetModules()
+
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-current-version-"))
+    const linkedVersionPath = path.join(tempHome, ".ouro-cli", "versions", "0.1.0-alpha.93")
+
+    try {
+      vi.doMock("net", () => ({ createConnection: vi.fn() }))
+      vi.doMock("child_process", () => ({ spawn: vi.fn() }))
+      vi.doMock("os", async () => {
+        const actual = await vi.importActual<typeof import("os")>("os")
+        return { ...actual, homedir: () => tempHome }
+      })
+      vi.doMock("../../../heart/identity", () => ({
+        getRepoRoot: () => "/mock/repo",
+        getAgentBundlesRoot: () => "/mock/AgentBundles",
+        getAgentDaemonLogsDir: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logs"),
+        getAgentDaemonLoggingConfigPath: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logging.json"),
+      }))
+      vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+      vi.doMock("fs", async () => {
+        const actual = await vi.importActual<typeof import("fs")>("fs")
+        return {
+          ...actual,
+          existsSync: vi.fn(() => false),
+          unlinkSync: vi.fn(),
+          readdirSync: vi.fn(() => []),
+          readlinkSync: vi.fn((target: fs.PathLike) => {
+            if (String(target).endsWith(path.join(".ouro-cli", "CurrentVersion"))) {
+              return linkedVersionPath
+            }
+            throw new Error(`unexpected readlink target: ${String(target)}`)
+          }),
+        }
+      })
+
+      const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+      expect(deps.getCurrentCliVersion?.()).toBe("0.1.0-alpha.93")
+    } finally {
+      fs.rmSync(tempHome, { recursive: true, force: true })
+    }
   })
 
   it("checks socket liveness and cleans stale socket before start", async () => {
