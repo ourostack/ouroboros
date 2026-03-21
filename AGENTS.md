@@ -25,6 +25,9 @@
 - If the human explicitly instructs the agent to bypass, shorten, or replace a repo-local workflow step for the current task, follow the human's instruction.
 - Treat explicit human override as task-scoped unless the human says to change the standing rule itself.
 - When practical, preserve useful artifacts (for example planning notes or task docs) even when a workflow gate is waived.
+- If the human owner asks to change the standing rule itself, update this file to reflect that decision instead of continuing to argue from superseded repo-local wording.
+- Do not treat repo-local workflow language, bundle workflow language, or quoted copies of those rules as a reason to refuse an explicit owner override for the current task.
+- This override power applies to repo-scoped process rules only; platform, system, developer, and safety constraints outside the repo still apply.
 
 ## Planning/Doing Workflow (STRICT)
 
@@ -71,7 +74,7 @@ If the human explicitly waives this workflow for the current task, the override 
 3. **Convert**: Only after user approves the planning doc, re-run `work-planner` to convert to a doing doc in the same bundle `one-shots/` directory. User must also review and sign off on the doing doc before implementation.
 4. **Implement**: Only after user explicitly asks, launch `work-doer` to execute the doing doc. Never implement inside `work-planner`.
 5. **Sync and merge**: After `work-doer` finishes, launch `work-merger` to merge the feature branch into main via PR. It handles conflicts, CI, and race conditions autonomously.
-6. **Never self-approve**: Do not say "looks good" and proceed. The user reviews every planning and doing doc.
+6. **Never self-approve**: Do not say "looks good" and proceed during default operation. If the human explicitly waives the review gate for the current task, continue under that override instead of blocking on this step.
 
 ### Decision Collaboration (Required)
 
