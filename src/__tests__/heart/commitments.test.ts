@@ -55,12 +55,12 @@ describe("deriveCommitments", () => {
     expect(result.safeToIgnore).toContain("no active tasks to track")
   })
 
-  it("includes obligation in committedTo", () => {
+  it("does not treat raw current-turn text as a persisted commitment", () => {
     const result = deriveCommitments(
       makeFrame({ currentObligation: "think about naming" }),
       makeIdleJob(),
     )
-    expect(result.committedTo).toContain("i told them i'd think about naming")
+    expect(result.committedTo).toEqual([])
   })
 
   it("includes running inner job in committedTo", () => {
@@ -127,7 +127,6 @@ describe("deriveCommitments", () => {
   it("combined: all entries present", () => {
     const result = deriveCommitments(
       makeFrame({
-        currentObligation: "naming",
         mustResolveBeforeHandoff: true,
         bridges: [{
           id: "b1",
@@ -143,7 +142,7 @@ describe("deriveCommitments", () => {
       }),
       makeIdleJob({ status: "running", content: "thinking" }),
     )
-    expect(result.committedTo.length).toBeGreaterThanOrEqual(4)
+    expect(result.committedTo.length).toBeGreaterThanOrEqual(3)
     expect(result.completionCriteria.length).toBeGreaterThanOrEqual(2)
   })
 

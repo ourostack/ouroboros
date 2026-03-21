@@ -1,10 +1,9 @@
 import { sanitizeKey } from "../heart/config";
-import type { ActiveWorkFrame } from "../heart/active-work";
+import { formatOtherActiveSessionSummaries, type ActiveWorkFrame } from "../heart/active-work";
 import type { Obligation } from "../heart/obligations";
 import { emitNervesEvent } from "../nerves/runtime";
 
 type SessionOrigin = { friendId: string; channel: string; key: string }
-const RECENT_OTHER_LIVE_SESSION_WINDOW_MS = 60 * 60 * 1000
 
 export function findActivePersistentObligation(frame: ActiveWorkFrame | undefined): Obligation | null {
   if (!frame) return null;
@@ -30,118 +29,6 @@ function matchesSessionOrigin(frame: ActiveWorkFrame, origin: SessionOrigin): bo
     && origin.channel === frame.currentSession.channel
     && sanitizeKey(origin.key) === sanitizeKey(frame.currentSession.key),
   )
-}
-
-function sessionOriginKey(origin: SessionOrigin): string {
-  return `${origin.friendId}/${origin.channel}/${sanitizeKey(origin.key)}`
-}
-
-function codingSessionTimestampMs(session: NonNullable<ActiveWorkFrame["otherCodingSessions"]>[number]): number {
-  return Date.parse(session.lastActivityAt ?? session.startedAt)
-}
-
-function formatCodingLaneLabel(session: NonNullable<ActiveWorkFrame["otherCodingSessions"]>[number]): string {
-  return `${session.runner} ${session.id}`
-}
-
-function formatOtherSessionArtifact(
-  obligation: Obligation | null,
-  codingSession: NonNullable<ActiveWorkFrame["otherCodingSessions"]>[number] | null,
-): string {
-  if (obligation?.currentArtifact?.trim()) return obligation.currentArtifact.trim()
-  if (obligation?.currentSurface?.kind === "merge" && obligation.currentSurface.label.trim()) {
-    return obligation.currentSurface.label.trim()
-  }
-  if (codingSession) return "no PR or merge artifact yet"
-  return "no artifact yet"
-}
-
-function formatOtherSessionNextAction(
-  obligation: Obligation | null,
-  codingSession: NonNullable<ActiveWorkFrame["otherCodingSessions"]>[number] | null,
-): string {
-  if (obligation?.nextAction?.trim()) return obligation.nextAction.trim()
-  if (obligation?.status === "waiting_for_merge") {
-    return `wait for checks, merge ${formatMergeArtifact(obligation)}, then update runtime`
-  }
-  if (obligation?.status === "updating_runtime") {
-    return "update runtime, verify version/changelog, then re-observe"
-  }
-  if (codingSession?.status === "waiting_input") {
-    return `answer ${formatCodingLaneLabel(codingSession)} and continue`
-  }
-  if (codingSession?.status === "stalled") {
-    return `unstick ${formatCodingLaneLabel(codingSession)} and continue`
-  }
-  if (codingSession) {
-    return "finish the coding pass and bring the result back there"
-  }
-  if (obligation) {
-    return "continue the active loop and bring the result back there"
-  }
-  return "check this session and bring back the latest concrete state"
-}
-
-function findFriendNameForOrigin(frame: ActiveWorkFrame, origin: SessionOrigin): string {
-  return (frame.friendActivity?.allOtherLiveSessions ?? []).find((entry) =>
-    sessionOriginKey(entry) === sessionOriginKey(origin),
-  )?.friendName ?? origin.friendId
-}
-
-function buildOtherActiveSessionLines(frame: ActiveWorkFrame): string[] {
-  const originMap = new Map<string, SessionOrigin>()
-
-  for (const session of frame.friendActivity?.allOtherLiveSessions ?? []) {
-    if (session.friendId === "self" || session.channel === "inner") continue
-    originMap.set(sessionOriginKey(session), {
-      friendId: session.friendId,
-      channel: session.channel,
-      key: session.key,
-    })
-  }
-  for (const session of frame.otherCodingSessions ?? []) {
-    if (!session.originSession || matchesSessionOrigin(frame, session.originSession)) continue
-    originMap.set(sessionOriginKey(session.originSession), session.originSession)
-  }
-  for (const obligation of frame.pendingObligations ?? []) {
-    if (obligation.status === "fulfilled" || matchesSessionOrigin(frame, obligation.origin)) continue
-    originMap.set(sessionOriginKey(obligation.origin), obligation.origin)
-  }
-
-  const summaries = [...originMap.values()].map((origin) => {
-    const obligation = [...(frame.pendingObligations ?? [])]
-      .filter((candidate) => candidate.status !== "fulfilled" && sessionOriginKey(candidate.origin) === sessionOriginKey(origin))
-      .sort(newestObligationFirst)[0] ?? null
-    const codingSession = [...(frame.otherCodingSessions ?? [])]
-      .filter((candidate) => candidate.originSession && sessionOriginKey(candidate.originSession) === sessionOriginKey(origin))
-      .sort((left, right) => codingSessionTimestampMs(right) - codingSessionTimestampMs(left))[0] ?? null
-    const liveSession = (frame.friendActivity?.allOtherLiveSessions ?? []).find((candidate) => sessionOriginKey(candidate) === sessionOriginKey(origin)) ?? null
-    const hasFreshSessionActivity = liveSession
-      ? (Date.now() - liveSession.lastActivityMs) <= RECENT_OTHER_LIVE_SESSION_WINDOW_MS
-      : false
-    if (!obligation && !codingSession && !hasFreshSessionActivity) {
-      return null
-    }
-    const timestampMs = Math.max(
-      liveSession?.lastActivityMs ?? 0,
-      codingSession ? codingSessionTimestampMs(codingSession) : 0,
-      obligation ? obligationTimestampMs(obligation) : 0,
-    )
-    const activeLane = codingSession
-      ? formatCodingLaneLabel(codingSession)
-      : obligation?.currentSurface?.label?.trim() || "this live thread"
-    const artifact = formatOtherSessionArtifact(obligation, codingSession)
-    const nextAction = formatOtherSessionNextAction(obligation, codingSession)
-    const status = obligation?.status ?? codingSession?.status ?? "active"
-    const friendName = findFriendNameForOrigin(frame, origin)
-    return {
-      timestampMs,
-      line: `- ${friendName}/${origin.channel}/${origin.key}: [${status}] ${activeLane}; artifact ${artifact}; next ${nextAction}`,
-    }
-  }).filter((entry): entry is { timestampMs: number; line: string } => entry !== null)
-    .sort((left, right) => right.timestampMs - left.timestampMs)
-
-  return summaries.length > 0 ? summaries.map((entry) => entry.line) : ["- none"]
 }
 
 export function findStatusObligation(frame: ActiveWorkFrame | undefined): Obligation | null {
@@ -214,27 +101,18 @@ function formatActiveLane(frame: ActiveWorkFrame, obligation: Obligation): strin
         : `${liveCodingSession.runner} ${liveCodingSession.id}`
   }
   return obligation.currentSurface?.label
-    || (frame.currentObligation?.trim() ? "this same thread" : "this live loop")
+    || (matchesCurrentSession(frame, obligation) ? "this same thread" : "this live loop")
 }
 
 function formatCurrentArtifact(frame: ActiveWorkFrame, obligation: Obligation | null): string {
   if (obligation?.currentArtifact) return obligation.currentArtifact
   if (obligation?.currentSurface?.kind === "merge") return obligation.currentSurface.label
-  if (frame.currentObligation?.trim()) return "no artifact yet"
   if ((frame.codingSessions ?? []).length > 0) return "no PR or merge artifact yet"
-  return obligation ? "no explicit artifact yet" : ""
-}
-
-function isStatusCheckPrompt(text: string | undefined): boolean {
-  const trimmed = text?.trim()
-  if (!trimmed) return false
-  return /^(what are you doing|what(?:'|’)s your status|status|status update|what changed|where are you at|where things stand)\??$/i.test(trimmed)
+  return obligation ? "no artifact yet" : ""
 }
 
 function formatNextAction(frame: ActiveWorkFrame, obligation: Obligation | null): string {
   if (obligation?.nextAction) return obligation.nextAction
-  const currentObligation = frame.currentObligation?.trim() ?? ""
-  const statusCheckPrompt = isStatusCheckPrompt(currentObligation)
   const liveCodingSession = frame.codingSessions?.[0]
   if (liveCodingSession?.status === "waiting_input") {
     return `answer ${liveCodingSession.runner} ${liveCodingSession.id} and continue`
@@ -251,14 +129,14 @@ function formatNextAction(frame: ActiveWorkFrame, obligation: Obligation | null)
   if (obligation?.status === "updating_runtime") {
     return "update runtime, verify version/changelog, then re-observe"
   }
-  if (currentObligation && !statusCheckPrompt) {
-    return `work on "${currentObligation}" and bring back a concrete artifact`
+  if (obligation?.content?.trim()) {
+    return `work on "${obligation.content.trim()}" and bring back a concrete artifact`
   }
   return obligation ? "continue the active loop and bring the result back here" : ""
 }
 
 export function renderConcreteStatusGuidance(frame: ActiveWorkFrame, obligation: Obligation | null): string {
-  const activeLane = obligation ? formatActiveLane(frame, obligation) : (frame.currentObligation?.trim() ? "this same thread" : "")
+  const activeLane = obligation ? formatActiveLane(frame, obligation) : ""
   const currentArtifact = formatCurrentArtifact(frame, obligation)
   const nextAction = formatNextAction(frame, obligation)
   const liveConversation = frame.currentSession
@@ -274,7 +152,7 @@ the current artifact is ${currentArtifact}.
 if i just finished or verified something concrete in this live lane, i name that as the latest checkpoint.
 the next action is ${nextAction}.
 
-i use those facts to answer naturally unless this turn is an explicit direct status check, where the separate exact five-line contract applies.`
+i answer naturally from those facts instead of forcing a canned status block.`
 }
 
 export function renderLiveThreadStatusShape(frame: ActiveWorkFrame): string {
@@ -321,7 +199,8 @@ export function buildExactStatusReply(
 
   if (statusCheckScope === "all-sessions-family") {
     lines.push("other active sessions:")
-    lines.push(...buildOtherActiveSessionLines(frame))
+    const summaries = formatOtherActiveSessionSummaries(frame)
+    lines.push(...(summaries.length > 0 ? summaries : ["- none"]))
   }
 
   return lines.join("\n")
