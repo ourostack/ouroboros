@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.104",
+      "changes": [
+        "Family-scoped status checks now keep the five-line header anchored on the current live conversation while appending an `other active sessions:` block for every other live lane the agent is actively working.",
+        "The inbound pipeline, active-work frame, prompt steering, and status retry logic now preserve non-current live coding lanes and obligations so family status answers stop hiding parallel work in other sessions."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.103",
       "changes": [
         "Status-check turns now answer in a fixed live-state shape that names the current conversation, active lane, artifact, latest checkpoint, and next action instead of drifting into broad mission summaries.",
