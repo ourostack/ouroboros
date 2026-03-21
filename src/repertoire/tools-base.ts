@@ -11,17 +11,29 @@ import { emitNervesEvent } from "../nerves/runtime";
 import { getAgentRoot, getAgentName } from "../heart/identity";
 import { ensureSafeRepoWorkspace, resolveSafeRepoPath, resolveSafeShellExecution } from "../heart/safe-workspace";
 import { requestInnerWake } from "../heart/daemon/socket-client";
-import { extractThoughtResponseFromMessages, formatSurfacedValue, getInnerDialogSessionPath, readInnerDialogStatus } from "../heart/daemon/thoughts";
+import {
+  deriveInnerDialogStatus,
+  deriveInnerJob,
+  extractThoughtResponseFromMessages,
+  formatSurfacedValue,
+  getInnerDialogSessionPath,
+  readInnerDialogRawData,
+  readInnerDialogStatus,
+} from "../heart/daemon/thoughts";
 import { createBridgeManager, formatBridgeStatus } from "../heart/bridges/manager";
 import { recallSession, type SessionRecallOptions, type SessionRecallResult } from "../heart/session-recall";
+import { listSessionActivity } from "../heart/session-activity";
+import { buildActiveWorkFrame, formatActiveWorkFrame, type ActiveWorkFrame } from "../heart/active-work";
 import { codingToolDefinitions } from "./coding/tools";
+import { getCodingSessionManager, type CodingSessionStatus } from "./coding";
 import { readMemoryFacts, saveMemoryFact, searchMemoryFacts } from "../mind/memory";
+import { getTaskModule } from "./tasks";
 import { getPendingDir, getInnerDialogPendingDir } from "../mind/pending";
 import type { PendingMessage } from "../mind/pending";
 import type { BridgeRecord, BridgeSessionRef } from "../heart/bridges/store";
 import { buildProgressStory, renderProgressStory } from "../heart/progress-story";
 import { deliverCrossChatMessage, type CrossChatDeliveryResult } from "../heart/cross-chat-delivery";
-import { createObligation } from "../heart/obligations";
+import { createObligation, readPendingObligations } from "../heart/obligations";
 
 export interface CodingFeedbackTarget {
   send: (message: string) => Promise<void>;
@@ -179,6 +191,166 @@ function renderCrossChatDeliveryStatus(
     objective: `message to ${target}`,
     outcomeText: `${lead}\n${result.detail}`,
   }))
+}
+
+function emptyTaskBoard() {
+  return {
+    compact: "",
+    full: "",
+    byStatus: {
+      drafting: [],
+      processing: [],
+      validating: [],
+      collaborating: [],
+      paused: [],
+      blocked: [],
+      done: [],
+    },
+    actionRequired: [],
+    unresolvedDependencies: [],
+    activeSessions: [],
+    activeBridges: [],
+  }
+}
+
+function isLiveCodingSessionStatus(status: CodingSessionStatus): boolean {
+  return status === "spawning"
+    || status === "running"
+    || status === "waiting_input"
+    || status === "stalled"
+}
+
+function readActiveWorkInnerState(): ActiveWorkFrame["inner"] {
+  const defaultJob = {
+    status: "idle" as const,
+    content: null,
+    origin: null,
+    mode: "reflect" as const,
+    obligationStatus: null,
+    surfacedResult: null,
+    queuedAt: null,
+    startedAt: null,
+    surfacedAt: null,
+  }
+  try {
+    const agentRoot = getAgentRoot()
+    const pendingDir = getInnerDialogPendingDir(getAgentName())
+    const sessionPath = getInnerDialogSessionPath(agentRoot)
+    const { pendingMessages, turns, runtimeState } = readInnerDialogRawData(sessionPath, pendingDir)
+    const dialogStatus = deriveInnerDialogStatus(pendingMessages, turns, runtimeState)
+    const job = deriveInnerJob(pendingMessages, turns, runtimeState)
+    const storeObligationPending = readPendingObligations(agentRoot).length > 0
+    return {
+      status: dialogStatus.processing === "started" ? "running" : "idle",
+      hasPending: dialogStatus.queue !== "clear",
+      origin: dialogStatus.origin,
+      contentSnippet: dialogStatus.contentSnippet,
+      obligationPending: dialogStatus.obligationPending || storeObligationPending,
+      job,
+    }
+  } catch {
+    return {
+      status: "idle",
+      hasPending: false,
+      job: defaultJob,
+    }
+  }
+}
+
+async function buildToolActiveWorkFrame(ctx?: ToolContext): Promise<ActiveWorkFrame> {
+  const currentSession = ctx?.currentSession
+    ? {
+        friendId: ctx.currentSession.friendId,
+        channel: ctx.currentSession.channel as import("../mind/friends/types").Channel,
+        key: ctx.currentSession.key,
+        sessionPath: resolveSessionPath(ctx.currentSession.friendId, ctx.currentSession.channel, ctx.currentSession.key),
+      }
+    : null
+  const agentRoot = getAgentRoot()
+  const bridges = currentSession
+    ? createBridgeManager().findBridgesForSession({
+        friendId: currentSession.friendId,
+        channel: currentSession.channel,
+        key: currentSession.key,
+      })
+    : []
+
+  let friendActivity = [] as ReturnType<typeof listSessionActivity>
+  try {
+    friendActivity = listSessionActivity({
+      sessionsDir: `${agentRoot}/state/sessions`,
+      friendsDir: `${agentRoot}/friends`,
+      agentName: getAgentName(),
+      currentSession,
+    })
+  } catch {
+    friendActivity = []
+  }
+
+  const pendingObligations = (() => {
+    try {
+      return readPendingObligations(agentRoot)
+    } catch {
+      return []
+    }
+  })()
+
+  let codingSessions = [] as ReturnType<ReturnType<typeof getCodingSessionManager>["listSessions"]>
+  let otherCodingSessions = [] as ReturnType<ReturnType<typeof getCodingSessionManager>["listSessions"]>
+  try {
+    const liveCodingSessions = getCodingSessionManager()
+      .listSessions()
+      .filter((session) => isLiveCodingSessionStatus(session.status) && Boolean(session.originSession))
+    if (currentSession) {
+      codingSessions = liveCodingSessions.filter((session) =>
+        session.originSession?.friendId === currentSession.friendId
+        && session.originSession.channel === currentSession.channel
+        && session.originSession.key === currentSession.key,
+      )
+      otherCodingSessions = liveCodingSessions.filter((session) =>
+        !(
+          session.originSession?.friendId === currentSession.friendId
+          && session.originSession.channel === currentSession.channel
+          && session.originSession.key === currentSession.key
+        ),
+      )
+    } else {
+      codingSessions = []
+      otherCodingSessions = liveCodingSessions
+    }
+  } catch {
+    codingSessions = []
+    otherCodingSessions = []
+  }
+
+  const currentObligation = currentSession
+    ? pendingObligations.find((obligation) =>
+      obligation.status !== "fulfilled"
+      && obligation.origin.friendId === currentSession.friendId
+      && obligation.origin.channel === currentSession.channel
+      && obligation.origin.key === currentSession.key,
+    )?.content ?? null
+    : null
+
+  return buildActiveWorkFrame({
+    currentSession,
+    currentObligation,
+    mustResolveBeforeHandoff: false,
+    inner: readActiveWorkInnerState(),
+    bridges,
+    codingSessions,
+    otherCodingSessions,
+    pendingObligations,
+    taskBoard: (() => {
+      try {
+        return getTaskModule().getBoard()
+      } catch {
+        return emptyTaskBoard()
+      }
+    })(),
+    friendActivity,
+    targetCandidates: [],
+  })
 }
 
 export function renderInnerProgressStatus(
@@ -876,6 +1048,23 @@ export const baseToolDefinitions: ToolDefinition[] = [
       }
 
       return `unknown bridge action: ${action}`
+    },
+  },
+  {
+    tool: {
+      type: "function",
+      function: {
+        name: "query_active_work",
+        description: "read the current live world-state across visible sessions, coding lanes, inner work, and return obligations. use this instead of piecing status together from separate session and coding tools.",
+        parameters: {
+          type: "object",
+          properties: {},
+        },
+      },
+    },
+    handler: async (_args, ctx) => {
+      const frame = await buildToolActiveWorkFrame(ctx)
+      return `this is my current top-level live world-state.\nanswer whole-self status questions from this before drilling into individual sessions.\n\n${formatActiveWorkFrame(frame)}`
     },
   },
   {
