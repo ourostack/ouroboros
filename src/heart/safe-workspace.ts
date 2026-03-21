@@ -285,8 +285,18 @@ export function ensureSafeRepoWorkspace(options: EnsureSafeWorkspaceOptions = {}
 }
 
 export function resolveSafeRepoPath(options: ResolveSafePathOptions): { selection: SafeWorkspaceSelection | null; resolvedPath: string } {
-  const requestedPath = path.resolve(options.requestedPath)
+  const rawRequestedPath = options.requestedPath
   const repoRoot = path.resolve(options.repoRoot ?? getRepoRoot())
+
+  if (!path.isAbsolute(rawRequestedPath) && !rawRequestedPath.startsWith("~")) {
+    const selection = activeSelection ?? ensureSafeRepoWorkspace(options)
+    return {
+      selection,
+      resolvedPath: path.resolve(selection.workspaceRoot, rawRequestedPath),
+    }
+  }
+
+  const requestedPath = path.resolve(rawRequestedPath)
 
   if (activeSelection && requestedPath.startsWith(activeSelection.workspaceRoot + path.sep)) {
     return { selection: activeSelection, resolvedPath: requestedPath }

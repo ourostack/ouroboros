@@ -10,6 +10,7 @@ import { emitNervesEvent } from "../nerves/runtime";
 import type { ProviderCapability } from "../heart/core";
 import { guardInvocation } from "./guardrails";
 import { getAgentRoot } from "../heart/identity";
+import { resolveSafeRepoPath } from "../heart/safe-workspace";
 
 function safeGetAgentRoot(): string | undefined {
   try {
@@ -114,6 +115,16 @@ export function isConfirmationRequired(toolName: string): boolean {
   return def?.confirmationRequired === true;
 }
 
+function normalizeGuardArgs(name: string, args: Record<string, string>): Record<string, string> {
+  if ((name === "read_file" || name === "write_file" || name === "edit_file") && args.path) {
+    return {
+      ...args,
+      path: resolveSafeRepoPath({ requestedPath: args.path }).resolvedPath,
+    }
+  }
+  return args
+}
+
 export async function execTool(name: string, args: Record<string, string>, ctx?: ToolContext): Promise<string> {
   emitNervesEvent({
     event: "tool.start",
@@ -141,7 +152,8 @@ export async function execTool(name: string, args: Record<string, string>, ctx?:
     trustLevel: ctx?.context?.friend?.trustLevel,
     agentRoot: safeGetAgentRoot(),
   }
-  const guardResult = guardInvocation(name, args, guardContext)
+  const guardArgs = normalizeGuardArgs(name, args)
+  const guardResult = guardInvocation(name, guardArgs, guardContext)
   if (!guardResult.allowed) {
     emitNervesEvent({
       level: "warn",

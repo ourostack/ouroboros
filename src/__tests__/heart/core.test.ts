@@ -11,14 +11,27 @@ function defaultReadFileSync(filePath: any, _encoding?: any): string {
   return ""
 }
 
+function mockReadFileToolResult(content: string, matcher: RegExp = /\.txt$/) {
+  vi.mocked(fs.readFileSync).mockImplementation((filePath: any, encoding?: any) => {
+    const p = String(filePath)
+    if (matcher.test(p)) return content
+    return defaultReadFileSync(filePath, encoding)
+  })
+}
+
 // Mock fs and child_process before importing core
-vi.mock("fs", () => ({
-  existsSync: vi.fn(),
-  readFileSync: vi.fn(defaultReadFileSync),
-  writeFileSync: vi.fn(),
-  readdirSync: vi.fn(),
-  mkdirSync: vi.fn(),
-}))
+vi.mock("fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("fs")>()
+  return {
+    ...actual,
+    existsSync: vi.fn(),
+    readFileSync: vi.fn(defaultReadFileSync),
+    writeFileSync: vi.fn(),
+    readdirSync: vi.fn(),
+    mkdirSync: vi.fn(),
+    rmSync: vi.fn(),
+  }
+})
 
 vi.mock("child_process", () => ({
   execSync: vi.fn(),
@@ -30,22 +43,34 @@ vi.mock("../../repertoire/skills", () => ({
   loadSkill: vi.fn(),
 }))
 
-vi.mock("../../heart/identity", () => ({
-  loadAgentConfig: vi.fn(() => ({
-    name: "testagent",
-    configPath: "~/.agentsecrets/testagent/secrets.json",
-    provider: "minimax",
-  })),
-  DEFAULT_AGENT_CONTEXT: {
-    maxTokens: 80000,
-    contextMargin: 20,
-  },
-  getAgentName: vi.fn(() => "testagent"),
-  getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/testagent/secrets.json"),
-  getAgentRoot: vi.fn(() => "/mock/repo/testagent"),
-  getRepoRoot: vi.fn(() => "/mock/repo"),
-  resetIdentity: vi.fn(),
-}))
+vi.mock("../../heart/safe-workspace", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../heart/safe-workspace")>()
+  const nodePath = await import("path")
+  return {
+    ...actual,
+    resolveSafeRepoPath: vi.fn((options: { requestedPath: string }) => ({
+      selection: null,
+      resolvedPath: nodePath.resolve("/mock/repo", options.requestedPath),
+    })),
+  }
+})
+
+vi.mock("../../heart/identity", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../heart/identity")>()
+  return {
+    ...actual,
+    loadAgentConfig: vi.fn(() => ({
+      name: "testagent",
+      configPath: "~/.agentsecrets/testagent/secrets.json",
+      provider: "minimax",
+    })),
+    getAgentName: vi.fn(() => "testagent"),
+    getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/testagent/secrets.json"),
+    getAgentRoot: vi.fn(() => "/mock/repo/testagent"),
+    getRepoRoot: vi.fn(() => "/mock/repo"),
+    resetIdentity: vi.fn(),
+  }
+})
 
 // We need to mock OpenAI before importing core
 const mockCreate = vi.fn()
@@ -1052,7 +1077,7 @@ describe("runAgent", () => {
   })
 
   it("loops back for another model call after tool execution", async () => {
-    vi.mocked(fs.readFileSync).mockReturnValue("data")
+    mockReadFileToolResult("data")
 
     let callCount = 0
     mockCreate.mockImplementation(() => {
@@ -1124,7 +1149,7 @@ describe("runAgent", () => {
   })
 
   it("pushes assistant message with tool_calls and tool result messages", async () => {
-    vi.mocked(fs.readFileSync).mockReturnValue("contents")
+    mockReadFileToolResult("contents")
 
     let callCount = 0
     mockCreate.mockImplementation(() => {
@@ -1191,7 +1216,7 @@ describe("runAgent", () => {
   })
 
   it("handles tool call with arguments split across chunks", async () => {
-    vi.mocked(fs.readFileSync).mockReturnValue("data")
+    mockReadFileToolResult("data")
 
     let callCount = 0
     mockCreate.mockImplementation(() => {
@@ -1366,7 +1391,7 @@ describe("runAgent", () => {
   })
 
   it("pushes assistant message without content when only tool calls are returned", async () => {
-    vi.mocked(fs.readFileSync).mockReturnValue("data")
+    mockReadFileToolResult("data")
 
     let callCount = 0
     mockCreate.mockImplementation(() => {
@@ -1401,7 +1426,7 @@ describe("runAgent", () => {
   })
 
   it("handles tool call chunks with missing id and function name", async () => {
-    vi.mocked(fs.readFileSync).mockReturnValue("data")
+    mockReadFileToolResult("data")
 
     let callCount = 0
     mockCreate.mockImplementation(() => {
@@ -1439,7 +1464,7 @@ describe("runAgent", () => {
   })
 
   it("handles tool call chunk with no function arguments", async () => {
-    vi.mocked(fs.readFileSync).mockReturnValue("data")
+    mockReadFileToolResult("data")
 
     let callCount = 0
     mockCreate.mockImplementation(() => {
@@ -1609,7 +1634,7 @@ describe("runAgent", () => {
 
   it("skips remaining tools when signal is aborted mid-tool-execution", async () => {
     const controller = new AbortController()
-    vi.mocked(fs.readFileSync).mockReturnValue("data")
+    mockReadFileToolResult("data")
 
     // Return 2 tool calls in one response
     mockCreate.mockReturnValue({
@@ -1820,7 +1845,7 @@ describe("runAgent", () => {
     vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
     await setupAzure()
 
-    vi.mocked(fs.readFileSync).mockReturnValue("file contents")
+    mockReadFileToolResult("file contents")
 
     let callCount = 0
     mockResponsesCreate.mockImplementation(() => {
@@ -1865,7 +1890,7 @@ describe("runAgent", () => {
     vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
     await setupAzure()
 
-    vi.mocked(fs.readFileSync).mockReturnValue("data")
+    mockReadFileToolResult("data")
 
     const reasoningItem = { type: "reasoning", id: "r1", summary: [{ text: "thought", type: "summary_text" }], encrypted_content: "enc1" }
     const funcItem = { type: "function_call", id: "fc1", call_id: "c1", name: "read_file", arguments: '{"path":"a.txt"}', status: "completed" }
@@ -1924,7 +1949,7 @@ describe("runAgent", () => {
     vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
     await setupAzure()
 
-    vi.mocked(fs.readFileSync).mockReturnValue("data")
+    mockReadFileToolResult("data")
 
     const funcItem = { type: "function_call", id: "fc1", call_id: "c1", name: "read_file", arguments: '{"path":"a.txt"}', status: "completed" }
     // Capture input snapshots at call time
@@ -2113,7 +2138,7 @@ describe("runAgent", () => {
     vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
     await setupAzure()
 
-    vi.mocked(fs.readFileSync).mockReturnValue("data")
+    mockReadFileToolResult("data")
 
     const reasoningItem = { type: "reasoning", id: "r1", summary: [], encrypted_content: "enc1" }
     const funcItem = { type: "function_call", id: "fc1", call_id: "c1", name: "read_file", arguments: '{"path":"a.txt"}', status: "completed" }
@@ -2208,7 +2233,7 @@ describe("runAgent", () => {
   })
 
   it("returns usage from last API call when multiple tool rounds", async () => {
-    vi.mocked(fs.readFileSync).mockReturnValue("data")
+    mockReadFileToolResult("data")
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++

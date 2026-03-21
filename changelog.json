@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.85",
+      "changes": [
+        "Relative repo paths now route through the chosen safe workspace too, so read/edit/write file tools actually operate in the dedicated clone or worktree instead of silently hitting the wrong checkout.",
+        "File-edit guardrails now normalize paths the same way file reads do, which means a `read_file` followed by `edit_file` on the same relative path no longer self-blocks during safe-workspace routing."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.84",
       "changes": [
         "Safe workspace routing now covers repo-local shell commands too, so agents that discover a harness friction through `shell` land in the dedicated worktree instead of wandering in the shared checkout.",
