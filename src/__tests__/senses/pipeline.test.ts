@@ -865,7 +865,7 @@ describe("handleInboundTurn", () => {
       )
     })
 
-    it("threads explicit cross-relationship target candidates into the active-work frame and suggests one shared-work candidate when the target is clear", async () => {
+    it("threads explicit cross-relationship target candidates into the active-work frame without inventing a shared-work suggestion from raw text alone", async () => {
       const getAgentRootSpy = vi.spyOn(identity, "getAgentRoot").mockReturnValue("/tmp/AgentBundles/slugger.ouro")
       const getAgentNameSpy = vi.spyOn(identity, "getAgentName").mockReturnValue("slugger")
       mockListTargetSessionCandidates.mockResolvedValue([
@@ -911,17 +911,7 @@ describe("handleInboundTurn", () => {
           key: "chat:any;+;project-group-123",
         }),
       ])
-      expect((options as any).activeWorkFrame.bridgeSuggestion).toEqual(
-        expect.objectContaining({
-          kind: "begin-new",
-          reason: "shared-work-candidate",
-          targetSession: expect.objectContaining({
-            friendId: "group-1",
-            channel: "bluebubbles",
-            key: "chat:any;+;project-group-123",
-          }),
-        }),
-      )
+      expect((options as any).activeWorkFrame.bridgeSuggestion).toBeNull()
       expect(getAgentRootSpy).toHaveBeenCalled()
       expect(getAgentNameSpy).toHaveBeenCalled()
       getAgentRootSpy.mockRestore()
@@ -971,7 +961,7 @@ describe("handleInboundTurn", () => {
       expect((options as any).currentObligation).toBe("latest ask")
     })
 
-    it("marks direct status-check turns in runAgent options", async () => {
+    it("does not pre-classify direct status-check turns in runAgent options", async () => {
       const input = makeInput({
         continuityIngressTexts: ["what are you doing?"],
       })
@@ -980,11 +970,11 @@ describe("handleInboundTurn", () => {
 
       const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
       const options = runAgentCall[4] as RunAgentOptions
-      expect((options as any).statusCheckRequested).toBe(true)
-      expect((options as any).toolChoiceRequired).toBe(true)
+      expect((options as any).statusCheckRequested).toBeUndefined()
+      expect((options as any).statusCheckScope).toBeUndefined()
     })
 
-    it("does not mark work prompts that merely mention status as direct status-check turns", async () => {
+    it("does not set special status routing for work prompts that merely mention status", async () => {
       const input = makeInput({
         continuityIngressTexts: ["figure out whether your current CLI status replies still drift"],
       })
@@ -993,7 +983,8 @@ describe("handleInboundTurn", () => {
 
       const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
       const options = runAgentCall[4] as RunAgentOptions
-      expect((options as any).statusCheckRequested).toBe(false)
+      expect((options as any).statusCheckRequested).toBeUndefined()
+      expect((options as any).statusCheckScope).toBeUndefined()
     })
 
     it("falls back to an empty ingress list when continuity ingress texts are absent", async () => {
@@ -1295,8 +1286,8 @@ describe("handleInboundTurn", () => {
           otherCodingSessions?: Array<{ id: string }>
         }
       }
-      expect(options.statusCheckRequested).toBe(true)
-      expect(options.statusCheckScope).toBe("all-sessions-family")
+      expect(options.statusCheckRequested).toBeUndefined()
+      expect(options.statusCheckScope).toBeUndefined()
       expect(options.activeWorkFrame?.codingSessions.map((session) => session.id)).toEqual(["coding-010"])
       expect(options.activeWorkFrame?.otherCodingSessions?.map((session) => session.id)).toEqual(["coding-011"])
     })

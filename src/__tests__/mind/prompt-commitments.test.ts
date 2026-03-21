@@ -58,13 +58,24 @@ describe("commitmentsSection", () => {
 
   it("renders all three sections from formatCommitments", () => {
     const result = commitmentsSection({
-      activeWorkFrame: makeFrame({ currentObligation: "naming" }),
+      activeWorkFrame: makeFrame({
+        pendingObligations: [
+          {
+            id: "ob-naming",
+            origin: { friendId: "ari", channel: "cli", key: "session" },
+            content: "naming",
+            status: "pending",
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:00:00Z",
+          },
+        ],
+      }),
     })
     expect(result).toContain("## my commitments")
     expect(result).toContain("## what i'm holding right now")
-    expect(result).toContain("- i told them i'd naming")
+    expect(result).toContain("- i owe ari: naming")
     expect(result).toContain('## what "done" looks like')
-    expect(result).toContain("- just be present in this conversation")
+    expect(result).toContain("- fulfill my outstanding obligations")
     expect(result).toContain("## what i can let go of")
     expect(result).toContain("- no shared work to coordinate")
     expect(result).toContain("- no active tasks to track")
@@ -97,12 +108,10 @@ describe("commitmentsSection", () => {
   it("includes bridge and task commitments with their completion criteria", () => {
     const result = commitmentsSection({
       activeWorkFrame: makeFrame({
-        currentObligation: "ship the fix",
         bridges: [{ id: "b-1", summary: "align on naming", objective: "naming obj", sessions: [], createdAt: "" }] as any,
         taskPressure: { compactBoard: "", liveTaskNames: ["deploy auth service"], activeBridges: [] },
       }),
     })
-    expect(result).toContain("- i told them i'd ship the fix")
     expect(result).toContain("- i have shared work: align on naming")
     expect(result).toContain("- i'm tracking: deploy auth service")
     expect(result).toContain("- keep shared work aligned across sessions")

@@ -45,11 +45,6 @@ export function deriveCommitments(
     }
   }
 
-  // Obligation (from current turn -- kept for backward compat)
-  if (typeof activeWorkFrame.currentObligation === "string" && activeWorkFrame.currentObligation.trim().length > 0) {
-    committedTo.push(`i told them i'd ${activeWorkFrame.currentObligation.trim()}`)
-  }
-
   // Inner job
   if (innerJob.status === "queued" || innerJob.status === "running") {
     const contentSuffix = innerJob.content ? ` -- ${innerJob.content.slice(0, 60)}` : ""

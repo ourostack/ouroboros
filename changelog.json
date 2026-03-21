@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.106",
+      "changes": [
+        "Family-scoped status answers now come from the live obligation/session world-state directly instead of a regex-triggered 'status question' mode, so agents can answer naturally while still seeing all material live work across sessions.",
+        "Raw inbound text no longer masquerades as a real commitment or next action; current lanes, artifacts, and next steps are now grounded in persistent obligations, live coding state, and concrete session activity."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.105",
       "changes": [
         "Family-wide status answers now dedupe normalized session keys, drop inner/self noise, and ignore stale non-obligation lanes so 'what are you doing?' stays focused on real active work across all live sessions.",

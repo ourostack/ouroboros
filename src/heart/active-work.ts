@@ -8,6 +8,7 @@ import type { InnerJob } from "./daemon/thoughts"
 import { isOpenObligation, isOpenObligationStatus, type Obligation } from "./obligations"
 import type { SessionActivityRecord } from "./session-activity"
 import { formatTargetSessionCandidates, type TargetSessionCandidate } from "./target-resolution"
+import { sanitizeKey } from "./config"
 
 export type CenterOfGravityMode = "local-turn" | "inward-work" | "shared-work"
 
@@ -80,6 +81,7 @@ export interface BridgeSuggestionInput {
   currentObligation?: string | null
   mustResolveBeforeHandoff: boolean
   bridges: BridgeRecord[]
+  pendingObligations?: Obligation[]
   taskBoard: BoardResult
   targetCandidates?: TargetSessionCandidate[]
 }
@@ -107,12 +109,10 @@ function isActiveBridge(bridge: BridgeRecord): boolean {
   return bridge.lifecycle === "active"
 }
 
-function hasSharedObligationPressure(input: Pick<BuildActiveWorkFrameInput, "currentObligation" | "mustResolveBeforeHandoff" | "taskBoard">): boolean {
-  return (
-    typeof input.currentObligation === "string"
-    && input.currentObligation.trim().length > 0
-  ) || input.mustResolveBeforeHandoff
+function hasSharedObligationPressure(input: Pick<BuildActiveWorkFrameInput, "mustResolveBeforeHandoff" | "taskBoard" | "pendingObligations">): boolean {
+  return input.mustResolveBeforeHandoff
     || summarizeLiveTasks(input.taskBoard).length > 0
+    || activeObligationCount(input.pendingObligations) > 0
 }
 
 function formatCodingLaneLabel(session: CodingSession): string {
@@ -173,6 +173,20 @@ function findPrimaryOpenObligation(frame: ActiveWorkFrame): Obligation | null {
     ?? null
 }
 
+function matchesCurrentSession(frame: ActiveWorkFrame, obligation: Obligation): boolean {
+  return Boolean(
+    frame.currentSession
+    && obligation.origin.friendId === frame.currentSession.friendId
+    && obligation.origin.channel === frame.currentSession.channel
+    && sanitizeKey(obligation.origin.key) === sanitizeKey(frame.currentSession.key),
+  )
+}
+
+function findCurrentSessionOpenObligation(frame: ActiveWorkFrame): Obligation | null {
+  return (frame.pendingObligations ?? []).find((obligation) => isOpenObligationStatus(obligation.status) && matchesCurrentSession(frame, obligation))
+    ?? null
+}
+
 function formatActiveLane(frame: ActiveWorkFrame, obligation: Obligation | null): string | null {
   const liveCodingSession = frame.codingSessions?.[0]
   if (liveCodingSession) {
@@ -181,11 +195,11 @@ function formatActiveLane(frame: ActiveWorkFrame, obligation: Obligation | null)
   if (obligation?.currentSurface?.label) {
     return obligation.currentSurface.label
   }
+  if (obligation && matchesCurrentSession(frame, obligation) && frame.currentSession) {
+    return "this same thread"
+  }
   if (frame.inner?.job?.status === "running") {
     return "inner dialog"
-  }
-  if (typeof frame.currentObligation === "string" && frame.currentObligation.trim().length > 0 && frame.currentSession) {
-    return "this same thread"
   }
   return null
 }
@@ -200,10 +214,16 @@ function formatCurrentArtifact(frame: ActiveWorkFrame, obligation: Obligation | 
   if ((frame.codingSessions ?? []).length > 0) {
     return "no PR or merge artifact yet"
   }
-  if (typeof frame.currentObligation === "string" && frame.currentObligation.trim().length > 0) {
+  if (obligation) {
     return "no artifact yet"
   }
   return null
+}
+
+function formatObligationContentNextAction(obligation: Obligation | null): string | null {
+  const content = obligation?.content?.trim()
+  if (!content) return null
+  return `work on "${content}" and bring back a concrete artifact`
 }
 
 function formatNextAction(frame: ActiveWorkFrame, obligation: Obligation | null): string | null {
@@ -227,12 +247,161 @@ function formatNextAction(frame: ActiveWorkFrame, obligation: Obligation | null)
     return "update runtime, verify version/changelog, then re-observe"
   }
   if (obligation) {
-    return "continue the active loop and bring the result back here"
+    return formatObligationContentNextAction(obligation) || "continue the active loop and bring the result back here"
   }
-  if (typeof frame.currentObligation === "string" && frame.currentObligation.trim().length > 0) {
-    return `work on "${frame.currentObligation.trim()}" and bring back a concrete artifact`
+  if (frame.mustResolveBeforeHandoff) {
+    return "finish what i started here before moving on"
   }
   return null
+}
+
+type SessionOrigin = { friendId: string; channel: string; key: string }
+const RECENT_OTHER_LIVE_SESSION_WINDOW_MS = 60 * 60 * 1000
+
+function sessionOriginKey(origin: SessionOrigin): string {
+  return `${origin.friendId}/${origin.channel}/${sanitizeKey(origin.key)}`
+}
+
+function codingSessionTimestampMs(session: CodingSession): number {
+  return Date.parse(session.lastActivityAt ?? session.startedAt)
+}
+
+function obligationTimestampMs(obligation: Obligation): number {
+  return Date.parse(obligation.updatedAt ?? obligation.createdAt)
+}
+
+function newestObligationFirst(left: Obligation, right: Obligation): number {
+  return obligationTimestampMs(right) - obligationTimestampMs(left)
+}
+
+function formatOtherSessionArtifact(
+  obligation: Obligation | null,
+  codingSession: CodingSession | null,
+): string {
+  if (obligation?.currentArtifact?.trim()) return obligation.currentArtifact.trim()
+  if (obligation?.currentSurface?.kind === "merge" && obligation.currentSurface.label.trim()) {
+    return obligation.currentSurface.label.trim()
+  }
+  if (codingSession) return "no PR or merge artifact yet"
+  return obligation ? "no artifact yet" : "no explicit artifact yet"
+}
+
+function formatOtherSessionNextAction(
+  obligation: Obligation | null,
+  codingSession: CodingSession | null,
+): string {
+  if (obligation?.nextAction?.trim()) return obligation.nextAction.trim()
+  if (obligation?.status === "waiting_for_merge") {
+    return `wait for checks, merge ${formatMergeArtifact(obligation)}, then update runtime`
+  }
+  if (obligation?.status === "updating_runtime") {
+    return "update runtime, verify version/changelog, then re-observe"
+  }
+  if (codingSession?.status === "waiting_input") {
+    return `answer ${formatCodingLaneLabel(codingSession)} and continue`
+  }
+  if (codingSession?.status === "stalled") {
+    return `unstick ${formatCodingLaneLabel(codingSession)} and continue`
+  }
+  if (codingSession) {
+    return "finish the coding pass and bring the result back there"
+  }
+  if (obligation) {
+    return formatObligationContentNextAction(obligation) || "continue the active loop and bring the result back there"
+  }
+  return "check this session and bring back the latest concrete state"
+}
+
+function formatOtherSessionLine(
+  label: string,
+  status: string,
+  activeLane: string,
+  artifact: string,
+  nextAction: string,
+): string {
+  return `- ${label}: [${status}] ${activeLane}; artifact ${artifact}; next ${nextAction}`
+}
+
+export function formatOtherActiveSessionSummaries(frame: ActiveWorkFrame, nowMs = Date.now()): string[] {
+  const originMap = new Map<string, SessionOrigin>()
+
+  for (const session of frame.friendActivity?.allOtherLiveSessions ?? []) {
+    if (session.friendId === "self" || session.channel === "inner") continue
+    originMap.set(sessionOriginKey(session), {
+      friendId: session.friendId,
+      channel: session.channel,
+      key: session.key,
+    })
+  }
+
+  const orphanCodingSummaries = (frame.otherCodingSessions ?? [])
+    .filter((session) => !session.originSession)
+    .sort((left, right) => codingSessionTimestampMs(right) - codingSessionTimestampMs(left))
+    .map((session) => ({
+      timestampMs: codingSessionTimestampMs(session),
+      line: formatOtherSessionLine(
+        "another session",
+        session.status,
+        formatCodingLaneLabel(session),
+        "no PR or merge artifact yet",
+        formatOtherSessionNextAction(null, session),
+      ),
+    }))
+
+  for (const session of frame.otherCodingSessions ?? []) {
+    if (!session.originSession) continue
+    if (
+      frame.currentSession
+      && session.originSession.friendId === frame.currentSession.friendId
+      && session.originSession.channel === frame.currentSession.channel
+      && sanitizeKey(session.originSession.key) === sanitizeKey(frame.currentSession.key)
+    ) {
+      continue
+    }
+    originMap.set(sessionOriginKey(session.originSession), session.originSession)
+  }
+
+  for (const obligation of frame.pendingObligations ?? []) {
+    if (obligation.status === "fulfilled" || matchesCurrentSession(frame, obligation)) continue
+    originMap.set(sessionOriginKey(obligation.origin), obligation.origin)
+  }
+
+  const summaries = [...originMap.values()].map((origin) => {
+    const originKey = sessionOriginKey(origin)
+    const obligation = [...(frame.pendingObligations ?? [])]
+      .filter((candidate) => candidate.status !== "fulfilled" && sessionOriginKey(candidate.origin) === originKey)
+      .sort(newestObligationFirst)[0] ?? null
+    const codingSession = [...(frame.otherCodingSessions ?? [])]
+      .filter((candidate) => candidate.originSession && sessionOriginKey(candidate.originSession) === originKey)
+      .sort((left, right) => codingSessionTimestampMs(right) - codingSessionTimestampMs(left))[0] ?? null
+    const liveSession = (frame.friendActivity?.allOtherLiveSessions ?? []).find((candidate) => sessionOriginKey(candidate) === originKey) ?? null
+    const hasFreshSessionActivity = liveSession
+      ? (nowMs - liveSession.lastActivityMs) <= RECENT_OTHER_LIVE_SESSION_WINDOW_MS
+      : false
+    if (!obligation && !codingSession && !hasFreshSessionActivity) {
+      return null
+    }
+    const timestampMs = Math.max(
+      liveSession?.lastActivityMs ?? 0,
+      codingSession ? codingSessionTimestampMs(codingSession) : 0,
+      obligation ? obligationTimestampMs(obligation) : 0,
+    )
+    const activeLane = codingSession
+      ? formatCodingLaneLabel(codingSession)
+      : obligation?.currentSurface?.label?.trim() || "this live thread"
+    const artifact = formatOtherSessionArtifact(obligation, codingSession)
+    const nextAction = formatOtherSessionNextAction(obligation, codingSession)
+    const status = obligation?.status ?? codingSession?.status ?? "active"
+    const label = liveSession?.friendName ?? origin.friendId
+    return {
+      timestampMs,
+      line: formatOtherSessionLine(`${label}/${origin.channel}/${origin.key}`, status, activeLane, artifact, nextAction),
+    }
+  }).filter((entry): entry is { timestampMs: number; line: string } => entry !== null)
+    .sort((left, right) => right.timestampMs - left.timestampMs)
+
+  const lines = summaries.map((entry) => entry.line)
+  return [...lines, ...orphanCodingSummaries.map((entry) => entry.line)]
 }
 
 export function suggestBridgeForActiveWork(input: BridgeSuggestionInput): BridgeSuggestion | null {
@@ -256,10 +425,17 @@ export function suggestBridgeForActiveWork(input: BridgeSuggestionInput): Bridge
     .sort((a, b) => {
       return b.lastActivityMs - a.lastActivityMs
     })
-  if (!hasSharedObligationPressure(input) || targetCandidates.length === 0) {
+  if (!hasSharedObligationPressure({
+    mustResolveBeforeHandoff: input.mustResolveBeforeHandoff,
+    taskBoard: input.taskBoard,
+    pendingObligations: input.pendingObligations,
+  }) || targetCandidates.length === 0) {
     return null
   }
   const targetSession = targetCandidates[0]
+  const objectiveHint = [...(input.pendingObligations ?? [])]
+    .find((obligation) => isOpenObligationStatus(obligation.status))
+    ?.content?.trim() || "keep this shared work aligned"
 
   const activeBridge = input.bridges.find(isActiveBridge) ?? null
   if (activeBridge) {
@@ -282,7 +458,7 @@ export function suggestBridgeForActiveWork(input: BridgeSuggestionInput): Bridge
   return {
     kind: "begin-new",
     targetSession,
-    objectiveHint: input.currentObligation?.trim() || "keep this shared work aligned",
+    objectiveHint,
     reason: "shared-work-candidate",
   }
 }
@@ -339,6 +515,7 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
       currentObligation: input.currentObligation,
       mustResolveBeforeHandoff: input.mustResolveBeforeHandoff,
       bridges: input.bridges,
+      pendingObligations: input.pendingObligations,
       taskBoard: input.taskBoard,
       targetCandidates: input.targetCandidates,
     }),
@@ -368,17 +545,17 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
 export function formatActiveWorkFrame(frame: ActiveWorkFrame): string {
   const lines = ["## what i'm holding"]
   const primaryObligation = findPrimaryOpenObligation(frame)
+  const currentSessionObligation = findCurrentSessionOpenObligation(frame)
   const activeLane = formatActiveLane(frame, primaryObligation)
   const currentArtifact = formatCurrentArtifact(frame, primaryObligation)
   const nextAction = formatNextAction(frame, primaryObligation)
-  const otherCodingSessions = frame.otherCodingSessions ?? []
-  const otherLiveSessions = frame.friendActivity?.allOtherLiveSessions ?? []
+  const otherActiveSessions = formatOtherActiveSessionSummaries(frame)
 
   // Session line
   if (frame.currentSession) {
     let sessionLine = `i'm in a conversation on ${formatSessionLabel(frame.currentSession)}.`
-    if (typeof frame.currentObligation === "string" && frame.currentObligation.trim().length > 0) {
-      sessionLine += ` i told them i'd ${frame.currentObligation.trim()}.`
+    if (currentSessionObligation?.content?.trim()) {
+      sessionLine += ` i still owe them: ${currentSessionObligation.content.trim()}.`
     } else if (frame.mustResolveBeforeHandoff) {
       sessionLine += " i need to finish what i started here before moving on."
     }
@@ -446,23 +623,10 @@ export function formatActiveWorkFrame(frame: ActiveWorkFrame): string {
     }
   }
 
-  if (otherCodingSessions.length > 0) {
+  if (otherActiveSessions.length > 0) {
     lines.push("")
-    lines.push("## other live coding work")
-    for (const session of otherCodingSessions) {
-      const origin = session.originSession
-        ? `${session.originSession.friendId}/${session.originSession.channel}/${session.originSession.key}`
-        : "another session"
-      lines.push(`- [${session.status}] ${formatCodingLaneLabel(session)} for ${origin}`)
-    }
-  }
-
-  if (otherLiveSessions.length > 0) {
-    lines.push("")
-    lines.push("## other live sessions")
-    for (const session of otherLiveSessions) {
-      lines.push(`- ${session.friendName}/${session.channel}/${session.key}`)
-    }
+    lines.push("## other active sessions")
+    lines.push(...otherActiveSessions)
   }
 
   // Task pressure

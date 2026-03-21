@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { Readable, Writable } from "stream"
+import { Readable, Writable } from "node:stream"
 
 describe("CLI UX - InputController", () => {
   let origStdinOn: typeof process.stdin.on
