@@ -6,6 +6,7 @@ vi.mock("fs", () => ({
   writeFileSync: vi.fn(),
   readdirSync: vi.fn(),
   mkdirSync: vi.fn(),
+  rmSync: vi.fn(),
 }))
 
 vi.mock("child_process", () => ({
@@ -61,9 +62,11 @@ vi.mock("../../heart/identity", () => {
       context: { ...DEFAULT_AGENT_CONTEXT },
     })),
     getAgentName: vi.fn(() => "testagent"),
-  getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/testagent/secrets.json"),
+    getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/testagent/secrets.json"),
     getAgentRoot: vi.fn(() => "/mock/repo/testagent"),
     getRepoRoot: vi.fn(() => "/mock/repo"),
+    getAgentRepoWorkspacesRoot: vi.fn(() => "/mock/repo/testagent/state/workspaces"),
+    HARNESS_CANONICAL_REPO_URL: "https://github.com/ouroborosbot/ouroboros.git",
     resetIdentity: vi.fn(),
   }
 })
@@ -76,12 +79,17 @@ describe("execTool", () => {
   let execTool: (name: string, args: any, ctx?: any) => Promise<string>
   let patchRuntimeConfig: (partial: any) => void
 
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
   beforeEach(async () => {
     vi.resetModules()
     vi.mocked(fs.existsSync).mockReset()
     vi.mocked(fs.readFileSync).mockReset()
     vi.mocked(fs.writeFileSync).mockReset()
     vi.mocked(fs.readdirSync).mockReset()
+    vi.mocked(fs.rmSync).mockReset()
     vi.mocked(execSync).mockReset()
     vi.mocked(spawnSync).mockReset()
     vi.mocked(listSkills).mockReset()
@@ -142,6 +150,73 @@ describe("execTool", () => {
     const result = await execTool("shell", { command: "echo hello" })
     expect(result).toBe("shell output")
     expect(execSync).toHaveBeenCalledWith("echo hello", { encoding: "utf-8", timeout: 30000 })
+  })
+
+  it("safe_workspace acquires a dedicated worktree and reports the path and branch", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(123)
+    vi.mocked(spawnSync).mockImplementation((command: any, args: any) => {
+      expect(command).toBe("git")
+      if (args.join(" ") === "rev-parse --is-inside-work-tree") return { stdout: Buffer.from("true\n"), stderr: Buffer.from(""), status: 0 } as any
+      if (args.join(" ") === "rev-parse --abbrev-ref HEAD") return { stdout: Buffer.from("main\n"), stderr: Buffer.from(""), status: 0 } as any
+      if (args.join(" ") === "fetch origin") return { stdout: Buffer.from(""), stderr: Buffer.from(""), status: 0 } as any
+      if (args.join(" ") === "pull --ff-only origin main") return { stdout: Buffer.from(""), stderr: Buffer.from(""), status: 0 } as any
+      if (args.join(" ") === "worktree add -B slugger/safe-workspace-123 /mock/repo/testagent/state/workspaces/ouroboros-main-123 origin/main") {
+        return { stdout: Buffer.from(""), stderr: Buffer.from(""), status: 0 } as any
+      }
+      throw new Error(`unexpected git args: ${args.join(" ")}`)
+    })
+
+    const result = await execTool("safe_workspace", {})
+
+    expect(result).toContain("workspace: /mock/repo/testagent/state/workspaces/ouroboros-main-123")
+    expect(result).toContain("branch: slugger/safe-workspace-123")
+    expect(result).toContain("runtime: clone-main")
+  })
+
+  it("safe_workspace reports installed-runtime cleanup and branch cleanly", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(124)
+    vi.mocked(spawnSync).mockImplementation((command: any, args: any) => {
+      expect(command).toBe("git")
+      if (args.join(" ") === "rev-parse --is-inside-work-tree") return { stdout: Buffer.from(""), stderr: Buffer.from("fatal: not a git repository"), status: 128 } as any
+      if (args.join(" ") === "clone --depth 1 --branch main https://github.com/ouroborosbot/ouroboros.git /mock/repo/testagent/state/workspaces/ouroboros-scratch-124") {
+        return { stdout: Buffer.from(""), stderr: Buffer.from(""), status: 0 } as any
+      }
+      throw new Error(`unexpected git args: ${args.join(" ")}`)
+    })
+    const result = await execTool("safe_workspace", {})
+
+    expect(result).toContain("workspace: /mock/repo/testagent/state/workspaces/ouroboros-scratch-124")
+    expect(result).toContain("branch: main")
+    expect(result).toContain("runtime: installed-runtime")
+    expect(result).toContain("cleanup_after_merge: yes")
+  })
+
+  it("shell routes repo-local commands into the acquired safe workspace", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(456)
+    vi.mocked(execSync).mockReturnValue("routed output")
+    vi.mocked(spawnSync).mockImplementation((command: any, args: any) => {
+      expect(command).toBe("git")
+      if (args.join(" ") === "rev-parse --is-inside-work-tree") return { stdout: Buffer.from("true\n"), stderr: Buffer.from(""), status: 0 } as any
+      if (args.join(" ") === "rev-parse --abbrev-ref HEAD") return { stdout: Buffer.from("main\n"), stderr: Buffer.from(""), status: 0 } as any
+      if (args.join(" ") === "fetch origin") return { stdout: Buffer.from(""), stderr: Buffer.from(""), status: 0 } as any
+      if (args.join(" ") === "pull --ff-only origin main") return { stdout: Buffer.from(""), stderr: Buffer.from(""), status: 0 } as any
+      if (args.join(" ") === "worktree add -B slugger/safe-workspace-456 /mock/repo/testagent/state/workspaces/ouroboros-main-456 origin/main") {
+        return { stdout: Buffer.from(""), stderr: Buffer.from(""), status: 0 } as any
+      }
+      throw new Error(`unexpected git args: ${args.join(" ")}`)
+    })
+
+    const result = await execTool("shell", { command: "cd /mock/repo && git status" })
+
+    expect(result).toBe("routed output")
+    expect(execSync).toHaveBeenCalledWith(
+      "cd /mock/repo/testagent/state/workspaces/ouroboros-main-456 && git status",
+      {
+        encoding: "utf-8",
+        timeout: 30000,
+        cwd: "/mock/repo/testagent/state/workspaces/ouroboros-main-456",
+      },
+    )
   })
 
   // ── removed tools: gh_cli, list_directory, git_commit, get_current_time ──

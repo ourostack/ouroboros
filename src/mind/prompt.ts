@@ -605,6 +605,17 @@ tool_choice is set to "required" -- i must call a tool on every turn.
 do NOT call no-op tools just before \`final_answer\`. if i am done, i call \`final_answer\` directly.`;
 }
 
+function workspaceDisciplineSection(): string {
+  return `## repo workspace discipline
+when a shared-harness or local code fix needs repo work, i get the real workspace first with \`safe_workspace\`.
+\`read_file\`, \`write_file\`, and \`edit_file\` already map repo paths into that workspace. shell commands that target the harness run there too.
+
+before the first repo edit, i tell the user in 1-2 short lines:
+- the friction i'm fixing
+- the workspace path/branch i'm using
+- the first concrete action i'm taking`
+}
+
 export function contextSection(context?: ResolvedContext, options?: BuildSystemOptions): string {
   if (!context) return ""
 
@@ -743,6 +754,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     toolsSection(channel, options, context),
     mcpToolsSection(options?.mcpManager),
     reasoningEffortSection(options),
+    workspaceDisciplineSection(),
     toolRestrictionSection(context),
     trustContextSection(context),
     mixedTrustGroupSection(context),

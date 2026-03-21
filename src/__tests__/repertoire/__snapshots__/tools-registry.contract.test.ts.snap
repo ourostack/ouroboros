@@ -19,6 +19,7 @@ exports[`tool registry contract > tool surface area snapshot 1`] = `
   "memory_search",
   "query_session",
   "read_file",
+  "safe_workspace",
   "save_friend_note",
   "send_message",
   "set_reasoning_effort",

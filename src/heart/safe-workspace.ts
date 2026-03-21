@@ -13,11 +13,18 @@ export interface SafeWorkspaceSelection {
   runtimeKind: "clone-main" | "clone-non-main" | "installed-runtime"
   repoRoot: string
   workspaceRoot: string
+  workspaceBranch: string
   sourceBranch: string | null
   sourceCloneUrl: string
   cleanupAfterMerge: boolean
   created: boolean
   note: string
+}
+
+export interface SafeShellExecution {
+  selection: SafeWorkspaceSelection | null
+  command: string
+  cwd?: string
 }
 
 export interface EnsureSafeWorkspaceOptions {
@@ -104,7 +111,7 @@ function createDedicatedWorktree(
   mkdirSync: typeof fs.mkdirSync,
   rmSync: typeof fs.rmSync,
   spawnSync: typeof defaultSpawnSync,
-): { workspaceRoot: string; created: boolean } {
+): { workspaceRoot: string; created: boolean; branchName: string } {
   mkdirSync(path.dirname(workspaceRoot), { recursive: true })
   const branchName = `slugger/${branchSuffix}`
 
@@ -117,7 +124,7 @@ function createDedicatedWorktree(
     "git worktree add",
   )
 
-  return { workspaceRoot, created: true }
+  return { workspaceRoot, created: true, branchName } as const
 }
 
 function createScratchClone(
@@ -127,7 +134,7 @@ function createScratchClone(
   mkdirSync: typeof fs.mkdirSync,
   rmSync: typeof fs.rmSync,
   spawnSync: typeof defaultSpawnSync,
-): { workspaceRoot: string; created: boolean } {
+): { workspaceRoot: string; created: boolean; branchName: string } {
   mkdirSync(path.dirname(workspaceRoot), { recursive: true })
   if (existsSync(workspaceRoot)) {
     rmSync(workspaceRoot, { recursive: true, force: true })
@@ -137,7 +144,13 @@ function createScratchClone(
     stdio: ["ignore", "pipe", "pipe"],
   })
   assertGitOk(result, "git clone")
-  return { workspaceRoot, created: true }
+  return { workspaceRoot, created: true, branchName: "main" } as const
+}
+
+const REPO_LOCAL_SHELL_COMMAND = /^(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*(git|npm|npx|node|pnpm|yarn|bun|rg|sed|cat|ls|find|grep|vitest|tsc|eslint)\b/
+
+function looksRepoLocalShellCommand(command: string): boolean {
+  return REPO_LOCAL_SHELL_COMMAND.test(command.trim())
 }
 
 function registerCleanupHook(options: {
@@ -207,6 +220,7 @@ export function ensureSafeRepoWorkspace(options: EnsureSafeWorkspaceOptions = {}
         runtimeKind: "clone-main",
         repoRoot,
         workspaceRoot: created.workspaceRoot,
+        workspaceBranch: created.branchName,
         sourceBranch: branch,
         sourceCloneUrl: canonicalRepoUrl,
         cleanupAfterMerge: false,
@@ -228,6 +242,7 @@ export function ensureSafeRepoWorkspace(options: EnsureSafeWorkspaceOptions = {}
         runtimeKind: "clone-non-main",
         repoRoot,
         workspaceRoot: created.workspaceRoot,
+        workspaceBranch: created.branchName,
         sourceBranch: branch,
         sourceCloneUrl: canonicalRepoUrl,
         cleanupAfterMerge: false,
@@ -242,6 +257,7 @@ export function ensureSafeRepoWorkspace(options: EnsureSafeWorkspaceOptions = {}
       runtimeKind: "installed-runtime",
       repoRoot,
       workspaceRoot: created.workspaceRoot,
+      workspaceBranch: created.branchName,
       sourceBranch: null,
       sourceCloneUrl: canonicalRepoUrl,
       cleanupAfterMerge: true,
@@ -259,6 +275,7 @@ export function ensureSafeRepoWorkspace(options: EnsureSafeWorkspaceOptions = {}
       runtimeKind: selection.runtimeKind,
       repoRoot: selection.repoRoot,
       workspaceRoot: selection.workspaceRoot,
+      workspaceBranch: selection.workspaceBranch,
       sourceBranch: selection.sourceBranch,
       sourceCloneUrl: selection.sourceCloneUrl,
       cleanupAfterMerge: selection.cleanupAfterMerge,
@@ -283,4 +300,33 @@ export function resolveSafeRepoPath(options: ResolveSafePathOptions): { selectio
   const relativePath = requestedPath === repoRoot ? "" : path.relative(repoRoot, requestedPath)
   const resolvedPath = relativePath ? path.join(selection.workspaceRoot, relativePath) : selection.workspaceRoot
   return { selection, resolvedPath }
+}
+
+export function resolveSafeShellExecution(command: string, options: EnsureSafeWorkspaceOptions = {}): SafeShellExecution {
+  const trimmed = command.trim()
+  if (!trimmed) {
+    return { selection: activeSelection, command }
+  }
+
+  if (activeSelection && command.includes(activeSelection.workspaceRoot)) {
+    return { selection: activeSelection, command, cwd: activeSelection.workspaceRoot }
+  }
+
+  const repoRoot = path.resolve(options.repoRoot ?? getRepoRoot())
+  const mentionsRepoRoot = command.includes(repoRoot)
+  const shouldRoute = mentionsRepoRoot || looksRepoLocalShellCommand(trimmed)
+  if (!shouldRoute) {
+    return { selection: activeSelection, command }
+  }
+
+  const selection = ensureSafeRepoWorkspace(options)
+  const rewrittenCommand = mentionsRepoRoot
+    ? command.split(repoRoot).join(selection.workspaceRoot)
+    : command
+
+  return {
+    selection,
+    command: rewrittenCommand,
+    cwd: selection.workspaceRoot,
+  }
 }

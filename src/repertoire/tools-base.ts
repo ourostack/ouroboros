@@ -9,7 +9,7 @@ import type { Integration, ResolvedContext, FriendRecord } from "../mind/friends
 import type { FriendStore } from "../mind/friends/store";
 import { emitNervesEvent } from "../nerves/runtime";
 import { getAgentRoot, getAgentName } from "../heart/identity";
-import { resolveSafeRepoPath } from "../heart/safe-workspace";
+import { ensureSafeRepoWorkspace, resolveSafeRepoPath, resolveSafeShellExecution } from "../heart/safe-workspace";
 import { requestInnerWake } from "../heart/daemon/socket-client";
 import { extractThoughtResponseFromMessages, formatSurfacedValue, getInnerDialogSessionPath, readInnerDialogStatus } from "../heart/daemon/thoughts";
 import { createBridgeManager, formatBridgeStatus } from "../heart/bridges/manager";
@@ -453,6 +453,29 @@ export const baseToolDefinitions: ToolDefinition[] = [
     tool: {
       type: "function",
       function: {
+        name: "safe_workspace",
+        description: "acquire or inspect the safe harness repo workspace for local edits. returns the real workspace path, branch, and why it was chosen.",
+        parameters: {
+          type: "object",
+          properties: {},
+        },
+      },
+    },
+    handler: () => {
+      const selection = ensureSafeRepoWorkspace()
+      return [
+        `workspace: ${selection.workspaceRoot}`,
+        `branch: ${selection.workspaceBranch}`,
+        `runtime: ${selection.runtimeKind}`,
+        `cleanup_after_merge: ${selection.cleanupAfterMerge ? "yes" : "no"}`,
+        `note: ${selection.note}`,
+      ].join("\n")
+    },
+  },
+  {
+    tool: {
+      type: "function",
+      function: {
         name: "shell",
         description: "run shell command",
         parameters: {
@@ -462,7 +485,14 @@ export const baseToolDefinitions: ToolDefinition[] = [
         },
       },
     },
-    handler: (a) => execSync(a.command, { encoding: "utf-8", timeout: 30000 }),
+    handler: (a) => {
+      const prepared = resolveSafeShellExecution(a.command)
+      return execSync(prepared.command, {
+        encoding: "utf-8",
+        timeout: 30000,
+        ...(prepared.cwd ? { cwd: prepared.cwd } : {}),
+      })
+    },
   },
   {
     tool: {

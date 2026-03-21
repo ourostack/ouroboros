@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.84",
+      "changes": [
+        "Safe workspace routing now covers repo-local shell commands too, so agents that discover a harness friction through `shell` land in the dedicated worktree instead of wandering in the shared checkout.",
+        "The new `safe_workspace` tool and prompt guidance make the chosen workspace path, branch, and first concrete repo action explicit before the first edit, tightening the visible OODA loop."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.83",
       "changes": [
         "Visible OODA loop substrate: persistent return obligations now surface where work is happening, whether the agent is still investigating, and what still needs to come back to the originating session.",

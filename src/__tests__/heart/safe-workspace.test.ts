@@ -6,6 +6,7 @@ import {
   getActiveSafeWorkspaceSelection,
   resetSafeWorkspaceSelection,
   resolveSafeRepoPath,
+  resolveSafeShellExecution,
 } from "../../heart/safe-workspace"
 
 function spawnResult(stdout = "", stderr = "", status = 0) {
@@ -47,6 +48,7 @@ describe("safe workspace acquisition", () => {
 
     expect(selection.runtimeKind).toBe("clone-main")
     expect(selection.workspaceRoot).toBe("/bundle/state/workspaces/ouroboros-main-123")
+    expect(selection.workspaceBranch).toBe("slugger/safe-workspace-123")
     expect(selection.cleanupAfterMerge).toBe(false)
     expect(selection.note).toContain("fast-forwarded")
     expect(spawnSync).toHaveBeenCalledWith("git", ["pull", "--ff-only", "origin", "main"], expect.any(Object))
@@ -81,6 +83,7 @@ describe("safe workspace acquisition", () => {
     expect(selection.runtimeKind).toBe("clone-non-main")
     expect(selection.sourceBranch).toBe("feature/thing")
     expect(selection.workspaceRoot).toBe("/bundle/state/workspaces/ouroboros-origin-main-456")
+    expect(selection.workspaceBranch).toBe("slugger/safe-workspace-456")
     expect(selection.note).toContain("feature/thing")
     expect(selection.note).toContain("origin/main")
     expect(spawnSync).not.toHaveBeenCalledWith("git", ["pull", "--ff-only", "origin", "main"], expect.any(Object))
@@ -109,6 +112,7 @@ describe("safe workspace acquisition", () => {
     expect(selection.runtimeKind).toBe("installed-runtime")
     expect(selection.cleanupAfterMerge).toBe(true)
     expect(selection.workspaceRoot).toBe("/bundle/state/workspaces/ouroboros-scratch-789")
+    expect(selection.workspaceBranch).toBe("main")
     expect(selection.sourceCloneUrl).toBe("https://github.com/ouroborosbot/ouroboros.git")
     expect(spawnSync).toHaveBeenCalledWith(
       "git",
@@ -159,6 +163,81 @@ describe("safe workspace acquisition", () => {
     expect(untouched.resolvedPath).toBe("/tmp/notes.txt")
   })
 
+  it("routes repo-root shell commands into the chosen safe workspace", () => {
+    const spawnSync = vi.fn((command: string, args: string[]) => {
+      expect(command).toBe("git")
+      if (args.join(" ") === "rev-parse --is-inside-work-tree") return spawnResult("true\n")
+      if (args.join(" ") === "rev-parse --abbrev-ref HEAD") return spawnResult("main\n")
+      if (args.join(" ") === "fetch origin") return spawnResult()
+      if (args.join(" ") === "pull --ff-only origin main") return spawnResult()
+      if (args[0] === "worktree" && args[1] === "add") return spawnResult()
+      throw new Error(`unexpected git args: ${args.join(" ")}`)
+    })
+
+    const routed = resolveSafeShellExecution("cd /repo && git status", {
+      repoRoot: "/repo",
+      agentName: "slugger",
+      workspaceRoot: "/bundle/state/workspaces",
+      spawnSync,
+      existsSync: vi.fn(() => false) as any,
+      mkdirSync: vi.fn() as any,
+      rmSync: vi.fn() as any,
+      now: () => 612,
+    })
+
+    expect(routed.selection?.workspaceRoot).toBe("/bundle/state/workspaces/ouroboros-main-612")
+    expect(routed.cwd).toBe("/bundle/state/workspaces/ouroboros-main-612")
+    expect(routed.command).toBe("cd /bundle/state/workspaces/ouroboros-main-612 && git status")
+  })
+
+  it("routes plain repo-local shell commands into the chosen safe workspace cwd", () => {
+    const spawnSync = vi.fn((command: string, args: string[]) => {
+      expect(command).toBe("git")
+      if (args.join(" ") === "rev-parse --is-inside-work-tree") return spawnResult("true\n")
+      if (args.join(" ") === "rev-parse --abbrev-ref HEAD") return spawnResult("feature/thing\n")
+      if (args.join(" ") === "fetch origin") return spawnResult()
+      if (args[0] === "worktree" && args[1] === "add") return spawnResult()
+      throw new Error(`unexpected git args: ${args.join(" ")}`)
+    })
+
+    const routed = resolveSafeShellExecution("git status --short", {
+      repoRoot: "/repo",
+      agentName: "slugger",
+      workspaceRoot: "/bundle/state/workspaces",
+      spawnSync,
+      existsSync: vi.fn(() => false) as any,
+      mkdirSync: vi.fn() as any,
+      rmSync: vi.fn() as any,
+      now: () => 613,
+    })
+
+    expect(routed.selection?.workspaceRoot).toBe("/bundle/state/workspaces/ouroboros-origin-main-613")
+    expect(routed.cwd).toBe("/bundle/state/workspaces/ouroboros-origin-main-613")
+    expect(routed.command).toBe("git status --short")
+  })
+
+  it("leaves unrelated shell commands untouched", () => {
+    const routed = resolveSafeShellExecution("date", {
+      repoRoot: "/repo",
+      agentName: "slugger",
+    })
+
+    expect(routed.selection).toBeNull()
+    expect(routed.cwd).toBeUndefined()
+    expect(routed.command).toBe("date")
+  })
+
+  it("leaves empty shell commands untouched without acquiring a workspace", () => {
+    const routed = resolveSafeShellExecution("   ", {
+      repoRoot: "/repo",
+      agentName: "slugger",
+    })
+
+    expect(routed.selection).toBeNull()
+    expect(routed.cwd).toBeUndefined()
+    expect(routed.command).toBe("   ")
+  })
+
   it("reuses the active selection and leaves already-mapped workspace paths unchanged", () => {
     const spawnSync = vi.fn((command: string, args: string[]) => {
       expect(command).toBe("git")
@@ -201,6 +280,17 @@ describe("safe workspace acquisition", () => {
 
     expect(alreadyMapped.selection).toBe(first)
     expect(alreadyMapped.resolvedPath).toBe("/bundle/state/workspaces/ouroboros-main-444/src/file.ts")
+
+    const alreadyMappedShell = resolveSafeShellExecution("git -C /bundle/state/workspaces/ouroboros-main-444 status", {
+      repoRoot: "/repo",
+      agentName: "slugger",
+      workspaceRoot: "/bundle/state/workspaces",
+      spawnSync,
+    })
+
+    expect(alreadyMappedShell.selection).toBe(first)
+    expect(alreadyMappedShell.cwd).toBe("/bundle/state/workspaces/ouroboros-main-444")
+    expect(alreadyMappedShell.command).toBe("git -C /bundle/state/workspaces/ouroboros-main-444 status")
   })
 
   it("removes pre-existing workspace roots before creating worktrees and scratch clones", () => {

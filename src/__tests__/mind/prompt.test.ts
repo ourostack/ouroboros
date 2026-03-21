@@ -41,9 +41,11 @@ vi.mock("../../heart/identity", () => {
       context: { ...DEFAULT_AGENT_CONTEXT },
     })),
     getAgentName: vi.fn(() => "testagent"),
-  getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/testagent/secrets.json"),
+    getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/testagent/secrets.json"),
     getAgentRoot: vi.fn(() => "/mock/repo/testagent"),
     getRepoRoot: vi.fn(() => "/mock/repo"),
+    getAgentRepoWorkspacesRoot: vi.fn(() => "/mock/repo/testagent/state/workspaces"),
+    HARNESS_CANONICAL_REPO_URL: "https://github.com/ouroborosbot/ouroboros.git",
     resetIdentity: vi.fn(),
   }
 })
@@ -198,6 +200,20 @@ describe("buildSystem", () => {
     const result = await buildSystem()
     expect(result).toContain("i am Ouroboros")
     expect(result).toContain("i use lowercase")
+  })
+
+  it("includes repo workspace discipline guidance for local harness edits", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem()
+    expect(result).toContain("## repo workspace discipline")
+    expect(result).toContain("safe_workspace")
+    expect(result).toContain("workspace path/branch")
+    expect(result).toContain("first concrete action")
   })
 
   it("includes active bridge work when bridge context is present", async () => {
