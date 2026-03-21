@@ -7,6 +7,7 @@
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions"
 import type { ChannelCallbacks, CompletionMetadata, RunAgentOptions, RunAgentOutcome } from "../heart/core"
 import type { PostTurnHooks, SessionContinuityState, UsageData } from "../mind/context"
+import type { SessionOrientation } from "../mind/session-orientation"
 import type { Channel, ChannelCapabilities, IdentityProvider, ResolvedContext } from "../mind/friends/types"
 import type { FriendStore } from "../mind/friends/store"
 import type { TrustGateInput, TrustGateResult } from "./trust-gate"
@@ -45,7 +46,7 @@ export interface InboundTurnInput {
   /** Resolves external identity into a FriendRecord + channel capabilities. */
   friendResolver: { resolve(): Promise<ResolvedContext> }
   /** Loads an existing session or creates a fresh one. */
-  sessionLoader: { loadOrCreate(): Promise<{ messages: ChatCompletionMessageParam[]; sessionPath: string; state?: SessionContinuityState }> }
+  sessionLoader: { loadOrCreate(): Promise<{ messages: ChatCompletionMessageParam[]; sessionPath: string; state?: SessionContinuityState; sessionOrientation?: SessionOrientation }> }
   /** Directory to drain pending messages from. */
   pendingDir: string
   /** Friend store used for token accumulation. */
@@ -86,7 +87,8 @@ export interface InboundTurnInput {
     usage?: UsageData,
     hooks?: PostTurnHooks,
     state?: SessionContinuityState,
-  ) => void
+    sessionOrientation?: SessionOrientation,
+  ) => SessionOrientation | undefined
   accumulateFriendTokens: (
     store: FriendStore,
     friendId: string,
@@ -109,6 +111,7 @@ export interface InboundTurnResult {
   sessionPath?: string
   /** The final messages array after the turn. Undefined when gate rejects. */
   messages?: ChatCompletionMessageParam[]
+  sessionOrientation?: SessionOrientation
   /** Pending envelopes drained at turn start, including deferred returns. */
   drainedPending?: PendingMessage[]
 }
@@ -386,6 +389,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     setMustResolveBeforeHandoff: (value) => {
       mustResolveBeforeHandoff = value
     },
+    sessionOrientation: session.sessionOrientation,
     toolContext: {
       /* v8 ignore next -- default no-op signin satisfies interface; real signin injected by sense adapter @preserve */
       signin: async () => undefined,
@@ -415,7 +419,14 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
       ? { lastFriendActivityAt }
       : undefined)
     : (Object.keys(continuingState).length > 0 ? continuingState : undefined)
-  input.postTurn(sessionMessages, session.sessionPath, result.usage, undefined, nextState)
+  const nextSessionOrientation = input.postTurn(
+    sessionMessages,
+    session.sessionPath,
+    result.usage,
+    undefined,
+    nextState,
+    session.sessionOrientation,
+  )
 
   // Step 7: Token accumulation
   await input.accumulateFriendTokens(input.friendStore, resolvedContext.friend.id, result.usage)
@@ -438,6 +449,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     completion: result.completion,
     sessionPath: session.sessionPath,
     messages: sessionMessages,
+    sessionOrientation: nextSessionOrientation,
     drainedPending: pending,
   }
 }

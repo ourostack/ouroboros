@@ -266,6 +266,28 @@ describe("saveSession", () => {
     expect(parsed.lastUsage).toBeUndefined()
   })
 
+  it("persists sessionOrientation when provided", async () => {
+    const { saveSession } = await import("../../mind/context")
+    const msgs: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "system", content: "sys" },
+    ]
+    const sessionOrientation = {
+      updatedAt: "2026-03-21T09:00:00.000Z",
+      goal: "keep the harness grounded",
+      constraints: ["keep it simple"],
+      progress: ["edit_file src/mind/prompt.ts"],
+      readFiles: ["src/mind/context.ts"],
+      modifiedFiles: ["src/mind/prompt.ts"],
+    }
+
+    ;(saveSession as any)("/tmp/session.json", msgs, undefined, undefined, sessionOrientation)
+
+    expect(fs.writeFileSync).toHaveBeenCalledWith(
+      "/tmp/session.json",
+      JSON.stringify({ version: 1, messages: msgs, sessionOrientation }, null, 2),
+    )
+  })
+
   it("writes persisted continuity state when mustResolveBeforeHandoff is true", async () => {
     const { saveSession } = await import("../../mind/context")
     const msgs: OpenAI.ChatCompletionMessageParam[] = [
@@ -524,6 +546,42 @@ describe("loadSession", () => {
     })
   })
 
+  it("returns persisted sessionOrientation when present", async () => {
+    const { loadSession } = await import("../../mind/context")
+    const msgs = [{ role: "system", content: "sys" }]
+    const sessionOrientation = {
+      updatedAt: "2026-03-21T09:00:00.000Z",
+      goal: "tighten the harness backbone",
+      constraints: ["keep it simple"],
+      progress: ["edit_file src/mind/prompt.ts"],
+      readFiles: ["src/mind/context.ts"],
+      modifiedFiles: ["src/mind/prompt.ts"],
+    }
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({ version: 1, messages: msgs, sessionOrientation }),
+    )
+
+    const result = loadSession("/tmp/session.json")
+
+    expect(result).toEqual({ messages: msgs, lastUsage: undefined, sessionOrientation })
+  })
+
+  it("ignores malformed sessionOrientation instead of rejecting the session", async () => {
+    const { loadSession } = await import("../../mind/context")
+    const msgs = [{ role: "system", content: "sys" }]
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        version: 1,
+        messages: msgs,
+        sessionOrientation: { updatedAt: 123, constraints: "nope" },
+      }),
+    )
+
+    const result = loadSession("/tmp/session.json")
+
+    expect(result).toEqual({ messages: msgs, lastUsage: undefined })
+  })
+
   it("returns null when file is missing (ENOENT)", async () => {
     const { loadSession } = await import("../../mind/context")
     vi.mocked(fs.readFileSync).mockImplementation(() => {
@@ -771,6 +829,42 @@ describe("postTurn", () => {
     expect(written.version).toBe(1)
     expect(written.messages).toEqual(messages)
     expect(written.lastUsage).toEqual(usage)
+  })
+
+  it("returns and saves a session orientation built from the turn", async () => {
+    const { getContextConfig } = await import("../../heart/config")
+    vi.mocked(getContextConfig).mockReturnValue({ maxTokens: 80000, contextMargin: 20 })
+
+    const { postTurn } = await import("../../mind/context")
+    const messages: any[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "keep it simple and update src/mind/prompt.ts" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          {
+            id: "call-1",
+            type: "function",
+            function: { name: "edit_file", arguments: "{\"path\":\"src/mind/prompt.ts\"}" },
+          },
+        ],
+      },
+      { role: "tool", tool_call_id: "call-1", content: "patched" },
+    ]
+
+    const orientation = (postTurn as any)(messages, "/tmp/sess.json")
+
+    expect(orientation).toEqual(expect.objectContaining({
+      goal: "keep it simple and update src/mind/prompt.ts",
+      constraints: ["keep it simple and update src/mind/prompt.ts"],
+      progress: ["edit_file src/mind/prompt.ts"],
+      readFiles: [],
+      modifiedFiles: ["src/mind/prompt.ts"],
+    }))
+
+    const written = JSON.parse(vi.mocked(fs.writeFileSync).mock.calls[0][1] as string)
+    expect(written.sessionOrientation).toEqual(orientation)
   })
 
   it("handles empty messages array (only system prompt)", async () => {

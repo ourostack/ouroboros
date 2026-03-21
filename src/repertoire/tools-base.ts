@@ -13,7 +13,14 @@ import { ensureSafeRepoWorkspace, resolveSafeRepoPath, resolveSafeShellExecution
 import { requestInnerWake } from "../heart/daemon/socket-client";
 import { extractThoughtResponseFromMessages, formatSurfacedValue, getInnerDialogSessionPath, readInnerDialogStatus } from "../heart/daemon/thoughts";
 import { createBridgeManager, formatBridgeStatus } from "../heart/bridges/manager";
-import { recallSession, type SessionRecallOptions, type SessionRecallResult } from "../heart/session-recall";
+import {
+  recallSession,
+  searchSessionTranscript,
+  type SessionRecallOptions,
+  type SessionRecallResult,
+  type SessionSearchOptions,
+  type SessionSearchResult,
+} from "../heart/session-recall";
 import { codingToolDefinitions } from "./coding/tools";
 import { readMemoryFacts, saveMemoryFact, searchMemoryFacts } from "../mind/memory";
 import { getPendingDir, getInnerDialogPendingDir } from "../mind/pending";
@@ -22,6 +29,7 @@ import type { BridgeRecord, BridgeSessionRef } from "../heart/bridges/store";
 import { buildProgressStory, renderProgressStory } from "../heart/progress-story";
 import { deliverCrossChatMessage, type CrossChatDeliveryResult } from "../heart/cross-chat-delivery";
 import { createObligation } from "../heart/obligations";
+import type { SessionOrientation } from "../mind/session-orientation";
 
 export interface CodingFeedbackTarget {
   send: (message: string) => Promise<void>;
@@ -58,6 +66,7 @@ export interface ToolContext {
   activeBridges?: BridgeRecord[];
   supportedReasoningEfforts?: readonly string[];
   setReasoningEffort?: (level: string) => void;
+  sessionOrientation?: SessionOrientation;
 }
 
 export type ToolHandler = (args: Record<string, string>, ctx?: ToolContext) => string | Promise<string>;
@@ -131,6 +140,14 @@ async function recallSessionSafely(options: SessionRecallOptions): Promise<Sessi
         return { kind: "missing" }
       }
     }
+    return { kind: "missing" }
+  }
+}
+
+async function searchSessionSafely(options: SessionSearchOptions): Promise<SessionSearchResult | { kind: "missing" }> {
+  try {
+    return await searchSessionTranscript(options)
+  } catch {
     return { kind: "missing" }
   }
 }
@@ -883,7 +900,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "query_session",
-        description: "read the last messages from another session. use this to check on a conversation with a friend or review your own inner dialog.",
+        description: "inspect another session. use transcript for recent context, status for self/inner progress, or search to find older history by query.",
         parameters: {
           type: "object",
           properties: {
@@ -891,7 +908,12 @@ export const baseToolDefinitions: ToolDefinition[] = [
             channel: { type: "string", description: "the channel: cli, teams, or inner" },
             key: { type: "string", description: "session key (defaults to 'session')" },
             messageCount: { type: "string", description: "how many recent messages to return (default 20)" },
-            mode: { type: "string", enum: ["transcript", "status"], description: "transcript (default) or lightweight status for self/inner checks" },
+            mode: {
+              type: "string",
+              enum: ["transcript", "status", "search"],
+              description: "transcript (default), lightweight status for self/inner checks, or search for older history",
+            },
+            query: { type: "string", description: "required when mode=search; search term for older session history" },
           },
           required: ["friendId", "channel"],
         },
@@ -912,6 +934,37 @@ export const baseToolDefinitions: ToolDefinition[] = [
         const sessionPath = getInnerDialogSessionPath(getAgentRoot())
         const pendingDir = getInnerDialogPendingDir(getAgentName())
         return renderInnerProgressStatus(readInnerDialogStatus(sessionPath, pendingDir))
+      }
+
+      if (mode === "search") {
+        const query = (args.query || "").trim()
+        if (!query) {
+          return "search mode requires a non-empty query."
+        }
+
+        const search = await searchSessionSafely({
+          sessionPath: resolveSessionPath(friendId, channel, key),
+          friendId,
+          channel,
+          key,
+          query,
+        })
+
+        if (search.kind === "missing") {
+          return NO_SESSION_FOUND_MESSAGE
+        }
+        if (search.kind === "empty") {
+          return EMPTY_SESSION_MESSAGE
+        }
+        if (search.kind === "no_match") {
+          return `no matches for "${search.query}" in that session.\n\n${search.snapshot}`
+        }
+
+        return [
+          `history search: "${search.query}"`,
+          search.snapshot,
+          ...search.matches.map((match, index) => `match ${index + 1}\n${match}`),
+        ].join("\n\n")
       }
 
       const sessFile = resolveSessionPath(friendId, channel, key)

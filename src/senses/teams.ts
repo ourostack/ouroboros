@@ -577,7 +577,12 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
             ? existing.messages
             : [{ role: "system", content: await buildSystem("teams", { mcpManager }, resolvedContext) }]
           repairOrphanedToolCalls(messages)
-          return { messages, sessionPath: sessPath, state: existing?.state }
+          return {
+            messages,
+            sessionPath: sessPath,
+            state: existing?.state,
+            sessionOrientation: existing?.sessionOrientation,
+          }
         },
       },
       pendingDir,

@@ -2593,6 +2593,8 @@ describe("buildSystem with context", () => {
     expect(result).toContain("## task board")
     expect(result).toContain("## my skills")
     expect(result).toContain("## memory and friend tool contracts")
+    expect(result).toContain("query_session")
+    expect(result).toContain("mode=search")
   })
 
   it("buildSystem('inner') does NOT include contextSection output (no friend context, no onboarding)", async () => {
@@ -3330,5 +3332,50 @@ describe("groupChatParticipationSection", () => {
     const result = await buildSystem("bluebubbles", undefined, ctx as any)
     expect(result).toContain("no_response")
     expect(result).toMatch(/reaction|tapback/i)
+  })
+})
+
+describe("session orientation prompting", () => {
+  beforeEach(() => {
+    setupReadFileSync()
+  })
+
+  it("buildSystem includes execution discipline guidance", async () => {
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("cli")
+
+    expect(result).toContain("## execution discipline")
+    expect(result).toContain("do the work instead of narrating intentions")
+    expect(result).toContain("don't pretend progress")
+    expect(result).toContain("answer ad-hoc questions directly without losing the main objective")
+  })
+
+  it("buildSystem includes durable session orientation when provided", async () => {
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("cli", {
+      sessionOrientation: {
+        updatedAt: "2026-03-21T09:00:00.000Z",
+        goal: "tighten the harness backbone",
+        constraints: ["keep it simple"],
+        progress: ["edit_file src/mind/prompt.ts"],
+        readFiles: ["src/mind/context.ts"],
+        modifiedFiles: ["src/mind/prompt.ts"],
+      },
+    })
+
+    expect(result).toContain("## session orientation")
+    expect(result).toContain("goal: tighten the harness backbone")
+    expect(result).toContain("- keep it simple")
+    expect(result).toContain("- edit_file src/mind/prompt.ts")
   })
 })
