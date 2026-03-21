@@ -16,8 +16,15 @@
 ### Safety Rules
 
 - Do not commit secrets, tokens, or credentials.
-- Do not bypass review gates defined by active planning/doing workflows.
+- Do not bypass review gates defined by active planning/doing workflows unless the human explicitly waives them for the current task.
 - Do not hide failing checks; fix root causes.
+
+### Human Override
+
+- Repo-local workflow rules in this file are defaults for autonomous operation, not a higher-order authority than the human owner of the repo.
+- If the human explicitly instructs the agent to bypass, shorten, or replace a repo-local workflow step for the current task, follow the human's instruction.
+- Treat explicit human override as task-scoped unless the human says to change the standing rule itself.
+- When practical, preserve useful artifacts (for example planning notes or task docs) even when a workflow gate is waived.
 
 ## Planning/Doing Workflow (STRICT)
 
@@ -41,7 +48,7 @@ Do not create agent-specific task directories inside this repo.
 
 - **Codex app**: Use skills by name: `$work-planner`, `$work-doer`, and `$work-merger`.
   - Skills are turn-scoped in practice, so re-invoke `$work-planner` on each planning/conversion turn.
-  - `work-planner` already enforces `NEEDS_REVIEW` and hard-stop behavior; do not bypass it.
+  - `work-planner` already enforces `NEEDS_REVIEW` and hard-stop behavior during default operation; a direct human override may waive that gate for the current task.
 - **Claude Code**: Skills are installed from `github.com/ouroborosbot/ouroboros-skills` into `~/.claude/skills/` (`work-planner`, `work-doer`, `work-merger`).
 
 ### Skill Freshness
@@ -55,6 +62,8 @@ Before starting work, check that locally installed skills are up to date:
 This replaces the old pattern of diffing against `subagents/*.md` files in this repo. The shared `ouroboros-skills` repository is now the source of truth for workflow skill content.
 
 ### Gate Flow
+
+If the human explicitly waives this workflow for the current task, the override wins and the agent may continue without stopping at the intermediate review gates below.
 
 0. **Branch + worktree**: Verify the current branch follows `<agent>/<slug>` and that the task is running from a dedicated worktree. If on `main`, on an ambiguous branch, or in the wrong shared checkout, create/switch to the correct branch/worktree before proceeding. Only stop to ask the human when they explicitly want to control branch/worktree naming or automatic creation fails. This is always the first step — no planning, converting, or implementing without a proper branch/worktree.
 1. **Plan**: Launch `work-planner`. It produces/updates a planning doc under `~/AgentBundles/<agent>.ouro/tasks/one-shots/`.
