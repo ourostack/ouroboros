@@ -181,6 +181,22 @@ describe("obligations store", () => {
       expect(all[0].latestNote).toBe("still tracing the issue")
       expect(all[0].updatedAt).toBeTruthy()
     })
+
+    it("persists current artifact and next action for live status surfacing", () => {
+      const ob = createObligation(tmpDir, { origin: sampleOrigin, content: "close the loop visibly" })
+      advanceObligation(tmpDir, ob.id, {
+        status: "waiting_for_merge",
+        currentSurface: { kind: "merge", label: "PR #123" },
+        currentArtifact: "PR #123",
+        nextAction: "wait for checks, merge PR #123, then update runtime",
+        latestNote: "opened PR #123",
+      })
+
+      const all = readObligations(tmpDir)
+      expect(all[0].currentArtifact).toBe("PR #123")
+      expect(all[0].nextAction).toBe("wait for checks, merge PR #123, then update runtime")
+      expect(all[0].latestNote).toBe("opened PR #123")
+    })
   })
 
   describe("findPendingObligationForOrigin", () => {

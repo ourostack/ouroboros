@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.102",
+      "changes": [
+        "Live obligations now persist a concrete current artifact and next action, so status answers can anchor on the actual active lane, artifact, and immediate step instead of drifting into broad mission statements.",
+        "Obligation-bound coding feedback now turns PR milestones into structured report-backs and lifecycle updates, which keeps the originating live conversation informed when child work opens a PR, waits for merge, or needs a runtime update."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.101",
       "changes": [
         "Live coding-session status now prefers active work from the current thread instead of resurfacing stale global history, so agents stop anchoring on ancient sessions like `coding-001` when newer coding lanes are already in flight.",
