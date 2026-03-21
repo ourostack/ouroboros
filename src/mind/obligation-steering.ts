@@ -1,8 +1,10 @@
+import { sanitizeKey } from "../heart/config";
 import type { ActiveWorkFrame } from "../heart/active-work";
 import type { Obligation } from "../heart/obligations";
 import { emitNervesEvent } from "../nerves/runtime";
 
 type SessionOrigin = { friendId: string; channel: string; key: string }
+const RECENT_OTHER_LIVE_SESSION_WINDOW_MS = 60 * 60 * 1000
 
 export function findActivePersistentObligation(frame: ActiveWorkFrame | undefined): Obligation | null {
   if (!frame) return null;
@@ -26,12 +28,12 @@ function matchesSessionOrigin(frame: ActiveWorkFrame, origin: SessionOrigin): bo
     frame.currentSession
     && origin.friendId === frame.currentSession.friendId
     && origin.channel === frame.currentSession.channel
-    && origin.key === frame.currentSession.key,
+    && sanitizeKey(origin.key) === sanitizeKey(frame.currentSession.key),
   )
 }
 
 function sessionOriginKey(origin: SessionOrigin): string {
-  return `${origin.friendId}/${origin.channel}/${origin.key}`
+  return `${origin.friendId}/${origin.channel}/${sanitizeKey(origin.key)}`
 }
 
 function codingSessionTimestampMs(session: NonNullable<ActiveWorkFrame["otherCodingSessions"]>[number]): number {
@@ -82,9 +84,7 @@ function formatOtherSessionNextAction(
 
 function findFriendNameForOrigin(frame: ActiveWorkFrame, origin: SessionOrigin): string {
   return (frame.friendActivity?.allOtherLiveSessions ?? []).find((entry) =>
-    entry.friendId === origin.friendId
-    && entry.channel === origin.channel
-    && entry.key === origin.key,
+    sessionOriginKey(entry) === sessionOriginKey(origin),
   )?.friendName ?? origin.friendId
 }
 
@@ -92,6 +92,7 @@ function buildOtherActiveSessionLines(frame: ActiveWorkFrame): string[] {
   const originMap = new Map<string, SessionOrigin>()
 
   for (const session of frame.friendActivity?.allOtherLiveSessions ?? []) {
+    if (session.friendId === "self" || session.channel === "inner") continue
     originMap.set(sessionOriginKey(session), {
       friendId: session.friendId,
       channel: session.channel,
@@ -115,6 +116,12 @@ function buildOtherActiveSessionLines(frame: ActiveWorkFrame): string[] {
       .filter((candidate) => candidate.originSession && sessionOriginKey(candidate.originSession) === sessionOriginKey(origin))
       .sort((left, right) => codingSessionTimestampMs(right) - codingSessionTimestampMs(left))[0] ?? null
     const liveSession = (frame.friendActivity?.allOtherLiveSessions ?? []).find((candidate) => sessionOriginKey(candidate) === sessionOriginKey(origin)) ?? null
+    const hasFreshSessionActivity = liveSession
+      ? (Date.now() - liveSession.lastActivityMs) <= RECENT_OTHER_LIVE_SESSION_WINDOW_MS
+      : false
+    if (!obligation && !codingSession && !hasFreshSessionActivity) {
+      return null
+    }
     const timestampMs = Math.max(
       liveSession?.lastActivityMs ?? 0,
       codingSession ? codingSessionTimestampMs(codingSession) : 0,
@@ -131,7 +138,8 @@ function buildOtherActiveSessionLines(frame: ActiveWorkFrame): string[] {
       timestampMs,
       line: `- ${friendName}/${origin.channel}/${origin.key}: [${status}] ${activeLane}; artifact ${artifact}; next ${nextAction}`,
     }
-  }).sort((left, right) => right.timestampMs - left.timestampMs)
+  }).filter((entry): entry is { timestampMs: number; line: string } => entry !== null)
+    .sort((left, right) => right.timestampMs - left.timestampMs)
 
   return summaries.length > 0 ? summaries.map((entry) => entry.line) : ["- none"]
 }
