@@ -55,9 +55,18 @@ describe("formatActiveWorkFrame (selfhood framing)", () => {
 
   it("renders obligation appended to session line", () => {
     const result = formatActiveWorkFrame(makeFrame({
-      currentObligation: "think about naming",
+      pendingObligations: [
+        {
+          id: "ob-session",
+          origin: { friendId: "friend-1", channel: "cli", key: "session" },
+          content: "think about naming",
+          status: "investigating",
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:01:00Z",
+        },
+      ],
     }))
-    expect(result).toContain("i told them i'd think about naming.")
+    expect(result).toContain("i still owe them: think about naming.")
   })
 
   it("renders running inner job with origin and obligation", () => {

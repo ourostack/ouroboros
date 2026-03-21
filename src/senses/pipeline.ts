@@ -133,24 +133,6 @@ function emptyTaskBoard(): BoardResult {
   }
 }
 
-const STATUS_CHECK_PATTERNS = [
-  /^\s*what are you doing\??\s*$/i,
-  /^\s*what'?s your status\??\s*$/i,
-  /^\s*status\??\s*$/i,
-  /^\s*status update\??\s*$/i,
-  /^\s*what changed\??\s*$/i,
-  /^\s*where (?:are you at|things stand)\??\s*$/i,
-]
-
-function isStatusCheckRequested(ingressTexts: readonly string[] | undefined): boolean {
-  const latest = ingressTexts
-    ?.map((text) => text.trim())
-    .filter((text) => text.length > 0)
-    .at(-1)
-  if (!latest) return false
-  return STATUS_CHECK_PATTERNS.some((pattern) => pattern.test(latest))
-}
-
 function isLiveCodingSessionStatus(
   status: import("../repertoire/coding/types").CodingSessionStatus,
 ): boolean {
@@ -407,10 +389,6 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
 
   // Step 5: runAgent
   const existingToolContext = input.runAgentOptions?.toolContext
-  const statusCheckRequested = isStatusCheckRequested(input.continuityIngressTexts)
-  const statusCheckScope = statusCheckRequested && resolvedContext.friend.trustLevel === "family"
-    ? "all-sessions-family" as const
-    : undefined
   const runAgentOptions: RunAgentOptions = {
     ...input.runAgentOptions,
     bridgeContext,
@@ -418,9 +396,6 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     delegationDecision,
     currentSessionKey: currentSession.key,
     currentObligation,
-    statusCheckRequested,
-    statusCheckScope,
-    toolChoiceRequired: statusCheckRequested ? true : input.runAgentOptions?.toolChoiceRequired,
     mustResolveBeforeHandoff,
     setMustResolveBeforeHandoff: (value) => {
       mustResolveBeforeHandoff = value

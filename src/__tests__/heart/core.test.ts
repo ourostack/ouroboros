@@ -5796,7 +5796,16 @@ describe("tool_choice required and final_answer", () => {
         taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
         friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
         codingSessions: [],
-        pendingObligations: [],
+        pendingObligations: [
+          {
+            id: "ob-status-retry",
+            origin: { friendId: "friend-1", channel: "cli", key: "session" },
+            content: "figure out whether status replies still drift",
+            status: "investigating",
+            createdAt: "2026-03-21T09:00:00.000Z",
+            updatedAt: "2026-03-21T09:01:00.000Z",
+          },
+        ],
         bridgeSuggestion: null,
       },
     } as any)
@@ -6064,10 +6073,10 @@ describe("tool_choice required and final_answer", () => {
     } as any)
 
     expect(textChunks).toEqual([
-      "live conversation: cli/session\nactive lane: this same thread\ncurrent artifact: no artifact yet\nlatest checkpoint: just confirmed the stale checkpoint source\nnext action: continue the active loop and bring the result back here",
+      "live conversation: cli/session\nactive lane: this same thread\ncurrent artifact: no artifact yet\nlatest checkpoint: just confirmed the stale checkpoint source\nnext action: work on \"close the visible loop\" and bring back a concrete artifact",
     ])
     expect((result as any).completion).toEqual({
-      answer: "live conversation: cli/session\nactive lane: this same thread\ncurrent artifact: no artifact yet\nlatest checkpoint: just confirmed the stale checkpoint source\nnext action: continue the active loop and bring the result back here",
+      answer: "live conversation: cli/session\nactive lane: this same thread\ncurrent artifact: no artifact yet\nlatest checkpoint: just confirmed the stale checkpoint source\nnext action: work on \"close the visible loop\" and bring back a concrete artifact",
       intent: "complete",
     })
   })

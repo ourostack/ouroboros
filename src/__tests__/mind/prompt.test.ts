@@ -292,8 +292,82 @@ describe("buildSystem", () => {
     )
 
     expect(result).toContain("## what i'm holding")
-    expect(result).toContain("i told them i'd carry Ari across cli and teams.")
+    expect(result).not.toContain("i told them i'd carry Ari across cli and teams.")
     expect(result).toContain("relates to bridge bridge-1")
+  })
+
+  it("gives family members an always-on all-sessions truth rule without a status-question switch", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const baseContext = makeOnboardingContext()
+
+    const result = await buildSystem(
+      "cli",
+      {
+        activeWorkFrame: {
+          centerOfGravity: "inward-work",
+          currentSession: { friendId: "uuid-1", channel: "cli", key: "session", sessionPath: "/tmp/s.json" },
+          currentObligation: "what are you up to?",
+          mustResolveBeforeHandoff: false,
+          inner: { status: "idle", hasPending: false, job: { status: "idle", content: null, origin: null, mode: "reflect", obligationStatus: null, surfacedResult: null, queuedAt: null, startedAt: null, surfacedAt: null } },
+          bridges: [],
+          taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+          friendActivity: {
+            freshestForCurrentFriend: null,
+            otherLiveSessionsForCurrentFriend: [],
+            allOtherLiveSessions: [
+              {
+                friendId: "uuid-1",
+                friendName: "Jordan",
+                channel: "bluebubbles",
+                key: "chat",
+                sessionPath: "/tmp/bb.json",
+                lastActivityAt: "2026-03-21T09:00:00.000Z",
+                lastActivityMs: Date.parse("2026-03-21T09:00:00.000Z"),
+                activitySource: "friend-facing",
+              },
+            ],
+          },
+          codingSessions: [],
+          otherCodingSessions: [
+            {
+              id: "coding-300",
+              runner: "codex",
+              workdir: "/tmp/workspaces/ouroboros",
+              taskRef: "bb-fix",
+              status: "running",
+              stdoutTail: "",
+              stderrTail: "",
+              pid: 300,
+              startedAt: "2026-03-21T09:00:00.000Z",
+              lastActivityAt: "2026-03-21T09:01:00.000Z",
+              endedAt: null,
+              restartCount: 0,
+              lastExitCode: null,
+              lastSignal: null,
+              failure: null,
+              originSession: { friendId: "uuid-1", channel: "bluebubbles", key: "chat" },
+            },
+          ],
+          pendingObligations: [],
+          bridgeSuggestion: null,
+        },
+      } as any,
+      {
+        ...baseContext,
+        friend: {
+          ...baseContext.friend,
+          trustLevel: "family",
+        },
+      } as any,
+    )
+
+    expect(result).toContain("if a family member asks what i'm up to or how things are going, that includes the material live work i can see across sessions, not just this thread.")
+    expect(result).toContain("i answer naturally from the live world-state in this prompt.")
   })
 
   it("elevates an exact live-status format when this turn is a direct status check", async () => {
