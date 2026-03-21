@@ -2,10 +2,38 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.107",
+      "changes": [
+        "Agents now carry durable session orientation, grounded session recall, and Pi-inspired coding context packs/checkpoints into long-running work, which keeps ad-hoc answers and resumed execution anchored to the real task state instead of prompt theater.",
+        "Repeated no-progress polling is now blocked by a live loop guard for coding/session status tools, so the harness stops thrashing on identical status checks and pushes the agent to act, wait meaningfully, or answer truthfully with what is known."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.106",
+      "changes": [
+        "Family-scoped status answers now come from the live obligation/session world-state directly instead of a regex-triggered 'status question' mode, so agents can answer naturally while still seeing all material live work across sessions.",
+        "Raw inbound text no longer masquerades as a real commitment or next action; current lanes, artifacts, and next steps are now grounded in persistent obligations, live coding state, and concrete session activity."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.105",
+      "changes": [
+        "Family-wide status answers now dedupe normalized session keys, drop inner/self noise, and ignore stale non-obligation lanes so 'what are you doing?' stays focused on real active work across all live sessions.",
+        "BlueBubbles and CLI lanes that refer to the same live thread now collapse into one clean status line, preventing duplicate session bullets when family asks for the full cross-session picture."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.104",
+      "changes": [
+        "Family-scoped status checks now keep the five-line header anchored on the current live conversation while appending an `other active sessions:` block for every other live lane the agent is actively working.",
+        "The inbound pipeline, active-work frame, prompt steering, and status retry logic now preserve non-current live coding lanes and obligations so family status answers stop hiding parallel work in other sessions."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.103",
       "changes": [
-        "Coding sessions now generate Pi-inspired scope/state context packs that carry repo instructions, bundle skills, git snapshot, and related coding-session state directly into each spawned runner.",
-        "The coding lane now persists resumable checkpoints and durable per-session artifacts, and surfaces those checkpoints more clearly through coding status, coding tail, and active-work rendering."
+        "Status-check turns now answer in a fixed live-state shape that names the current conversation, active lane, artifact, latest checkpoint, and next action instead of drifting into broad mission summaries.",
+        "Those status turns now hold final streaming until the exact reply is ready and turn report-backs into same-thread obligation updates, so 'I'll report back here' comes back as a real in-thread follow-up instead of hidden background work."
       ]
     },
     {

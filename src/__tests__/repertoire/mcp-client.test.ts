@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { EventEmitter, PassThrough } from "stream"
+import { EventEmitter, PassThrough } from "node:stream"
 
 vi.mock("child_process", () => ({
   spawn: vi.fn(),

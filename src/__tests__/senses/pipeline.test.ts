@@ -865,7 +865,7 @@ describe("handleInboundTurn", () => {
       )
     })
 
-    it("threads explicit cross-relationship target candidates into the active-work frame and suggests one shared-work candidate when the target is clear", async () => {
+    it("threads explicit cross-relationship target candidates into the active-work frame without inventing a shared-work suggestion from raw text alone", async () => {
       const getAgentRootSpy = vi.spyOn(identity, "getAgentRoot").mockReturnValue("/tmp/AgentBundles/slugger.ouro")
       const getAgentNameSpy = vi.spyOn(identity, "getAgentName").mockReturnValue("slugger")
       mockListTargetSessionCandidates.mockResolvedValue([
@@ -911,17 +911,7 @@ describe("handleInboundTurn", () => {
           key: "chat:any;+;project-group-123",
         }),
       ])
-      expect((options as any).activeWorkFrame.bridgeSuggestion).toEqual(
-        expect.objectContaining({
-          kind: "begin-new",
-          reason: "shared-work-candidate",
-          targetSession: expect.objectContaining({
-            friendId: "group-1",
-            channel: "bluebubbles",
-            key: "chat:any;+;project-group-123",
-          }),
-        }),
-      )
+      expect((options as any).activeWorkFrame.bridgeSuggestion).toBeNull()
       expect(getAgentRootSpy).toHaveBeenCalled()
       expect(getAgentNameSpy).toHaveBeenCalled()
       getAgentRootSpy.mockRestore()
@@ -969,6 +959,32 @@ describe("handleInboundTurn", () => {
       const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
       const options = runAgentCall[4] as RunAgentOptions
       expect((options as any).currentObligation).toBe("latest ask")
+    })
+
+    it("does not pre-classify direct status-check turns in runAgent options", async () => {
+      const input = makeInput({
+        continuityIngressTexts: ["what are you doing?"],
+      })
+
+      await handleInboundTurn(input)
+
+      const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
+      const options = runAgentCall[4] as RunAgentOptions
+      expect((options as any).statusCheckRequested).toBeUndefined()
+      expect((options as any).statusCheckScope).toBeUndefined()
+    })
+
+    it("does not set special status routing for work prompts that merely mention status", async () => {
+      const input = makeInput({
+        continuityIngressTexts: ["figure out whether your current CLI status replies still drift"],
+      })
+
+      await handleInboundTurn(input)
+
+      const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
+      const options = runAgentCall[4] as RunAgentOptions
+      expect((options as any).statusCheckRequested).toBeUndefined()
+      expect((options as any).statusCheckScope).toBeUndefined()
     })
 
     it("falls back to an empty ingress list when continuity ingress texts are absent", async () => {
@@ -1223,6 +1239,63 @@ describe("handleInboundTurn", () => {
       const options = runAgentCall[4] as RunAgentOptions
       expect(options.activeWorkFrame?.centerOfGravity).toBe("inward-work")
       expect(options.activeWorkFrame?.codingSessions.map((session) => session.id)).toEqual(["coding-004"])
+    })
+
+    it("keeps non-current live coding sessions available for family-wide status checks", async () => {
+      const friend = makeFriend({ trustLevel: "family" })
+      const caps = makeCapabilities({ channel: "cli", senseType: "local" as SenseType })
+      const context: ResolvedContext = { friend, channel: caps }
+      const input = makeInput({
+        channel: "cli",
+        capabilities: caps,
+        continuityIngressTexts: ["what are you doing?"],
+        friendResolver: { resolve: vi.fn().mockResolvedValue(context) },
+      })
+      mockListCodingSessions.mockReturnValue([
+        {
+          id: "coding-010",
+          runner: "codex",
+          workdir: "/tmp/repo",
+          taskRef: "current-thread-fix",
+          status: "running",
+          startedAt: "2026-03-20T17:00:00.000Z",
+          lastActivityAt: "2026-03-20T17:01:00.000Z",
+          endedAt: null,
+          restartCount: 0,
+          lastExitCode: null,
+          lastSignal: null,
+          originSession: { friendId: "friend-1", channel: "cli", key: "session" },
+        },
+        {
+          id: "coding-011",
+          runner: "claude",
+          workdir: "/tmp/repo",
+          taskRef: "bb-follow-up",
+          status: "waiting_input",
+          startedAt: "2026-03-20T17:00:00.000Z",
+          lastActivityAt: "2026-03-20T17:02:00.000Z",
+          endedAt: null,
+          restartCount: 0,
+          lastExitCode: null,
+          lastSignal: null,
+          originSession: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
+        },
+      ])
+
+      await handleInboundTurn(input)
+
+      const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
+      const options = runAgentCall[4] as RunAgentOptions & {
+        statusCheckScope?: string
+        activeWorkFrame?: {
+          codingSessions: Array<{ id: string }>
+          otherCodingSessions?: Array<{ id: string }>
+        }
+      }
+      expect(options.statusCheckRequested).toBeUndefined()
+      expect(options.statusCheckScope).toBeUndefined()
+      expect(options.activeWorkFrame?.codingSessions.map((session) => session.id)).toEqual(["coding-010"])
+      expect(options.activeWorkFrame?.otherCodingSessions?.map((session) => session.id)).toEqual(["coding-011"])
     })
 
     it("falls back to an empty live coding list when the coding session manager throws", async () => {

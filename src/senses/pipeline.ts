@@ -136,6 +136,15 @@ function emptyTaskBoard(): BoardResult {
   }
 }
 
+function isLiveCodingSessionStatus(
+  status: import("../repertoire/coding/types").CodingSessionStatus,
+): boolean {
+  return status === "spawning"
+    || status === "running"
+    || status === "waiting_input"
+    || status === "stalled"
+}
+
 function readInnerWorkState(): ActiveWorkFrame["inner"] {
   const defaultJob = {
     status: "idle" as const,
@@ -293,22 +302,26 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     pendingObligations = []
   }
   let codingSessions = [] as ReturnType<ReturnType<typeof getCodingSessionManager>["listSessions"]>
+  let otherCodingSessions = [] as ReturnType<ReturnType<typeof getCodingSessionManager>["listSessions"]>
   try {
-    codingSessions = getCodingSessionManager()
+    const liveCodingSessions = getCodingSessionManager()
       .listSessions()
-      .filter((session) => {
-        if (session.status !== "spawning" && session.status !== "running" && session.status !== "waiting_input" && session.status !== "stalled") {
-          return false
-        }
-        if (!session.originSession) {
-          return false
-        }
-        return session.originSession.friendId === currentSession.friendId
-          && session.originSession.channel === currentSession.channel
-          && session.originSession.key === currentSession.key
-      })
+      .filter((session) => isLiveCodingSessionStatus(session.status) && Boolean(session.originSession))
+    codingSessions = liveCodingSessions.filter((session) =>
+      session.originSession?.friendId === currentSession.friendId
+      && session.originSession.channel === currentSession.channel
+      && session.originSession.key === currentSession.key,
+    )
+    otherCodingSessions = liveCodingSessions.filter((session) =>
+      !(
+        session.originSession?.friendId === currentSession.friendId
+        && session.originSession.channel === currentSession.channel
+        && session.originSession.key === currentSession.key
+      ),
+    )
   } catch {
     codingSessions = []
+    otherCodingSessions = []
   }
   const activeWorkFrame = buildActiveWorkFrame({
     currentSession,
@@ -317,6 +330,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     inner: readInnerWorkState(),
     bridges: activeBridges,
     codingSessions,
+    otherCodingSessions,
     pendingObligations,
     taskBoard: (() => {
       try {

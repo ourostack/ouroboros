@@ -13,6 +13,7 @@ vi.mock("../../../heart/identity", () => ({
 }))
 
 vi.mock("../../../heart/obligations", () => ({
+  createObligation: vi.fn(),
   findPendingObligationForOrigin: vi.fn(),
   advanceObligation: vi.fn(),
 }))
@@ -22,8 +23,8 @@ vi.mock("../../../repertoire/coding/context-pack", () => ({
 }))
 
 import { attachCodingSessionFeedback, formatCodingTail, getCodingSessionManager } from "../../../repertoire/coding"
-import { advanceObligation, findPendingObligationForOrigin } from "../../../heart/obligations"
 import { prepareCodingContextPack } from "../../../repertoire/coding/context-pack"
+import { advanceObligation, createObligation, findPendingObligationForOrigin } from "../../../heart/obligations"
 
 describe("coding tool contracts", () => {
   const manager = {
@@ -43,6 +44,15 @@ describe("coding tool contracts", () => {
     vi.mocked(getCodingSessionManager).mockReturnValue(manager as unknown as ReturnType<typeof getCodingSessionManager>)
     vi.mocked(attachCodingSessionFeedback).mockReset()
     vi.mocked(formatCodingTail).mockClear()
+    vi.mocked(createObligation).mockReset()
+    vi.mocked(createObligation).mockReturnValue({
+      id: "ob-created",
+      origin: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+      content: "finish task and bring the result back",
+      status: "pending",
+      createdAt: "2026-03-20T00:00:00.000Z",
+      updatedAt: "2026-03-20T00:00:00.000Z",
+    } as any)
     vi.mocked(findPendingObligationForOrigin).mockReset()
     vi.mocked(findPendingObligationForOrigin).mockReturnValue(undefined)
     vi.mocked(advanceObligation).mockReset()
@@ -631,6 +641,7 @@ describe("coding tool contracts", () => {
       lastSignal: null,
       failure: null,
       originSession: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+      obligationId: "ob-created",
     })
 
     await execTool(
@@ -659,8 +670,20 @@ describe("coding tool contracts", () => {
       originSession: { friendId: "ari", channel: "bluebubbles", key: "chat" },
       scopeFile: "/tmp/generated-scope.md",
       stateFile: "/tmp/generated-state.md",
+      obligationId: "ob-created",
     })
-    expect(advanceObligation).not.toHaveBeenCalled()
+    expect(createObligation).toHaveBeenCalledWith("/Users/test/AgentBundles/slugger.ouro", {
+      origin: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+      content: "finish task-779 and bring the result back",
+    })
+    expect(advanceObligation).toHaveBeenCalledWith(
+      "/Users/test/AgentBundles/slugger.ouro",
+      "ob-created",
+      expect.objectContaining({
+        status: "investigating",
+        currentSurface: { kind: "coding", label: "claude coding-779" },
+      }),
+    )
   })
 
   it("coding_spawn does not reuse sessions from another origin thread", async () => {
@@ -729,6 +752,7 @@ describe("coding tool contracts", () => {
       originSession: { friendId: "ari", channel: "bluebubbles", key: "chat" },
       scopeFile: "/tmp/generated-scope.md",
       stateFile: "/tmp/generated-state.md",
+      obligationId: "ob-created",
     })
     expect(JSON.parse(result)).toMatchObject({ id: "coding-901" })
   })
@@ -870,6 +894,7 @@ describe("coding tool contracts", () => {
       lastSignal: null,
       failure: null,
       originSession: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+      obligationId: "ob-created",
     })
 
     const result = await execTool(
@@ -898,6 +923,7 @@ describe("coding tool contracts", () => {
       originSession: { friendId: "ari", channel: "bluebubbles", key: "chat" },
       scopeFile: "/tmp/generated-scope.md",
       stateFile: "/tmp/generated-state.md",
+      obligationId: "ob-created",
     })
     expect(JSON.parse(result)).toMatchObject({ id: "coding-906" })
   })

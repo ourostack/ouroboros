@@ -138,17 +138,21 @@ function deriveObligationMilestone(update: CodingSessionUpdate): ObligationMiles
 }
 
 function isSafeProgressSnippet(snippet: string): boolean {
+  const normalized = snippet.trim()
   const wordCount = snippet.split(/\s+/).filter(Boolean).length
   return (
-    snippet.length <= 80
+    normalized.length <= 80
+    && wordCount >= 2
     && wordCount <= 8
-    && !snippet.includes(":")
-    && !snippet.startsWith("**")
-    && !/^Respond with\b/i.test(snippet)
-    && !/^Coding session metadata\b/i.test(snippet)
-    && !/^sessionId\b/i.test(snippet)
-    && !/^taskRef\b/i.test(snippet)
-    && !/^parentAgent\b/i.test(snippet)
+    && /[A-Za-z]{3,}/.test(normalized)
+    && !normalized.includes(":")
+    && !/[{}\[\]();]/.test(normalized)
+    && !normalized.startsWith("**")
+    && !/^Respond with\b/i.test(normalized)
+    && !/^Coding session metadata\b/i.test(normalized)
+    && !/^sessionId\b/i.test(normalized)
+    && !/^taskRef\b/i.test(normalized)
+    && !/^parentAgent\b/i.test(normalized)
   )
 }
 
