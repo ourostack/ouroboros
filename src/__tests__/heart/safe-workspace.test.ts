@@ -266,10 +266,15 @@ describe("safe workspace acquisition", () => {
   })
 
   it("reuses the active selection and leaves already-mapped workspace paths unchanged", () => {
-    const spawnSync = vi.fn((command: string, args: string[]) => {
+    const spawnSync = vi.fn((command: string, args: string[], options?: { cwd?: string }) => {
       expect(command).toBe("git")
       if (args.join(" ") === "rev-parse --is-inside-work-tree") return spawnResult("true\n")
-      if (args.join(" ") === "rev-parse --abbrev-ref HEAD") return spawnResult("main\n")
+      if (args.join(" ") === "rev-parse --abbrev-ref HEAD") {
+        if (options?.cwd === "/bundle/state/workspaces/ouroboros-main-444") {
+          return spawnResult("slugger/safe-workspace-444\n")
+        }
+        return spawnResult("main\n")
+      }
       if (args.join(" ") === "fetch origin") return spawnResult()
       if (args.join(" ") === "pull --ff-only origin main") return spawnResult()
       if (args[0] === "worktree" && args[1] === "add") return spawnResult()
@@ -290,9 +295,7 @@ describe("safe workspace acquisition", () => {
       repoRoot: "/repo",
       agentName: "slugger",
       workspaceRoot: "/bundle/state/workspaces",
-      spawnSync: vi.fn(() => {
-        throw new Error("should not reacquire")
-      }) as any,
+      spawnSync,
     })
 
     expect(second).toBe(first)
@@ -399,8 +402,11 @@ describe("safe workspace acquisition", () => {
       agentName: "slugger",
       workspaceRoot: "/bundle/state/workspaces",
       persistSelection: true,
-      spawnSync: vi.fn(() => {
-        throw new Error("should not reacquire")
+      spawnSync: vi.fn((command: string, args: string[]) => {
+        expect(command).toBe("git")
+        if (args.join(" ") === "rev-parse --is-inside-work-tree") return spawnResult("true\n")
+        if (args.join(" ") === "rev-parse --abbrev-ref HEAD") return spawnResult("slugger/safe-workspace-903\n")
+        throw new Error(`unexpected git args: ${args.join(" ")}`)
       }) as any,
       existsSync,
       mkdirSync: vi.fn() as any,
@@ -411,6 +417,52 @@ describe("safe workspace acquisition", () => {
 
     expect(restored.sourceBranch).toBe("feature/live-loop")
     expect(restored.workspaceRoot).toBe("/bundle/state/workspaces/ouroboros-origin-main-903")
+  })
+
+  it("refreshes a restored persisted selection when the workspace branch changed", () => {
+    const stateFile = "/bundle/state/workspaces/.active-safe-workspace.json"
+    const persisted = new Map<string, string>([
+      [stateFile, JSON.stringify({
+        runtimeKind: "clone-non-main",
+        repoRoot: "/repo",
+        workspaceRoot: "/bundle/state/workspaces/ouroboros-origin-main-904",
+        workspaceBranch: "slugger/safe-workspace-older",
+        sourceBranch: "feature/live-loop",
+        sourceCloneUrl: "https://github.com/ouroborosbot/ouroboros.git",
+        cleanupAfterMerge: false,
+        created: true,
+        note: "restored from persisted worktree selection",
+      })],
+    ])
+    const existsSync = vi.fn((target: string) =>
+      target === "/bundle/state/workspaces"
+      || target === stateFile
+      || target === "/bundle/state/workspaces/ouroboros-origin-main-904",
+    ) as any
+    const writeFileSync = vi.fn((target: string, content: string) => {
+      persisted.set(target, content)
+    }) as any
+
+    const restored = ensureSafeRepoWorkspace({
+      repoRoot: "/repo",
+      agentName: "slugger",
+      workspaceRoot: "/bundle/state/workspaces",
+      persistSelection: true,
+      spawnSync: vi.fn((command: string, args: string[]) => {
+        expect(command).toBe("git")
+        if (args.join(" ") === "rev-parse --is-inside-work-tree") return spawnResult("true\n")
+        if (args.join(" ") === "rev-parse --abbrev-ref HEAD") return spawnResult("slugger/fix-up-stale-currentversion-sync-clean\n")
+        throw new Error(`unexpected git args: ${args.join(" ")}`)
+      }) as any,
+      existsSync,
+      mkdirSync: vi.fn() as any,
+      rmSync: vi.fn() as any,
+      readFileSync: vi.fn((target: string) => persisted.get(target) ?? "") as any,
+      writeFileSync,
+    })
+
+    expect(restored.workspaceBranch).toBe("slugger/fix-up-stale-currentversion-sync-clean")
+    expect(JSON.parse(persisted.get(stateFile) ?? "{}").workspaceBranch).toBe("slugger/fix-up-stale-currentversion-sync-clean")
   })
 
   it("drops a stale persisted selection and reacquires a fresh workspace", () => {
