@@ -30,7 +30,6 @@ import type { SteeringFollowUpEffect } from "../senses/continuity";
 import type { ActiveWorkFrame } from "./active-work";
 import type { DelegationDecision, DelegationReason } from "./delegation";
 import type { InnerJob } from "./daemon/thoughts";
-import { buildExactStatusReply, findStatusObligation, renderExactStatusReplyContract } from "../mind/obligation-steering";
 import { getInnerDialogPendingDir, queuePendingMessage } from "../mind/pending";
 import type { PendingMessage } from "../mind/pending";
 import { getAgentName, getAgentRoot } from "./identity";
@@ -240,8 +239,6 @@ export interface RunAgentOptions {
   bridgeContext?: string;
   currentSessionKey?: string;
   currentObligation?: string;
-  statusCheckRequested?: boolean;
-  statusCheckScope?: "all-sessions-family";
   mustResolveBeforeHandoff?: boolean;
   hasQueuedFollowUp?: boolean;
   activeWorkFrame?: ActiveWorkFrame;
@@ -390,53 +387,6 @@ export function getFinalAnswerRetryError(
     return "you're claiming this work is complete, but the external state hasn't been verified this turn. ground your claim with a fresh check (gh pr view, npm view, gh run view, etc.) before calling final_answer.";
   }
   return null;
-}
-
-function hasExactStatusReplyShape(
-  answer: string,
-  statusCheckScope?: RunAgentOptions["statusCheckScope"],
-): boolean {
-  const lines = answer.trimEnd().split(/\r?\n/)
-  const hasFiveLineHeader = (
-    /^live conversation:\s+\S.+$/i.test(lines[0])
-    && /^active lane:\s+\S.+$/i.test(lines[1])
-    && /^current artifact:\s+\S.+$/i.test(lines[2])
-    && /^latest checkpoint:\s+\S.+$/i.test(lines[3])
-    && /^next action:\s+\S.+$/i.test(lines[4])
-  )
-  if (!hasFiveLineHeader) return false
-  if (statusCheckScope !== "all-sessions-family") {
-    return lines.length === 5
-  }
-  if (lines.length < 7) return false
-  if (!/^other active sessions:\s*$/i.test(lines[5])) return false
-  return lines.slice(6).every((line) => /^-\s+\S.+$/i.test(line))
-}
-
-function extractLatestCheckpoint(answer: string): string {
-  const latestLine = answer.trimEnd().split(/\r?\n/)[3]!
-  return latestLine.replace(/^latest checkpoint:\s*/i, "").trim()
-}
-
-function getStatusReplyRetryError(
-  answer: string | undefined,
-  statusCheckRequested: boolean | undefined,
-  activeWorkFrame: ActiveWorkFrame | undefined,
-  statusCheckScope?: RunAgentOptions["statusCheckScope"],
-): string | null {
-  if (!statusCheckRequested || answer == null) return null
-  if (hasExactStatusReplyShape(answer, statusCheckScope)) return null
-  if (!activeWorkFrame) {
-    return `the user asked for current status. call final_answer again using exactly these five non-empty lines and nothing else:
-live conversation: ...
-active lane: ...
-current artifact: ...
-latest checkpoint: ...
-next action: ...`
-  }
-  return `the user asked for current status right now.
-${renderExactStatusReplyContract(activeWorkFrame, findStatusObligation(activeWorkFrame), statusCheckScope)}
-call final_answer again using that exact status shape and nothing else.`
 }
 
 // Re-export kick utilities for backward compat
@@ -737,7 +687,7 @@ export async function runAgent(
         traceId,
         toolChoiceRequired,
         reasoningEffort: currentReasoningEffort,
-        eagerFinalAnswerStreaming: !options?.statusCheckRequested,
+        eagerFinalAnswerStreaming: true,
       });
 
       // Track usage from the latest API call
@@ -799,32 +749,17 @@ export async function runAgent(
             options?.activeWorkFrame?.inner?.job,
             sawExternalStateQuery,
           )
-          const statusReplyRetryError = getStatusReplyRetryError(
-            answer,
-            options?.statusCheckRequested,
-            options?.activeWorkFrame,
-            options?.statusCheckScope,
-          )
-          const exactStatusReplyAccepted = Boolean(options?.statusCheckRequested) && !statusReplyRetryError && answer != null
-          const deliveredAnswer = exactStatusReplyAccepted && options?.activeWorkFrame
-            ? buildExactStatusReply(
-              options.activeWorkFrame,
-              findStatusObligation(options.activeWorkFrame),
-              extractLatestCheckpoint(answer),
-              options?.statusCheckScope,
-            )
-            : answer
+          const deliveredAnswer = answer
           const validDirectReply = mustResolveBeforeHandoffActive && intent === "direct_reply" && sawSteeringFollowUp;
           const validTerminalIntent = intent === "complete" || intent === "blocked";
           const validClosure = deliveredAnswer != null
-            && (exactStatusReplyAccepted || !retryError)
-            && !statusReplyRetryError
-            && (exactStatusReplyAccepted || !mustResolveBeforeHandoffActive || validDirectReply || validTerminalIntent);
+            && !retryError
+            && (!mustResolveBeforeHandoffActive || validDirectReply || validTerminalIntent);
 
           if (validClosure) {
             completion = {
               answer: deliveredAnswer,
-              intent: validDirectReply && !exactStatusReplyAccepted ? "direct_reply" : intent === "blocked" ? "blocked" : "complete",
+              intent: validDirectReply ? "direct_reply" : intent === "blocked" ? "blocked" : "complete",
             };
             if (result.finalAnswerStreamed) {
               // The streaming layer already parsed and emitted the answer
@@ -838,7 +773,7 @@ export async function runAgent(
               callbacks.onTextChunk(deliveredAnswer);
             }
             messages.push(msg);
-            if (validDirectReply && !exactStatusReplyAccepted) {
+            if (validDirectReply) {
               const resumeWork = "direct reply delivered. resume the unresolved obligation now and keep working until you can finish or clearly report that you are blocked.";
               messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: resumeWork });
               providerRuntime.appendToolOutput(result.toolCalls[0].id, resumeWork);
@@ -855,8 +790,7 @@ export async function runAgent(
             // assistant msg + error tool result and let the model try again.
             callbacks.onClearText?.();
             messages.push(msg);
-            const toolRetryMessage = statusReplyRetryError
-              ?? retryError
+            const toolRetryMessage = retryError
               ?? "your final_answer was incomplete or malformed. call final_answer again with your complete response."
             messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: toolRetryMessage });
             providerRuntime.appendToolOutput(result.toolCalls[0].id, toolRetryMessage);

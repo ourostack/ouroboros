@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 
 describe("active work frame", () => {
   it("builds one shared center of gravity from active bridge, task pressure, and live same-friend sessions", async () => {
@@ -1506,6 +1506,65 @@ describe("active work frame", () => {
 
     expect(rendered).toContain("- Ari/bluebubbles/chat: [investigating] this live thread; artifact no artifact yet; next continue the active loop and bring the result back there")
   })
+
+  it("keeps same-friend cross-channel sessions visible for family status even when they are older than the generic freshness window", async () => {
+    const { buildActiveWorkFrame, formatActiveWorkFrame } = await import("../../heart/active-work")
+
+    const frame = buildActiveWorkFrame({
+      currentSession: {
+        friendId: "friend-1",
+        channel: "cli",
+        key: "session",
+        sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+      },
+      mustResolveBeforeHandoff: false,
+      inner: { status: "idle", hasPending: false },
+      bridges: [],
+      taskBoard: {
+        compact: "",
+        activeBridges: [],
+        byStatus: {
+          drafting: [],
+          processing: [],
+          validating: [],
+          collaborating: [],
+          paused: [],
+          blocked: [],
+          done: [],
+        },
+      },
+      friendActivity: [
+        {
+          friendId: "friend-1",
+          friendName: "Ari",
+          channel: "bluebubbles",
+          key: "chat:any;-;ari@mendelow.me",
+          sessionPath: "/tmp/state/sessions/friend-1/bluebubbles/chat-any.json",
+          lastActivityAt: "2026-03-21T17:36:03.760Z",
+          lastActivityMs: Date.parse("2026-03-21T17:36:03.760Z"),
+          activitySource: "friend-facing",
+        },
+        {
+          friendId: "friend-1",
+          friendName: "Ari",
+          channel: "cli",
+          key: "old-session",
+          sessionPath: "/tmp/state/sessions/friend-1/cli/old-session.json",
+          lastActivityAt: "2026-03-21T17:35:03.760Z",
+          lastActivityMs: Date.parse("2026-03-21T17:35:03.760Z"),
+          activitySource: "friend-facing",
+        },
+      ],
+      pendingObligations: [],
+    })
+
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-03-21T19:52:25.818Z"))
+    const rendered = formatActiveWorkFrame(frame)
+
+    expect(rendered).toContain("- Ari/bluebubbles/chat:any;-;ari@mendelow.me: [active] this live thread; artifact no explicit artifact yet; next check this session and bring back the latest concrete state")
+    expect(rendered).not.toContain("Ari/cli/old-session")
+    nowSpy.mockRestore()
+  })
 })
 
 describe("delegation router", () => {
@@ -2177,6 +2236,134 @@ describe("delegation router", () => {
       bridgeSuggestion: null,
     } as any)
     expect(stalled).toContain("- next action: unstick codex coding-014 and continue")
+
+    const waitingInputOverridesStaleObligation = formatActiveWorkFrame({
+      currentSession: {
+        friendId: "friend-1",
+        channel: "cli",
+        key: "session",
+        sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+      },
+      currentObligation: "close the loop visibly",
+      mustResolveBeforeHandoff: false,
+      centerOfGravity: "inward-work",
+      inner: { status: "idle", hasPending: false, job: { status: "idle", content: null, origin: null, mode: "reflect", obligationStatus: null, surfacedResult: null, queuedAt: null, startedAt: null, surfacedAt: null } as any },
+      bridges: [],
+      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+      friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
+      codingSessions: [
+        {
+          id: "coding-080",
+          runner: "codex",
+          workdir: "/tmp/workspaces/ouroboros",
+          taskRef: "status-fix",
+          status: "waiting_input" as const,
+          stdoutTail: "",
+          stderrTail: "",
+          pid: 80,
+          startedAt: "2026-03-21T16:00:00.000Z",
+          lastActivityAt: "2026-03-21T16:01:00.000Z",
+          endedAt: null,
+          restartCount: 0,
+          lastExitCode: null,
+          lastSignal: null,
+          failure: null,
+        },
+      ],
+      pendingObligations: [
+        {
+          id: "ob-current",
+          origin: { friendId: "friend-1", channel: "cli", key: "session" },
+          content: "close the loop visibly",
+          status: "investigating" as const,
+          nextAction: "answer codex coding-078 and continue",
+          createdAt: "2026-03-21T16:00:00.000Z",
+          updatedAt: "2026-03-21T16:01:00.000Z",
+        },
+      ],
+      bridgeSuggestion: null,
+    } as any)
+    expect(waitingInputOverridesStaleObligation).toContain("- next action: answer codex coding-080 and continue")
+    expect(waitingInputOverridesStaleObligation).not.toContain("- next action: answer codex coding-078 and continue")
+
+    const concreteArtifactOverridesLiveCoding = formatActiveWorkFrame({
+      currentSession: {
+        friendId: "friend-1",
+        channel: "cli",
+        key: "session",
+        sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+      },
+      currentObligation: "close the loop visibly",
+      mustResolveBeforeHandoff: false,
+      centerOfGravity: "inward-work",
+      inner: { status: "idle", hasPending: false, job: { status: "idle", content: null, origin: null, mode: "reflect", obligationStatus: null, surfacedResult: null, queuedAt: null, startedAt: null, surfacedAt: null } as any },
+      bridges: [],
+      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+      friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
+      codingSessions: [
+        {
+          id: "coding-081",
+          runner: "codex",
+          workdir: "/tmp/workspaces/ouroboros",
+          taskRef: "status-fix",
+          status: "running" as const,
+          stdoutTail: "",
+          stderrTail: "",
+          pid: 81,
+          startedAt: "2026-03-21T16:00:00.000Z",
+          lastActivityAt: "2026-03-21T16:01:00.000Z",
+          endedAt: null,
+          restartCount: 0,
+          lastExitCode: null,
+          lastSignal: null,
+          failure: null,
+        },
+      ],
+      pendingObligations: [
+        {
+          id: "ob-current",
+          origin: { friendId: "friend-1", channel: "cli", key: "session" },
+          content: "close the loop visibly",
+          status: "investigating" as const,
+          currentArtifact: "PR #999",
+          nextAction: "merge PR #999 and restart to pick it up",
+          createdAt: "2026-03-21T16:00:00.000Z",
+          updatedAt: "2026-03-21T16:01:00.000Z",
+        },
+      ],
+      bridgeSuggestion: null,
+    } as any)
+    expect(concreteArtifactOverridesLiveCoding).toContain("- next action: merge PR #999 and restart to pick it up")
+
+    const plainNextActionWithoutCoding = formatActiveWorkFrame({
+      currentSession: {
+        friendId: "friend-1",
+        channel: "cli",
+        key: "session",
+        sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+      },
+      currentObligation: "close the loop visibly",
+      mustResolveBeforeHandoff: false,
+      centerOfGravity: "inward-work",
+      inner: { status: "idle", hasPending: false, job: { status: "idle", content: null, origin: null, mode: "reflect", obligationStatus: null, surfacedResult: null, queuedAt: null, startedAt: null, surfacedAt: null } as any },
+      bridges: [],
+      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+      friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
+      codingSessions: [],
+      pendingObligations: [
+        {
+          id: "ob-current",
+          origin: { friendId: "friend-1", channel: "cli", key: "session" },
+          content: "close the loop visibly",
+          status: "investigating" as const,
+          nextAction: "ask one blocking question and continue",
+          createdAt: "2026-03-21T16:00:00.000Z",
+          updatedAt: "2026-03-21T16:01:00.000Z",
+        },
+      ],
+      bridgeSuggestion: null,
+    } as any)
+    expect(plainNextActionWithoutCoding).toContain("- next action: ask one blocking question and continue")
 
     const waitingForMerge = formatActiveWorkFrame({
       currentSession: {
