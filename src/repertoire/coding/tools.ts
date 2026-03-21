@@ -1,6 +1,7 @@
 import type OpenAI from "openai"
 
 import { attachCodingSessionFeedback, formatCodingTail, getCodingSessionManager } from "./index"
+import { prepareCodingContextPack } from "./context-pack"
 import type { ToolContext } from "../tools-base"
 import { getAgentRoot } from "../../heart/identity"
 import { advanceObligation, findPendingObligationForOrigin } from "../../heart/obligations"
@@ -51,12 +52,15 @@ function matchesReusableCodingSession(session: CodingSession, request: CodingSes
     return false
   }
 
+  const scopeMatches = request.scopeFile ? session.scopeFile === request.scopeFile : true
+  const stateMatches = request.stateFile ? session.stateFile === request.stateFile : true
+
   return (
     session.runner === request.runner &&
     session.workdir === request.workdir &&
     session.taskRef === request.taskRef &&
-    session.scopeFile === request.scopeFile &&
-    session.stateFile === request.stateFile &&
+    scopeMatches &&
+    stateMatches &&
     session.obligationId === request.obligationId &&
     sameOriginSession(request.originSession, session.originSession)
   )
@@ -254,7 +258,8 @@ export const codingToolDefinitions = [
       if (stateFile) request.stateFile = stateFile
 
       const manager = getCodingSessionManager()
-      const existingSession = findReusableCodingSession(manager.listSessions(), request)
+      const existingSessions = manager.listSessions()
+      const existingSession = findReusableCodingSession(existingSessions, request)
       if (existingSession) {
         emitNervesEvent({
           component: "repertoire",
@@ -266,6 +271,15 @@ export const codingToolDefinitions = [
           attachCodingSessionFeedback(manager, existingSession, ctx.codingFeedback)
         }
         return JSON.stringify({ ...existingSession, reused: true })
+      }
+
+      if (!request.scopeFile || !request.stateFile) {
+        const generated = prepareCodingContextPack({
+          request: { ...request },
+          existingSessions,
+        })
+        if (!request.scopeFile) request.scopeFile = generated.scopeFile
+        if (!request.stateFile) request.stateFile = generated.stateFile
       }
 
       const session = await manager.spawnSession(request)

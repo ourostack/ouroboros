@@ -59,6 +59,18 @@ function buildSpawnEnv(baseEnv: NodeJS.ProcessEnv, homeDir: string): NodeJS.Proc
   }
 }
 
+function appendFileSection(
+  sections: string[],
+  label: string,
+  filePath: string | undefined,
+  deps: Required<Pick<SpawnCodingDeps, "existsSync" | "readFileSync">>,
+): void {
+  if (!filePath || !deps.existsSync(filePath)) return
+  const content = deps.readFileSync(filePath, "utf-8").trim()
+  if (content.length === 0) return
+  sections.push(`${label} (${filePath}):\n${content}`)
+}
+
 function buildPrompt(request: CodingSessionRequest, deps: Required<Pick<SpawnCodingDeps, "existsSync" | "readFileSync">>): string {
   const sections: string[] = []
 
@@ -71,12 +83,8 @@ function buildPrompt(request: CodingSessionRequest, deps: Required<Pick<SpawnCod
     ].join("\n"),
   )
 
-  if (request.stateFile && deps.existsSync(request.stateFile)) {
-    const stateContent = deps.readFileSync(request.stateFile, "utf-8").trim()
-    if (stateContent.length > 0) {
-      sections.push(`State file (${request.stateFile}):\n${stateContent}`)
-    }
-  }
+  appendFileSection(sections, "Scope file", request.scopeFile, deps)
+  appendFileSection(sections, "State file", request.stateFile, deps)
 
   sections.push(request.prompt)
   return sections.join("\n\n---\n\n")

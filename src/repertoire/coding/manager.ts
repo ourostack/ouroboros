@@ -44,6 +44,7 @@ export interface CodingSessionManagerOptions {
   maxRestarts?: number
   defaultStallThresholdMs?: number
   stateFilePath?: string
+  artifactDirPath?: string
   existsSync?: (target: string) => boolean
   readFileSync?: ReadText
   writeFileSync?: WriteText
@@ -64,6 +65,10 @@ function defaultStateFilePath(agentName: string): string {
   return path.join(getAgentRoot(agentName), "state", "coding", "sessions.json")
 }
 
+function defaultArtifactDirPath(agentName: string): string {
+  return path.join(getAgentRoot(agentName), "state", "coding", "sessions")
+}
+
 function isPidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0)
@@ -77,6 +82,8 @@ function cloneSession(session: CodingSession): CodingSession {
   return {
     ...session,
     originSession: session.originSession ? { ...session.originSession } : undefined,
+    checkpoint: session.checkpoint ?? null,
+    artifactPath: session.artifactPath,
     stdoutTail: session.stdoutTail,
     stderrTail: session.stderrTail,
     failure: session.failure
@@ -101,6 +108,53 @@ function isActiveSessionStatus(status: CodingSession["status"]): boolean {
 function appendTail(existing: string, nextChunk: string, maxLength = 2000): string {
   const combined = `${existing}${nextChunk}`
   return combined.length <= maxLength ? combined : combined.slice(combined.length - maxLength)
+}
+
+function compactText(text: string): string {
+  return text.replace(/\s+/g, " ").trim()
+}
+
+function clipText(text: string, maxLength = 240): string {
+  return text.length <= maxLength ? text : `${text.slice(0, maxLength - 3)}...`
+}
+
+function latestMeaningfulLine(text: string): string | null {
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => compactText(line))
+    .filter(Boolean)
+
+  if (lines.length === 0) return null
+  return clipText(lines.at(-1)!)
+}
+
+function fallbackCheckpoint(status: CodingSession["status"], code: number | null, signal: NodeJS.Signals | null): string | null {
+  switch (status) {
+    case "waiting_input":
+      return "needs input"
+    case "stalled":
+      return "no recent output"
+    case "completed":
+      return "completed"
+    case "failed":
+      if (code !== null) return `exit code ${code}`
+      if (signal) return `terminated by ${signal}`
+      return "failed"
+    case "killed":
+      return "terminated by parent agent"
+    default:
+      return null
+  }
+}
+
+function deriveCheckpoint(
+  session: Pick<CodingSession, "stdoutTail" | "stderrTail" | "status" | "lastExitCode" | "lastSignal">,
+): string | null {
+  return (
+    latestMeaningfulLine(session.stderrTail)
+    ?? latestMeaningfulLine(session.stdoutTail)
+    ?? fallbackCheckpoint(session.status, session.lastExitCode, session.lastSignal)
+  )
 }
 
 function isSpawnCodingResult(value: SpawnProcessResult): value is SpawnCodingResult {
@@ -151,6 +205,7 @@ export class CodingSessionManager {
   private readonly maxRestarts: number
   private readonly defaultStallThresholdMs: number
   private readonly stateFilePath: string
+  private readonly artifactDirPath: string
   private readonly existsSync: (target: string) => boolean
   private readonly readFileSync: ReadText
   private readonly writeFileSync: WriteText
@@ -171,6 +226,8 @@ export class CodingSessionManager {
     this.pidAlive = options.pidAlive ?? isPidAlive
     this.agentName = options.agentName ?? safeAgentName()
     this.stateFilePath = options.stateFilePath ?? defaultStateFilePath(this.agentName)
+    this.artifactDirPath = options.artifactDirPath
+      ?? (options.stateFilePath ? path.dirname(options.stateFilePath) : defaultArtifactDirPath(this.agentName))
 
     this.loadPersistedState()
   }
@@ -195,6 +252,8 @@ export class CodingSessionManager {
       obligationId: normalizedRequest.obligationId,
       scopeFile: normalizedRequest.scopeFile,
       stateFile: normalizedRequest.stateFile,
+      checkpoint: null,
+      artifactPath: this.artifactPathFor(id),
       status: "spawning",
       stdoutTail: "",
       stderrTail: "",
@@ -294,6 +353,7 @@ export class CodingSessionManager {
     record.process.kill("SIGTERM")
     record.process = null
     record.session.status = "killed"
+    record.session.checkpoint = "terminated by parent agent"
     record.session.endedAt = this.nowIso()
 
     emitNervesEvent({
@@ -318,6 +378,7 @@ export class CodingSessionManager {
 
       stalled += 1
       record.session.status = "stalled"
+      record.session.checkpoint = deriveCheckpoint(record.session)
 
       emitNervesEvent({
         level: "warn",
@@ -347,6 +408,7 @@ export class CodingSessionManager {
       record.process = null
       if (record.session.status === "running" || record.session.status === "spawning") {
         record.session.status = "killed"
+        record.session.checkpoint = "terminated during manager shutdown"
         record.session.endedAt = this.nowIso()
       }
     }
@@ -397,6 +459,13 @@ export class CodingSessionManager {
       updateKind = "completed"
     }
 
+    const checkpoint = latestMeaningfulLine(text)
+    if (checkpoint) {
+      record.session.checkpoint = checkpoint
+    } else if (!record.session.checkpoint) {
+      record.session.checkpoint = deriveCheckpoint(record.session)
+    }
+
     emitNervesEvent({
       component: "repertoire",
       event: "repertoire.coding_session_output",
@@ -422,6 +491,7 @@ export class CodingSessionManager {
 
     if (record.session.status === "killed" || record.session.status === "completed") {
       record.session.endedAt = this.nowIso()
+      record.session.checkpoint = deriveCheckpoint(record.session)
       this.persistState()
       return
     }
@@ -429,6 +499,7 @@ export class CodingSessionManager {
     if (code === 0) {
       record.session.status = "completed"
       record.session.endedAt = this.nowIso()
+      record.session.checkpoint = deriveCheckpoint(record.session)
       this.persistState()
       this.notifyListeners(record.session.id, { kind: "completed", session: cloneSession(record.session) })
       return
@@ -449,6 +520,7 @@ export class CodingSessionManager {
       record.stdoutTail,
       record.stderrTail,
     )
+    record.session.checkpoint = deriveCheckpoint(record.session)
 
     emitNervesEvent({
       level: "error",
@@ -478,6 +550,7 @@ export class CodingSessionManager {
     record.session.lastActivityAt = this.nowIso()
     record.session.endedAt = null
     record.session.failure = null
+    record.session.checkpoint = `restarted after ${reason}`
 
     this.attachProcessListeners(record)
 
@@ -582,6 +655,8 @@ export class CodingSessionManager {
         failure: session.failure ?? null,
         stdoutTail: session.stdoutTail ?? session.failure?.stdoutTail ?? "",
         stderrTail: session.stderrTail ?? session.failure?.stderrTail ?? "",
+        checkpoint: typeof session.checkpoint === "string" ? session.checkpoint : null,
+        artifactPath: typeof session.artifactPath === "string" ? session.artifactPath : this.artifactPathFor(session.id),
       }
 
       if (typeof normalizedSession.pid === "number") {
@@ -602,6 +677,8 @@ export class CodingSessionManager {
           normalizedSession.pid = null
         }
       }
+
+      normalizedSession.checkpoint = normalizedSession.checkpoint ?? deriveCheckpoint(normalizedSession)
 
       this.records.set(normalizedSession.id, {
         request: normalizedRequest,
@@ -644,6 +721,93 @@ export class CodingSessionManager {
         message: "failed persisting coding sessions",
         meta: { path: this.stateFilePath, reason: error instanceof Error ? error.message : String(error) },
       })
+    }
+
+    this.persistArtifacts()
+  }
+
+  private artifactPathFor(sessionId: string): string {
+    return path.join(this.artifactDirPath, `${sessionId}.md`)
+  }
+
+  private renderArtifact(record: CodingSessionRecord): string {
+    const { request, session } = record
+    const stdout = session.stdoutTail.trim() || "(empty)"
+    const stderr = session.stderrTail.trim() || "(empty)"
+
+    const lines = [
+      "# Coding Session Artifact",
+      "",
+      "## Session",
+      `id: ${session.id}`,
+      `runner: ${session.runner}`,
+      `status: ${session.status}`,
+      `taskRef: ${session.taskRef ?? "unassigned"}`,
+      `workdir: ${session.workdir}`,
+      `startedAt: ${session.startedAt}`,
+      `lastActivityAt: ${session.lastActivityAt}`,
+      `endedAt: ${session.endedAt ?? "active"}`,
+      `pid: ${session.pid ?? "none"}`,
+      `restarts: ${session.restartCount}`,
+      `checkpoint: ${session.checkpoint ?? "none"}`,
+      `scopeFile: ${session.scopeFile ?? "none"}`,
+      `stateFile: ${session.stateFile ?? "none"}`,
+      "",
+      "## Request",
+      request.prompt,
+      "",
+      "## Stdout Tail",
+      stdout,
+      "",
+      "## Stderr Tail",
+      stderr,
+    ]
+
+    if (session.failure) {
+      lines.push(
+        "",
+        "## Failure",
+        `command: ${session.failure.command}`,
+        `args: ${session.failure.args.join(" ") || "(none)"}`,
+        `code: ${session.failure.code ?? "null"}`,
+        `signal: ${session.failure.signal ?? "null"}`,
+      )
+    }
+
+    return `${lines.join("\n")}\n`
+  }
+
+  private persistArtifacts(): void {
+    try {
+      this.mkdirSync(this.artifactDirPath, { recursive: true })
+    } catch (error) {
+      emitNervesEvent({
+        level: "warn",
+        component: "repertoire",
+        event: "repertoire.coding_artifact_persist_error",
+        message: "failed preparing coding artifact directory",
+        meta: { path: this.artifactDirPath, reason: error instanceof Error ? error.message : String(error) },
+      })
+      return
+    }
+
+    for (const record of this.records.values()) {
+      try {
+        record.session.artifactPath = record.session.artifactPath ?? this.artifactPathFor(record.session.id)
+        this.writeFileSync(record.session.artifactPath, this.renderArtifact(record), "utf-8")
+      } catch (error) {
+        emitNervesEvent({
+          level: "warn",
+          component: "repertoire",
+          event: "repertoire.coding_artifact_persist_error",
+          message: "failed writing coding session artifact",
+          meta: {
+            id: record.session.id,
+            path: record.session.artifactPath ?? this.artifactPathFor(record.session.id),
+            reason: error instanceof Error ? error.message : String(error),
+          },
+        })
+      }
     }
   }
 }
