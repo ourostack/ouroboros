@@ -248,6 +248,34 @@ export function repairSessionMessages(messages: OpenAI.ChatCompletionMessagePara
   return result
 }
 
+function stripOrphanedToolResults(messages: OpenAI.ChatCompletionMessageParam[]): OpenAI.ChatCompletionMessageParam[] {
+  const validCallIds = new Set<string>()
+  for (const msg of messages) {
+    if (msg.role !== "assistant" || !Array.isArray(msg.tool_calls)) continue
+    for (const toolCall of msg.tool_calls) validCallIds.add(toolCall.id)
+  }
+
+  let removed = 0
+  const repaired = messages.filter((msg) => {
+    if (msg.role !== "tool") return true
+    const keep = validCallIds.has(msg.tool_call_id)
+    if (!keep) removed++
+    return keep
+  })
+
+  if (removed > 0) {
+    emitNervesEvent({
+      level: "warn",
+      event: "mind.session_orphan_tool_result_repair",
+      component: "mind",
+      message: "removed orphaned tool results from session history",
+      meta: { removed },
+    })
+  }
+
+  return repaired
+}
+
 export function saveSession(
   filePath: string,
   messages: OpenAI.ChatCompletionMessageParam[],
@@ -265,6 +293,7 @@ export function saveSession(
     })
     messages = repairSessionMessages(messages)
   }
+  messages = stripOrphanedToolResults(messages)
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
   const envelope: {
     version: number
@@ -299,6 +328,7 @@ export function loadSession(filePath: string): SessionData | null {
       })
       messages = repairSessionMessages(messages)
     }
+    messages = stripOrphanedToolResults(messages)
     const rawState = data?.state && typeof data.state === "object" && data.state !== null
       ? data.state as { mustResolveBeforeHandoff?: unknown; lastFriendActivityAt?: unknown }
       : undefined

@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.88",
+      "changes": [
+        "CLI session repair now strips orphaned tool-result messages when a saved chat history lost the matching assistant tool call, so a broken prior turn no longer bricks every future `ouro chat` message with a tool-call replay error.",
+        "Recovered sessions keep valid tool call/result pairs intact while dropping only the stale outputs, which lets live operator chats resume from repaired history instead of forcing a brand-new thread."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.87",
       "changes": [
         "CLI chat now keeps model reasoning private again. The visible surface stays on spinners, tool updates, and actual replies instead of dim internal-thinking text leaking into the operator conversation.",

@@ -363,6 +363,45 @@ describe("saveSession", () => {
     expect(parsed.messages[2].content).toContain("first")
     expect(parsed.messages[2].content).toContain("second")
   })
+
+  it("strips orphaned tool results on save", async () => {
+    const { saveSession } = await import("../../mind/context")
+    const msgs: any[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "done" },
+      { role: "tool", tool_call_id: "orphan-1", content: "stale result" },
+    ]
+
+    saveSession("/tmp/session.json", msgs)
+
+    const written = vi.mocked(fs.writeFileSync).mock.calls[0][1] as string
+    const parsed = JSON.parse(written)
+    expect(parsed.messages).toHaveLength(3)
+    expect(parsed.messages.some((msg: any) => msg.role === "tool")).toBe(false)
+  })
+
+  it("preserves valid tool call/result pairs on save", async () => {
+    const { saveSession } = await import("../../mind/context")
+    const msgs: any[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "hi" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "call-1", type: "function", function: { name: "read_file", arguments: "{}" } }],
+      },
+      { role: "tool", tool_call_id: "call-1", content: "ok" },
+    ]
+
+    saveSession("/tmp/session.json", msgs)
+
+    const written = vi.mocked(fs.writeFileSync).mock.calls[0][1] as string
+    const parsed = JSON.parse(written)
+    expect(parsed.messages).toHaveLength(4)
+    expect(parsed.messages[2].tool_calls?.[0]?.id).toBe("call-1")
+    expect(parsed.messages[3]).toEqual({ role: "tool", tool_call_id: "call-1", content: "ok" })
+  })
 })
 
 describe("loadSession", () => {
@@ -503,6 +542,28 @@ describe("loadSession", () => {
     expect(result!.messages).toHaveLength(3)
     expect((result!.messages[2] as any).content).toContain("first")
     expect((result!.messages[2] as any).content).toContain("second")
+  })
+
+  it("strips orphaned tool results on load", async () => {
+    const { loadSession } = await import("../../mind/context")
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        version: 1,
+        messages: [
+          { role: "system", content: "sys" },
+          { role: "user", content: "hi" },
+          { role: "assistant", content: "done" },
+          { role: "tool", tool_call_id: "orphan-1", content: "stale result" },
+          { role: "user", content: "next" },
+        ],
+      }),
+    )
+
+    const result = loadSession("/tmp/session.json")
+
+    expect(result).not.toBeNull()
+    expect(result!.messages).toHaveLength(4)
+    expect(result!.messages.some((msg: any) => msg.role === "tool")).toBe(false)
   })
 })
 
