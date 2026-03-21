@@ -2399,7 +2399,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         ? deps.getChangelogPath()
         : getChangelogPath()
       const raw = fs.readFileSync(changelogPath, "utf-8")
-      const entries = JSON.parse(raw) as Array<{ version: string; date?: string; changes?: string[] }>
+      const parsed = JSON.parse(raw) as
+        | Array<{ version: string; date?: string; changes?: string[] }>
+        | { versions?: Array<{ version: string; date?: string; changes?: string[] }> }
+      const entries = Array.isArray(parsed) ? parsed : (parsed.versions ?? [])
       let filtered = entries
       if (command.from) {
         const fromVersion = command.from

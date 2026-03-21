@@ -5264,6 +5264,39 @@ describe("ouro changelog command", () => {
     }
   })
 
+  it("runOuroCli changelog --from filters object-shaped changelog entries", async () => {
+    const changelogData = {
+      versions: [
+        { version: "0.1.0-alpha.90", changes: ["latest fix"] },
+        { version: "0.1.0-alpha.89", changes: ["previous fix"] },
+        { version: "0.1.0-alpha.88", changes: ["baseline fix"] },
+      ],
+    }
+    const tmpFile = path.join(os.tmpdir(), `changelog-object-${Date.now()}.json`)
+    fs.writeFileSync(tmpFile, JSON.stringify(changelogData))
+
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/test.sock",
+      sendCommand: vi.fn(),
+      startDaemonProcess: vi.fn(),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(),
+      installSubagents: vi.fn(),
+      getChangelogPath: () => tmpFile,
+    }
+
+    try {
+      const result = await runOuroCli(["changelog", "--from", "0.1.0-alpha.88"], deps)
+      expect(result).toContain("0.1.0-alpha.90")
+      expect(result).toContain("0.1.0-alpha.89")
+      expect(result).not.toContain("0.1.0-alpha.88")
+    } finally {
+      fs.unlinkSync(tmpFile)
+    }
+  })
+
   it("runOuroCli changelog --from with no matching entries returns empty message", async () => {
     const changelogData = [
       { version: "0.1.0", date: "2026-03-01", changes: ["initial release"] },
