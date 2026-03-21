@@ -37,6 +37,8 @@ function makeSession(overrides: Partial<CodingSession> = {}): CodingSession {
     lastExitCode: null,
     lastSignal: null,
     failure: null,
+    checkpoint: null,
+    artifactPath: undefined,
     ...overrides,
   }
 }
@@ -125,6 +127,8 @@ describe("coding feedback relay", () => {
     const rendered = formatCodingTail(
       makeSession({
         status: "failed",
+        checkpoint: "apply_patch blew up",
+        artifactPath: "/Users/test/AgentBundles/slugger.ouro/state/coding/sessions/coding-001.md",
         stdoutTail: "stdout payload",
         stderrTail: "stderr payload",
       }),
@@ -132,6 +136,8 @@ describe("coding feedback relay", () => {
 
     expect(rendered).toContain("sessionId: coding-001")
     expect(rendered).toContain("status: failed")
+    expect(rendered).toContain("checkpoint: apply_patch blew up")
+    expect(rendered).toContain("artifactPath: /Users/test/AgentBundles/slugger.ouro/state/coding/sessions/coding-001.md")
     expect(rendered).toContain("[stdout]")
     expect(rendered).toContain("stdout payload")
     expect(rendered).toContain("[stderr]")
@@ -141,13 +147,45 @@ describe("coding feedback relay", () => {
   it("renders empty coding tails with explicit placeholders", () => {
     const rendered = formatCodingTail(
       makeSession({
+        checkpoint: null,
         stdoutTail: "",
         stderrTail: "",
       }),
     )
 
+    expect(rendered).toContain("checkpoint: (empty)")
+    expect(rendered).toContain("artifactPath: (none)")
     expect(rendered).toContain("[stdout]\n(empty)")
     expect(rendered).toContain("[stderr]\n(empty)")
+  })
+
+  it("prefers session checkpoints when formatting update messages", async () => {
+    let listener: ((update: CodingSessionUpdate) => void | Promise<void>) | undefined
+    const manager = {
+      subscribe: vi.fn((_sessionId: string, cb: (update: CodingSessionUpdate) => void | Promise<void>) => {
+        listener = cb
+        return () => undefined
+      }),
+    }
+    const target = { send: vi.fn().mockResolvedValue(undefined) }
+
+    attachCodingSessionFeedback(manager, makeSession(), target)
+    await Promise.resolve()
+    target.send.mockClear()
+
+    await listener?.({
+      kind: "waiting_input",
+      session: makeSession({
+        status: "waiting_input",
+        checkpoint: "needs review on the failing coverage branch",
+        stdoutTail: "OpenAI Codex v0.104.0\n--------\nstatus: NEEDS_REVIEW",
+      }),
+      stream: "stdout",
+      text: "OpenAI Codex v0.104.0\n--------\nstatus: NEEDS_REVIEW",
+    })
+    await Promise.resolve()
+
+    expect(target.send).toHaveBeenCalledWith("codex coding-001 waiting: needs review on the failing coverage branch")
   })
 
   it("supports kill updates, send failures, and manual unsubscribe", async () => {

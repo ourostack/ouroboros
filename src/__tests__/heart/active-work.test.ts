@@ -173,6 +173,7 @@ describe("active work frame", () => {
           runner: "claude",
           workdir: "/tmp/workspaces/ouroboros",
           taskRef: "harness-maintenance",
+          checkpoint: "needs review on the context-pack checkpoint rendering path because the branch is still failing in one focused place",
           status: "waiting_input" as const,
           stdoutTail: "needs review",
           stderrTail: "",
@@ -201,6 +202,53 @@ describe("active work frame", () => {
     expect(rendered).toContain("## live coding work")
     expect(rendered).toContain("[waiting_input] claude coding-013")
     expect(rendered).toContain("for this thread")
+    expect(rendered).toContain("needs review on the context-pack checkpoint rendering path because the branch...")
+  })
+
+  it("renders short coding checkpoints without clipping", async () => {
+    const { buildActiveWorkFrame, formatActiveWorkFrame } = await import("../../heart/active-work")
+
+    const frame = buildActiveWorkFrame({
+      currentSession: {
+        friendId: "friend-1",
+        channel: "bluebubbles",
+        key: "chat",
+        sessionPath: "/tmp/state/sessions/friend-1/bluebubbles/chat.json",
+      },
+      mustResolveBeforeHandoff: false,
+      inner: { status: "idle", hasPending: false },
+      bridges: [],
+      pendingObligations: [],
+      codingSessions: [
+        {
+          id: "coding-014",
+          runner: "codex",
+          workdir: "/tmp/workspaces/ouroboros",
+          taskRef: "harness-maintenance",
+          checkpoint: "ready to merge",
+          status: "running" as const,
+          stdoutTail: "ready to merge",
+          stderrTail: "",
+          pid: 14,
+          startedAt: "2026-03-05T23:53:00.000Z",
+          lastActivityAt: "2026-03-05T23:59:00.000Z",
+          endedAt: null,
+          restartCount: 0,
+          lastExitCode: null,
+          lastSignal: null,
+          failure: null,
+          originSession: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
+        },
+      ],
+      taskBoard: {
+        compact: "",
+        activeBridges: [],
+        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [] },
+      },
+      friendActivity: [],
+    })
+
+    expect(formatActiveWorkFrame(frame)).toContain("ready to merge")
   })
 
   it("renders live coding work from another thread with explicit scope", async () => {

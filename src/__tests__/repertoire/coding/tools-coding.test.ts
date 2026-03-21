@@ -17,8 +17,13 @@ vi.mock("../../../heart/obligations", () => ({
   advanceObligation: vi.fn(),
 }))
 
+vi.mock("../../../repertoire/coding/context-pack", () => ({
+  prepareCodingContextPack: vi.fn(),
+}))
+
 import { attachCodingSessionFeedback, formatCodingTail, getCodingSessionManager } from "../../../repertoire/coding"
 import { advanceObligation, findPendingObligationForOrigin } from "../../../heart/obligations"
+import { prepareCodingContextPack } from "../../../repertoire/coding/context-pack"
 
 describe("coding tool contracts", () => {
   const manager = {
@@ -41,6 +46,14 @@ describe("coding tool contracts", () => {
     vi.mocked(findPendingObligationForOrigin).mockReset()
     vi.mocked(findPendingObligationForOrigin).mockReturnValue(undefined)
     vi.mocked(advanceObligation).mockReset()
+    vi.mocked(prepareCodingContextPack).mockReset()
+    vi.mocked(prepareCodingContextPack).mockReturnValue({
+      contextKey: "ctx-123",
+      scopeFile: "/tmp/generated-scope.md",
+      stateFile: "/tmp/generated-state.md",
+      scopeContent: "# scope",
+      stateContent: "# state",
+    })
     manager.spawnSession.mockReset()
     manager.getSession.mockReset()
     manager.listSessions.mockReset()
@@ -138,6 +151,174 @@ describe("coding tool contracts", () => {
       id: "coding-001",
       runner: "claude",
       status: "running",
+    })
+  })
+
+  it("coding_spawn auto-generates context files when scope/state are omitted", async () => {
+    manager.spawnSession.mockResolvedValue({
+      id: "coding-010",
+      runner: "codex",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      taskRef: "task-auto",
+      scopeFile: "/tmp/generated-scope.md",
+      stateFile: "/tmp/generated-state.md",
+      status: "running",
+      stdoutTail: "",
+      stderrTail: "",
+      pid: 5010,
+      startedAt: "2026-03-21T00:55:00.000Z",
+      lastActivityAt: "2026-03-21T00:55:00.000Z",
+      endedAt: null,
+      restartCount: 0,
+      lastExitCode: null,
+      lastSignal: null,
+      failure: null,
+    })
+
+    await execTool("coding_spawn", {
+      runner: "codex",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      prompt: "execute",
+      taskRef: "task-auto",
+    })
+
+    expect(prepareCodingContextPack).toHaveBeenCalledWith({
+      request: {
+        runner: "codex",
+        workdir: "/Users/test/AgentWorkspaces/ouroboros",
+        prompt: "execute",
+        taskRef: "task-auto",
+      },
+      existingSessions: [],
+    })
+    expect(manager.spawnSession).toHaveBeenCalledWith({
+      runner: "codex",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      prompt: "execute",
+      taskRef: "task-auto",
+      scopeFile: "/tmp/generated-scope.md",
+      stateFile: "/tmp/generated-state.md",
+    })
+  })
+
+  it("coding_spawn skips auto-generated context files when explicit ones are provided", async () => {
+    manager.spawnSession.mockResolvedValue({
+      id: "coding-011",
+      runner: "codex",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      taskRef: "task-explicit",
+      scopeFile: "/tmp/manual-scope.md",
+      stateFile: "/tmp/manual-state.md",
+      status: "running",
+      stdoutTail: "",
+      stderrTail: "",
+      pid: 5011,
+      startedAt: "2026-03-21T00:56:00.000Z",
+      lastActivityAt: "2026-03-21T00:56:00.000Z",
+      endedAt: null,
+      restartCount: 0,
+      lastExitCode: null,
+      lastSignal: null,
+      failure: null,
+    })
+
+    await execTool("coding_spawn", {
+      runner: "codex",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      prompt: "execute",
+      taskRef: "task-explicit",
+      scopeFile: "/tmp/manual-scope.md",
+      stateFile: "/tmp/manual-state.md",
+    })
+
+    expect(prepareCodingContextPack).not.toHaveBeenCalled()
+    expect(manager.spawnSession).toHaveBeenCalledWith({
+      runner: "codex",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      prompt: "execute",
+      taskRef: "task-explicit",
+      scopeFile: "/tmp/manual-scope.md",
+      stateFile: "/tmp/manual-state.md",
+    })
+  })
+
+  it("coding_spawn keeps an explicit scope file and generates only the missing state file", async () => {
+    manager.spawnSession.mockResolvedValue({
+      id: "coding-012",
+      runner: "codex",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      taskRef: "task-scope-only",
+      scopeFile: "/tmp/manual-scope.md",
+      stateFile: "/tmp/generated-state.md",
+      status: "running",
+      stdoutTail: "",
+      stderrTail: "",
+      pid: 5012,
+      startedAt: "2026-03-21T00:57:00.000Z",
+      lastActivityAt: "2026-03-21T00:57:00.000Z",
+      endedAt: null,
+      restartCount: 0,
+      lastExitCode: null,
+      lastSignal: null,
+      failure: null,
+    })
+
+    await execTool("coding_spawn", {
+      runner: "codex",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      prompt: "execute",
+      taskRef: "task-scope-only",
+      scopeFile: "/tmp/manual-scope.md",
+    })
+
+    expect(prepareCodingContextPack).toHaveBeenCalledOnce()
+    expect(manager.spawnSession).toHaveBeenCalledWith({
+      runner: "codex",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      prompt: "execute",
+      taskRef: "task-scope-only",
+      scopeFile: "/tmp/manual-scope.md",
+      stateFile: "/tmp/generated-state.md",
+    })
+  })
+
+  it("coding_spawn keeps an explicit state file and generates only the missing scope file", async () => {
+    manager.spawnSession.mockResolvedValue({
+      id: "coding-013",
+      runner: "codex",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      taskRef: "task-state-only",
+      scopeFile: "/tmp/generated-scope.md",
+      stateFile: "/tmp/manual-state.md",
+      status: "running",
+      stdoutTail: "",
+      stderrTail: "",
+      pid: 5013,
+      startedAt: "2026-03-21T00:58:00.000Z",
+      lastActivityAt: "2026-03-21T00:58:00.000Z",
+      endedAt: null,
+      restartCount: 0,
+      lastExitCode: null,
+      lastSignal: null,
+      failure: null,
+    })
+
+    await execTool("coding_spawn", {
+      runner: "codex",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      prompt: "execute",
+      taskRef: "task-state-only",
+      stateFile: "/tmp/manual-state.md",
+    })
+
+    expect(prepareCodingContextPack).toHaveBeenCalledOnce()
+    expect(manager.spawnSession).toHaveBeenCalledWith({
+      runner: "codex",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      prompt: "execute",
+      taskRef: "task-state-only",
+      scopeFile: "/tmp/generated-scope.md",
+      stateFile: "/tmp/manual-state.md",
     })
   })
 
@@ -405,6 +586,8 @@ describe("coding tool contracts", () => {
       taskRef: "task-778",
       originSession: { friendId: "ari", channel: "bluebubbles", key: "chat" },
       obligationId: "ob-1",
+      scopeFile: "/tmp/generated-scope.md",
+      stateFile: "/tmp/generated-state.md",
     })
     expect(advanceObligation).toHaveBeenCalledWith(
       "/Users/test/AgentBundles/slugger.ouro",
@@ -460,6 +643,8 @@ describe("coding tool contracts", () => {
       prompt: "execute",
       taskRef: "task-779",
       originSession: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+      scopeFile: "/tmp/generated-scope.md",
+      stateFile: "/tmp/generated-state.md",
     })
     expect(advanceObligation).not.toHaveBeenCalled()
   })
@@ -528,6 +713,8 @@ describe("coding tool contracts", () => {
       prompt: "execute",
       taskRef: "task-900",
       originSession: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+      scopeFile: "/tmp/generated-scope.md",
+      stateFile: "/tmp/generated-state.md",
     })
     expect(JSON.parse(result)).toMatchObject({ id: "coding-901" })
   })
@@ -582,6 +769,8 @@ describe("coding tool contracts", () => {
       workdir: "/Users/test/AgentWorkspaces/ouroboros",
       prompt: "execute",
       taskRef: "task-902",
+      scopeFile: "/tmp/generated-scope.md",
+      stateFile: "/tmp/generated-state.md",
     })
     expect(JSON.parse(result)).toMatchObject({ id: "coding-903" })
   })
@@ -693,6 +882,8 @@ describe("coding tool contracts", () => {
       prompt: "execute",
       taskRef: "task-905",
       originSession: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+      scopeFile: "/tmp/generated-scope.md",
+      stateFile: "/tmp/generated-state.md",
     })
     expect(JSON.parse(result)).toMatchObject({ id: "coding-906" })
   })
@@ -778,6 +969,8 @@ describe("coding tool contracts", () => {
       workdir: "/Users/test/AgentWorkspaces/slugger",
       prompt: "plan",
       taskRef: "task-9",
+      scopeFile: "/tmp/generated-scope.md",
+      stateFile: "/tmp/generated-state.md",
     })
   })
 

@@ -116,6 +116,12 @@ function formatCodingLaneLabel(session: CodingSession): string {
   return `${session.runner} ${session.id}`
 }
 
+function compactCodingCheckpoint(session: CodingSession): string {
+  const checkpoint = session.checkpoint?.replace(/\s+/g, " ").trim()
+  if (!checkpoint) return ""
+  return checkpoint.length <= 80 ? checkpoint : `${checkpoint.slice(0, 77)}...`
+}
+
 function describeCodingSessionScope(session: CodingSession, currentSession: ActiveWorkFrame["currentSession"]): string {
   if (!session.originSession) return ""
   if (
@@ -324,7 +330,10 @@ export function formatActiveWorkFrame(frame: ActiveWorkFrame): string {
     lines.push("")
     lines.push("## live coding work")
     for (const session of frame.codingSessions) {
-      lines.push(`- [${session.status}] ${formatCodingLaneLabel(session)}${describeCodingSessionScope(session, frame.currentSession)}`)
+      const checkpoint = compactCodingCheckpoint(session)
+      lines.push(
+        `- [${session.status}] ${formatCodingLaneLabel(session)}${describeCodingSessionScope(session, frame.currentSession)}${checkpoint ? `: ${checkpoint}` : ""}`,
+      )
     }
   }
 
