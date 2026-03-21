@@ -34,6 +34,7 @@ const mocks = vi.hoisted(() => ({
     messages: [],
   }),
   createInterface: vi.fn(),
+  cursorTo: vi.fn(),
   resolveContext: vi.fn().mockResolvedValue({
     friend: {
       id: "mock-uuid",
@@ -67,6 +68,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("readline", () => ({
   createInterface: (...a: any[]) => mocks.createInterface(...a),
+  cursorTo: (...a: any[]) => mocks.cursorTo(...a),
 }))
 vi.mock("../../heart/core", () => ({
   runAgent: (...a: any[]) => mocks.runAgent(...a),
@@ -171,7 +173,7 @@ vi.mock("os", async () => {
   }
 })
 
-import { main } from "../../senses/cli"
+import { main, writeCliAsyncAssistantMessage } from "../../senses/cli"
 
 // ── helpers ──
 
@@ -293,6 +295,7 @@ function resetMocks() {
   })
 
   // Fresh registry each test
+  mocks.cursorTo.mockReset()
   mocks.registry = {
     register: vi.fn(),
     get: vi.fn(),
@@ -1273,6 +1276,90 @@ describe("runCliSession", () => {
       { usage: undefined },
     )
   })
+
+  it("provides default CLI coding feedback that surfaces async assistant updates", async () => {
+    setupBasic({ inputSequence: ["hello", "/exit"] })
+
+    await runCliSession({
+      agentName: "testagent",
+      pasteDebounceMs: 0,
+    })
+
+    const messages = mocks.runAgent.mock.calls[0][0]
+    const opts = mocks.runAgent.mock.calls[0][4]
+    expect(typeof opts.toolContext.codingFeedback.send).toBe("function")
+
+    await opts.toolContext.codingFeedback.send("codex coding-001 completed: hi")
+
+    expect(messages.at(-1)).toEqual({
+      role: "assistant",
+      content: "codex coding-001 completed: hi",
+    })
+    expect(stdoutChunks.join("")).toContain("codex coding-001 completed: hi")
+    expect(stdoutChunks.join("")).toContain("\x1b[36m> \x1b[0m")
+  })
+
+  it("redraws the in-progress input and cursor for async assistant updates", () => {
+    const writes: string[] = []
+    const stdout = {
+      write: vi.fn((chunk: string) => {
+        writes.push(chunk)
+        return true
+      }),
+    }
+    const rl = { line: "continue typing", cursor: 4 } as any
+
+    writeCliAsyncAssistantMessage(rl, "codex coding-001 completed: hi", stdout)
+
+    expect(writes).toEqual([
+      "\r\x1b[K",
+      "codex coding-001 completed: hi\n",
+      "\x1b[36m> \x1b[0m",
+      "continue typing",
+    ])
+    expect(mocks.cursorTo).toHaveBeenCalledWith(process.stdout, 6)
+  })
+
+  it("redraws the in-progress input without moving the cursor when already at the end", () => {
+    const writes: string[] = []
+    const stdout = {
+      write: vi.fn((chunk: string) => {
+        writes.push(chunk)
+        return true
+      }),
+    }
+    const rl = { line: "continue typing", cursor: "continue typing".length } as any
+
+    writeCliAsyncAssistantMessage(rl, "codex coding-001 completed: hi", stdout)
+
+    expect(writes).toEqual([
+      "\r\x1b[K",
+      "codex coding-001 completed: hi\n",
+      "\x1b[36m> \x1b[0m",
+      "continue typing",
+    ])
+    expect(mocks.cursorTo).not.toHaveBeenCalled()
+  })
+
+  it("falls back cleanly when readline internals are absent", () => {
+    const writes: string[] = []
+    const stdout = {
+      write: vi.fn((chunk: string) => {
+        writes.push(chunk)
+        return true
+      }),
+    }
+    const rl = {} as any
+
+    writeCliAsyncAssistantMessage(rl, "codex coding-001 completed: hi", stdout)
+
+    expect(writes).toEqual([
+      "\r\x1b[K",
+      "codex coding-001 completed: hi\n",
+      "\x1b[36m> \x1b[0m",
+    ])
+    expect(mocks.cursorTo).not.toHaveBeenCalled()
+  })
 })
 
 // ── pipeline integration tests ──
@@ -1406,6 +1493,31 @@ describe("agent.ts main() - pipeline integration", () => {
     expect(typeof pipelineInput.drainDeferredReturns).toBe("function")
     expect(pipelineInput.drainDeferredReturns("friend-1")).toEqual([])
     expect(drainDeferredReturns).toHaveBeenCalledWith("testagent", "friend-1")
+  })
+
+  it("passes CLI coding feedback into the shared pipeline and persists async updates", async () => {
+    setupBasic({ inputSequence: ["hello", "/exit"] })
+
+    await main(undefined, { pasteDebounceMs: 0 })
+
+    const pipelineInput = mocks.handleInboundTurn.mock.calls[0][0]
+    expect(typeof pipelineInput.runAgentOptions.toolContext.codingFeedback.send).toBe("function")
+
+    await pipelineInput.runAgentOptions.toolContext.codingFeedback.send("codex coding-001 completed: hi")
+
+    expect(mocks.postTurn).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "assistant",
+          content: "codex coding-001 completed: hi",
+        }),
+      ]),
+      "/tmp/test-session.json",
+      undefined,
+      undefined,
+      undefined,
+    )
+    expect(stdoutChunks.join("")).toContain("codex coding-001 completed: hi")
   })
 
   it("persists postTurn continuity state across CLI turns", async () => {
