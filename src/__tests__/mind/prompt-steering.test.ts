@@ -52,11 +52,28 @@ describe("centerOfGravitySteeringSection", () => {
     expect(result).toBe("")
   })
 
-  it("returns empty string for local-turn", () => {
+  it("renders live-thread status shape guidance for local-turn even before an obligation is captured", () => {
     const result = centerOfGravitySteeringSection("cli", {
       activeWorkFrame: makeMinimalFrame({ centerOfGravity: "local-turn" }),
     })
-    expect(result).toBe("")
+    expect(result).toContain("live conversation: cli/session")
+    expect(result).toContain("active lane: this same thread")
+    expect(result).toContain('current artifact: <actual artifact or "no artifact yet">')
+    expect(result).toContain("latest checkpoint: <freshest concrete thing i just finished or verified>")
+    expect(result).toContain("next action: <smallest concrete next step i'm taking now>")
+  })
+
+  it("renders concrete status guidance for a local-turn with a live obligation", () => {
+    const result = centerOfGravitySteeringSection("cli", {
+      activeWorkFrame: makeMinimalFrame({
+        centerOfGravity: "local-turn",
+        currentObligation: "investigate the stale status reply",
+      }),
+    })
+    expect(result).toContain("the live conversation is cli/session.")
+    expect(result).toContain("the active lane is this same thread.")
+    expect(result).toContain("the current artifact is no artifact yet.")
+    expect(result).toContain('the next action is work on "investigate the stale status reply" and bring back a concrete artifact.')
   })
 
   it("returns steering for inward-work with queued job and origin (friendName)", () => {
@@ -242,9 +259,9 @@ describe("centerOfGravitySteeringSection", () => {
 
     const result = centerOfGravitySteeringSection("cli", { activeWorkFrame: frame })
     expect(result).toContain("if someone asks what i'm doing or for status")
-    expect(result).toContain("active lane")
-    expect(result).toContain("current artifact")
-    expect(result).toContain("next action")
+    expect(result).toContain("the active lane is")
+    expect(result).toContain("the current artifact is")
+    expect(result).toContain("the next action is")
     expect(result).toContain("PR #123")
   })
 
@@ -338,8 +355,34 @@ describe("obligation steering helpers", () => {
   })
 
   it("returns an empty string when there is no obligation for concrete status guidance", async () => {
-    const { renderConcreteStatusGuidance } = await import("../../mind/obligation-steering")
+    const { findStatusObligation, renderConcreteStatusGuidance } = await import("../../mind/obligation-steering")
+    expect(findStatusObligation(undefined)).toBeNull()
     expect(renderConcreteStatusGuidance(makeMinimalFrame(), null)).toBe("")
+  })
+
+  it("sorts status obligations by createdAt when updatedAt is missing", async () => {
+    const { findStatusObligation } = await import("../../mind/obligation-steering")
+    const chosen = findStatusObligation(makeMinimalFrame({
+      currentSession: null,
+      pendingObligations: [
+        {
+          id: "older",
+          origin: { friendId: "friend-1", channel: "cli", key: "session" },
+          content: "older",
+          status: "investigating",
+          createdAt: "2026-01-01T00:00:00Z",
+        },
+        {
+          id: "newer",
+          origin: { friendId: "friend-2", channel: "teams", key: "chat" },
+          content: "newer",
+          status: "investigating",
+          createdAt: "2026-01-01T00:01:00Z",
+        },
+      ],
+    }))
+
+    expect(chosen?.id).toBe("newer")
   })
 
   it("renders concrete guidance for waiting input on another thread", async () => {
@@ -376,9 +419,9 @@ describe("obligation steering helpers", () => {
       updatedAt: "2026-01-01T00:01:00Z",
     })
 
-    expect(result).toContain("active lane: codex coding-201 for bluebubbles/chat")
-    expect(result).toContain("current artifact: no PR or merge artifact yet")
-    expect(result).toContain("next action: answer codex coding-201 and continue")
+    expect(result).toContain("the active lane is codex coding-201 for bluebubbles/chat.")
+    expect(result).toContain("the current artifact is no PR or merge artifact yet.")
+    expect(result).toContain("the next action is answer codex coding-201 and continue.")
   })
 
   it("renders concrete guidance for stalled coding without origin metadata", async () => {
@@ -415,8 +458,8 @@ describe("obligation steering helpers", () => {
       updatedAt: "2026-01-01T00:01:00Z",
     })
 
-    expect(result).toContain("active lane: claude coding-202")
-    expect(result).toContain("next action: unstick claude coding-202 and continue")
+    expect(result).toContain("the active lane is claude coding-202.")
+    expect(result).toContain("the next action is unstick claude coding-202 and continue.")
   })
 
   it("renders merge and runtime fallback next actions when explicit fields are absent", async () => {
@@ -431,9 +474,9 @@ describe("obligation steering helpers", () => {
       createdAt: "2026-01-01T00:00:00Z",
       updatedAt: "2026-01-01T00:01:00Z",
     })
-    expect(waitingForMerge).toContain("active lane: PR #456")
-    expect(waitingForMerge).toContain("current artifact: PR #456")
-    expect(waitingForMerge).toContain("next action: wait for checks, merge PR #456, then update runtime")
+    expect(waitingForMerge).toContain("the active lane is PR #456.")
+    expect(waitingForMerge).toContain("the current artifact is PR #456.")
+    expect(waitingForMerge).toContain("the next action is wait for checks, merge PR #456, then update runtime.")
 
     const updatingRuntime = renderConcreteStatusGuidance(makeMinimalFrame(), {
       id: "ob-5",
@@ -444,9 +487,66 @@ describe("obligation steering helpers", () => {
       createdAt: "2026-01-01T00:00:00Z",
       updatedAt: "2026-01-01T00:01:00Z",
     })
-    expect(updatingRuntime).toContain("active lane: ouro up")
-    expect(updatingRuntime).toContain("current artifact: no explicit artifact yet")
-    expect(updatingRuntime).toContain("next action: update runtime, verify version/changelog, then re-observe")
+    expect(updatingRuntime).toContain("the active lane is ouro up.")
+    expect(updatingRuntime).toContain("the current artifact is no explicit artifact yet.")
+    expect(updatingRuntime).toContain("the next action is update runtime, verify version/changelog, then re-observe.")
+  })
+
+  it("strips a leading merge verb and falls back to the fix for empty merge content", async () => {
+    const { renderConcreteStatusGuidance } = await import("../../mind/obligation-steering")
+
+    const stripped = renderConcreteStatusGuidance(makeMinimalFrame(), {
+      id: "ob-merge-strip",
+      origin: { friendId: "ari", channel: "cli", key: "session" },
+      content: "merge the fix",
+      status: "waiting_for_merge",
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:01:00Z",
+    })
+    expect(stripped).toContain("the next action is wait for checks, merge the fix, then update runtime.")
+
+    const fallback = renderConcreteStatusGuidance(makeMinimalFrame(), {
+      id: "ob-merge-fallback",
+      origin: { friendId: "ari", channel: "cli", key: "session" },
+      content: "   ",
+      status: "waiting_for_merge",
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:01:00Z",
+    })
+    expect(fallback).toContain("the next action is wait for checks, merge the fix, then update runtime.")
+
+    const bareMergeFallback = renderConcreteStatusGuidance(makeMinimalFrame(), {
+      id: "ob-merge-bare",
+      origin: { friendId: "ari", channel: "cli", key: "session" },
+      content: "merge",
+      status: "waiting_for_merge",
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:01:00Z",
+    })
+    expect(bareMergeFallback).toContain("the next action is wait for checks, merge the fix, then update runtime.")
+
+    const currentArtifactWins = renderConcreteStatusGuidance(makeMinimalFrame(), {
+      id: "ob-merge-artifact",
+      origin: { friendId: "ari", channel: "cli", key: "session" },
+      content: "merge the fix",
+      currentArtifact: "PR #321",
+      currentSurface: { kind: "merge", label: "ignored merge surface" },
+      status: "waiting_for_merge",
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:01:00Z",
+    })
+    expect(currentArtifactWins).toContain("the next action is wait for checks, merge PR #321, then update runtime.")
+
+    const blankSurfaceFallsBack = renderConcreteStatusGuidance(makeMinimalFrame(), {
+      id: "ob-merge-blank-surface",
+      origin: { friendId: "ari", channel: "cli", key: "session" },
+      content: "merge the fix",
+      currentSurface: { kind: "merge", label: "   " },
+      status: "waiting_for_merge",
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:01:00Z",
+    })
+    expect(blankSurfaceFallsBack).toContain("the next action is wait for checks, merge the fix, then update runtime.")
   })
 
   it("falls back to the generic live loop guidance when no concrete surface exists yet", async () => {
@@ -460,9 +560,9 @@ describe("obligation steering helpers", () => {
       updatedAt: "2026-01-01T00:01:00Z",
     })
 
-    expect(result).toContain("active lane: this live loop")
-    expect(result).toContain("current artifact: no explicit artifact yet")
-    expect(result).toContain("next action: continue the active loop and bring the result back here")
+    expect(result).toContain("the active lane is this live loop.")
+    expect(result).toContain("the current artifact is no explicit artifact yet.")
+    expect(result).toContain("the next action is continue the active loop and bring the result back here.")
   })
 
   it("renders the generic live-coding fallback when coding is running but not blocked", async () => {
@@ -499,9 +599,9 @@ describe("obligation steering helpers", () => {
       },
     )
 
-    expect(result).toContain("active lane: codex coding-203")
-    expect(result).toContain("current artifact: no PR or merge artifact yet")
-    expect(result).toContain("next action: finish the coding pass and bring the result back here")
+    expect(result).toContain("the active lane is codex coding-203.")
+    expect(result).toContain("the current artifact is no PR or merge artifact yet.")
+    expect(result).toContain("the next action is finish the coding pass and bring the result back here.")
   })
 
   it("handles frames that omit codingSessions by falling back cleanly", async () => {
@@ -522,8 +622,149 @@ describe("obligation steering helpers", () => {
       updatedAt: "2026-01-01T00:01:00Z",
     })
 
-    expect(result).toContain("active lane: ouro up")
-    expect(result).toContain("current artifact: no explicit artifact yet")
-    expect(result).toContain("next action: update runtime, verify version/changelog, then re-observe")
+    expect(result).toContain("the active lane is ouro up.")
+    expect(result).toContain("the current artifact is no explicit artifact yet.")
+    expect(result).toContain("the next action is update runtime, verify version/changelog, then re-observe.")
+  })
+
+  it("renders concrete status guidance from the current obligation when no persistent obligation exists yet", async () => {
+    const { renderConcreteStatusGuidance } = await import("../../mind/obligation-steering")
+    const result = renderConcreteStatusGuidance(
+      makeMinimalFrame({
+        currentObligation: "investigate the stale status reply",
+      }),
+      null,
+    )
+
+    expect(result).toContain("the live conversation is cli/session.")
+    expect(result).toContain("the active lane is this same thread.")
+    expect(result).toContain("the current artifact is no artifact yet.")
+    expect(result).toContain('the next action is work on "investigate the stale status reply" and bring back a concrete artifact.')
+  })
+
+  it("renders the generic live-thread status shape when no obligation has been captured yet", async () => {
+    const { renderLiveThreadStatusShape } = await import("../../mind/obligation-steering")
+    const result = renderLiveThreadStatusShape(makeMinimalFrame())
+
+    expect(result).toContain("live conversation: cli/session")
+    expect(result).toContain("active lane: this same thread")
+    expect(result).toContain('current artifact: <actual artifact or "no artifact yet">')
+    expect(result).toContain("latest checkpoint: <freshest concrete thing i just finished or verified>")
+    expect(result).toContain("next action: <smallest concrete next step i'm taking now>")
+  })
+
+  it("returns an empty live-thread shape when there is no current session", async () => {
+    const { renderLiveThreadStatusShape } = await import("../../mind/obligation-steering")
+    expect(renderLiveThreadStatusShape(makeMinimalFrame({ currentSession: null }))).toBe("")
+  })
+
+  it("renders a hard five-line reply contract for direct status questions", async () => {
+    const { renderExactStatusReplyContract } = await import("../../mind/obligation-steering")
+    const result = renderExactStatusReplyContract(makeMinimalFrame(), null)
+
+    expect(result).toContain("reply using exactly these five lines and nothing else")
+    expect(result).toContain("live conversation: cli/session")
+    expect(result).toContain("active lane: this same thread")
+    expect(result).toContain("current artifact: no artifact yet")
+    expect(result).toContain("latest checkpoint: <freshest concrete thing i just finished or verified>")
+    expect(result).toContain("next action: continue the active loop and bring the result back here")
+  })
+
+  it("prefers the newest same-thread obligation for status shaping over older stale coding notes", async () => {
+    const { findStatusObligation, renderExactStatusReplyContract } = await import("../../mind/obligation-steering")
+    const frame = makeMinimalFrame({
+      currentObligation: "inspect the live thread and decide the next concrete action",
+      pendingObligations: [
+        {
+          id: "ob-old",
+          origin: { friendId: "friend-1", channel: "cli", key: "session" },
+          content: "finish harness-maintenance-live-status-loop and bring the result back",
+          status: "investigating",
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:01:00Z",
+          currentSurface: { kind: "coding", label: "codex coding-075" },
+          latestNote: "coding session completed: stale tail text",
+        },
+        {
+          id: "ob-new",
+          origin: { friendId: "friend-1", channel: "cli", key: "session" },
+          content: "inspect the live thread and decide the next concrete action",
+          status: "pending",
+          createdAt: "2026-01-01T00:02:00Z",
+          updatedAt: "2026-01-01T00:02:00Z",
+        },
+      ],
+    })
+
+    const chosen = findStatusObligation(frame)
+    const result = renderExactStatusReplyContract(frame, chosen)
+
+    expect(chosen?.id).toBe("ob-new")
+    expect(result).toContain("active lane: this same thread")
+    expect(result).toContain("current artifact: no artifact yet")
+    expect(result).toContain('next action: work on "inspect the live thread and decide the next concrete action" and bring back a concrete artifact')
+    expect(result).not.toContain("codex coding-075")
+    expect(result).not.toContain("stale tail text")
+  })
+
+  it("uses this same thread and keeps latest-checkpoint guidance live when a live obligation has no explicit surface yet", async () => {
+    const { renderConcreteStatusGuidance } = await import("../../mind/obligation-steering")
+    const result = renderConcreteStatusGuidance(
+      makeMinimalFrame({
+        currentObligation: "investigate the stale status reply",
+      }),
+      {
+        id: "ob-live-thread",
+        origin: { friendId: "ari", channel: "cli", key: "session" },
+        content: "investigate the stale status reply",
+        status: "investigating",
+        latestNote: "just finished reproducing the stale answer",
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:01:00Z",
+      },
+    )
+
+    expect(result).toContain("the active lane is this same thread.")
+    expect(result).toContain("the current artifact is no artifact yet.")
+    expect(result).toContain("if i just finished or verified something concrete in this live lane, i name that as the latest checkpoint.")
+    expect(result).toContain('the next action is work on "investigate the stale status reply" and bring back a concrete artifact.')
+  })
+
+  it("does not echo a direct status question back as the next action", async () => {
+    const { renderExactStatusReplyContract } = await import("../../mind/obligation-steering")
+    const result = renderExactStatusReplyContract(
+      makeMinimalFrame({
+        currentObligation: "what are you doing?",
+      }),
+      {
+        id: "ob-status",
+        origin: { friendId: "ari", channel: "cli", key: "session" },
+        content: "close the visible loop",
+        status: "investigating",
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:01:00Z",
+      },
+    )
+
+    expect(result).toContain("latest checkpoint: <freshest concrete thing i just finished or verified>")
+    expect(result).toContain("next action: continue the active loop and bring the result back here")
+    expect(result).not.toContain('next action: work on "what are you doing?"')
+  })
+
+  it("builds an exact status reply with deterministic fallbacks", async () => {
+    const { buildExactStatusReply } = await import("../../mind/obligation-steering")
+    const result = buildExactStatusReply(
+      makeMinimalFrame({ currentSession: null, currentObligation: "" }),
+      null,
+      "   ",
+    )
+
+    expect(result).toBe([
+      "live conversation: not in a live conversation",
+      "active lane: this live loop",
+      "current artifact: no artifact yet",
+      "latest checkpoint: <freshest concrete thing i just finished or verified>",
+      "next action: continue the active loop and bring the result back here",
+    ].join("\n"))
   })
 })

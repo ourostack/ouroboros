@@ -18,7 +18,7 @@ import { listSessionActivity, type SessionActivityQuery } from "../heart/session
 import { formatActiveWorkFrame, type ActiveWorkFrame } from "../heart/active-work";
 import type { DelegationDecision } from "../heart/delegation";
 import { deriveCommitments, formatCommitments } from "../heart/commitments";
-import { findActivePersistentObligation, renderActiveObligationSteering, renderConcreteStatusGuidance } from "./obligation-steering";
+import { findActivePersistentObligation, findStatusObligation, renderActiveObligationSteering, renderConcreteStatusGuidance, renderExactStatusReplyContract, renderLiveThreadStatusShape } from "./obligation-steering";
 
 // Lazy-loaded psyche text cache
 let _psycheCache: {
@@ -470,6 +470,7 @@ export interface BuildSystemOptions {
   bridgeContext?: string;
   currentSessionKey?: string;
   currentObligation?: string;
+  statusCheckRequested?: boolean;
   mustResolveBeforeHandoff?: boolean;
   hasQueuedFollowUp?: boolean;
   activeWorkFrame?: ActiveWorkFrame;
@@ -496,16 +497,21 @@ export function centerOfGravitySteeringSection(channel: Channel, options?: Build
   const frame = options?.activeWorkFrame
   if (!frame) return ""
   const cog = frame.centerOfGravity
-  if (cog === "local-turn") return ""
 
   const job = frame.inner?.job
   const activeObligation = findActivePersistentObligation(frame)
+  const statusObligation = findStatusObligation(frame)
+  const genericConcreteStatus = renderConcreteStatusGuidance(frame, statusObligation)
+
+  if (cog === "local-turn") {
+    return genericConcreteStatus || renderLiveThreadStatusShape(frame)
+  }
 
   if (cog === "inward-work") {
     if (activeObligation) {
       return `${renderActiveObligationSteering(activeObligation)}
 
-${renderConcreteStatusGuidance(frame, activeObligation)}`
+${genericConcreteStatus}`
     }
 
     if (job?.status === "queued" || job?.status === "running") {
@@ -551,6 +557,10 @@ i already have coding work running in ${liveCodingSession.runner} ${liveCodingSe
 i should orient around that live lane first, then decide what still needs to come back here.`
     }
 
+    if (genericConcreteStatus) {
+      return genericConcreteStatus
+    }
+
     return `## where my attention is
 i have unfinished work that needs attention before i move on.
 
@@ -567,6 +577,16 @@ i should keep the different sides aligned. what i learn here may matter there, a
 
   /* v8 ignore next -- unreachable: all center-of-gravity modes covered above @preserve */
   return ""
+}
+
+function statusCheckSection(channel: Channel, options?: BuildSystemOptions): string {
+  if (channel === "inner" || !options?.statusCheckRequested) return ""
+  const frame = options.activeWorkFrame
+  if (!frame) return ""
+  const activeObligation = findStatusObligation(frame)
+  return `## status question on this turn
+the user is asking for current status right now.
+${renderExactStatusReplyContract(frame, activeObligation)}`
 }
 
 export function commitmentsSection(options?: BuildSystemOptions): string {
@@ -782,6 +802,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     skillsSection(),
     taskBoardSection(),
     activeWorkSection(options),
+    statusCheckSection(channel, options),
     centerOfGravitySteeringSection(channel, options),
     commitmentsSection(options),
     delegationHintSection(options),

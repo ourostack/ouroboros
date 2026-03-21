@@ -147,6 +147,23 @@ function formatObligationSurface(obligation: Obligation): string {
   }
 }
 
+function mergeArtifactFallback(obligation: Obligation): string {
+  const trimmed = obligation.content.trim()
+  if (!trimmed) return "the fix"
+  const stripped = trimmed.replace(/^merge(?:\s+|$)/i, "").trim()
+  return stripped || "the fix"
+}
+
+function formatMergeArtifact(obligation: Obligation): string {
+  const currentArtifact = obligation.currentArtifact?.trim()
+  if (currentArtifact) return currentArtifact
+  if (obligation.currentSurface?.kind === "merge") {
+    const surfaceLabel = obligation.currentSurface.label.trim()
+    if (surfaceLabel) return surfaceLabel
+  }
+  return mergeArtifactFallback(obligation)
+}
+
 function findPrimaryOpenObligation(frame: ActiveWorkFrame): Obligation | null {
   return (frame.pendingObligations ?? []).find((ob) => ob.status !== "pending" && ob.status !== "fulfilled")
     ?? (frame.pendingObligations ?? []).find(isOpenObligation)
@@ -164,6 +181,9 @@ function formatActiveLane(frame: ActiveWorkFrame, obligation: Obligation | null)
   if (frame.inner?.job?.status === "running") {
     return "inner dialog"
   }
+  if (typeof frame.currentObligation === "string" && frame.currentObligation.trim().length > 0 && frame.currentSession) {
+    return "this same thread"
+  }
   return null
 }
 
@@ -176,6 +196,9 @@ function formatCurrentArtifact(frame: ActiveWorkFrame, obligation: Obligation | 
   }
   if ((frame.codingSessions ?? []).length > 0) {
     return "no PR or merge artifact yet"
+  }
+  if (typeof frame.currentObligation === "string" && frame.currentObligation.trim().length > 0) {
+    return "no artifact yet"
   }
   return null
 }
@@ -195,14 +218,16 @@ function formatNextAction(frame: ActiveWorkFrame, obligation: Obligation | null)
     return "finish the coding pass and bring the result back here"
   }
   if (obligation?.status === "waiting_for_merge") {
-    const artifact = formatCurrentArtifact(frame, obligation) ?? "the fix"
-    return `wait for checks, merge ${artifact}, then update runtime`
+    return `wait for checks, merge ${formatMergeArtifact(obligation)}, then update runtime`
   }
   if (obligation?.status === "updating_runtime") {
     return "update runtime, verify version/changelog, then re-observe"
   }
   if (obligation) {
     return "continue the active loop and bring the result back here"
+  }
+  if (typeof frame.currentObligation === "string" && frame.currentObligation.trim().length > 0) {
+    return `work on "${frame.currentObligation.trim()}" and bring back a concrete artifact`
   }
   return null
 }
