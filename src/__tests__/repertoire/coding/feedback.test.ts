@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest"
 
 vi.mock("../../../heart/identity", () => ({
+  getAgentName: vi.fn(() => "slugger"),
   getAgentRoot: vi.fn(() => "/Users/test/AgentBundles/slugger.ouro"),
 }))
 
@@ -8,8 +9,13 @@ vi.mock("../../../heart/obligations", () => ({
   advanceObligation: vi.fn(),
 }))
 
+vi.mock("../../../heart/daemon/socket-client", () => ({
+  requestInnerWake: vi.fn().mockResolvedValue(null),
+}))
+
 import { attachCodingSessionFeedback, formatCodingTail } from "../../../repertoire/coding/feedback"
 import { advanceObligation } from "../../../heart/obligations"
+import { requestInnerWake } from "../../../heart/daemon/socket-client"
 import type { CodingSession, CodingSessionUpdate } from "../../../repertoire/coding/types"
 
 function makeSession(overrides: Partial<CodingSession> = {}): CodingSession {
@@ -411,6 +417,109 @@ describe("coding feedback relay", () => {
     expect(target.send).toHaveBeenLastCalledWith("codex coding-001 for bluebubbles/chat completed: opened PR #123")
   })
 
+  it("wakes inner dialog when an obligation-bound coding session needs the loop to continue", async () => {
+    let listener: ((update: CodingSessionUpdate) => void | Promise<void>) | undefined
+    const manager = {
+      subscribe: vi.fn((_sessionId: string, cb: (update: CodingSessionUpdate) => void | Promise<void>) => {
+        listener = cb
+        return () => undefined
+      }),
+    }
+    const target = { send: vi.fn().mockResolvedValue(undefined) }
+    const session = makeSession() as CodingSession & {
+      originSession?: { friendId: string; channel: string; key: string }
+      obligationId?: string
+    }
+    session.originSession = { friendId: "ari", channel: "cli", key: "session" }
+    session.obligationId = "ob-4"
+
+    vi.mocked(requestInnerWake).mockClear()
+    attachCodingSessionFeedback(manager, session as CodingSession, target)
+    await Promise.resolve()
+
+    expect(requestInnerWake).not.toHaveBeenCalled()
+
+    await listener?.({
+      kind: "progress",
+      session: { ...(session as CodingSession), stdoutTail: "thinking" },
+      stream: "stdout",
+      text: "thinking",
+    })
+    await Promise.resolve()
+    expect(requestInnerWake).not.toHaveBeenCalled()
+
+    await listener?.({
+      kind: "waiting_input",
+      session: { ...(session as CodingSession), status: "waiting_input" },
+    })
+    await listener?.({
+      kind: "stalled",
+      session: { ...(session as CodingSession), status: "stalled" },
+    })
+    await listener?.({
+      kind: "completed",
+      session: {
+        ...(session as CodingSession),
+        status: "completed",
+        pid: null,
+        endedAt: "2026-03-05T23:55:00.000Z",
+      },
+    })
+    await listener?.({
+      kind: "failed",
+      session: {
+        ...(session as CodingSession),
+        status: "failed",
+        pid: null,
+        endedAt: "2026-03-05T23:56:00.000Z",
+      },
+    })
+    await listener?.({
+      kind: "killed",
+      session: {
+        ...(session as CodingSession),
+        status: "killed",
+        pid: null,
+        endedAt: "2026-03-05T23:57:00.000Z",
+      },
+    })
+    await Promise.resolve()
+
+    expect(requestInnerWake).toHaveBeenCalledTimes(5)
+    expect(requestInnerWake).toHaveBeenNthCalledWith(1, "slugger")
+    expect(requestInnerWake).toHaveBeenNthCalledWith(2, "slugger")
+    expect(requestInnerWake).toHaveBeenNthCalledWith(3, "slugger")
+    expect(requestInnerWake).toHaveBeenNthCalledWith(4, "slugger")
+    expect(requestInnerWake).toHaveBeenNthCalledWith(5, "slugger")
+  })
+
+  it("does not wake inner dialog for coding sessions without an obligation", async () => {
+    let listener: ((update: CodingSessionUpdate) => void | Promise<void>) | undefined
+    const manager = {
+      subscribe: vi.fn((_sessionId: string, cb: (update: CodingSessionUpdate) => void | Promise<void>) => {
+        listener = cb
+        return () => undefined
+      }),
+    }
+    const target = { send: vi.fn().mockResolvedValue(undefined) }
+
+    vi.mocked(requestInnerWake).mockClear()
+    attachCodingSessionFeedback(manager, makeSession(), target)
+    await Promise.resolve()
+
+    await listener?.({
+      kind: "completed",
+      session: makeSession({
+        status: "completed",
+        pid: null,
+        endedAt: "2026-03-05T23:55:00.000Z",
+      }),
+    })
+    await Promise.resolve()
+
+    expect(requestInnerWake).not.toHaveBeenCalled()
+  })
+
   it("updates obligation notes for progress, waiting, stalled, failed, and killed coding states", async () => {
     let listener: ((update: CodingSessionUpdate) => void | Promise<void>) | undefined
     const manager = {
@@ -543,5 +652,41 @@ describe("coding feedback relay", () => {
       "ob-3",
       expect.objectContaining({ latestNote: "coding session failed: apply_patch blew up" }),
     )
+  })
+
+  it("keeps relaying feedback when an obligation wake request fails", async () => {
+    let listener: ((update: CodingSessionUpdate) => void | Promise<void>) | undefined
+    const manager = {
+      subscribe: vi.fn((_sessionId: string, cb: (update: CodingSessionUpdate) => void | Promise<void>) => {
+        listener = cb
+        return () => undefined
+      }),
+    }
+    const target = { send: vi.fn().mockResolvedValue(undefined) }
+    const session = makeSession() as CodingSession & { obligationId?: string }
+    session.obligationId = "ob-5"
+
+    vi.mocked(requestInnerWake).mockClear()
+    vi.mocked(requestInnerWake)
+      .mockRejectedValueOnce("wake failed")
+      .mockRejectedValueOnce(new Error("wake failed error"))
+    attachCodingSessionFeedback(manager, session as CodingSession, target)
+    await Promise.resolve()
+    target.send.mockClear()
+
+    await listener?.({
+      kind: "waiting_input",
+      session: { ...(session as CodingSession), status: "waiting_input" },
+    })
+    await listener?.({
+      kind: "stalled",
+      session: { ...(session as CodingSession), status: "stalled" },
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(target.send).toHaveBeenCalledWith("codex coding-001 waiting")
+    expect(target.send).toHaveBeenCalledWith("codex coding-001 stalled")
+    expect(requestInnerWake).toHaveBeenCalledWith("slugger")
   })
 })
