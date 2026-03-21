@@ -1905,6 +1905,191 @@ describe("delegation router", () => {
     expect(rendered).toContain("[updating_runtime] friend-1/bluebubbles/chat: restart onto latest runtime (updating via ouro up)")
   })
 
+  it("renders current concrete state with active lane, artifact, and next action", async () => {
+    const { formatActiveWorkFrame } = await import("../../heart/active-work")
+
+    const rendered = formatActiveWorkFrame({
+      currentSession: {
+        friendId: "friend-1",
+        channel: "bluebubbles",
+        key: "chat",
+        sessionPath: "/tmp/state/sessions/friend-1/bluebubbles/chat.json",
+      },
+      currentObligation: "close the loop visibly",
+      mustResolveBeforeHandoff: false,
+      centerOfGravity: "inward-work",
+      inner: {
+        status: "idle",
+        hasPending: false,
+        job: {
+          status: "idle" as const,
+          content: null,
+          origin: null,
+          mode: "reflect" as const,
+          obligationStatus: null,
+          surfacedResult: null,
+          queuedAt: null,
+          startedAt: null,
+          surfacedAt: null,
+        },
+      },
+      bridges: [],
+      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+      friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
+      codingSessions: [
+        {
+          id: "coding-013",
+          runner: "claude",
+          workdir: "/tmp/workspaces/ouroboros",
+          taskRef: "session-awareness-fix",
+          status: "running" as const,
+          stdoutTail: "working",
+          stderrTail: "",
+          pid: 13,
+          startedAt: "2026-03-20T16:00:00.000Z",
+          lastActivityAt: "2026-03-20T16:01:00.000Z",
+          endedAt: null,
+          restartCount: 0,
+          lastExitCode: null,
+          lastSignal: null,
+          failure: null,
+          originSession: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
+        },
+      ],
+      pendingObligations: [
+        {
+          id: "ob-open",
+          origin: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
+          content: "bring the fix back",
+          status: "waiting_for_merge" as const,
+          currentSurface: { kind: "merge", label: "PR #123" },
+          currentArtifact: "PR #123",
+          nextAction: "wait for checks, merge PR #123, then update runtime",
+          latestNote: "opened PR #123",
+          createdAt: "2026-03-20T16:00:00.000Z",
+          updatedAt: "2026-03-20T16:01:00.000Z",
+        },
+      ],
+      bridgeSuggestion: null,
+    } as any)
+
+    expect(rendered).toContain("## current concrete state")
+    expect(rendered).toContain("- live conversation: bluebubbles/chat")
+    expect(rendered).toContain("- active lane: claude coding-013 for this thread")
+    expect(rendered).toContain("- current artifact: PR #123")
+    expect(rendered).toContain("- next action: wait for checks, merge PR #123, then update runtime")
+  })
+
+  it("falls back to concrete-state next actions for stalled coding, merge waiting, and runtime update", async () => {
+    const { formatActiveWorkFrame } = await import("../../heart/active-work")
+
+    const stalled = formatActiveWorkFrame({
+      currentSession: {
+        friendId: "friend-1",
+        channel: "cli",
+        key: "session",
+        sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+      },
+      currentObligation: "close the loop visibly",
+      mustResolveBeforeHandoff: false,
+      centerOfGravity: "inward-work",
+      inner: { status: "idle", hasPending: false, job: { status: "idle", content: null, origin: null, mode: "reflect", obligationStatus: null, surfacedResult: null, queuedAt: null, startedAt: null, surfacedAt: null } as any },
+      bridges: [],
+      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+      friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
+      codingSessions: [
+        {
+          id: "coding-014",
+          runner: "codex",
+          workdir: "/tmp/workspaces/ouroboros",
+          taskRef: "status-fix",
+          status: "stalled" as const,
+          stdoutTail: "",
+          stderrTail: "stuck",
+          pid: 14,
+          startedAt: "2026-03-20T16:00:00.000Z",
+          lastActivityAt: "2026-03-20T16:01:00.000Z",
+          endedAt: null,
+          restartCount: 0,
+          lastExitCode: null,
+          lastSignal: null,
+          failure: null,
+        },
+      ],
+      pendingObligations: [
+        {
+          id: "ob-stalled",
+          origin: { friendId: "friend-1", channel: "cli", key: "session" },
+          content: "unstick the coding pass",
+          status: "investigating" as const,
+          createdAt: "2026-03-20T16:00:00.000Z",
+          updatedAt: "2026-03-20T16:01:00.000Z",
+        },
+      ],
+      bridgeSuggestion: null,
+    } as any)
+    expect(stalled).toContain("- next action: unstick codex coding-014 and continue")
+
+    const waitingForMerge = formatActiveWorkFrame({
+      currentSession: {
+        friendId: "friend-1",
+        channel: "cli",
+        key: "session",
+        sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+      },
+      currentObligation: "close the loop visibly",
+      mustResolveBeforeHandoff: false,
+      centerOfGravity: "inward-work",
+      inner: { status: "idle", hasPending: false, job: { status: "idle", content: null, origin: null, mode: "reflect", obligationStatus: null, surfacedResult: null, queuedAt: null, startedAt: null, surfacedAt: null } as any },
+      bridges: [],
+      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+      friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
+      codingSessions: [],
+      pendingObligations: [
+        {
+          id: "ob-merge",
+          origin: { friendId: "friend-1", channel: "cli", key: "session" },
+          content: "merge the fix",
+          status: "waiting_for_merge" as const,
+          createdAt: "2026-03-20T16:00:00.000Z",
+          updatedAt: "2026-03-20T16:01:00.000Z",
+        },
+      ],
+      bridgeSuggestion: null,
+    } as any)
+    expect(waitingForMerge).toContain("- next action: wait for checks, merge the fix, then update runtime")
+
+    const updatingRuntime = formatActiveWorkFrame({
+      currentSession: {
+        friendId: "friend-1",
+        channel: "cli",
+        key: "session",
+        sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+      },
+      currentObligation: "close the loop visibly",
+      mustResolveBeforeHandoff: false,
+      centerOfGravity: "inward-work",
+      inner: { status: "idle", hasPending: false, job: { status: "idle", content: null, origin: null, mode: "reflect", obligationStatus: null, surfacedResult: null, queuedAt: null, startedAt: null, surfacedAt: null } as any },
+      bridges: [],
+      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+      friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
+      codingSessions: [],
+      pendingObligations: [
+        {
+          id: "ob-runtime",
+          origin: { friendId: "friend-1", channel: "cli", key: "session" },
+          content: "restart onto latest runtime",
+          status: "updating_runtime" as const,
+          currentSurface: { kind: "runtime", label: "ouro up" },
+          createdAt: "2026-03-20T16:00:00.000Z",
+          updatedAt: "2026-03-20T16:01:00.000Z",
+        },
+      ],
+      bridgeSuggestion: null,
+    } as any)
+    expect(updatingRuntime).toContain("- next action: update runtime, verify version/changelog, then re-observe")
+  })
+
   it("uses the default obligation surface label for open statuses without a specialized formatter", async () => {
     const { formatActiveWorkFrame } = await import("../../heart/active-work")
 

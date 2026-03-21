@@ -180,6 +180,8 @@ describe("centerOfGravitySteeringSection", () => {
           content: "fix the return loop",
           status: "investigating",
           currentSurface: { kind: "coding", label: "codex coding-001" },
+          currentArtifact: "no PR yet",
+          nextAction: "finish the coding pass and bring the result back here",
           createdAt: "2026-01-01T00:00:00Z",
           updatedAt: "2026-01-01T00:01:00Z",
         },
@@ -193,6 +195,57 @@ describe("centerOfGravitySteeringSection", () => {
     const result = centerOfGravitySteeringSection("cli", { activeWorkFrame: frame })
     expect(result).toContain("already working on something i owe")
     expect(result).toContain("codex coding-001")
+  })
+
+  it("tells status answers to use active lane, current artifact, and next action", () => {
+    const frame = makeMinimalFrame({
+      centerOfGravity: "inward-work",
+      pendingObligations: [
+        {
+          id: "ob-2",
+          origin: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+          content: "close the loop visibly",
+          status: "waiting_for_merge",
+          currentSurface: { kind: "merge", label: "PR #123" },
+          currentArtifact: "PR #123",
+          nextAction: "wait for checks, merge PR #123, then update runtime",
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:01:00Z",
+        },
+      ],
+      codingSessions: [
+        {
+          id: "coding-013",
+          runner: "claude",
+          workdir: "/tmp/workspaces/ouroboros",
+          taskRef: "visible-status-fix",
+          status: "running",
+          stdoutTail: "working",
+          stderrTail: "",
+          pid: 13,
+          startedAt: "2026-03-05T23:53:00.000Z",
+          lastActivityAt: "2026-03-05T23:59:00.000Z",
+          endedAt: null,
+          restartCount: 0,
+          lastExitCode: null,
+          lastSignal: null,
+          failure: null,
+          originSession: { friendId: "friend-1", channel: "cli", key: "session" },
+        },
+      ],
+      inner: {
+        status: "idle",
+        hasPending: false,
+        job: makeIdleJob({ status: "idle" }),
+      },
+    })
+
+    const result = centerOfGravitySteeringSection("cli", { activeWorkFrame: frame })
+    expect(result).toContain("if someone asks what i'm doing or for status")
+    expect(result).toContain("active lane")
+    expect(result).toContain("current artifact")
+    expect(result).toContain("next action")
+    expect(result).toContain("PR #123")
   })
 
   it("returns steering for inward-work when live coding work is already active", () => {
@@ -282,5 +335,195 @@ describe("obligation steering helpers", () => {
     })
     expect(result).toContain("already working on something i owe alex")
     expect(result).not.toContain("right now that work is happening in")
+  })
+
+  it("returns an empty string when there is no obligation for concrete status guidance", async () => {
+    const { renderConcreteStatusGuidance } = await import("../../mind/obligation-steering")
+    expect(renderConcreteStatusGuidance(makeMinimalFrame(), null)).toBe("")
+  })
+
+  it("renders concrete guidance for waiting input on another thread", async () => {
+    const { renderConcreteStatusGuidance } = await import("../../mind/obligation-steering")
+    const frame = makeMinimalFrame({
+      codingSessions: [
+        {
+          id: "coding-201",
+          runner: "codex",
+          workdir: "/tmp/workspaces/ouroboros",
+          taskRef: "status-fix",
+          status: "waiting_input",
+          stdoutTail: "need review",
+          stderrTail: "",
+          pid: 201,
+          startedAt: "2026-03-05T23:53:00.000Z",
+          lastActivityAt: "2026-03-05T23:59:00.000Z",
+          endedAt: null,
+          restartCount: 0,
+          lastExitCode: null,
+          lastSignal: null,
+          failure: null,
+          originSession: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
+        },
+      ],
+    })
+
+    const result = renderConcreteStatusGuidance(frame, {
+      id: "ob-2",
+      origin: { friendId: "ari", channel: "cli", key: "session" },
+      content: "close the loop visibly",
+      status: "investigating",
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:01:00Z",
+    })
+
+    expect(result).toContain("active lane: codex coding-201 for bluebubbles/chat")
+    expect(result).toContain("current artifact: no PR or merge artifact yet")
+    expect(result).toContain("next action: answer codex coding-201 and continue")
+  })
+
+  it("renders concrete guidance for stalled coding without origin metadata", async () => {
+    const { renderConcreteStatusGuidance } = await import("../../mind/obligation-steering")
+    const frame = makeMinimalFrame({
+      currentSession: null,
+      codingSessions: [
+        {
+          id: "coding-202",
+          runner: "claude",
+          workdir: "/tmp/workspaces/ouroboros",
+          taskRef: "status-fix",
+          status: "stalled",
+          stdoutTail: "",
+          stderrTail: "stuck",
+          pid: 202,
+          startedAt: "2026-03-05T23:53:00.000Z",
+          lastActivityAt: "2026-03-05T23:59:00.000Z",
+          endedAt: null,
+          restartCount: 0,
+          lastExitCode: null,
+          lastSignal: null,
+          failure: null,
+        },
+      ],
+    })
+
+    const result = renderConcreteStatusGuidance(frame, {
+      id: "ob-3",
+      origin: { friendId: "ari", channel: "cli", key: "session" },
+      content: "close the loop visibly",
+      status: "investigating",
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:01:00Z",
+    })
+
+    expect(result).toContain("active lane: claude coding-202")
+    expect(result).toContain("next action: unstick claude coding-202 and continue")
+  })
+
+  it("renders merge and runtime fallback next actions when explicit fields are absent", async () => {
+    const { renderConcreteStatusGuidance } = await import("../../mind/obligation-steering")
+
+    const waitingForMerge = renderConcreteStatusGuidance(makeMinimalFrame(), {
+      id: "ob-4",
+      origin: { friendId: "ari", channel: "cli", key: "session" },
+      content: "merge the fix",
+      status: "waiting_for_merge",
+      currentSurface: { kind: "merge", label: "PR #456" },
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:01:00Z",
+    })
+    expect(waitingForMerge).toContain("active lane: PR #456")
+    expect(waitingForMerge).toContain("current artifact: PR #456")
+    expect(waitingForMerge).toContain("next action: wait for checks, merge PR #456, then update runtime")
+
+    const updatingRuntime = renderConcreteStatusGuidance(makeMinimalFrame(), {
+      id: "ob-5",
+      origin: { friendId: "ari", channel: "cli", key: "session" },
+      content: "restart onto latest runtime",
+      status: "updating_runtime",
+      currentSurface: { kind: "runtime", label: "ouro up" },
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:01:00Z",
+    })
+    expect(updatingRuntime).toContain("active lane: ouro up")
+    expect(updatingRuntime).toContain("current artifact: no explicit artifact yet")
+    expect(updatingRuntime).toContain("next action: update runtime, verify version/changelog, then re-observe")
+  })
+
+  it("falls back to the generic live loop guidance when no concrete surface exists yet", async () => {
+    const { renderConcreteStatusGuidance } = await import("../../mind/obligation-steering")
+    const result = renderConcreteStatusGuidance(makeMinimalFrame({ currentSession: null }), {
+      id: "ob-6",
+      origin: { friendId: "ari", channel: "cli", key: "session" },
+      content: "keep the loop moving",
+      status: "investigating",
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:01:00Z",
+    })
+
+    expect(result).toContain("active lane: this live loop")
+    expect(result).toContain("current artifact: no explicit artifact yet")
+    expect(result).toContain("next action: continue the active loop and bring the result back here")
+  })
+
+  it("renders the generic live-coding fallback when coding is running but not blocked", async () => {
+    const { renderConcreteStatusGuidance } = await import("../../mind/obligation-steering")
+    const result = renderConcreteStatusGuidance(
+      makeMinimalFrame({
+        codingSessions: [
+          {
+            id: "coding-203",
+            runner: "codex",
+            workdir: "/tmp/workspaces/ouroboros",
+            taskRef: "status-fix",
+            status: "running",
+            stdoutTail: "working",
+            stderrTail: "",
+            pid: 203,
+            startedAt: "2026-03-05T23:53:00.000Z",
+            lastActivityAt: "2026-03-05T23:59:00.000Z",
+            endedAt: null,
+            restartCount: 0,
+            lastExitCode: null,
+            lastSignal: null,
+            failure: null,
+          },
+        ],
+      }),
+      {
+        id: "ob-7",
+        origin: { friendId: "ari", channel: "cli", key: "session" },
+        content: "keep the loop moving",
+        status: "investigating",
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:01:00Z",
+      },
+    )
+
+    expect(result).toContain("active lane: codex coding-203")
+    expect(result).toContain("current artifact: no PR or merge artifact yet")
+    expect(result).toContain("next action: finish the coding pass and bring the result back here")
+  })
+
+  it("handles frames that omit codingSessions by falling back cleanly", async () => {
+    const { renderConcreteStatusGuidance } = await import("../../mind/obligation-steering")
+    const frame = {
+      ...makeMinimalFrame(),
+      currentSession: null,
+      codingSessions: undefined,
+    } as unknown as ActiveWorkFrame
+
+    const result = renderConcreteStatusGuidance(frame, {
+      id: "ob-8",
+      origin: { friendId: "ari", channel: "cli", key: "session" },
+      content: "keep the loop moving",
+      status: "updating_runtime",
+      currentSurface: { kind: "runtime", label: "ouro up" },
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:01:00Z",
+    })
+
+    expect(result).toContain("active lane: ouro up")
+    expect(result).toContain("current artifact: no explicit artifact yet")
+    expect(result).toContain("next action: update runtime, verify version/changelog, then re-observe")
   })
 })

@@ -20,6 +20,8 @@ const OBLIGATION_WAKE_UPDATE_KINDS = new Set<CodingSessionUpdate["kind"]>([
   "failed",
   "killed",
 ])
+const PULL_REQUEST_NUMBER_PATTERN = /\bPR\s*#(\d+)\b/i
+const PULL_REQUEST_URL_PATTERN = /\/pull\/(\d+)(?:\b|\/)?/i
 
 function clip(text: string, maxLength = 280): string {
   const trimmed = text.trim()
@@ -65,6 +67,74 @@ function formatSessionLabel(session: CodingSession): string {
     ? ` for ${session.originSession.channel}/${session.originSession.key}`
     : ""
   return `${session.runner} ${session.id}${origin}`
+}
+
+function extractPullRequestLabel(snippet: string | null): string | null {
+  if (!snippet) return null
+  const numberMatch = snippet.match(PULL_REQUEST_NUMBER_PATTERN)
+  if (numberMatch) return `PR #${numberMatch[1]}`
+  const urlMatch = snippet.match(PULL_REQUEST_URL_PATTERN)
+  if (urlMatch) return `PR #${urlMatch[1]}`
+  return null
+}
+
+function isMergedPullRequestSnippet(snippet: string): boolean {
+  return /\bmerged\b/i.test(snippet) || /\blanded\b/i.test(snippet)
+}
+
+interface ObligationMilestone {
+  status?: "investigating" | "waiting_for_merge" | "updating_runtime"
+  currentSurface?: { kind: "coding" | "merge" | "runtime"; label: string }
+  currentArtifact?: string
+  nextAction?: string
+}
+
+function deriveObligationMilestone(update: CodingSessionUpdate): ObligationMilestone | null {
+  const snippet = pickUpdateSnippet(update)
+  const pullRequest = extractPullRequestLabel(snippet)
+
+  if (update.kind === "completed" && snippet && pullRequest && isMergedPullRequestSnippet(snippet)) {
+    return {
+      status: "updating_runtime",
+      currentSurface: { kind: "runtime", label: "ouro up" },
+      currentArtifact: pullRequest,
+      nextAction: "update runtime, verify version/changelog, then re-observe",
+    }
+  }
+
+  if (update.kind === "completed" && pullRequest) {
+    return {
+      status: "waiting_for_merge",
+      currentSurface: { kind: "merge", label: pullRequest },
+      currentArtifact: pullRequest,
+      nextAction: `wait for checks, merge ${pullRequest}, then update runtime`,
+    }
+  }
+
+  if (update.kind === "waiting_input") {
+    return {
+      status: "investigating",
+      currentSurface: { kind: "coding", label: `${update.session.runner} ${update.session.id}` },
+      nextAction: `answer ${update.session.runner} ${update.session.id} and continue`,
+    }
+  }
+
+  if (update.kind === "stalled") {
+    return {
+      status: "investigating",
+      currentSurface: { kind: "coding", label: `${update.session.runner} ${update.session.id}` },
+      nextAction: `unstick ${update.session.runner} ${update.session.id} and continue`,
+    }
+  }
+
+  if (update.kind === "progress" || update.kind === "spawned" || update.kind === "failed" || update.kind === "killed" || update.kind === "completed") {
+    return {
+      status: "investigating",
+      currentSurface: { kind: "coding", label: `${update.session.runner} ${update.session.id}` },
+    }
+  }
+
+  return null
 }
 
 function isSafeProgressSnippet(snippet: string): boolean {
@@ -142,6 +212,23 @@ function formatUpdateMessage(update: CodingSessionUpdate): string | null {
   }
 }
 
+function formatReportBackMessage(update: CodingSessionUpdate, baseMessage: string | null): string | null {
+  if (!baseMessage) return null
+  if (!update.session.obligationId || !update.session.originSession) {
+    return baseMessage
+  }
+
+  const milestone = deriveObligationMilestone(update)
+  const extraLines: string[] = []
+  if (milestone?.currentArtifact) {
+    extraLines.push(`current artifact: ${milestone.currentArtifact}`)
+  }
+  if (milestone?.nextAction) {
+    extraLines.push(`next: ${milestone.nextAction}`)
+  }
+  return extraLines.length > 0 ? `${baseMessage}\n${extraLines.join("\n")}` : baseMessage
+}
+
 function obligationNoteFromUpdate(update: CodingSessionUpdate): string | null {
   const snippet = pickUpdateSnippet(update)
   switch (update.kind) {
@@ -169,10 +256,13 @@ function obligationNoteFromUpdate(update: CodingSessionUpdate): string | null {
 function syncObligationFromUpdate(update: CodingSessionUpdate): void {
   const obligationId = update.session.obligationId
   if (!obligationId) return
+  const milestone = deriveObligationMilestone(update)
   try {
     advanceObligation(getAgentRoot(), obligationId, {
-      status: "investigating",
-      currentSurface: { kind: "coding", label: `${update.session.runner} ${update.session.id}` },
+      status: milestone?.status ?? "investigating",
+      currentSurface: milestone?.currentSurface ?? { kind: "coding", label: `${update.session.runner} ${update.session.id}` },
+      currentArtifact: milestone?.currentArtifact,
+      nextAction: milestone?.nextAction,
       latestNote: obligationNoteFromUpdate(update) ?? undefined,
     })
   } catch {
@@ -232,10 +322,10 @@ export function attachCodingSessionFeedback(
 
   const spawnedUpdate = { kind: "spawned", session } as const
   syncObligationFromUpdate(spawnedUpdate)
-  sendMessage(formatUpdateMessage(spawnedUpdate))
+  sendMessage(formatReportBackMessage(spawnedUpdate, formatUpdateMessage(spawnedUpdate)))
   unsubscribe = manager.subscribe(session.id, async (update) => {
     syncObligationFromUpdate(update)
-    sendMessage(formatUpdateMessage(update))
+    sendMessage(formatReportBackMessage(update, formatUpdateMessage(update)))
     await wakeInnerDialogForObligation(update)
     if (TERMINAL_UPDATE_KINDS.has(update.kind)) {
       closed = true
