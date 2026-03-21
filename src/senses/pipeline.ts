@@ -16,6 +16,7 @@ import { resolveMustResolveBeforeHandoff } from "./continuity"
 import { createBridgeManager, formatBridgeContext } from "../heart/bridges/manager"
 import { getAgentName, getAgentRoot } from "../heart/identity"
 import { getTaskModule } from "../repertoire/tasks"
+import { getCodingSessionManager } from "../repertoire/coding"
 import { listSessionActivity } from "../heart/session-activity"
 import type { SessionActivityRecord } from "../heart/session-activity"
 import { buildActiveWorkFrame, type ActiveWorkFrame } from "../heart/active-work"
@@ -288,12 +289,31 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   } catch {
     pendingObligations = []
   }
+  let codingSessions = [] as ReturnType<ReturnType<typeof getCodingSessionManager>["listSessions"]>
+  try {
+    codingSessions = getCodingSessionManager()
+      .listSessions()
+      .filter((session) => {
+        if (session.status !== "spawning" && session.status !== "running" && session.status !== "waiting_input" && session.status !== "stalled") {
+          return false
+        }
+        if (!session.originSession) {
+          return false
+        }
+        return session.originSession.friendId === currentSession.friendId
+          && session.originSession.channel === currentSession.channel
+          && session.originSession.key === currentSession.key
+      })
+  } catch {
+    codingSessions = []
+  }
   const activeWorkFrame = buildActiveWorkFrame({
     currentSession,
     currentObligation,
     mustResolveBeforeHandoff,
     inner: readInnerWorkState(),
     bridges: activeBridges,
+    codingSessions,
     pendingObligations,
     taskBoard: (() => {
       try {

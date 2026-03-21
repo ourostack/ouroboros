@@ -864,6 +864,279 @@ describe("coding tool contracts", () => {
     ])
   })
 
+  it("coding_status prefers active sessions for the current origin and hides stale closed history by default", async () => {
+    manager.listSessions.mockReturnValue([
+      {
+        id: "coding-001",
+        runner: "claude",
+        workdir: "/Users/test/AgentWorkspaces/slugger",
+        taskRef: "old-task",
+        status: "completed",
+        stdoutTail: "done",
+        stderrTail: "",
+        pid: null,
+        startedAt: "2026-03-05T23:40:00.000Z",
+        lastActivityAt: "2026-03-05T23:41:00.000Z",
+        endedAt: "2026-03-05T23:41:00.000Z",
+        restartCount: 0,
+        lastExitCode: 0,
+        lastSignal: null,
+        failure: null,
+        originSession: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+      },
+      {
+        id: "coding-012",
+        runner: "codex",
+        workdir: "/Users/test/AgentWorkspaces/ouroboros",
+        taskRef: "other-thread",
+        status: "running",
+        stdoutTail: "working elsewhere",
+        stderrTail: "",
+        pid: 12,
+        startedAt: "2026-03-05T23:52:00.000Z",
+        lastActivityAt: "2026-03-05T23:58:00.000Z",
+        endedAt: null,
+        restartCount: 0,
+        lastExitCode: null,
+        lastSignal: null,
+        failure: null,
+        originSession: { friendId: "other", channel: "cli", key: "session" },
+      },
+      {
+        id: "coding-013",
+        runner: "claude",
+        workdir: "/Users/test/AgentWorkspaces/ouroboros",
+        taskRef: "current-thread",
+        status: "waiting_input",
+        stdoutTail: "needs review",
+        stderrTail: "",
+        pid: 13,
+        startedAt: "2026-03-05T23:53:00.000Z",
+        lastActivityAt: "2026-03-05T23:59:00.000Z",
+        endedAt: null,
+        restartCount: 0,
+        lastExitCode: null,
+        lastSignal: null,
+        failure: null,
+        originSession: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+      },
+    ])
+
+    const result = await execTool("coding_status", {}, {
+      currentSession: {
+        friendId: "ari",
+        channel: "bluebubbles",
+        key: "chat",
+        sessionPath: "/tmp/state/sessions/ari/bluebubbles/chat.json",
+      },
+    })
+
+    expect(JSON.parse(result)).toMatchObject([
+      expect.objectContaining({ id: "coding-013", status: "waiting_input" }),
+      expect.objectContaining({ id: "coding-012", status: "running" }),
+    ])
+    expect(result).not.toContain("\"coding-001\"")
+  })
+
+  it("coding_status falls back to the newest relevant closed sessions when nothing is active", async () => {
+    manager.listSessions.mockReturnValue([
+      {
+        id: "coding-001",
+        runner: "claude",
+        workdir: "/Users/test/AgentWorkspaces/slugger",
+        taskRef: "old-task",
+        status: "completed",
+        stdoutTail: "done",
+        stderrTail: "",
+        pid: null,
+        startedAt: "2026-03-05T23:40:00.000Z",
+        lastActivityAt: "2026-03-05T23:41:00.000Z",
+        endedAt: "2026-03-05T23:41:00.000Z",
+        restartCount: 0,
+        lastExitCode: 0,
+        lastSignal: null,
+        failure: null,
+        originSession: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+      },
+      {
+        id: "coding-020",
+        runner: "claude",
+        workdir: "/Users/test/AgentWorkspaces/slugger",
+        taskRef: "unrelated-thread",
+        status: "completed",
+        stdoutTail: "done elsewhere",
+        stderrTail: "",
+        pid: null,
+        startedAt: "2026-03-05T23:50:00.000Z",
+        lastActivityAt: "2026-03-05T23:58:00.000Z",
+        endedAt: "2026-03-05T23:58:00.000Z",
+        restartCount: 0,
+        lastExitCode: 0,
+        lastSignal: null,
+        failure: null,
+        originSession: { friendId: "other", channel: "cli", key: "session" },
+      },
+      {
+        id: "coding-021",
+        runner: "codex",
+        workdir: "/Users/test/AgentWorkspaces/slugger",
+        taskRef: "current-thread",
+        status: "killed",
+        stdoutTail: "interrupted",
+        stderrTail: "",
+        pid: null,
+        startedAt: "2026-03-05T23:54:00.000Z",
+        lastActivityAt: "2026-03-06T00:01:00.000Z",
+        endedAt: "2026-03-06T00:01:00.000Z",
+        restartCount: 0,
+        lastExitCode: null,
+        lastSignal: "SIGTERM",
+        failure: null,
+        originSession: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+      },
+    ])
+
+    const result = await execTool("coding_status", {}, {
+      currentSession: {
+        friendId: "ari",
+        channel: "bluebubbles",
+        key: "chat",
+        sessionPath: "/tmp/state/sessions/ari/bluebubbles/chat.json",
+      },
+    })
+
+    expect(JSON.parse(result)).toMatchObject([
+      expect.objectContaining({ id: "coding-021", status: "killed" }),
+      expect.objectContaining({ id: "coding-001", status: "completed" }),
+    ])
+    expect(result).not.toContain("\"coding-020\"")
+  })
+
+  it("coding_status breaks same-rank active ties by latest activity and newer session id", async () => {
+    manager.listSessions.mockReturnValue([
+      {
+        id: "coding-013",
+        runner: "claude",
+        workdir: "/Users/test/AgentWorkspaces/ouroboros",
+        taskRef: "current-thread",
+        status: "running",
+        stdoutTail: "working",
+        stderrTail: "",
+        pid: 13,
+        startedAt: "2026-03-05T23:53:00.000Z",
+        lastActivityAt: "2026-03-05T23:59:00.000Z",
+        endedAt: null,
+        restartCount: 0,
+        lastExitCode: null,
+        lastSignal: null,
+        failure: null,
+        originSession: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+      },
+      {
+        id: "coding-014",
+        runner: "codex",
+        workdir: "/Users/test/AgentWorkspaces/ouroboros",
+        taskRef: "current-thread",
+        status: "waiting_input",
+        stdoutTail: "needs answer",
+        stderrTail: "",
+        pid: 14,
+        startedAt: "2026-03-05T23:54:00.000Z",
+        lastActivityAt: "2026-03-05T23:59:00.000Z",
+        endedAt: null,
+        restartCount: 0,
+        lastExitCode: null,
+        lastSignal: null,
+        failure: null,
+        originSession: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+      },
+    ])
+
+    const result = await execTool("coding_status", {}, {
+      currentSession: {
+        friendId: "ari",
+        channel: "bluebubbles",
+        key: "chat",
+        sessionPath: "/tmp/state/sessions/ari/bluebubbles/chat.json",
+      },
+    })
+
+    expect(JSON.parse(result)).toMatchObject([
+      expect.objectContaining({ id: "coding-014", status: "waiting_input" }),
+      expect.objectContaining({ id: "coding-013", status: "running" }),
+    ])
+  })
+
+  it("coding_status falls back to newest global history when the current thread has no matching sessions", async () => {
+    manager.listSessions.mockReturnValue([
+      {
+        id: "coding-020",
+        runner: "claude",
+        workdir: "/Users/test/AgentWorkspaces/ouroboros",
+        taskRef: "other-thread",
+        status: "completed",
+        stdoutTail: "done elsewhere",
+        stderrTail: "",
+        pid: null,
+        startedAt: "2026-03-05T23:50:00.000Z",
+        lastActivityAt: "2026-03-05T23:58:00.000Z",
+        endedAt: "2026-03-05T23:58:00.000Z",
+        restartCount: 0,
+        lastExitCode: 0,
+        lastSignal: null,
+        failure: null,
+        originSession: { friendId: "other", channel: "cli", key: "session" },
+      },
+      {
+        id: "coding-021",
+        runner: "codex",
+        workdir: "/Users/test/AgentWorkspaces/ouroboros",
+        taskRef: "another-thread",
+        status: "killed",
+        stdoutTail: "interrupted",
+        stderrTail: "",
+        pid: null,
+        startedAt: "2026-03-05T23:54:00.000Z",
+        lastActivityAt: "2026-03-06T00:01:00.000Z",
+        endedAt: "2026-03-06T00:01:00.000Z",
+        restartCount: 0,
+        lastExitCode: null,
+        lastSignal: "SIGTERM",
+        failure: null,
+        originSession: { friendId: "someone-else", channel: "teams", key: "thread" },
+      },
+    ])
+
+    const result = await execTool("coding_status", {}, {
+      currentSession: {
+        friendId: "ari",
+        channel: "bluebubbles",
+        key: "chat",
+        sessionPath: "/tmp/state/sessions/ari/bluebubbles/chat.json",
+      },
+    })
+
+    expect(JSON.parse(result)).toMatchObject([
+      expect.objectContaining({ id: "coding-021", status: "killed" }),
+      expect.objectContaining({ id: "coding-020", status: "completed" }),
+    ])
+  })
+
+  it("coding_status returns an empty list when there are no sessions", async () => {
+    manager.listSessions.mockReturnValue([])
+
+    const result = await execTool("coding_status", {}, {
+      currentSession: {
+        friendId: "ari",
+        channel: "bluebubbles",
+        key: "chat",
+        sessionPath: "/tmp/state/sessions/ari/bluebubbles/chat.json",
+      },
+    })
+
+    expect(JSON.parse(result)).toEqual([])
+  })
+
   it("coding_tail returns readable recent stdout/stderr for a session", async () => {
     manager.getSession.mockReturnValue({
       id: "coding-010",

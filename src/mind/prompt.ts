@@ -531,6 +531,24 @@ i've been thinking privately and reached something.${originClause}
 i should bring my answer back to the conversation it came from.`
     }
 
+    const liveCodingSession = frame.codingSessions?.[0]
+    if (liveCodingSession) {
+      const sameThread = frame.currentSession
+        && liveCodingSession.originSession
+        && liveCodingSession.originSession.friendId === frame.currentSession.friendId
+        && liveCodingSession.originSession.channel === frame.currentSession.channel
+        && liveCodingSession.originSession.key === frame.currentSession.key
+      const scopeClause = sameThread
+        ? " for this same thread"
+        : liveCodingSession.originSession
+          ? ` for ${liveCodingSession.originSession.channel}/${liveCodingSession.originSession.key}`
+          : ""
+      return `## where my attention is
+i already have coding work running in ${liveCodingSession.runner} ${liveCodingSession.id}${scopeClause}.
+
+i should orient around that live lane first, then decide what still needs to come back here.`
+    }
+
     return `## where my attention is
 i have unfinished work that needs attention before i move on.
 

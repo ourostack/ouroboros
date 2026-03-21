@@ -1,6 +1,7 @@
 import type { Channel } from "../mind/friends/types"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { BoardResult } from "../repertoire/tasks/types"
+import type { CodingSession } from "../repertoire/coding/types"
 import { bridgeStateLabel } from "./bridges/state-machine"
 import type { BridgeRecord } from "./bridges/store"
 import type { InnerJob } from "./daemon/thoughts"
@@ -52,6 +53,7 @@ export interface ActiveWorkFrame {
     freshestForCurrentFriend: SessionActivityRecord | null
     otherLiveSessionsForCurrentFriend: SessionActivityRecord[]
   }
+  codingSessions: CodingSession[]
   pendingObligations: Obligation[]
   targetCandidates?: TargetSessionCandidate[]
   bridgeSuggestion: BridgeSuggestion | null
@@ -63,6 +65,7 @@ interface BuildActiveWorkFrameInput {
   mustResolveBeforeHandoff: boolean
   inner: ActiveWorkFrame["inner"]
   bridges: BridgeRecord[]
+  codingSessions?: CodingSession[]
   pendingObligations?: Obligation[]
   taskBoard: BoardResult
   friendActivity: SessionActivityRecord[]
@@ -107,6 +110,23 @@ function hasSharedObligationPressure(input: Pick<BuildActiveWorkFrameInput, "cur
     && input.currentObligation.trim().length > 0
   ) || input.mustResolveBeforeHandoff
     || summarizeLiveTasks(input.taskBoard).length > 0
+}
+
+function formatCodingLaneLabel(session: CodingSession): string {
+  return `${session.runner} ${session.id}`
+}
+
+function describeCodingSessionScope(session: CodingSession, currentSession: ActiveWorkFrame["currentSession"]): string {
+  if (!session.originSession) return ""
+  if (
+    currentSession
+    && session.originSession.friendId === currentSession.friendId
+    && session.originSession.channel === currentSession.channel
+    && session.originSession.key === currentSession.key
+  ) {
+    return " for this thread"
+  }
+  return ` for ${session.originSession.channel}/${session.originSession.key}`
 }
 
 function activeObligationCount(obligations: Obligation[] | undefined): number {
@@ -195,9 +215,10 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
   const liveTaskNames = summarizeLiveTasks(input.taskBoard)
   const activeBridgePresent = input.bridges.some(isActiveBridge)
   const openObligations = activeObligationCount(input.pendingObligations)
+  const liveCodingSessions = input.codingSessions ?? []
   const centerOfGravity: CenterOfGravityMode = activeBridgePresent
     ? "shared-work"
-    : (input.inner.status === "running" || input.inner.hasPending || input.mustResolveBeforeHandoff || openObligations > 0)
+    : (input.inner.status === "running" || input.inner.hasPending || input.mustResolveBeforeHandoff || openObligations > 0 || liveCodingSessions.length > 0)
       ? "inward-work"
       : "local-turn"
 
@@ -217,6 +238,7 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
       freshestForCurrentFriend: friendSessions[0] ?? null,
       otherLiveSessionsForCurrentFriend: friendSessions,
     },
+    codingSessions: liveCodingSessions,
     pendingObligations: input.pendingObligations ?? [],
     targetCandidates: input.targetCandidates ?? [],
     bridgeSuggestion: suggestBridgeForActiveWork({
@@ -239,6 +261,7 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
       bridges: frame.bridges.length,
       liveTasks: frame.taskPressure.liveTaskNames.length,
       liveSessions: frame.friendActivity.otherLiveSessionsForCurrentFriend.length,
+      codingSessions: frame.codingSessions.length,
       pendingObligations: openObligations,
       hasBridgeSuggestion: frame.bridgeSuggestion !== null,
     },
@@ -295,6 +318,14 @@ export function formatActiveWorkFrame(frame: ActiveWorkFrame): string {
       lines.push(surfacedLine)
     }
     // idle, returned, abandoned: omitted
+  }
+
+  if ((frame.codingSessions ?? []).length > 0) {
+    lines.push("")
+    lines.push("## live coding work")
+    for (const session of frame.codingSessions) {
+      lines.push(`- [${session.status}] ${formatCodingLaneLabel(session)}${describeCodingSessionScope(session, frame.currentSession)}`)
+    }
   }
 
   // Task pressure

@@ -33,6 +33,7 @@ function makeMinimalFrame(overrides: Partial<ActiveWorkFrame> = {}): ActiveWorkF
     bridges: [],
     taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
     friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
+    codingSessions: [],
     bridgeSuggestion: null,
     ...overrides,
   }
@@ -192,6 +193,42 @@ describe("centerOfGravitySteeringSection", () => {
     const result = centerOfGravitySteeringSection("cli", { activeWorkFrame: frame })
     expect(result).toContain("already working on something i owe")
     expect(result).toContain("codex coding-001")
+  })
+
+  it("returns steering for inward-work when live coding work is already active", () => {
+    const frame = makeMinimalFrame({
+      centerOfGravity: "inward-work",
+      codingSessions: [
+        {
+          id: "coding-013",
+          runner: "claude",
+          workdir: "/tmp/workspaces/ouroboros",
+          taskRef: "harness-maintenance",
+          status: "running",
+          stdoutTail: "working",
+          stderrTail: "",
+          pid: 13,
+          startedAt: "2026-03-05T23:53:00.000Z",
+          lastActivityAt: "2026-03-05T23:59:00.000Z",
+          endedAt: null,
+          restartCount: 0,
+          lastExitCode: null,
+          lastSignal: null,
+          failure: null,
+          originSession: { friendId: "friend-1", channel: "cli", key: "session" },
+        },
+      ],
+      inner: {
+        status: "idle",
+        hasPending: false,
+        job: makeIdleJob({ status: "idle" }),
+      },
+    })
+
+    const result = centerOfGravitySteeringSection("cli", { activeWorkFrame: frame })
+    expect(result).toContain("already have coding work running")
+    expect(result).toContain("claude coding-013")
+    expect(result).toContain("for this same thread")
   })
 
   it("returns steering for shared-work", () => {
