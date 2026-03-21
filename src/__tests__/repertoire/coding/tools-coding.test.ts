@@ -175,12 +175,25 @@ describe("coding tool contracts", () => {
       failure: null,
     })
 
-    await execTool("coding_spawn", {
-      runner: "codex",
-      workdir: "/Users/test/AgentWorkspaces/ouroboros",
-      prompt: "execute",
-      taskRef: "task-auto",
-    })
+    const sessionOrientation = {
+      updatedAt: "2026-03-21T01:00:00.000Z",
+      goal: "tighten parent orientation",
+      constraints: ["keep it simple"],
+      progress: ["read_file AGENTS.md"],
+      readFiles: ["AGENTS.md"],
+      modifiedFiles: [],
+    }
+
+    await execTool(
+      "coding_spawn",
+      {
+        runner: "codex",
+        workdir: "/Users/test/AgentWorkspaces/ouroboros",
+        prompt: "execute",
+        taskRef: "task-auto",
+      },
+      { sessionOrientation } as Record<string, unknown>,
+    )
 
     expect(prepareCodingContextPack).toHaveBeenCalledWith({
       request: {
@@ -190,6 +203,7 @@ describe("coding tool contracts", () => {
         taskRef: "task-auto",
       },
       existingSessions: [],
+      sessionOrientation,
     })
     expect(manager.spawnSession).toHaveBeenCalledWith({
       runner: "codex",

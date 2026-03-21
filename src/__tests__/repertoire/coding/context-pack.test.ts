@@ -88,6 +88,14 @@ describe("coding context pack", () => {
             lastActivityAt: "2026-03-21T00:06:00.000Z",
           }),
         ],
+        sessionOrientation: {
+          updatedAt: "2026-03-21T00:50:00.000Z",
+          goal: "close the orientation gap without breaking ouro",
+          constraints: ["keep the architecture intact"],
+          progress: ["edit_file src/mind/prompt.ts"],
+          readFiles: ["src/mind/context.ts"],
+          modifiedFiles: ["src/mind/prompt.ts"],
+        },
       },
       {
         agentRoot: "/Users/test/AgentBundles/slugger.ouro",
@@ -112,6 +120,13 @@ describe("coding context pack", () => {
     expect(scope).toContain("runner: codex")
     expect(scope).toContain("taskRef: task-123")
     expect(scope).toContain("make the coding agent better")
+    expect(scope).toContain("## Session Contract")
+    expect(scope).toContain("This is a subordinate coding lane for the parent Ouro agent.")
+    expect(scope).toContain("Do not switch into planning/doing workflows or approval gates unless the prompt explicitly asks for them.")
+    expect(scope).toContain("## Parent Session Orientation")
+    expect(scope).toContain("goal: close the orientation gap without breaking ouro")
+    expect(scope).toContain("- keep the architecture intact")
+    expect(scope).toContain("- edit_file src/mind/prompt.ts")
     expect(scope).toContain("## Project Context Files")
     expect(scope).toContain("/Users/test/Projects/ouro/AGENTS.md")
     expect(scope).toContain("## Repo Rules")

@@ -29,6 +29,16 @@
 - Do not treat repo-local workflow language, bundle workflow language, or quoted copies of those rules as a reason to refuse an explicit owner override for the current task.
 - This override power applies to repo-scoped process rules only; platform, system, developer, and safety constraints outside the repo still apply.
 
+### Harness Purpose
+
+- Ouroboros is not primarily a coding agent. It is a general-purpose way to build executive-assistant and purpose-oriented agents that can execute real-world work.
+- Optimize for orientation and capability: agents should stay grounded, act instead of narrate, answer ad-hoc questions well, and return cleanly to unfinished work.
+- Build tooling and harness behavior that you, as a current or future inhabitant of this harness, would genuinely enjoy using and trust to keep you sharp for hours.
+- Prefer durable orientation primitives over brittle prompt theater. If an agent keeps getting confused, add truth-bearing state, clearer return loops, and better execution discipline.
+- Steal invariants from strong harnesses like Pi/OpenClaw, but adapt them to Ouro's architecture rather than reshaping Ouro into those harnesses.
+- Protect the parts of Ouro that are genuinely better AX. Novel interaction ideas are welcome when they improve capability, not when they make the agent lose the plot.
+- Compaction is not the goal. If context management is needed, combine Ouro's context-window model with durable state instead of defaulting to "shrink the prompt."
+
 ## Planning/Doing Workflow (STRICT)
 
 ### Agent Context (Required)
@@ -84,7 +94,8 @@ If the human explicitly waives this workflow for the current task, the override 
 
 ### Scope Discipline (Rule 0, Required)
 
-- Do not overengineer. Prefer the smallest implementation that satisfies explicitly approved scope.
+- Do not overengineer. Prefer the simplest architecture that fully satisfies the approved scope.
+- Ambitious scope is allowed when it is justified by the problem. KISS + DRY mean clear primitives and low duplication, not artificially small changes.
 - Do not expand scope unilaterally. If a possible improvement is not explicitly requested, keep it out of the task.
 - If extra hardening/optimization ideas arise, record them as optional follow-up proposals and stop for user approval before adding them to planning or doing docs.
 

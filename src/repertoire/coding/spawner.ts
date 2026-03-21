@@ -76,6 +76,17 @@ function buildPrompt(request: CodingSessionRequest, deps: Required<Pick<SpawnCod
 
   sections.push(
     [
+      "Execution contract:",
+      "- You are a subordinate coding session launched by a parent Ouro agent.",
+      "- Execute the concrete request in the supplied workdir directly.",
+      "- Do not switch into planning/doing workflows, approval gates, or repo-management rituals unless the request explicitly asks for them.",
+      "- Treat the request, scope file, and state file as the authoritative briefing for this session.",
+      "- Prefer direct execution and verification over narration.",
+    ].join("\n"),
+  )
+
+  sections.push(
+    [
       "Coding session metadata:",
       `sessionId: ${request.sessionId ?? "pending"}`,
       `parentAgent: ${request.parentAgent ?? "unknown"}`,

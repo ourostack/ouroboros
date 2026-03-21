@@ -57,6 +57,9 @@ describe("coding spawner", () => {
       "stream-json",
     ])
     expect(result.prompt).toContain("Coding session metadata")
+    expect(result.prompt).toContain("Execution contract:")
+    expect(result.prompt).toContain("You are a subordinate coding session launched by a parent Ouro agent.")
+    expect(result.prompt).toContain("Do not switch into planning/doing workflows, approval gates, or repo-management rituals unless the request explicitly asks for them.")
     expect(result.prompt).toContain("sessionId: coding-777")
     expect(result.prompt).toContain("parentAgent: slugger")
     expect(result.prompt).toContain("taskRef: task-123")
@@ -103,6 +106,7 @@ describe("coding spawner", () => {
 
     expect(result.command).toBe("codex")
     expect(result.args).toEqual(["exec", "--skip-git-repo-check", "--cd", "/Users/test/AgentWorkspaces/slugger"])
+    expect(result.prompt).toContain("Execution contract:")
     expect(result.prompt).toContain("taskRef: task-456")
     expect(result.prompt).toContain("plan")
     expect(readFileSync).not.toHaveBeenCalled()
