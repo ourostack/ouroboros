@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.93",
+      "changes": [
+        "Final-answer truth checks now require fresh external-state verification (gh pr view, npm view, etc.) before allowing intent=complete when a live obligation is active, preventing stale or guessed merge/publish/deploy claims."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.92",
       "changes": [
         "Final-answer truth checks now reject `intent=complete` when a must-resolve handoff still has an active live-session return obligation and no newer follow-up proves the loop resumed.",
