@@ -391,21 +391,16 @@ describe("CLI adapter - onReasoningChunk and onTextChunk rendering", () => {
     expect(stdoutChunks.join("")).toBe("hello \x1b[1mworld\x1b[22m")
   })
 
-  it("onReasoningChunk outputs dim text", () => {
+  it("onReasoningChunk keeps reasoning private", () => {
     callbacks.onReasoningChunk("reasoning")
-    const output = stdoutChunks.join("")
-    expect(output).toContain("\x1b[2m")
-    expect(output).toContain("reasoning")
-    expect(output).toContain("\x1b[0m")
+    expect(stdoutChunks.join("")).toBe("")
   })
 
-  it("reasoning then content: \\n separator before text on stdout", () => {
+  it("reasoning then content streams only the answer text", () => {
     callbacks.onReasoningChunk("thinking")
     callbacks.onTextChunk("answer")
     callbacks.flushMarkdown()
-    const output = stdoutChunks.join("")
-    expect(output).toContain("\x1b[2mthinking\x1b[0m")
-    expect(output).toContain("\nanswer")
+    expect(stdoutChunks.join("")).toBe("answer")
   })
 
   it("text-only response has no reasoning separator", () => {
@@ -415,20 +410,12 @@ describe("CLI adapter - onReasoningChunk and onTextChunk rendering", () => {
     expect(output).toBe("just text")
   })
 
-  it("multiple reasoning chunks before text: only one \\n separator", () => {
+  it("multiple reasoning chunks remain hidden before text", () => {
     callbacks.onReasoningChunk("step1")
     callbacks.onReasoningChunk("step2")
     callbacks.onTextChunk("answer")
     callbacks.flushMarkdown()
-    const output = stdoutChunks.join("")
-    // Reasoning chunks: "\x1b[2mstep1\x1b[0m\x1b[2mstep2\x1b[0m"
-    // Then separator "\n" then "answer"
-    // Count separating newlines between reasoning and answer (not within reasoning)
-    const reasoningEnd = output.lastIndexOf("\x1b[0m")
-    const answerStart = output.indexOf("answer")
-    const gap = output.slice(reasoningEnd, answerStart)
-    const newlines = (gap.match(/\n/g) || []).length
-    expect(newlines).toBe(1)
+    expect(stdoutChunks.join("")).toBe("answer")
   })
 
   it("onModelStart resets reasoning state for new turn", () => {
@@ -442,12 +429,10 @@ describe("CLI adapter - onReasoningChunk and onTextChunk rendering", () => {
     expect(output).not.toContain("\n\n")
   })
 
-  it("multiple reasoning chunks are all dim", () => {
+  it("multiple reasoning chunks stay private", () => {
     callbacks.onReasoningChunk("chunk1")
     callbacks.onReasoningChunk("chunk2")
-    const output = stdoutChunks.join("")
-    expect(output).toContain("\x1b[2mchunk1\x1b[0m")
-    expect(output).toContain("\x1b[2mchunk2\x1b[0m")
+    expect(stdoutChunks.join("")).toBe("")
   })
 
   it("content-only: no dim codes on stdout", () => {
@@ -866,7 +851,7 @@ describe("CLI adapter - phrase rotation", () => {
     vi.useRealTimers()
   })
 
-  it("onReasoningChunk stops active spinner", async () => {
+  it("onReasoningChunk leaves the thinking spinner running", async () => {
     vi.resetModules()
     const agent = await import("../../senses/cli")
     const callbacks = agent.createCliCallbacks()
@@ -874,9 +859,9 @@ describe("CLI adapter - phrase rotation", () => {
     callbacks.onModelStart() // starts spinner
     stderrChunks.length = 0
     callbacks.onReasoningChunk("thinking")
-    // Spinner should have been stopped (emits \x1b[K clear)
+    // Reasoning stays private, so the spinner remains the visible indicator.
     const output = stderrChunks.join("")
-    expect(output).toContain("\x1b[K")
+    expect(output).toBe("")
 
     callbacks.flushMarkdown()
   })

@@ -320,6 +320,188 @@ describe("safe workspace acquisition", () => {
     expect(alreadyMappedShell.command).toBe("git -C /bundle/state/workspaces/ouroboros-main-444 status")
   })
 
+  it("persists and restores the active selection across a runtime restart", () => {
+    const persisted = new Map<string, string>()
+    const existsSync = vi.fn((target: string) =>
+      target === "/bundle/state/workspaces"
+      || target === "/bundle/state/workspaces/.active-safe-workspace.json"
+      || target === "/bundle/state/workspaces/ouroboros-scratch-901",
+    ) as any
+    const writeFileSync = vi.fn((target: string, content: string) => {
+      persisted.set(target, content)
+    }) as any
+    const readFileSync = vi.fn((target: string) => persisted.get(target) ?? "") as any
+
+    const initial = ensureSafeRepoWorkspace({
+      repoRoot: "/installed/@ouro.bot/cli",
+      agentName: "slugger",
+      workspaceRoot: "/bundle/state/workspaces",
+      persistSelection: true,
+      canonicalRepoUrl: "https://github.com/ouroborosbot/ouroboros.git",
+      spawnSync: vi.fn((command: string, args: string[]) => {
+        expect(command).toBe("git")
+        if (args.join(" ") === "rev-parse --is-inside-work-tree") return spawnResult("", "fatal: not a git repository", 128)
+        if (args[0] === "clone") return spawnResult()
+        throw new Error(`unexpected git args: ${args.join(" ")}`)
+      }) as any,
+      existsSync,
+      mkdirSync: vi.fn() as any,
+      rmSync: vi.fn() as any,
+      writeFileSync,
+      now: () => 901,
+    })
+
+    expect(initial.workspaceRoot).toBe("/bundle/state/workspaces/ouroboros-scratch-901")
+
+    resetSafeWorkspaceSelection()
+
+    const restored = ensureSafeRepoWorkspace({
+      repoRoot: "/installed/@ouro.bot/cli",
+      agentName: "slugger",
+      workspaceRoot: "/bundle/state/workspaces",
+      persistSelection: true,
+      spawnSync: vi.fn(() => {
+        throw new Error("should not reacquire")
+      }) as any,
+      existsSync,
+      mkdirSync: vi.fn() as any,
+      rmSync: vi.fn() as any,
+      readFileSync,
+      writeFileSync,
+    })
+
+    expect(restored).toEqual(initial)
+  })
+
+  it("restores a persisted selection whose sourceBranch is a string", () => {
+    const stateFile = "/bundle/state/workspaces/.active-safe-workspace.json"
+    const persisted = new Map<string, string>([
+      [stateFile, JSON.stringify({
+        runtimeKind: "clone-non-main",
+        repoRoot: "/repo",
+        workspaceRoot: "/bundle/state/workspaces/ouroboros-origin-main-903",
+        workspaceBranch: "slugger/safe-workspace-903",
+        sourceBranch: "feature/live-loop",
+        sourceCloneUrl: "https://github.com/ouroborosbot/ouroboros.git",
+        cleanupAfterMerge: false,
+        created: true,
+        note: "restored from persisted worktree selection",
+      })],
+    ])
+    const existsSync = vi.fn((target: string) =>
+      target === "/bundle/state/workspaces"
+      || target === stateFile
+      || target === "/bundle/state/workspaces/ouroboros-origin-main-903",
+    ) as any
+
+    const restored = ensureSafeRepoWorkspace({
+      repoRoot: "/repo",
+      agentName: "slugger",
+      workspaceRoot: "/bundle/state/workspaces",
+      persistSelection: true,
+      spawnSync: vi.fn(() => {
+        throw new Error("should not reacquire")
+      }) as any,
+      existsSync,
+      mkdirSync: vi.fn() as any,
+      rmSync: vi.fn() as any,
+      readFileSync: vi.fn((target: string) => persisted.get(target) ?? "") as any,
+      writeFileSync: vi.fn() as any,
+    })
+
+    expect(restored.sourceBranch).toBe("feature/live-loop")
+    expect(restored.workspaceRoot).toBe("/bundle/state/workspaces/ouroboros-origin-main-903")
+  })
+
+  it("drops a stale persisted selection and reacquires a fresh workspace", () => {
+    const stateFile = "/bundle/state/workspaces/.active-safe-workspace.json"
+    const staleRoot = "/bundle/state/workspaces/ouroboros-scratch-stale"
+    const persisted = new Map<string, string>([
+      [stateFile, JSON.stringify({
+        runtimeKind: "installed-runtime",
+        repoRoot: "/installed/@ouro.bot/cli",
+        workspaceRoot: staleRoot,
+        workspaceBranch: "main",
+        sourceBranch: null,
+        sourceCloneUrl: "https://github.com/ouroborosbot/ouroboros.git",
+        cleanupAfterMerge: true,
+        created: true,
+        note: "stale scratch clone",
+      })],
+    ])
+    const existsSync = vi.fn((target: string) =>
+      target === "/bundle/state/workspaces"
+      || target === stateFile,
+    ) as any
+    const unlinkSync = vi.fn((target: string) => {
+      persisted.delete(target)
+    }) as any
+
+    const selection = ensureSafeRepoWorkspace({
+      repoRoot: "/installed/@ouro.bot/cli",
+      agentName: "slugger",
+      workspaceRoot: "/bundle/state/workspaces",
+      persistSelection: true,
+      canonicalRepoUrl: "https://github.com/ouroborosbot/ouroboros.git",
+      spawnSync: vi.fn((command: string, args: string[]) => {
+        expect(command).toBe("git")
+        if (args.join(" ") === "rev-parse --is-inside-work-tree") return spawnResult("", "fatal: not a git repository", 128)
+        if (args[0] === "clone") return spawnResult()
+        throw new Error(`unexpected git args: ${args.join(" ")}`)
+      }) as any,
+      existsSync,
+      mkdirSync: vi.fn() as any,
+      rmSync: vi.fn() as any,
+      readFileSync: vi.fn((target: string) => persisted.get(target) ?? "") as any,
+      writeFileSync: vi.fn((target: string, content: string) => {
+        persisted.set(target, content)
+      }) as any,
+      unlinkSync,
+      now: () => 902,
+    })
+
+    expect(unlinkSync).toHaveBeenCalledWith(stateFile)
+    expect(selection.workspaceRoot).toBe("/bundle/state/workspaces/ouroboros-scratch-902")
+  })
+
+  it("drops a non-object persisted payload and reacquires", () => {
+    const stateFile = "/bundle/state/workspaces/.active-safe-workspace.json"
+    const persisted = new Map<string, string>([[stateFile, JSON.stringify("oops")]])
+    const unlinkSync = vi.fn((target: string) => {
+      persisted.delete(target)
+    }) as any
+    const existsSync = vi.fn((target: string) =>
+      target === "/bundle/state/workspaces"
+      || target === stateFile,
+    ) as any
+
+    const selection = ensureSafeRepoWorkspace({
+      repoRoot: "/installed/@ouro.bot/cli",
+      agentName: "slugger",
+      workspaceRoot: "/bundle/state/workspaces",
+      persistSelection: true,
+      canonicalRepoUrl: "https://github.com/ouroborosbot/ouroboros.git",
+      spawnSync: vi.fn((command: string, args: string[]) => {
+        expect(command).toBe("git")
+        if (args.join(" ") === "rev-parse --is-inside-work-tree") return spawnResult("", "fatal: not a git repository", 128)
+        if (args[0] === "clone") return spawnResult()
+        throw new Error(`unexpected git args: ${args.join(" ")}`)
+      }) as any,
+      existsSync,
+      mkdirSync: vi.fn() as any,
+      rmSync: vi.fn() as any,
+      readFileSync: vi.fn((target: string) => persisted.get(target) ?? "") as any,
+      writeFileSync: vi.fn((target: string, content: string) => {
+        persisted.set(target, content)
+      }) as any,
+      unlinkSync,
+      now: () => 904,
+    })
+
+    expect(unlinkSync).toHaveBeenCalledWith(stateFile)
+    expect(selection.workspaceRoot).toBe("/bundle/state/workspaces/ouroboros-scratch-904")
+  })
+
   it("removes pre-existing workspace roots before creating worktrees and scratch clones", () => {
     const mkdirSync = vi.fn() as any
     const rmSync = vi.fn() as any
@@ -530,10 +712,10 @@ describe("safe workspace acquisition", () => {
     mod.resetSafeWorkspaceSelection()
 
     vi.spyOn(Date, "now").mockReturnValue(559)
-    const selection = mod.ensureSafeRepoWorkspace()
+    const selection = mod.ensureSafeRepoWorkspace({ persistSelection: false })
     expect(selection.workspaceRoot).toBe("/bundle/defaults/slugger/ouroboros-scratch-559")
     mod.resetSafeWorkspaceSelection({ keepCleanupHookRegistered: true })
-    mod.ensureSafeRepoWorkspace()
+    mod.ensureSafeRepoWorkspace({ persistSelection: false })
 
     const resolvedViaDefaultRepoRoot = mod.resolveSafeRepoPath({
       requestedPath: "/installed/default-runtime/src/tool.ts",
@@ -548,6 +730,58 @@ describe("safe workspace acquisition", () => {
       ["clone", "--depth", "1", "--branch", "main", "https://example.com/canonical.git", expect.stringContaining("/bundle/defaults/slugger/ouroboros-scratch-")],
       expect.any(Object),
     )
+  })
+
+  it("reacquires cleanly when persisted-state fs helpers are unavailable", async () => {
+    vi.resetModules()
+
+    const spawnSync = vi.fn((command: string, args: string[]) => {
+      expect(command).toBe("git")
+      if (args.join(" ") === "rev-parse --is-inside-work-tree") return spawnResult("", "fatal: not a git repository", 128)
+      if (args[0] === "clone") return spawnResult()
+      throw new Error(`unexpected git args: ${args.join(" ")}`)
+    })
+    const existsSync = vi.fn((target: string) =>
+      target === "/bundle/defaults/slugger"
+      || target === "/bundle/defaults/slugger/.active-safe-workspace.json",
+    )
+    const mkdirSync = vi.fn()
+    const rmSync = vi.fn()
+
+    vi.doMock("../../heart/identity", async () => {
+      const actual = await vi.importActual<typeof import("../../heart/identity")>("../../heart/identity")
+      return {
+        ...actual,
+        getAgentName: () => "slugger",
+        getRepoRoot: () => "/installed/default-runtime",
+        getAgentRepoWorkspacesRoot: (agentName: string) => `/bundle/defaults/${agentName}`,
+        HARNESS_CANONICAL_REPO_URL: "https://example.com/canonical.git",
+      }
+    })
+    vi.doMock("child_process", async () => {
+      const actual = await vi.importActual<typeof import("child_process")>("child_process")
+      return { ...actual, spawnSync }
+    })
+    vi.doMock("fs", async () => {
+      const actual = await vi.importActual<typeof import("fs")>("fs")
+      return {
+        ...actual,
+        existsSync,
+        mkdirSync,
+        rmSync,
+        readFileSync: undefined,
+        writeFileSync: undefined,
+        unlinkSync: undefined,
+      }
+    })
+
+    const mod = await import("../../heart/safe-workspace")
+    mod.resetSafeWorkspaceSelection()
+
+    vi.spyOn(Date, "now").mockReturnValue(905)
+    const selection = mod.ensureSafeRepoWorkspace({ persistSelection: true })
+    expect(selection.workspaceRoot).toBe("/bundle/defaults/slugger/ouroboros-scratch-905")
+    expect(spawnSync).toHaveBeenCalled()
   })
 
   it("remaps repo paths when an active selection exists but the request is not already inside the workspace", () => {
