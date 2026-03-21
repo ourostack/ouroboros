@@ -31,6 +31,16 @@ function makeInput(overrides: Partial<BridgeSuggestionInput> = {}): BridgeSugges
     currentObligation: "keep aligned",
     mustResolveBeforeHandoff: false,
     bridges: [],
+    pendingObligations: [
+      {
+        id: "ob-bridge",
+        origin: { friendId: "friend-1", channel: "teams", key: "conv-1" },
+        content: "keep aligned",
+        status: "investigating",
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:01Z",
+      },
+    ],
     taskBoard: {
       compact: "",
       activeBridges: [],
@@ -89,6 +99,7 @@ describe("suggestBridgeForActiveWork threshold relaxation", () => {
     const result = suggestBridgeForActiveWork(makeInput({
       currentObligation: null,
       mustResolveBeforeHandoff: false,
+      pendingObligations: [],
       taskBoard: {
         compact: "",
         activeBridges: [],

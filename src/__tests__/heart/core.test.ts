@@ -5720,6 +5720,651 @@ describe("tool_choice required and final_answer", () => {
     })
   })
 
+  it("retries status-check final answers until they use the exact five-line shape", async () => {
+    let callCount = 0
+    mockCreate.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        return makeStream([
+          makeChunk(undefined, [
+            {
+              index: 0,
+              id: "call_1",
+              function: {
+                name: "final_answer",
+                arguments: JSON.stringify({
+                  answer: "i'm confirming the diagnosis from this live thread\n\nlatest checkpoint:\n- direct CLI status replies here are staying concrete\n- they no longer seem to drift\n\nnext concrete action:\n- inspect the CLI coding-lane report-back formatter",
+                }),
+              },
+            },
+          ]),
+        ])
+      }
+      return makeStream([
+        makeChunk(undefined, [
+          {
+            index: 0,
+            id: "call_2",
+            function: {
+              name: "final_answer",
+              arguments: JSON.stringify({
+                answer: "live conversation: cli/session\nactive lane: this same thread\ncurrent artifact: no artifact yet\nlatest checkpoint: direct CLI status replies here are staying concrete\nnext action: inspect the CLI coding-lane report-back formatter",
+              }),
+            },
+          },
+        ]),
+      ])
+    })
+
+    const textChunks: string[] = []
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: (text) => textChunks.push(text),
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+      onClearText: () => { textChunks.length = 0 },
+    }
+
+    const messages: any[] = [{ role: "system", content: "test" }]
+    const result = await runAgent(messages, callbacks, undefined, undefined, {
+      toolChoiceRequired: true,
+      statusCheckRequested: true,
+      activeWorkFrame: {
+        centerOfGravity: "local-turn",
+        currentSession: { friendId: "friend-1", channel: "cli", key: "session", sessionPath: "/tmp/session.json" },
+        currentObligation: "figure out whether status replies still drift",
+        mustResolveBeforeHandoff: false,
+        inner: {
+          status: "idle",
+          hasPending: false,
+          job: {
+            status: "idle",
+            content: null,
+            origin: null,
+            mode: "reflect",
+            obligationStatus: null,
+            surfacedResult: null,
+            queuedAt: null,
+            startedAt: null,
+            surfacedAt: null,
+          },
+        },
+        bridges: [],
+        taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+        friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
+        codingSessions: [],
+        pendingObligations: [
+          {
+            id: "ob-status-retry",
+            origin: { friendId: "friend-1", channel: "cli", key: "session" },
+            content: "figure out whether status replies still drift",
+            status: "investigating",
+            createdAt: "2026-03-21T09:00:00.000Z",
+            updatedAt: "2026-03-21T09:01:00.000Z",
+          },
+        ],
+        bridgeSuggestion: null,
+      },
+    } as any)
+
+    expect(callCount).toBe(2)
+    expect(textChunks).toEqual([
+      "live conversation: cli/session\nactive lane: this same thread\ncurrent artifact: no artifact yet\nlatest checkpoint: direct CLI status replies here are staying concrete\nnext action: work on \"figure out whether status replies still drift\" and bring back a concrete artifact",
+    ])
+    const toolResults = messages.filter((m: any) => m.role === "tool")
+    expect(toolResults).toHaveLength(2)
+    expect(toolResults[0].content).toContain("reply using exactly these five lines and nothing else")
+    expect(toolResults[1].content).toBe("(delivered)")
+    expect((result as any).completion).toEqual({
+      answer: "live conversation: cli/session\nactive lane: this same thread\ncurrent artifact: no artifact yet\nlatest checkpoint: direct CLI status replies here are staying concrete\nnext action: work on \"figure out whether status replies still drift\" and bring back a concrete artifact",
+      intent: "complete",
+    })
+  })
+
+  it("uses generic five-line retry guidance when status was requested without an active-work frame", async () => {
+    let callCount = 0
+    mockCreate.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        return makeStream([
+          makeChunk(undefined, [
+            {
+              index: 0,
+              id: "call_1",
+              function: {
+                name: "final_answer",
+                arguments: JSON.stringify({
+                  answer: "still tracing it",
+                }),
+              },
+            },
+          ]),
+        ])
+      }
+      return makeStream([
+        makeChunk(undefined, [
+          {
+            index: 0,
+            id: "call_2",
+            function: {
+              name: "final_answer",
+              arguments: JSON.stringify({
+                answer: "live conversation: unknown\nactive lane: unknown\ncurrent artifact: no artifact yet\nlatest checkpoint: narrowed the status-reporting gap\nnext action: keep tracing the live thread and report back here",
+              }),
+            },
+          },
+        ]),
+      ])
+    })
+
+    const messages: any[] = [{ role: "system", content: "test" }]
+    const textChunks: string[] = []
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: (text) => textChunks.push(text),
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+      onClearText: () => { textChunks.length = 0 },
+    }
+
+    const result = await runAgent(messages, callbacks, undefined, undefined, {
+      toolChoiceRequired: true,
+      statusCheckRequested: true,
+    } as any)
+
+    expect(callCount).toBe(2)
+    const toolResults = messages.filter((m: any) => m.role === "tool")
+    expect(toolResults).toHaveLength(2)
+    expect(toolResults[0].content).toContain("call final_answer again using exactly these five non-empty lines")
+    expect(textChunks).toEqual([
+      "live conversation: unknown\nactive lane: unknown\ncurrent artifact: no artifact yet\nlatest checkpoint: narrowed the status-reporting gap\nnext action: keep tracing the live thread and report back here",
+    ])
+    expect((result as any).completion).toEqual({
+      answer: "live conversation: unknown\nactive lane: unknown\ncurrent artifact: no artifact yet\nlatest checkpoint: narrowed the status-reporting gap\nnext action: keep tracing the live thread and report back here",
+      intent: "complete",
+    })
+  })
+
+  it("accepts an exact status reply even when normal inward gates would otherwise keep the turn open", async () => {
+    mockCreate.mockReturnValue(
+      makeStream([
+        makeChunk(undefined, [
+          {
+            index: 0,
+            id: "call_1",
+            function: {
+              name: "final_answer",
+              arguments: JSON.stringify({
+                answer: "live conversation: cli/session\nactive lane: codex coding-201 for this same thread\ncurrent artifact: PR #999\nlatest checkpoint: checks are green and the restart command is ready\nnext action: merge PR #999 and restart to pick it up",
+              }),
+            },
+          },
+        ]),
+      ]),
+    )
+
+    const textChunks: string[] = []
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: (text) => textChunks.push(text),
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+      onClearText: () => { textChunks.length = 0 },
+    }
+
+    const messages: any[] = [{ role: "system", content: "test" }]
+    const result = await runAgent(messages, callbacks, undefined, undefined, {
+      toolChoiceRequired: true,
+      statusCheckRequested: true,
+      mustResolveBeforeHandoff: true,
+      currentObligation: "merge, restart, and report back",
+      delegationDecision: { target: "delegate-inward", reasons: ["explicit_reflection"], outwardClosureRequired: true },
+      activeWorkFrame: {
+        centerOfGravity: "inward-work",
+        currentSession: { friendId: "friend-1", channel: "cli", key: "session", sessionPath: "/tmp/session.json" },
+        currentObligation: "merge, restart, and report back",
+        mustResolveBeforeHandoff: true,
+        inner: {
+          status: "running",
+          hasPending: false,
+          job: {
+            status: "running",
+            content: "figure out restart sequencing",
+            origin: { friendId: "friend-1", channel: "cli", key: "session", friendName: "ari" },
+            mode: "reflect",
+            obligationStatus: "active",
+            surfacedResult: null,
+            queuedAt: null,
+            startedAt: "2026-03-21T08:00:00.000Z",
+            surfacedAt: null,
+          },
+        },
+        bridges: [],
+        taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+        friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
+        codingSessions: [
+          {
+            id: "coding-201",
+            runner: "codex",
+            workdir: "/tmp/workspaces/ouroboros",
+            taskRef: "status-loop",
+            status: "running",
+            stdoutTail: "green",
+            stderrTail: "",
+            pid: 201,
+            startedAt: "2026-03-21T07:55:00.000Z",
+            lastActivityAt: "2026-03-21T08:05:00.000Z",
+            endedAt: null,
+            restartCount: 0,
+            lastExitCode: null,
+            lastSignal: null,
+            failure: null,
+            originSession: { friendId: "friend-1", channel: "cli", key: "session" },
+          },
+        ],
+        pendingObligations: [
+          {
+            id: "ob-201",
+            origin: { friendId: "friend-1", channel: "cli", key: "session" },
+            content: "merge, restart, and report back",
+            status: "investigating",
+            createdAt: "2026-03-21T07:55:00.000Z",
+            updatedAt: "2026-03-21T08:05:00.000Z",
+            currentArtifact: "PR #999",
+            nextAction: "merge PR #999 and restart to pick it up",
+          },
+        ],
+        bridgeSuggestion: null,
+      },
+    } as any)
+
+    expect(result.outcome).toBe("complete")
+    expect(textChunks).toEqual([
+      "live conversation: cli/session\nactive lane: codex coding-201 for this same thread\ncurrent artifact: PR #999\nlatest checkpoint: checks are green and the restart command is ready\nnext action: merge PR #999 and restart to pick it up",
+    ])
+    const toolResults = messages.filter((m: any) => m.role === "tool")
+    expect(toolResults).toHaveLength(1)
+    expect(toolResults[0].content).toBe("(delivered)")
+    expect((result as any).completion).toEqual({
+      answer: "live conversation: cli/session\nactive lane: codex coding-201 for this same thread\ncurrent artifact: PR #999\nlatest checkpoint: checks are green and the restart command is ready\nnext action: merge PR #999 and restart to pick it up",
+      intent: "complete",
+    })
+  })
+
+  it("canonicalizes exact status replies so stale echoed next actions do not leak through", async () => {
+    mockCreate.mockReturnValue(
+      makeStream([
+        makeChunk(undefined, [
+          {
+            index: 0,
+            id: "call_1",
+            function: {
+              name: "final_answer",
+              arguments: JSON.stringify({
+                answer: "live conversation: cli/session\nactive lane: this same thread\ncurrent artifact: no artifact yet\nlatest checkpoint: just confirmed the stale checkpoint source\nnext action: work on \"what are you doing?\" and bring back a concrete artifact",
+              }),
+            },
+          },
+        ]),
+      ]),
+    )
+
+    const textChunks: string[] = []
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: (text) => textChunks.push(text),
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+      onClearText: () => { textChunks.length = 0 },
+    }
+
+    const messages: any[] = [{ role: "system", content: "test" }]
+    const result = await runAgent(messages, callbacks, undefined, undefined, {
+      toolChoiceRequired: true,
+      statusCheckRequested: true,
+      activeWorkFrame: {
+        centerOfGravity: "inward-work",
+        currentSession: { friendId: "friend-1", channel: "cli", key: "session", sessionPath: "/tmp/session.json" },
+        currentObligation: "what are you doing?",
+        mustResolveBeforeHandoff: false,
+        inner: {
+          status: "idle",
+          hasPending: false,
+          job: {
+            status: "idle",
+            content: null,
+            origin: null,
+            mode: "reflect",
+            obligationStatus: null,
+            surfacedResult: null,
+            queuedAt: null,
+            startedAt: null,
+            surfacedAt: null,
+          },
+        },
+        bridges: [],
+        taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+        friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
+        codingSessions: [],
+        pendingObligations: [
+          {
+            id: "ob-echo",
+            origin: { friendId: "friend-1", channel: "cli", key: "session" },
+            content: "close the visible loop",
+            status: "investigating",
+            createdAt: "2026-03-21T09:00:00.000Z",
+            updatedAt: "2026-03-21T09:01:00.000Z",
+          },
+        ],
+        bridgeSuggestion: null,
+      },
+    } as any)
+
+    expect(textChunks).toEqual([
+      "live conversation: cli/session\nactive lane: this same thread\ncurrent artifact: no artifact yet\nlatest checkpoint: just confirmed the stale checkpoint source\nnext action: work on \"close the visible loop\" and bring back a concrete artifact",
+    ])
+    expect((result as any).completion).toEqual({
+      answer: "live conversation: cli/session\nactive lane: this same thread\ncurrent artifact: no artifact yet\nlatest checkpoint: just confirmed the stale checkpoint source\nnext action: work on \"close the visible loop\" and bring back a concrete artifact",
+      intent: "complete",
+    })
+  })
+
+  it("canonicalizes family status replies so they include other active sessions too", async () => {
+    let callCount = 0
+    mockCreate.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        return makeStream([
+          makeChunk(undefined, [
+            {
+              index: 0,
+              id: "call_1",
+              function: {
+                name: "final_answer",
+                arguments: JSON.stringify({
+                  answer: [
+                    "live conversation: cli/session",
+                    "active lane: this same thread",
+                    "current artifact: no artifact yet",
+                    "latest checkpoint: just checked the multi-session surface",
+                    'next action: work on "what are you doing?" and bring back a concrete artifact',
+                  ].join("\n"),
+                }),
+              },
+            },
+          ]),
+        ])
+      }
+
+      return makeStream([
+        makeChunk(undefined, [
+          {
+            index: 0,
+            id: "call_2",
+            function: {
+              name: "final_answer",
+              arguments: JSON.stringify({
+                answer: [
+                  "live conversation: cli/session",
+                  "active lane: this same thread",
+                  "current artifact: no artifact yet",
+                  "latest checkpoint: just checked the multi-session surface",
+                  'next action: work on "what are you doing?" and bring back a concrete artifact',
+                  "other active sessions:",
+                  "- placeholder",
+                ].join("\n"),
+              }),
+            },
+          },
+        ]),
+      ])
+    })
+
+    const textChunks: string[] = []
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: (text) => textChunks.push(text),
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+      onClearText: () => { textChunks.length = 0 },
+    }
+
+    const messages: any[] = [{ role: "system", content: "test" }]
+    const result = await runAgent(messages, callbacks, undefined, undefined, {
+      toolChoiceRequired: true,
+      statusCheckRequested: true,
+      statusCheckScope: "all-sessions-family",
+      activeWorkFrame: {
+        centerOfGravity: "inward-work",
+        currentSession: { friendId: "friend-1", channel: "cli", key: "session", sessionPath: "/tmp/session.json" },
+        currentObligation: "what are you doing?",
+        mustResolveBeforeHandoff: false,
+        inner: {
+          status: "idle",
+          hasPending: false,
+          job: {
+            status: "idle",
+            content: null,
+            origin: null,
+            mode: "reflect",
+            obligationStatus: null,
+            surfacedResult: null,
+            queuedAt: null,
+            startedAt: null,
+            surfacedAt: null,
+          },
+        },
+        bridges: [],
+        taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+        friendActivity: {
+          freshestForCurrentFriend: null,
+          otherLiveSessionsForCurrentFriend: [],
+          allOtherLiveSessions: [
+            {
+              friendId: "friend-1",
+              friendName: "ari",
+              channel: "bluebubbles",
+              key: "chat",
+              sessionPath: "/tmp/bb-session.json",
+              lastActivityAt: "2026-03-21T09:05:00.000Z",
+              lastActivityMs: Date.parse("2026-03-21T09:05:00.000Z"),
+              activitySource: "friend-facing",
+            },
+          ],
+        },
+        codingSessions: [],
+        otherCodingSessions: [
+          {
+            id: "coding-300",
+            runner: "codex",
+            workdir: "/tmp/workspaces/ouroboros",
+            taskRef: "bb-fix",
+            status: "running",
+            stdoutTail: "",
+            stderrTail: "",
+            pid: 300,
+            startedAt: "2026-03-21T09:00:00.000Z",
+            lastActivityAt: "2026-03-21T09:06:00.000Z",
+            endedAt: null,
+            restartCount: 0,
+            lastExitCode: null,
+            lastSignal: null,
+            failure: null,
+            originSession: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
+          },
+        ],
+        pendingObligations: [
+          {
+            id: "ob-bb",
+            origin: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
+            content: "land the bluebubbles fix",
+            status: "waiting_for_merge",
+            currentArtifact: "PR #777",
+            nextAction: "wait for checks, merge PR #777, then update runtime",
+            createdAt: "2026-03-21T09:00:00.000Z",
+            updatedAt: "2026-03-21T09:07:00.000Z",
+          },
+        ],
+        bridgeSuggestion: null,
+      },
+    } as any)
+
+    expect(callCount).toBe(2)
+    expect(textChunks).toEqual([
+      [
+        "live conversation: cli/session",
+        "active lane: this same thread",
+        "current artifact: no artifact yet",
+        "latest checkpoint: just checked the multi-session surface",
+        "next action: continue the active loop and bring the result back here",
+        "other active sessions:",
+        "- ari/bluebubbles/chat: [waiting_for_merge] codex coding-300; artifact PR #777; next wait for checks, merge PR #777, then update runtime",
+      ].join("\n"),
+    ])
+    expect((result as any).completion).toEqual({
+      answer: [
+        "live conversation: cli/session",
+        "active lane: this same thread",
+        "current artifact: no artifact yet",
+        "latest checkpoint: just checked the multi-session surface",
+        "next action: continue the active loop and bring the result back here",
+        "other active sessions:",
+        "- ari/bluebubbles/chat: [waiting_for_merge] codex coding-300; artifact PR #777; next wait for checks, merge PR #777, then update runtime",
+      ].join("\n"),
+      intent: "complete",
+    })
+  })
+
+  it("retries family status replies when the other-session header is malformed", async () => {
+    let callCount = 0
+    mockCreate.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        return makeStream([
+          makeChunk(undefined, [
+            {
+              index: 0,
+              id: "call_bad_family_header",
+              function: {
+                name: "final_answer",
+                arguments: JSON.stringify({
+                  answer: [
+                    "live conversation: cli/session",
+                    "active lane: this same thread",
+                    "current artifact: no artifact yet",
+                    "latest checkpoint: just checked the multi-session surface",
+                    "next action: continue the active loop and bring the result back here",
+                    "other sessions:",
+                    "- placeholder",
+                  ].join("\n"),
+                }),
+              },
+            },
+          ]),
+        ])
+      }
+
+      return makeStream([
+        makeChunk(undefined, [
+          {
+            index: 0,
+            id: "call_fixed_family_header",
+            function: {
+              name: "final_answer",
+              arguments: JSON.stringify({
+                answer: [
+                  "live conversation: cli/session",
+                  "active lane: this same thread",
+                  "current artifact: no artifact yet",
+                  "latest checkpoint: just checked the multi-session surface",
+                  "next action: continue the active loop and bring the result back here",
+                  "other active sessions:",
+                  "- placeholder",
+                ].join("\n"),
+              }),
+            },
+          },
+        ]),
+      ])
+    })
+
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+      onClearText: () => {},
+    }
+
+    const messages: any[] = [{ role: "system", content: "test" }]
+    await runAgent(messages, callbacks, undefined, undefined, {
+      toolChoiceRequired: true,
+      statusCheckRequested: true,
+      statusCheckScope: "all-sessions-family",
+      activeWorkFrame: {
+        centerOfGravity: "inward-work",
+        currentSession: { friendId: "friend-1", channel: "cli", key: "session", sessionPath: "/tmp/session.json" },
+        currentObligation: "what are you doing?",
+        mustResolveBeforeHandoff: false,
+        inner: {
+          status: "idle",
+          hasPending: false,
+          job: {
+            status: "idle",
+            content: null,
+            origin: null,
+            mode: "reflect",
+            obligationStatus: null,
+            surfacedResult: null,
+            queuedAt: null,
+            startedAt: null,
+            surfacedAt: null,
+          },
+        },
+        bridges: [],
+        taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+        friendActivity: {
+          freshestForCurrentFriend: null,
+          otherLiveSessionsForCurrentFriend: [],
+          allOtherLiveSessions: [],
+        },
+        codingSessions: [],
+        otherCodingSessions: [],
+        pendingObligations: [
+          {
+            id: "ob-current",
+            origin: { friendId: "friend-1", channel: "cli", key: "session" },
+            content: "what are you doing?",
+            status: "investigating",
+            createdAt: "2026-03-21T09:00:00.000Z",
+            updatedAt: "2026-03-21T09:01:00.000Z",
+          },
+        ],
+        bridgeSuggestion: null,
+      },
+    } as any)
+
+    expect(callCount).toBe(2)
+  })
+
   it("treats direct_reply as non-terminal when a newer steering follow-up exists", async () => {
     let callCount = 0
     let drainCount = 0

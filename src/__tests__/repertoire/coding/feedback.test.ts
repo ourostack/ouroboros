@@ -97,18 +97,36 @@ describe("coding feedback relay", () => {
 
     await listener?.({
       kind: "progress",
-      session: makeSession({ stdoutTail: "thinking" }),
+      session: makeSession({ stdoutTail: "tests green" }),
       stream: "stdout",
-      text: "thinking",
+      text: "tests green",
     })
     await Promise.resolve()
-    expect(target.send).toHaveBeenCalledWith("codex coding-001: thinking")
+    expect(target.send).toHaveBeenCalledWith("codex coding-001: tests green")
 
     await listener?.({
       kind: "progress",
-      session: makeSession({ stdoutTail: "thinking" }),
+      session: makeSession({ stdoutTail: "tests green" }),
       stream: "stdout",
-      text: "thinking",
+      text: "tests green",
+    })
+    await Promise.resolve()
+    expect(target.send).toHaveBeenCalledTimes(1)
+
+    await listener?.({
+      kind: "progress",
+      session: makeSession({ stdoutTail: "main" }),
+      stream: "stdout",
+      text: "main",
+    })
+    await Promise.resolve()
+    expect(target.send).toHaveBeenCalledTimes(1)
+
+    await listener?.({
+      kind: "progress",
+      session: makeSession({ stdoutTail: "}," }),
+      stream: "stdout",
+      text: "},",
     })
     await Promise.resolve()
     expect(target.send).toHaveBeenCalledTimes(1)
@@ -239,15 +257,15 @@ describe("coding feedback relay", () => {
 
     await listener?.({
       kind: "progress",
-      session: makeSession({ stdoutTail: "thinking" }),
+      session: makeSession({ stdoutTail: "tests green" }),
       stream: "stdout",
-      text: "thinking",
+      text: "tests green",
     })
     await Promise.resolve()
     await Promise.resolve()
 
     expect(target.send).toHaveBeenCalledWith("codex coding-001 started")
-    expect(target.send).toHaveBeenCalledWith("codex coding-001: thinking")
+    expect(target.send).toHaveBeenCalledWith("codex coding-001: tests green")
   })
 
   it("formats waiting, stalled, failed, and clipped terminal messages without snippets", async () => {

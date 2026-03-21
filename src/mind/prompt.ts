@@ -18,8 +18,8 @@ import { listSessionActivity, type SessionActivityQuery } from "../heart/session
 import { formatActiveWorkFrame, type ActiveWorkFrame } from "../heart/active-work";
 import type { DelegationDecision } from "../heart/delegation";
 import { deriveCommitments, formatCommitments } from "../heart/commitments";
-import { findActivePersistentObligation, renderActiveObligationSteering, renderConcreteStatusGuidance } from "./obligation-steering";
 import { renderSessionOrientation, type SessionOrientation } from "./session-orientation";
+import { findActivePersistentObligation, findStatusObligation, renderActiveObligationSteering, renderConcreteStatusGuidance, renderExactStatusReplyContract, renderLiveThreadStatusShape } from "./obligation-steering";
 
 // Lazy-loaded psyche text cache
 let _psycheCache: {
@@ -472,6 +472,8 @@ export interface BuildSystemOptions {
   bridgeContext?: string;
   currentSessionKey?: string;
   currentObligation?: string;
+  statusCheckRequested?: boolean;
+  statusCheckScope?: "all-sessions-family";
   mustResolveBeforeHandoff?: boolean;
   hasQueuedFollowUp?: boolean;
   activeWorkFrame?: ActiveWorkFrame;
@@ -507,21 +509,36 @@ function sessionOrientationSection(options?: BuildSystemOptions): string {
   return renderSessionOrientation(options?.sessionOrientation)
 }
 
+function familyCrossSessionTruthSection(context?: ResolvedContext, options?: BuildSystemOptions): string {
+  if (!options?.activeWorkFrame) return ""
+  if (context?.friend?.trustLevel !== "family") return ""
+  return `## cross-session truth
+if a family member asks what i'm up to or how things are going, that includes the material live work i can see across sessions, not just this thread.
+i answer naturally from the live world-state in this prompt.
+i do not rely on canned status-question modes or phrase matching.
+if part of the picture is still fuzzy, i say what i can see and what still needs checking.`
+}
+
 export function centerOfGravitySteeringSection(channel: Channel, options?: BuildSystemOptions): string {
   if (channel === "inner") return ""
   const frame = options?.activeWorkFrame
   if (!frame) return ""
   const cog = frame.centerOfGravity
-  if (cog === "local-turn") return ""
 
   const job = frame.inner?.job
   const activeObligation = findActivePersistentObligation(frame)
+  const statusObligation = findStatusObligation(frame)
+  const genericConcreteStatus = renderConcreteStatusGuidance(frame, statusObligation)
+
+  if (cog === "local-turn") {
+    return genericConcreteStatus || renderLiveThreadStatusShape(frame)
+  }
 
   if (cog === "inward-work") {
     if (activeObligation) {
       return `${renderActiveObligationSteering(activeObligation)}
 
-${renderConcreteStatusGuidance(frame, activeObligation)}`
+${genericConcreteStatus}`
     }
 
     if (job?.status === "queued" || job?.status === "running") {
@@ -567,6 +584,10 @@ i already have coding work running in ${liveCodingSession.runner} ${liveCodingSe
 i should orient around that live lane first, then decide what still needs to come back here.`
     }
 
+    if (genericConcreteStatus) {
+      return genericConcreteStatus
+    }
+
     return `## where my attention is
 i have unfinished work that needs attention before i move on.
 
@@ -583,6 +604,16 @@ i should keep the different sides aligned. what i learn here may matter there, a
 
   /* v8 ignore next -- unreachable: all center-of-gravity modes covered above @preserve */
   return ""
+}
+
+function statusCheckSection(channel: Channel, options?: BuildSystemOptions): string {
+  if (channel === "inner" || !options?.statusCheckRequested) return ""
+  const frame = options.activeWorkFrame
+  if (!frame) return ""
+  const activeObligation = findStatusObligation(frame)
+  return `## status question on this turn
+the user is asking for current status right now.
+${renderExactStatusReplyContract(frame, activeObligation, options.statusCheckScope)}`
 }
 
 export function commitmentsSection(options?: BuildSystemOptions): string {
@@ -800,6 +831,8 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     taskBoardSection(),
     activeWorkSection(options),
     sessionOrientationSection(options),
+    familyCrossSessionTruthSection(context, options),
+    statusCheckSection(channel, options),
     centerOfGravitySteeringSection(channel, options),
     commitmentsSection(options),
     delegationHintSection(options),
