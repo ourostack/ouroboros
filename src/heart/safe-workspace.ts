@@ -32,10 +32,14 @@ export interface EnsureSafeWorkspaceOptions {
   agentName?: string
   canonicalRepoUrl?: string
   workspaceRoot?: string
+  persistSelection?: boolean
   spawnSync?: typeof defaultSpawnSync
   existsSync?: typeof fs.existsSync
   mkdirSync?: typeof fs.mkdirSync
   rmSync?: typeof fs.rmSync
+  readFileSync?: typeof fs.readFileSync
+  writeFileSync?: typeof fs.writeFileSync
+  unlinkSync?: typeof fs.unlinkSync
   now?: () => number
 }
 
@@ -45,6 +49,84 @@ export interface ResolveSafePathOptions extends EnsureSafeWorkspaceOptions {
 
 let activeSelection: SafeWorkspaceSelection | null = null
 let cleanupHookRegistered = false
+
+function workspaceSelectionStateFile(workspaceBase: string): string {
+  return path.join(workspaceBase, ".active-safe-workspace.json")
+}
+
+function getOptionalFsFn<T>(name: string): T | undefined {
+  try {
+    return (fs as Record<string, unknown>)[name] as T | undefined
+  } catch {
+    return undefined
+  }
+}
+
+function shouldPersistSelection(options: EnsureSafeWorkspaceOptions): boolean {
+  return options.persistSelection ?? options.workspaceRoot === undefined
+}
+
+function isPersistedSelectionShape(value: unknown): value is SafeWorkspaceSelection {
+  if (!value || typeof value !== "object") return false
+  const candidate = value as Partial<SafeWorkspaceSelection>
+  return (
+    typeof candidate.runtimeKind === "string"
+    && typeof candidate.repoRoot === "string"
+    && typeof candidate.workspaceRoot === "string"
+    && typeof candidate.workspaceBranch === "string"
+    && (candidate.sourceBranch === null || typeof candidate.sourceBranch === "string")
+    && typeof candidate.sourceCloneUrl === "string"
+    && typeof candidate.cleanupAfterMerge === "boolean"
+    && typeof candidate.created === "boolean"
+    && typeof candidate.note === "string"
+  )
+}
+
+function loadPersistedSelection(
+  workspaceBase: string,
+  options: Pick<EnsureSafeWorkspaceOptions, "existsSync" | "readFileSync" | "unlinkSync">,
+): SafeWorkspaceSelection | null {
+  const existsSync = options.existsSync ?? fs.existsSync
+  const readFileSync = options.readFileSync ?? getOptionalFsFn<typeof fs.readFileSync>("readFileSync")
+  const unlinkSync = options.unlinkSync ?? getOptionalFsFn<typeof fs.unlinkSync>("unlinkSync")
+  const stateFile = workspaceSelectionStateFile(workspaceBase)
+
+  if (!existsSync(stateFile)) return null
+  if (!readFileSync) return null
+
+  try {
+    const raw = readFileSync(stateFile, "utf-8")
+    const parsed = JSON.parse(raw)
+    if (!isPersistedSelectionShape(parsed) || !existsSync(parsed.workspaceRoot)) {
+      try {
+        unlinkSync?.(stateFile)
+      } catch {
+        // best effort
+      }
+      return null
+    }
+    return parsed
+  } catch {
+    try {
+      unlinkSync?.(stateFile)
+    } catch {
+      // best effort
+    }
+    return null
+  }
+}
+
+function persistSelectionState(
+  workspaceBase: string,
+  selection: SafeWorkspaceSelection,
+  options: Pick<EnsureSafeWorkspaceOptions, "mkdirSync" | "writeFileSync">,
+): void {
+  const mkdirSync = options.mkdirSync ?? fs.mkdirSync
+  const writeFileSync = options.writeFileSync ?? getOptionalFsFn<typeof fs.writeFileSync>("writeFileSync")
+  if (!writeFileSync) return
+  mkdirSync(workspaceBase, { recursive: true })
+  writeFileSync(workspaceSelectionStateFile(workspaceBase), JSON.stringify(selection, null, 2), "utf-8")
+}
 
 function defaultNow(): number {
   return Date.now()
@@ -189,6 +271,7 @@ export function ensureSafeRepoWorkspace(options: EnsureSafeWorkspaceOptions = {}
   const agentName = resolveAgentName(options.agentName)
   const canonicalRepoUrl = options.canonicalRepoUrl ?? HARNESS_CANONICAL_REPO_URL
   const workspaceBase = options.workspaceRoot ?? getAgentRepoWorkspacesRoot(agentName)
+  const persistSelection = shouldPersistSelection(options)
   const spawnSync = options.spawnSync ?? defaultSpawnSync
   const existsSync = options.existsSync ?? fs.existsSync
   const mkdirSync = options.mkdirSync ?? fs.mkdirSync
@@ -197,6 +280,27 @@ export function ensureSafeRepoWorkspace(options: EnsureSafeWorkspaceOptions = {}
   const stamp = String(now())
 
   registerCleanupHook({ rmSync })
+
+  if (persistSelection) {
+    const restored = loadPersistedSelection(workspaceBase, options)
+    if (restored) {
+      activeSelection = restored
+      emitNervesEvent({
+        component: "workspace",
+        event: "workspace.safe_repo_restored",
+        message: "restored safe repo workspace after runtime restart",
+        meta: {
+          runtimeKind: restored.runtimeKind,
+          repoRoot: restored.repoRoot,
+          workspaceRoot: restored.workspaceRoot,
+          workspaceBranch: restored.workspaceBranch,
+          sourceBranch: restored.sourceBranch,
+          cleanupAfterMerge: restored.cleanupAfterMerge,
+        },
+      })
+      return restored
+    }
+  }
 
   let selection: SafeWorkspaceSelection
 
@@ -267,6 +371,9 @@ export function ensureSafeRepoWorkspace(options: EnsureSafeWorkspaceOptions = {}
   }
 
   activeSelection = selection
+  if (persistSelection) {
+    persistSelectionState(workspaceBase, selection, options)
+  }
   emitNervesEvent({
     component: "workspace",
     event: "workspace.safe_repo_acquired",

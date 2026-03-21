@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.87",
+      "changes": [
+        "CLI chat now keeps model reasoning private again. The visible surface stays on spinners, tool updates, and actual replies instead of dim internal-thinking text leaking into the operator conversation.",
+        "Safe workspace selection now persists across daemon restarts and `ouro up`, so repo-local reads, edits, and shell commands keep targeting the same acquired scratch clone or worktree after a runtime update."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.86",
       "changes": [
         "Commitments section now uses the structured formatCommitments helper, rendering holding/criteria/release sections instead of a flat bullet list. Tests updated to cover bridges, tasks, and mustResolveBeforeHandoff."

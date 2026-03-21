@@ -318,7 +318,6 @@ export function createCliCallbacks(): ChannelCallbacks & { flushMarkdown(): void
   })
   let currentSpinner: Spinner | null = null
   function setSpinner(s: Spinner | null) { currentSpinner = s; setActiveSpinner(s) }
-  let hadReasoning = false
   let hadToolRun = false
   let textDirty = false // true when text/reasoning was written without a trailing newline
   const streamer = new MarkdownStreamer()
@@ -328,7 +327,6 @@ export function createCliCallbacks(): ChannelCallbacks & { flushMarkdown(): void
     onModelStart: () => {
       currentSpinner?.stop()
       setSpinner(null)
-      hadReasoning = false
       textDirty = false
       streamer.reset()
       wrapper.reset()
@@ -355,12 +353,6 @@ export function createCliCallbacks(): ChannelCallbacks & { flushMarkdown(): void
         currentSpinner.stop()
         setSpinner(null)
       }
-      if (hadReasoning) {
-        // Single newline to separate reasoning from reply — reasoning
-        // output often ends with its own trailing newline(s)
-        process.stdout.write("\n")
-        hadReasoning = false
-      }
       const rendered = streamer.push(text)
       /* v8 ignore start -- wrapper integration: tested via cli.test.ts onTextChunk tests @preserve */
       if (rendered) {
@@ -370,14 +362,9 @@ export function createCliCallbacks(): ChannelCallbacks & { flushMarkdown(): void
       /* v8 ignore stop */
       textDirty = text.length > 0 && !text.endsWith("\n")
     },
-    onReasoningChunk: (text: string) => {
-      if (currentSpinner) {
-        currentSpinner.stop()
-        setSpinner(null)
-      }
-      hadReasoning = true
-      process.stdout.write(`\x1b[2m${text}\x1b[0m`)
-      textDirty = text.length > 0 && !text.endsWith("\n")
+    onReasoningChunk: (_text: string) => {
+      // Keep reasoning private in the CLI surface. The spinner continues to
+      // represent active thinking until actual tool or answer output arrives.
     },
     onToolStart: (_name: string, _args: Record<string, string>) => {
       // Stop the model-start spinner: when the model returns only tool calls
