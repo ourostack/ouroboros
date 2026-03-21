@@ -45,7 +45,11 @@ describe("coding spawner defaults", () => {
     expect(spawnMock).toHaveBeenCalledWith(
       "codex",
       ["exec", "--skip-git-repo-check", "--cd", "/Users/test/AgentWorkspaces/ouroboros"],
-      { cwd: "/Users/test/AgentWorkspaces/ouroboros", stdio: ["pipe", "pipe", "pipe"] },
+      expect.objectContaining({
+        cwd: "/Users/test/AgentWorkspaces/ouroboros",
+        env: expect.objectContaining({ PATH: expect.any(String) }),
+        stdio: ["pipe", "pipe", "pipe"],
+      }),
     )
     expect(result.process).toBe(proc)
     expect(proc.stdin.end).toHaveBeenCalledWith(expect.stringContaining("taskRef: task-default"))

@@ -73,7 +73,11 @@ describe("coding spawner", () => {
         "--output-format",
         "stream-json",
       ],
-      { cwd: "/Users/test/AgentWorkspaces/ouroboros", stdio: ["pipe", "pipe", "pipe"] },
+      expect.objectContaining({
+        cwd: "/Users/test/AgentWorkspaces/ouroboros",
+        env: expect.objectContaining({ PATH: expect.stringContaining(".ouro-cli/bin") }),
+        stdio: ["pipe", "pipe", "pipe"],
+      }),
     )
     expect((result.process as any).stdin.end).toHaveBeenCalledWith(`${result.prompt}\n`)
   })
@@ -138,5 +142,68 @@ describe("coding spawner", () => {
     expect(result.prompt).toContain("sessionId: pending")
     expect(result.prompt).toContain("parentAgent: unknown")
     expect(result.prompt).toContain("taskRef: unassigned")
+  })
+
+  it("prepends ~/.ouro-cli/bin to PATH when missing", () => {
+    const spawnFn = vi.fn(() => new FakeProcess(404))
+
+    spawnCodingProcess(
+      {
+        runner: "claude",
+        workdir: "/Users/test/AgentWorkspaces/ouroboros",
+        prompt: "check runtime",
+        taskRef: "task-path",
+      },
+      {
+        spawnFn,
+        homeDir: "/Users/test",
+        baseEnv: { PATH: "/usr/bin:/bin", HOME: "/Users/test" },
+      },
+    )
+
+    const options = spawnFn.mock.calls[0][2] as { env: NodeJS.ProcessEnv }
+    expect(options.env.PATH).toBe("/Users/test/.ouro-cli/bin:/usr/bin:/bin")
+  })
+
+  it("handles missing PATH env var gracefully", () => {
+    const spawnFn = vi.fn(() => new FakeProcess(406))
+
+    spawnCodingProcess(
+      {
+        runner: "claude",
+        workdir: "/Users/test/AgentWorkspaces/ouroboros",
+        prompt: "check runtime",
+        taskRef: "task-path",
+      },
+      {
+        spawnFn,
+        homeDir: "/Users/test",
+        baseEnv: { HOME: "/Users/test" },
+      },
+    )
+
+    const options = spawnFn.mock.calls[0][2] as { env: NodeJS.ProcessEnv }
+    expect(options.env.PATH).toBe("/Users/test/.ouro-cli/bin")
+  })
+
+  it("does not duplicate ~/.ouro-cli/bin when already present", () => {
+    const spawnFn = vi.fn(() => new FakeProcess(405))
+
+    spawnCodingProcess(
+      {
+        runner: "codex",
+        workdir: "/Users/test/AgentWorkspaces/ouroboros",
+        prompt: "check runtime",
+        taskRef: "task-path",
+      },
+      {
+        spawnFn,
+        homeDir: "/Users/test",
+        baseEnv: { PATH: "/Users/test/.ouro-cli/bin:/usr/bin:/bin", HOME: "/Users/test" },
+      },
+    )
+
+    const options = spawnFn.mock.calls[0][2] as { env: NodeJS.ProcessEnv }
+    expect(options.env.PATH).toBe("/Users/test/.ouro-cli/bin:/usr/bin:/bin")
   })
 })
