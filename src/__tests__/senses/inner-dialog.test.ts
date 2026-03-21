@@ -303,6 +303,23 @@ describe("inner dialog runtime", () => {
     expect(msg).not.toContain("last i remember")
   })
 
+  it("omits fallback checkpoint boilerplate from instinct messages", () => {
+    const msg = buildInstinctUserMessage(
+      [{ id: "backlog", prompt: "Instinct: review pending tasks.", enabled: true }],
+      "heartbeat",
+      { checkpoint: "no prior checkpoint recorded" },
+    )
+    expect(msg).toContain("Instinct: review pending tasks.")
+    expect(msg).not.toContain("last i remember")
+    expect(msg).not.toContain("no prior checkpoint recorded")
+  })
+
+  it("omits fallback checkpoint boilerplate from task-triggered messages", () => {
+    const msg = buildTaskTriggeredMessage("ongoing/review", "task body here", "no prior checkpoint recorded")
+    expect(msg).not.toContain("last i remember")
+    expect(msg).not.toContain("no prior checkpoint recorded")
+  })
+
   // ── readTaskFile tests ──────────────────────────────────────────
 
   it("reads task file from agent root tasks directory", () => {
@@ -1063,7 +1080,10 @@ describe("inner dialog runtime", () => {
     const input = mockHandleInboundTurn.mock.calls[0][0]
     expect(input.messages).toHaveLength(1)
     expect(input.messages[0].role).toBe("user")
-    expect(String(input.messages[0].content)).toContain("Instinct: review pending tasks.")
+    const content = String(input.messages[0].content)
+    expect(content).toContain("Instinct: review pending tasks.")
+    expect(content).not.toContain("no prior checkpoint recorded")
+    expect(content).toContain("last i remember: I will rest until heartbeat.")
   })
 
   it("includes checkpoint context in instinct message on resumed session", async () => {

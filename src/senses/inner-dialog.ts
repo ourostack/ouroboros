@@ -110,13 +110,21 @@ export function buildNonCanonicalCleanupNudge(nonCanonicalPaths: string[]): stri
   ].join("\n")
 }
 
+function displayCheckpoint(checkpoint?: string): string | undefined {
+  const trimmed = checkpoint?.trim()
+  if (!trimmed || trimmed === "no prior checkpoint recorded") {
+    return undefined
+  }
+  return trimmed
+}
+
 export function buildInstinctUserMessage(
   instincts: InnerDialogInstinct[],
   _reason: "boot" | "heartbeat" | "instinct",
   state: InnerDialogState,
 ): string {
   const active = instincts.find((instinct) => instinct.enabled !== false) ?? DEFAULT_INNER_DIALOG_INSTINCTS[0]
-  const checkpoint = state.checkpoint?.trim()
+  const checkpoint = displayCheckpoint(state.checkpoint)
   const lines = [active.prompt]
   if (checkpoint) {
     lines.push(`\nlast i remember: ${checkpoint}`)
@@ -145,8 +153,9 @@ export function buildTaskTriggeredMessage(taskId: string, taskContent: string, c
   } else {
     lines.push("", `## task: ${taskId}`, "(task file not found)")
   }
-  if (checkpoint) {
-    lines.push("", `last i remember: ${checkpoint}`)
+  const renderedCheckpoint = displayCheckpoint(checkpoint)
+  if (renderedCheckpoint) {
+    lines.push("", `last i remember: ${renderedCheckpoint}`)
   }
   return lines.join("\n")
 }
