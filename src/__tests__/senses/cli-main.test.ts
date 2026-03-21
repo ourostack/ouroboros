@@ -34,6 +34,7 @@ const mocks = vi.hoisted(() => ({
     messages: [],
   }),
   createInterface: vi.fn(),
+  cursorTo: vi.fn(),
   resolveContext: vi.fn().mockResolvedValue({
     friend: {
       id: "mock-uuid",
@@ -67,6 +68,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("readline", () => ({
   createInterface: (...a: any[]) => mocks.createInterface(...a),
+  cursorTo: (...a: any[]) => mocks.cursorTo(...a),
 }))
 vi.mock("../../heart/core", () => ({
   runAgent: (...a: any[]) => mocks.runAgent(...a),
@@ -171,7 +173,7 @@ vi.mock("os", async () => {
   }
 })
 
-import { main } from "../../senses/cli"
+import { main, writeCliAsyncAssistantMessage } from "../../senses/cli"
 
 // ── helpers ──
 
@@ -293,6 +295,7 @@ function resetMocks() {
   })
 
   // Fresh registry each test
+  mocks.cursorTo.mockReset()
   mocks.registry = {
     register: vi.fn(),
     get: vi.fn(),
@@ -1294,6 +1297,68 @@ describe("runCliSession", () => {
     })
     expect(stdoutChunks.join("")).toContain("codex coding-001 completed: hi")
     expect(stdoutChunks.join("")).toContain("\x1b[36m> \x1b[0m")
+  })
+
+  it("redraws the in-progress input and cursor for async assistant updates", () => {
+    const writes: string[] = []
+    const stdout = {
+      write: vi.fn((chunk: string) => {
+        writes.push(chunk)
+        return true
+      }),
+    }
+    const rl = { line: "continue typing", cursor: 4 } as any
+
+    writeCliAsyncAssistantMessage(rl, "codex coding-001 completed: hi", stdout)
+
+    expect(writes).toEqual([
+      "\r\x1b[K",
+      "codex coding-001 completed: hi\n",
+      "\x1b[36m> \x1b[0m",
+      "continue typing",
+    ])
+    expect(mocks.cursorTo).toHaveBeenCalledWith(process.stdout, 6)
+  })
+
+  it("redraws the in-progress input without moving the cursor when already at the end", () => {
+    const writes: string[] = []
+    const stdout = {
+      write: vi.fn((chunk: string) => {
+        writes.push(chunk)
+        return true
+      }),
+    }
+    const rl = { line: "continue typing", cursor: "continue typing".length } as any
+
+    writeCliAsyncAssistantMessage(rl, "codex coding-001 completed: hi", stdout)
+
+    expect(writes).toEqual([
+      "\r\x1b[K",
+      "codex coding-001 completed: hi\n",
+      "\x1b[36m> \x1b[0m",
+      "continue typing",
+    ])
+    expect(mocks.cursorTo).not.toHaveBeenCalled()
+  })
+
+  it("falls back cleanly when readline internals are absent", () => {
+    const writes: string[] = []
+    const stdout = {
+      write: vi.fn((chunk: string) => {
+        writes.push(chunk)
+        return true
+      }),
+    }
+    const rl = {} as any
+
+    writeCliAsyncAssistantMessage(rl, "codex coding-001 completed: hi", stdout)
+
+    expect(writes).toEqual([
+      "\r\x1b[K",
+      "codex coding-001 completed: hi\n",
+      "\x1b[36m> \x1b[0m",
+    ])
+    expect(mocks.cursorTo).not.toHaveBeenCalled()
   })
 })
 
