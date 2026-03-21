@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.86",
+      "changes": [
+        "Commitments section now uses the structured formatCommitments helper, rendering holding/criteria/release sections instead of a flat bullet list. Tests updated to cover bridges, tasks, and mustResolveBeforeHandoff."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.85",
       "changes": [
         "Relative repo paths now route through the chosen safe workspace too, so read/edit/write file tools actually operate in the dedicated clone or worktree instead of silently hitting the wrong checkout.",

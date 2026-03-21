@@ -17,7 +17,7 @@ import { getTaskModule } from "../repertoire/tasks";
 import { listSessionActivity, type SessionActivityQuery } from "../heart/session-activity";
 import { formatActiveWorkFrame, type ActiveWorkFrame } from "../heart/active-work";
 import type { DelegationDecision } from "../heart/delegation";
-import { deriveCommitments } from "../heart/commitments";
+import { deriveCommitments, formatCommitments } from "../heart/commitments";
 import { findActivePersistentObligation, renderActiveObligationSteering } from "./obligation-steering";
 
 // Lazy-loaded psyche text cache
@@ -555,7 +555,7 @@ export function commitmentsSection(options?: BuildSystemOptions): string {
   if (!job) return ""
   const commitments = deriveCommitments(options.activeWorkFrame, job, options.activeWorkFrame.pendingObligations)
   if (commitments.committedTo.length === 0) return ""
-  return `## my commitments\n${commitments.committedTo.map((c) => `- ${c}`).join("\n")}`
+  return `## my commitments\n\n${formatCommitments(commitments)}`
 }
 
 const DELEGATION_REASON_PROSE_HINT: Record<import("../heart/delegation").DelegationReason, string> = {

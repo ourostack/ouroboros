@@ -56,15 +56,21 @@ describe("commitmentsSection", () => {
     expect(result).toBe("")
   })
 
-  it("returns section with header and bullet points when commitments exist", () => {
+  it("renders all three sections from formatCommitments", () => {
     const result = commitmentsSection({
       activeWorkFrame: makeFrame({ currentObligation: "naming" }),
     })
     expect(result).toContain("## my commitments")
+    expect(result).toContain("## what i'm holding right now")
     expect(result).toContain("- i told them i'd naming")
+    expect(result).toContain('## what "done" looks like')
+    expect(result).toContain("- just be present in this conversation")
+    expect(result).toContain("## what i can let go of")
+    expect(result).toContain("- no shared work to coordinate")
+    expect(result).toContain("- no active tasks to track")
   })
 
-  it("surfaces active obligation status and work surface in the prompt section", () => {
+  it("surfaces obligation with status, surface, and derived completion criteria", () => {
     const result = commitmentsSection({
       activeWorkFrame: makeFrame({
         pendingObligations: [
@@ -80,8 +86,37 @@ describe("commitmentsSection", () => {
         ],
       }),
     })
-    expect(result).toContain("## my commitments")
+    expect(result).toContain("## what i'm holding right now")
     expect(result).toContain("i owe alex: make the loop visible (investigating in codex coding-001)")
+    expect(result).toContain('## what "done" looks like')
+    expect(result).toContain("- fulfill my outstanding obligations")
+    expect(result).toContain("- close my active obligation loops")
+    expect(result).toContain("## what i can let go of")
+  })
+
+  it("includes bridge and task commitments with their completion criteria", () => {
+    const result = commitmentsSection({
+      activeWorkFrame: makeFrame({
+        currentObligation: "ship the fix",
+        bridges: [{ id: "b-1", summary: "align on naming", objective: "naming obj", sessions: [], createdAt: "" }] as any,
+        taskPressure: { compactBoard: "", liveTaskNames: ["deploy auth service"], activeBridges: [] },
+      }),
+    })
+    expect(result).toContain("- i told them i'd ship the fix")
+    expect(result).toContain("- i have shared work: align on naming")
+    expect(result).toContain("- i'm tracking: deploy auth service")
+    expect(result).toContain("- keep shared work aligned across sessions")
+  })
+
+  it("includes mustResolveBeforeHandoff in holding and criteria sections", () => {
+    const result = commitmentsSection({
+      activeWorkFrame: makeFrame({
+        currentObligation: "finish the refactor",
+        mustResolveBeforeHandoff: true,
+      }),
+    })
+    expect(result).toContain("- i need to finish what i started before moving on")
+    expect(result).toContain("- resolve the current thread before moving on")
   })
 
   it("emits nerves event reference", () => {
