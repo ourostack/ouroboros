@@ -4,6 +4,8 @@
     {
       "version": "0.1.0-alpha.90",
       "changes": [
+        "coding_spawn now reuses the newest active matching coding session instead of blindly creating another coding-* lane for the same task, workspace, and origin thread.",
+        "Reused coding sessions are surfaced explicitly in the tool payload, which keeps live operator updates anchored to the real active child session instead of drifting onto stale parallel status.",
         "Fixed `ouro changelog` so it reads the shipped object-shaped changelog format (`{ versions: [...] }`) instead of falling through to 'no changelog entries found' for valid runtime releases.",
         "Added regression coverage for both populated and missing `versions` object-shaped changelog payloads so the CLI parser and coverage gate stay aligned."
       ]
