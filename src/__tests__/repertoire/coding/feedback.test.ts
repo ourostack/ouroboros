@@ -452,7 +452,204 @@ describe("coding feedback relay", () => {
     })
     await Promise.resolve()
 
-    expect(target.send).toHaveBeenLastCalledWith("codex coding-001 for bluebubbles/chat completed: opened PR #123")
+    expect(target.send).toHaveBeenLastCalledWith(
+      "codex coding-001 for bluebubbles/chat completed: opened PR #123\ncurrent artifact: PR #123\nnext: wait for checks, merge PR #123, then update runtime",
+    )
+  })
+
+  it("turns opened-pr milestones into concrete report-back messages and merge-state obligation updates", async () => {
+    let listener: ((update: CodingSessionUpdate) => void | Promise<void>) | undefined
+    const manager = {
+      subscribe: vi.fn((_sessionId: string, cb: (update: CodingSessionUpdate) => void | Promise<void>) => {
+        listener = cb
+        return () => undefined
+      }),
+    }
+    const target = { send: vi.fn().mockResolvedValue(undefined) }
+    const session = makeSession() as CodingSession & {
+      originSession?: { friendId: string; channel: string; key: string }
+      obligationId?: string
+    }
+    session.originSession = { friendId: "ari", channel: "bluebubbles", key: "chat" }
+    session.obligationId = "ob-6"
+
+    vi.mocked(advanceObligation).mockClear()
+    attachCodingSessionFeedback(manager, session as CodingSession, target)
+    await Promise.resolve()
+    target.send.mockClear()
+
+    await listener?.({
+      kind: "completed",
+      session: {
+        ...(session as CodingSession),
+        status: "completed",
+        stdoutTail: "opened PR #123",
+        pid: null,
+        endedAt: "2026-03-05T23:55:00.000Z",
+      },
+    })
+    await Promise.resolve()
+
+    expect(target.send).toHaveBeenLastCalledWith(
+      "codex coding-001 for bluebubbles/chat completed: opened PR #123\ncurrent artifact: PR #123\nnext: wait for checks, merge PR #123, then update runtime",
+    )
+    expect(advanceObligation).toHaveBeenCalledWith(
+      "/Users/test/AgentBundles/slugger.ouro",
+      "ob-6",
+      expect.objectContaining({
+        status: "waiting_for_merge",
+        currentSurface: { kind: "merge", label: "PR #123" },
+        currentArtifact: "PR #123",
+        nextAction: "wait for checks, merge PR #123, then update runtime",
+      }),
+    )
+  })
+
+  it("turns merged-pr milestones into runtime-update report-back messages", async () => {
+    let listener: ((update: CodingSessionUpdate) => void | Promise<void>) | undefined
+    const manager = {
+      subscribe: vi.fn((_sessionId: string, cb: (update: CodingSessionUpdate) => void | Promise<void>) => {
+        listener = cb
+        return () => undefined
+      }),
+    }
+    const target = { send: vi.fn().mockResolvedValue(undefined) }
+    const session = makeSession() as CodingSession & {
+      originSession?: { friendId: string; channel: string; key: string }
+      obligationId?: string
+    }
+    session.originSession = { friendId: "ari", channel: "bluebubbles", key: "chat" }
+    session.obligationId = "ob-7"
+
+    vi.mocked(advanceObligation).mockClear()
+    attachCodingSessionFeedback(manager, session as CodingSession, target)
+    await Promise.resolve()
+    target.send.mockClear()
+
+    await listener?.({
+      kind: "completed",
+      session: {
+        ...(session as CodingSession),
+        status: "completed",
+        stdoutTail: "merged PR #123",
+        pid: null,
+        endedAt: "2026-03-05T23:55:00.000Z",
+      },
+    })
+    await Promise.resolve()
+
+    expect(target.send).toHaveBeenLastCalledWith(
+      "codex coding-001 for bluebubbles/chat completed: merged PR #123\ncurrent artifact: PR #123\nnext: update runtime, verify version/changelog, then re-observe",
+    )
+    expect(advanceObligation).toHaveBeenCalledWith(
+      "/Users/test/AgentBundles/slugger.ouro",
+      "ob-7",
+      expect.objectContaining({
+        status: "updating_runtime",
+        currentSurface: { kind: "runtime", label: "ouro up" },
+        currentArtifact: "PR #123",
+        nextAction: "update runtime, verify version/changelog, then re-observe",
+      }),
+    )
+  })
+
+  it("recognizes pull-request URLs and landed wording in obligation-bound report-backs", async () => {
+    let listener: ((update: CodingSessionUpdate) => void | Promise<void>) | undefined
+    const manager = {
+      subscribe: vi.fn((_sessionId: string, cb: (update: CodingSessionUpdate) => void | Promise<void>) => {
+        listener = cb
+        return () => undefined
+      }),
+    }
+    const target = { send: vi.fn().mockResolvedValue(undefined) }
+    const session = makeSession() as CodingSession & {
+      originSession?: { friendId: string; channel: string; key: string }
+      obligationId?: string
+    }
+    session.originSession = { friendId: "ari", channel: "bluebubbles", key: "chat" }
+    session.obligationId = "ob-8"
+
+    vi.mocked(advanceObligation).mockClear()
+    attachCodingSessionFeedback(manager, session as CodingSession, target)
+    await Promise.resolve()
+    target.send.mockClear()
+
+    await listener?.({
+      kind: "completed",
+      session: {
+        ...(session as CodingSession),
+        status: "completed",
+        stdoutTail: "landed https://github.com/ouroborosbot/ouroboros/pull/124",
+        pid: null,
+        endedAt: "2026-03-05T23:55:00.000Z",
+      },
+    })
+    await Promise.resolve()
+
+    expect(target.send).toHaveBeenLastCalledWith(
+      "codex coding-001 for bluebubbles/chat completed: landed https://github.com/ouroborosbot/ouroboros/pull/124\ncurrent artifact: PR #124\nnext: update runtime, verify version/changelog, then re-observe",
+    )
+    expect(advanceObligation).toHaveBeenCalledWith(
+      "/Users/test/AgentBundles/slugger.ouro",
+      "ob-8",
+      expect.objectContaining({
+        status: "updating_runtime",
+        currentSurface: { kind: "runtime", label: "ouro up" },
+        currentArtifact: "PR #124",
+      }),
+    )
+  })
+
+  it("falls back safely when coding updates are malformed or milestone-less", async () => {
+    let listener: ((update: CodingSessionUpdate) => void | Promise<void>) | undefined
+    const manager = {
+      subscribe: vi.fn((_sessionId: string, cb: (update: CodingSessionUpdate) => void | Promise<void>) => {
+        listener = cb
+        return () => undefined
+      }),
+    }
+    const target = { send: vi.fn().mockResolvedValue(undefined) }
+    const session = makeSession() as CodingSession & {
+      originSession?: { friendId: string; channel: string; key: string }
+      obligationId?: string
+    }
+    session.originSession = { friendId: "ari", channel: "cli", key: "session" }
+    session.obligationId = "ob-9"
+
+    vi.mocked(advanceObligation).mockClear()
+    attachCodingSessionFeedback(manager, session as CodingSession, target)
+    await Promise.resolve()
+    target.send.mockClear()
+
+    await listener?.({
+      kind: "completed",
+      session: {
+        ...(session as CodingSession),
+        status: "completed",
+        stdoutTail: "done and dusted",
+        pid: null,
+        endedAt: "2026-03-05T23:55:00.000Z",
+      },
+    })
+    await listener?.({
+      kind: "unknown" as never,
+      session: {
+        ...(session as CodingSession),
+        status: "running",
+      },
+    })
+    await Promise.resolve()
+
+    expect(target.send).toHaveBeenCalledTimes(1)
+    expect(target.send).toHaveBeenCalledWith("codex coding-001 for cli/session completed: done and dusted")
+    expect(advanceObligation).toHaveBeenCalledWith(
+      "/Users/test/AgentBundles/slugger.ouro",
+      "ob-9",
+      expect.objectContaining({
+        status: "investigating",
+        currentSurface: { kind: "coding", label: "codex coding-001" },
+      }),
+    )
   })
 
   it("wakes inner dialog when an obligation-bound coding session needs the loop to continue", async () => {

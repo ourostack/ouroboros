@@ -5,7 +5,7 @@ import type { CodingSession } from "../repertoire/coding/types"
 import { bridgeStateLabel } from "./bridges/state-machine"
 import type { BridgeRecord } from "./bridges/store"
 import type { InnerJob } from "./daemon/thoughts"
-import { isOpenObligationStatus, type Obligation } from "./obligations"
+import { isOpenObligation, isOpenObligationStatus, type Obligation } from "./obligations"
 import type { SessionActivityRecord } from "./session-activity"
 import { formatTargetSessionCandidates, type TargetSessionCandidate } from "./target-resolution"
 
@@ -153,6 +153,66 @@ function formatObligationSurface(obligation: Obligation): string {
   }
 }
 
+function findPrimaryOpenObligation(frame: ActiveWorkFrame): Obligation | null {
+  return (frame.pendingObligations ?? []).find((ob) => ob.status !== "pending" && ob.status !== "fulfilled")
+    ?? (frame.pendingObligations ?? []).find(isOpenObligation)
+    ?? null
+}
+
+function formatActiveLane(frame: ActiveWorkFrame, obligation: Obligation | null): string | null {
+  const liveCodingSession = frame.codingSessions?.[0]
+  if (liveCodingSession) {
+    return `${formatCodingLaneLabel(liveCodingSession)}${describeCodingSessionScope(liveCodingSession, frame.currentSession)}`
+  }
+  if (obligation?.currentSurface?.label) {
+    return obligation.currentSurface.label
+  }
+  if (frame.inner?.job?.status === "running") {
+    return "inner dialog"
+  }
+  return null
+}
+
+function formatCurrentArtifact(frame: ActiveWorkFrame, obligation: Obligation | null): string | null {
+  if (obligation?.currentArtifact?.trim()) {
+    return obligation.currentArtifact.trim()
+  }
+  if (obligation?.currentSurface?.kind === "merge" && obligation.currentSurface.label.trim()) {
+    return obligation.currentSurface.label.trim()
+  }
+  if ((frame.codingSessions ?? []).length > 0) {
+    return "no PR or merge artifact yet"
+  }
+  return null
+}
+
+function formatNextAction(frame: ActiveWorkFrame, obligation: Obligation | null): string | null {
+  if (obligation?.nextAction?.trim()) {
+    return obligation.nextAction.trim()
+  }
+  const liveCodingSession = frame.codingSessions?.[0]
+  if (liveCodingSession?.status === "waiting_input") {
+    return `answer ${formatCodingLaneLabel(liveCodingSession)} and continue`
+  }
+  if (liveCodingSession?.status === "stalled") {
+    return `unstick ${formatCodingLaneLabel(liveCodingSession)} and continue`
+  }
+  if (liveCodingSession) {
+    return "finish the coding pass and bring the result back here"
+  }
+  if (obligation?.status === "waiting_for_merge") {
+    const artifact = formatCurrentArtifact(frame, obligation) ?? "the fix"
+    return `wait for checks, merge ${artifact}, then update runtime`
+  }
+  if (obligation?.status === "updating_runtime") {
+    return "update runtime, verify version/changelog, then re-observe"
+  }
+  if (obligation) {
+    return "continue the active loop and bring the result back here"
+  }
+  return null
+}
+
 export function suggestBridgeForActiveWork(input: BridgeSuggestionInput): BridgeSuggestion | null {
   const targetCandidates = (input.targetCandidates ?? [])
     .filter((candidate) => {
@@ -278,6 +338,10 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
 
 export function formatActiveWorkFrame(frame: ActiveWorkFrame): string {
   const lines = ["## what i'm holding"]
+  const primaryObligation = findPrimaryOpenObligation(frame)
+  const activeLane = formatActiveLane(frame, primaryObligation)
+  const currentArtifact = formatCurrentArtifact(frame, primaryObligation)
+  const nextAction = formatNextAction(frame, primaryObligation)
 
   // Session line
   if (frame.currentSession) {
@@ -292,6 +356,23 @@ export function formatActiveWorkFrame(frame: ActiveWorkFrame): string {
   } else {
     lines.push("")
     lines.push("i'm not in a conversation right now.")
+  }
+
+  if (activeLane || currentArtifact || nextAction) {
+    lines.push("")
+    lines.push("## current concrete state")
+    if (frame.currentSession) {
+      lines.push(`- live conversation: ${formatSessionLabel(frame.currentSession)}`)
+    }
+    if (activeLane) {
+      lines.push(`- active lane: ${activeLane}`)
+    }
+    if (currentArtifact) {
+      lines.push(`- current artifact: ${currentArtifact}`)
+    }
+    if (nextAction) {
+      lines.push(`- next action: ${nextAction}`)
+    }
   }
 
   // Inner status block

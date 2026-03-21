@@ -23,6 +23,8 @@ export interface Obligation {
   createdAt: string
   updatedAt?: string
   currentSurface?: ObligationSurface
+  currentArtifact?: string
+  nextAction?: string
   latestNote?: string
   fulfilledAt?: string
 }
@@ -124,6 +126,8 @@ export function advanceObligation(
   update: {
     status?: ObligationStatus
     currentSurface?: ObligationSurface
+    currentArtifact?: string
+    nextAction?: string
     latestNote?: string
   },
 ): void {
@@ -145,6 +149,12 @@ export function advanceObligation(
   }
   if (update.currentSurface) {
     obligation.currentSurface = update.currentSurface
+  }
+  if (typeof update.currentArtifact === "string") {
+    obligation.currentArtifact = update.currentArtifact
+  }
+  if (typeof update.nextAction === "string") {
+    obligation.nextAction = update.nextAction
   }
   if (typeof update.latestNote === "string") {
     obligation.latestNote = update.latestNote
