@@ -767,4 +767,621 @@ describe("obligation steering helpers", () => {
       "next action: continue the active loop and bring the result back here",
     ].join("\n"))
   })
+
+  it("builds family status replies with all other live sessions and concrete next-step fallbacks", async () => {
+    const { buildExactStatusReply } = await import("../../mind/obligation-steering")
+    const frame = makeMinimalFrame({
+      currentObligation: "close the loop here",
+      friendActivity: {
+        freshestForCurrentFriend: null,
+        otherLiveSessionsForCurrentFriend: [],
+        allOtherLiveSessions: [
+          {
+            friendId: "ari",
+            friendName: "Ari",
+            channel: "bluebubbles",
+            key: "chat",
+            sessionPath: "/tmp/ari-bb.json",
+            lastActivityAt: "2026-03-21T10:08:00.000Z",
+            lastActivityMs: Date.parse("2026-03-21T10:08:00.000Z"),
+            activitySource: "friend-facing",
+          },
+          {
+            friendId: "pat",
+            friendName: "Pat",
+            channel: "teams",
+            key: "group",
+            sessionPath: "/tmp/pat-group.json",
+            lastActivityAt: "2026-03-21T10:09:00.000Z",
+            lastActivityMs: Date.parse("2026-03-21T10:09:00.000Z"),
+            activitySource: "friend-facing",
+          },
+          {
+            friendId: "sam",
+            friendName: "Sam",
+            channel: "cli",
+            key: "session-2",
+            sessionPath: "/tmp/sam-cli.json",
+            lastActivityAt: "2026-03-21T10:10:00.000Z",
+            lastActivityMs: Date.parse("2026-03-21T10:10:00.000Z"),
+            activitySource: "friend-facing",
+          },
+          {
+            friendId: "jordan",
+            friendName: "Jordan",
+            channel: "teams",
+            key: "chat",
+            sessionPath: "/tmp/jordan-teams.json",
+            lastActivityAt: "2026-03-21T10:11:00.000Z",
+            lastActivityMs: Date.parse("2026-03-21T10:11:00.000Z"),
+            activitySource: "friend-facing",
+          },
+          {
+            friendId: "quinn",
+            friendName: "Quinn",
+            channel: "cli",
+            key: "scratch",
+            sessionPath: "/tmp/quinn-cli.json",
+            lastActivityAt: "2026-03-21T10:12:00.000Z",
+            lastActivityMs: Date.parse("2026-03-21T10:12:00.000Z"),
+            activitySource: "friend-facing",
+          },
+          {
+            friendId: "casey",
+            friendName: "Casey",
+            channel: "cli",
+            key: "pairing",
+            sessionPath: "/tmp/casey-cli.json",
+            lastActivityAt: "2026-03-21T10:07:30.000Z",
+            lastActivityMs: Date.parse("2026-03-21T10:07:30.000Z"),
+            activitySource: "friend-facing",
+          },
+          {
+            friendId: "morgan",
+            friendName: "Morgan",
+            channel: "bluebubbles",
+            key: "dm",
+            sessionPath: "/tmp/morgan-bb.json",
+            lastActivityAt: "2026-03-21T10:07:00.000Z",
+            lastActivityMs: Date.parse("2026-03-21T10:07:00.000Z"),
+            activitySource: "friend-facing",
+          },
+          {
+            friendId: "riley",
+            friendName: "Riley",
+            channel: "cli",
+            key: "followup",
+            sessionPath: "/tmp/riley-cli.json",
+            lastActivityAt: "2026-03-21T10:06:30.000Z",
+            lastActivityMs: Date.parse("2026-03-21T10:06:30.000Z"),
+            activitySource: "friend-facing",
+          },
+          {
+            friendId: "taylor",
+            friendName: "Taylor",
+            channel: "teams",
+            key: "started-only",
+            sessionPath: "/tmp/taylor-teams.json",
+            lastActivityAt: "2026-03-21T10:06:15.000Z",
+            lastActivityMs: Date.parse("2026-03-21T10:06:15.000Z"),
+            activitySource: "friend-facing",
+          },
+        ],
+      },
+      otherCodingSessions: [
+        {
+          id: "coding-old",
+          runner: "codex",
+          workdir: "/tmp/workspaces/sam-old",
+          taskRef: "older-sam-work",
+          status: "running",
+          stdoutTail: "",
+          stderrTail: "",
+          pid: 200,
+          startedAt: "2026-03-21T09:55:00.000Z",
+          lastActivityAt: "2026-03-21T10:07:00.000Z",
+          endedAt: null,
+          restartCount: 0,
+          lastExitCode: null,
+          lastSignal: null,
+          failure: null,
+          originSession: { friendId: "sam", channel: "cli", key: "session-2" },
+        },
+        {
+          id: "coding-new",
+          runner: "codex",
+          workdir: "/tmp/workspaces/sam-new",
+          taskRef: "sam-followup",
+          status: "waiting_input",
+          stdoutTail: "",
+          stderrTail: "",
+          pid: 201,
+          startedAt: "2026-03-21T09:57:00.000Z",
+          lastActivityAt: "2026-03-21T10:13:00.000Z",
+          endedAt: null,
+          restartCount: 0,
+          lastExitCode: null,
+          lastSignal: null,
+          failure: null,
+          originSession: { friendId: "sam", channel: "cli", key: "session-2" },
+        },
+        {
+          id: "coding-stalled",
+          runner: "claude",
+          workdir: "/tmp/workspaces/jordan",
+          taskRef: "jordan-stalled",
+          status: "stalled",
+          stdoutTail: "",
+          stderrTail: "",
+          pid: 202,
+          startedAt: "2026-03-21T09:58:00.000Z",
+          lastActivityAt: "2026-03-21T10:14:00.000Z",
+          endedAt: null,
+          restartCount: 0,
+          lastExitCode: null,
+          lastSignal: null,
+          failure: null,
+          originSession: { friendId: "jordan", channel: "teams", key: "chat" },
+        },
+        {
+          id: "coding-running",
+          runner: "codex",
+          workdir: "/tmp/workspaces/casey",
+          taskRef: "casey-pass",
+          status: "running",
+          stdoutTail: "",
+          stderrTail: "",
+          pid: 203,
+          startedAt: "2026-03-21T09:59:00.000Z",
+          lastActivityAt: "2026-03-21T10:07:30.000Z",
+          endedAt: null,
+          restartCount: 0,
+          lastExitCode: null,
+          lastSignal: null,
+          failure: null,
+          originSession: { friendId: "casey", channel: "cli", key: "pairing" },
+        },
+        {
+          id: "coding-started-only",
+          runner: "claude",
+          workdir: "/tmp/workspaces/taylor",
+          taskRef: "taylor-pass",
+          status: "running",
+          stdoutTail: "",
+          stderrTail: "",
+          pid: 204,
+          startedAt: "2026-03-21T10:06:15.000Z",
+          lastActivityAt: null,
+          endedAt: null,
+          restartCount: 0,
+          lastExitCode: null,
+          lastSignal: null,
+          failure: null,
+          originSession: { friendId: "taylor", channel: "teams", key: "started-only" },
+        },
+      ],
+      pendingObligations: [
+        {
+          id: "ob-current",
+          origin: { friendId: "friend-1", channel: "cli", key: "session" },
+          content: "close the loop here",
+          status: "investigating",
+          createdAt: "2026-03-21T10:00:00.000Z",
+          updatedAt: "2026-03-21T10:00:00.000Z",
+        },
+        {
+          id: "ob-merge",
+          origin: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+          content: "merge the session-awareness fix",
+          status: "waiting_for_merge",
+          currentSurface: { kind: "merge", label: "PR #177" },
+          createdAt: "2026-03-21T10:01:00.000Z",
+          updatedAt: "2026-03-21T10:01:00.000Z",
+        },
+        {
+          id: "ob-runtime",
+          origin: { friendId: "pat", channel: "teams", key: "group" },
+          content: "roll onto the merged runtime",
+          status: "updating_runtime",
+          currentSurface: { kind: "runtime", label: "ouro up" },
+          currentArtifact: "alpha.103 installed",
+          createdAt: "2026-03-21T10:02:00.000Z",
+          updatedAt: "2026-03-21T10:02:00.000Z",
+        },
+        {
+          id: "ob-morgan",
+          origin: { friendId: "morgan", channel: "bluebubbles", key: "dm" },
+          content: "bring the visibility fix back there",
+          status: "investigating",
+          createdAt: "2026-03-21T10:03:00.000Z",
+          updatedAt: "2026-03-21T10:03:00.000Z",
+        },
+        {
+          id: "ob-riley",
+          origin: { friendId: "riley", channel: "cli", key: "followup" },
+          content: "close the review loop",
+          status: "investigating",
+          nextAction: "ask one blocking question and continue",
+          createdAt: "2026-03-21T10:03:30.000Z",
+          updatedAt: "2026-03-21T10:03:30.000Z",
+        },
+      ],
+    })
+
+    const result = buildExactStatusReply(frame, frame.pendingObligations?.[0] ?? null, "just verified the current thread", "all-sessions-family")
+    const lines = result.split("\n")
+    const otherSessionsIndex = lines.indexOf("other active sessions:")
+
+    expect(lines.slice(0, 5)).toEqual([
+      "live conversation: cli/session",
+      "active lane: this same thread",
+      "current artifact: no artifact yet",
+      "latest checkpoint: just verified the current thread",
+      'next action: work on "close the loop here" and bring back a concrete artifact',
+    ])
+    expect(otherSessionsIndex).toBeGreaterThan(0)
+    expect(lines[otherSessionsIndex + 1]).toBe("- Jordan/teams/chat: [stalled] claude coding-stalled; artifact no PR or merge artifact yet; next unstick claude coding-stalled and continue")
+    expect(result).toContain("- Sam/cli/session-2: [waiting_input] codex coding-new; artifact no PR or merge artifact yet; next answer codex coding-new and continue")
+    expect(result).toContain("- Casey/cli/pairing: [running] codex coding-running; artifact no PR or merge artifact yet; next finish the coding pass and bring the result back there")
+    expect(result).toContain("- Morgan/bluebubbles/dm: [investigating] this live thread; artifact no artifact yet; next continue the active loop and bring the result back there")
+    expect(result).toContain("- Riley/cli/followup: [investigating] this live thread; artifact no artifact yet; next ask one blocking question and continue")
+    expect(result).toContain("- Taylor/teams/started-only: [running] claude coding-started-only; artifact no PR or merge artifact yet; next finish the coding pass and bring the result back there")
+    expect(result).toContain("- Quinn/cli/scratch: [active] this live thread; artifact no artifact yet; next check this session and bring back the latest concrete state")
+    expect(result).toContain("- Pat/teams/group: [updating_runtime] ouro up; artifact alpha.103 installed; next update runtime, verify version/changelog, then re-observe")
+    expect(result).toContain("- Ari/bluebubbles/chat: [waiting_for_merge] PR #177; artifact PR #177; next wait for checks, merge PR #177, then update runtime")
+  })
+
+  it("renders family status reply contract fallbacks when the current thread has no captured obligation", async () => {
+    const { renderExactStatusReplyContract } = await import("../../mind/obligation-steering")
+    const result = renderExactStatusReplyContract(
+      makeMinimalFrame({
+        currentSession: null,
+        pendingObligations: [
+          {
+            id: "ob-other",
+            origin: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+            content: "carry the fix back there",
+            status: "investigating",
+            createdAt: "2026-03-21T10:00:00.000Z",
+            updatedAt: "2026-03-21T10:01:00.000Z",
+          },
+        ],
+      }),
+      null,
+      "all-sessions-family",
+    )
+
+    expect(result).toContain("reply using exactly this status shape and nothing else:")
+    expect(result).toContain("live conversation: not in a live conversation")
+    expect(result).toContain("active lane: this live loop")
+    expect(result).toContain("current artifact: no artifact yet")
+    expect(result).toContain("next action: continue the active loop and bring the result back here")
+  })
+
+  it("renders family status fallbacks for a live thread even when family-wide surfaces are sparse", async () => {
+    const { renderExactStatusReplyContract, buildExactStatusReply } = await import("../../mind/obligation-steering")
+    const frame = makeMinimalFrame({
+      pendingObligations: undefined,
+      friendActivity: undefined as any,
+      otherCodingSessions: undefined,
+    })
+
+    const contract = renderExactStatusReplyContract(frame, null, "all-sessions-family")
+    const reply = buildExactStatusReply(frame, null, "just checked the live thread", "all-sessions-family")
+
+    expect(contract).toContain("live conversation: cli/session")
+    expect(contract).toContain("active lane: this same thread")
+    expect(contract).toContain("current artifact: no artifact yet")
+    expect(reply).toBe([
+      "live conversation: cli/session",
+      "active lane: this same thread",
+      "current artifact: no artifact yet",
+      "latest checkpoint: just checked the live thread",
+      "next action: continue the active loop and bring the result back here",
+      "other active sessions:",
+      "- none",
+    ].join("\n"))
+  })
+
+  it("renders family status reply contract from the live current-thread obligation when one exists", async () => {
+    const { renderExactStatusReplyContract } = await import("../../mind/obligation-steering")
+    const result = renderExactStatusReplyContract(
+      makeMinimalFrame({
+        currentObligation: "close the loop here",
+        pendingObligations: [
+          {
+            id: "ob-current",
+            origin: { friendId: "friend-1", channel: "cli", key: "session" },
+            content: "close the loop here",
+            status: "investigating",
+            createdAt: "2026-03-21T10:00:00.000Z",
+            updatedAt: "2026-03-21T10:01:00.000Z",
+          },
+        ],
+      }),
+      null,
+      "all-sessions-family",
+    )
+
+    expect(result).toContain("live conversation: cli/session")
+    expect(result).toContain("active lane: this same thread")
+    expect(result).toContain("current artifact: no artifact yet")
+    expect(result).toContain('next action: work on "close the loop here" and bring back a concrete artifact')
+  })
+
+  it("builds family status replies with an explicit none marker when no other sessions are active", async () => {
+    const { buildExactStatusReply } = await import("../../mind/obligation-steering")
+    const result = buildExactStatusReply(
+      makeMinimalFrame({
+        currentObligation: "close the loop here",
+        pendingObligations: [
+          {
+            id: "ob-current",
+            origin: { friendId: "friend-1", channel: "cli", key: "session" },
+            content: "close the loop here",
+            status: "investigating",
+            createdAt: "2026-03-21T10:00:00.000Z",
+            updatedAt: "2026-03-21T10:00:00.000Z",
+          },
+        ],
+        friendActivity: {
+          freshestForCurrentFriend: null,
+          otherLiveSessionsForCurrentFriend: [],
+          allOtherLiveSessions: [],
+        },
+        otherCodingSessions: [],
+      }),
+      null,
+      "just verified the current thread",
+      "all-sessions-family",
+    )
+
+    expect(result).toBe([
+      "live conversation: cli/session",
+      "active lane: this same thread",
+      "current artifact: no artifact yet",
+      "latest checkpoint: just verified the current thread",
+      'next action: work on "close the loop here" and bring back a concrete artifact',
+      "other active sessions:",
+      "- none",
+    ].join("\n"))
+  })
+
+  it("builds family status replies for obligation-only sessions without a live-session record", async () => {
+    const { buildExactStatusReply } = await import("../../mind/obligation-steering")
+    const result = buildExactStatusReply(
+      makeMinimalFrame({
+        currentObligation: "close the loop here",
+        pendingObligations: [
+          {
+            id: "ob-current",
+            origin: { friendId: "friend-1", channel: "cli", key: "session" },
+            content: "close the loop here",
+            status: "investigating",
+            createdAt: "2026-03-21T10:00:00.000Z",
+            updatedAt: "2026-03-21T10:00:00.000Z",
+          },
+          {
+            id: "ob-other",
+            origin: { friendId: "alex", channel: "teams", key: "thread-7" },
+            content: "carry the fix back there",
+            status: "investigating",
+            createdAt: "2026-03-21T10:02:00.000Z",
+            updatedAt: "2026-03-21T10:03:00.000Z",
+          },
+        ],
+        friendActivity: {
+          freshestForCurrentFriend: null,
+          otherLiveSessionsForCurrentFriend: [],
+          allOtherLiveSessions: [],
+        },
+        otherCodingSessions: [],
+      }),
+      null,
+      "just verified the current thread",
+      "all-sessions-family",
+    )
+
+    expect(result).toContain("other active sessions:")
+    expect(result).toContain("- alex/teams/thread-7: [investigating] this live thread; artifact no artifact yet; next continue the active loop and bring the result back there")
+  })
+
+  it("falls back to friend ids when sparse family frames only know about other obligations", async () => {
+    const { buildExactStatusReply } = await import("../../mind/obligation-steering")
+    const result = buildExactStatusReply(
+      makeMinimalFrame({
+        currentObligation: "close the loop here",
+        friendActivity: undefined as any,
+        otherCodingSessions: undefined,
+        pendingObligations: [
+          {
+            id: "ob-current",
+            origin: { friendId: "friend-1", channel: "cli", key: "session" },
+            content: "close the loop here",
+            status: "investigating",
+            createdAt: "2026-03-21T10:00:00.000Z",
+            updatedAt: "2026-03-21T10:00:00.000Z",
+          },
+          {
+            id: "ob-other",
+            origin: { friendId: "sam", channel: "teams", key: "thread-9" },
+            content: "carry the fix back there",
+            status: "investigating",
+            createdAt: "2026-03-21T10:04:00.000Z",
+            updatedAt: "2026-03-21T10:05:00.000Z",
+          },
+        ],
+      }),
+      null,
+      "just checked the live thread",
+      "all-sessions-family",
+    )
+
+    expect(result).toContain("- sam/teams/thread-9: [investigating] this live thread; artifact no artifact yet; next continue the active loop and bring the result back there")
+  })
+
+  it("builds family status replies from live or coding candidates even before other obligations exist", async () => {
+    const { buildExactStatusReply } = await import("../../mind/obligation-steering")
+    const result = buildExactStatusReply(
+      makeMinimalFrame({
+        currentObligation: "close the loop here",
+        pendingObligations: undefined,
+        friendActivity: {
+          freshestForCurrentFriend: null,
+          otherLiveSessionsForCurrentFriend: [],
+          allOtherLiveSessions: [
+            {
+              friendId: "jamie",
+              friendName: "Jamie",
+              channel: "teams",
+              key: "pairing",
+              sessionPath: "/tmp/jamie-teams.json",
+              lastActivityAt: "2026-03-21T10:08:00.000Z",
+              lastActivityMs: Date.parse("2026-03-21T10:08:00.000Z"),
+              activitySource: "friend-facing",
+            },
+          ],
+        },
+        otherCodingSessions: [
+          {
+            id: "coding-jamie",
+            runner: "codex",
+            workdir: "/tmp/workspaces/jamie",
+            taskRef: "jamie-pass",
+            status: "running",
+            stdoutTail: "",
+            stderrTail: "",
+            pid: 401,
+            startedAt: "2026-03-21T10:07:00.000Z",
+            lastActivityAt: "2026-03-21T10:09:00.000Z",
+            endedAt: null,
+            restartCount: 0,
+            lastExitCode: null,
+            lastSignal: null,
+            failure: null,
+            originSession: { friendId: "jamie", channel: "teams", key: "pairing" },
+          },
+        ],
+      }),
+      null,
+      "just checked the live thread",
+      "all-sessions-family",
+    )
+
+    expect(result).toContain("- Jamie/teams/pairing: [running] codex coding-jamie; artifact no PR or merge artifact yet; next finish the coding pass and bring the result back there")
+  })
+
+  it("ignores current-thread, fulfilled, and originless candidates when summarizing other sessions", async () => {
+    const { buildExactStatusReply } = await import("../../mind/obligation-steering")
+    const result = buildExactStatusReply(
+      makeMinimalFrame({
+        currentObligation: "close the loop here",
+        friendActivity: {
+          freshestForCurrentFriend: null,
+          otherLiveSessionsForCurrentFriend: [],
+          allOtherLiveSessions: [
+            {
+              friendId: "other",
+              friendName: "Other",
+              channel: "teams",
+              key: "thread",
+              sessionPath: "/tmp/other-thread.json",
+              lastActivityAt: "2026-03-21T10:06:00.000Z",
+              lastActivityMs: Date.parse("2026-03-21T10:06:00.000Z"),
+              activitySource: "friend-facing",
+            },
+          ],
+        },
+        otherCodingSessions: [
+          {
+            id: "coding-originless",
+            runner: "codex",
+            workdir: "/tmp/originless",
+            taskRef: "originless",
+            status: "running",
+            stdoutTail: "",
+            stderrTail: "",
+            pid: 301,
+            startedAt: "2026-03-21T10:00:00.000Z",
+            lastActivityAt: "2026-03-21T10:01:00.000Z",
+            endedAt: null,
+            restartCount: 0,
+            lastExitCode: null,
+            lastSignal: null,
+            failure: null,
+          },
+          {
+            id: "coding-same",
+            runner: "codex",
+            workdir: "/tmp/same",
+            taskRef: "same-thread",
+            status: "running",
+            stdoutTail: "",
+            stderrTail: "",
+            pid: 302,
+            startedAt: "2026-03-21T10:00:00.000Z",
+            lastActivityAt: "2026-03-21T10:02:00.000Z",
+            endedAt: null,
+            restartCount: 0,
+            lastExitCode: null,
+            lastSignal: null,
+            failure: null,
+            originSession: { friendId: "friend-1", channel: "cli", key: "session" },
+          },
+          {
+            id: "coding-other",
+            runner: "codex",
+            workdir: "/tmp/other",
+            taskRef: "other-thread",
+            status: "running",
+            stdoutTail: "",
+            stderrTail: "",
+            pid: 303,
+            startedAt: "2026-03-21T10:00:00.000Z",
+            lastActivityAt: "2026-03-21T10:07:00.000Z",
+            endedAt: null,
+            restartCount: 0,
+            lastExitCode: null,
+            lastSignal: null,
+            failure: null,
+            originSession: { friendId: "other", channel: "teams", key: "thread" },
+          },
+        ],
+        pendingObligations: [
+          {
+            id: "ob-current",
+            origin: { friendId: "friend-1", channel: "cli", key: "session" },
+            content: "close the loop here",
+            status: "investigating",
+            createdAt: "2026-03-21T10:00:00.000Z",
+            updatedAt: "2026-03-21T10:00:00.000Z",
+          },
+          {
+            id: "ob-fulfilled",
+            origin: { friendId: "fulfilled", channel: "cli", key: "done" },
+            content: "already resolved",
+            status: "fulfilled",
+            createdAt: "2026-03-21T09:59:00.000Z",
+            updatedAt: "2026-03-21T09:59:00.000Z",
+          },
+          {
+            id: "ob-same",
+            origin: { friendId: "friend-1", channel: "cli", key: "session" },
+            content: "still here",
+            status: "waiting_for_merge",
+            createdAt: "2026-03-21T10:01:00.000Z",
+            updatedAt: "2026-03-21T10:01:00.000Z",
+          },
+        ],
+      }),
+      null,
+      "just checked the live thread",
+      "all-sessions-family",
+    )
+
+    expect(result).toContain("- Other/teams/thread: [running] codex coding-other; artifact no PR or merge artifact yet; next finish the coding pass and bring the result back there")
+    expect(result).not.toContain("coding-originless")
+    expect(result).not.toContain("coding-same")
+    expect(result).not.toContain("fulfilled/cli/done")
+  })
 })

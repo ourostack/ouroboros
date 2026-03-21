@@ -151,6 +151,15 @@ function isStatusCheckRequested(ingressTexts: readonly string[] | undefined): bo
   return STATUS_CHECK_PATTERNS.some((pattern) => pattern.test(latest))
 }
 
+function isLiveCodingSessionStatus(
+  status: import("../repertoire/coding/types").CodingSessionStatus,
+): boolean {
+  return status === "spawning"
+    || status === "running"
+    || status === "waiting_input"
+    || status === "stalled"
+}
+
 function readInnerWorkState(): ActiveWorkFrame["inner"] {
   const defaultJob = {
     status: "idle" as const,
@@ -308,22 +317,26 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     pendingObligations = []
   }
   let codingSessions = [] as ReturnType<ReturnType<typeof getCodingSessionManager>["listSessions"]>
+  let otherCodingSessions = [] as ReturnType<ReturnType<typeof getCodingSessionManager>["listSessions"]>
   try {
-    codingSessions = getCodingSessionManager()
+    const liveCodingSessions = getCodingSessionManager()
       .listSessions()
-      .filter((session) => {
-        if (session.status !== "spawning" && session.status !== "running" && session.status !== "waiting_input" && session.status !== "stalled") {
-          return false
-        }
-        if (!session.originSession) {
-          return false
-        }
-        return session.originSession.friendId === currentSession.friendId
-          && session.originSession.channel === currentSession.channel
-          && session.originSession.key === currentSession.key
-      })
+      .filter((session) => isLiveCodingSessionStatus(session.status) && Boolean(session.originSession))
+    codingSessions = liveCodingSessions.filter((session) =>
+      session.originSession?.friendId === currentSession.friendId
+      && session.originSession.channel === currentSession.channel
+      && session.originSession.key === currentSession.key,
+    )
+    otherCodingSessions = liveCodingSessions.filter((session) =>
+      !(
+        session.originSession?.friendId === currentSession.friendId
+        && session.originSession.channel === currentSession.channel
+        && session.originSession.key === currentSession.key
+      ),
+    )
   } catch {
     codingSessions = []
+    otherCodingSessions = []
   }
   const activeWorkFrame = buildActiveWorkFrame({
     currentSession,
@@ -332,6 +345,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     inner: readInnerWorkState(),
     bridges: activeBridges,
     codingSessions,
+    otherCodingSessions,
     pendingObligations,
     taskBoard: (() => {
       try {
@@ -394,6 +408,9 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   // Step 5: runAgent
   const existingToolContext = input.runAgentOptions?.toolContext
   const statusCheckRequested = isStatusCheckRequested(input.continuityIngressTexts)
+  const statusCheckScope = statusCheckRequested && resolvedContext.friend.trustLevel === "family"
+    ? "all-sessions-family" as const
+    : undefined
   const runAgentOptions: RunAgentOptions = {
     ...input.runAgentOptions,
     bridgeContext,
@@ -402,6 +419,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     currentSessionKey: currentSession.key,
     currentObligation,
     statusCheckRequested,
+    statusCheckScope,
     toolChoiceRequired: statusCheckRequested ? true : input.runAgentOptions?.toolChoiceRequired,
     mustResolveBeforeHandoff,
     setMustResolveBeforeHandoff: (value) => {

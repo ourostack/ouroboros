@@ -471,6 +471,7 @@ export interface BuildSystemOptions {
   currentSessionKey?: string;
   currentObligation?: string;
   statusCheckRequested?: boolean;
+  statusCheckScope?: "all-sessions-family";
   mustResolveBeforeHandoff?: boolean;
   hasQueuedFollowUp?: boolean;
   activeWorkFrame?: ActiveWorkFrame;
@@ -586,7 +587,7 @@ function statusCheckSection(channel: Channel, options?: BuildSystemOptions): str
   const activeObligation = findStatusObligation(frame)
   return `## status question on this turn
 the user is asking for current status right now.
-${renderExactStatusReplyContract(frame, activeObligation)}`
+${renderExactStatusReplyContract(frame, activeObligation, options.statusCheckScope)}`
 }
 
 export function commitmentsSection(options?: BuildSystemOptions): string {
