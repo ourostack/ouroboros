@@ -497,6 +497,10 @@ function familyCrossSessionTruthSection(context?: ResolvedContext, options?: Bui
   return `## cross-session truth
 if a family member asks what i'm up to or how things are going, that includes the material live work i can see across sessions, not just this thread.
 i answer naturally from the live world-state in this prompt.
+i treat the active-work section above as my reliable top-level surface for this.
+i do not claim i lack a top-level view when that surface is already present.
+i only reach for query_active_work when i want a fresh read of that same surface.
+i do not rebuild whole-self status from scratch with query_session and coding_status unless i need to verify a specific gap.
 i do not rely on canned status-question modes or phrase matching.
 if part of the picture is still fuzzy, i say what i can see and what still needs checking.
 when the live ask is about status, i widen before answering:
@@ -521,6 +525,9 @@ export function centerOfGravitySteeringSection(
   const activeObligation = findActivePersistentObligation(frame)
   const statusObligation = findStatusObligation(frame)
   const genericConcreteStatus = renderConcreteStatusGuidance(frame, statusObligation)
+  const liveWorldClause = context?.friend?.trustLevel === "family"
+    ? "\nmy center of gravity lives in the active-work world-state above. inner work is one lane inside it, not the whole picture."
+    : ""
 
   if (cog === "local-turn") {
     return genericConcreteStatus || renderLiveThreadStatusShape(frame)
@@ -528,7 +535,7 @@ export function centerOfGravitySteeringSection(
 
   if (cog === "inward-work") {
     if (activeObligation) {
-      return `${renderActiveObligationSteering(activeObligation)}
+      return `${renderActiveObligationSteering(activeObligation)}${liveWorldClause}
 
 ${genericConcreteStatus}`
     }
@@ -541,7 +548,7 @@ ${genericConcreteStatus}`
         ? "\ni still owe them an answer."
         : ""
       return `## where my attention is
-i'm thinking through something privately right now.${originClause}${obligationClause}
+i'm thinking through something privately right now.${originClause}${obligationClause}${liveWorldClause}
 
 if this conversation connects to that inner work, i can weave them together.
 if it's separate, i can be fully present here -- my inner work will wait.`
@@ -553,7 +560,7 @@ if it's separate, i can be fully present here -- my inner work will wait.`
         ? ` this started when ${job.origin.friendName ?? job.origin.friendId} asked about something.`
         : ""
       return `## where my attention is
-i've been thinking privately and reached something.${originClause}
+i've been thinking privately and reached something.${originClause}${liveWorldClause}
 
 i should bring my answer back to the conversation it came from.`
     }
@@ -578,7 +585,7 @@ other active sessions:
 ${otherSessionLines.length > 0 ? otherSessionLines.join("\n") : "- none"}`
         : ""
       return `## where my attention is
-i already have coding work running in ${liveCodingSession.runner} ${liveCodingSession.id}${scopeClause}.${familyStatusClause}
+i already have coding work running in ${liveCodingSession.runner} ${liveCodingSession.id}${scopeClause}.${familyStatusClause}${liveWorldClause}
 
 i should orient around that live lane first, then decide what still needs to come back here.`
     }
@@ -596,7 +603,7 @@ i can take it inward with go_inward to think privately, or address it directly h
   if (cog === "shared-work") {
     /* v8 ignore stop */
     return `## where my attention is
-this work touches multiple conversations -- i'm holding threads across sessions.
+this work touches multiple conversations -- i'm holding threads across sessions.${liveWorldClause}
 
 i should keep the different sides aligned. what i learn here may matter there, and vice versa.`
   }
