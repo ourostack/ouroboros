@@ -493,6 +493,16 @@ function activeWorkSection(options?: BuildSystemOptions): string {
   return formatActiveWorkFrame(options.activeWorkFrame)
 }
 
+function familyCrossSessionTruthSection(context?: ResolvedContext, options?: BuildSystemOptions): string {
+  if (!options?.activeWorkFrame) return ""
+  if (context?.friend?.trustLevel !== "family") return ""
+  return `## cross-session truth
+if a family member asks what i'm up to or how things are going, that includes the material live work i can see across sessions, not just this thread.
+i answer naturally from the live world-state in this prompt.
+i do not rely on canned status-question modes or phrase matching.
+if part of the picture is still fuzzy, i say what i can see and what still needs checking.`
+}
+
 export function centerOfGravitySteeringSection(channel: Channel, options?: BuildSystemOptions): string {
   if (channel === "inner") return ""
   const frame = options?.activeWorkFrame
@@ -803,6 +813,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     skillsSection(),
     taskBoardSection(),
     activeWorkSection(options),
+    familyCrossSessionTruthSection(context, options),
     statusCheckSection(channel, options),
     centerOfGravitySteeringSection(channel, options),
     commitmentsSection(options),

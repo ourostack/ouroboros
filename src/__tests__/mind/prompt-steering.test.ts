@@ -63,17 +63,28 @@ describe("centerOfGravitySteeringSection", () => {
     expect(result).toContain("next action: <smallest concrete next step i'm taking now>")
   })
 
-  it("renders concrete status guidance for a local-turn with a live obligation", () => {
+  it("renders concrete status guidance for a local-turn with a real live obligation", () => {
     const result = centerOfGravitySteeringSection("cli", {
       activeWorkFrame: makeMinimalFrame({
         centerOfGravity: "local-turn",
-        currentObligation: "investigate the stale status reply",
+        currentObligation: "what are you doing?",
+        pendingObligations: [
+          {
+            id: "ob-status",
+            origin: { friendId: "friend-1", channel: "cli", key: "session" },
+            content: "investigate the stale status reply",
+            status: "investigating",
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:01:00Z",
+          },
+        ],
       }),
     })
     expect(result).toContain("the live conversation is cli/session.")
     expect(result).toContain("the active lane is this same thread.")
     expect(result).toContain("the current artifact is no artifact yet.")
     expect(result).toContain('the next action is work on "investigate the stale status reply" and bring back a concrete artifact.')
+    expect(result).not.toContain('work on "what are you doing?"')
   })
 
   it("returns steering for inward-work with queued job and origin (friendName)", () => {
@@ -488,7 +499,7 @@ describe("obligation steering helpers", () => {
       updatedAt: "2026-01-01T00:01:00Z",
     })
     expect(updatingRuntime).toContain("the active lane is ouro up.")
-    expect(updatingRuntime).toContain("the current artifact is no explicit artifact yet.")
+    expect(updatingRuntime).toContain("the current artifact is no artifact yet.")
     expect(updatingRuntime).toContain("the next action is update runtime, verify version/changelog, then re-observe.")
   })
 
@@ -561,7 +572,22 @@ describe("obligation steering helpers", () => {
     })
 
     expect(result).toContain("the active lane is this live loop.")
-    expect(result).toContain("the current artifact is no explicit artifact yet.")
+    expect(result).toContain("the current artifact is no artifact yet.")
+    expect(result).toContain('the next action is work on "keep the loop moving" and bring back a concrete artifact.')
+  })
+
+  it("falls back to the generic current-loop action when an obligation has no usable content", async () => {
+    const { renderConcreteStatusGuidance } = await import("../../mind/obligation-steering")
+    const result = renderConcreteStatusGuidance(makeMinimalFrame({ currentSession: null }), {
+      id: "ob-6b",
+      origin: { friendId: "ari", channel: "cli", key: "session" },
+      content: "   ",
+      status: "investigating",
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:01:00Z",
+    })
+
+    expect(result).toContain("the active lane is this live loop.")
     expect(result).toContain("the next action is continue the active loop and bring the result back here.")
   })
 
@@ -623,23 +649,41 @@ describe("obligation steering helpers", () => {
     })
 
     expect(result).toContain("the active lane is ouro up.")
-    expect(result).toContain("the current artifact is no explicit artifact yet.")
+    expect(result).toContain("the current artifact is no artifact yet.")
     expect(result).toContain("the next action is update runtime, verify version/changelog, then re-observe.")
   })
 
-  it("renders concrete status guidance from the current obligation when no persistent obligation exists yet", async () => {
+  it("renders concrete status guidance from a persistent obligation instead of raw turn text", async () => {
     const { renderConcreteStatusGuidance } = await import("../../mind/obligation-steering")
     const result = renderConcreteStatusGuidance(
       makeMinimalFrame({
-        currentObligation: "investigate the stale status reply",
+        currentObligation: "what are you doing?",
+        pendingObligations: [
+          {
+            id: "ob-status",
+            origin: { friendId: "friend-1", channel: "cli", key: "session" },
+            content: "investigate the stale status reply",
+            status: "investigating",
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:01:00Z",
+          },
+        ],
       }),
-      null,
+      {
+        id: "ob-status",
+        origin: { friendId: "friend-1", channel: "cli", key: "session" },
+        content: "investigate the stale status reply",
+        status: "investigating",
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:01:00Z",
+      },
     )
 
     expect(result).toContain("the live conversation is cli/session.")
     expect(result).toContain("the active lane is this same thread.")
     expect(result).toContain("the current artifact is no artifact yet.")
     expect(result).toContain('the next action is work on "investigate the stale status reply" and bring back a concrete artifact.')
+    expect(result).not.toContain('work on "what are you doing?"')
   })
 
   it("renders the generic live-thread status shape when no obligation has been captured yet", async () => {
@@ -715,7 +759,7 @@ describe("obligation steering helpers", () => {
       }),
       {
         id: "ob-live-thread",
-        origin: { friendId: "ari", channel: "cli", key: "session" },
+        origin: { friendId: "friend-1", channel: "cli", key: "session" },
         content: "investigate the stale status reply",
         status: "investigating",
         latestNote: "just finished reproducing the stale answer",
@@ -738,7 +782,7 @@ describe("obligation steering helpers", () => {
       }),
       {
         id: "ob-status",
-        origin: { friendId: "ari", channel: "cli", key: "session" },
+        origin: { friendId: "friend-1", channel: "cli", key: "session" },
         content: "close the visible loop",
         status: "investigating",
         createdAt: "2026-01-01T00:00:00Z",
@@ -747,7 +791,7 @@ describe("obligation steering helpers", () => {
     )
 
     expect(result).toContain("latest checkpoint: <freshest concrete thing i just finished or verified>")
-    expect(result).toContain("next action: continue the active loop and bring the result back here")
+    expect(result).toContain('next action: work on "close the visible loop" and bring back a concrete artifact')
     expect(result).not.toContain('next action: work on "what are you doing?"')
   })
 
@@ -1024,10 +1068,10 @@ describe("obligation steering helpers", () => {
     expect(lines[otherSessionsIndex + 1]).toBe("- Jordan/teams/chat: [stalled] claude coding-stalled; artifact no PR or merge artifact yet; next unstick claude coding-stalled and continue")
     expect(result).toContain("- Sam/cli/session-2: [waiting_input] codex coding-new; artifact no PR or merge artifact yet; next answer codex coding-new and continue")
     expect(result).toContain("- Casey/cli/pairing: [running] codex coding-running; artifact no PR or merge artifact yet; next finish the coding pass and bring the result back there")
-    expect(result).toContain("- Morgan/bluebubbles/dm: [investigating] this live thread; artifact no artifact yet; next continue the active loop and bring the result back there")
+    expect(result).toContain('- Morgan/bluebubbles/dm: [investigating] this live thread; artifact no artifact yet; next work on "bring the visibility fix back there" and bring back a concrete artifact')
     expect(result).toContain("- Riley/cli/followup: [investigating] this live thread; artifact no artifact yet; next ask one blocking question and continue")
     expect(result).toContain("- Taylor/teams/started-only: [running] claude coding-started-only; artifact no PR or merge artifact yet; next finish the coding pass and bring the result back there")
-    expect(result).toContain("- Quinn/cli/scratch: [active] this live thread; artifact no artifact yet; next check this session and bring back the latest concrete state")
+    expect(result).toContain("- Quinn/cli/scratch: [active] this live thread; artifact no explicit artifact yet; next check this session and bring back the latest concrete state")
     expect(result).toContain("- Pat/teams/group: [updating_runtime] ouro up; artifact alpha.103 installed; next update runtime, verify version/changelog, then re-observe")
     expect(result).toContain("- Ari/bluebubbles/chat: [waiting_for_merge] PR #177; artifact PR #177; next wait for checks, merge PR #177, then update runtime")
     nowSpy.mockRestore()
@@ -1096,7 +1140,7 @@ describe("obligation steering helpers", () => {
     const result = buildExactStatusReply(frame, frame.pendingObligations?.[0] ?? null, "just checked the current thread", "all-sessions-family")
 
     expect(result).toContain("other active sessions:")
-    expect(result).toContain("- Ari/bluebubbles/chat:any;-;ari@mendelow.me: [investigating] this live thread; artifact no artifact yet; next continue the active loop and bring the result back there")
+    expect(result).toContain('- Ari/bluebubbles/chat:any;-;ari@mendelow.me: [investigating] this live thread; artifact no artifact yet; next work on "bring the answer back there" and bring back a concrete artifact')
     expect(result).not.toContain("self/inner/dialog")
     expect(result).not.toContain("ari-old/cli/session")
     expect(result.match(/Ari\/bluebubbles\//g)?.length ?? 0).toBe(1)
@@ -1255,7 +1299,7 @@ describe("obligation steering helpers", () => {
     )
 
     expect(result).toContain("other active sessions:")
-    expect(result).toContain("- alex/teams/thread-7: [investigating] this live thread; artifact no artifact yet; next continue the active loop and bring the result back there")
+    expect(result).toContain('- alex/teams/thread-7: [investigating] this live thread; artifact no artifact yet; next work on "carry the fix back there" and bring back a concrete artifact')
   })
 
   it("falls back to friend ids when sparse family frames only know about other obligations", async () => {
@@ -1289,7 +1333,7 @@ describe("obligation steering helpers", () => {
       "all-sessions-family",
     )
 
-    expect(result).toContain("- sam/teams/thread-9: [investigating] this live thread; artifact no artifact yet; next continue the active loop and bring the result back there")
+    expect(result).toContain('- sam/teams/thread-9: [investigating] this live thread; artifact no artifact yet; next work on "carry the fix back there" and bring back a concrete artifact')
   })
 
   it("builds family status replies from live or coding candidates even before other obligations exist", async () => {
@@ -1452,7 +1496,7 @@ describe("obligation steering helpers", () => {
     )
 
     expect(result).toContain("- Other/teams/thread: [running] codex coding-other; artifact no PR or merge artifact yet; next finish the coding pass and bring the result back there")
-    expect(result).not.toContain("coding-originless")
+    expect(result).toContain("- another session: [running] codex coding-originless; artifact no PR or merge artifact yet; next finish the coding pass and bring the result back there")
     expect(result).not.toContain("coding-same")
     expect(result).not.toContain("fulfilled/cli/done")
   })
