@@ -1,4 +1,5 @@
-import { getAgentRoot } from "../../heart/identity"
+import { getAgentName, getAgentRoot } from "../../heart/identity"
+import { requestInnerWake } from "../../heart/daemon/socket-client"
 import { advanceObligation } from "../../heart/obligations"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { CodingSession, CodingSessionUpdate } from "./types"
@@ -12,6 +13,13 @@ export interface CodingFeedbackTarget {
 }
 
 const TERMINAL_UPDATE_KINDS = new Set<CodingSessionUpdate["kind"]>(["completed", "failed", "killed"])
+const OBLIGATION_WAKE_UPDATE_KINDS = new Set<CodingSessionUpdate["kind"]>([
+  "waiting_input",
+  "stalled",
+  "completed",
+  "failed",
+  "killed",
+])
 
 function clip(text: string, maxLength = 280): string {
   const trimmed = text.trim()
@@ -142,6 +150,28 @@ function syncObligationFromUpdate(update: CodingSessionUpdate): void {
   }
 }
 
+async function wakeInnerDialogForObligation(update: CodingSessionUpdate): Promise<void> {
+  if (!update.session.obligationId || !OBLIGATION_WAKE_UPDATE_KINDS.has(update.kind)) {
+    return
+  }
+
+  try {
+    await requestInnerWake(getAgentName())
+  } catch (error) {
+    emitNervesEvent({
+      level: "warn",
+      component: "repertoire",
+      event: "repertoire.coding_feedback_wake_error",
+      message: "coding feedback wake request failed",
+      meta: {
+        sessionId: update.session.id,
+        kind: update.kind,
+        reason: error instanceof Error ? error.message : String(error),
+      },
+    })
+  }
+}
+
 export function formatCodingTail(session: CodingSession): string {
   const stdout = session.stdoutTail.trim() || "(empty)"
   const stderr = session.stderrTail.trim() || "(empty)"
@@ -193,6 +223,7 @@ export function attachCodingSessionFeedback(
   unsubscribe = manager.subscribe(session.id, async (update) => {
     syncObligationFromUpdate(update)
     sendMessage(formatUpdateMessage(update))
+    await wakeInnerDialogForObligation(update)
     if (TERMINAL_UPDATE_KINDS.has(update.kind)) {
       closed = true
       unsubscribe()
