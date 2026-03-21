@@ -6,6 +6,51 @@ vi.mock("../../nerves/runtime", () => ({
 
 import { emitNervesEvent } from "../../nerves/runtime"
 
+describe("isExternalStateQuery", () => {
+  let isExternalStateQuery: typeof import("../../heart/core").isExternalStateQuery
+
+  beforeAll(async () => {
+    const core = await import("../../heart/core")
+    isExternalStateQuery = core.isExternalStateQuery
+  })
+
+  it("returns true for gh pr view commands", () => {
+    expect(isExternalStateQuery("shell", { command: "gh pr view 157 --json state" })).toBe(true)
+  })
+
+  it("returns true for gh run view commands", () => {
+    expect(isExternalStateQuery("shell", { command: "gh run view 123 --json conclusion" })).toBe(true)
+  })
+
+  it("returns true for gh api calls", () => {
+    expect(isExternalStateQuery("shell", { command: "gh api repos/org/repo/pulls/1" })).toBe(true)
+  })
+
+  it("returns true for npm view commands", () => {
+    expect(isExternalStateQuery("shell", { command: "npm view @ouro.bot/cli@0.1.0-alpha.92 version" })).toBe(true)
+  })
+
+  it("returns true for npm info commands", () => {
+    expect(isExternalStateQuery("shell", { command: "npm info @ouro.bot/cli version" })).toBe(true)
+  })
+
+  it("returns false for non-shell tools", () => {
+    expect(isExternalStateQuery("send_message", { command: "gh pr view 1" })).toBe(false)
+  })
+
+  it("returns false for shell commands without external queries", () => {
+    expect(isExternalStateQuery("shell", { command: "ls -la" })).toBe(false)
+  })
+
+  it("returns false for git-only commands", () => {
+    expect(isExternalStateQuery("shell", { command: "git log --oneline -5" })).toBe(false)
+  })
+
+  it("returns false when command is missing", () => {
+    expect(isExternalStateQuery("shell", {})).toBe(false)
+  })
+})
+
 describe("getFinalAnswerRetryError with obligation and truth checks", () => {
   let getFinalAnswerRetryError: typeof import("../../heart/core").getFinalAnswerRetryError
 
@@ -249,5 +294,112 @@ describe("getFinalAnswerRetryError with obligation and truth checks", () => {
     expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       event: "engine.delegation_adherence_rejected",
     }))
+  })
+})
+
+describe("external state grounding check", () => {
+  let getFinalAnswerRetryError: typeof import("../../heart/core").getFinalAnswerRetryError
+
+  beforeAll(async () => {
+    const core = await import("../../heart/core")
+    getFinalAnswerRetryError = core.getFinalAnswerRetryError
+  })
+
+  it("rejects complete when currentObligation exists but no external state verification", () => {
+    const result = getFinalAnswerRetryError(
+      false,        // mustResolveBeforeHandoff — false so check #5 doesn't fire
+      "complete",   // intent
+      false,        // sawSteeringFollowUp
+      undefined,    // delegationDecision
+      false,        // sawSendMessageSelf
+      false,        // sawGoInward
+      false,        // sawQuerySession
+      "merge the PR and publish", // currentObligation
+      undefined,    // innerJob
+      false,        // sawExternalStateQuery
+    )
+    expect(result).toContain("verified")
+    expect(result).toContain("fresh")
+  })
+
+  it("allows complete when currentObligation exists and external state was verified", () => {
+    const result = getFinalAnswerRetryError(
+      false,
+      "complete",
+      false,
+      undefined,
+      false,
+      false,
+      false,
+      "merge the PR and publish",
+      undefined,
+      true,         // sawExternalStateQuery
+    )
+    expect(result).toBeNull()
+  })
+
+  it("allows complete when steering follow-up provides external grounding", () => {
+    const result = getFinalAnswerRetryError(
+      false,
+      "complete",
+      true,         // sawSteeringFollowUp — counts as external grounding
+      undefined,
+      false,
+      false,
+      false,
+      "merge the PR and publish",
+      undefined,
+      false,        // no sawExternalStateQuery needed
+    )
+    expect(result).toBeNull()
+  })
+
+  it("does not require external verification when there is no currentObligation", () => {
+    const result = getFinalAnswerRetryError(
+      false,
+      "complete",
+      false,
+      undefined,
+      false,
+      false,
+      false,
+      null,         // no currentObligation
+      undefined,
+      false,        // no external verification
+    )
+    expect(result).toBeNull()
+  })
+
+  it("does not require external verification for non-complete intents", () => {
+    const result = getFinalAnswerRetryError(
+      false,
+      "blocked",
+      false,
+      undefined,
+      false,
+      false,
+      false,
+      "merge the PR and publish",
+      undefined,
+      false,
+    )
+    expect(result).toBeNull()
+  })
+
+  it("return-loop check fires before grounding check when mustResolve and no steering follow-up", () => {
+    const result = getFinalAnswerRetryError(
+      true,
+      "complete",
+      false,        // no steering follow-up
+      undefined,
+      false,
+      false,
+      false,
+      "merge the PR and publish",
+      undefined,
+      false,        // no external verification
+    )
+    // Check #5 (return-loop) fires first since mustResolve + !steering
+    expect(result).toContain("you still owe the live session")
   })
 })

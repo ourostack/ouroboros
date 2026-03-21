@@ -330,6 +330,13 @@ function parseFinalAnswerPayload(argumentsText: string): { answer?: string; inte
   }
 }
 
+/** Returns true when a tool call queries external state (GitHub, npm registry). */
+export function isExternalStateQuery(toolName: string, args: Record<string, unknown>): boolean {
+  if (toolName !== "shell") return false;
+  const cmd = String(args.command ?? "");
+  return /\bgh\s+(pr|run|api|issue)\b/.test(cmd) || /\bnpm\s+(view|info|show)\b/.test(cmd);
+}
+
 export function getFinalAnswerRetryError(
   mustResolveBeforeHandoff: boolean,
   intent: FinalAnswerIntent | undefined,
@@ -340,6 +347,7 @@ export function getFinalAnswerRetryError(
   sawQuerySession?: boolean,
   currentObligation?: string | null,
   innerJob?: InnerJob,
+  sawExternalStateQuery?: boolean,
 ): string | null {
   // 1. Delegation adherence: delegate-inward without evidence of inward action
   if (delegationDecision?.target === "delegate-inward" && !sawSendMessageSelf && !sawGoInward && !sawQuerySession) {
@@ -369,6 +377,10 @@ export function getFinalAnswerRetryError(
   // 5. mustResolveBeforeHandoff + complete while a live return loop is still active
   if (mustResolveBeforeHandoff && intent === "complete" && currentObligation && !sawSteeringFollowUp) {
     return "you still owe the live session a visible return on this work. don't end the turn yet — continue until you've brought back the external-state update, or use intent=blocked with the concrete blocker.";
+  }
+  // 6. External-state grounding: obligation + complete requires fresh external verification
+  if (intent === "complete" && currentObligation && !sawExternalStateQuery && !sawSteeringFollowUp) {
+    return "you're claiming this work is complete, but the external state hasn't been verified this turn. ground your claim with a fresh check (gh pr view, npm view, gh run view, etc.) before calling final_answer.";
   }
   return null;
 }
@@ -599,6 +611,7 @@ export async function runAgent(
   let sawGoInward = false;
   let sawQuerySession = false;
   let sawBridgeManage = false;
+  let sawExternalStateQuery = false;
 
   // Prevent MaxListenersExceeded warning — each iteration adds a listener
   try { require("events").setMaxListeners(50, signal); } catch { /* unsupported */ }
@@ -726,6 +739,7 @@ export async function runAgent(
             sawQuerySession,
             options?.currentObligation ?? null,
             options?.activeWorkFrame?.inner?.job,
+            sawExternalStateQuery,
           )
           const validDirectReply = mustResolveBeforeHandoffActive && intent === "direct_reply" && sawSteeringFollowUp;
           const validTerminalIntent = intent === "complete" || intent === "blocked";
@@ -919,6 +933,8 @@ export async function runAgent(
           if (tc.name === "query_session") sawQuerySession = true;
           /* v8 ignore next -- flag tested via truth-check integration tests @preserve */
           if (tc.name === "bridge_manage") sawBridgeManage = true;
+          /* v8 ignore next -- flag tested via truth-check integration tests @preserve */
+          if (isExternalStateQuery(tc.name, args)) sawExternalStateQuery = true;
           const argSummary = summarizeArgs(tc.name, args);
           // Confirmation check for mutate tools
           if (isConfirmationRequired(tc.name) && !options?.skipConfirmation) {
