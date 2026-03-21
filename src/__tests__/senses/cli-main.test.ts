@@ -1273,6 +1273,28 @@ describe("runCliSession", () => {
       { usage: undefined },
     )
   })
+
+  it("provides default CLI coding feedback that surfaces async assistant updates", async () => {
+    setupBasic({ inputSequence: ["hello", "/exit"] })
+
+    await runCliSession({
+      agentName: "testagent",
+      pasteDebounceMs: 0,
+    })
+
+    const messages = mocks.runAgent.mock.calls[0][0]
+    const opts = mocks.runAgent.mock.calls[0][4]
+    expect(typeof opts.toolContext.codingFeedback.send).toBe("function")
+
+    await opts.toolContext.codingFeedback.send("codex coding-001 completed: hi")
+
+    expect(messages.at(-1)).toEqual({
+      role: "assistant",
+      content: "codex coding-001 completed: hi",
+    })
+    expect(stdoutChunks.join("")).toContain("codex coding-001 completed: hi")
+    expect(stdoutChunks.join("")).toContain("\x1b[36m> \x1b[0m")
+  })
 })
 
 // ── pipeline integration tests ──
@@ -1406,6 +1428,31 @@ describe("agent.ts main() - pipeline integration", () => {
     expect(typeof pipelineInput.drainDeferredReturns).toBe("function")
     expect(pipelineInput.drainDeferredReturns("friend-1")).toEqual([])
     expect(drainDeferredReturns).toHaveBeenCalledWith("testagent", "friend-1")
+  })
+
+  it("passes CLI coding feedback into the shared pipeline and persists async updates", async () => {
+    setupBasic({ inputSequence: ["hello", "/exit"] })
+
+    await main(undefined, { pasteDebounceMs: 0 })
+
+    const pipelineInput = mocks.handleInboundTurn.mock.calls[0][0]
+    expect(typeof pipelineInput.runAgentOptions.toolContext.codingFeedback.send).toBe("function")
+
+    await pipelineInput.runAgentOptions.toolContext.codingFeedback.send("codex coding-001 completed: hi")
+
+    expect(mocks.postTurn).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "assistant",
+          content: "codex coding-001 completed: hi",
+        }),
+      ]),
+      "/tmp/test-session.json",
+      undefined,
+      undefined,
+      undefined,
+    )
+    expect(stdoutChunks.join("")).toContain("codex coding-001 completed: hi")
   })
 
   it("persists postTurn continuity state across CLI turns", async () => {
