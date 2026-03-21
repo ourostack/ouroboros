@@ -364,6 +364,38 @@ describe("saveSession", () => {
     expect(parsed.messages[2].content).toContain("second")
   })
 
+  it("emits auto-healed save repairs below warning level", async () => {
+    vi.resetModules()
+    const emitNervesEvent = vi.fn()
+    vi.doMock("../../nerves/runtime", () => ({
+      emitNervesEvent,
+    }))
+    const { saveSession } = await import("../../mind/context")
+    const msgs: any[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "first" },
+      { role: "assistant", content: "second" },
+      { role: "tool", tool_call_id: "orphan-1", content: "stale result" },
+    ]
+
+    saveSession("/tmp/session.json", msgs)
+
+    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "mind.session_invariant_violation",
+      level: "info",
+    }))
+    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "mind.session_invariant_repair",
+      level: "info",
+    }))
+    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "mind.session_orphan_tool_result_repair",
+      level: "info",
+    }))
+    expect(emitNervesEvent).not.toHaveBeenCalledWith(expect.objectContaining({ level: "warn" }))
+  })
+
   it("strips orphaned tool results on save", async () => {
     const { saveSession } = await import("../../mind/context")
     const msgs: any[] = [
@@ -542,6 +574,43 @@ describe("loadSession", () => {
     expect(result!.messages).toHaveLength(3)
     expect((result!.messages[2] as any).content).toContain("first")
     expect((result!.messages[2] as any).content).toContain("second")
+  })
+
+  it("emits auto-healed load repairs below warning level", async () => {
+    vi.resetModules()
+    const emitNervesEvent = vi.fn()
+    vi.doMock("../../nerves/runtime", () => ({
+      emitNervesEvent,
+    }))
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        version: 1,
+        messages: [
+          { role: "system", content: "sys" },
+          { role: "user", content: "hi" },
+          { role: "assistant", content: "first" },
+          { role: "assistant", content: "second" },
+          { role: "tool", tool_call_id: "orphan-1", content: "stale result" },
+        ],
+      }),
+    )
+    const { loadSession } = await import("../../mind/context")
+
+    loadSession("/tmp/session.json")
+
+    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "mind.session_invariant_violation",
+      level: "info",
+    }))
+    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "mind.session_invariant_repair",
+      level: "info",
+    }))
+    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "mind.session_orphan_tool_result_repair",
+      level: "info",
+    }))
+    expect(emitNervesEvent).not.toHaveBeenCalledWith(expect.objectContaining({ level: "warn" }))
   })
 
   it("strips orphaned tool results on load", async () => {
