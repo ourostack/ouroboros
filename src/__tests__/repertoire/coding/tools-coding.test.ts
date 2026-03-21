@@ -44,6 +44,7 @@ describe("coding tool contracts", () => {
     manager.spawnSession.mockReset()
     manager.getSession.mockReset()
     manager.listSessions.mockReset()
+    manager.listSessions.mockReturnValue([])
     manager.subscribe.mockReset()
     manager.subscribe.mockReturnValue(() => {})
     manager.sendInput.mockReset()
@@ -140,6 +141,144 @@ describe("coding tool contracts", () => {
     })
   })
 
+  it("coding_spawn reuses an active matching session instead of spawning another one", async () => {
+    manager.listSessions.mockReturnValue([
+      {
+        id: "coding-123",
+        runner: "claude",
+        workdir: "/Users/test/AgentWorkspaces/ouroboros",
+        taskRef: "task-123",
+        scopeFile: "/tmp/scope.md",
+        stateFile: "/tmp/state.md",
+        status: "running",
+        stdoutTail: "still working",
+        stderrTail: "",
+        pid: 4321,
+        startedAt: "2026-03-05T23:50:00.000Z",
+        lastActivityAt: "2026-03-05T23:55:00.000Z",
+        endedAt: null,
+        restartCount: 0,
+        lastExitCode: null,
+        lastSignal: null,
+        failure: null,
+      },
+    ])
+
+    const result = await execTool("coding_spawn", {
+      runner: "claude",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      prompt: "execute",
+      taskRef: "task-123",
+      scopeFile: "/tmp/scope.md",
+      stateFile: "/tmp/state.md",
+    })
+
+    expect(manager.spawnSession).not.toHaveBeenCalled()
+    expect(JSON.parse(result)).toMatchObject({
+      id: "coding-123",
+      reused: true,
+      status: "running",
+    })
+  })
+
+  it("coding_spawn prefers the newest matching active session when duplicates already exist", async () => {
+    manager.listSessions.mockReturnValue([
+      {
+        id: "coding-010",
+        runner: "claude",
+        workdir: "/Users/test/AgentWorkspaces/ouroboros",
+        taskRef: "task-123",
+        status: "running",
+        stdoutTail: "",
+        stderrTail: "",
+        pid: 410,
+        startedAt: "2026-03-05T23:50:00.000Z",
+        lastActivityAt: "2026-03-05T23:54:00.000Z",
+        endedAt: null,
+        restartCount: 0,
+        lastExitCode: null,
+        lastSignal: null,
+        failure: null,
+      },
+      {
+        id: "coding-011",
+        runner: "claude",
+        workdir: "/Users/test/AgentWorkspaces/ouroboros",
+        taskRef: "task-123",
+        status: "waiting_input",
+        stdoutTail: "needs review",
+        stderrTail: "",
+        pid: 411,
+        startedAt: "2026-03-05T23:51:00.000Z",
+        lastActivityAt: "2026-03-05T23:56:00.000Z",
+        endedAt: null,
+        restartCount: 0,
+        lastExitCode: null,
+        lastSignal: null,
+        failure: null,
+      },
+    ])
+
+    const result = await execTool("coding_spawn", {
+      runner: "claude",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      prompt: "execute",
+      taskRef: "task-123",
+    })
+
+    expect(manager.spawnSession).not.toHaveBeenCalled()
+    expect(JSON.parse(result)).toMatchObject({ id: "coding-011", reused: true, status: "waiting_input" })
+  })
+
+  it("coding_spawn breaks same-activity ties by newer session id", async () => {
+    manager.listSessions.mockReturnValue([
+      {
+        id: "coding-020",
+        runner: "claude",
+        workdir: "/Users/test/AgentWorkspaces/ouroboros",
+        taskRef: "task-tie",
+        status: "running",
+        stdoutTail: "",
+        stderrTail: "",
+        pid: 420,
+        startedAt: "2026-03-05T23:50:00.000Z",
+        lastActivityAt: "2026-03-05T23:56:00.000Z",
+        endedAt: null,
+        restartCount: 0,
+        lastExitCode: null,
+        lastSignal: null,
+        failure: null,
+      },
+      {
+        id: "coding-021",
+        runner: "claude",
+        workdir: "/Users/test/AgentWorkspaces/ouroboros",
+        taskRef: "task-tie",
+        status: "running",
+        stdoutTail: "",
+        stderrTail: "",
+        pid: 421,
+        startedAt: "2026-03-05T23:51:00.000Z",
+        lastActivityAt: "2026-03-05T23:56:00.000Z",
+        endedAt: null,
+        restartCount: 0,
+        lastExitCode: null,
+        lastSignal: null,
+        failure: null,
+      },
+    ])
+
+    const result = await execTool("coding_spawn", {
+      runner: "claude",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      prompt: "execute",
+      taskRef: "task-tie",
+    })
+
+    expect(manager.spawnSession).not.toHaveBeenCalled()
+    expect(JSON.parse(result)).toMatchObject({ id: "coding-021", reused: true })
+  })
+
   it("coding_spawn attaches coding feedback relay when context provides it", async () => {
     manager.spawnSession.mockResolvedValue({
       id: "coding-777",
@@ -173,6 +312,44 @@ describe("coding tool contracts", () => {
 
     expect(attachCodingSessionFeedback).toHaveBeenCalledWith(manager, expect.objectContaining({ id: "coding-777" }), feedback)
     expect(JSON.parse(result)).toMatchObject({ id: "coding-777", runner: "codex" })
+  })
+
+  it("coding_spawn attaches coding feedback relay when reusing an active session", async () => {
+    manager.listSessions.mockReturnValue([
+      {
+        id: "coding-333",
+        runner: "codex",
+        workdir: "/Users/test/AgentWorkspaces/ouroboros",
+        taskRef: "task-333",
+        status: "running",
+        stdoutTail: "",
+        stderrTail: "",
+        pid: 333,
+        startedAt: "2026-03-05T23:50:00.000Z",
+        lastActivityAt: "2026-03-05T23:55:00.000Z",
+        endedAt: null,
+        restartCount: 0,
+        lastExitCode: null,
+        lastSignal: null,
+        failure: null,
+      },
+    ])
+    const feedback = { send: vi.fn().mockResolvedValue(undefined) }
+
+    const result = await execTool(
+      "coding_spawn",
+      {
+        runner: "codex",
+        workdir: "/Users/test/AgentWorkspaces/ouroboros",
+        prompt: "execute",
+        taskRef: "task-333",
+      },
+      { codingFeedback: feedback },
+    )
+
+    expect(manager.spawnSession).not.toHaveBeenCalled()
+    expect(attachCodingSessionFeedback).toHaveBeenCalledWith(manager, expect.objectContaining({ id: "coding-333" }), feedback)
+    expect(JSON.parse(result)).toMatchObject({ id: "coding-333", reused: true })
   })
 
   it("coding_spawn threads current-session provenance and obligation linkage into the coding session", async () => {
@@ -285,6 +462,239 @@ describe("coding tool contracts", () => {
       originSession: { friendId: "ari", channel: "bluebubbles", key: "chat" },
     })
     expect(advanceObligation).not.toHaveBeenCalled()
+  })
+
+  it("coding_spawn does not reuse sessions from another origin thread", async () => {
+    manager.listSessions.mockReturnValue([
+      {
+        id: "coding-900",
+        runner: "claude",
+        workdir: "/Users/test/AgentWorkspaces/ouroboros",
+        taskRef: "task-900",
+        status: "running",
+        stdoutTail: "still working",
+        stderrTail: "",
+        pid: 900,
+        startedAt: "2026-03-05T23:50:00.000Z",
+        lastActivityAt: "2026-03-05T23:55:00.000Z",
+        endedAt: null,
+        restartCount: 0,
+        lastExitCode: null,
+        lastSignal: null,
+        failure: null,
+        originSession: { friendId: "other", channel: "bluebubbles", key: "chat" },
+      },
+    ])
+    manager.spawnSession.mockResolvedValue({
+      id: "coding-901",
+      runner: "claude",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      taskRef: "task-900",
+      status: "running",
+      stdoutTail: "",
+      stderrTail: "",
+      pid: 901,
+      startedAt: "2026-03-05T23:56:00.000Z",
+      lastActivityAt: "2026-03-05T23:56:00.000Z",
+      endedAt: null,
+      restartCount: 0,
+      lastExitCode: null,
+      lastSignal: null,
+      failure: null,
+      originSession: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+    })
+
+    const result = await execTool(
+      "coding_spawn",
+      {
+        runner: "claude",
+        workdir: "/Users/test/AgentWorkspaces/ouroboros",
+        prompt: "execute",
+        taskRef: "task-900",
+      },
+      {
+        currentSession: {
+          friendId: "ari",
+          channel: "bluebubbles",
+          key: "chat",
+          sessionPath: "/tmp/state/sessions/ari/bluebubbles/chat.json",
+        },
+      },
+    )
+
+    expect(manager.spawnSession).toHaveBeenCalledWith({
+      runner: "claude",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      prompt: "execute",
+      taskRef: "task-900",
+      originSession: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+    })
+    expect(JSON.parse(result)).toMatchObject({ id: "coding-901" })
+  })
+
+  it("coding_spawn does not reuse inactive matching sessions", async () => {
+    manager.listSessions.mockReturnValue([
+      {
+        id: "coding-902",
+        runner: "claude",
+        workdir: "/Users/test/AgentWorkspaces/ouroboros",
+        taskRef: "task-902",
+        status: "completed",
+        stdoutTail: "done",
+        stderrTail: "",
+        pid: null,
+        startedAt: "2026-03-05T23:50:00.000Z",
+        lastActivityAt: "2026-03-05T23:55:00.000Z",
+        endedAt: "2026-03-05T23:56:00.000Z",
+        restartCount: 0,
+        lastExitCode: 0,
+        lastSignal: null,
+        failure: null,
+      },
+    ])
+    manager.spawnSession.mockResolvedValue({
+      id: "coding-903",
+      runner: "claude",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      taskRef: "task-902",
+      status: "running",
+      stdoutTail: "",
+      stderrTail: "",
+      pid: 903,
+      startedAt: "2026-03-05T23:57:00.000Z",
+      lastActivityAt: "2026-03-05T23:57:00.000Z",
+      endedAt: null,
+      restartCount: 0,
+      lastExitCode: null,
+      lastSignal: null,
+      failure: null,
+    })
+
+    const result = await execTool("coding_spawn", {
+      runner: "claude",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      prompt: "execute",
+      taskRef: "task-902",
+    })
+
+    expect(manager.spawnSession).toHaveBeenCalledWith({
+      runner: "claude",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      prompt: "execute",
+      taskRef: "task-902",
+    })
+    expect(JSON.parse(result)).toMatchObject({ id: "coding-903" })
+  })
+
+  it("coding_spawn reuses matching sessions when origin provenance matches", async () => {
+    manager.listSessions.mockReturnValue([
+      {
+        id: "coding-904",
+        runner: "claude",
+        workdir: "/Users/test/AgentWorkspaces/ouroboros",
+        taskRef: "task-904",
+        status: "running",
+        stdoutTail: "",
+        stderrTail: "",
+        pid: 904,
+        startedAt: "2026-03-05T23:50:00.000Z",
+        lastActivityAt: "2026-03-05T23:55:00.000Z",
+        endedAt: null,
+        restartCount: 0,
+        lastExitCode: null,
+        lastSignal: null,
+        failure: null,
+        originSession: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+      },
+    ])
+
+    const result = await execTool(
+      "coding_spawn",
+      {
+        runner: "claude",
+        workdir: "/Users/test/AgentWorkspaces/ouroboros",
+        prompt: "execute",
+        taskRef: "task-904",
+      },
+      {
+        currentSession: {
+          friendId: "ari",
+          channel: "bluebubbles",
+          key: "chat",
+          sessionPath: "/tmp/state/sessions/ari/bluebubbles/chat.json",
+        },
+      },
+    )
+
+    expect(manager.spawnSession).not.toHaveBeenCalled()
+    expect(JSON.parse(result)).toMatchObject({ id: "coding-904", reused: true })
+  })
+
+  it("coding_spawn does not reuse sessions when origin provenance is missing on one side", async () => {
+    manager.listSessions.mockReturnValue([
+      {
+        id: "coding-905",
+        runner: "claude",
+        workdir: "/Users/test/AgentWorkspaces/ouroboros",
+        taskRef: "task-905",
+        status: "running",
+        stdoutTail: "",
+        stderrTail: "",
+        pid: 905,
+        startedAt: "2026-03-05T23:50:00.000Z",
+        lastActivityAt: "2026-03-05T23:55:00.000Z",
+        endedAt: null,
+        restartCount: 0,
+        lastExitCode: null,
+        lastSignal: null,
+        failure: null,
+      },
+    ])
+    manager.spawnSession.mockResolvedValue({
+      id: "coding-906",
+      runner: "claude",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      taskRef: "task-905",
+      status: "running",
+      stdoutTail: "",
+      stderrTail: "",
+      pid: 906,
+      startedAt: "2026-03-05T23:56:00.000Z",
+      lastActivityAt: "2026-03-05T23:56:00.000Z",
+      endedAt: null,
+      restartCount: 0,
+      lastExitCode: null,
+      lastSignal: null,
+      failure: null,
+      originSession: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+    })
+
+    const result = await execTool(
+      "coding_spawn",
+      {
+        runner: "claude",
+        workdir: "/Users/test/AgentWorkspaces/ouroboros",
+        prompt: "execute",
+        taskRef: "task-905",
+      },
+      {
+        currentSession: {
+          friendId: "ari",
+          channel: "bluebubbles",
+          key: "chat",
+          sessionPath: "/tmp/state/sessions/ari/bluebubbles/chat.json",
+        },
+      },
+    )
+
+    expect(manager.spawnSession).toHaveBeenCalledWith({
+      runner: "claude",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      prompt: "execute",
+      taskRef: "task-905",
+      originSession: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+    })
+    expect(JSON.parse(result)).toMatchObject({ id: "coding-906" })
   })
 
   it("coding_spawn uses a generic start note when a linked obligation has no origin session on the returned session", async () => {
