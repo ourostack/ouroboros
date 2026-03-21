@@ -3,7 +3,7 @@ import type OpenAI from "openai"
 import { attachCodingSessionFeedback, formatCodingTail, getCodingSessionManager } from "./index"
 import type { ToolContext } from "../tools-base"
 import { getAgentRoot } from "../../heart/identity"
-import { advanceObligation, findPendingObligationForOrigin } from "../../heart/obligations"
+import { advanceObligation, createObligation, findPendingObligationForOrigin } from "../../heart/obligations"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { CodingRunner, CodingSession, CodingSessionRequest } from "./types"
 
@@ -128,6 +128,10 @@ function selectCodingStatusSessions(
   }
 
   return [...sessions].sort(latestSessionFirst)
+}
+
+function buildCodingObligationContent(taskRef: string): string {
+  return `finish ${taskRef} and bring the result back`
 }
 
 const codingSpawnTool: OpenAI.ChatCompletionTool = {
@@ -266,6 +270,14 @@ export const codingToolDefinitions = [
           attachCodingSessionFeedback(manager, existingSession, ctx.codingFeedback)
         }
         return JSON.stringify({ ...existingSession, reused: true })
+      }
+
+      if (request.originSession && !request.obligationId) {
+        const created = createObligation(getAgentRoot(), {
+          origin: request.originSession,
+          content: buildCodingObligationContent(taskRef),
+        })
+        request.obligationId = created.id
       }
 
       const session = await manager.spawnSession(request)

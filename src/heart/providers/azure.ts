@@ -107,7 +107,13 @@ export function createAzureProviderRuntime(): ProviderRuntime {
       };
       if (request.traceId) params.metadata = { trace_id: request.traceId };
       if (request.toolChoiceRequired) params.tool_choice = "required";
-      const result = await streamResponsesApi(this.client as OpenAI, params, request.callbacks, request.signal);
+      const result = await streamResponsesApi(
+        this.client as OpenAI,
+        params,
+        request.callbacks,
+        request.signal,
+        request.eagerFinalAnswerStreaming,
+      );
       for (const item of result.outputItems) nativeInput!.push(item);
       return result;
     },

@@ -47,7 +47,13 @@ export function createMinimaxProviderRuntime(): ProviderRuntime {
       if (this.model) params.model = this.model;
       if (request.traceId) params.metadata = { trace_id: request.traceId };
       if (request.toolChoiceRequired) params.tool_choice = "required";
-      return streamChatCompletion(this.client as OpenAI, params, request.callbacks, request.signal);
+      return streamChatCompletion(
+        this.client as OpenAI,
+        params,
+        request.callbacks,
+        request.signal,
+        request.eagerFinalAnswerStreaming,
+      );
     },
   };
 }

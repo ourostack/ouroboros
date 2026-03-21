@@ -971,6 +971,31 @@ describe("handleInboundTurn", () => {
       expect((options as any).currentObligation).toBe("latest ask")
     })
 
+    it("marks direct status-check turns in runAgent options", async () => {
+      const input = makeInput({
+        continuityIngressTexts: ["what are you doing?"],
+      })
+
+      await handleInboundTurn(input)
+
+      const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
+      const options = runAgentCall[4] as RunAgentOptions
+      expect((options as any).statusCheckRequested).toBe(true)
+      expect((options as any).toolChoiceRequired).toBe(true)
+    })
+
+    it("does not mark work prompts that merely mention status as direct status-check turns", async () => {
+      const input = makeInput({
+        continuityIngressTexts: ["figure out whether your current CLI status replies still drift"],
+      })
+
+      await handleInboundTurn(input)
+
+      const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
+      const options = runAgentCall[4] as RunAgentOptions
+      expect((options as any).statusCheckRequested).toBe(false)
+    })
+
     it("falls back to an empty ingress list when continuity ingress texts are absent", async () => {
       const input = makeInput({
         continuityIngressTexts: undefined,

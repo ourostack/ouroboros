@@ -296,6 +296,61 @@ describe("buildSystem", () => {
     expect(result).toContain("relates to bridge bridge-1")
   })
 
+  it("elevates an exact live-status format when this turn is a direct status check", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem(
+      "cli",
+      {
+        statusCheckRequested: true,
+        activeWorkFrame: {
+          centerOfGravity: "local-turn",
+          currentSession: { friendId: "friend-1", channel: "cli", key: "session", sessionPath: "/tmp/s.json" },
+          currentObligation: null,
+          mustResolveBeforeHandoff: false,
+          inner: { status: "idle", hasPending: false, job: { status: "idle", content: null, origin: null, mode: "reflect", obligationStatus: null, surfacedResult: null, queuedAt: null, startedAt: null, surfacedAt: null } },
+          bridges: [],
+          taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+          friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
+          codingSessions: [],
+          pendingObligations: [],
+          bridgeSuggestion: null,
+        },
+      } as any,
+    )
+
+    expect(result).toContain("## status question on this turn")
+    expect(result).toContain("reply using exactly these five lines and nothing else")
+    expect(result).toContain("live conversation: cli/session")
+    expect(result).toContain("active lane: this same thread")
+    expect(result).toContain('current artifact: <actual artifact or "no artifact yet">')
+    expect(result).toContain("latest checkpoint: <freshest concrete thing i just finished or verified>")
+    expect(result).toContain("next action: <smallest concrete next step i'm taking now>")
+  })
+
+  it("does not render a status-check section when no active-work frame is available", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem(
+      "cli",
+      {
+        statusCheckRequested: true,
+      } as any,
+    )
+
+    expect(result).not.toContain("## status question on this turn")
+    expect(result).not.toContain("reply using exactly these five lines and nothing else")
+  })
+
   it("makes current trust context and candidate target chats explicit enough to reason about", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")

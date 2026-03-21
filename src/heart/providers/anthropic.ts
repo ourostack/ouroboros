@@ -284,7 +284,7 @@ async function streamAnthropicMessages(
   const toolCalls = new Map<number, { id: string; name: string; arguments: string }>();
   const thinkingBlocks = new Map<number, { type: "thinking"; thinking: string; signature: string }>();
   const redactedBlocks = new Map<number, { type: "redacted_thinking"; data: string }>();
-  const answerStreamer = new FinalAnswerStreamer(request.callbacks);
+  const answerStreamer = new FinalAnswerStreamer(request.callbacks, request.eagerFinalAnswerStreaming);
 
   try {
     for await (const event of response) {

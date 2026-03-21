@@ -115,9 +115,11 @@ export class FinalAnswerStreamer {
   private parser = new FinalAnswerParser();
   private _detected = false;
   private callbacks: ChannelCallbacks;
+  private enabled: boolean;
 
-  constructor(callbacks: ChannelCallbacks) {
+  constructor(callbacks: ChannelCallbacks, enabled = true) {
     this.callbacks = callbacks;
+    this.enabled = enabled;
   }
 
   get detected(): boolean { return this._detected; }
@@ -125,6 +127,7 @@ export class FinalAnswerStreamer {
 
   /** Mark final_answer as detected. Calls onClearText on the callbacks. */
   activate(): void {
+    if (!this.enabled) return;
     if (this._detected) return;
     this._detected = true;
     this.callbacks.onClearText?.();
@@ -132,6 +135,7 @@ export class FinalAnswerStreamer {
 
   /** Feed an argument delta through the parser. Emits text via onTextChunk. */
   processDelta(delta: string): void {
+    if (!this.enabled) return;
     if (!this._detected) return;
     const text = this.parser.process(delta);
     if (text) this.callbacks.onTextChunk(text);
@@ -286,6 +290,7 @@ export async function streamChatCompletion(
   createParams: Record<string, unknown>,
   callbacks: ChannelCallbacks,
   signal?: AbortSignal,
+  eagerFinalAnswerStreaming = true,
 ): Promise<TurnResult> {
   emitNervesEvent({
     component: "engine",
@@ -307,7 +312,7 @@ export async function streamChatCompletion(
   > = {};
   let streamStarted = false;
   let usage: UsageData | undefined;
-  const answerStreamer = new FinalAnswerStreamer(callbacks);
+  const answerStreamer = new FinalAnswerStreamer(callbacks, eagerFinalAnswerStreaming);
 
   // State machine for parsing inline <think> tags (MiniMax pattern)
   let contentBuf = "";
@@ -452,6 +457,7 @@ export async function streamResponsesApi(
   createParams: Record<string, unknown>,
   callbacks: ChannelCallbacks,
   signal?: AbortSignal,
+  eagerFinalAnswerStreaming = true,
 ): Promise<TurnResult> {
   emitNervesEvent({
     component: "engine",
@@ -471,7 +477,7 @@ export async function streamResponsesApi(
   const outputItems: ResponseItem[] = [];
   let currentToolCall: { call_id: string; name: string; arguments: string } | null = null;
   let usage: UsageData | undefined;
-  const answerStreamer = new FinalAnswerStreamer(callbacks);
+  const answerStreamer = new FinalAnswerStreamer(callbacks, eagerFinalAnswerStreaming);
   let functionCallCount = 0;
 
   for await (const event of response) {

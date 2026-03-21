@@ -1288,6 +1288,26 @@ describe("FinalAnswerStreamer", () => {
     expect(chunks.length).toBe(0)
     expect(streamer.streamed).toBe(false)
   })
+
+  it("processDelta() stays silent when eager final-answer streaming is disabled", () => {
+    let cleared = false
+    const chunks: string[] = []
+    const streamer = new FinalAnswerStreamer({
+      onModelStreamStart: () => {},
+      onTextChunk: (t: string) => { chunks.push(t) },
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onClearText: () => { cleared = true },
+      flushMarkdown: () => {},
+    }, false)
+    streamer.activate()
+    streamer.processDelta('{"answer":"hello"}')
+    expect(cleared).toBe(false)
+    expect(streamer.detected).toBe(false)
+    expect(chunks).toEqual([])
+    expect(streamer.streamed).toBe(false)
+  })
 })
 
 // --- Unit 20a: streamChatCompletion final_answer streaming integration tests ---

@@ -2042,6 +2042,187 @@ describe("delegation router", () => {
     expect(updatingRuntime).toContain("- next action: update runtime, verify version/changelog, then re-observe")
   })
 
+  it("strips a leading merge verb and falls back to the fix for empty merge content in active-work next actions", async () => {
+    const { formatActiveWorkFrame } = await import("../../heart/active-work")
+
+    const stripped = formatActiveWorkFrame({
+      currentSession: {
+        friendId: "friend-1",
+        channel: "cli",
+        key: "session",
+        sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+      },
+      currentObligation: "close the loop visibly",
+      mustResolveBeforeHandoff: false,
+      centerOfGravity: "inward-work",
+      inner: { status: "idle", hasPending: false, job: { status: "idle", content: null, origin: null, mode: "reflect", obligationStatus: null, surfacedResult: null, queuedAt: null, startedAt: null, surfacedAt: null } as any },
+      bridges: [],
+      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+      friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
+      codingSessions: [],
+      pendingObligations: [
+        {
+          id: "ob-merge-strip",
+          origin: { friendId: "friend-1", channel: "cli", key: "session" },
+          content: "merge the fix",
+          status: "waiting_for_merge" as const,
+          createdAt: "2026-03-20T16:00:00.000Z",
+          updatedAt: "2026-03-20T16:01:00.000Z",
+        },
+      ],
+      bridgeSuggestion: null,
+    } as any)
+    expect(stripped).toContain("- next action: wait for checks, merge the fix, then update runtime")
+
+    const fallback = formatActiveWorkFrame({
+      currentSession: {
+        friendId: "friend-1",
+        channel: "cli",
+        key: "session",
+        sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+      },
+      currentObligation: "close the loop visibly",
+      mustResolveBeforeHandoff: false,
+      centerOfGravity: "inward-work",
+      inner: { status: "idle", hasPending: false, job: { status: "idle", content: null, origin: null, mode: "reflect", obligationStatus: null, surfacedResult: null, queuedAt: null, startedAt: null, surfacedAt: null } as any },
+      bridges: [],
+      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+      friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
+      codingSessions: [],
+      pendingObligations: [
+        {
+          id: "ob-merge-fallback",
+          origin: { friendId: "friend-1", channel: "cli", key: "session" },
+          content: "   ",
+          status: "waiting_for_merge" as const,
+          createdAt: "2026-03-20T16:00:00.000Z",
+          updatedAt: "2026-03-20T16:01:00.000Z",
+        },
+      ],
+      bridgeSuggestion: null,
+    } as any)
+    expect(fallback).toContain("- next action: wait for checks, merge the fix, then update runtime")
+
+    const bareMergeFallback = formatActiveWorkFrame({
+      currentSession: {
+        friendId: "friend-1",
+        channel: "cli",
+        key: "session",
+        sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+      },
+      currentObligation: "close the loop visibly",
+      mustResolveBeforeHandoff: false,
+      centerOfGravity: "inward-work",
+      inner: { status: "idle", hasPending: false, job: { status: "idle", content: null, origin: null, mode: "reflect", obligationStatus: null, surfacedResult: null, queuedAt: null, startedAt: null, surfacedAt: null } as any },
+      bridges: [],
+      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+      friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
+      codingSessions: [],
+      pendingObligations: [
+        {
+          id: "ob-merge-bare",
+          origin: { friendId: "friend-1", channel: "cli", key: "session" },
+          content: "merge",
+          status: "waiting_for_merge" as const,
+          createdAt: "2026-03-20T16:00:00.000Z",
+          updatedAt: "2026-03-20T16:01:00.000Z",
+        },
+      ],
+      bridgeSuggestion: null,
+    } as any)
+    expect(bareMergeFallback).toContain("- next action: wait for checks, merge the fix, then update runtime")
+
+    const currentArtifactWins = formatActiveWorkFrame({
+      currentSession: {
+        friendId: "friend-1",
+        channel: "cli",
+        key: "session",
+        sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+      },
+      currentObligation: "close the loop visibly",
+      mustResolveBeforeHandoff: false,
+      centerOfGravity: "inward-work",
+      inner: { status: "idle", hasPending: false, job: { status: "idle", content: null, origin: null, mode: "reflect", obligationStatus: null, surfacedResult: null, queuedAt: null, startedAt: null, surfacedAt: null } as any },
+      bridges: [],
+      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+      friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
+      codingSessions: [],
+      pendingObligations: [
+        {
+          id: "ob-merge-artifact",
+          origin: { friendId: "friend-1", channel: "cli", key: "session" },
+          content: "merge the fix",
+          currentArtifact: "PR #321",
+          currentSurface: { kind: "merge", label: "ignored merge surface" },
+          status: "waiting_for_merge" as const,
+          createdAt: "2026-03-20T16:00:00.000Z",
+          updatedAt: "2026-03-20T16:01:00.000Z",
+        },
+      ],
+      bridgeSuggestion: null,
+    } as any)
+    expect(currentArtifactWins).toContain("- next action: wait for checks, merge PR #321, then update runtime")
+
+    const blankSurfaceFallsBack = formatActiveWorkFrame({
+      currentSession: {
+        friendId: "friend-1",
+        channel: "cli",
+        key: "session",
+        sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+      },
+      currentObligation: "close the loop visibly",
+      mustResolveBeforeHandoff: false,
+      centerOfGravity: "inward-work",
+      inner: { status: "idle", hasPending: false, job: { status: "idle", content: null, origin: null, mode: "reflect", obligationStatus: null, surfacedResult: null, queuedAt: null, startedAt: null, surfacedAt: null } as any },
+      bridges: [],
+      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+      friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
+      codingSessions: [],
+      pendingObligations: [
+        {
+          id: "ob-merge-blank-surface",
+          origin: { friendId: "friend-1", channel: "cli", key: "session" },
+          content: "merge the fix",
+          currentSurface: { kind: "merge", label: "   " },
+          status: "waiting_for_merge" as const,
+          createdAt: "2026-03-20T16:00:00.000Z",
+          updatedAt: "2026-03-20T16:01:00.000Z",
+        },
+      ],
+      bridgeSuggestion: null,
+    } as any)
+    expect(blankSurfaceFallsBack).toContain("- next action: wait for checks, merge the fix, then update runtime")
+  })
+
+  it("renders concrete current-thread status from the live obligation even before a coding lane exists", async () => {
+    const { formatActiveWorkFrame } = await import("../../heart/active-work")
+
+    const rendered = formatActiveWorkFrame({
+      currentSession: {
+        friendId: "friend-1",
+        channel: "cli",
+        key: "session",
+        sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+      },
+      currentObligation: "investigate the stale status reply",
+      mustResolveBeforeHandoff: false,
+      centerOfGravity: "local-turn",
+      inner: { status: "idle", hasPending: false, job: { status: "idle", content: null, origin: null, mode: "reflect", obligationStatus: null, surfacedResult: null, queuedAt: null, startedAt: null, surfacedAt: null } as any },
+      bridges: [],
+      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+      friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
+      codingSessions: [],
+      pendingObligations: [],
+      bridgeSuggestion: null,
+    } as any)
+
+    expect(rendered).toContain("## current concrete state")
+    expect(rendered).toContain("- live conversation: cli/session")
+    expect(rendered).toContain("- active lane: this same thread")
+    expect(rendered).toContain("- current artifact: no artifact yet")
+    expect(rendered).toContain('- next action: work on "investigate the stale status reply" and bring back a concrete artifact')
+  })
+
   it("uses the default obligation surface label for open statuses without a specialized formatter", async () => {
     const { formatActiveWorkFrame } = await import("../../heart/active-work")
 
