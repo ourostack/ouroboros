@@ -49,8 +49,9 @@ describe("formatActiveWorkFrame (selfhood framing)", () => {
   it("renders minimal frame with session line only", () => {
     const result = formatActiveWorkFrame(makeFrame())
     expect(result).toContain("## what i'm holding")
+    expect(result).toContain("this is my top-level live world-state right now.")
     expect(result).toContain("i'm in a conversation on cli/session.")
-    expect(result).not.toContain("obligation")
+    expect(result).not.toContain("i still owe")
   })
 
   it("renders obligation appended to session line", () => {

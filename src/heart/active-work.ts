@@ -554,6 +554,7 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
 
 export function formatActiveWorkFrame(frame: ActiveWorkFrame): string {
   const lines = ["## what i'm holding"]
+  lines.push("this is my top-level live world-state right now. inner work, coding lanes, other sessions, and return obligations all belong inside this picture.")
   const primaryObligation = findPrimaryOpenObligation(frame)
   const currentSessionObligation = findCurrentSessionOpenObligation(frame)
   const activeLane = formatActiveLane(frame, primaryObligation)
