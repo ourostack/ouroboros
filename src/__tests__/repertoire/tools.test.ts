@@ -144,6 +144,43 @@ describe("execTool", () => {
     expect(fs.writeFileSync).toHaveBeenCalledWith("/tmp/out.txt", "hello", "utf-8")
   })
 
+  it("relative read/edit paths mutate the acquired safe workspace", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(125)
+    vi.mocked(fs.readFileSync).mockImplementation((targetPath: any) => {
+      if (targetPath === "/mock/repo/testagent/state/workspaces/ouroboros-main-125/src/mind/prompt.ts") {
+        return "hello world"
+      }
+      return undefined as any
+    })
+    vi.mocked(spawnSync).mockImplementation((command: any, args: any) => {
+      expect(command).toBe("git")
+      if (args.join(" ") === "rev-parse --is-inside-work-tree") return { stdout: Buffer.from("true\n"), stderr: Buffer.from(""), status: 0 } as any
+      if (args.join(" ") === "rev-parse --abbrev-ref HEAD") return { stdout: Buffer.from("main\n"), stderr: Buffer.from(""), status: 0 } as any
+      if (args.join(" ") === "fetch origin") return { stdout: Buffer.from(""), stderr: Buffer.from(""), status: 0 } as any
+      if (args.join(" ") === "pull --ff-only origin main") return { stdout: Buffer.from(""), stderr: Buffer.from(""), status: 0 } as any
+      if (args.join(" ") === "worktree add -B slugger/safe-workspace-125 /mock/repo/testagent/state/workspaces/ouroboros-main-125 origin/main") {
+        return { stdout: Buffer.from(""), stderr: Buffer.from(""), status: 0 } as any
+      }
+      throw new Error(`unexpected git args: ${args.join(" ")}`)
+    })
+
+    const read = await execTool("read_file", { path: "src/mind/prompt.ts" })
+    expect(read).toBe("hello world")
+
+    const edited = await execTool("edit_file", {
+      path: "src/mind/prompt.ts",
+      old_string: "hello world",
+      new_string: "hello slugger",
+    })
+
+    expect(edited).toContain("hello slugger")
+    expect(fs.writeFileSync).toHaveBeenCalledWith(
+      "/mock/repo/testagent/state/workspaces/ouroboros-main-125/src/mind/prompt.ts",
+      "hello slugger",
+      "utf-8",
+    )
+  })
+
   // ── shell ──
   it("shell runs command and returns output", async () => {
     vi.mocked(execSync).mockReturnValue("shell output")

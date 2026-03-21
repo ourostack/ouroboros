@@ -163,6 +163,33 @@ describe("safe workspace acquisition", () => {
     expect(untouched.resolvedPath).toBe("/tmp/notes.txt")
   })
 
+  it("maps relative repo-local paths into the chosen safe workspace", () => {
+    const spawnSync = vi.fn((command: string, args: string[]) => {
+      expect(command).toBe("git")
+      if (args.join(" ") === "rev-parse --is-inside-work-tree") return spawnResult("true\n")
+      if (args.join(" ") === "rev-parse --abbrev-ref HEAD") return spawnResult("main\n")
+      if (args.join(" ") === "fetch origin") return spawnResult()
+      if (args.join(" ") === "pull --ff-only origin main") return spawnResult()
+      if (args[0] === "worktree" && args[1] === "add") return spawnResult()
+      throw new Error(`unexpected git args: ${args.join(" ")}`)
+    })
+
+    const mapped = resolveSafeRepoPath({
+      requestedPath: "src/file.ts",
+      repoRoot: "/repo",
+      agentName: "slugger",
+      workspaceRoot: "/bundle/state/workspaces",
+      spawnSync,
+      existsSync: vi.fn(() => false) as any,
+      mkdirSync: vi.fn() as any,
+      rmSync: vi.fn() as any,
+      now: () => 223,
+    })
+
+    expect(mapped.selection?.workspaceRoot).toBe("/bundle/state/workspaces/ouroboros-main-223")
+    expect(mapped.resolvedPath).toBe("/bundle/state/workspaces/ouroboros-main-223/src/file.ts")
+  })
+
   it("routes repo-root shell commands into the chosen safe workspace", () => {
     const spawnSync = vi.fn((command: string, args: string[]) => {
       expect(command).toBe("git")
