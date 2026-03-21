@@ -338,8 +338,9 @@ export function getFinalAnswerRetryError(
   sawSendMessageSelf?: boolean,
   sawGoInward?: boolean,
   sawQuerySession?: boolean,
+  currentObligation?: string | null,
   innerJob?: InnerJob,
-): string {
+): string | null {
   // 1. Delegation adherence: delegate-inward without evidence of inward action
   if (delegationDecision?.target === "delegate-inward" && !sawSendMessageSelf && !sawGoInward && !sawQuerySession) {
     emitNervesEvent({
@@ -365,8 +366,11 @@ export function getFinalAnswerRetryError(
   if (mustResolveBeforeHandoff && intent === "direct_reply" && !sawSteeringFollowUp) {
     return "your final_answer used intent=direct_reply without a newer steering follow-up. continue the unresolved work, or call final_answer again with intent=complete or blocked when appropriate.";
   }
-  // 5. Default malformed fallback
-  return "your final_answer was incomplete or malformed. call final_answer again with your complete response.";
+  // 5. mustResolveBeforeHandoff + complete while a live return loop is still active
+  if (mustResolveBeforeHandoff && intent === "complete" && currentObligation && !sawSteeringFollowUp) {
+    return "you still owe the live session a visible return on this work. don't end the turn yet — continue until you've brought back the external-state update, or use intent=blocked with the concrete blocker.";
+  }
+  return null;
 }
 
 // Re-export kick utilities for backward compat
@@ -712,9 +716,21 @@ export async function runAgent(
           // Extract answer from the tool call arguments.
           // Supports: {"answer":"text","intent":"..."} or "text" (JSON string).
           const { answer, intent } = parseFinalAnswerPayload(result.toolCalls[0].arguments);
+          const retryError = getFinalAnswerRetryError(
+            mustResolveBeforeHandoffActive,
+            intent,
+            sawSteeringFollowUp,
+            options?.delegationDecision,
+            sawSendMessageSelf,
+            sawGoInward,
+            sawQuerySession,
+            options?.currentObligation ?? null,
+            options?.activeWorkFrame?.inner?.job,
+          )
           const validDirectReply = mustResolveBeforeHandoffActive && intent === "direct_reply" && sawSteeringFollowUp;
           const validTerminalIntent = intent === "complete" || intent === "blocked";
           const validClosure = answer != null
+            && !retryError
             && (!mustResolveBeforeHandoffActive || validDirectReply || validTerminalIntent);
 
           if (validClosure) {
@@ -750,10 +766,9 @@ export async function runAgent(
             // malformed. Clear any partial streamed text or noise, then push the
             // assistant msg + error tool result and let the model try again.
             callbacks.onClearText?.();
-            const retryError = getFinalAnswerRetryError(mustResolveBeforeHandoffActive, intent, sawSteeringFollowUp, options?.delegationDecision, sawSendMessageSelf, sawGoInward);
             messages.push(msg);
-            messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: retryError });
-            providerRuntime.appendToolOutput(result.toolCalls[0].id, retryError);
+            messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: retryError ?? "your final_answer was incomplete or malformed. call final_answer again with your complete response." });
+            providerRuntime.appendToolOutput(result.toolCalls[0].id, retryError ?? "your final_answer was incomplete or malformed. call final_answer again with your complete response.");
           }
           continue;
         }
