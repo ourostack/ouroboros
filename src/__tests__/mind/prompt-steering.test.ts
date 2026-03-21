@@ -368,6 +368,7 @@ describe("centerOfGravitySteeringSection", () => {
     expect(result).toContain("one part of the visible picture, not the whole picture")
     expect(result).toContain("other active sessions:")
     expect(result).toContain("Ari/bluebubbles/chat:any;-;ari@mendelow.me")
+    expect(result).toContain("my center of gravity lives in the active-work world-state above")
   })
 
   it("returns steering for shared-work", () => {
