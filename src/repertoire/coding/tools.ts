@@ -5,7 +5,7 @@ import type { ToolContext } from "../tools-base"
 import { getAgentRoot } from "../../heart/identity"
 import { advanceObligation, findPendingObligationForOrigin } from "../../heart/obligations"
 import { emitNervesEvent } from "../../nerves/runtime"
-import type { CodingRunner, CodingSessionRequest } from "./types"
+import type { CodingRunner, CodingSession, CodingSessionRequest } from "./types"
 
 const RUNNERS: CodingRunner[] = ["claude", "codex"]
 
@@ -35,6 +35,42 @@ function emitCodingToolEvent(toolName: string): void {
     message: "coding tool handler invoked",
     meta: { toolName },
   })
+}
+
+function sameOriginSession(
+  left: CodingSessionRequest["originSession"],
+  right: CodingSession["originSession"],
+): boolean {
+  if (!left && !right) return true
+  if (!left || !right) return false
+  return left.friendId === right.friendId && left.channel === right.channel && left.key === right.key
+}
+
+function matchesReusableCodingSession(session: CodingSession, request: CodingSessionRequest): boolean {
+  if (session.status !== "spawning" && session.status !== "running" && session.status !== "waiting_input" && session.status !== "stalled") {
+    return false
+  }
+
+  return (
+    session.runner === request.runner &&
+    session.workdir === request.workdir &&
+    session.taskRef === request.taskRef &&
+    session.scopeFile === request.scopeFile &&
+    session.stateFile === request.stateFile &&
+    session.obligationId === request.obligationId &&
+    sameOriginSession(request.originSession, session.originSession)
+  )
+}
+
+function latestSessionFirst(left: CodingSession, right: CodingSession): number {
+  const lastActivityDelta = Date.parse(right.lastActivityAt) - Date.parse(left.lastActivityAt)
+  if (lastActivityDelta !== 0) return lastActivityDelta
+  return right.id.localeCompare(left.id)
+}
+
+function findReusableCodingSession(sessions: CodingSession[], request: CodingSessionRequest): CodingSession | null {
+  const matches = sessions.filter((session) => matchesReusableCodingSession(session, request)).sort(latestSessionFirst)
+  return matches[0] ?? null
 }
 
 const codingSpawnTool: OpenAI.ChatCompletionTool = {
@@ -161,6 +197,20 @@ export const codingToolDefinitions = [
       if (stateFile) request.stateFile = stateFile
 
       const manager = getCodingSessionManager()
+      const existingSession = findReusableCodingSession(manager.listSessions(), request)
+      if (existingSession) {
+        emitNervesEvent({
+          component: "repertoire",
+          event: "repertoire.coding_session_reused",
+          message: "reused active coding session",
+          meta: { id: existingSession.id, runner: existingSession.runner, taskRef: existingSession.taskRef },
+        })
+        if (ctx?.codingFeedback) {
+          attachCodingSessionFeedback(manager, existingSession, ctx.codingFeedback)
+        }
+        return JSON.stringify({ ...existingSession, reused: true })
+      }
+
       const session = await manager.spawnSession(request)
       if (session.obligationId) {
         advanceObligation(getAgentRoot(), session.obligationId, {
