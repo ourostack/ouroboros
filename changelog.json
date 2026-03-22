@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.112",
+      "changes": [
+        "`ouro up` no longer prints the 'ouro updated to X (was Y)' message twice when the update flow re-execs from a newly installed version."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.111",
       "changes": [
         "The PATH installer now repairs a stale ~/.local/bin/ouro launcher in place instead of deleting it, so a shadowing old wrapper can no longer cause the wrong CLI version to load and produce backwards 'ouro updated to X (was Y)' messages."
