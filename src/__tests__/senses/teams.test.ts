@@ -550,7 +550,7 @@ describe("Teams adapter - message handling", () => {
     expect(mockRunAgent).toHaveBeenCalled()
     const messages = mockRunAgent.mock.calls[0][0]
     expect(messages.some((m: any) => m.role === "system")).toBe(true)
-    expect(messages.some((m: any) => m.role === "user" && m.content === "hello from Teams")).toBe(true)
+    expect(messages.some((m: any) => m.role === "user" && typeof m.content === "string" && m.content.includes("hello from Teams"))).toBe(true)
   })
 
   it("passes AbortSignal to runAgent", async () => {
@@ -1897,7 +1897,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
     expect(runAgentFn).toHaveBeenCalledTimes(2)
     const replayMessages = runAgentFn.mock.calls[1][0]
     const userMessages = replayMessages.filter((message: any) => message.role === "user")
-    expect(userMessages.at(-1)).toEqual(expect.objectContaining({ content: "stop working on that" }))
+    expect(userMessages.at(-1)?.content).toEqual(expect.stringContaining("stop working on that"))
 
     vi.restoreAllMocks()
   })
@@ -2000,9 +2000,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
     expect(runAgentFn).toHaveBeenCalledTimes(2)
     const replayMessages = runAgentFn.mock.calls[1][0]
     const userMessages = replayMessages.filter((message: any) => message.role === "user")
-    expect(userMessages.at(-1)).toEqual(expect.objectContaining({
-      content: "instead do the release checklist\nand include the rollback note",
-    }))
+    expect(userMessages.at(-1)?.content).toEqual(expect.stringContaining("instead do the release checklist\nand include the rollback note"))
 
     vi.restoreAllMocks()
   })
@@ -2146,7 +2144,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
     expect(mockRunAgent).toHaveBeenCalled()
     const messages = mockRunAgent.mock.calls[0][0]
     const userMsg = messages.filter((m: any) => m.role === "user").pop()
-    expect(userMsg.content).toBe("")
+    expect(userMsg.content).toEqual(expect.stringContaining("## live world-state checkpoint"))
 
     vi.restoreAllMocks()
   })
@@ -3506,7 +3504,7 @@ describe("Teams adapter - session persistence", () => {
     const msgs = runAgentFn.mock.calls[0][0]
     // System prompt comes from loaded session (refresh now happens inside runAgent)
     expect(msgs[0].role).toBe("system")
-    expect(msgs.some((m: any) => m.content === "new msg")).toBe(true)
+    expect(msgs.some((m: any) => typeof m.content === "string" && m.content.includes("new msg"))).toBe(true)
   })
 
   it("calls postTurn after runAgent with usage", async () => {
@@ -3609,8 +3607,8 @@ describe("Teams adapter - session persistence", () => {
     expect(runAgentFn).toHaveBeenCalledTimes(2)
     const msgs1 = runAgentFn.mock.calls[0][0]
     const msgs2 = runAgentFn.mock.calls[1][0]
-    expect(msgs1.find((m: any) => m.content === "msg for conv1")).toBeDefined()
-    expect(msgs2.find((m: any) => m.content === "msg for conv2")).toBeDefined()
+    expect(msgs1.find((m: any) => typeof m.content === "string" && m.content.includes("msg for conv1"))).toBeDefined()
+    expect(msgs2.find((m: any) => typeof m.content === "string" && m.content.includes("msg for conv2"))).toBeDefined()
   })
 
   it("graceful fallback on corrupt session file", async () => {

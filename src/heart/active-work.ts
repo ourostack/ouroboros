@@ -12,6 +12,8 @@ import { sanitizeKey } from "./config"
 
 export type CenterOfGravityMode = "local-turn" | "inward-work" | "shared-work"
 
+const RECENT_ACTIVE_OBLIGATION_WINDOW_MS = 60 * 60 * 1000
+
 export type BridgeSuggestion =
   | {
       kind: "begin-new"
@@ -134,6 +136,64 @@ function describeCodingSessionScope(session: CodingSession, currentSession: Acti
 
 function activeObligationCount(obligations: Obligation[] | undefined): number {
   return (obligations ?? []).filter((ob) => isOpenObligationStatus(ob.status)).length
+}
+
+function obligationOriginKey(obligation: Obligation): string {
+  return `${obligation.origin.friendId}/${obligation.origin.channel}/${sanitizeKey(obligation.origin.key)}`
+}
+
+function buildLiveCodingLabelSet(
+  codingSessions: CodingSession[],
+  otherCodingSessions: CodingSession[],
+): Set<string> {
+  return new Set([
+    ...codingSessions.map(formatCodingLaneLabel),
+    ...otherCodingSessions.map(formatCodingLaneLabel),
+  ])
+}
+
+function isMaterialActiveObligation(
+  obligation: Obligation,
+  liveCodingLabels: Set<string>,
+  nowMs: number,
+): boolean {
+  if (obligation.currentArtifact?.trim()) return true
+  if (obligation.status === "waiting_for_merge" || obligation.status === "updating_runtime") return true
+
+  const surface = obligation.currentSurface
+  if (surface?.kind === "merge" || surface?.kind === "runtime") return true
+
+  const recentlyTouched = (nowMs - obligationTimestampMs(obligation)) <= RECENT_ACTIVE_OBLIGATION_WINDOW_MS
+  if (surface?.kind === "coding") {
+    const liveLabel = surface.label.trim()
+    return (liveLabel.length > 0 && liveCodingLabels.has(liveLabel)) || recentlyTouched
+  }
+
+  return recentlyTouched
+}
+
+function normalizePendingObligations(
+  obligations: Obligation[] | undefined,
+  codingSessions: CodingSession[],
+  otherCodingSessions: CodingSession[],
+): Obligation[] {
+  const openObligations = (obligations ?? []).filter((obligation) => isOpenObligationStatus(obligation.status))
+  if (openObligations.length === 0) return []
+
+  const liveCodingLabels = buildLiveCodingLabelSet(codingSessions, otherCodingSessions)
+  const nowMs = Date.now()
+  const normalized: Obligation[] = []
+  const seenOrigins = new Set<string>()
+
+  for (const obligation of [...openObligations].sort(newestObligationFirst)) {
+    if (!isMaterialActiveObligation(obligation, liveCodingLabels, nowMs)) continue
+    const originKey = obligationOriginKey(obligation)
+    if (seenOrigins.has(originKey)) continue
+    seenOrigins.add(originKey)
+    normalized.push(obligation)
+  }
+
+  return normalized
 }
 
 function formatObligationSurface(obligation: Obligation): string {
@@ -270,7 +330,8 @@ function codingSessionTimestampMs(session: CodingSession): number {
 }
 
 function obligationTimestampMs(obligation: Obligation): number {
-  return Date.parse(obligation.updatedAt ?? obligation.createdAt)
+  const value = Date.parse(obligation.updatedAt ?? obligation.createdAt)
+  return Number.isFinite(value) ? value : 0
 }
 
 function newestObligationFirst(left: Obligation, right: Obligation): number {
@@ -488,11 +549,11 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
 
   const liveTaskNames = summarizeLiveTasks(input.taskBoard)
   const activeBridgePresent = input.bridges.some(isActiveBridge)
-  const openObligations = activeObligationCount(input.pendingObligations)
   const liveCodingSessions = input.codingSessions ?? []
   const allOtherLiveSessions = [...input.friendActivity].sort(compareActivity)
   const otherCodingSessions = input.otherCodingSessions ?? []
-  const pendingObligations = input.pendingObligations ?? []
+  const pendingObligations = normalizePendingObligations(input.pendingObligations, liveCodingSessions, otherCodingSessions)
+  const openObligations = activeObligationCount(pendingObligations)
   const centerOfGravity: CenterOfGravityMode = activeBridgePresent
     ? "shared-work"
     : (input.inner.status === "running" || input.inner.hasPending || input.mustResolveBeforeHandoff || openObligations > 0 || liveCodingSessions.length > 0)
@@ -525,7 +586,7 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
       currentObligation: input.currentObligation,
       mustResolveBeforeHandoff: input.mustResolveBeforeHandoff,
       bridges: input.bridges,
-      pendingObligations: input.pendingObligations,
+      pendingObligations,
       taskBoard: input.taskBoard,
       targetCandidates: input.targetCandidates,
     }),
@@ -555,6 +616,7 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
 export function formatActiveWorkFrame(frame: ActiveWorkFrame): string {
   const lines = ["## what i'm holding"]
   lines.push("this is my top-level live world-state right now. inner work, coding lanes, other sessions, and return obligations all belong inside this picture.")
+  lines.push("if older checkpoints elsewhere in the transcript disagree with this picture, this picture wins.")
   const primaryObligation = findPrimaryOpenObligation(frame)
   const currentSessionObligation = findCurrentSessionOpenObligation(frame)
   const activeLane = formatActiveLane(frame, primaryObligation)
@@ -684,6 +746,30 @@ export function formatActiveWorkFrame(frame: ActiveWorkFrame): string {
     } else {
       lines.push(`this work relates to bridge ${frame.bridgeSuggestion.bridgeId} -- i should connect ${formatSessionLabel(frame.bridgeSuggestion.targetSession)} to it.`)
     }
+  }
+
+  return lines.join("\n")
+}
+
+export function formatLiveWorldStateCheckpoint(frame: ActiveWorkFrame): string {
+  const primaryObligation = findPrimaryOpenObligation(frame)
+  const activeLane = formatActiveLane(frame, primaryObligation) ?? "no explicit live lane"
+  const currentArtifact = formatCurrentArtifact(frame, primaryObligation) ?? "no artifact yet"
+  const nextAction = formatNextAction(frame, primaryObligation) ?? "continue from the live world-state"
+  const otherActiveSessions = formatOtherActiveSessionSummaries(frame)
+
+  const lines = [
+    "## live world-state checkpoint",
+    "this is the freshest reality for this turn. if older transcript history disagrees, treat it as stale.",
+    `- live conversation: ${frame.currentSession ? formatSessionLabel(frame.currentSession) : "not in a live conversation"}`,
+    `- active lane: ${activeLane}`,
+    `- current artifact: ${currentArtifact}`,
+    `- next action: ${nextAction}`,
+  ]
+
+  if (otherActiveSessions.length > 0) {
+    lines.push("other active sessions:")
+    lines.push(...otherActiveSessions)
   }
 
   return lines.join("\n")
