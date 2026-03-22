@@ -22,10 +22,11 @@ class FakeProcess {
 }
 
 describe("coding spawner", () => {
-  it("builds claude command and prompt with metadata + state content", () => {
+  it("builds claude command and prompt with metadata, scope content, and state content", () => {
     const spawnFn = vi.fn(() => new FakeProcess(777))
-    const existsSync = vi.fn((target: string) => target.endsWith("/state.md"))
+    const existsSync = vi.fn((target: string) => target.endsWith("/scope.md") || target.endsWith("/state.md"))
     const readFileSync = vi.fn((target: string) => {
+      if (target.endsWith("/scope.md")) return "SCOPE PAYLOAD"
       if (target.endsWith("/state.md")) return "STATE PAYLOAD"
       return ""
     })
@@ -38,6 +39,7 @@ describe("coding spawner", () => {
         sessionId: "coding-777",
         parentAgent: "slugger",
         taskRef: "task-123",
+        scopeFile: "/tmp/scope.md",
         stateFile: "/tmp/state.md",
       },
       { spawnFn, existsSync, readFileSync },
@@ -55,9 +57,14 @@ describe("coding spawner", () => {
       "stream-json",
     ])
     expect(result.prompt).toContain("Coding session metadata")
+    expect(result.prompt).toContain("Execution contract:")
+    expect(result.prompt).toContain("You are a subordinate coding session launched by a parent Ouro agent.")
+    expect(result.prompt).toContain("Do not switch into planning/doing workflows, approval gates, or repo-management rituals unless the request explicitly asks for them.")
     expect(result.prompt).toContain("sessionId: coding-777")
     expect(result.prompt).toContain("parentAgent: slugger")
     expect(result.prompt).toContain("taskRef: task-123")
+    expect(result.prompt).toContain("Scope file (/tmp/scope.md):")
+    expect(result.prompt).toContain("SCOPE PAYLOAD")
     expect(result.prompt).toContain("State file (/tmp/state.md):")
     expect(result.prompt).toContain("STATE PAYLOAD")
     expect(result.prompt).toContain("execute")
@@ -99,6 +106,7 @@ describe("coding spawner", () => {
 
     expect(result.command).toBe("codex")
     expect(result.args).toEqual(["exec", "--skip-git-repo-check", "--cd", "/Users/test/AgentWorkspaces/slugger"])
+    expect(result.prompt).toContain("Execution contract:")
     expect(result.prompt).toContain("taskRef: task-456")
     expect(result.prompt).toContain("plan")
     expect(readFileSync).not.toHaveBeenCalled()
@@ -120,6 +128,7 @@ describe("coding spawner", () => {
       { spawnFn, existsSync, readFileSync },
     )
 
+    expect(result.prompt).not.toContain("Scope file")
     expect(result.prompt).not.toContain("State file")
     expect(result.prompt).toContain("taskRef: task-merge")
     expect(result.prompt).toContain("merge now")

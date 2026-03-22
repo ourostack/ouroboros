@@ -871,7 +871,13 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
           continuityIngressTexts: getCliContinuityIngressTexts(userInput),
           callbacks,
           friendResolver: { resolve: () => Promise.resolve(resolvedContext) },
-          sessionLoader: { loadOrCreate: () => Promise.resolve({ messages, sessionPath: sessPath, state: sessionState }) },
+          sessionLoader: {
+            loadOrCreate: () => Promise.resolve({
+              messages,
+              sessionPath: sessPath,
+              state: sessionState,
+            }),
+          },
           pendingDir,
           friendStore,
           provider: "local",

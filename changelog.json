@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.110",
+      "changes": [
+        "Pi-style capability salvage now lands fully inside the active-work-first architecture: coding lanes inherit a live world-state checkpoint, session recall stays evidence-based, and no parallel session-orientation self-model remains.",
+        "Repeated no-progress polling is now blocked across active-work, coding, and session status surfaces, while coding checkpoints/artifacts persist cleanly enough for the same agent to resume real work instead of narrating around it."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.109",
       "changes": [
         "Each inbound turn now carries a fresh live world-state checkpoint, so natural questions like 'what are you up to?' anchor on current sessions, obligations, coding lanes, and next actions instead of stale transcript history.",

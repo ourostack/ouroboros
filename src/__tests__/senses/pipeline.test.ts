@@ -1366,5 +1366,20 @@ describe("handleInboundTurn", () => {
         expect(savedState?.mustResolveBeforeHandoff).toBeUndefined()
       },
     )
+
+    it("injects the live world-state checkpoint into the inbound user message", async () => {
+      const input = makeInput({
+        messages: [{ role: "user", content: "hello" }],
+      })
+
+      const result = await handleInboundTurn(input)
+
+      const userMessage = (result.messages ?? []).find((message) => message.role === "user")
+      expect(userMessage).toEqual(expect.objectContaining({
+        role: "user",
+        content: expect.stringContaining("## live world-state checkpoint"),
+      }))
+      expect(typeof userMessage?.content === "string" ? userMessage.content : "").toContain("hello")
+    })
   })
 })

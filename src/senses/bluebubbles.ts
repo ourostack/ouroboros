@@ -734,7 +734,13 @@ async function handleBlueBubblesNormalizedEvent(
         continuityIngressTexts: getBlueBubblesContinuityIngressTexts(event),
         callbacks,
         friendResolver: { resolve: () => Promise.resolve(context) },
-        sessionLoader: { loadOrCreate: () => Promise.resolve({ messages: sessionMessages, sessionPath: sessPath, state: existing?.state }) },
+        sessionLoader: {
+          loadOrCreate: () => Promise.resolve({
+            messages: sessionMessages,
+            sessionPath: sessPath,
+            state: existing?.state,
+          }),
+        },
         pendingDir,
         friendStore: store,
         provider: "imessage-handle",

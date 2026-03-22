@@ -78,15 +78,23 @@ describe("coding session manager persistence", () => {
     })
 
     expect(mkdirSync).toHaveBeenCalledWith("/tmp", { recursive: true })
-    expect(writeFileSync).toHaveBeenCalledTimes(1)
-    const [, payload] = writeFileSync.mock.calls[0] as [string, string]
+    expect(writeFileSync).toHaveBeenCalledWith("/tmp/coding-persist.json", expect.any(String), "utf-8")
+    expect(writeFileSync).toHaveBeenCalledWith("/tmp/coding-001.md", expect.any(String), "utf-8")
+    const stateWrite = writeFileSync.mock.calls.find((call) => call[0] === "/tmp/coding-persist.json")
+    const [, payload] = stateWrite as [string, string]
     const parsed = JSON.parse(payload) as {
       sequence: number
-      records: Array<{ request: { sessionId: string; parentAgent: string } }>
+      records: Array<{ request: { sessionId: string; parentAgent: string }; session: { artifactPath: string; checkpoint: string | null } }>
     }
     expect(parsed.sequence).toBe(1)
     expect(parsed.records[0].request.sessionId).toBe("coding-001")
     expect(parsed.records[0].request.parentAgent).toBe("default")
+    expect(parsed.records[0].session.artifactPath).toBe("/tmp/coding-001.md")
+    expect(parsed.records[0].session.checkpoint).toBeNull()
+
+    const artifactWrite = writeFileSync.mock.calls.find((call) => call[0] === "/tmp/coding-001.md")
+    expect(artifactWrite?.[1]).toContain("# Coding Session Artifact")
+    expect(artifactWrite?.[1]).toContain("checkpoint: none")
   })
 
   it("persists origin-session provenance and obligation linkage on spawn", async () => {
@@ -115,12 +123,14 @@ describe("coding session manager persistence", () => {
     expect((session as any).originSession).toEqual({ friendId: "ari", channel: "bluebubbles", key: "chat" })
     expect((session as any).obligationId).toBe("ob-1")
 
-    const [, payload] = writeFileSync.mock.calls.at(-1) as [string, string]
+    const stateWrite = writeFileSync.mock.calls.find((call) => call[0] === "/tmp/coding-persist-provenance.json")
+    const [, payload] = stateWrite as [string, string]
     const parsed = JSON.parse(payload)
     expect(parsed.records[0].request.originSession).toEqual({ friendId: "ari", channel: "bluebubbles", key: "chat" })
     expect(parsed.records[0].request.obligationId).toBe("ob-1")
     expect(parsed.records[0].session.originSession).toEqual({ friendId: "ari", channel: "bluebubbles", key: "chat" })
     expect(parsed.records[0].session.obligationId).toBe("ob-1")
+    expect(parsed.records[0].session.artifactPath).toBe("/tmp/coding-001.md")
   })
 
   it("rehydrates persisted sessions and advances sequence", async () => {
@@ -581,6 +591,231 @@ describe("coding session manager persistence", () => {
     })
     expect(failed?.failure?.stdoutTail).toContain("stdout payload")
     expect(failed?.failure?.stderrTail).toContain("stderr payload")
+    expect(failed?.checkpoint).toBe("stderr payload")
+    expect(failed?.artifactPath).toBe("/tmp/coding-001.md")
+  })
+
+  it("derives signal-based checkpoints and renders null exit codes in artifacts", async () => {
+    const proc = new FakeProcess(905)
+    const writeFileSync = vi.fn()
+    const manager = new CodingSessionManager({
+      spawnProcess: vi.fn(() => ({
+        process: proc,
+        command: "claude",
+        args: ["-p"],
+        prompt: "hello",
+      })),
+      stateFilePath: "/tmp/coding-null-code-failure.json",
+      existsSync: () => false,
+      readFileSync: () => "",
+      writeFileSync,
+      mkdirSync: vi.fn(),
+      maxRestarts: 0,
+      nowIso: () => "2026-03-07T00:21:00.000Z",
+    })
+
+    const session = await manager.spawnSession({
+      runner: "claude",
+      workdir: "/tmp/repo",
+      prompt: "do",
+      taskRef: "task-null-code",
+    })
+
+    proc.emitExit(null, "SIGTERM")
+
+    const failed = manager.getSession(session.id)
+    expect(failed?.checkpoint).toBe("terminated by SIGTERM")
+
+    const artifactWrite = writeFileSync.mock.calls.filter((call) => call[0] === "/tmp/coding-001.md").at(-1)
+    expect(artifactWrite?.[1]).toContain("code: null")
+    expect(artifactWrite?.[1]).toContain("signal: SIGTERM")
+  })
+
+  it("derives a fallback checkpoint when an output chunk has no meaningful line", async () => {
+    const proc = new FakeProcess(901)
+    const manager = new CodingSessionManager({
+      spawnProcess: vi.fn(() => proc),
+      stateFilePath: "/tmp/coding-empty-output.json",
+      existsSync: () => false,
+      readFileSync: () => "",
+      writeFileSync: vi.fn(),
+      mkdirSync: vi.fn(),
+      nowIso: () => "2026-03-07T00:20:00.000Z",
+    })
+
+    const session = await manager.spawnSession({
+      runner: "claude",
+      workdir: "/tmp/repo",
+      prompt: "do",
+      taskRef: "task-empty-output",
+    })
+
+    proc.emitStdout("   \n")
+
+    expect(manager.getSession(session.id)?.checkpoint).toBeNull()
+  })
+
+  it("keeps an existing checkpoint when a later output chunk is blank", async () => {
+    const proc = new FakeProcess(910)
+    const manager = new CodingSessionManager({
+      spawnProcess: vi.fn(() => proc),
+      stateFilePath: "/tmp/coding-blank-followup.json",
+      existsSync: () => false,
+      readFileSync: () => "",
+      writeFileSync: vi.fn(),
+      mkdirSync: vi.fn(),
+      nowIso: () => "2026-03-07T00:20:00.000Z",
+    })
+
+    const session = await manager.spawnSession({
+      runner: "claude",
+      workdir: "/tmp/repo",
+      prompt: "do",
+      taskRef: "task-blank-followup",
+    })
+
+    proc.emitStdout("working on it\n")
+    proc.emitStdout("   \n")
+
+    expect(manager.getSession(session.id)?.checkpoint).toBe("working on it")
+  })
+
+  it("uses a no-output checkpoint when a running session stalls", async () => {
+    const now = "2026-03-07T00:20:00.000Z"
+    const manager = new CodingSessionManager({
+      spawnProcess: vi.fn(() => new FakeProcess(906)),
+      stateFilePath: "/tmp/coding-stall-fallback.json",
+      existsSync: () => false,
+      readFileSync: () => "",
+      writeFileSync: vi.fn(),
+      mkdirSync: vi.fn(),
+      nowIso: () => now,
+      defaultStallThresholdMs: 10,
+    })
+
+    const session = await manager.spawnSession({
+      runner: "claude",
+      workdir: "/tmp/repo",
+      prompt: "do",
+      taskRef: "task-stall-fallback",
+      autoRestartOnStall: false,
+    })
+
+    expect(manager.checkStalls(Date.parse(now) + 100)).toBe(1)
+    expect(manager.getSession(session.id)?.checkpoint).toBe("no recent output")
+  })
+
+  it("continues when the artifact directory cannot be prepared", async () => {
+    const manager = new CodingSessionManager({
+      spawnProcess: vi.fn(() => new FakeProcess(902)),
+      stateFilePath: "/tmp/coding-artifact-dir-error.json",
+      existsSync: () => false,
+      readFileSync: () => "",
+      writeFileSync: vi.fn(),
+      mkdirSync: (target: string) => {
+        if (target === "/tmp/coding-artifacts") {
+          throw new Error("artifact mkdir denied")
+        }
+      },
+      artifactDirPath: "/tmp/coding-artifacts",
+    })
+
+    await expect(
+      manager.spawnSession({
+        runner: "claude",
+        workdir: "/tmp/repo",
+        prompt: "work",
+        taskRef: "task-artifact-dir",
+      }),
+    ).resolves.toBeDefined()
+  })
+
+  it("stringifies non-Error artifact directory failures", async () => {
+    const manager = new CodingSessionManager({
+      spawnProcess: vi.fn(() => new FakeProcess(907)),
+      stateFilePath: "/tmp/coding-artifact-dir-string-error.json",
+      existsSync: () => false,
+      readFileSync: () => "",
+      writeFileSync: vi.fn(),
+      mkdirSync: (target: string) => {
+        if (target === "/tmp/coding-artifacts-string-error") {
+          throw "artifact mkdir denied"
+        }
+      },
+      artifactDirPath: "/tmp/coding-artifacts-string-error",
+    })
+
+    await expect(
+      manager.spawnSession({
+        runner: "claude",
+        workdir: "/tmp/repo",
+        prompt: "work",
+        taskRef: "task-artifact-dir-string",
+      }),
+    ).resolves.toBeDefined()
+  })
+
+  it("continues when writing an individual artifact fails", async () => {
+    const writeFileSync = vi.fn((target: string) => {
+      if (target === "/tmp/coding-artifacts/coding-001.md") {
+        throw new Error("artifact write denied")
+      }
+    })
+
+    const manager = new CodingSessionManager({
+      spawnProcess: vi.fn(() => new FakeProcess(903)),
+      stateFilePath: "/tmp/coding-artifact-write-error.json",
+      existsSync: () => false,
+      readFileSync: () => "",
+      writeFileSync,
+      mkdirSync: () => undefined,
+      artifactDirPath: "/tmp/coding-artifacts",
+    })
+
+    await expect(
+      manager.spawnSession({
+        runner: "claude",
+        workdir: "/tmp/repo",
+        prompt: "work",
+        taskRef: "task-artifact-write",
+      }),
+    ).resolves.toBeDefined()
+
+    expect(writeFileSync).toHaveBeenCalledWith("/tmp/coding-artifact-write-error.json", expect.any(String), "utf-8")
+    expect(writeFileSync).toHaveBeenCalledWith("/tmp/coding-artifacts/coding-001.md", expect.any(String), "utf-8")
+  })
+
+  it("recomputes missing artifact paths while persisting artifacts", async () => {
+    const writeFileSync = vi.fn(() => {
+      throw "artifact write denied"
+    })
+    const manager = new CodingSessionManager({
+      spawnProcess: vi.fn(() => new FakeProcess(908)),
+      stateFilePath: "/tmp/coding-artifact-recompute.json",
+      existsSync: () => false,
+      readFileSync: () => "",
+      writeFileSync,
+      mkdirSync: () => undefined,
+      artifactDirPath: "/tmp/coding-artifacts-recompute",
+    })
+
+    const session = await manager.spawnSession({
+      runner: "claude",
+      workdir: "/tmp/repo",
+      prompt: "work",
+      taskRef: "task-artifact-recompute",
+    })
+
+    const record = (manager as any).records.get(session.id)
+    Object.defineProperty(record.session, "artifactPath", {
+      configurable: true,
+      enumerable: true,
+      get: () => undefined,
+      set: () => undefined,
+    })
+
+    expect(() => (manager as any).persistArtifacts()).not.toThrow()
+    expect(writeFileSync).toHaveBeenCalledWith(undefined, expect.any(String), "utf-8")
   })
 
   it("covers active-status restoration branches and taskRef fallback from request", () => {
@@ -637,5 +872,128 @@ describe("coding session manager persistence", () => {
     expect(manager.getSession("coding-104")?.status).toBe("failed")
     expect(manager.getSession("coding-105")?.status).toBe("completed")
     expect(manager.getSession("coding-102")?.taskRef).toBe("request-coding-102")
+  })
+
+  it("restores fallback checkpoints for waiting_input and killed sessions", () => {
+    const payload = {
+      sequence: 2,
+      records: [
+        {
+          request: {
+            runner: "claude",
+            workdir: "/tmp/repo",
+            prompt: "restore waiting",
+            taskRef: "task-waiting",
+            sessionId: "coding-201",
+            parentAgent: "slugger",
+          },
+          session: {
+            id: "coding-201",
+            runner: "claude",
+            workdir: "/tmp/repo",
+            taskRef: "task-waiting",
+            status: "waiting_input",
+            startedAt: "2026-03-07T00:00:00.000Z",
+            lastActivityAt: "2026-03-07T00:00:00.000Z",
+            endedAt: null,
+            restartCount: 0,
+            lastExitCode: null,
+            lastSignal: null,
+            failure: null,
+            stdoutTail: "",
+            stderrTail: "",
+          },
+        },
+        {
+          request: {
+            runner: "claude",
+            workdir: "/tmp/repo",
+            prompt: "restore killed",
+            taskRef: "task-killed",
+            sessionId: "coding-202",
+            parentAgent: "slugger",
+          },
+          session: {
+            id: "coding-202",
+            runner: "claude",
+            workdir: "/tmp/repo",
+            taskRef: "task-killed",
+            status: "killed",
+            startedAt: "2026-03-07T00:00:00.000Z",
+            lastActivityAt: "2026-03-07T00:00:00.000Z",
+            endedAt: "2026-03-07T00:10:00.000Z",
+            restartCount: 0,
+            lastExitCode: null,
+            lastSignal: null,
+            failure: null,
+            stdoutTail: "",
+            stderrTail: "",
+          },
+        },
+      ],
+    }
+
+    const manager = new CodingSessionManager({
+      spawnProcess: vi.fn(() => new FakeProcess(904)),
+      stateFilePath: "/tmp/coding-fallback-checkpoints.json",
+      existsSync: () => true,
+      readFileSync: () => JSON.stringify(payload),
+      writeFileSync: vi.fn(),
+      mkdirSync: vi.fn(),
+      pidAlive: () => true,
+      nowIso: () => "2026-03-07T00:30:00.000Z",
+    })
+
+    expect(manager.getSession("coding-201")?.checkpoint).toBe("needs input")
+    expect(manager.getSession("coding-202")?.checkpoint).toBe("terminated by parent agent")
+  })
+
+  it("preserves restored checkpoint and artifactPath strings", () => {
+    const payload = {
+      sequence: 1,
+      records: [
+        {
+          request: {
+            runner: "claude",
+            workdir: "/tmp/repo",
+            prompt: "restore",
+            taskRef: "task-preserved",
+            sessionId: "coding-301",
+            parentAgent: "slugger",
+          },
+          session: {
+            id: "coding-301",
+            runner: "claude",
+            workdir: "/tmp/repo",
+            taskRef: "task-preserved",
+            status: "completed",
+            startedAt: "2026-03-07T00:00:00.000Z",
+            lastActivityAt: "2026-03-07T00:05:00.000Z",
+            endedAt: "2026-03-07T00:06:00.000Z",
+            restartCount: 0,
+            lastExitCode: 0,
+            lastSignal: null,
+            failure: null,
+            stdoutTail: "",
+            stderrTail: "",
+            checkpoint: "waiting on review",
+            artifactPath: "/tmp/custom-artifacts/coding-301.md",
+          },
+        },
+      ],
+    }
+
+    const manager = new CodingSessionManager({
+      spawnProcess: vi.fn(() => new FakeProcess(909)),
+      stateFilePath: "/tmp/coding-preserved-fields.json",
+      existsSync: () => true,
+      readFileSync: () => JSON.stringify(payload),
+      writeFileSync: vi.fn(),
+      mkdirSync: vi.fn(),
+      pidAlive: () => true,
+    })
+
+    expect(manager.getSession("coding-301")?.checkpoint).toBe("waiting on review")
+    expect(manager.getSession("coding-301")?.artifactPath).toBe("/tmp/custom-artifacts/coding-301.md")
   })
 })

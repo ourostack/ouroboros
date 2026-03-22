@@ -457,6 +457,7 @@ function memoryFriendToolContractSection(): string {
 2. \`memory_save\` — When I learn something general - about a project, codebase, system, decision, or anything I might need later that isn't about a specific person - I call \`memory_save\`. When in doubt, I save it.
 3. \`get_friend_note\` — When I need to check what I know about someone who isn't in this conversation - cross-referencing before mentioning someone, or checking context about a person someone else brought up - I call \`get_friend_note\`.
 4. \`memory_search\` — When I need to recall something I learned before - a topic comes up and I want to check what I know - I call \`memory_search\`.
+5. \`query_session\` — When I need grounded session history, especially for ad-hoc questions or older turns beyond my prompt, I call \`query_session\`. Use \`mode=status\` for self/inner progress and \`mode=search\` with a query for older history.
 
 ## what's already in my context
 - My active friend's notes are auto-loaded (I don't need \`get_friend_note\` for the person I'm talking to).
