@@ -1638,9 +1638,9 @@ async function performSystemSetup(deps: OuroCliDeps): Promise<void> {
   if (deps.installOuroCommand) {
     try {
       const installResult = deps.installOuroCommand()
-      /* v8 ignore next -- migration hint: only fires once during old→new layout migration @preserve */
-      if (installResult.migratedFromOldPath) {
-        deps.writeStdout("migrated ouro to ~/.ouro-cli/ — open a new terminal or run: source ~/.zshrc")
+      /* v8 ignore next -- old-launcher repair hint: fires when stale ~/.local/bin/ouro is fixed @preserve */
+      if (installResult.repairedOldLauncher) {
+        deps.writeStdout("repaired stale ouro launcher at ~/.local/bin/ouro")
       }
     } catch (error) {
       emitNervesEvent({
