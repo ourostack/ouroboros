@@ -3,6 +3,7 @@ import { randomUUID } from "crypto"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
+import * as semver from "semver"
 import { getAgentBundlesRoot, getAgentDaemonLogsDir, getAgentName, getAgentRoot, getRepoRoot, type AgentProvider } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { FileFriendStore } from "../../mind/friends/store-file"
@@ -2434,7 +2435,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       let filtered = entries
       if (command.from) {
         const fromVersion = command.from
-        filtered = entries.filter((e) => e.version > fromVersion)
+        filtered = entries.filter((e) => semver.valid(e.version) && semver.gt(e.version, fromVersion))
       }
       if (filtered.length === 0) {
         const message = "no changelog entries found."
