@@ -19,7 +19,7 @@ import { getTaskModule } from "../repertoire/tasks"
 import { getCodingSessionManager } from "../repertoire/coding"
 import { listSessionActivity } from "../heart/session-activity"
 import type { SessionActivityRecord } from "../heart/session-activity"
-import { buildActiveWorkFrame, type ActiveWorkFrame } from "../heart/active-work"
+import { buildActiveWorkFrame, formatLiveWorldStateCheckpoint, type ActiveWorkFrame } from "../heart/active-work"
 import { decideDelegation } from "../heart/delegation"
 import { listTargetSessionCandidates } from "../heart/target-resolution"
 import { readInnerDialogRawData, deriveInnerDialogStatus, deriveInnerJob, getInnerDialogSessionPath } from "../heart/daemon/thoughts"
@@ -140,6 +140,29 @@ function isLiveCodingSessionStatus(
     || status === "running"
     || status === "waiting_input"
     || status === "stalled"
+}
+
+function prependTurnSections(
+  message: ChatCompletionMessageParam,
+  sections: string[],
+): ChatCompletionMessageParam {
+  if (message.role !== "user" || sections.length === 0) return message
+  const prefix = sections.join("\n\n")
+
+  if (typeof message.content === "string") {
+    return {
+      ...message,
+      content: `${prefix}\n\n${message.content}`,
+    }
+  }
+
+  return {
+    ...message,
+    content: [
+      { type: "text" as const, text: `${prefix}\n\n` },
+      ...message.content,
+    ],
+  }
 }
 
 function readInnerWorkState(): ActiveWorkFrame["inner"] {
@@ -353,33 +376,16 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   const sessionPending = input.drainPending(input.pendingDir)
   const pending = [...deferredReturns, ...sessionPending]
 
-  // Assemble messages: session messages + pending (formatted) + inbound user messages
+  // Assemble messages: session messages + live world-state checkpoint + pending + inbound user messages
+  const prefixSections = [formatLiveWorldStateCheckpoint(activeWorkFrame)]
   if (pending.length > 0) {
-    // Format pending messages and prepend to the user content
     const pendingSection = pending
       .map((msg) => `[pending from ${msg.from}]: ${msg.content}`)
       .join("\n")
-
-    // If there are inbound user messages, prepend pending to the first one
-    if (input.messages.length > 0) {
-      const firstMsg = input.messages[0]
-      if (firstMsg.role === "user") {
-        if (typeof firstMsg.content === "string") {
-          input.messages[0] = {
-            ...firstMsg,
-            content: `## pending messages\n${pendingSection}\n\n${firstMsg.content}`,
-          }
-        } else {
-          input.messages[0] = {
-            ...firstMsg,
-            content: [
-              { type: "text" as const, text: `## pending messages\n${pendingSection}\n\n` },
-              ...firstMsg.content,
-            ],
-          }
-        }
-      }
-    }
+    prefixSections.push(`## pending messages\n${pendingSection}`)
+  }
+  if (input.messages.length > 0) {
+    input.messages[0] = prependTurnSections(input.messages[0], prefixSections)
   }
 
   // Append user messages from the inbound turn

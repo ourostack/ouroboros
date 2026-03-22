@@ -400,4 +400,77 @@ describe("query_active_work tool", () => {
     expect(result).not.toContain("## live coding work")
     expect(result).not.toContain("## return obligations")
   })
+
+  it("filters out stale obligation surfaces that are no longer backed by live work", async () => {
+    readPendingObligationsMock.mockImplementation(() => [
+      {
+        id: "ob-stale-coding",
+        origin: { friendId: "friend-1", channel: "cli", key: "session" },
+        content: "finish harness-maintenance-live-status-loop and bring the result back",
+        status: "investigating",
+        currentSurface: { kind: "coding", label: "codex coding-083" },
+        latestNote: "coding session completed; merge/update still pending",
+        createdAt: "2020-03-21T20:00:00.000Z",
+        updatedAt: "2020-03-21T20:27:30.594Z",
+      },
+      {
+        id: "ob-stale-pending",
+        origin: { friendId: "friend-1", channel: "cli", key: "session" },
+        content: "status-block injection is still active",
+        status: "pending",
+        createdAt: "2020-03-21T20:00:00.000Z",
+        updatedAt: "2020-03-21T20:28:30.594Z",
+      },
+    ])
+    listCodingSessionsMock.mockImplementation(() => [])
+
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find((entry) => entry.tool.function.name === "query_active_work")!
+
+    const result = await tool.handler({}, {
+      signin: async () => undefined,
+      currentSession: {
+        friendId: "friend-1",
+        channel: "cli",
+        key: "session",
+      },
+    } as any)
+
+    expect(result).toContain("i'm in a conversation on cli/session.")
+    expect(result).not.toContain("coding-083")
+    expect(result).not.toContain("status-block injection is still active")
+    expect(result).not.toContain("## return obligations")
+  })
+
+  it("keeps a recent coding obligation visible even before a merge artifact exists", async () => {
+    const recentIso = new Date().toISOString()
+    readPendingObligationsMock.mockImplementation(() => [
+      {
+        id: "ob-recent-coding",
+        origin: { friendId: "friend-1", channel: "cli", key: "session" },
+        content: "inspect the current family-status issue",
+        status: "investigating",
+        currentSurface: { kind: "coding", label: "codex coding-083" },
+        latestNote: "coding session completed; merge/update still pending",
+        createdAt: recentIso,
+        updatedAt: recentIso,
+      },
+    ])
+    listCodingSessionsMock.mockImplementation(() => [])
+
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find((entry) => entry.tool.function.name === "query_active_work")!
+
+    const result = await tool.handler({}, {
+      signin: async () => undefined,
+      currentSession: {
+        friendId: "friend-1",
+        channel: "cli",
+        key: "session",
+      },
+    } as any)
+
+    expect(result).toContain("codex coding-083")
+    expect(result).toContain("## return obligations")
+  })
 })
