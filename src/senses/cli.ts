@@ -841,7 +841,6 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
   // Load existing session or start fresh
   const existing = loadSession(sessPath)
   let sessionState = existing?.state
-  let sessionOrientation = existing?.sessionOrientation
   const mcpManager = await getSharedMcpManager() ?? undefined
   const sessionMessages: OpenAI.ChatCompletionMessageParam[] = existing?.messages && existing.messages.length > 0
     ? existing.messages
@@ -859,7 +858,7 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
       pasteDebounceMs,
       messages: sessionMessages,
       onAsyncAssistantMessage: async (messages, _assistantMessage) => {
-        sessionOrientation = postTurn(messages, sessPath, undefined, undefined, sessionState, sessionOrientation)
+        postTurn(messages, sessPath, undefined, undefined, sessionState)
       },
       runTurn: async (messages, userInput, callbacks, signal, toolContext) => {
         // Run the full per-turn pipeline: resolve -> gate -> session -> drain -> runAgent -> postTurn -> tokens
@@ -877,7 +876,6 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
               messages,
               sessionPath: sessPath,
               state: sessionState,
-              sessionOrientation,
             }),
           },
           pendingDir,
@@ -896,10 +894,9 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
               summarize,
             },
           }),
-          postTurn: (turnMessages, sessionPathArg, usage, hooks, state, nextOrientation) => {
-            sessionOrientation = postTurn(turnMessages, sessionPathArg, usage, hooks, state, nextOrientation)
+          postTurn: (turnMessages, sessionPathArg, usage, hooks, state) => {
+            postTurn(turnMessages, sessionPathArg, usage, hooks, state)
             sessionState = state
-            return sessionOrientation
           },
           accumulateFriendTokens,
           signal,
@@ -922,7 +919,6 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
       },
       onNewSession: () => {
         deleteSession(sessPath)
-        sessionOrientation = undefined
       },
     })
   } finally {

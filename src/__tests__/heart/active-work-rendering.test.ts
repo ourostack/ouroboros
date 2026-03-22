@@ -40,17 +40,21 @@ function makeFrame(overrides: Partial<ActiveWorkFrame> = {}): ActiveWorkFrame {
 
 describe("formatActiveWorkFrame (selfhood framing)", () => {
   let formatActiveWorkFrame: (frame: ActiveWorkFrame) => string
+  let formatLiveWorldStateCheckpoint: (frame: ActiveWorkFrame) => string
 
   beforeAll(async () => {
     const mod = await import("../../heart/active-work")
     formatActiveWorkFrame = mod.formatActiveWorkFrame
+    formatLiveWorldStateCheckpoint = mod.formatLiveWorldStateCheckpoint
   })
 
   it("renders minimal frame with session line only", () => {
     const result = formatActiveWorkFrame(makeFrame())
     expect(result).toContain("## what i'm holding")
+    expect(result).toContain("this is my top-level live world-state right now.")
+    expect(result).toContain("if older checkpoints elsewhere in the transcript disagree with this picture, this picture wins.")
     expect(result).toContain("i'm in a conversation on cli/session.")
-    expect(result).not.toContain("obligation")
+    expect(result).not.toContain("i still owe")
   })
 
   it("renders obligation appended to session line", () => {
@@ -257,6 +261,41 @@ describe("formatActiveWorkFrame (selfhood framing)", () => {
       currentSession: null,
     }))
     expect(result).toContain("not in a conversation right now")
+  })
+
+  it("renders a compact live world-state checkpoint with fallbacks when no current session is active", () => {
+    const result = formatLiveWorldStateCheckpoint(makeFrame({
+      currentSession: null,
+    }))
+    expect(result).toContain("## live world-state checkpoint")
+    expect(result).toContain("- live conversation: not in a live conversation")
+    expect(result).toContain("- active lane: no explicit live lane")
+    expect(result).toContain("- current artifact: no artifact yet")
+    expect(result).toContain("- next action: continue from the live world-state")
+    expect(result).not.toContain("other active sessions:")
+  })
+
+  it("renders other active sessions in the compact live world-state checkpoint", () => {
+    const result = formatLiveWorldStateCheckpoint(makeFrame({
+      friendActivity: {
+        freshestForCurrentFriend: null,
+        otherLiveSessionsForCurrentFriend: [],
+        allOtherLiveSessions: [
+          {
+            friendId: "friend-1",
+            friendName: "Ari",
+            channel: "bluebubbles",
+            key: "chat:any;-;ari@mendelow.me",
+            sessionPath: "/tmp/ari-bb.json",
+            lastActivityAt: "2026-03-21T09:00:00.000Z",
+            lastActivityMs: Date.parse("2026-03-21T09:00:00.000Z"),
+            activitySource: "friend-facing",
+          },
+        ],
+      } as any,
+    }))
+    expect(result).toContain("other active sessions:")
+    expect(result).toContain("Ari/bluebubbles/chat:any;-;ari@mendelow.me")
   })
 
   it("emits nerves event reference", () => {

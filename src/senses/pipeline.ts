@@ -7,7 +7,6 @@
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions"
 import type { ChannelCallbacks, CompletionMetadata, RunAgentOptions, RunAgentOutcome } from "../heart/core"
 import type { PostTurnHooks, SessionContinuityState, UsageData } from "../mind/context"
-import type { SessionOrientation } from "../mind/session-orientation"
 import type { Channel, ChannelCapabilities, IdentityProvider, ResolvedContext } from "../mind/friends/types"
 import type { FriendStore } from "../mind/friends/store"
 import type { TrustGateInput, TrustGateResult } from "./trust-gate"
@@ -20,7 +19,7 @@ import { getTaskModule } from "../repertoire/tasks"
 import { getCodingSessionManager } from "../repertoire/coding"
 import { listSessionActivity } from "../heart/session-activity"
 import type { SessionActivityRecord } from "../heart/session-activity"
-import { buildActiveWorkFrame, type ActiveWorkFrame } from "../heart/active-work"
+import { buildActiveWorkFrame, formatLiveWorldStateCheckpoint, type ActiveWorkFrame } from "../heart/active-work"
 import { decideDelegation } from "../heart/delegation"
 import { listTargetSessionCandidates } from "../heart/target-resolution"
 import { readInnerDialogRawData, deriveInnerDialogStatus, deriveInnerJob, getInnerDialogSessionPath } from "../heart/daemon/thoughts"
@@ -46,7 +45,7 @@ export interface InboundTurnInput {
   /** Resolves external identity into a FriendRecord + channel capabilities. */
   friendResolver: { resolve(): Promise<ResolvedContext> }
   /** Loads an existing session or creates a fresh one. */
-  sessionLoader: { loadOrCreate(): Promise<{ messages: ChatCompletionMessageParam[]; sessionPath: string; state?: SessionContinuityState; sessionOrientation?: SessionOrientation }> }
+  sessionLoader: { loadOrCreate(): Promise<{ messages: ChatCompletionMessageParam[]; sessionPath: string; state?: SessionContinuityState }> }
   /** Directory to drain pending messages from. */
   pendingDir: string
   /** Friend store used for token accumulation. */
@@ -87,8 +86,7 @@ export interface InboundTurnInput {
     usage?: UsageData,
     hooks?: PostTurnHooks,
     state?: SessionContinuityState,
-    sessionOrientation?: SessionOrientation,
-  ) => SessionOrientation | undefined
+  ) => void
   accumulateFriendTokens: (
     store: FriendStore,
     friendId: string,
@@ -111,7 +109,6 @@ export interface InboundTurnResult {
   sessionPath?: string
   /** The final messages array after the turn. Undefined when gate rejects. */
   messages?: ChatCompletionMessageParam[]
-  sessionOrientation?: SessionOrientation
   /** Pending envelopes drained at turn start, including deferred returns. */
   drainedPending?: PendingMessage[]
 }
@@ -143,6 +140,29 @@ function isLiveCodingSessionStatus(
     || status === "running"
     || status === "waiting_input"
     || status === "stalled"
+}
+
+function prependTurnSections(
+  message: ChatCompletionMessageParam,
+  sections: string[],
+): ChatCompletionMessageParam {
+  if (message.role !== "user" || sections.length === 0) return message
+  const prefix = sections.join("\n\n")
+
+  if (typeof message.content === "string") {
+    return {
+      ...message,
+      content: `${prefix}\n\n${message.content}`,
+    }
+  }
+
+  return {
+    ...message,
+    content: [
+      { type: "text" as const, text: `${prefix}\n\n` },
+      ...message.content,
+    ],
+  }
 }
 
 function readInnerWorkState(): ActiveWorkFrame["inner"] {
@@ -356,33 +376,16 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   const sessionPending = input.drainPending(input.pendingDir)
   const pending = [...deferredReturns, ...sessionPending]
 
-  // Assemble messages: session messages + pending (formatted) + inbound user messages
+  // Assemble messages: session messages + live world-state checkpoint + pending + inbound user messages
+  const prefixSections = [formatLiveWorldStateCheckpoint(activeWorkFrame)]
   if (pending.length > 0) {
-    // Format pending messages and prepend to the user content
     const pendingSection = pending
       .map((msg) => `[pending from ${msg.from}]: ${msg.content}`)
       .join("\n")
-
-    // If there are inbound user messages, prepend pending to the first one
-    if (input.messages.length > 0) {
-      const firstMsg = input.messages[0]
-      if (firstMsg.role === "user") {
-        if (typeof firstMsg.content === "string") {
-          input.messages[0] = {
-            ...firstMsg,
-            content: `## pending messages\n${pendingSection}\n\n${firstMsg.content}`,
-          }
-        } else {
-          input.messages[0] = {
-            ...firstMsg,
-            content: [
-              { type: "text" as const, text: `## pending messages\n${pendingSection}\n\n` },
-              ...firstMsg.content,
-            ],
-          }
-        }
-      }
-    }
+    prefixSections.push(`## pending messages\n${pendingSection}`)
+  }
+  if (input.messages.length > 0) {
+    input.messages[0] = prependTurnSections(input.messages[0], prefixSections)
   }
 
   // Append user messages from the inbound turn
@@ -403,7 +406,6 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     setMustResolveBeforeHandoff: (value) => {
       mustResolveBeforeHandoff = value
     },
-    sessionOrientation: session.sessionOrientation,
     toolContext: {
       /* v8 ignore next -- default no-op signin satisfies interface; real signin injected by sense adapter @preserve */
       signin: async () => undefined,
@@ -433,14 +435,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
       ? { lastFriendActivityAt }
       : undefined)
     : (Object.keys(continuingState).length > 0 ? continuingState : undefined)
-  const nextSessionOrientation = input.postTurn(
-    sessionMessages,
-    session.sessionPath,
-    result.usage,
-    undefined,
-    nextState,
-    session.sessionOrientation,
-  )
+  input.postTurn(sessionMessages, session.sessionPath, result.usage, undefined, nextState)
 
   // Step 7: Token accumulation
   await input.accumulateFriendTokens(input.friendStore, resolvedContext.friend.id, result.usage)
@@ -463,7 +458,6 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     completion: result.completion,
     sessionPath: session.sessionPath,
     messages: sessionMessages,
-    sessionOrientation: nextSessionOrientation,
     drainedPending: pending,
   }
 }

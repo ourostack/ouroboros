@@ -4,7 +4,6 @@ import { emitNervesEvent } from "../nerves/runtime"
 import * as fs from "fs"
 import * as path from "path"
 import { estimateTokensForMessages } from "./token-estimate"
-import { buildSessionOrientation, normalizeSessionOrientation, type SessionOrientation } from "./session-orientation"
 
 export interface UsageData {
   input_tokens: number
@@ -22,7 +21,6 @@ export interface SessionData {
   messages: OpenAI.ChatCompletionMessageParam[]
   lastUsage?: UsageData
   state?: SessionContinuityState
-  sessionOrientation?: SessionOrientation
 }
 
 export interface PostTurnHooks {
@@ -283,7 +281,6 @@ export function saveSession(
   messages: OpenAI.ChatCompletionMessageParam[],
   lastUsage?: UsageData,
   state?: SessionContinuityState,
-  sessionOrientation?: SessionOrientation,
 ): void {
   const violations = validateSessionMessages(messages)
   if (violations.length > 0) {
@@ -303,7 +300,6 @@ export function saveSession(
     messages: OpenAI.ChatCompletionMessageParam[]
     lastUsage?: UsageData
     state?: SessionContinuityState
-    sessionOrientation?: SessionOrientation
   } = { version: 1, messages }
   if (lastUsage) envelope.lastUsage = lastUsage
   if (state?.mustResolveBeforeHandoff === true || typeof state?.lastFriendActivityAt === "string") {
@@ -312,7 +308,6 @@ export function saveSession(
       ...(typeof state?.lastFriendActivityAt === "string" ? { lastFriendActivityAt: state.lastFriendActivityAt } : {}),
     }
   }
-  if (sessionOrientation) envelope.sessionOrientation = sessionOrientation
   fs.writeFileSync(filePath, JSON.stringify(envelope, null, 2))
 }
 
@@ -346,13 +341,7 @@ export function loadSession(filePath: string): SessionData | null {
         ...(typeof rawState.lastFriendActivityAt === "string" ? { lastFriendActivityAt: rawState.lastFriendActivityAt } : {}),
       }
       : undefined
-    const sessionOrientation = normalizeSessionOrientation(data?.sessionOrientation)
-    return {
-      messages,
-      lastUsage: data.lastUsage,
-      ...(state ? { state } : {}),
-      ...(sessionOrientation ? { sessionOrientation } : {}),
-    }
+    return { messages, lastUsage: data.lastUsage, state }
   } catch {
     return null
   }
@@ -364,9 +353,7 @@ export function postTurn(
   usage?: UsageData,
   hooks?: PostTurnHooks,
   state?: SessionContinuityState,
-  sessionOrientation?: SessionOrientation,
-): SessionOrientation | undefined {
-  const nextSessionOrientation = buildSessionOrientation(messages, sessionOrientation)
+): void {
   if (hooks?.beforeTrim) {
     try {
       hooks.beforeTrim([...messages])
@@ -385,8 +372,7 @@ export function postTurn(
   const { maxTokens, contextMargin } = getContextConfig()
   const trimmed = trimMessages(messages, maxTokens, contextMargin, usage?.input_tokens)
   messages.splice(0, messages.length, ...trimmed)
-  saveSession(sessPath, messages, usage, state, nextSessionOrientation)
-  return nextSessionOrientation
+  saveSession(sessPath, messages, usage, state)
 }
 
 export function deleteSession(filePath: string): void {

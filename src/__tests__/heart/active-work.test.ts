@@ -642,6 +642,7 @@ describe("active work frame", () => {
 
   it("suggests beginning a new bridge when another live session makes the same work cross-surface even across a different relationship", async () => {
     const { buildActiveWorkFrame } = await import("../../heart/active-work")
+    const recentIso = new Date().toISOString()
 
     const frame = buildActiveWorkFrame({
       currentSession: {
@@ -673,8 +674,8 @@ describe("active work frame", () => {
           origin: { friendId: "friend-1", channel: "teams", key: "conv-1" },
           content: "keep Ari aligned across chats",
           status: "investigating",
-          createdAt: "2026-03-13T20:00:00.000Z",
-          updatedAt: "2026-03-13T20:01:00.000Z",
+          createdAt: recentIso,
+          updatedAt: recentIso,
         },
       ],
       friendActivity: [],
@@ -1170,6 +1171,7 @@ describe("active work frame", () => {
 
   it("suggests bridge when multiple non-blocked cross-relationship target candidates are live (picks freshest)", async () => {
     const { buildActiveWorkFrame } = await import("../../heart/active-work")
+    const recentIso = new Date().toISOString()
 
     const frame = buildActiveWorkFrame({
       currentSession: {
@@ -1188,8 +1190,8 @@ describe("active work frame", () => {
           origin: { friendId: "friend-1", channel: "bluebubbles", key: "chat-any" },
           content: "carry this across the right chat",
           status: "investigating",
-          createdAt: "2026-03-13T20:00:30.000Z",
-          updatedAt: "2026-03-13T20:02:30.000Z",
+          createdAt: recentIso,
+          updatedAt: recentIso,
         },
       ],
       taskBoard: {
@@ -1410,6 +1412,7 @@ describe("active work frame", () => {
   })
   it("falls back to the generic current next action when an active obligation has no usable content", async () => {
     const { buildActiveWorkFrame, formatActiveWorkFrame } = await import("../../heart/active-work")
+    const recentIso = new Date().toISOString()
 
     const frame = buildActiveWorkFrame({
       currentSession: {
@@ -1441,8 +1444,8 @@ describe("active work frame", () => {
           origin: { friendId: "friend-1", channel: "cli", key: "session" },
           content: "   ",
           status: "investigating",
-          createdAt: "2026-03-21T10:05:00.000Z",
-          updatedAt: "2026-03-21T10:06:00.000Z",
+          createdAt: recentIso,
+          updatedAt: recentIso,
         },
       ],
     })
@@ -1454,6 +1457,7 @@ describe("active work frame", () => {
 
   it("falls back to the generic other-session next action when a remote obligation has no usable content", async () => {
     const { buildActiveWorkFrame, formatActiveWorkFrame } = await import("../../heart/active-work")
+    const recentIso = new Date().toISOString()
 
     const frame = buildActiveWorkFrame({
       currentSession: {
@@ -1496,7 +1500,7 @@ describe("active work frame", () => {
           origin: { friendId: "friend-2", channel: "bluebubbles", key: "chat" },
           content: "   ",
           status: "investigating",
-          createdAt: "2026-03-21T10:06:30.000Z",
+          createdAt: recentIso,
           updatedAt: undefined as unknown as string,
         },
       ],
@@ -1831,6 +1835,7 @@ describe("delegation router", () => {
 
   it("treats active obligations as inward-work pressure even when inner job is idle", async () => {
     const { buildActiveWorkFrame, formatActiveWorkFrame } = await import("../../heart/active-work")
+    const recentIso = new Date().toISOString()
 
     const frame = buildActiveWorkFrame({
       currentSession: {
@@ -1863,8 +1868,8 @@ describe("delegation router", () => {
           content: "close the loop on the fix",
           status: "investigating" as const,
           currentSurface: { kind: "coding", label: "codex coding-001" },
-          createdAt: "2026-03-20T15:00:00.000Z",
-          updatedAt: "2026-03-20T15:05:00.000Z",
+          createdAt: recentIso,
+          updatedAt: recentIso,
         },
       ],
       taskBoard: {
@@ -3057,5 +3062,227 @@ describe("ActiveWorkFrame.inner with InnerJob", () => {
     expect(newerIndex).toBeGreaterThan(-1)
     expect(olderIndex).toBeGreaterThan(-1)
     expect(newerIndex).toBeLessThan(olderIndex)
+  })
+
+  it("keeps only material pending obligations and collapses duplicate origins to the freshest item", async () => {
+    const { buildActiveWorkFrame } = await import("../../heart/active-work")
+
+    const frame = buildActiveWorkFrame({
+      currentSession: {
+        friendId: "friend-1",
+        channel: "cli",
+        key: "session",
+        sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+      },
+      mustResolveBeforeHandoff: false,
+      inner: { status: "idle", hasPending: false },
+      bridges: [],
+      taskBoard: {
+        compact: "",
+        activeBridges: [],
+        byStatus: {
+          drafting: [],
+          processing: [],
+          validating: [],
+          collaborating: [],
+          paused: [],
+          blocked: [],
+          done: [],
+        },
+      },
+      friendActivity: [],
+      pendingObligations: [
+        {
+          id: "artifact-invalid-date",
+          origin: { friendId: "friend-2", channel: "bluebubbles", key: "chat" },
+          content: "merge the bluebubbles fix",
+          status: "investigating",
+          currentArtifact: "PR #999",
+          createdAt: "not-a-date",
+          updatedAt: "also-not-a-date",
+        },
+        {
+          id: "waiting-for-merge",
+          origin: { friendId: "friend-3", channel: "teams", key: "thread-1" },
+          content: "finish the teams fix",
+          status: "waiting_for_merge",
+          currentSurface: { kind: "merge", label: "PR #123" },
+          createdAt: "2026-03-21T10:00:00.000Z",
+          updatedAt: "2026-03-21T10:10:00.000Z",
+        },
+        {
+          id: "runtime-update",
+          origin: { friendId: "friend-4", channel: "cli", key: "thread-2" },
+          content: "update onto the merged runtime",
+          status: "investigating",
+          currentSurface: { kind: "runtime", label: "ouro up" },
+          createdAt: "2026-03-21T10:20:00.000Z",
+          updatedAt: "2026-03-21T10:21:00.000Z",
+        },
+        {
+          id: "older-duplicate",
+          origin: { friendId: "friend-5", channel: "cli", key: "thread-3" },
+          content: "older duplicate",
+          status: "investigating",
+          currentArtifact: "PR #120",
+          createdAt: "2026-03-21T10:00:00.000Z",
+          updatedAt: "2026-03-21T10:05:00.000Z",
+        },
+        {
+          id: "newer-duplicate",
+          origin: { friendId: "friend-5", channel: "cli", key: "thread-3" },
+          content: "newer duplicate",
+          status: "investigating",
+          currentArtifact: "PR #121",
+          createdAt: "2026-03-21T10:30:00.000Z",
+          updatedAt: "2026-03-21T10:35:00.000Z",
+        },
+      ],
+    })
+
+    expect(frame.pendingObligations.map((obligation) => obligation.id)).toEqual([
+      "newer-duplicate",
+      "runtime-update",
+      "waiting-for-merge",
+      "artifact-invalid-date",
+    ])
+  })
+
+  it("falls back to a generic bridge objective hint when no open obligation has usable content", async () => {
+    const { suggestBridgeForActiveWork } = await import("../../heart/active-work")
+
+    const suggestion = suggestBridgeForActiveWork({
+      currentSession: {
+        friendId: "friend-1",
+        channel: "cli",
+        key: "session",
+        sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+      },
+      mustResolveBeforeHandoff: true,
+      bridges: [],
+      pendingObligations: [
+        {
+          id: "blank-obligation",
+          origin: { friendId: "friend-1", channel: "cli", key: "session" },
+          content: "   ",
+          status: "investigating",
+          createdAt: "2026-03-21T11:00:00.000Z",
+          updatedAt: "2026-03-21T11:05:00.000Z",
+        },
+      ],
+      taskBoard: {
+        compact: "",
+        activeBridges: [],
+        byStatus: {
+          drafting: [],
+          processing: [],
+          validating: [],
+          collaborating: [],
+          paused: [],
+          blocked: [],
+          done: [],
+        },
+      },
+      targetCandidates: [
+        {
+          friendId: "friend-2",
+          friendName: "Ari",
+          channel: "bluebubbles",
+          key: "chat",
+          sessionPath: "/tmp/state/sessions/friend-2/bluebubbles/chat.json",
+          snapshot: "recent focus",
+          trust: {
+            level: "friend",
+            basis: "direct",
+            summary: "directly trusted",
+            why: "same person on another surface",
+            permits: ["shared coordination"],
+            constraints: [],
+          },
+          delivery: {
+            mode: "queue_only",
+            reason: "needs explicit handoff",
+          },
+          lastActivityAt: "2026-03-21T11:06:00.000Z",
+          lastActivityMs: Date.parse("2026-03-21T11:06:00.000Z"),
+          activitySource: "friend-facing",
+        },
+      ],
+    })
+
+    expect(suggestion).toEqual({
+      kind: "begin-new",
+      targetSession: expect.objectContaining({
+        friendId: "friend-2",
+        channel: "bluebubbles",
+        key: "chat",
+      }),
+      objectiveHint: "keep this shared work aligned",
+      reason: "shared-work-candidate",
+    })
+  })
+
+  it("suggests a bridge even when shared pressure exists without pending obligations", async () => {
+    const { suggestBridgeForActiveWork } = await import("../../heart/active-work")
+
+    const suggestion = suggestBridgeForActiveWork({
+      currentSession: {
+        friendId: "friend-1",
+        channel: "cli",
+        key: "session",
+        sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+      },
+      mustResolveBeforeHandoff: true,
+      bridges: [],
+      taskBoard: {
+        compact: "",
+        activeBridges: [],
+        byStatus: {
+          drafting: [],
+          processing: [],
+          validating: [],
+          collaborating: [],
+          paused: [],
+          blocked: [],
+          done: [],
+        },
+      },
+      targetCandidates: [
+        {
+          friendId: "friend-9",
+          friendName: "Ari",
+          channel: "bluebubbles",
+          key: "chat",
+          sessionPath: "/tmp/state/sessions/friend-9/bluebubbles/chat.json",
+          snapshot: "recent focus",
+          trust: {
+            level: "friend",
+            basis: "direct",
+            summary: "directly trusted",
+            why: "same person on another surface",
+            permits: ["shared coordination"],
+            constraints: [],
+          },
+          delivery: {
+            mode: "queue_only",
+            reason: "needs explicit handoff",
+          },
+          lastActivityAt: "2026-03-21T11:07:00.000Z",
+          lastActivityMs: Date.parse("2026-03-21T11:07:00.000Z"),
+          activitySource: "friend-facing",
+        },
+      ],
+    })
+
+    expect(suggestion).toEqual({
+      kind: "begin-new",
+      targetSession: expect.objectContaining({
+        friendId: "friend-9",
+        channel: "bluebubbles",
+        key: "chat",
+      }),
+      objectiveHint: "keep this shared work aligned",
+      reason: "shared-work-candidate",
+    })
   })
 })

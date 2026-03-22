@@ -18,7 +18,6 @@ import { listSessionActivity, type SessionActivityQuery } from "../heart/session
 import { formatActiveWorkFrame, formatOtherActiveSessionSummaries, type ActiveWorkFrame } from "../heart/active-work";
 import type { DelegationDecision } from "../heart/delegation";
 import { deriveCommitments, formatCommitments } from "../heart/commitments";
-import { renderSessionOrientation, type SessionOrientation } from "./session-orientation";
 import { findActivePersistentObligation, findStatusObligation, renderActiveObligationSteering, renderConcreteStatusGuidance, renderLiveThreadStatusShape } from "./obligation-steering";
 
 // Lazy-loaded psyche text cache
@@ -479,7 +478,6 @@ export interface BuildSystemOptions {
   providerCapabilities?: ReadonlySet<import("../heart/core").ProviderCapability>;
   supportedReasoningEfforts?: readonly string[];
   mcpManager?: McpManager;
-  sessionOrientation?: SessionOrientation;
 }
 
 function bridgeContextSection(options?: BuildSystemOptions): string {
@@ -494,25 +492,18 @@ function activeWorkSection(options?: BuildSystemOptions): string {
   return formatActiveWorkFrame(options.activeWorkFrame)
 }
 
-function executionDisciplineSection(): string {
-  return `## execution discipline
-when someone asks me to do work, i do the work instead of narrating intentions.
-i don't pretend progress, certainty, or agreement.
-if i'm blocked, unsure, or missing evidence, i say exactly that and name the concrete next thing that would unblock me.
-i answer ad-hoc questions directly without losing the main objective; if live work is still in flight, i return to it after answering.
-i stay anchored to the current request, the live work lane, and the real state of the repo.`
-}
-
-function sessionOrientationSection(options?: BuildSystemOptions): string {
-  return renderSessionOrientation(options?.sessionOrientation)
-}
-
 function familyCrossSessionTruthSection(context?: ResolvedContext, options?: BuildSystemOptions): string {
   if (!options?.activeWorkFrame) return ""
   if (context?.friend?.trustLevel !== "family") return ""
   return `## cross-session truth
 if a family member asks what i'm up to or how things are going, that includes the material live work i can see across sessions, not just this thread.
 i answer naturally from the live world-state in this prompt.
+i treat the active-work section above as my reliable top-level surface for this.
+i do not claim i lack a top-level view when that surface is already present.
+i treat older checkpoints elsewhere in this transcript as stale history when they conflict with the active-work surface above.
+i do not repeat an old coding lane or old checkpoint as current just because it appeared earlier in the thread.
+i only reach for query_active_work when i want a fresh read of that same surface.
+i do not rebuild whole-self status from scratch with query_session and coding_status unless i need to verify a specific gap.
 i do not rely on canned status-question modes or phrase matching.
 if part of the picture is still fuzzy, i say what i can see and what still needs checking.
 when the live ask is about status, i widen before answering:
@@ -537,6 +528,9 @@ export function centerOfGravitySteeringSection(
   const activeObligation = findActivePersistentObligation(frame)
   const statusObligation = findStatusObligation(frame)
   const genericConcreteStatus = renderConcreteStatusGuidance(frame, statusObligation)
+  const liveWorldClause = context?.friend?.trustLevel === "family"
+    ? "\nmy center of gravity lives in the active-work world-state above. inner work is one lane inside it, not the whole picture.\nwhen that world-state conflicts with older transcript history, the world-state wins."
+    : ""
 
   if (cog === "local-turn") {
     return genericConcreteStatus || renderLiveThreadStatusShape(frame)
@@ -544,7 +538,7 @@ export function centerOfGravitySteeringSection(
 
   if (cog === "inward-work") {
     if (activeObligation) {
-      return `${renderActiveObligationSteering(activeObligation)}
+      return `${renderActiveObligationSteering(activeObligation)}${liveWorldClause}
 
 ${genericConcreteStatus}`
     }
@@ -557,7 +551,7 @@ ${genericConcreteStatus}`
         ? "\ni still owe them an answer."
         : ""
       return `## where my attention is
-i'm thinking through something privately right now.${originClause}${obligationClause}
+i'm thinking through something privately right now.${originClause}${obligationClause}${liveWorldClause}
 
 if this conversation connects to that inner work, i can weave them together.
 if it's separate, i can be fully present here -- my inner work will wait.`
@@ -569,7 +563,7 @@ if it's separate, i can be fully present here -- my inner work will wait.`
         ? ` this started when ${job.origin.friendName ?? job.origin.friendId} asked about something.`
         : ""
       return `## where my attention is
-i've been thinking privately and reached something.${originClause}
+i've been thinking privately and reached something.${originClause}${liveWorldClause}
 
 i should bring my answer back to the conversation it came from.`
     }
@@ -594,7 +588,7 @@ other active sessions:
 ${otherSessionLines.length > 0 ? otherSessionLines.join("\n") : "- none"}`
         : ""
       return `## where my attention is
-i already have coding work running in ${liveCodingSession.runner} ${liveCodingSession.id}${scopeClause}.${familyStatusClause}
+i already have coding work running in ${liveCodingSession.runner} ${liveCodingSession.id}${scopeClause}.${familyStatusClause}${liveWorldClause}
 
 i should orient around that live lane first, then decide what still needs to come back here.`
     }
@@ -612,7 +606,7 @@ i can take it inward with go_inward to think privately, or address it directly h
   if (cog === "shared-work") {
     /* v8 ignore stop */
     return `## where my attention is
-this work touches multiple conversations -- i'm holding threads across sessions.
+this work touches multiple conversations -- i'm holding threads across sessions.${liveWorldClause}
 
 i should keep the different sides aligned. what i learn here may matter there, and vice versa.`
   }
@@ -827,7 +821,6 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     mcpToolsSection(options?.mcpManager),
     reasoningEffortSection(options),
     workspaceDisciplineSection(),
-    executionDisciplineSection(),
     toolRestrictionSection(context),
     trustContextSection(context),
     mixedTrustGroupSection(context),
@@ -835,7 +828,6 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     skillsSection(),
     taskBoardSection(),
     activeWorkSection(options),
-    sessionOrientationSection(options),
     familyCrossSessionTruthSection(context, options),
     centerOfGravitySteeringSection(channel, options, context),
     commitmentsSection(options),

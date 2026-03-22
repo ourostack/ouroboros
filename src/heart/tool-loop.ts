@@ -53,6 +53,10 @@ function digest(value: unknown): string {
 }
 
 function normalizeArgs(toolName: string, args: Record<string, string>): Record<string, unknown> {
+  if (toolName === "query_active_work") {
+    return { toolName }
+  }
+
   if (toolName === "coding_status" || toolName === "coding_tail") {
     return {
       toolName,
@@ -85,7 +89,8 @@ function normalizeOutcome(result: string, success: boolean): Record<string, unkn
 }
 
 function isKnownPollTool(toolName: string, args: Record<string, string>): boolean {
-  return toolName === "coding_status"
+  return toolName === "query_active_work"
+    || toolName === "coding_status"
     || toolName === "coding_tail"
     || (toolName === "query_session" && (args.mode ?? "").trim() === "status")
 }

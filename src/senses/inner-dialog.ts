@@ -504,7 +504,6 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
         return {
           messages: existingMessages,
           sessionPath: sessionFilePath,
-          sessionOrientation: loaded?.sessionOrientation,
         }
       }
       // Fresh session: build system prompt

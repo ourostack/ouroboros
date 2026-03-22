@@ -1,7 +1,6 @@
 import * as fs from "fs"
 import type { TrustLevel } from "../mind/friends/types"
 import { emitNervesEvent } from "../nerves/runtime"
-import { normalizeSessionOrientation, type SessionOrientation } from "../mind/session-orientation"
 
 export interface SessionRecallOptions {
   sessionPath: string
@@ -89,33 +88,8 @@ function clip(text: string, limit = 160): string {
   return compact.length > limit ? compact.slice(0, limit - 1) + "…" : compact
 }
 
-function buildOrientationSnapshot(orientation?: SessionOrientation): string[] {
-  if (!orientation) return []
-
-  const lines: string[] = []
-  if (orientation.goal) {
-    lines.push(`goal: ${clip(orientation.goal, 200)}`)
-  }
-  if (orientation.constraints.length > 0) {
-    lines.push(`constraints: ${clip(orientation.constraints.join("; "), 200)}`)
-  }
-  if (orientation.progress.length > 0) {
-    lines.push(`progress: ${clip(orientation.progress.join("; "), 200)}`)
-  }
-  if (orientation.modifiedFiles.length > 0) {
-    lines.push(`files: ${clip(orientation.modifiedFiles.join(", "), 200)}`)
-  }
-
-  return lines
-}
-
-function buildSnapshot(
-  summary: string,
-  tailMessages: Array<{ role: string; content: string }>,
-  orientation?: SessionOrientation,
-): string {
+function buildSnapshot(summary: string, tailMessages: Array<{ role: string; content: string }>): string {
   const lines = [`recent focus: ${clip(summary, 240)}`]
-  lines.push(...buildOrientationSnapshot(orientation))
   const latestUser = [...tailMessages].reverse().find((message) => message.role === "user")?.content
   const latestAssistant = [...tailMessages].reverse().find((message) => message.role === "assistant")?.content
 
@@ -132,11 +106,9 @@ function buildSnapshot(
 function buildSearchSnapshot(
   query: string,
   messages: Array<{ role: string; content: string }>,
-  orientation?: SessionOrientation,
   includeLatestTurn = true,
 ): string {
   const lines = [`history query: "${clip(query, 120)}"`]
-  lines.push(...buildOrientationSnapshot(orientation))
   if (!includeLatestTurn) {
     return lines.join("\n")
   }
@@ -152,14 +124,6 @@ function buildSearchSnapshot(
 
   return lines.join("\n")
 }
-
-function mergeOrientationIntoSummary(summary: string, orientation?: SessionOrientation): string {
-  const orientationLines = buildOrientationSnapshot(orientation)
-  if (orientationLines.length === 0) return summary
-
-  return [`session orientation:`, ...orientationLines, "", summary].join("\n")
-}
-
 function buildSearchExcerpts(
   messages: Array<{ role: string; content: string }>,
   query: string,
@@ -222,11 +186,7 @@ export async function recallSession(options: SessionRecallOptions): Promise<Sess
     return { kind: "missing" }
   }
 
-  const parsed = JSON.parse(raw) as {
-    messages?: Array<{ role?: unknown; content?: unknown }>
-    sessionOrientation?: unknown
-  }
-  const sessionOrientation = normalizeSessionOrientation(parsed.sessionOrientation)
+  const parsed = JSON.parse(raw) as { messages?: Array<{ role?: unknown; content?: unknown }> }
   const tailMessages = normalizeSessionMessages(parsed.messages).slice(-options.messageCount)
 
   if (tailMessages.length === 0) {
@@ -237,19 +197,18 @@ export async function recallSession(options: SessionRecallOptions): Promise<Sess
     .map((message) => `[${message.role}] ${message.content}`)
     .join("\n")
 
-  const rawSummary = options.summarize
+  const summary = options.summarize
     ? await options.summarize(
       transcript,
       buildSummaryInstruction(options.friendId, options.channel, options.trustLevel ?? "family"),
     )
     : transcript
-  const summary = mergeOrientationIntoSummary(rawSummary, sessionOrientation)
 
   return {
     kind: "ok",
     transcript,
     summary,
-    snapshot: buildSnapshot(summary, tailMessages, sessionOrientation),
+    snapshot: buildSnapshot(summary, tailMessages),
     tailMessages,
   }
 }
@@ -275,11 +234,7 @@ export async function searchSessionTranscript(options: SessionSearchOptions): Pr
     return { kind: "missing" }
   }
 
-  const parsed = JSON.parse(raw) as {
-    messages?: Array<{ role?: unknown; content?: unknown }>
-    sessionOrientation?: unknown
-  }
-  const sessionOrientation = normalizeSessionOrientation(parsed.sessionOrientation)
+  const parsed = JSON.parse(raw) as { messages?: Array<{ role?: unknown; content?: unknown }> }
   const messages = normalizeSessionMessages(parsed.messages)
 
   if (messages.length === 0) {
@@ -293,14 +248,14 @@ export async function searchSessionTranscript(options: SessionSearchOptions): Pr
     return {
       kind: "no_match",
       query,
-      snapshot: buildSearchSnapshot(query, messages, sessionOrientation),
+      snapshot: buildSearchSnapshot(query, messages),
     }
   }
 
   return {
     kind: "ok",
     query,
-    snapshot: buildSearchSnapshot(query, messages, sessionOrientation, false),
+    snapshot: buildSearchSnapshot(query, messages, false),
     matches,
   }
 }

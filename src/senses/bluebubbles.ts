@@ -739,7 +739,6 @@ async function handleBlueBubblesNormalizedEvent(
             messages: sessionMessages,
             sessionPath: sessPath,
             state: existing?.state,
-            sessionOrientation: existing?.sessionOrientation,
           }),
         },
         pendingDir,

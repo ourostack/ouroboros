@@ -88,13 +88,59 @@ describe("coding context pack", () => {
             lastActivityAt: "2026-03-21T00:06:00.000Z",
           }),
         ],
-        sessionOrientation: {
-          updatedAt: "2026-03-21T00:50:00.000Z",
-          goal: "close the orientation gap without breaking ouro",
-          constraints: ["keep the architecture intact"],
-          progress: ["edit_file src/mind/prompt.ts"],
-          readFiles: ["src/mind/context.ts"],
-          modifiedFiles: ["src/mind/prompt.ts"],
+        activeWorkFrame: {
+          currentSession: {
+            friendId: "friend-1",
+            channel: "teams",
+            key: "thread-9",
+            sessionPath: "/Users/test/AgentBundles/slugger.ouro/state/sessions/friend-1/teams/thread-9.json",
+          },
+          currentObligation: "bring back the coding result",
+          mustResolveBeforeHandoff: true,
+          centerOfGravity: "inward-work",
+          inner: {
+            status: "idle",
+            hasPending: false,
+            job: {
+              status: "idle",
+              content: null,
+              origin: null,
+              mode: "reflect",
+              obligationStatus: null,
+              surfacedResult: null,
+              queuedAt: null,
+              startedAt: null,
+              surfacedAt: null,
+            },
+          },
+          bridges: [],
+          taskPressure: {
+            compactBoard: "",
+            liveTaskNames: [],
+            activeBridges: [],
+          },
+          friendActivity: {
+            freshestForCurrentFriend: null,
+            otherLiveSessionsForCurrentFriend: [],
+          },
+          codingSessions: [
+            {
+              id: "coding-001",
+              runner: "codex",
+              workdir: "/Users/test/Projects/ouro",
+              taskRef: "task-123",
+              status: "running",
+              startedAt: "2026-03-21T00:00:00.000Z",
+              lastActivityAt: "2026-03-21T00:05:00.000Z",
+              endedAt: null,
+              restartCount: 0,
+              lastExitCode: null,
+              lastSignal: null,
+            },
+          ],
+          otherCodingSessions: [],
+          pendingObligations: [],
+          bridgeSuggestion: null,
         },
       },
       {
@@ -121,12 +167,8 @@ describe("coding context pack", () => {
     expect(scope).toContain("taskRef: task-123")
     expect(scope).toContain("make the coding agent better")
     expect(scope).toContain("## Session Contract")
-    expect(scope).toContain("This is a subordinate coding lane for the parent Ouro agent.")
+    expect(scope).toContain("This is a focused coding lane opened by the parent Ouro agent.")
     expect(scope).toContain("Do not switch into planning/doing workflows or approval gates unless the prompt explicitly asks for them.")
-    expect(scope).toContain("## Parent Session Orientation")
-    expect(scope).toContain("goal: close the orientation gap without breaking ouro")
-    expect(scope).toContain("- keep the architecture intact")
-    expect(scope).toContain("- edit_file src/mind/prompt.ts")
     expect(scope).toContain("## Project Context Files")
     expect(scope).toContain("/Users/test/Projects/ouro/AGENTS.md")
     expect(scope).toContain("## Repo Rules")
@@ -142,6 +184,9 @@ describe("coding context pack", () => {
     expect(state).toContain("branch: slugger/pi-mono-capability-adoption")
     expect(state).toContain("head: 42ee0bf")
     expect(state).toContain(" M src/repertoire/coding/tools.ts")
+    expect(state).toContain("## live world-state checkpoint")
+    expect(state).toContain("- live conversation: teams/thread-9")
+    expect(state).toContain("- next action: finish the coding pass and bring the result back here")
     expect(state).toContain("coding-001")
     expect(state).toContain("coding-002")
     expect(state).toContain("checkpoint=working through the coding lane")
