@@ -501,7 +501,10 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
   const sessionLoader = {
     loadOrCreate: async () => {
       if (existingMessages.length > 0) {
-        return { messages: existingMessages, sessionPath: sessionFilePath }
+        return {
+          messages: existingMessages,
+          sessionPath: sessionFilePath,
+        }
       }
       // Fresh session: build system prompt
       const systemPrompt = await buildSystem("inner", { toolChoiceRequired: true, mcpManager })

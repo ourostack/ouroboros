@@ -121,6 +121,12 @@ function formatCodingLaneLabel(session: CodingSession): string {
   return `${session.runner} ${session.id}`
 }
 
+function compactCodingCheckpoint(session: CodingSession): string {
+  const checkpoint = session.checkpoint?.replace(/\s+/g, " ").trim()
+  if (!checkpoint) return ""
+  return checkpoint.length <= 80 ? checkpoint : `${checkpoint.slice(0, 77)}...`
+}
+
 function describeCodingSessionScope(session: CodingSession, currentSession: ActiveWorkFrame["currentSession"]): string {
   if (!session.originSession) return ""
   if (
@@ -264,6 +270,14 @@ function formatActiveLane(frame: ActiveWorkFrame, obligation: Obligation | null)
   return null
 }
 
+function formatCodingArtifact(session: CodingSession): string
+function formatCodingArtifact(session: CodingSession | null | undefined): string | null
+function formatCodingArtifact(session: CodingSession | null | undefined): string | null {
+  const artifactPath = session?.artifactPath?.trim()
+  if (artifactPath) return artifactPath
+  return session ? "no PR or merge artifact yet" : null
+}
+
 function formatCurrentArtifact(frame: ActiveWorkFrame, obligation: Obligation | null): string | null {
   if (obligation?.currentArtifact?.trim()) {
     return obligation.currentArtifact.trim()
@@ -271,8 +285,9 @@ function formatCurrentArtifact(frame: ActiveWorkFrame, obligation: Obligation | 
   if (obligation?.currentSurface?.kind === "merge" && obligation.currentSurface.label.trim()) {
     return obligation.currentSurface.label.trim()
   }
-  if ((frame.codingSessions ?? []).length > 0) {
-    return "no PR or merge artifact yet"
+  const liveCodingArtifact = formatCodingArtifact(frame.codingSessions?.[0])
+  if (liveCodingArtifact) {
+    return liveCodingArtifact
   }
   if (obligation) {
     return "no artifact yet"
@@ -346,7 +361,8 @@ function formatOtherSessionArtifact(
   if (obligation?.currentSurface?.kind === "merge" && obligation.currentSurface.label.trim()) {
     return obligation.currentSurface.label.trim()
   }
-  if (codingSession) return "no PR or merge artifact yet"
+  const codingArtifact = formatCodingArtifact(codingSession)
+  if (codingArtifact) return codingArtifact
   return obligation ? "no artifact yet" : "no explicit artifact yet"
 }
 
@@ -407,7 +423,7 @@ export function formatOtherActiveSessionSummaries(frame: ActiveWorkFrame, nowMs 
         "another session",
         session.status,
         formatCodingLaneLabel(session),
-        "no PR or merge artifact yet",
+        formatCodingArtifact(session),
         formatOtherSessionNextAction(null, session),
       ),
     }))
@@ -692,7 +708,10 @@ export function formatActiveWorkFrame(frame: ActiveWorkFrame): string {
     lines.push("")
     lines.push("## live coding work")
     for (const session of frame.codingSessions) {
-      lines.push(`- [${session.status}] ${formatCodingLaneLabel(session)}${describeCodingSessionScope(session, frame.currentSession)}`)
+      const checkpoint = compactCodingCheckpoint(session)
+      lines.push(
+        `- [${session.status}] ${formatCodingLaneLabel(session)}${describeCodingSessionScope(session, frame.currentSession)}${checkpoint ? `: ${checkpoint}` : ""}`,
+      )
     }
   }
 

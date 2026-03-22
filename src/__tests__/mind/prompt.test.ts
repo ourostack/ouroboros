@@ -2680,6 +2680,8 @@ describe("buildSystem with context", () => {
     expect(result).toContain("## task board")
     expect(result).toContain("## my skills")
     expect(result).toContain("## memory and friend tool contracts")
+    expect(result).toContain("query_session")
+    expect(result).toContain("mode=search")
   })
 
   it("buildSystem('inner') does NOT include contextSection output (no friend context, no onboarding)", async () => {
@@ -3417,5 +3419,101 @@ describe("groupChatParticipationSection", () => {
     const result = await buildSystem("bluebubbles", undefined, ctx as any)
     expect(result).toContain("no_response")
     expect(result).toMatch(/reaction|tapback/i)
+  })
+})
+
+describe("active-work prompting", () => {
+  beforeEach(() => {
+    setupReadFileSync()
+  })
+
+  it("buildSystem teaches query_session search mode in the memory contract", async () => {
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("cli")
+
+    expect(result).toContain("## memory and friend tool contracts")
+    expect(result).toContain("Use `mode=status` for self/inner progress and `mode=search` with a query for older history.")
+  })
+
+  it("buildSystem reinforces active-work as the top-level truth for family status questions", async () => {
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("cli", {
+      activeWorkFrame: {
+        currentSession: {
+          friendId: "friend-1",
+          channel: "cli",
+          key: "session",
+          sessionPath: "/tmp/session.json",
+        },
+        currentObligation: "report back with the current status",
+        mustResolveBeforeHandoff: false,
+        centerOfGravity: "inward-work",
+        inner: {
+          status: "idle",
+          hasPending: false,
+          job: {
+            status: "idle",
+            content: null,
+            origin: null,
+            mode: "reflect",
+            obligationStatus: null,
+            surfacedResult: null,
+            queuedAt: null,
+            startedAt: null,
+            surfacedAt: null,
+          },
+        },
+        bridges: [],
+        taskPressure: {
+          compactBoard: "",
+          liveTaskNames: [],
+          activeBridges: [],
+        },
+        friendActivity: {
+          freshestForCurrentFriend: null,
+          otherLiveSessionsForCurrentFriend: [],
+        },
+        codingSessions: [],
+        otherCodingSessions: [],
+        pendingObligations: [],
+        bridgeSuggestion: null,
+      },
+    }, {
+      friend: {
+        id: "uuid-1",
+        name: "Family Tester",
+        externalIds: [{ provider: "local", externalId: "test", linkedAt: "2026-01-01T00:00:00.000Z" }],
+        tenantMemberships: [],
+        toolPreferences: {},
+        notes: {},
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        schemaVersion: 1,
+        trustLevel: "family",
+      },
+      channel: {
+        channel: "cli",
+        senseType: "local",
+        availableIntegrations: [],
+        supportsMarkdown: false,
+        supportsStreaming: true,
+        supportsRichCards: false,
+        maxMessageLength: Infinity,
+      },
+    })
+
+    expect(result).toContain("## cross-session truth")
+    expect(result).toContain("i answer naturally from the live world-state in this prompt.")
+    expect(result).toContain("i do not rebuild whole-self status from scratch with query_session and coding_status unless i need to verify a specific gap.")
   })
 })

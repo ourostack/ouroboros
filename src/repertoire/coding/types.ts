@@ -49,6 +49,8 @@ export interface CodingSession {
   obligationId?: string
   scopeFile?: string
   stateFile?: string
+  checkpoint?: string | null
+  artifactPath?: string
   status: CodingSessionStatus
   stdoutTail: string
   stderrTail: string

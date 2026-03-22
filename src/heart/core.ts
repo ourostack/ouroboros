@@ -34,6 +34,7 @@ import type { PendingMessage } from "../mind/pending";
 import { getAgentName, getAgentRoot } from "./identity";
 import { requestInnerWake } from "./daemon/socket-client";
 import { createObligation } from "./obligations";
+import { createToolLoopState, detectToolLoop, recordToolOutcome } from "./tool-loop";
 
 export type ProviderId = "azure" | "anthropic" | "minimax" | "openai-codex" | "github-copilot";
 
@@ -613,6 +614,7 @@ export async function runAgent(
   let sawQuerySession = false;
   let sawBridgeManage = false;
   let sawExternalStateQuery = false;
+  const toolLoopState = createToolLoopState();
 
   // Prevent MaxListenersExceeded warning — each iteration adds a listener
   try { require("events").setMaxListeners(50, signal); } catch { /* unsupported */ }
@@ -626,10 +628,11 @@ export async function runAgent(
   );
   // Augment tool context with reasoning effort controls from provider
   const augmentedToolContext: ToolContext | undefined = options?.toolContext
-    ? {
+      ? {
         ...options.toolContext,
         supportedReasoningEfforts: providerRuntime.supportedReasoningEfforts,
         setReasoningEffort: (level: string) => { currentReasoningEffort = level; },
+        activeWorkFrame: options?.activeWorkFrame,
       }
     : undefined;
 
@@ -941,6 +944,15 @@ export async function runAgent(
           /* v8 ignore next -- flag tested via truth-check integration tests @preserve */
           if (isExternalStateQuery(tc.name, args)) sawExternalStateQuery = true;
           const argSummary = summarizeArgs(tc.name, args);
+          const toolLoop = detectToolLoop(toolLoopState, tc.name, args);
+          if (toolLoop.stuck) {
+            const rejection = `loop guard: ${toolLoop.message}`;
+            callbacks.onToolStart(tc.name, args);
+            callbacks.onToolEnd(tc.name, argSummary, false);
+            messages.push({ role: "tool", tool_call_id: tc.id, content: rejection });
+            providerRuntime.appendToolOutput(tc.id, rejection);
+            continue;
+          }
           // Confirmation check for mutate tools
           if (isConfirmationRequired(tc.name) && !options?.skipConfirmation) {
             let decision: "confirmed" | "denied" = "denied";
@@ -967,6 +979,7 @@ export async function runAgent(
             toolResult = `error: ${e}`;
             success = false;
           }
+          recordToolOutcome(toolLoopState, tc.name, args, toolResult, success);
           callbacks.onToolEnd(tc.name, argSummary, success);
           messages.push({ role: "tool", tool_call_id: tc.id, content: toolResult });
           providerRuntime.appendToolOutput(tc.id, toolResult);
