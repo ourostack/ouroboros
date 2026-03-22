@@ -2084,9 +2084,12 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
     const updateSummary = await applyPendingUpdates(bundlesRoot, currentVersion)
 
-    // Notify about CLI binary update (npx downloaded a new version)
+    // Notify about CLI binary update (npx downloaded a new version).
+    // Skip when the symlink already points to the running version — that
+    // means path 1 (checkForCliUpdate + reExecFromNewVersion) already
+    // printed the update message before re-exec.
     /* v8 ignore start -- CLI update detection: tested via daemon-cli-version-detect.test.ts @preserve */
-    if (previousCliVersion && previousCliVersion !== currentVersion) {
+    if (previousCliVersion && previousCliVersion !== currentVersion && linkedVersionBeforeUp !== currentVersion) {
       deps.writeStdout(`ouro updated to ${currentVersion} (was ${previousCliVersion})`)
       const changelogCommand = buildChangelogCommand(previousCliVersion, currentVersion)
       /* v8 ignore next -- buildChangelogCommand is non-null when previous/current runtime versions differ @preserve */
