@@ -300,7 +300,26 @@ describe("handleInboundTurn", () => {
       const messagesArg = runAgentCall[0] as ChatCompletionMessageParam[]
       // Pending messages should be formatted and included before the user message
       const allContent = messagesArg.map(m => typeof m.content === "string" ? m.content : "").join("\n")
+      expect(allContent).toContain("## live world-state checkpoint")
+      expect(allContent).toContain("if older transcript history disagrees, treat it as stale.")
       expect(allContent).toContain("someone tried to reach you")
+    })
+
+    it("injects a fresh live world-state checkpoint ahead of the inbound user turn", async () => {
+      const input = makeInput({
+        continuityIngressTexts: ["what are you up to?"],
+        messages: [{ role: "user", content: "what are you up to?" }] as ChatCompletionMessageParam[],
+      })
+
+      await handleInboundTurn(input)
+
+      const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
+      const messagesArg = runAgentCall[0] as ChatCompletionMessageParam[]
+      const allContent = messagesArg.map((m) => typeof m.content === "string" ? m.content : "").join("\n")
+      expect(allContent).toContain("## live world-state checkpoint")
+      expect(allContent).toContain("- live conversation: cli/session")
+      expect(allContent).toContain("- current artifact: no artifact yet")
+      expect(allContent).toContain("what are you up to?")
     })
 
     it("drains deferred friend returns before ordinary session pending and exposes the combined batch", async () => {
