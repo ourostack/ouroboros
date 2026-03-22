@@ -801,6 +801,7 @@ describe("ToolDefinition type and registry", () => {
     expect(names).toContain("load_skill")
     expect(names).toContain("claude")
     expect(names).toContain("web_search")
+    expect(names).toContain("query_active_work")
   })
 
   it("base tool definitions do NOT include removed tools", async () => {

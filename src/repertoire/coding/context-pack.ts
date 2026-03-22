@@ -3,8 +3,8 @@ import * as fs from "fs"
 import * as path from "path"
 import { spawnSync } from "child_process"
 
+import { formatLiveWorldStateCheckpoint, type ActiveWorkFrame } from "../../heart/active-work"
 import { getAgentName, getAgentRoot } from "../../heart/identity"
-import { renderSessionOrientation, type SessionOrientation } from "../../mind/session-orientation"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { listSkills } from "../skills"
 import type { CodingSession, CodingSessionRequest } from "./types"
@@ -22,7 +22,7 @@ export interface CodingContextPack {
 export interface CodingContextPackInput {
   request: CodingSessionRequest
   existingSessions?: CodingSession[]
-  sessionOrientation?: SessionOrientation
+  activeWorkFrame?: ActiveWorkFrame
 }
 
 interface CommandResult {
@@ -152,12 +152,6 @@ function formatSkills(skills: string[]): string {
   return skills.length > 0 ? skills.join(", ") : "(none found)"
 }
 
-function formatParentSessionOrientation(orientation?: SessionOrientation): string {
-  const rendered = renderSessionOrientation(orientation)
-  if (!rendered) return ""
-  return rendered.replace(/^## session orientation$/m, "## Parent Session Orientation")
-}
-
 function formatExistingSessions(sessions: CodingSession[]): string {
   if (sessions.length === 0) return "activeSessions: none"
   return sessions
@@ -184,9 +178,7 @@ function buildScopeContent(
   contextFiles: ContextFile[],
   skills: string[],
   agentName: string,
-  sessionOrientation?: SessionOrientation,
 ): string {
-  const parentOrientation = formatParentSessionOrientation(sessionOrientation)
   return [
     "# Coding Session Scope",
     "",
@@ -202,11 +194,10 @@ function buildScopeContent(
     request.prompt,
     "",
     "## Session Contract",
-    "- This is a subordinate coding lane for the parent Ouro agent.",
+    "- This is a focused coding lane opened by the parent Ouro agent.",
     "- Execute the concrete prompt in the supplied workdir directly.",
     "- Do not switch into planning/doing workflows or approval gates unless the prompt explicitly asks for them.",
-    "- Treat parent-session orientation as background context; the current prompt is the task center.",
-    ...(parentOrientation ? ["", parentOrientation] : []),
+    "- Treat the current prompt, scope file, and live world-state checkpoint in the state file as the authoritative briefing for this lane.",
     "",
     "## Project Context Files",
     formatContextFiles(contextFiles),
@@ -223,6 +214,7 @@ function buildStateContent(
   snapshot: RepoSnapshot,
   existingSessions: CodingSession[],
   agentName: string,
+  activeWorkFrame?: ActiveWorkFrame,
 ): string {
   const gitSection = snapshot.available
     ? [
@@ -244,6 +236,7 @@ function buildStateContent(
     "",
     "## Workspace Snapshot",
     gitSection,
+    ...(activeWorkFrame ? ["", formatLiveWorldStateCheckpoint(activeWorkFrame)] : []),
     "",
     "## Related Coding Sessions",
     formatExistingSessions(existingSessions),
@@ -286,8 +279,16 @@ export function prepareCodingContextPack(
   const snapshot = captureRepoSnapshot(input.request.workdir, runCommand)
   const generatedAt = nowIso()
 
-  const scopeContent = buildScopeContent(input.request, contextFiles, skills, agentName, input.sessionOrientation)
-  const stateContent = buildStateContent(input.request, contextKey, generatedAt, snapshot, existingSessions, agentName)
+  const scopeContent = buildScopeContent(input.request, contextFiles, skills, agentName)
+  const stateContent = buildStateContent(
+    input.request,
+    contextKey,
+    generatedAt,
+    snapshot,
+    existingSessions,
+    agentName,
+    input.activeWorkFrame,
+  )
 
   mkdirSync(contextDir, { recursive: true })
   writeFileSync(scopeFile, `${scopeContent}\n`, "utf-8")

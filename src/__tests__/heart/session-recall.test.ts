@@ -44,42 +44,6 @@ describe("session-recall", () => {
     expect(result.kind === "ok" ? result.snapshot : "").not.toContain("oldest question")
   })
 
-  it("uses saved session orientation in both summary and snapshot when available", async () => {
-    const { recallSession } = await import("../../heart/session-recall")
-
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
-      version: 1,
-      sessionOrientation: {
-        updatedAt: "2026-03-21T09:00:00.000Z",
-        goal: "keep the agent oriented",
-        constraints: ["keep it simple"],
-        progress: ["edit_file src/mind/prompt.ts"],
-        readFiles: ["src/mind/context.ts"],
-        modifiedFiles: ["src/mind/prompt.ts"],
-      },
-      messages: [
-        { role: "user", content: "what happened?" },
-        { role: "assistant", content: "i updated the prompt" },
-      ],
-    }))
-
-    const result = await recallSession({
-      sessionPath: "/mock/agent-root/state/sessions/friend-1/cli/session.json",
-      friendId: "friend-1",
-      channel: "cli",
-      key: "session",
-      messageCount: 20,
-    })
-
-    expect(result.kind).toBe("ok")
-    const ok = result.kind === "ok" ? result : null
-    expect(ok?.summary).toContain("session orientation:")
-    expect(ok?.summary).toContain("goal: keep the agent oriented")
-    expect(ok?.summary).toContain("progress: edit_file src/mind/prompt.ts")
-    expect(ok?.snapshot).toContain("goal: keep the agent oriented")
-    expect(ok?.snapshot).toContain("files: src/mind/prompt.ts")
-  })
-
   it("uses trust-aware summarization instructions for non-self recall", async () => {
     const { recallSession } = await import("../../heart/session-recall")
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
@@ -306,18 +270,10 @@ describe("session-recall", () => {
     expect(result).toEqual({ kind: "missing" })
   })
 
-  it("searches the full session history and returns matched excerpts with orientation context", async () => {
+  it("searches the full session history and returns matched excerpts", async () => {
     const { searchSessionTranscript } = await import("../../heart/session-recall")
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
       version: 1,
-      sessionOrientation: {
-        updatedAt: "2026-03-21T09:00:00.000Z",
-        goal: "keep the billing follow-up grounded",
-        constraints: ["answer directly"],
-        progress: ["query_session search"],
-        readFiles: [],
-        modifiedFiles: [],
-      },
       messages: [
         { role: "user", content: "can you check billing history?" },
         { role: "assistant", content: "yes, looking now" },
@@ -338,25 +294,16 @@ describe("session-recall", () => {
     expect(result.kind).toBe("ok")
     const ok = result.kind === "ok" ? result : null
     expect(ok?.snapshot).toContain('history query: "billing"')
-    expect(ok?.snapshot).toContain("goal: keep the billing follow-up grounded")
     expect(ok?.matches).toHaveLength(2)
     expect(ok?.matches[0]).toContain("[assistant] yes, looking now")
     expect(ok?.matches[0]).toContain("[user] the billing fix looked shaky earlier")
     expect(ok?.matches[0]).toContain("[assistant] the billing fix is merged and stable now")
   })
 
-  it("returns a no-match search result with current orientation and latest turn context", async () => {
+  it("returns a no-match search result with the latest turn context", async () => {
     const { searchSessionTranscript } = await import("../../heart/session-recall")
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
       version: 1,
-      sessionOrientation: {
-        updatedAt: "2026-03-21T09:00:00.000Z",
-        goal: "stay oriented",
-        constraints: ["keep it simple"],
-        progress: [],
-        readFiles: [],
-        modifiedFiles: [],
-      },
       messages: [
         { role: "user", content: "hello there" },
         { role: "assistant", content: "hi, still on the release thread" },
@@ -374,22 +321,15 @@ describe("session-recall", () => {
     expect(result).toMatchObject({
       kind: "no_match",
       query: "billing",
-      snapshot: expect.stringContaining("goal: stay oriented"),
+      snapshot: expect.stringContaining('history query: "billing"'),
     })
     expect(result.kind === "no_match" ? result.snapshot : "").toContain("latest assistant: hi, still on the release thread")
   })
 
-  it("builds no-match snapshots without goal or assistant lines when that context is absent", async () => {
+  it("builds no-match snapshots without assistant lines when that context is absent", async () => {
     const { searchSessionTranscript } = await import("../../heart/session-recall")
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
       version: 1,
-      sessionOrientation: {
-        updatedAt: "2026-03-21T09:00:00.000Z",
-        constraints: ["keep it simple"],
-        progress: [],
-        readFiles: [],
-        modifiedFiles: [],
-      },
       messages: [
         { role: "user", content: "hello there" },
       ],
@@ -406,9 +346,7 @@ describe("session-recall", () => {
     expect(result.kind).toBe("no_match")
     const snapshot = result.kind === "no_match" ? result.snapshot : ""
     expect(snapshot).toContain('history query: "billing"')
-    expect(snapshot).toContain("constraints: keep it simple")
     expect(snapshot).toContain("latest user: hello there")
-    expect(snapshot).not.toContain("goal:")
     expect(snapshot).not.toContain("latest assistant:")
   })
 
@@ -432,18 +370,10 @@ describe("session-recall", () => {
     expect(result).toEqual({ kind: "empty" })
   })
 
-  it("treats a blank search query as no match while still surfacing orientation context", async () => {
+  it("treats a blank search query as no match while still surfacing the query snapshot", async () => {
     const { searchSessionTranscript } = await import("../../heart/session-recall")
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
       version: 1,
-      sessionOrientation: {
-        updatedAt: "2026-03-21T09:00:00.000Z",
-        goal: "stay oriented",
-        constraints: [],
-        progress: [],
-        readFiles: [],
-        modifiedFiles: [],
-      },
       messages: [
         { role: "user", content: "hello there" },
         { role: "assistant", content: "still on the release thread" },
@@ -461,7 +391,7 @@ describe("session-recall", () => {
     expect(result).toMatchObject({
       kind: "no_match",
       query: "",
-      snapshot: expect.stringContaining("goal: stay oriented"),
+      snapshot: expect.stringContaining('history query: ""'),
     })
   })
 

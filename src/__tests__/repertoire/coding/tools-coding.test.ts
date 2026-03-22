@@ -185,13 +185,45 @@ describe("coding tool contracts", () => {
       failure: null,
     })
 
-    const sessionOrientation = {
-      updatedAt: "2026-03-21T01:00:00.000Z",
-      goal: "tighten parent orientation",
-      constraints: ["keep it simple"],
-      progress: ["read_file AGENTS.md"],
-      readFiles: ["AGENTS.md"],
-      modifiedFiles: [],
+    const activeWorkFrame = {
+      currentSession: {
+        friendId: "ari",
+        channel: "cli",
+        key: "session",
+        sessionPath: "/tmp/session.json",
+      },
+      currentObligation: "finish task and bring the result back",
+      mustResolveBeforeHandoff: true,
+      centerOfGravity: "inward-work",
+      inner: {
+        status: "idle",
+        hasPending: false,
+        job: {
+          status: "idle",
+          content: null,
+          origin: null,
+          mode: "reflect",
+          obligationStatus: null,
+          surfacedResult: null,
+          queuedAt: null,
+          startedAt: null,
+          surfacedAt: null,
+        },
+      },
+      bridges: [],
+      taskPressure: {
+        compactBoard: "",
+        liveTaskNames: [],
+        activeBridges: [],
+      },
+      friendActivity: {
+        freshestForCurrentFriend: null,
+        otherLiveSessionsForCurrentFriend: [],
+      },
+      codingSessions: [],
+      otherCodingSessions: [],
+      pendingObligations: [],
+      bridgeSuggestion: null,
     }
 
     await execTool(
@@ -202,7 +234,7 @@ describe("coding tool contracts", () => {
         prompt: "execute",
         taskRef: "task-auto",
       },
-      { sessionOrientation } as Record<string, unknown>,
+      { activeWorkFrame } as Record<string, unknown>,
     )
 
     expect(prepareCodingContextPack).toHaveBeenCalledWith({
@@ -213,7 +245,7 @@ describe("coding tool contracts", () => {
         taskRef: "task-auto",
       },
       existingSessions: [],
-      sessionOrientation,
+      activeWorkFrame,
     })
     expect(manager.spawnSession).toHaveBeenCalledWith({
       runner: "codex",

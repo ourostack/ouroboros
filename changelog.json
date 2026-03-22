@@ -2,10 +2,17 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.109",
+      "changes": [
+        "Each inbound turn now carries a fresh live world-state checkpoint, so natural questions like 'what are you up to?' anchor on current sessions, obligations, coding lanes, and next actions instead of stale transcript history.",
+        "Active-work now serves as the agent's top-level center of gravity: material obligations are normalized, duplicate-origin noise is collapsed, and inner dialog is treated as one lane inside the live world-state instead of the whole self."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.108",
       "changes": [
-        "Agents now carry durable session orientation, grounded session recall, and Pi-inspired coding context packs/checkpoints into long-running work, which keeps ad-hoc answers and resumed execution anchored to the real task state instead of prompt theater.",
-        "Repeated no-progress polling is now blocked by a live loop guard for coding/session status tools, so the harness stops thrashing on identical status checks and pushes the agent to act, wait meaningfully, or answer truthfully with what is known."
+        "Agents now have a first-class `query_active_work` tool that reads one top-level live world-state across the current conversation, other active sessions, live coding lanes, inner work, and return obligations instead of reconstructing status from side tools.",
+        "Family-facing status guidance now treats the active-work world-state as the agent's center of gravity, so 'what are you up to?' answers stay anchored in one coherent live picture instead of drifting into inner-dialog archaeology."
       ]
     },
     {

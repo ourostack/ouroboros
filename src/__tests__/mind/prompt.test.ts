@@ -368,6 +368,13 @@ describe("buildSystem", () => {
 
     expect(result).toContain("if a family member asks what i'm up to or how things are going, that includes the material live work i can see across sessions, not just this thread.")
     expect(result).toContain("i answer naturally from the live world-state in this prompt.")
+    expect(result).toContain("i treat the active-work section above as my reliable top-level surface for this.")
+    expect(result).toContain("i do not claim i lack a top-level view when that surface is already present.")
+    expect(result).toContain("i treat older checkpoints elsewhere in this transcript as stale history when they conflict with the active-work surface above.")
+    expect(result).toContain("i do not repeat an old coding lane or old checkpoint as current just because it appeared earlier in the thread.")
+    expect(result).toContain("i only reach for query_active_work when i want a fresh read of that same surface.")
+    expect(result).toContain("i do not rebuild whole-self status from scratch with query_session and coding_status unless i need to verify a specific gap.")
+    expect(result).toContain("i do not rely on canned status-question modes or phrase matching.")
     expect(result).toContain("when the live ask is about status, i widen before answering:")
     expect(result).toContain("- where i am right now")
     expect(result).toContain("- any other material active sessions or coding lanes i can see")
@@ -3415,12 +3422,12 @@ describe("groupChatParticipationSection", () => {
   })
 })
 
-describe("session orientation prompting", () => {
+describe("active-work prompting", () => {
   beforeEach(() => {
     setupReadFileSync()
   })
 
-  it("buildSystem includes execution discipline guidance", async () => {
+  it("buildSystem teaches query_session search mode in the memory contract", async () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
@@ -3429,13 +3436,11 @@ describe("session orientation prompting", () => {
 
     const result = await buildSystem("cli")
 
-    expect(result).toContain("## execution discipline")
-    expect(result).toContain("do the work instead of narrating intentions")
-    expect(result).toContain("don't pretend progress")
-    expect(result).toContain("answer ad-hoc questions directly without losing the main objective")
+    expect(result).toContain("## memory and friend tool contracts")
+    expect(result).toContain("Use `mode=status` for self/inner progress and `mode=search` with a query for older history.")
   })
 
-  it("buildSystem includes durable session orientation when provided", async () => {
+  it("buildSystem reinforces active-work as the top-level truth for family status questions", async () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
@@ -3443,19 +3448,72 @@ describe("session orientation prompting", () => {
     resetPsycheCache()
 
     const result = await buildSystem("cli", {
-      sessionOrientation: {
-        updatedAt: "2026-03-21T09:00:00.000Z",
-        goal: "tighten the harness backbone",
-        constraints: ["keep it simple"],
-        progress: ["edit_file src/mind/prompt.ts"],
-        readFiles: ["src/mind/context.ts"],
-        modifiedFiles: ["src/mind/prompt.ts"],
+      activeWorkFrame: {
+        currentSession: {
+          friendId: "friend-1",
+          channel: "cli",
+          key: "session",
+          sessionPath: "/tmp/session.json",
+        },
+        currentObligation: "report back with the current status",
+        mustResolveBeforeHandoff: false,
+        centerOfGravity: "inward-work",
+        inner: {
+          status: "idle",
+          hasPending: false,
+          job: {
+            status: "idle",
+            content: null,
+            origin: null,
+            mode: "reflect",
+            obligationStatus: null,
+            surfacedResult: null,
+            queuedAt: null,
+            startedAt: null,
+            surfacedAt: null,
+          },
+        },
+        bridges: [],
+        taskPressure: {
+          compactBoard: "",
+          liveTaskNames: [],
+          activeBridges: [],
+        },
+        friendActivity: {
+          freshestForCurrentFriend: null,
+          otherLiveSessionsForCurrentFriend: [],
+        },
+        codingSessions: [],
+        otherCodingSessions: [],
+        pendingObligations: [],
+        bridgeSuggestion: null,
+      },
+    }, {
+      friend: {
+        id: "uuid-1",
+        name: "Family Tester",
+        externalIds: [{ provider: "local", externalId: "test", linkedAt: "2026-01-01T00:00:00.000Z" }],
+        tenantMemberships: [],
+        toolPreferences: {},
+        notes: {},
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        schemaVersion: 1,
+        trustLevel: "family",
+      },
+      channel: {
+        channel: "cli",
+        senseType: "local",
+        availableIntegrations: [],
+        supportsMarkdown: false,
+        supportsStreaming: true,
+        supportsRichCards: false,
+        maxMessageLength: Infinity,
       },
     })
 
-    expect(result).toContain("## session orientation")
-    expect(result).toContain("goal: tighten the harness backbone")
-    expect(result).toContain("- keep it simple")
-    expect(result).toContain("- edit_file src/mind/prompt.ts")
+    expect(result).toContain("## cross-session truth")
+    expect(result).toContain("i answer naturally from the live world-state in this prompt.")
+    expect(result).toContain("i do not rebuild whole-self status from scratch with query_session and coding_status unless i need to verify a specific gap.")
   })
 })

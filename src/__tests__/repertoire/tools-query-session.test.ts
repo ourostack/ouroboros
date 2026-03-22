@@ -651,14 +651,6 @@ describe("query_session tool", () => {
 
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
       version: 1,
-      sessionOrientation: {
-        updatedAt: "2026-03-21T09:00:00.000Z",
-        goal: "track billing work",
-        constraints: [],
-        progress: ["query_session search"],
-        readFiles: [],
-        modifiedFiles: [],
-      },
       messages: [
         { role: "user", content: "hello" },
         { role: "assistant", content: "hi there" },
@@ -677,26 +669,17 @@ describe("query_session tool", () => {
     })
 
     expect(result).toContain('history search: "billing"')
-    expect(result).toContain("goal: track billing work")
     expect(result).toContain("[user] billing was failing in staging earlier")
     expect(result).toContain("[assistant] billing is green now after the fix")
     expect(result).not.toContain("latest unrelated answer")
   })
 
-  it("reports when a history search has no matches while still surfacing current orientation", async () => {
+  it("reports when a history search has no matches while still surfacing the latest turn context", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
 
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
       version: 1,
-      sessionOrientation: {
-        updatedAt: "2026-03-21T09:00:00.000Z",
-        goal: "stay oriented",
-        constraints: ["answer directly"],
-        progress: [],
-        readFiles: [],
-        modifiedFiles: [],
-      },
       messages: [
         { role: "user", content: "hello" },
         { role: "assistant", content: "still working the release thread" },
@@ -711,7 +694,6 @@ describe("query_session tool", () => {
     })
 
     expect(result).toContain('no matches for "billing" in that session.')
-    expect(result).toContain("goal: stay oriented")
     expect(result).toContain("latest assistant: still working the release thread")
   })
 

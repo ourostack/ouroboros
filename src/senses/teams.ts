@@ -581,7 +581,6 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
             messages,
             sessionPath: sessPath,
             state: existing?.state,
-            sessionOrientation: existing?.sessionOrientation,
           }
         },
       },

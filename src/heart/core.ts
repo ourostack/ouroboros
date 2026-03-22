@@ -17,7 +17,6 @@ import type { TurnResult } from "./streaming";
 import type { UsageData } from "../mind/context";
 import { trimMessages } from "../mind/context";
 import { buildSystem } from "../mind/prompt";
-import type { SessionOrientation } from "../mind/session-orientation";
 import type { McpManager } from "../repertoire/mcp-manager";
 import type { Channel } from "../mind/prompt";
 import { injectAssociativeRecall } from "../mind/associative-recall";
@@ -248,7 +247,6 @@ export interface RunAgentOptions {
   tools?: OpenAI.ChatCompletionFunctionTool[];
   execTool?: (name: string, args: Record<string, string>, ctx?: ToolContext) => Promise<string>;
   mcpManager?: McpManager;
-  sessionOrientation?: SessionOrientation;
 }
 
 export type RunAgentOutcome =
@@ -577,7 +575,6 @@ export async function runAgent(
         ...options,
         providerCapabilities: providerRuntime.capabilities,
         supportedReasoningEfforts: providerRuntime.supportedReasoningEfforts,
-        sessionOrientation: options?.sessionOrientation,
       };
       const refreshed = await buildSystem(channel, buildSystemOptions, currentContext);
       upsertSystemPrompt(messages, refreshed);
@@ -631,11 +628,11 @@ export async function runAgent(
   );
   // Augment tool context with reasoning effort controls from provider
   const augmentedToolContext: ToolContext | undefined = options?.toolContext
-    ? {
+      ? {
         ...options.toolContext,
         supportedReasoningEfforts: providerRuntime.supportedReasoningEfforts,
         setReasoningEffort: (level: string) => { currentReasoningEffort = level; },
-        sessionOrientation: options?.sessionOrientation,
+        activeWorkFrame: options?.activeWorkFrame,
       }
     : undefined;
 

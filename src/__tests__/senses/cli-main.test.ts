@@ -1516,7 +1516,6 @@ describe("agent.ts main() - pipeline integration", () => {
       undefined,
       undefined,
       undefined,
-      undefined,
     )
     expect(stdoutChunks.join("")).toContain("codex coding-001 completed: hi")
   })
@@ -1563,7 +1562,6 @@ describe("agent.ts main() - pipeline integration", () => {
       undefined,
       undefined,
       { mustResolveBeforeHandoff: true },
-      undefined,
     )
   })
 })

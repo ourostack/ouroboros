@@ -191,6 +191,21 @@ describe("tool loop guard", () => {
     })
   })
 
+  it("treats query_active_work as a live poll surface with stable args", async () => {
+    const { createToolLoopState, detectToolLoop, recordToolOutcome } = await import("../../heart/tool-loop")
+
+    const state = createToolLoopState()
+    for (let count = 0; count < 3; count++) {
+      recordToolOutcome(state, "query_active_work", { scope: "ignored" }, "same live frame", true)
+    }
+
+    expect(detectToolLoop(state, "query_active_work", {})).toMatchObject({
+      stuck: true,
+      detector: "known_poll_no_progress",
+      count: 3,
+    })
+  })
+
   it("normalizes missing poll identifiers to stable empty defaults", async () => {
     const { createToolLoopState, detectToolLoop, recordToolOutcome } = await import("../../heart/tool-loop")
 

@@ -289,7 +289,7 @@ export const codingToolDefinitions = [
         const generated = prepareCodingContextPack({
           request: { ...request },
           existingSessions,
-          sessionOrientation: ctx?.sessionOrientation,
+          activeWorkFrame: ctx?.activeWorkFrame,
         })
         if (!request.scopeFile) request.scopeFile = generated.scopeFile
         if (!request.stateFile) request.stateFile = generated.stateFile
