@@ -3941,7 +3941,8 @@ describe("anthropic setup-token provider contract", () => {
       max_tokens: 128000,
       system: "system from array",
       tool_choice: { type: "any" },
-      thinking: { type: "adaptive", effort: "medium" },
+      thinking: { type: "adaptive" },
+      output_config: { effort: "medium" },
     }))
     expect(Array.isArray((params as any).messages)).toBe(true)
     expect(Array.isArray((params as any).tools)).toBe(true)

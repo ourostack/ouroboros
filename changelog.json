@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.123",
+      "changes": [
+        "Fixed Anthropic API request format: effort parameter moved from thinking object to output_config. Was causing 400 errors that masked real model access restrictions."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.122",
       "changes": [
         "Daemon now uses a pidfile (~/.ouro-cli/daemon.pids) for process cleanup instead of fragile ps-based name matching. All managed PIDs (daemon, agents, senses) are written on startup and reaped on next restart.",
