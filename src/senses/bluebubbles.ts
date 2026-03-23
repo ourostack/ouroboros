@@ -672,6 +672,10 @@ async function handleBlueBubblesNormalizedEvent(
         return { handled: true, notifiedAgent: false, kind: event.kind, reason: "already_processed" }
       }
 
+      // Record EARLY to prevent duplicate processing. BB webhooks can retry
+      // before the first turn completes — recording after the turn is too late.
+      recordBlueBubblesInbound(agentName, event, source)
+
       if (source !== "webhook" && sessionLikelyContainsMessage(event, existing?.messages ?? sessionMessages)) {
         recordBlueBubblesInbound(agentName, event, "recovery-bootstrap")
         emitNervesEvent({
