@@ -25,6 +25,8 @@ interface SecretsTemplate {
     anthropic: {
       model: string
       setupToken: string
+      refreshToken?: string
+      expiresAt?: number
     }
     "openai-codex": {
       model: string
@@ -72,6 +74,8 @@ const DEFAULT_SECRETS_TEMPLATE: SecretsTemplate = {
     anthropic: {
       model: "claude-opus-4-6",
       setupToken: "",
+      refreshToken: "",
+      expiresAt: 0,
     },
     "openai-codex": {
       model: "gpt-5.4",
