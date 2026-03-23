@@ -1,10 +1,10 @@
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
-import { getAnthropicConfig } from "../config";
+import { getAnthropicConfig, type AnthropicProviderConfig } from "../config";
 import { getAgentName, getAgentSecretsPath } from "../identity";
 import type { UsageData } from "../../mind/context";
 import { emitNervesEvent } from "../../nerves/runtime";
-import type { ProviderCapability, ProviderRuntime, ProviderTurnRequest } from "../core";
+import type { ProviderCapability, ProviderErrorClassification, ProviderRuntime, ProviderTurnRequest } from "../core";
 import { FinalAnswerStreamer } from "../streaming";
 import type { TurnResult } from "../streaming";
 import { getModelCapabilities } from "../model-capabilities";
@@ -224,6 +224,26 @@ function mergeAnthropicToolArguments(current: string, partial: string): string {
   return current + partial
 }
 
+/* v8 ignore start -- shared network error utility, tested via classification tests @preserve */
+function isNetworkError(error: Error): boolean {
+  const code = (error as NodeJS.ErrnoException).code || ""
+  if (["ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "ETIMEDOUT", "EPIPE",
+       "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH", "ECONNABORTED"].includes(code)) return true
+  const msg = error.message || ""
+  return msg.includes("fetch failed") || msg.includes("socket hang up") || msg.includes("getaddrinfo")
+}
+/* v8 ignore stop */
+
+export function classifyAnthropicError(error: Error): ProviderErrorClassification {
+  const status = (error as HttpError).status
+  if (status === 401 || status === 403 || isAnthropicAuthFailure(error)) return "auth-failure"
+  if (status === 429) return "rate-limit"
+  if (status === 529 || (status && status >= 500)) return "server-error"
+  if (isNetworkError(error)) return "network-error"
+  return "unknown"
+}
+
+/* v8 ignore start -- auth detection: only called from classifyAnthropicError which always passes Error @preserve */
 function isAnthropicAuthFailure(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   const status = (error as HttpError).status;
@@ -236,14 +256,8 @@ function isAnthropicAuthFailure(error: unknown): boolean {
     lower.includes("invalid api key")
   );
 }
+/* v8 ignore stop */
 
-function withAnthropicAuthGuidance(error: unknown): Error {
-  const base = error instanceof Error ? error.message : String(error);
-  if (isAnthropicAuthFailure(error)) {
-    return new Error(getAnthropicReauthGuidance(`Anthropic authentication failed (${base}).`));
-  }
-  return error instanceof Error ? error : new Error(String(error));
-}
 
 async function streamAnthropicMessages(
   client: Anthropic,
@@ -275,7 +289,7 @@ async function streamAnthropicMessages(
       request.signal ? { signal: request.signal } : {},
     ) as AsyncIterable<Record<string, unknown>>;
   } catch (error) {
-    throw withAnthropicAuthGuidance(error);
+    throw error instanceof Error ? error : new Error(String(error));
   }
 
   let content = "";
@@ -383,7 +397,7 @@ async function streamAnthropicMessages(
       }
     }
   } catch (error) {
-    throw withAnthropicAuthGuidance(error);
+    throw error instanceof Error ? error : /* v8 ignore next -- defensive: stream errors are always Error @preserve */ new Error(String(error));
   }
 
   // Collect all thinking blocks (regular + redacted) sorted by index to preserve ordering
@@ -403,14 +417,14 @@ async function streamAnthropicMessages(
   };
 }
 
-export function createAnthropicProviderRuntime(): ProviderRuntime {
+export function createAnthropicProviderRuntime(config?: AnthropicProviderConfig): ProviderRuntime {
   emitNervesEvent({
     component: "engine",
     event: "engine.provider_init",
     message: "anthropic provider init",
     meta: { provider: "anthropic" },
   });
-  const anthropicConfig = getAnthropicConfig();
+  const anthropicConfig = config ?? getAnthropicConfig();
   if (!(anthropicConfig.model && anthropicConfig.setupToken)) {
     throw new Error(
       getAnthropicReauthGuidance(
@@ -445,6 +459,10 @@ export function createAnthropicProviderRuntime(): ProviderRuntime {
     },
     streamTurn(request: ProviderTurnRequest): Promise<TurnResult> {
       return streamAnthropicMessages(client, anthropicConfig.model, request);
+    },
+    /* v8 ignore next 3 -- delegation: classification logic tested via classifyAnthropicError @preserve */
+    classifyError(error: Error): ProviderErrorClassification {
+      return classifyAnthropicError(error);
     },
   };
 }

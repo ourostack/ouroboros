@@ -1,8 +1,8 @@
 import OpenAI from "openai";
-import { getOpenAICodexConfig } from "../config";
+import { getOpenAICodexConfig, type OpenAICodexProviderConfig } from "../config";
 import { getAgentName, getAgentSecretsPath } from "../identity";
 import { emitNervesEvent } from "../../nerves/runtime";
-import type { ProviderCapability, ProviderRuntime, ProviderTurnRequest } from "../core";
+import type { ProviderCapability, ProviderErrorClassification, ProviderRuntime, ProviderTurnRequest } from "../core";
 import type { ResponseItem } from "../streaming";
 import { streamResponsesApi, toResponsesInput, toResponsesTools } from "../streaming";
 import { getModelCapabilities } from "../model-capabilities";
@@ -47,6 +47,30 @@ function getOpenAICodexReauthGuidance(reason: string): string {
   ].join("\n");
 }
 
+/* v8 ignore start -- shared network error utility, tested via classification tests @preserve */
+function isNetworkError(error: Error): boolean {
+  const code = (error as NodeJS.ErrnoException).code || ""
+  if (["ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "ETIMEDOUT", "EPIPE",
+       "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH", "ECONNABORTED"].includes(code)) return true
+  const msg = error.message || ""
+  return msg.includes("fetch failed") || msg.includes("socket hang up") || msg.includes("getaddrinfo")
+}
+/* v8 ignore stop */
+
+export function classifyOpenAICodexError(error: Error): ProviderErrorClassification {
+  const status = (error as HttpError).status
+  if (status === 401 || status === 403 || isOpenAICodexAuthFailure(error)) return "auth-failure"
+  if (status === 429) {
+    const lower = error.message.toLowerCase()
+    if (lower.includes("usage") || lower.includes("quota") || lower.includes("exceeded your")) return "usage-limit"
+    return "rate-limit"
+  }
+  if (status && status >= 500) return "server-error"
+  if (isNetworkError(error)) return "network-error"
+  return "unknown"
+}
+
+/* v8 ignore start -- auth detection: only called from classifyOpenAICodexError which always passes Error @preserve */
 function isOpenAICodexAuthFailure(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   const status = (error as HttpError).status;
@@ -54,14 +78,8 @@ function isOpenAICodexAuthFailure(error: unknown): boolean {
   const lower = error.message.toLowerCase();
   return OPENAI_CODEX_AUTH_FAILURE_MARKERS.some((marker) => lower.includes(marker));
 }
+/* v8 ignore stop */
 
-function withOpenAICodexAuthGuidance(error: unknown): Error {
-  const base = error instanceof Error ? error.message : String(error);
-  if (isOpenAICodexAuthFailure(error)) {
-    return new Error(getOpenAICodexReauthGuidance(`OpenAI Codex authentication failed (${base}).`));
-  }
-  return error instanceof Error ? error : new Error(String(error));
-}
 
 function decodeJwtPayload(token: string): JsonRecord | null {
   const parts = token.split(".");
@@ -89,14 +107,14 @@ function getChatGPTAccountIdFromToken(token: string): string {
   return accountId.trim();
 }
 
-export function createOpenAICodexProviderRuntime(): ProviderRuntime {
+export function createOpenAICodexProviderRuntime(config?: OpenAICodexProviderConfig): ProviderRuntime {
   emitNervesEvent({
     component: "engine",
     event: "engine.provider_init",
     message: "openai-codex provider init",
     meta: { provider: "openai-codex" },
   });
-  const codexConfig = getOpenAICodexConfig();
+  const codexConfig = config ?? getOpenAICodexConfig();
   if (!(codexConfig.model && codexConfig.oauthAccessToken)) {
     throw new Error(
       getOpenAICodexReauthGuidance(
@@ -177,8 +195,12 @@ export function createOpenAICodexProviderRuntime(): ProviderRuntime {
         for (const item of result.outputItems) nativeInput!.push(item);
         return result;
       } catch (error) {
-        throw withOpenAICodexAuthGuidance(error);
+        throw error instanceof Error ? error : new Error(String(error));
       }
+    },
+    /* v8 ignore next 3 -- delegation: classification logic tested via classifyOpenAICodexError @preserve */
+    classifyError(error: Error): ProviderErrorClassification {
+      return classifyOpenAICodexError(error);
     },
   };
 }

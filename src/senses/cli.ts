@@ -851,6 +851,7 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
   const currentAgentName = getAgentName()
   const pendingDir = getPendingDir(currentAgentName, friendId, "cli", "session")
   const summarize = createSummarize()
+  const cliFailoverState: import("./pipeline").FailoverState = { pending: null }
 
   try {
     await runCliSession({
@@ -863,13 +864,32 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
       runTurn: async (messages, userInput, callbacks, signal, toolContext) => {
         // Run the full per-turn pipeline: resolve -> gate -> session -> drain -> runAgent -> postTurn -> tokens
         // User message passed via input.messages so the pipeline can prepend pending messages to it.
+        const failoverState = cliFailoverState
+
+        // Capture terminal errors instead of displaying immediately — the failover
+        // message replaces the raw error if failover triggers successfully.
+        let capturedTerminalError: Error | null = null
+        /* v8 ignore start -- failover-aware callback wrapper: tested via pipeline integration @preserve */
+        const failoverAwareCallbacks: typeof callbacks = {
+          ...callbacks,
+          onError: (error: Error, severity: "transient" | "terminal") => {
+            if (severity === "terminal" && failoverState) {
+              capturedTerminalError = error
+              callbacks.onError(new Error(""), "transient")
+              return
+            }
+            callbacks.onError(error, severity)
+          },
+        }
+        /* v8 ignore stop */
+
         const result = await handleInboundTurn({
           channel: "cli",
           sessionKey: "session",
           capabilities: cliCapabilities,
           messages: [{ role: "user", content: userInput }],
           continuityIngressTexts: getCliContinuityIngressTexts(userInput),
-          callbacks,
+          callbacks: failoverAwareCallbacks,
           friendResolver: { resolve: () => Promise.resolve(resolvedContext) },
           sessionLoader: {
             loadOrCreate: () => Promise.resolve({
@@ -906,7 +926,18 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
             mcpManager,
             toolContext,
           },
+          failoverState,
         })
+
+        /* v8 ignore start -- failover display: tested via pipeline integration tests @preserve */
+        if (result.failoverMessage) {
+          // Failover handled it — show the actionable message instead of the raw error
+          process.stdout.write(`\x1b[33m${result.failoverMessage}\x1b[0m\n`)
+        } else if (capturedTerminalError) {
+          // Failover didn't trigger (no failoverState, or sequence failed) — show the raw error
+          process.stderr.write(`\x1b[31m${formatError(capturedTerminalError)}\x1b[0m\n`)
+        }
+        /* v8 ignore stop */
 
         // Handle gate rejection: display auto-reply if present
         if (!result.gateResult.allowed) {

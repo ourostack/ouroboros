@@ -4284,7 +4284,7 @@ describe("anthropic setup-token provider contract", () => {
         activeTools: [],
         callbacks,
       }),
-    ).rejects.toThrow(/ouro auth --agent testagent[\s\S]*retry the failed ouro command or reconnect this session/)
+    ).rejects.toThrow("oauth authentication failed")
   })
 
   it("wraps Anthropic auth failures from streaming events with setup-token guidance", async () => {
@@ -4331,7 +4331,7 @@ describe("anthropic setup-token provider contract", () => {
         activeTools: [],
         callbacks,
       }),
-    ).rejects.toThrow("Anthropic authentication failed")
+    ).rejects.toThrow("invalid api key")
   })
 
   it("preserves non-auth Anthropic errors without rewriting guidance", async () => {
@@ -4680,7 +4680,7 @@ describe("openai-codex oauth provider contract", () => {
         activeTools: [],
         callbacks,
       }),
-    ).rejects.toThrow(/OpenAI Codex authentication failed[\s\S]*ouro auth --agent testagent[\s\S]*retry the failed ouro command or reconnect this session/)
+    ).rejects.toThrow("authentication failed")
   })
 
   it("wraps openai-codex auth failures detected from error message markers", async () => {
@@ -4715,7 +4715,7 @@ describe("openai-codex oauth provider contract", () => {
         activeTools: [],
         callbacks,
       }),
-    ).rejects.toThrow("OpenAI Codex authentication failed")
+    ).rejects.toThrow("invalid bearer token")
   })
 
   it("fails fast when openai-codex oauthAccessToken contains only whitespace", async () => {

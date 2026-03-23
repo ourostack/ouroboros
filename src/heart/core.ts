@@ -40,6 +40,14 @@ export type ProviderId = "azure" | "anthropic" | "minimax" | "openai-codex" | "g
 
 export type ProviderCapability = "reasoning-effort" | "phase-annotation";
 
+export type ProviderErrorClassification =
+  | "auth-failure"
+  | "usage-limit"
+  | "rate-limit"
+  | "server-error"
+  | "network-error"
+  | "unknown";
+
 export interface CompletionMetadata {
   answer: string;
   intent: "complete" | "blocked" | "direct_reply";
@@ -54,6 +62,7 @@ export interface ProviderRuntime {
   streamTurn(request: ProviderTurnRequest): Promise<TurnResult>;
   appendToolOutput(callId: string, output: string): void;
   resetTurnState(messages: OpenAI.ChatCompletionMessageParam[]): void;
+  classifyError(error: Error): ProviderErrorClassification;
 }
 
 export interface ProviderTurnRequest {
@@ -535,13 +544,22 @@ export function classifyTransientError(err: unknown): string {
 const MAX_RETRIES = 3;
 const RETRY_BASE_MS = 2000;
 
+const TRANSIENT_RETRY_LABELS: Record<string, string> = {
+  "auth-failure": "auth error",
+  "usage-limit": "usage limit",
+  "rate-limit": "rate limited",
+  "server-error": "server error",
+  "network-error": "network error",
+  "unknown": "error",
+};
+
 export async function runAgent(
   messages: OpenAI.ChatCompletionMessageParam[],
   callbacks: ChannelCallbacks,
   channel?: Channel,
   signal?: AbortSignal,
   options?: RunAgentOptions,
-): Promise<{ usage?: UsageData; outcome: RunAgentOutcome; completion?: CompletionMetadata }> {
+): Promise<{ usage?: UsageData; outcome: RunAgentOutcome; completion?: CompletionMetadata; error?: Error; errorClassification?: ProviderErrorClassification }> {
   const providerRuntime = getProviderRuntime();
   const provider = providerRuntime.id;
   const toolChoiceRequired = options?.toolChoiceRequired ?? true;
@@ -606,6 +624,8 @@ export async function runAgent(
   let retryCount = 0;
   let outcome: RunAgentOutcome = "complete";
   let completion: CompletionMetadata | undefined;
+  let terminalError: Error | undefined;
+  let terminalErrorClassification: ProviderErrorClassification | undefined;
   let sawSteeringFollowUp = false;
   let mustResolveBeforeHandoffActive = options?.mustResolveBeforeHandoff === true;
   let currentReasoningEffort = "medium";
@@ -1007,7 +1027,15 @@ export async function runAgent(
       if (isTransientError(e) && retryCount < MAX_RETRIES) {
         retryCount++;
         const delay = RETRY_BASE_MS * Math.pow(2, retryCount - 1);
-        const cause = classifyTransientError(e);
+        let classification: string
+        try {
+          classification = providerRuntime.classifyError(e instanceof Error ? e : /* v8 ignore next -- defensive: errors are always Error instances @preserve */ new Error(String(e)))
+        } catch {
+          /* v8 ignore next -- defensive: classifyError should not throw @preserve */
+          classification = classifyTransientError(e)
+        }
+        /* v8 ignore next -- defensive: all classifications have labels @preserve */
+        const cause = TRANSIENT_RETRY_LABELS[classification] ?? classification
         callbacks.onError(new Error(`${cause}, retrying in ${delay / 1000}s (${retryCount}/${MAX_RETRIES})...`), "transient");
         // Wait with abort support
         const aborted = await new Promise<boolean>((resolve) => {
@@ -1026,14 +1054,21 @@ export async function runAgent(
         providerRuntime.resetTurnState(messages);
         continue;
       }
-      callbacks.onError(e instanceof Error ? e : new Error(String(e)), "terminal");
+      terminalError = e instanceof Error ? e : new Error(String(e));
+      try {
+        terminalErrorClassification = providerRuntime.classifyError(terminalError);
+      } catch {
+        /* v8 ignore next -- defensive: classifyError should not throw @preserve */
+        terminalErrorClassification = "unknown";
+      }
+      callbacks.onError(terminalError, "terminal");
       emitNervesEvent({
         level: "error",
         event: "engine.error",
         trace_id: traceId,
         component: "engine",
-        message: e instanceof Error ? e.message : String(e),
-        meta: {},
+        message: terminalError.message,
+        meta: { errorClassification: terminalErrorClassification },
       });
       stripLastToolCalls(messages);
       outcome = "errored";
@@ -1047,5 +1082,10 @@ export async function runAgent(
     message: "runAgent turn completed",
     meta: { done, sawGoInward, sawQuerySession, sawBridgeManage },
   });
-  return { usage: lastUsage, outcome, completion };
+  return {
+    usage: lastUsage,
+    outcome,
+    completion,
+    ...(terminalError ? { error: terminalError, errorClassification: terminalErrorClassification } : {}),
+  };
 }

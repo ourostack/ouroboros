@@ -306,6 +306,6 @@ describe("createGithubCopilotProviderRuntime", () => {
     const callbacks = { onModelStart: vi.fn(), onModelStreamStart: vi.fn(), onTextChunk: vi.fn(), onReasoningChunk: vi.fn(), onToolStart: vi.fn(), onToolEnd: vi.fn(), onError: vi.fn() }
     await expect(
       runtime.streamTurn({ messages: [{ role: "user", content: "hi" }], activeTools: [], callbacks }),
-    ).rejects.toThrow(/ouro auth verify/)
+    ).rejects.toThrow("auth failed")
   })
 })

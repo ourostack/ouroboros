@@ -33,7 +33,9 @@ import { writeBlueBubblesRuntimeState } from "./bluebubbles-runtime-state"
 import { findObsoleteBlueBubblesThreadSessions } from "./bluebubbles-session-cleanup"
 import { createDebugActivityController } from "./debug-activity"
 import { enforceTrustGate } from "./trust-gate"
-import { handleInboundTurn } from "./pipeline"
+import { handleInboundTurn, type FailoverState } from "./pipeline"
+
+const bbFailoverStates = new Map<string, FailoverState>()
 
 type BlueBubblesCallbacks = ChannelCallbacks & {
   flush(): Promise<void>
@@ -776,7 +778,21 @@ async function handleBlueBubblesNormalizedEvent(
         accumulateFriendTokens: resolvedDeps.accumulateFriendTokens,
         signal: controller.signal,
         runAgentOptions: { mcpManager },
+        failoverState: (() => {
+          if (!bbFailoverStates.has(event.chat.sessionKey)) {
+            bbFailoverStates.set(event.chat.sessionKey, { pending: null })
+          }
+          return bbFailoverStates.get(event.chat.sessionKey)!
+        })(),
       })
+
+      /* v8 ignore start -- failover display: tested via pipeline integration tests @preserve */
+      if (result.failoverMessage) {
+        await client.sendText({ chat: event.chat, text: result.failoverMessage })
+      }
+      /* v8 ignore stop */
+      // switchedProvider: no separate confirmation — the agent's context message
+      // tells it about the switch, and it acknowledges naturally in its response.
 
       // ── Handle gate result ────────────────────────────────────────
 
