@@ -30,6 +30,28 @@ type ProviderConfig =
 
 const PING_TIMEOUT_MS = 10_000
 
+/**
+ * Strip raw JSON API response bodies from error messages.
+ * SDK errors often include the full response body: "400 {"type":"error","error":...}".
+ * Extract just the HTTP status prefix or a short summary.
+ */
+export function sanitizeErrorMessage(message: string): string {
+  // Match "NNN {json...}" pattern — keep the status code, drop the JSON
+  const match = message.match(/^(\d{3})\s*\{/)
+  if (match) {
+    // Try to extract the inner message from the JSON
+    try {
+      const json = JSON.parse(message.slice(match[1].length).trim())
+      const inner = json?.error?.message
+      if (typeof inner === "string" && inner && inner !== "Error") {
+        return `${match[1]} ${inner}`
+      }
+    } catch { /* not valid JSON, fall through */ }
+    return `HTTP ${match[1]}`
+  }
+  return message
+}
+
 function hasEmptyCredentials(provider: AgentProvider, config: ProviderConfig): boolean {
   switch (provider) {
     case "anthropic":
@@ -135,7 +157,7 @@ export async function pingProvider(
       message: `provider ping failed: ${provider}`,
       meta: { provider, classification, error: err.message },
     })
-    return { ok: false, classification, message: err.message }
+    return { ok: false, classification, message: sanitizeErrorMessage(err.message) }
   }
 }
 
