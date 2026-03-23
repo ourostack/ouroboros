@@ -438,18 +438,46 @@ export function createAnthropicProviderRuntime(config?: AnthropicProviderConfig)
   if (modelCaps.reasoningEffort) capabilities.add("reasoning-effort");
 
   const credential = resolveAnthropicSetupTokenCredential();
-  const client = new Anthropic({
-    authToken: credential.token,
-    timeout: 30000,
-    maxRetries: 0,
-    defaultHeaders: {
-      "anthropic-beta": ANTHROPIC_OAUTH_BETA_HEADER,
-    },
-  });
+  const fullConfig = config ?? getAnthropicConfig()
+  const refreshToken = (fullConfig as unknown as Record<string, unknown>).refreshToken as string | undefined
+  const expiresAt = (fullConfig as unknown as Record<string, unknown>).expiresAt as number | undefined
+
+  function createClient(token: string): Anthropic {
+    return new Anthropic({
+      authToken: token,
+      timeout: 30000,
+      maxRetries: 0,
+      defaultHeaders: {
+        "anthropic-beta": ANTHROPIC_OAUTH_BETA_HEADER,
+      },
+    });
+  }
+
+  let currentToken = credential.token
+  let client = createClient(currentToken)
+
+  /* v8 ignore start -- token refresh: dynamic import + ensureFreshToken, tested via integration @preserve */
+  async function ensureClient(): Promise<Anthropic> {
+    try {
+      const { ensureFreshToken } = await import("./anthropic-token")
+      const { getAgentName } = await import("../identity")
+      const freshToken = await ensureFreshToken(currentToken, refreshToken, expiresAt, getAgentName())
+      if (freshToken !== currentToken) {
+        currentToken = freshToken
+        client = createClient(freshToken)
+      }
+    } catch {
+      // refresh failed — use existing client
+    }
+    return client
+  }
+  /* v8 ignore stop */
+
   return {
     id: "anthropic",
     model: anthropicConfig.model,
-    client,
+    /* v8 ignore next -- getter: returns mutable client ref @preserve */
+    get client() { return client },
     capabilities,
     supportedReasoningEfforts: modelCaps.reasoningEffort,
     resetTurnState(_messages: OpenAI.ChatCompletionMessageParam[]): void {
@@ -458,8 +486,9 @@ export function createAnthropicProviderRuntime(config?: AnthropicProviderConfig)
     appendToolOutput(_callId: string, _output: string): void {
       // Anthropic uses canonical messages for tool_result tracking.
     },
-    streamTurn(request: ProviderTurnRequest): Promise<TurnResult> {
-      return streamAnthropicMessages(client, anthropicConfig.model, request);
+    async streamTurn(request: ProviderTurnRequest): Promise<TurnResult> {
+      const freshClient = await ensureClient();
+      return streamAnthropicMessages(freshClient, anthropicConfig.model, request);
     },
     /* v8 ignore next 3 -- delegation: classification logic tested via classifyAnthropicError @preserve */
     classifyError(error: Error): ProviderErrorClassification {
