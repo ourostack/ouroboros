@@ -113,7 +113,8 @@ describe("Anthropic thinking request params", () => {
     })
 
     expect(capturedAnthropicParams).toBeDefined()
-    expect(capturedAnthropicParams.thinking).toEqual({ type: "adaptive", effort: "high" })
+    expect(capturedAnthropicParams.thinking).toEqual({ type: "adaptive" })
+    expect(capturedAnthropicParams.output_config).toEqual({ effort: "high" })
   })
 
   it("defaults thinking effort to medium when reasoningEffort is undefined", async () => {
@@ -145,7 +146,8 @@ describe("Anthropic thinking request params", () => {
       },
     })
 
-    expect(capturedAnthropicParams.thinking).toEqual({ type: "adaptive", effort: "medium" })
+    expect(capturedAnthropicParams.thinking).toEqual({ type: "adaptive" })
+    expect(capturedAnthropicParams.output_config).toEqual({ effort: "medium" })
   })
 
   it("sets max_tokens from registry maxOutputTokens for opus-4-6", async () => {

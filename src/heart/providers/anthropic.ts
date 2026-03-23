@@ -274,7 +274,8 @@ async function streamAnthropicMessages(
     max_tokens: maxTokens,
     messages,
     stream: true,
-    thinking: { type: "adaptive", effort: request.reasoningEffort ?? "medium" },
+    thinking: { type: "adaptive" },
+    output_config: { effort: request.reasoningEffort ?? "medium" },
   };
   if (system) params.system = system;
   if (anthropicTools.length > 0) params.tools = anthropicTools;
