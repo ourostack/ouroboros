@@ -280,7 +280,9 @@ async function streamAnthropicMessages(
   if (system) params.system = system;
   if (anthropicTools.length > 0) params.tools = anthropicTools;
   if (request.toolChoiceRequired && anthropicTools.length > 0) {
-    params.tool_choice = { type: "any" };
+    // Thinking (adaptive or enabled) only supports tool_choice "auto" or "none".
+    // "any" forces tool use which is incompatible with extended thinking.
+    params.tool_choice = params.thinking ? { type: "auto" } : /* v8 ignore next -- no-thinking path: thinking always set for 4.6 models @preserve */ { type: "any" };
   }
 
   let response: AsyncIterable<Record<string, unknown>>;

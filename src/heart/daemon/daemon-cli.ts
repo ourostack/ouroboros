@@ -124,7 +124,6 @@ export interface OuroCliDeps {
   reExecFromNewVersion?: (args: string[]) => never
   getPreviousCliVersion?: () => string | null
   listCliVersions?: () => string[]
-  pingProvider?: (provider: AgentProvider, config: Record<string, unknown>) => Promise<{ ok: boolean; classification?: string; message?: string }>
 }
 
 export interface SessionEntry {
@@ -576,46 +575,20 @@ function hasStoredCredentials(provider: AgentProvider, providerSecrets: Record<s
 }
 /* v8 ignore stop */
 
-/* v8 ignore start -- verifyProviderCredentials: per-provider branches tested via auth verify tests @preserve */
+/* v8 ignore start -- verifyProviderCredentials: delegates to pingProvider @preserve */
 async function verifyProviderCredentials(
-  provider: AgentProvider,
+  provider: string,
   providers: Record<string, Record<string, unknown>>,
-  fetchImpl: typeof fetch = fetch,
 ): Promise<string> {
-  const p = providers[provider]
-  if (!p) return "not configured"
-  if (provider === "anthropic") {
-    const token = (p as { setupToken?: string }).setupToken || ""
-    if (!token) return "failed (no token)"
-    if (token.startsWith("sk-ant-")) return "ok"
-    return "failed (invalid token format)"
+  const config = providers[provider]
+  if (!config) return "not configured"
+  try {
+    const { pingProvider } = await import("../../heart/provider-ping")
+    const result = await pingProvider(provider as AgentProvider, config as unknown as Parameters<typeof pingProvider>[1])
+    return result.ok ? "ok" : `failed (${result.message})`
+  } catch (error) {
+    return `failed (${error instanceof Error ? error.message : String(error)})`
   }
-  if (provider === "openai-codex") {
-    const token = (p as { oauthAccessToken?: string }).oauthAccessToken || ""
-    return token ? "ok" : "failed (no token)"
-  }
-  if (provider === "github-copilot") {
-    const token = (p as { githubToken?: string }).githubToken || ""
-    if (!token) return "failed (no token)"
-    try {
-      const response = await fetchImpl("https://api.github.com/copilot_internal/user", {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      return response.ok ? "ok" : `failed (HTTP ${response.status})`
-    } catch (error) {
-      return `failed (${(error as Error).message})`
-    }
-  }
-  if (provider === "minimax") {
-    const apiKey = (p as { apiKey?: string }).apiKey || ""
-    return apiKey ? "ok" : "failed (no api key)"
-  }
-  // azure
-  const endpoint = (p as { endpoint?: string }).endpoint || ""
-  const apiKey = (p as { apiKey?: string }).apiKey || ""
-  if (!endpoint) return "failed (no endpoint)"
-  if (!apiKey) return "failed (no api key)"
-  return "ok"
 }
 /* v8 ignore stop */
 
@@ -1490,12 +1463,6 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     promptInput: defaultPromptInput,
     runAdoptionSpecialist: defaultRunAdoptionSpecialist,
     runAuthFlow: defaultRunRuntimeAuthFlow,
-    /* v8 ignore start -- integration: real API ping @preserve */
-    pingProvider: async (provider, config) => {
-      const { pingProvider: ping } = await import("../../heart/provider-ping")
-      return ping(provider as AgentProvider, config as unknown as Parameters<typeof ping>[1])
-    },
-    /* v8 ignore stop */
     registerOuroBundleType: defaultRegisterOuroBundleUti,
     installOuroCommand: defaultInstallOuroCommand,
     /* v8 ignore start -- self-healing: ensures active symlink matches running runtime version @preserve */
@@ -2283,15 +2250,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     /* v8 ignore start -- integration: real API ping after auth @preserve */
     try {
       const { secrets } = loadAgentSecrets(command.agent)
-      const config = secrets.providers[provider as keyof typeof secrets.providers]
-      const pingResult = await deps.pingProvider!(provider, config as Parameters<NonNullable<typeof deps.pingProvider>>[1])
-      if (pingResult.ok) {
-        deps.writeStdout(`verified: ${provider} credentials are working.`)
-      } else {
-        deps.writeStdout(`warning: ${provider} credentials were saved but verification failed. you may need to re-run auth.`)
-      }
+      const status = await verifyProviderCredentials(provider, secrets.providers)
+      deps.writeStdout(`${provider}: ${status}`)
     } catch {
-      // Ping failure is non-blocking — credentials were saved regardless
+      // Verification failure is non-blocking — credentials were saved regardless
     }
     /* v8 ignore stop */
     return result.message
@@ -2302,16 +2264,15 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   if (command.kind === "auth.verify") {
     const { secrets } = loadAgentSecrets(command.agent)
     const providers = secrets.providers
-    const fetchFn = deps.fetchImpl ?? fetch
     if (command.provider) {
-      const status = await verifyProviderCredentials(command.provider, providers, fetchFn)
+      const status = await verifyProviderCredentials(command.provider, providers)
       const message = `${command.provider}: ${status}`
       deps.writeStdout(message)
       return message
     }
     const lines: string[] = []
     for (const p of Object.keys(providers) as AgentProvider[]) {
-      const status = await verifyProviderCredentials(p, providers, fetchFn)
+      const status = await verifyProviderCredentials(p, providers)
       lines.push(`${p}: ${status}`)
     }
     const message = lines.join("\n")
@@ -2328,8 +2289,15 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       deps.writeStdout(message)
       return message
     }
+    // Verify credentials actually work before switching
+    const status = await verifyProviderCredentials(command.provider, secrets.providers)
+    if (!status.startsWith("ok")) {
+      const message = `${command.provider}: ${status}. fix credentials with \`ouro auth --agent ${command.agent} --provider ${command.provider}\` before switching.`
+      deps.writeStdout(message)
+      return message
+    }
     writeAgentProviderSelection(command.agent, command.provider)
-    const message = `switched ${command.agent} to ${command.provider}`
+    const message = `switched ${command.agent} to ${command.provider} (verified working)`
     deps.writeStdout(message)
     return message
   }

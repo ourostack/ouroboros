@@ -3940,7 +3940,7 @@ describe("anthropic setup-token provider contract", () => {
       stream: true,
       max_tokens: 128000,
       system: "system from array",
-      tool_choice: { type: "any" },
+      tool_choice: { type: "auto" },
       thinking: { type: "adaptive" },
       output_config: { effort: "medium" },
     }))
