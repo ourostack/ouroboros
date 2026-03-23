@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.117",
+      "changes": [
+        "Failover messages now show human-readable reasons for failing providers instead of raw JSON API errors.",
+        "ouro auth now pings the provider after saving credentials and reports whether they work."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.116",
       "changes": [
         "Provider ping now uses a minimal direct API call (max_tokens:1, no thinking/reasoning params) instead of streamTurn, which was adding provider-specific features that could cause 400 errors unrelated to auth."
@@ -18,7 +25,7 @@
       "changes": [
         "When a model provider fails mid-conversation (auth error, usage limit, outage), the harness now classifies the error, pings alternative configured providers, and surfaces validated failover options to the user in-channel. Reply 'switch to <provider>' to continue on a working provider.",
         "Each provider now has a `classifyError` method that distinguishes auth failures, usage/subscription limits, rate limits, server errors, and network errors. The old auth guidance wrappers are replaced by this unified classification system.",
-        "New `pingProvider` function makes a real heartbeat completion call to verify provider credentials and quota are live — no more format-only checks.",
+        "New `pingProvider` function makes a real heartbeat completion call to verify provider credentials and quota are live \u2014 no more format-only checks.",
         "Provider factories now accept optional config parameters, enabling credential injection for health inventory pings without touching disk config."
       ]
     },
@@ -153,7 +160,7 @@
     {
       "version": "0.1.0-alpha.94",
       "changes": [
-        "Fix stale CurrentVersion symlink not healing during `ouro up` — the daemon now detects and repairs dangling version symlinks before reading the active version.",
+        "Fix stale CurrentVersion symlink not healing during `ouro up` \u2014 the daemon now detects and repairs dangling version symlinks before reading the active version.",
         "Fix homedir regression in daemon-cli-defaults test and cover changelog-null branch."
       ]
     },
@@ -247,14 +254,14 @@
     {
       "version": "0.1.0-alpha.80",
       "changes": [
-        "Bootstrap package (npx ouro.bot) now installs into ~/.ouro-cli/ versioned layout directly. No more silent npx updates — every install and update is logged. Cleans up old ~/.local/bin/ouro wrapper."
+        "Bootstrap package (npx ouro.bot) now installs into ~/.ouro-cli/ versioned layout directly. No more silent npx updates \u2014 every install and update is logged. Cleans up old ~/.local/bin/ouro wrapper."
       ]
     },
     {
       "version": "0.1.0-alpha.79",
       "changes": [
         "New: Versioned CLI directory layout (~/.ouro-cli/) replaces npx-based ouro wrapper. Explicit version management, rollback support, and deterministic updates.",
-        "New: `ouro up` now checks the registry for newer CLI versions, installs them into ~/.ouro-cli/versions/, activates via symlink flip, and re-execs — no more silent npx downloads.",
+        "New: `ouro up` now checks the registry for newer CLI versions, installs them into ~/.ouro-cli/versions/, activates via symlink flip, and re-execs \u2014 no more silent npx downloads.",
         "New: `ouro rollback [<version>]` swaps CurrentVersion/previous symlinks, stops the daemon. With a version arg, installs if needed then activates.",
         "New: `ouro versions` lists cached CLI versions with * current and (previous) markers.",
         "Migration: On first run, old ~/.local/bin/ouro wrapper is removed, old PATH entry cleaned from shell profile, new ~/.ouro-cli/bin added to PATH.",
@@ -276,10 +283,10 @@
     {
       "version": "0.1.0-alpha.76",
       "changes": [
-        "Fix: CLI chat terminal logging now filters to warn/error only — info-level nerves logs go to ndjson file only, keeping the interactive TUI clean.",
+        "Fix: CLI chat terminal logging now filters to warn/error only \u2014 info-level nerves logs go to ndjson file only, keeping the interactive TUI clean.",
         "Fix: Streamed model output now wraps at word boundaries instead of mid-word. A new StreamingWordWrapper buffers partial lines and breaks at spaces when approaching terminal width.",
         "New: `ouro up` now prints 'ouro updated to <version> (was <previous>)' when npx downloads a newer CLI binary, separate from the agent bundle update message.",
-        "Fix: Spinner/log interleave verified — terminal sink reads pause/resume hooks at call time, not creation time, so the filterSink wrapper in CLI logging does not break spinner coordination."
+        "Fix: Spinner/log interleave verified \u2014 terminal sink reads pause/resume hooks at call time, not creation time, so the filterSink wrapper in CLI logging does not break spinner coordination."
       ]
     },
     {
