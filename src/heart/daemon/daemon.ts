@@ -16,6 +16,47 @@ import { drainPending } from "../../mind/pending"
 import { getAlwaysOnSenseNames } from "../../mind/friends/channel"
 import { getSharedMcpManager, shutdownSharedMcpManager } from "../../repertoire/mcp-manager"
 
+/**
+ * Kill orphaned agent-entry.js processes from previous daemon instances.
+ * The process manager only tracks agents it spawns in-memory — agents from
+ * a previous daemon are invisible and keep handling requests on old code.
+ */
+/* v8 ignore start -- orphan cleanup: uses ps/kill which can't be unit-tested @preserve */
+export function killOrphanAgentProcesses(): void {
+  try {
+    const myPid = process.pid
+    const result = execSync("ps -eo pid,command", { encoding: "utf-8", timeout: 5000 })
+    const pidsToKill: number[] = []
+    for (const line of result.split("\n")) {
+      if (!line.includes("agent-entry.js")) continue
+      const trimmed = line.trim()
+      const pid = parseInt(trimmed, 10)
+      if (isNaN(pid) || pid === myPid) continue
+      pidsToKill.push(pid)
+    }
+    if (pidsToKill.length > 0) {
+      for (const pid of pidsToKill) {
+        try { process.kill(pid, "SIGTERM") } catch { /* already exited */ }
+      }
+      emitNervesEvent({
+        component: "daemon",
+        event: "daemon.orphan_cleanup",
+        message: `killed ${pidsToKill.length} orphaned agent processes`,
+        meta: { pids: pidsToKill },
+      })
+    }
+  } catch (error) {
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.orphan_cleanup_error",
+      message: "failed to clean up orphaned agent processes",
+      meta: { error: error instanceof Error ? error.message : String(error) },
+    })
+  }
+}
+/* v8 ignore stop */
+
 export interface DaemonCronJobSummary {
   id: string
   schedule: string
@@ -263,6 +304,7 @@ export class OuroDaemon {
     /* v8 ignore next -- catch callback: getSharedMcpManager logs errors internally @preserve */
     getSharedMcpManager().catch(() => {})
 
+    killOrphanAgentProcesses()
     await this.processManager.startAutoStartAgents()
     await this.senseManager?.startAutoStartSenses()
     this.scheduler.start?.()
