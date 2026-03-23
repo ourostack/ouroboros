@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.125",
+      "changes": [
+        "Fix: Default runtime logger is now silent (no stderr sink) so nerves events emitted before logger configuration no longer interleave with the CLI spinner animation.",
+        "Fix: MCP server connect failures now include the command name, args, and a hint to check agent.json mcpServers configuration."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.124",
       "changes": [
         "Anthropic OAuth tokens now auto-refresh before expiry. The provider checks token freshness before each turn, exchanges the refresh token for a new access token, and persists the result. No more 400 errors from expired setup tokens."
@@ -67,6 +74,9 @@
     {
       "version": "0.1.0-alpha.114",
       "changes": [
+        "Fix: Default runtime logger is now silent (no stderr sink) so nerves events emitted before logger configuration no longer interleave with the CLI spinner animation.",
+        "Fix: MCP server connect failures now include the command name, args, and a hint to check agent.json mcpServers configuration. Retry-exhaustion messages also identify the failing command.",
+        "Verification: StreamingWordWrapper integration in CLI chat confirmed working — wraps at word boundaries during streaming output.",
         "When a model provider fails mid-conversation (auth error, usage limit, outage), the harness now classifies the error, pings alternative configured providers, and surfaces validated failover options to the user in-channel. Reply 'switch to <provider>' to continue on a working provider.",
         "Each provider now has a `classifyError` method that distinguishes auth failures, usage/subscription limits, rate limits, server errors, and network errors. The old auth guidance wrappers are replaced by this unified classification system.",
         "New `pingProvider` function makes a real heartbeat completion call to verify provider credentials and quota are live \u2014 no more format-only checks.",
