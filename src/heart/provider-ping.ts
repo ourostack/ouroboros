@@ -31,24 +31,35 @@ type ProviderConfig =
 const PING_TIMEOUT_MS = 10_000
 
 /**
- * Strip raw JSON API response bodies from error messages.
- * SDK errors often include the full response body: "400 {"type":"error","error":...}".
- * Extract just the HTTP status prefix or a short summary.
+ * Strip raw JSON/HTML API response bodies from error messages.
+ * SDK errors often include the full response: "400 {"type":"error",...}" or "403 <html>...".
+ * Extract just the HTTP status and a short human-readable summary.
  */
 export function sanitizeErrorMessage(message: string): string {
-  // Match "NNN {json...}" pattern — keep the status code, drop the JSON
-  const match = message.match(/^(\d{3})\s*\{/)
-  if (match) {
-    // Try to extract the inner message from the JSON
+  const statusMatch = message.match(/^(\d{3})\s/)
+  if (!statusMatch) return message
+
+  const status = statusMatch[1]
+  const body = message.slice(status.length).trim()
+
+  // HTML response (Cloudflare challenge, error pages, etc.)
+  if (body.startsWith("<") || body.includes("<!DOCTYPE") || body.includes("<html")) {
+    return `HTTP ${status}`
+  }
+
+  // JSON response
+  if (body.startsWith("{")) {
     try {
-      const json = JSON.parse(message.slice(match[1].length).trim())
+      const json = JSON.parse(body)
       const inner = json?.error?.message
       if (typeof inner === "string" && inner && inner !== "Error") {
-        return `${match[1]} ${inner}`
+        return `${status} ${inner}`
       }
-    } catch { /* not valid JSON, fall through */ }
-    return `HTTP ${match[1]}`
+    } catch { /* not valid JSON */ }
+    return `HTTP ${status}`
   }
+
+  // Already clean (e.g., "401 Provided authentication token is expired.")
   return message
 }
 
