@@ -31,7 +31,7 @@ export function killOrphanProcesses(): void {
     const result = execSync("ps -eo pid,command", { encoding: "utf-8", timeout: 5000 })
     const pidsToKill: number[] = []
     for (const line of result.split("\n")) {
-      if (!line.includes("agent-entry.js") && !line.includes("daemon-entry.js")) continue
+      if (!line.includes("agent-entry.js") && !line.includes("daemon-entry.js") && !line.includes("-entry.js --agent")) continue
       const trimmed = line.trim()
       const pid = parseInt(trimmed, 10)
       if (isNaN(pid) || pid === myPid) continue
