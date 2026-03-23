@@ -62,7 +62,7 @@ describe("getFinalAnswerRetryError with obligation and truth checks", () => {
   const SELFHOOD_INWARD_MSG = "you're reaching for a final answer, but part of you knows this needs more thought. take it inward -- go_inward will let you think privately, or send_message(self) if you just want to leave yourself a note."
   const OBLIGATION_MSG = "you're still holding something from an earlier conversation -- someone is waiting for your answer. finish the thought first, or go_inward to keep working on it privately."
 
-  it("rejects delegate-inward with no evidence using selfhood message", () => {
+  it("no longer rejects delegate-inward (delegation is a suggestion, not a gate)", () => {
     const result = getFinalAnswerRetryError(
       false,
       undefined,
@@ -72,7 +72,7 @@ describe("getFinalAnswerRetryError with obligation and truth checks", () => {
       false, // sawGoInward
       false, // sawQuerySession
     )
-    expect(result).toBe(SELFHOOD_INWARD_MSG)
+    expect(result).toBeNull()
   })
 
   it("allows delegate-inward when sawSendMessageSelf (backward compat)", () => {
@@ -281,7 +281,7 @@ describe("getFinalAnswerRetryError with obligation and truth checks", () => {
     expect(result).toContain("direct_reply without a newer steering follow-up")
   })
 
-  it("emits nerves event on delegation adherence rejection", () => {
+  it("does not emit nerves event since delegation adherence is removed", () => {
     getFinalAnswerRetryError(
       false,
       undefined,
@@ -291,7 +291,7 @@ describe("getFinalAnswerRetryError with obligation and truth checks", () => {
       false,
       false,
     )
-    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+    expect(emitNervesEvent).not.toHaveBeenCalledWith(expect.objectContaining({
       event: "engine.delegation_adherence_rejected",
     }))
   })

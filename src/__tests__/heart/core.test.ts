@@ -8428,8 +8428,8 @@ describe("repairOrphanedToolCalls", () => {
   })
 })
 
-describe("getFinalAnswerRetryError delegation adherence", () => {
-  it("rejects with selfhood message when delegation target is delegate-inward but no evidence of inward action", async () => {
+describe("getFinalAnswerRetryError delegation adherence (removed)", () => {
+  it("no longer rejects delegate-inward — delegation is a suggestion, not a gate", async () => {
     const { getFinalAnswerRetryError } = await import("../../heart/core")
     const result = getFinalAnswerRetryError(
       false,
@@ -8438,76 +8438,20 @@ describe("getFinalAnswerRetryError delegation adherence", () => {
       { target: "delegate-inward", reasons: ["explicit_reflection"], outwardClosureRequired: true },
       false,
     )
-    expect(result).toContain("part of you knows this needs more thought")
-    expect(result).toContain("go_inward")
-  })
-
-  it("does NOT reject when delegation target is delegate-inward and send_message(self) WAS called", async () => {
-    const { getFinalAnswerRetryError } = await import("../../heart/core")
-    const result = getFinalAnswerRetryError(
-      false,
-      undefined,
-      false,
-      { target: "delegate-inward", reasons: ["explicit_reflection"], outwardClosureRequired: true },
-      true,
-    )
     expect(result).toBeNull()
   })
 
-  it("does NOT fire delegation adherence check when target is fast-path", async () => {
-    const { getFinalAnswerRetryError } = await import("../../heart/core")
-    const result = getFinalAnswerRetryError(
-      false,
-      undefined,
-      false,
-      { target: "fast-path", reasons: [], outwardClosureRequired: false },
-      false,
-    )
-    expect(result).toBeNull()
-  })
-
-  it("uses selfhood-oriented tone in the delegation adherence message", async () => {
-    const { getFinalAnswerRetryError } = await import("../../heart/core")
-    const result = getFinalAnswerRetryError(
-      false,
-      undefined,
-      false,
-      { target: "delegate-inward", reasons: ["cross_session"], outwardClosureRequired: true },
-      false,
-    )
-    // Selfhood tone: the agent experiences itself, not system-error framing
-    expect(result).toContain("go_inward will let you think privately")
-    expect(result).not.toContain("error")
-    expect(result).not.toContain("rejected")
-    expect(result).not.toContain("invalid")
-  })
-
-  it("returns null when no retry reason applies and delegationDecision is undefined", async () => {
+  it("returns null when delegationDecision is undefined", async () => {
     const { getFinalAnswerRetryError } = await import("../../heart/core")
     const result = getFinalAnswerRetryError(false, undefined, false, undefined, false)
     expect(result).toBeNull()
   })
 
-  it("returns null when no retry reason applies and sawSendMessageSelf is undefined", async () => {
+  it("returns null with delegate-inward even when mustResolveBeforeHandoff and no intent", async () => {
     const { getFinalAnswerRetryError } = await import("../../heart/core")
-    const result = getFinalAnswerRetryError(false, undefined, false, undefined, undefined)
-    expect(result).toBeNull()
-  })
-
-  it("does NOT fire delegation adherence when fast-path with send_message(self) called", async () => {
-    const { getFinalAnswerRetryError } = await import("../../heart/core")
-    const result = getFinalAnswerRetryError(
-      false,
-      undefined,
-      false,
-      { target: "fast-path", reasons: [], outwardClosureRequired: false },
-      true,
-    )
-    expect(result).toBeNull()
-  })
-
-  it("delegation adherence takes priority over mustResolveBeforeHandoff", async () => {
-    const { getFinalAnswerRetryError } = await import("../../heart/core")
+    // Previously this would reject with delegation taking priority.
+    // Now delegation check is removed, falls through to mustResolveBeforeHandoff
+    // check which rejects for missing intent.
     const result = getFinalAnswerRetryError(
       true,
       undefined,
@@ -8515,7 +8459,8 @@ describe("getFinalAnswerRetryError delegation adherence", () => {
       { target: "delegate-inward", reasons: ["explicit_reflection"], outwardClosureRequired: true },
       false,
     )
-    expect(result).toContain("part of you knows this needs more thought")
+    // Delegation no longer blocks — falls through to mustResolveBeforeHandoff missing-intent check
+    expect(result).toContain("missing required intent")
   })
 })
 

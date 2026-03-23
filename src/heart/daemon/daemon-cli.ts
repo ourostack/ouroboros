@@ -1909,7 +1909,7 @@ function executeReminderCommand(command: ReminderCliCommand, taskMod: TaskModule
 }
 
 export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefaultOuroCliDeps()): Promise<string> {
-  if (args.includes("--help") || args.includes("-h")) {
+  if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) {
     const text = usage()
     deps.writeStdout(text)
     return text

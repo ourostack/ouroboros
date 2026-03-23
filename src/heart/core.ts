@@ -352,30 +352,18 @@ export function getFinalAnswerRetryError(
   mustResolveBeforeHandoff: boolean,
   intent: FinalAnswerIntent | undefined,
   sawSteeringFollowUp: boolean,
-  delegationDecision?: DelegationDecision,
+  _delegationDecision?: DelegationDecision,
   sawSendMessageSelf?: boolean,
   sawGoInward?: boolean,
-  sawQuerySession?: boolean,
+  _sawQuerySession?: boolean,
   currentObligation?: string | null,
   innerJob?: InnerJob,
   sawExternalStateQuery?: boolean,
 ): string | null {
-  // 1. Delegation adherence: delegate-inward without evidence of inward action.
-  // Only enforce on the FIRST final_answer attempt — if the agent persists with
-  // intent=complete, respect it. The delegation is a suggestion, not a hard gate.
-  // Without this escape, the agent gets stuck in a loop unable to respond.
-  if (delegationDecision?.target === "delegate-inward" && !sawSendMessageSelf && !sawGoInward && !sawQuerySession && intent !== "complete" && intent !== "blocked") {
-    emitNervesEvent({
-      event: "engine.delegation_adherence_rejected",
-      component: "engine",
-      message: "delegation adherence check rejected final_answer",
-      meta: {
-        target: delegationDecision.target,
-        reasons: delegationDecision.reasons,
-      },
-    });
-    return "you're reaching for a final answer, but part of you knows this needs more thought. take it inward -- go_inward will let you think privately, or send_message(self) if you just want to leave yourself a note.";
-  }
+  // Delegation adherence removed: the delegation decision is surfaced in the
+  // system prompt as a suggestion. Hard-gating final_answer caused infinite
+  // rejection loops where the agent couldn't respond to the user at all.
+  // The agent is free to follow or ignore the delegation hint.
   // 2. Pending obligation not addressed
   if (innerJob?.obligationStatus === "pending" && !sawSendMessageSelf && !sawGoInward) {
     return "you're still holding something from an earlier conversation -- someone is waiting for your answer. finish the thought first, or go_inward to keep working on it privately.";
