@@ -63,7 +63,7 @@ describe("observability/runtime", () => {
     }))
   })
 
-  it("creates a default logger when runtime logger is unset", () => {
+  it("default logger is silent (no stderr) to prevent spinner interleave", () => {
     const chunks: string[] = []
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation((chunk: any) => {
       chunks.push(chunk.toString())
@@ -78,9 +78,9 @@ describe("observability/runtime", () => {
       meta: { test: true },
     })
 
-    expect(chunks.length).toBeGreaterThan(0)
-    expect(chunks[0]).toContain("INFO [observability] default logger path")
-    expect(chunks[0]).toContain("{\"test\":true}")
+    // Default logger has no sinks — events before configuration are silently dropped
+    // to prevent INFO lines from interleaving with CLI spinner output.
+    expect(chunks).toHaveLength(0)
 
     stderrSpy.mockRestore()
   })

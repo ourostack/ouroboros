@@ -96,14 +96,17 @@ export class McpManager {
       entry.cachedTools = tools
       entry.consecutiveFailures = 0
     } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
       emitNervesEvent({
         level: "error",
         event: "mcp.connect_error",
         component: "repertoire",
-        message: `failed to connect MCP server: ${name}`,
+        message: `failed to connect MCP server "${name}" (command: ${config.command}). Check that the command exists and is properly configured. Reason: ${reason}`,
         meta: {
           server: name,
-          reason: error instanceof Error ? error.message : String(error),
+          command: config.command,
+          args: config.args,
+          reason,
         },
       })
     }
@@ -121,8 +124,8 @@ export class McpManager {
         level: "error",
         event: "mcp.connect_error",
         component: "repertoire",
-        message: `MCP server "${name}" exceeded max restart retries (${MAX_RESTART_RETRIES})`,
-        meta: { server: name, failures: entry.consecutiveFailures },
+        message: `MCP server "${name}" exceeded max restart retries (${MAX_RESTART_RETRIES}). Giving up — check that "${entry.config.command}" exists and is properly configured in agent.json mcpServers.`,
+        meta: { server: name, command: entry.config.command, failures: entry.consecutiveFailures },
       })
       return
     }
