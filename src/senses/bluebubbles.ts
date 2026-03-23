@@ -734,7 +734,6 @@ async function handleBlueBubblesNormalizedEvent(
         capabilities: bbCapabilities,
         messages: [userMessage],
         continuityIngressTexts: getBlueBubblesContinuityIngressTexts(event),
-        callbacks,
         friendResolver: { resolve: () => Promise.resolve(context) },
         sessionLoader: {
           loadOrCreate: () => Promise.resolve({
@@ -778,6 +777,7 @@ async function handleBlueBubblesNormalizedEvent(
         accumulateFriendTokens: resolvedDeps.accumulateFriendTokens,
         signal: controller.signal,
         runAgentOptions: { mcpManager },
+        callbacks,
         failoverState: (() => {
           if (!bbFailoverStates.has(event.chat.sessionKey)) {
             bbFailoverStates.set(event.chat.sessionKey, { pending: null })
@@ -791,8 +791,6 @@ async function handleBlueBubblesNormalizedEvent(
         await client.sendText({ chat: event.chat, text: result.failoverMessage })
       }
       /* v8 ignore stop */
-      // switchedProvider: no separate confirmation — the agent's context message
-      // tells it about the switch, and it acknowledges naturally in its response.
 
       // ── Handle gate result ────────────────────────────────────────
 
