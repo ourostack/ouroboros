@@ -124,6 +124,7 @@ export interface OuroCliDeps {
   reExecFromNewVersion?: (args: string[]) => never
   getPreviousCliVersion?: () => string | null
   listCliVersions?: () => string[]
+  pingProvider?: (provider: AgentProvider, config: Record<string, unknown>) => Promise<{ ok: boolean; classification?: string; message?: string }>
 }
 
 export interface SessionEntry {
@@ -1489,6 +1490,12 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     promptInput: defaultPromptInput,
     runAdoptionSpecialist: defaultRunAdoptionSpecialist,
     runAuthFlow: defaultRunRuntimeAuthFlow,
+    /* v8 ignore start -- integration: real API ping @preserve */
+    pingProvider: async (provider, config) => {
+      const { pingProvider: ping } = await import("../../heart/provider-ping")
+      return ping(provider as AgentProvider, config as unknown as Parameters<typeof ping>[1])
+    },
+    /* v8 ignore stop */
     registerOuroBundleType: defaultRegisterOuroBundleUti,
     installOuroCommand: defaultInstallOuroCommand,
     /* v8 ignore start -- self-healing: ensures active symlink matches running runtime version @preserve */
@@ -2271,6 +2278,22 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     // Behavior: ouro auth stores credentials only — does NOT switch provider.
     // Use `ouro auth switch` to change the active provider.
     deps.writeStdout(result.message)
+
+    // Verify the credentials actually work by pinging the provider
+    /* v8 ignore start -- integration: real API ping after auth @preserve */
+    try {
+      const { secrets } = loadAgentSecrets(command.agent)
+      const config = secrets.providers[provider as keyof typeof secrets.providers]
+      const pingResult = await deps.pingProvider!(provider, config as Parameters<NonNullable<typeof deps.pingProvider>>[1])
+      if (pingResult.ok) {
+        deps.writeStdout(`verified: ${provider} credentials are working.`)
+      } else {
+        deps.writeStdout(`warning: ${provider} credentials were saved but verification failed. you may need to re-run auth.`)
+      }
+    } catch {
+      // Ping failure is non-blocking — credentials were saved regardless
+    }
+    /* v8 ignore stop */
     return result.message
   }
 

@@ -17,6 +17,15 @@ export type FailoverAction =
   | { action: "switch"; provider: AgentProvider }
   | { action: "dismiss" }
 
+const FAILING_PROVIDER_LABELS: Record<ProviderErrorClassification, string> = {
+  "auth-failure": "its credentials need to be refreshed",
+  "usage-limit": "has also hit its usage limit",
+  "rate-limit": "is also being rate limited",
+  "server-error": "is also experiencing an outage",
+  "network-error": "could not be reached",
+  "unknown": "could not be reached",
+}
+
 const CLASSIFICATION_LABELS: Record<ProviderErrorClassification, string> = {
   "auth-failure": "authentication failed",
   "usage-limit": "hit its usage limit",
@@ -43,7 +52,7 @@ export function buildFailoverContext(
 
   const workingProviders: AgentProvider[] = []
   const unconfiguredProviders: AgentProvider[] = []
-  const failingProviders: { provider: AgentProvider; reason: string }[] = []
+  const failingProviders: { provider: AgentProvider; classification: ProviderErrorClassification }[] = []
 
   for (const [provider, result] of Object.entries(inventory) as [AgentProvider, PingResult][]) {
     if (result.ok) {
@@ -52,7 +61,7 @@ export function buildFailoverContext(
       unconfiguredProviders.push(provider)
     } else {
       // Configured but ping failed (expired token, provider also down, etc.)
-      failingProviders.push({ provider, reason: result.message })
+      failingProviders.push({ provider, classification: result.classification })
     }
   }
 
@@ -69,8 +78,10 @@ export function buildFailoverContext(
   }
 
   if (failingProviders.length > 0) {
-    for (const { provider, reason } of failingProviders) {
-      lines.push(`${provider} is configured but its credentials failed (${reason}). run \`ouro auth --agent ${agentName} --provider ${provider}\` to refresh.`)
+    for (const { provider, classification } of failingProviders) {
+      /* v8 ignore next -- defensive: all classifications have labels @preserve */
+      const detail = FAILING_PROVIDER_LABELS[classification] ?? "could not be reached"
+      lines.push(`${provider} is configured but ${detail}. run \`ouro auth --agent ${agentName} --provider ${provider}\` to refresh.`)
     }
   }
 
