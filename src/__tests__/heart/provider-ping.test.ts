@@ -8,6 +8,7 @@ const mockAnthropicCreate = vi.fn()
 const mockOpenAICreate = vi.fn()
 const mockClassifyError = vi.fn()
 
+
 // Anthropic client mock: client.messages.create(...)
 const anthropicClient = { messages: { create: (...args: any[]) => mockAnthropicCreate(...args) } }
 // OpenAI-compatible client mock: client.chat.completions.create(...)
@@ -79,8 +80,9 @@ describe("pingProvider", () => {
     })
     expect(result.ok).toBe(true)
     // Should call messages.create with minimal params (no thinking)
+    // Ping uses haiku regardless of configured model (cheapest, widest token access)
     expect(mockAnthropicCreate).toHaveBeenCalledWith(
-      expect.objectContaining({ model: "claude-opus-4-6", max_tokens: 1 }),
+      expect.objectContaining({ model: "claude-haiku-4-5-20251001", max_tokens: 1 }),
       expect.anything(),
     )
   })

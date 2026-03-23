@@ -1,4 +1,4 @@
-import Anthropic from "@anthropic-ai/sdk"
+import type Anthropic from "@anthropic-ai/sdk"
 import OpenAI from "openai"
 import type { ProviderErrorClassification, ProviderRuntime } from "./core"
 import type { AgentProvider } from "./identity"
@@ -98,14 +98,15 @@ export async function pingProvider(
     const timeout = setTimeout(() => controller.abort(), PING_TIMEOUT_MS)
     try {
       // Minimal API call — no thinking, no reasoning, no tools.
-      // We use the runtime's client directly to avoid provider-specific
-      // streamTurn params (adaptive thinking, reasoning effort, phase
-      // annotations) that can cause 400 errors unrelated to auth/quota.
       if (provider === "anthropic") {
+        // Use haiku for the ping — setup tokens may not have access to newer
+        // models, but if haiku works, the credentials are valid.
+        // Override the beta header to exclude thinking (which requires a
+        // thinking param in the request body).
         const client = runtime.client as Anthropic
         await client.messages.create(
-          { model: runtime.model, max_tokens: 1, messages: [{ role: "user", content: "ping" }] },
-          { signal: controller.signal },
+          { model: "claude-haiku-4-5-20251001", max_tokens: 1, messages: [{ role: "user", content: "ping" }] },
+          { signal: controller.signal, headers: { "anthropic-beta": "claude-code-20250219,oauth-2025-04-20" } },
         )
       } else {
         // OpenAI-compatible providers (azure, codex, minimax, github-copilot)
