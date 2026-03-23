@@ -1,3 +1,5 @@
+import Anthropic from "@anthropic-ai/sdk"
+import OpenAI from "openai"
 import type { ProviderErrorClassification, ProviderRuntime } from "./core"
 import type { AgentProvider } from "./identity"
 import type {
@@ -68,18 +70,6 @@ function createRuntimeForPing(provider: AgentProvider, config: ProviderConfig): 
   }
 }
 
-/* v8 ignore start -- no-op stubs: never invoked, ping only needs streamTurn to not throw @preserve */
-const noop = () => {}
-/* v8 ignore stop */
-const noopCallbacks = {
-  onModelStart: noop,
-  onModelStreamStart: noop,
-  onTextChunk: noop,
-  onReasoningChunk: noop,
-  onToolStart: noop,
-  onToolEnd: noop,
-  onError: noop,
-}
 
 export async function pingProvider(
   provider: AgentProvider,
@@ -107,12 +97,24 @@ export async function pingProvider(
     /* v8 ignore next -- timeout callback: only fires after 10s, tests resolve faster @preserve */
     const timeout = setTimeout(() => controller.abort(), PING_TIMEOUT_MS)
     try {
-      await runtime.streamTurn({
-        messages: [{ role: "user", content: "ping" }],
-        activeTools: [],
-        callbacks: noopCallbacks,
-        signal: controller.signal,
-      })
+      // Minimal API call — no thinking, no reasoning, no tools.
+      // We use the runtime's client directly to avoid provider-specific
+      // streamTurn params (adaptive thinking, reasoning effort, phase
+      // annotations) that can cause 400 errors unrelated to auth/quota.
+      if (provider === "anthropic") {
+        const client = runtime.client as Anthropic
+        await client.messages.create(
+          { model: runtime.model, max_tokens: 1, messages: [{ role: "user", content: "ping" }] },
+          { signal: controller.signal },
+        )
+      } else {
+        // OpenAI-compatible providers (azure, codex, minimax, github-copilot)
+        const client = runtime.client as OpenAI
+        await client.chat.completions.create(
+          { model: runtime.model, max_tokens: 1, messages: [{ role: "user", content: "ping" }] },
+          { signal: controller.signal },
+        )
+      }
       return { ok: true }
     } finally {
       clearTimeout(timeout)

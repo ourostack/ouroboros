@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.116",
+      "changes": [
+        "Provider ping now uses a minimal direct API call (max_tokens:1, no thinking/reasoning params) instead of streamTurn, which was adding provider-specific features that could cause 400 errors unrelated to auth."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.115",
       "changes": [
         "Failover message now shows providers with expired/failing credentials separately with refresh instructions ('run ouro auth --agent X --provider Y to refresh') instead of silently omitting them."
