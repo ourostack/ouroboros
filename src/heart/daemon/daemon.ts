@@ -17,18 +17,21 @@ import { getAlwaysOnSenseNames } from "../../mind/friends/channel"
 import { getSharedMcpManager, shutdownSharedMcpManager } from "../../repertoire/mcp-manager"
 
 /**
- * Kill orphaned agent-entry.js processes from previous daemon instances.
- * The process manager only tracks agents it spawns in-memory — agents from
- * a previous daemon are invisible and keep handling requests on old code.
+ * Kill ALL orphaned ouro processes from previous daemon instances.
+ * On each `ouro up`, old daemon AND agent processes persist because:
+ * - Daemons are spawned detached and never killed on restart
+ * - Each old daemon keeps respawning agents from its own (stale) code
+ * This scans for both daemon-entry.js and agent-entry.js processes
+ * and kills everything except the current process.
  */
-/* v8 ignore start -- orphan cleanup: uses ps/kill which can't be unit-tested @preserve */
-export function killOrphanAgentProcesses(): void {
+/* v8 ignore start -- orphan cleanup: uses ps/kill, tested via deployment @preserve */
+export function killOrphanProcesses(): void {
   try {
     const myPid = process.pid
     const result = execSync("ps -eo pid,command", { encoding: "utf-8", timeout: 5000 })
     const pidsToKill: number[] = []
     for (const line of result.split("\n")) {
-      if (!line.includes("agent-entry.js")) continue
+      if (!line.includes("agent-entry.js") && !line.includes("daemon-entry.js")) continue
       const trimmed = line.trim()
       const pid = parseInt(trimmed, 10)
       if (isNaN(pid) || pid === myPid) continue
@@ -41,7 +44,7 @@ export function killOrphanAgentProcesses(): void {
       emitNervesEvent({
         component: "daemon",
         event: "daemon.orphan_cleanup",
-        message: `killed ${pidsToKill.length} orphaned agent processes`,
+        message: `killed ${pidsToKill.length} orphaned ouro processes`,
         meta: { pids: pidsToKill },
       })
     }
@@ -50,7 +53,7 @@ export function killOrphanAgentProcesses(): void {
       level: "warn",
       component: "daemon",
       event: "daemon.orphan_cleanup_error",
-      message: "failed to clean up orphaned agent processes",
+      message: "failed to clean up orphaned ouro processes",
       meta: { error: error instanceof Error ? error.message : String(error) },
     })
   }
@@ -304,7 +307,7 @@ export class OuroDaemon {
     /* v8 ignore next -- catch callback: getSharedMcpManager logs errors internally @preserve */
     getSharedMcpManager().catch(() => {})
 
-    killOrphanAgentProcesses()
+    killOrphanProcesses()
     await this.processManager.startAutoStartAgents()
     await this.senseManager?.startAutoStartSenses()
     this.scheduler.start?.()

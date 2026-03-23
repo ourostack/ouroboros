@@ -64,8 +64,37 @@ vi.mock("../../heart/providers/github-copilot", () => ({
   classifyGithubCopilotError: vi.fn(() => "unknown"),
 }))
 
-import { pingProvider, type PingResult } from "../../heart/provider-ping"
+import { pingProvider, sanitizeErrorMessage, type PingResult } from "../../heart/provider-ping"
 import type { ProviderErrorClassification } from "../../heart/core"
+
+describe("sanitizeErrorMessage", () => {
+  it("strips raw JSON from Anthropic SDK errors", () => {
+    const raw = '400 {"type":"error","error":{"type":"invalid_request_error","message":"thinking.adaptive.effort: Extra inputs are not permitted"},"request_id":"req_123"}'
+    expect(sanitizeErrorMessage(raw)).toBe("400 thinking.adaptive.effort: Extra inputs are not permitted")
+  })
+
+  it("extracts inner message from JSON error body", () => {
+    const raw = '401 {"type":"error","error":{"type":"authentication_error","message":"OAuth authentication is currently not supported."}}'
+    expect(sanitizeErrorMessage(raw)).toBe("401 OAuth authentication is currently not supported.")
+  })
+
+  it("falls back to HTTP status when inner message is generic 'Error'", () => {
+    const raw = '400 {"type":"error","error":{"type":"invalid_request_error","message":"Error"}}'
+    expect(sanitizeErrorMessage(raw)).toBe("HTTP 400")
+  })
+
+  it("falls back to HTTP status when JSON is malformed", () => {
+    expect(sanitizeErrorMessage("400 {not valid json")).toBe("HTTP 400")
+  })
+
+  it("passes through clean error messages unchanged", () => {
+    expect(sanitizeErrorMessage("401 Provided authentication token is expired.")).toBe("401 Provided authentication token is expired.")
+  })
+
+  it("passes through simple messages unchanged", () => {
+    expect(sanitizeErrorMessage("network error")).toBe("network error")
+  })
+})
 
 describe("pingProvider", () => {
   beforeEach(() => {

@@ -36,7 +36,7 @@ const CLASSIFICATION_LABELS: Record<ProviderErrorClassification, string> = {
 }
 
 export function buildFailoverContext(
-  errorMessage: string,
+  _errorMessage: string,
   classification: ProviderErrorClassification,
   currentProvider: AgentProvider,
   currentModel: string,
@@ -46,9 +46,7 @@ export function buildFailoverContext(
 ): FailoverContext {
   const label = CLASSIFICATION_LABELS[classification]
   const providerWithModel = currentModel ? `${currentProvider} (${currentModel})` : currentProvider
-  const errorSummary = errorMessage
-    ? `${providerWithModel} ${label} (${errorMessage})`
-    : `${providerWithModel} ${label}`
+  const errorSummary = `${providerWithModel} ${label}`
 
   const workingProviders: AgentProvider[] = []
   const unconfiguredProviders: AgentProvider[] = []

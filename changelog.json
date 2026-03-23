@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.120",
+      "changes": [
+        "Daemon startup now kills ALL orphaned ouro processes (daemons AND agents) from previous instances \u2014 fixes stale-version processes handling requests after every update.",
+        "Failover error messages no longer contain raw JSON API response bodies. Error messages are sanitized at the source and the failover summary uses clean classification labels only."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.119",
       "changes": [
         "Anthropic ping now uses haiku (widest token access) with minimal beta headers, fixing 400 errors from thinking beta requirements and model access restrictions on setup tokens."

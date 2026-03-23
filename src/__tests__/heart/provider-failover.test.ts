@@ -24,7 +24,7 @@ describe("buildFailoverContext", () => {
       models,
     )
 
-    expect(ctx.errorSummary).toBe("openai-codex (gpt-5.4) hit its usage limit (exceeded your usage limit)")
+    expect(ctx.errorSummary).toBe("openai-codex (gpt-5.4) hit its usage limit")
     expect(ctx.workingProviders).toEqual(["anthropic"])
     expect(ctx.unconfiguredProviders).toContain("minimax")
     expect(ctx.unconfiguredProviders).toContain("azure")
