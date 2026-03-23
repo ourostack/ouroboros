@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.129",
+      "changes": [
+        "Fixed final_answer truth-check false positive: agents with intent=complete can now deliver answers even when delegation suggests going inward.",
+        "Fixed BlueBubbles message deduplication: messages are recorded immediately to prevent duplicate processing on webhook retries.",
+        "Fixed session key normalization: listSessionActivity now compares sanitized keys so the current session is correctly excluded from other-session lists.",
+        "ouro auth with no args now shows auth-specific help instead of full CLI help."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.128",
       "changes": [
         "Error message sanitizer now strips HTML responses (Cloudflare challenge pages, error pages) in addition to JSON."

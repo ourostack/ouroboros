@@ -360,8 +360,11 @@ export function getFinalAnswerRetryError(
   innerJob?: InnerJob,
   sawExternalStateQuery?: boolean,
 ): string | null {
-  // 1. Delegation adherence: delegate-inward without evidence of inward action
-  if (delegationDecision?.target === "delegate-inward" && !sawSendMessageSelf && !sawGoInward && !sawQuerySession) {
+  // 1. Delegation adherence: delegate-inward without evidence of inward action.
+  // Only enforce on the FIRST final_answer attempt — if the agent persists with
+  // intent=complete, respect it. The delegation is a suggestion, not a hard gate.
+  // Without this escape, the agent gets stuck in a loop unable to respond.
+  if (delegationDecision?.target === "delegate-inward" && !sawSendMessageSelf && !sawGoInward && !sawQuerySession && intent !== "complete" && intent !== "blocked") {
     emitNervesEvent({
       event: "engine.delegation_adherence_rejected",
       component: "engine",

@@ -825,7 +825,14 @@ function parseAuthCommand(args: string[]): OuroCliCommand {
       continue
     }
   }
-  if (!agent) throw new Error(`Usage\n${usage()}`)
+  if (!agent) {
+    throw new Error([
+      "Usage:",
+      "  ouro auth --agent <name> [--provider <provider>]     Set up credentials",
+      "  ouro auth verify --agent <name> [--provider <p>]     Verify credentials work",
+      "  ouro auth switch --agent <name> --provider <p>       Switch active provider",
+    ].join("\n"))
+  }
   return provider ? { kind: "auth.run", agent, provider } : { kind: "auth.run", agent }
 }
 
