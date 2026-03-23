@@ -43,14 +43,17 @@ export function buildFailoverContext(
 
   const workingProviders: AgentProvider[] = []
   const unconfiguredProviders: AgentProvider[] = []
+  const failingProviders: { provider: AgentProvider; reason: string }[] = []
 
   for (const [provider, result] of Object.entries(inventory) as [AgentProvider, PingResult][]) {
     if (result.ok) {
       workingProviders.push(provider)
     } else if (result.classification === "auth-failure" && result.message === "no credentials configured") {
       unconfiguredProviders.push(provider)
+    } else {
+      // Configured but ping failed (expired token, provider also down, etc.)
+      failingProviders.push({ provider, reason: result.message })
     }
-    // Providers that are configured but failing (e.g., also rate-limited) are omitted from both lists
   }
 
   const lines: string[] = [`${errorSummary}.`]
@@ -65,11 +68,17 @@ export function buildFailoverContext(
     lines.push(`reply ${switchOptions} to continue.`)
   }
 
+  if (failingProviders.length > 0) {
+    for (const { provider, reason } of failingProviders) {
+      lines.push(`${provider} is configured but its credentials failed (${reason}). run \`ouro auth --agent ${agentName} --provider ${provider}\` to refresh.`)
+    }
+  }
+
   if (unconfiguredProviders.length > 0) {
     lines.push(`to set up ${unconfiguredProviders.join(", ")}, run \`ouro auth --agent ${agentName}\` in terminal.`)
   }
 
-  if (workingProviders.length === 0 && unconfiguredProviders.length === 0) {
+  if (workingProviders.length === 0 && unconfiguredProviders.length === 0 && failingProviders.length === 0) {
     lines.push(`no other providers are available. run \`ouro auth --agent ${agentName}\` in terminal to configure one.`)
   }
 
