@@ -27,7 +27,9 @@ import { buildProgressStory, renderProgressStory } from "../heart/progress-story
 import * as http from "http"
 import * as path from "path"
 import { enforceTrustGate } from "./trust-gate"
-import { handleInboundTurn } from "./pipeline"
+import { handleInboundTurn, type FailoverState } from "./pipeline"
+
+const teamsFailoverStates = new Map<string, FailoverState>()
 import { drainDeferredReturns, drainPending, getPendingDir } from "../mind/pending"
 import { classifySteeringFollowUpEffect, type SteeringFollowUpEffect } from "./continuity"
 
@@ -562,13 +564,35 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
     if (channelConfig.skipConfirmation) agentOptions.skipConfirmation = true
 
     // ── Call shared pipeline ──────────────────────────────────────────
+
+    // Capture terminal errors — failover message replaces the error card if it triggers
+    let capturedTerminalError: Error | null = null
+    const teamsFailoverState = (() => {
+      if (!teamsFailoverStates.has(conversationId)) {
+        teamsFailoverStates.set(conversationId, { pending: null })
+      }
+      return teamsFailoverStates.get(conversationId)!
+    })()
+    /* v8 ignore start -- failover-aware callback wrapper: tested via pipeline integration @preserve */
+    const failoverAwareCallbacks: typeof callbacks = {
+      ...callbacks,
+      onError: (error: Error, severity: "transient" | "terminal") => {
+        if (severity === "terminal" && teamsFailoverState) {
+          capturedTerminalError = error
+          return
+        }
+        callbacks.onError(error, severity)
+      },
+    }
+    /* v8 ignore stop */
+
     const result = await handleInboundTurn({
       channel: "teams",
       sessionKey: conversationId,
       capabilities: teamsCapabilities,
       messages: [{ role: "user" as const, content: currentText }],
       continuityIngressTexts: [currentText],
-      callbacks,
+      callbacks: failoverAwareCallbacks,
       friendResolver: { resolve: () => Promise.resolve(resolvedContext) },
       sessionLoader: {
         loadOrCreate: async () => {
@@ -608,7 +632,16 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
       accumulateFriendTokens,
       signal: controller.signal,
       runAgentOptions: agentOptions,
+      failoverState: teamsFailoverState,
     })
+
+    /* v8 ignore start -- failover display: tested via pipeline integration tests @preserve */
+    if (result.failoverMessage) {
+      stream.emit(result.failoverMessage)
+    } else if (capturedTerminalError) {
+      callbacks.onError(capturedTerminalError, "terminal")
+    }
+    /* v8 ignore stop */
 
     // ── Handle gate result ────────────────────────────────────────
     if (!result.gateResult.allowed) {
