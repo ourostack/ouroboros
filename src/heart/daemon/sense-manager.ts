@@ -20,6 +20,7 @@ export interface DaemonSenseManagerLike {
   startAutoStartSenses(): Promise<void>
   stopAll(): Promise<void>
   listSenseRows(): DaemonSenseRow[]
+  listManagedPids?(): number[]
 }
 
 export interface DaemonSenseManagerOptions {
@@ -29,7 +30,7 @@ export interface DaemonSenseManagerOptions {
   processManager?: {
     startAutoStartAgents(): Promise<void>
     stopAll(): Promise<void>
-    listAgentSnapshots(): Array<{ name: string; status: string }>
+    listAgentSnapshots(): Array<{ name: string; status: string; pid?: number | null }>
   }
 }
 
@@ -292,6 +293,14 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
   async stopAll(): Promise<void> {
     await this.processManager.stopAll()
   }
+
+  /* v8 ignore start -- pid collection for orphan cleanup pidfile @preserve */
+  listManagedPids(): number[] {
+    return this.processManager.listAgentSnapshots()
+      .map((s) => s.pid)
+      .filter((pid): pid is number => pid !== null && pid !== undefined)
+  }
+  /* v8 ignore stop */
 
   listSenseRows(): DaemonSenseRow[] {
     const runtime = new Map<string, Partial<Record<SenseName, SenseRuntimeInfo>>>()

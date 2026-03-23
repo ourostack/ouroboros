@@ -115,7 +115,7 @@ export function handleFailoverReply(
 ): FailoverAction {
   const lower = reply.toLowerCase().trim()
   for (const provider of context.workingProviders) {
-    if (lower === `switch to ${provider}` || lower === provider) {
+    if (lower.includes(`switch to ${provider}`) || lower === provider) {
       return { action: "switch", provider }
     }
   }

@@ -1,5 +1,6 @@
 import * as fs from "fs"
 import * as net from "net"
+import * as os from "os"
 import * as path from "path"
 import { getAgentBundlesRoot, getRepoRoot } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
@@ -16,27 +17,42 @@ import { drainPending } from "../../mind/pending"
 import { getAlwaysOnSenseNames } from "../../mind/friends/channel"
 import { getSharedMcpManager, shutdownSharedMcpManager } from "../../repertoire/mcp-manager"
 
+const PIDFILE_PATH = path.join(os.homedir(), ".ouro-cli", "daemon.pids")
+
 /**
- * Kill ALL orphaned ouro processes from previous daemon instances.
- * On each `ouro up`, old daemon AND agent processes persist because:
- * - Daemons are spawned detached and never killed on restart
- * - Each old daemon keeps respawning agents from its own (stale) code
- * This scans for both daemon-entry.js and agent-entry.js processes
- * and kills everything except the current process.
+ * Kill all ouro processes from the previous daemon instance using the pidfile.
+ * On startup, reads PIDs from ~/.ouro-cli/daemon.pids, kills them all, then
+ * deletes the file. The new daemon writes its own PIDs after spawning.
+ *
+ * Falls back to ps-based scanning if the pidfile doesn't exist (first run
+ * or manual cleanup).
  */
-/* v8 ignore start -- orphan cleanup: uses ps/kill, tested via deployment @preserve */
+/* v8 ignore start -- process lifecycle: uses kill/ps, tested via deployment @preserve */
 export function killOrphanProcesses(): void {
   try {
-    const myPid = process.pid
-    const result = execSync("ps -eo pid,command", { encoding: "utf-8", timeout: 5000 })
-    const pidsToKill: number[] = []
-    for (const line of result.split("\n")) {
-      if (!line.includes("agent-entry.js") && !line.includes("daemon-entry.js") && !line.includes("-entry.js --agent")) continue
-      const trimmed = line.trim()
-      const pid = parseInt(trimmed, 10)
-      if (isNaN(pid) || pid === myPid) continue
-      pidsToKill.push(pid)
+    let pidsToKill: number[] = []
+
+    // Primary: read pidfile from previous daemon
+    try {
+      const raw = fs.readFileSync(PIDFILE_PATH, "utf-8")
+      pidsToKill = raw.split("\n").map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n) && n !== process.pid)
+      fs.unlinkSync(PIDFILE_PATH)
+    } catch {
+      // No pidfile — fall back to ps scan
     }
+
+    // Fallback: scan ps for any ouro entry processes we missed
+    if (pidsToKill.length === 0) {
+      try {
+        const result = execSync("ps -eo pid,command", { encoding: "utf-8", timeout: 5000 })
+        for (const line of result.split("\n")) {
+          if (!line.includes("agent-entry.js") && !line.includes("daemon-entry.js") && !line.includes("-entry.js --agent")) continue
+          const pid = parseInt(line.trim(), 10)
+          if (!isNaN(pid) && pid !== process.pid) pidsToKill.push(pid)
+        }
+      } catch { /* ps failed — best effort */ }
+    }
+
     if (pidsToKill.length > 0) {
       for (const pid of pidsToKill) {
         try { process.kill(pid, "SIGTERM") } catch { /* already exited */ }
@@ -57,6 +73,18 @@ export function killOrphanProcesses(): void {
       meta: { error: error instanceof Error ? error.message : String(error) },
     })
   }
+}
+
+/**
+ * Write all managed PIDs (daemon + children) to the pidfile.
+ * Called after all agents and senses are spawned.
+ */
+export function writePidfile(extraPids: number[] = []): void {
+  try {
+    const pids = [process.pid, ...extraPids].filter(Boolean)
+    fs.mkdirSync(path.dirname(PIDFILE_PATH), { recursive: true })
+    fs.writeFileSync(PIDFILE_PATH, pids.join("\n") + "\n", "utf-8")
+  } catch { /* best effort */ }
 }
 /* v8 ignore stop */
 
@@ -307,9 +335,19 @@ export class OuroDaemon {
     /* v8 ignore next -- catch callback: getSharedMcpManager logs errors internally @preserve */
     getSharedMcpManager().catch(() => {})
 
+    /* v8 ignore start -- orphan cleanup + pidfile: calls process management functions @preserve */
     killOrphanProcesses()
+    /* v8 ignore stop */
     await this.processManager.startAutoStartAgents()
     await this.senseManager?.startAutoStartSenses()
+
+    // Write all managed PIDs to disk so the next daemon can clean up
+    /* v8 ignore start -- pidfile write: collects PIDs from process managers @preserve */
+    const agentPids = this.processManager.listAgentSnapshots().map((s) => s.pid).filter((p): p is number => p !== null)
+    const sensePids = this.senseManager?.listManagedPids?.() ?? []
+    writePidfile([...agentPids, ...sensePids])
+    /* v8 ignore stop */
+
     this.scheduler.start?.()
     await this.scheduler.reconcile?.()
     await this.drainPendingBundleMessages()
