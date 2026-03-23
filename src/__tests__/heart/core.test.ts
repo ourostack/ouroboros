@@ -3939,7 +3939,10 @@ describe("anthropic setup-token provider contract", () => {
       model: "claude-opus-4-6",
       stream: true,
       max_tokens: 128000,
-      system: "system from array",
+      system: [
+        { type: "text", text: "You are Claude Code, Anthropic's official CLI for Claude." },
+        { type: "text", text: "system from array" },
+      ],
       tool_choice: { type: "auto" },
       thinking: { type: "adaptive" },
       output_config: { effort: "medium" },
