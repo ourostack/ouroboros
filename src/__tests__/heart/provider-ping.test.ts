@@ -94,6 +94,16 @@ describe("sanitizeErrorMessage", () => {
   it("passes through simple messages unchanged", () => {
     expect(sanitizeErrorMessage("network error")).toBe("network error")
   })
+
+  it("strips HTML responses (Cloudflare challenge pages)", () => {
+    const raw = '403 <html>\n  <head>\n    <meta name="viewport"...'
+    expect(sanitizeErrorMessage(raw)).toBe("HTTP 403")
+  })
+
+  it("strips full HTML doctype responses", () => {
+    const raw = '503 <!DOCTYPE html><html><body>Service Unavailable</body></html>'
+    expect(sanitizeErrorMessage(raw)).toBe("HTTP 503")
+  })
 })
 
 describe("pingProvider", () => {
