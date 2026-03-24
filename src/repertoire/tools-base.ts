@@ -1477,10 +1477,10 @@ export const goInwardTool: OpenAI.ChatCompletionFunctionTool = {
   },
 };
 
-export const noResponseTool: OpenAI.ChatCompletionFunctionTool = {
+export const observeTool: OpenAI.ChatCompletionFunctionTool = {
   type: "function",
   function: {
-    name: "no_response",
+    name: "observe",
     description: "stay silent in this group chat — the moment doesn't call for a response. must be the only tool call in the turn.",
     parameters: {
       type: "object",
@@ -1491,10 +1491,10 @@ export const noResponseTool: OpenAI.ChatCompletionFunctionTool = {
   },
 };
 
-export const finalAnswerTool: OpenAI.ChatCompletionFunctionTool = {
+export const settleTool: OpenAI.ChatCompletionFunctionTool = {
   type: "function",
   function: {
-    name: "final_answer",
+    name: "settle",
     description:
       "respond to the user with your message. call this tool when you are ready to deliver your response.",
     parameters: {

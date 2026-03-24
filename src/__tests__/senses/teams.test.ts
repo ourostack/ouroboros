@@ -1261,9 +1261,9 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
         await firstTurn
         drainedFollowUps = options?.drainSteeringFollowUps?.() ?? []
         const superseded = drainedFollowUps.some((followUp) => followUp.effect === "clear_and_supersede")
-        return { usage: undefined, outcome: superseded ? "superseded" : "complete" }
+        return { usage: undefined, outcome: superseded ? "superseded" : "settled" }
       })
-      .mockResolvedValue({ usage: undefined, outcome: "complete" })
+      .mockResolvedValue({ usage: undefined, outcome: "settled" })
 
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
@@ -1356,9 +1356,9 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       .mockImplementationOnce(async (_messages: any, _callbacks: any, _channel: any, _signal: any, options: any) => {
         await firstTurn
         drainedFollowUps = options?.drainSteeringFollowUps?.() ?? []
-        return { usage: undefined, outcome: "complete" }
+        return { usage: undefined, outcome: "settled" }
       })
-      .mockResolvedValue({ usage: undefined, outcome: "complete" })
+      .mockResolvedValue({ usage: undefined, outcome: "settled" })
 
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
@@ -1467,7 +1467,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       DevtoolsPlugin: class MockDevtoolsPlugin {},
     }))
 
-    const runAgentFn = vi.fn().mockResolvedValue({ usage: undefined, outcome: "complete" })
+    const runAgentFn = vi.fn().mockResolvedValue({ usage: undefined, outcome: "settled" })
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: runAgentFn,
@@ -1553,7 +1553,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       DevtoolsPlugin: class MockDevtoolsPlugin {},
     }))
 
-    const runAgentFn = vi.fn().mockResolvedValue({ usage: undefined, outcome: "complete" })
+    const runAgentFn = vi.fn().mockResolvedValue({ usage: undefined, outcome: "settled" })
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: runAgentFn,
@@ -1639,7 +1639,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       DevtoolsPlugin: class MockDevtoolsPlugin {},
     }))
 
-    const runAgentFn = vi.fn().mockResolvedValue({ usage: undefined, outcome: "complete" })
+    const runAgentFn = vi.fn().mockResolvedValue({ usage: undefined, outcome: "settled" })
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: runAgentFn,
@@ -1730,7 +1730,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
     }))
 
     const deleteSessionCalls: string[] = []
-    const runAgentFn = vi.fn().mockResolvedValue({ usage: undefined, outcome: "complete" })
+    const runAgentFn = vi.fn().mockResolvedValue({ usage: undefined, outcome: "settled" })
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: runAgentFn,
@@ -1833,9 +1833,9 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
         await firstTurn
         const followUps = options?.drainSteeringFollowUps?.() ?? []
         const superseded = followUps.some((followUp: any) => followUp.effect === "clear_and_supersede")
-        return { usage: undefined, outcome: superseded ? "superseded" : "complete" }
+        return { usage: undefined, outcome: superseded ? "superseded" : "settled" }
       })
-      .mockResolvedValueOnce({ usage: undefined, outcome: "complete" })
+      .mockResolvedValueOnce({ usage: undefined, outcome: "settled" })
 
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
@@ -1927,9 +1927,9 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
         await firstTurn
         const followUps = options?.drainSteeringFollowUps?.() ?? []
         const superseded = followUps.some((followUp: any) => followUp.effect === "clear_and_supersede")
-        return { usage: undefined, outcome: superseded ? "superseded" : "complete" }
+        return { usage: undefined, outcome: superseded ? "superseded" : "settled" }
       })
-      .mockResolvedValueOnce({ usage: undefined, outcome: "complete" })
+      .mockResolvedValueOnce({ usage: undefined, outcome: "settled" })
 
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),

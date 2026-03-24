@@ -153,10 +153,10 @@ function goInwardToolCallChunks(args: Record<string, string>) {
   ]
 }
 
-// Streams a final_answer after go_inward
-function finalAnswerChunks(answer: string) {
+// Streams a settle after go_inward
+function settleChunks(answer: string) {
   return [
-    makeChunk(undefined, [{ index: 0, id: "call_final", function: { name: "final_answer", arguments: "" } }]),
+    makeChunk(undefined, [{ index: 0, id: "call_final", function: { name: "settle", arguments: "" } }]),
     makeChunk(undefined, [{ index: 0, function: { arguments: JSON.stringify({ answer, intent: "complete" }) } }]),
   ]
 }
@@ -285,9 +285,9 @@ describe("go_inward in runAgent", () => {
         { index: 1, function: { arguments: "{}" } },
       ]),
     ]))
-    // Second call: final_answer to end the loop
+    // Second call: settle to end the loop
     mockCreate.mockReturnValueOnce(makeStream(
-      finalAnswerChunks("done"),
+      settleChunks("done"),
     ))
 
     const callbacks = makeCallbacks()

@@ -1,6 +1,6 @@
 import { emitNervesEvent } from "../nerves/runtime"
 
-// Kick detection is currently disabled (tool_choice: required + final_answer
+// Kick detection is currently disabled (tool_choice: required + settle
 // is the primary loop control). Preserved for future re-enablement.
 //
 // A kick is a self-correction. When the harness detects a malformed response,
@@ -16,7 +16,7 @@ export interface Kick {
 
 const KICK_MESSAGES: Record<KickReason, string> = {
   empty: "I sent an empty message by accident — let me try again.",
-  narration: "I narrated instead of acting. Using the tool now -- if done, calling final_answer.",
+  narration: "I narrated instead of acting. Using the tool now -- if done, calling settle.",
   tool_required: "tool-required is on — I need to call a tool. use /tool-required to turn it off.",
 };
 

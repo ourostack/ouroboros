@@ -165,7 +165,7 @@ function makeInput(overrides: Partial<InboundTurnInput> = {}): InboundTurnInput 
     // Deps injected for testability
     enforceTrustGate: vi.fn().mockReturnValue({ allowed: true } as TrustGateResult),
     drainPending: vi.fn().mockReturnValue([] as PendingMessage[]),
-    runAgent: vi.fn().mockResolvedValue({ usage: usageData, outcome: "complete" }),
+    runAgent: vi.fn().mockResolvedValue({ usage: usageData, outcome: "settled" }),
     postTurn: vi.fn(),
     accumulateFriendTokens: vi.fn().mockResolvedValue(undefined),
     ...overrides,
@@ -1176,7 +1176,7 @@ describe("handleInboundTurn", () => {
       const input = makeInput({
         channel: "inner",
         capabilities: makeCapabilities({ channel: "inner", senseType: "local" }),
-        runAgent: vi.fn().mockResolvedValue({ usage: usageData, outcome: "complete" }),
+        runAgent: vi.fn().mockResolvedValue({ usage: usageData, outcome: "settled" }),
       })
 
       await handleInboundTurn(input)
@@ -1366,16 +1366,16 @@ describe("handleInboundTurn", () => {
       expect((result as any).turnOutcome).toBe("blocked")
     })
 
-    it("passes through no_response outcome from runAgent", async () => {
+    it("passes through observe outcome from runAgent", async () => {
       const input = makeInput({
-        runAgent: vi.fn().mockResolvedValue({ usage: usageData, outcome: "no_response" }),
+        runAgent: vi.fn().mockResolvedValue({ usage: usageData, outcome: "observed" }),
       })
 
       const result = await handleInboundTurn(input)
-      expect((result as any).turnOutcome).toBe("no_response")
+      expect((result as any).turnOutcome).toBe("observed")
     })
 
-    it.each(["complete", "blocked", "superseded", "no_response"] as const)(
+    it.each(["settled", "blocked", "superseded", "observed"] as const)(
       "clears mustResolveBeforeHandoff after terminal %s outcome",
       async (outcome) => {
         const input = makeInput({
@@ -1451,7 +1451,7 @@ describe("handleInboundTurn", () => {
     })
 
     it("handles failover reply to switch provider and auto-retries on new provider", async () => {
-      const mockRunAgent = vi.fn().mockResolvedValue({ usage: usageData, outcome: "complete" })
+      const mockRunAgent = vi.fn().mockResolvedValue({ usage: usageData, outcome: "settled" })
       const failoverState = {
         pending: {
           errorSummary: "openai-codex hit its usage limit",
@@ -1485,7 +1485,7 @@ describe("handleInboundTurn", () => {
       expect(lastUserMsg?.content).toContain("openai-codex")
       expect(lastUserMsg?.content).toContain("anthropic")
       // Turn completed successfully on the new provider
-      expect(result.turnOutcome).toBe("complete")
+      expect(result.turnOutcome).toBe("settled")
     })
 
     it("dismisses failover on unrelated reply and processes normally", async () => {
@@ -1511,7 +1511,7 @@ describe("handleInboundTurn", () => {
       expect(result.failoverMessage).toBeUndefined()
       expect(failoverState.pending).toBeNull()
       // Should have processed normally — runAgent was called
-      expect(result.turnOutcome).toBe("complete")
+      expect(result.turnOutcome).toBe("settled")
     })
 
     it("falls back to normal error handling when failover sequence throws", async () => {

@@ -26,7 +26,7 @@ vi.mock("../../heart/core", () => ({
 
 vi.mock("../../repertoire/tools", () => ({
   getToolsForChannel: vi.fn(() => []),
-  finalAnswerTool: { type: "function", function: { name: "final_answer", description: "respond" } },
+  settleTool: { type: "function", function: { name: "settle", description: "respond" } },
 }))
 
 vi.mock("../../repertoire/skills", () => ({

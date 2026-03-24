@@ -57,7 +57,7 @@ describe("buildSpecialistSystemPrompt", () => {
       provider: "anthropic",
     })
     expect(prompt).toContain("complete_adoption")
-    expect(prompt).toContain("final_answer")
+    expect(prompt).toContain("settle")
     expect(prompt).toContain("read_file")
     expect(prompt).toContain("write_file")
     expect(prompt).toContain("list_directory")

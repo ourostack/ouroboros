@@ -133,7 +133,7 @@ export function createAzureProviderRuntime(config?: AzureProviderConfig): Provid
         params,
         request.callbacks,
         request.signal,
-        request.eagerFinalAnswerStreaming,
+        request.eagerSettleStreaming,
       );
       for (const item of result.outputItems) nativeInput!.push(item);
       return result;
