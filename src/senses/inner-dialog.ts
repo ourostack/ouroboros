@@ -360,7 +360,7 @@ function advanceObligationQuietly(
   /* v8 ignore stop */
 }
 
-async function routeDelegatedCompletion(
+export async function routeDelegatedCompletion(
   agentRoot: string,
   agentName: string,
   completion: CompletionMetadata | undefined,
@@ -509,7 +509,6 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
   const reason = options?.reason ?? "heartbeat"
   const sessionFilePath = innerDialogSessionPath()
   const agentName = getAgentName()
-  const agentRoot = getAgentRoot()
   writeInnerDialogRuntimeState(sessionFilePath, {
     status: "running",
     reason,
@@ -623,7 +622,9 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
       },
     },
   })
-  await routeDelegatedCompletion(agentRoot, agentName, result.completion, result.drainedPending, now().getTime())
+  // Post-turn routeDelegatedCompletion removed: delivery is now inline via surface tool.
+  // settle in inner dialog produces no CompletionMetadata, so routeDelegatedCompletion
+  // would be a no-op. The routing infrastructure is reused by the surface handler.
 
   const resultMessages = result.messages ?? []
   const assistantPreview = extractAssistantPreview(resultMessages)
