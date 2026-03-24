@@ -14,6 +14,8 @@ import {
 
 export interface HatchCredentialsInput {
   setupToken?: string
+  refreshToken?: string
+  expiresAt?: number
   oauthAccessToken?: string
   apiKey?: string
   endpoint?: string

@@ -401,6 +401,25 @@ export async function collectRuntimeAuthCredentials(
     }
     const prompt = ensurePromptInput(input.promptInput, input.provider)
     const setupToken = validateAnthropicToken(await prompt("Paste the setup token from `claude setup-token`: "))
+
+    // Exchange the setup token for an access+refresh token pair so auto-refresh works.
+    // The setup token IS the initial access token — we use it as a refresh token to
+    // get back a proper token pair from the OAuth endpoint.
+    /* v8 ignore start -- token exchange: requires live Anthropic OAuth endpoint @preserve */
+    try {
+      const { refreshAnthropicToken } = await import("../providers/anthropic-token")
+      const tokenState = await refreshAnthropicToken(setupToken)
+      if (tokenState) {
+        return {
+          setupToken: tokenState.accessToken,
+          refreshToken: tokenState.refreshToken,
+          expiresAt: tokenState.expiresAt,
+        } as HatchCredentialsInput
+      }
+    } catch {
+      // Exchange failed — use the raw setup token as-is (it'll work until expiry)
+    }
+    /* v8 ignore stop */
     return { setupToken }
   }
 
@@ -480,6 +499,10 @@ function applyCredentials(
 ): void {
   if (provider === "anthropic") {
     secrets.providers.anthropic.setupToken = credentials.setupToken!.trim()
+    /* v8 ignore start -- token refresh fields: populated when OAuth exchange succeeds @preserve */
+    if (credentials.refreshToken) secrets.providers.anthropic.refreshToken = credentials.refreshToken
+    if (credentials.expiresAt) secrets.providers.anthropic.expiresAt = credentials.expiresAt
+    /* v8 ignore stop */
     return
   }
   if (provider === "github-copilot") {

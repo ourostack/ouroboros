@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.131",
+      "changes": [
+        "ouro auth --provider anthropic now exchanges the setup token for a refresh token immediately, enabling auto-refresh for subsequent sessions."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.130",
       "changes": [
         "Removed delegation adherence gate on final_answer: agents can now deliver answers regardless of delegation suggestions. Fixes infinite rejection loop.",
