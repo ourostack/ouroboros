@@ -587,7 +587,15 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
       attentionQueue = buildAttentionQueue({
         drainedPending: drained,
         outstandingObligations,
-        friendNameResolver: () => null, // inner dialog has no friend store with real names
+        friendNameResolver: (friendId) => {
+          try {
+            const raw = fs.readFileSync(path.join(getAgentRoot(agentName), "friends", friendId + ".json"), "utf-8")
+            const parsed = JSON.parse(raw)
+            return typeof parsed.name === "string" ? parsed.name : null
+          } catch {
+            return null
+          }
+        },
       })
       const summary = buildAttentionQueueSummary(attentionQueue)
       return summary ? [summary] : []
