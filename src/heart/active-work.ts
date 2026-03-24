@@ -2,6 +2,7 @@ import type { Channel } from "../mind/friends/types"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { BoardResult } from "../repertoire/tasks/types"
 import type { CodingSession } from "../repertoire/coding/types"
+import type { ReturnObligation } from "../mind/obligations"
 import { bridgeStateLabel } from "./bridges/state-machine"
 import type { BridgeRecord } from "./bridges/store"
 import type { InnerJob } from "./daemon/thoughts"
@@ -61,6 +62,7 @@ export interface ActiveWorkFrame {
   otherCodingSessions?: CodingSession[]
   pendingObligations: Obligation[]
   targetCandidates?: TargetSessionCandidate[]
+  innerReturnObligations: ReturnObligation[]
   bridgeSuggestion: BridgeSuggestion | null
 }
 
@@ -76,6 +78,7 @@ interface BuildActiveWorkFrameInput {
   taskBoard: BoardResult
   friendActivity: SessionActivityRecord[]
   targetCandidates?: TargetSessionCandidate[]
+  innerReturnObligations?: ReturnObligation[]
 }
 
 export interface BridgeSuggestionInput {
@@ -597,6 +600,7 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
     otherCodingSessions,
     pendingObligations,
     targetCandidates: input.targetCandidates ?? [],
+    innerReturnObligations: input.innerReturnObligations ?? [],
     bridgeSuggestion: suggestBridgeForActiveWork({
       currentSession: input.currentSession,
       currentObligation: input.currentObligation,
@@ -754,6 +758,17 @@ export function formatActiveWorkFrame(frame: ActiveWorkFrame): string {
         obligationLine += `\n  latest: ${obligation.latestNote.trim()}`
       }
       lines.push(obligationLine)
+    }
+  }
+
+  if (frame.innerReturnObligations && frame.innerReturnObligations.length > 0) {
+    lines.push("")
+    lines.push("## inner return obligations")
+    for (const ob of frame.innerReturnObligations) {
+      const preview = ob.delegatedContent.length > 60
+        ? `${ob.delegatedContent.slice(0, 57)}...`
+        : ob.delegatedContent
+      lines.push(`- [${ob.status}] ${ob.origin.friendId}/${ob.origin.channel}/${ob.origin.key}: ${preview}`)
     }
   }
 
