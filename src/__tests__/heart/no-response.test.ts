@@ -378,4 +378,35 @@ describe("observe tool in runAgent", () => {
     expect(toolResult).toBeDefined()
     expect(toolResult.content).toBe("(silenced)")
   })
+
+  it("inner dialog excludes go_inward, send_message, and observe from tool set", async () => {
+    mockCreate.mockReturnValue(
+      makeStream([
+        makeChunk(undefined, [
+          { index: 0, id: "call_1", function: { name: "settle", arguments: '{"answer":"done"}' } },
+        ]),
+      ])
+    )
+
+    await runAgent(
+      [{ role: "user", content: "heartbeat" }],
+      makeCallbacks(),
+      "inner",
+      undefined,
+      {
+        toolChoiceRequired: true,
+        toolContext: {
+          signin: async () => undefined,
+          context: { isGroupChat: false, channel: { channel: "inner", senseType: "open", availableIntegrations: [], supportsMarkdown: false, supportsStreaming: true, supportsRichCards: false, maxMessageLength: Infinity } },
+        },
+      },
+    )
+
+    const params = mockCreate.mock.calls[0][0]
+    const toolNames = params.tools.map((t: any) => t.function.name)
+    expect(toolNames).not.toContain("go_inward")
+    expect(toolNames).not.toContain("send_message")
+    expect(toolNames).not.toContain("observe")
+    expect(toolNames).toContain("settle")
+  })
 })

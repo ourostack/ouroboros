@@ -664,9 +664,23 @@ export async function runAgent(
     // so the model can signal completion. With tool_choice: required, the
     // model must call a tool every turn — settle is how it exits.
     // Overridable via options.toolChoiceRequired = false (e.g. CLI).
-    const activeTools = toolChoiceRequired
-      ? [...baseTools, goInwardTool, ...(currentContext?.isGroupChat ? [observeTool] : []), settleTool]
+    //
+    // Channel-based tool filtering:
+    // - Inner dialog: exclude go_inward (already inward), send_message (delivery via surface), observe (no one to observe)
+    // - 1:1 sessions: exclude observe (can't ignore someone talking directly to you)
+    // - Group chats: observe available
+    const isInnerDialog = channel === "inner";
+    const filteredBaseTools = isInnerDialog
+      ? baseTools.filter((t) => t.function.name !== "send_message")
       : baseTools;
+    const activeTools = toolChoiceRequired
+      ? [
+          ...filteredBaseTools,
+          ...(!isInnerDialog ? [goInwardTool] : []),
+          ...(currentContext?.isGroupChat && !isInnerDialog ? [observeTool] : []),
+          settleTool,
+        ]
+      : filteredBaseTools;
     const steeringFollowUps = options?.drainSteeringFollowUps?.() ?? [];
     if (steeringFollowUps.length > 0) {
       const hasSupersedingFollowUp = steeringFollowUps.some((followUp) => followUp.effect === "clear_and_supersede");
