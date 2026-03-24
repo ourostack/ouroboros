@@ -87,6 +87,7 @@ export function resumeActiveSpinner(): void { _activeSpinner?.resume() }
 /* v8 ignore stop */
 export function setActiveSpinner(s: Spinner | null): void { _activeSpinner = s }
 
+
 // spinner that only touches stderr, cleans up after itself
 // exported for direct testability (stop-without-start branch)
 export class Spinner {

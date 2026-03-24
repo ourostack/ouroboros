@@ -3285,4 +3285,79 @@ describe("ActiveWorkFrame.inner with InnerJob", () => {
       reason: "shared-work-candidate",
     })
   })
+
+  it("surfaces inner return obligations in the formatted active work frame", async () => {
+    const { buildActiveWorkFrame, formatActiveWorkFrame } = await import("../../heart/active-work")
+
+    const frame = buildActiveWorkFrame({
+      currentSession: {
+        friendId: "friend-1",
+        channel: "cli",
+        key: "session",
+        sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+      },
+      mustResolveBeforeHandoff: false,
+      inner: { status: "running", hasPending: true },
+      bridges: [],
+      taskBoard: {
+        compact: "",
+        activeBridges: [],
+        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [] },
+      },
+      friendActivity: [],
+      innerReturnObligations: [
+        {
+          id: "1709900001000-abc",
+          origin: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
+          status: "queued" as const,
+          delegatedContent: "think about penguins",
+          createdAt: 1709900001000,
+        },
+        {
+          id: "1709900002000-def",
+          origin: { friendId: "friend-2", channel: "cli", key: "session" },
+          status: "running" as const,
+          delegatedContent: "analyze the data",
+          createdAt: 1709900002000,
+          startedAt: 1709900002500,
+        },
+        {
+          id: "1709900003000-ghi",
+          origin: { friendId: "friend-3", channel: "teams", key: "conv" },
+          status: "queued" as const,
+          delegatedContent: "this is a very long delegated content string that exceeds the sixty character preview limit and should be truncated",
+          createdAt: 1709900003000,
+        },
+      ],
+    })
+
+    const formatted = formatActiveWorkFrame(frame)
+    expect(formatted).toContain("## inner return obligations")
+    expect(formatted).toContain("[queued] friend-1/bluebubbles/chat: think about penguins")
+    expect(formatted).toContain("[running] friend-2/cli/session: analyze the data")
+    // Long content should be truncated to 60 chars
+    expect(formatted).toContain("[queued] friend-3/teams/conv: this is a very long delegated content string that exceeds...")
+    expect(formatted).not.toContain("should be truncated")
+  })
+
+  it("omits inner return obligations section when no obligations exist", async () => {
+    const { buildActiveWorkFrame, formatActiveWorkFrame } = await import("../../heart/active-work")
+
+    const frame = buildActiveWorkFrame({
+      currentSession: null,
+      mustResolveBeforeHandoff: false,
+      inner: { status: "idle", hasPending: false },
+      bridges: [],
+      taskBoard: {
+        compact: "",
+        activeBridges: [],
+        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [] },
+      },
+      friendActivity: [],
+      innerReturnObligations: [],
+    })
+
+    const formatted = formatActiveWorkFrame(frame)
+    expect(formatted).not.toContain("inner return obligations")
+  })
 })
