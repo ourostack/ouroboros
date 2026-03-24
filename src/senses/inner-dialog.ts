@@ -284,18 +284,6 @@ function sessionMatchesActivity(
     && activity.key === session.key
 }
 
-function resolveExactOriginSession(
-  delegatedFrom: NonNullable<PendingMessage["delegatedFrom"]>,
-  sessionActivity: SessionActivityRecord[],
-): SessionActivityRecord | null {
-  return sessionActivity.find((activity) =>
-    activity.friendId === delegatedFrom.friendId
-    && activity.channel === delegatedFrom.channel
-    && activity.key === delegatedFrom.key
-    && activity.channel !== "inner",
-  ) ?? null
-}
-
 function resolveBridgePreferredSession(
   delegatedFrom: NonNullable<PendingMessage["delegatedFrom"]>,
   sessionActivity: SessionActivityRecord[],
@@ -429,19 +417,7 @@ export async function routeDelegatedCompletion(
     agentName,
   })
 
-  // Priority 1: Exact origin session (the session that delegated this work).
-  const exactOrigin = resolveExactOriginSession(delegatedFrom, sessionActivity)
-  if (exactOrigin) {
-    if (await tryDeliverDelegatedCompletion(exactOrigin, outboundEnvelope)) {
-      advanceObligationQuietly(agentName, obligationId, { status: "returned", returnedAt: timestamp, returnTarget: "exact-origin" })
-      return
-    }
-    writePendingEnvelope(getPendingDir(agentName, exactOrigin.friendId, exactOrigin.channel, exactOrigin.key), outboundEnvelope)
-    advanceObligationQuietly(agentName, obligationId, { status: "returned", returnedAt: timestamp, returnTarget: "exact-origin" })
-    return
-  }
-
-  // Priority 2: Bridge-preferred session (if delegation was within a bridge).
+  // Priority 1: Bridge-preferred session (if delegation was within a bridge).
   const bridgeTarget = resolveBridgePreferredSession(delegatedFrom, sessionActivity)
   if (bridgeTarget) {
     if (await tryDeliverDelegatedCompletion(bridgeTarget, outboundEnvelope)) {
@@ -453,7 +429,7 @@ export async function routeDelegatedCompletion(
     return
   }
 
-  // Priority 3: Freshest active friend session.
+  // Priority 2: Freshest active friend session.
   const freshest = findFreshestFriendSession({
     sessionsDir: path.join(agentRoot, "state", "sessions"),
     friendsDir: path.join(agentRoot, "friends"),
@@ -471,7 +447,7 @@ export async function routeDelegatedCompletion(
     return
   }
 
-  // Priority 4: Deferred return queue.
+  // Priority 3: Deferred return queue.
   writePendingEnvelope(getDeferredReturnDir(agentName, delegatedFrom.friendId), outboundEnvelope)
   advanceObligationQuietly(agentName, obligationId, { status: "deferred", returnedAt: timestamp, returnTarget: "deferred" })
 }
