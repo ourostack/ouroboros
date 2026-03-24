@@ -766,9 +766,32 @@ export async function runAgent(
       } else {
         // Check for settle sole call: intercept before tool execution
         if (isSoleSettle) {
+          // Inner dialog attention queue gate: reject settle if items remain
+          const attentionQueue = (augmentedToolContext ?? options?.toolContext)?.delegatedOrigins;
+          if (isInnerDialog && attentionQueue && attentionQueue.length > 0) {
+            callbacks.onClearText?.();
+            messages.push(msg);
+            const gateMessage = "you're holding thoughts someone is waiting for — surface them before you settle.";
+            messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: gateMessage });
+            providerRuntime.appendToolOutput(result.toolCalls[0].id, gateMessage);
+            continue;
+          }
+
           // Extract answer from the tool call arguments.
           // Supports: {"answer":"text","intent":"..."} or "text" (JSON string).
           const { answer, intent } = parseSettlePayload(result.toolCalls[0].arguments);
+
+          // Inner dialog settle: no CompletionMetadata, "(settled)" ack
+          if (isInnerDialog) {
+            messages.push(msg);
+            const settled = "(settled)";
+            messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: settled });
+            providerRuntime.appendToolOutput(result.toolCalls[0].id, settled);
+            outcome = "settled";
+            done = true;
+            continue;
+          }
+
           const retryError = getSettleRetryError(
             mustResolveBeforeHandoffActive,
             intent,
