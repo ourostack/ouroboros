@@ -10,6 +10,7 @@ describe("installOuroCommand", () => {
   let appended: Record<string, string>
   let chmoded: Record<string, number>
   let mkdirCalls: string[]
+  const correctContent = '#!/bin/sh\nexec npx --prefer-online --yes @ouro.bot/cli@alpha "$@"\n'
 
   function makeDeps(overrides: Partial<OuroPathInstallerDeps> = {}): OuroPathInstallerDeps {
     written = {}
