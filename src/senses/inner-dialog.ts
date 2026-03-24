@@ -17,7 +17,8 @@ import {
   type PendingMessage,
   type DelegatedFrom,
 } from "../mind/pending"
-import { advanceObligation } from "../mind/obligations"
+import { advanceObligation, listActiveObligations } from "../mind/obligations"
+import { buildAttentionQueue, buildAttentionQueueSummary, type AttentionItem } from "./attention-queue"
 import { getChannelCapabilities } from "../mind/friends/channel"
 import { enforceTrustGate } from "./trust-gate"
 import { accumulateFriendTokens } from "../mind/friends/tokens"
@@ -581,6 +582,9 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
   const callbacks = createInnerDialogCallbacks()
   const traceId = createTraceId()
 
+  // Attention queue: built when pending messages are drained, shared with tool context
+  let attentionQueue: AttentionItem[] = []
+
   const result = await handleInboundTurn({
     channel: "inner",
     sessionKey: "dialog",
@@ -598,11 +602,25 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
     postTurn,
     accumulateFriendTokens,
     signal: options?.signal,
+    onPendingDrained: (drained) => {
+      const outstandingObligations = listActiveObligations(agentName)
+      attentionQueue = buildAttentionQueue({
+        drainedPending: drained,
+        outstandingObligations,
+        friendNameResolver: () => null, // inner dialog has no friend store with real names
+      })
+      const summary = buildAttentionQueueSummary(attentionQueue)
+      return summary ? [summary] : []
+    },
     runAgentOptions: {
       traceId,
       toolChoiceRequired: true,
       skipConfirmation: true,
       mcpManager,
+      toolContext: {
+        signin: async () => undefined,
+        delegatedOrigins: attentionQueue,
+      },
     },
   })
   await routeDelegatedCompletion(agentRoot, agentName, result.completion, result.drainedPending, now().getTime())
