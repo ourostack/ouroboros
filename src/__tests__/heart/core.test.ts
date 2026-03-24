@@ -2325,7 +2325,7 @@ describe("runAgent", () => {
       { toolChoiceRequired: false, currentObligation: "reply to the live ask" } as any,
     )
 
-    expect((result as any).outcome).toBe("complete")
+    expect((result as any).outcome).toBe("settled")
   })
 
   // ── context overflow auto-recovery ──
@@ -5202,7 +5202,7 @@ describe("kick mechanism", () => {
     const assistantMessages = messages.filter((m: any) => m.role === "assistant")
     expect(assistantMessages).toHaveLength(2)
     expect(assistantMessages[0].content).toContain("let me read that file for you")
-    expect(assistantMessages[0].content).toContain("I narrated instead of acting. Using the tool now -- if done, calling final_answer.")
+    expect(assistantMessages[0].content).toContain("I narrated instead of acting. Using the tool now -- if done, calling settle.")
     expect(assistantMessages[1].content).toBe("here is the result")
   })
 
@@ -5235,7 +5235,7 @@ describe("kick mechanism", () => {
 
     // The self-correction assistant message should contain original narration + kick message
     const assistantMessages = messages.filter((m: any) => m.role === "assistant")
-    expect(assistantMessages.some((m: any) => m.content?.includes("let me check that") && m.content?.includes("I narrated instead of acting. Using the tool now -- if done, calling final_answer."))).toBe(true)
+    expect(assistantMessages.some((m: any) => m.content?.includes("let me check that") && m.content?.includes("I narrated instead of acting. Using the tool now -- if done, calling settle."))).toBe(true)
   })
 
   // Kick detection disabled — see core.ts
@@ -5329,7 +5329,7 @@ describe("kick mechanism", () => {
     const assistantMessages = messages.filter((m: any) => m.role === "assistant")
     expect(assistantMessages).toHaveLength(2)
     expect(assistantMessages[0].content).toContain("I'm going to")
-    expect(assistantMessages[0].content).toContain("I narrated instead of acting. Using the tool now -- if done, calling final_answer.")
+    expect(assistantMessages[0].content).toContain("I narrated instead of acting. Using the tool now -- if done, calling settle.")
     expect(assistantMessages[1].content).toBe("the file says hello")
   })
 
@@ -5390,14 +5390,14 @@ describe("kick mechanism", () => {
     const assistantMessages = messages.filter((m: any) => m.role === "assistant")
     expect(assistantMessages).toHaveLength(2)
     expect(assistantMessages[0].content).toContain("let me read that file")
-    expect(assistantMessages[0].content).toContain("I narrated instead of acting. Using the tool now -- if done, calling final_answer.")
+    expect(assistantMessages[0].content).toContain("I narrated instead of acting. Using the tool now -- if done, calling settle.")
     expect(assistantMessages[1].content).toBe("here is the answer")
 
     // config cleanup handled by resetConfigCache in beforeEach
   })
 })
 
-describe("tool_choice required and final_answer", () => {
+describe("tool_choice required and settle", () => {
   let runAgent: (
     messages: any[],
     callbacks: ChannelCallbacks,
@@ -5449,7 +5449,7 @@ describe("tool_choice required and final_answer", () => {
     mockCreate.mockReturnValue(
       makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_1", function: { name: "final_answer", arguments: '{"answer":"done"}' } },
+          { index: 0, id: "call_1", function: { name: "settle", arguments: '{"answer":"done"}' } },
         ]),
       ])
     )
@@ -5475,9 +5475,9 @@ describe("tool_choice required and final_answer", () => {
     await setupAzure()
 
     mockResponsesCreate.mockReturnValue(makeResponsesStream([
-      { type: "response.output_item.added", item: { type: "function_call", call_id: "c1", name: "final_answer", arguments: "" } },
+      { type: "response.output_item.added", item: { type: "function_call", call_id: "c1", name: "settle", arguments: "" } },
       { type: "response.function_call_arguments.delta", delta: '{"answer":"done"}' },
-      { type: "response.output_item.done", item: { type: "function_call", call_id: "c1", name: "final_answer", arguments: '{"answer":"done"}' } },
+      { type: "response.output_item.done", item: { type: "function_call", call_id: "c1", name: "settle", arguments: '{"answer":"done"}' } },
     ]))
 
     const core = await import("../../heart/core")
@@ -5498,11 +5498,11 @@ describe("tool_choice required and final_answer", () => {
     // config cleanup handled by resetConfigCache in beforeEach
   })
 
-  it("includes final_answer tool in tools list when toolChoiceRequired is true", async () => {
+  it("includes settle tool in tools list when toolChoiceRequired is true", async () => {
     mockCreate.mockReturnValue(
       makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_1", function: { name: "final_answer", arguments: '{"answer":"done"}' } },
+          { index: 0, id: "call_1", function: { name: "settle", arguments: '{"answer":"done"}' } },
         ]),
       ])
     )
@@ -5520,12 +5520,12 @@ describe("tool_choice required and final_answer", () => {
     await runAgent([{ role: "system", content: "test" }], callbacks, undefined, undefined, { toolChoiceRequired: true })
     const params = mockCreate.mock.calls[0][0]
     const toolNames = params.tools.map((t: any) => t.function.name)
-    expect(toolNames).toContain("final_answer")
+    expect(toolNames).toContain("settle")
   })
 
-  it("defaults: includes final_answer tool when toolChoiceRequired is not passed (defaults true)", async () => {
+  it("defaults: includes settle tool when toolChoiceRequired is not passed (defaults true)", async () => {
     mockCreate.mockReturnValue(makeStream([makeChunk(undefined, [
-      { index: 0, id: "call_1", function: { name: "final_answer", arguments: '{"answer":"done"}' } },
+      { index: 0, id: "call_1", function: { name: "settle", arguments: '{"answer":"done"}' } },
     ])]))
 
     const callbacks: ChannelCallbacks = {
@@ -5541,12 +5541,12 @@ describe("tool_choice required and final_answer", () => {
     await runAgent([{ role: "system", content: "test" }], callbacks)
     const params = mockCreate.mock.calls[0][0]
     const toolNames = params.tools.map((t: any) => t.function.name)
-    expect(toolNames).toContain("final_answer")
+    expect(toolNames).toContain("settle")
   })
 
   it("defaults: passes tool_choice: required when toolChoiceRequired is not set (defaults true)", async () => {
     mockCreate.mockReturnValue(makeStream([makeChunk(undefined, [
-      { index: 0, id: "call_1", function: { name: "final_answer", arguments: '{"answer":"done"}' } },
+      { index: 0, id: "call_1", function: { name: "settle", arguments: '{"answer":"done"}' } },
     ])]))
 
     const callbacks: ChannelCallbacks = {
@@ -5564,7 +5564,7 @@ describe("tool_choice required and final_answer", () => {
     expect(params.tool_choice).toBe("required")
   })
 
-  it("opt-out: does NOT include final_answer tool when toolChoiceRequired is false", async () => {
+  it("opt-out: does NOT include settle tool when toolChoiceRequired is false", async () => {
     mockCreate.mockReturnValue(makeStream([makeChunk("hello")]))
 
     const callbacks: ChannelCallbacks = {
@@ -5580,7 +5580,7 @@ describe("tool_choice required and final_answer", () => {
     await runAgent([{ role: "system", content: "test" }], callbacks, undefined, undefined, { toolChoiceRequired: false })
     const params = mockCreate.mock.calls[0][0]
     const toolNames = params.tools.map((t: any) => t.function.name)
-    expect(toolNames).not.toContain("final_answer")
+    expect(toolNames).not.toContain("settle")
   })
 
   it("opt-out: does NOT set tool_choice when toolChoiceRequired is false", async () => {
@@ -5629,11 +5629,11 @@ describe("tool_choice required and final_answer", () => {
     expect(params.tool_choice).toBeUndefined()
   })
 
-  it("final_answer sole call: extracts answer text and terminates loop", async () => {
+  it("settle sole call: extracts answer text and terminates loop", async () => {
     mockCreate.mockReturnValue(
       makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_1", function: { name: "final_answer", arguments: '{"answer":"the final response"}' } },
+          { index: 0, id: "call_1", function: { name: "settle", arguments: '{"answer":"the final response"}' } },
         ]),
       ])
     )
@@ -5653,13 +5653,13 @@ describe("tool_choice required and final_answer", () => {
     const messages: any[] = [{ role: "system", content: "test" }]
     const result = await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
-    // Should NOT have called any tools through onToolStart (final_answer is intercepted)
+    // Should NOT have called any tools through onToolStart (settle is intercepted)
     expect(toolStarts).toEqual([])
     // The full assistant message is kept (with tool_calls) for debuggability
     const assistantMsg = messages.find((m: any) => m.role === "assistant")
     expect(assistantMsg).toBeDefined()
     expect(assistantMsg.tool_calls).toBeDefined()
-    expect(assistantMsg.tool_calls[0].function.name).toBe("final_answer")
+    expect(assistantMsg.tool_calls[0].function.name).toBe("settle")
     // Answer is emitted through onTextChunk callback
     expect(textChunks).toEqual(["the final response"])
     // A synthetic tool response keeps the conversation valid
@@ -5682,7 +5682,7 @@ describe("tool_choice required and final_answer", () => {
       if (callCount === 1) {
         return makeStream([
           makeChunk(undefined, [
-            { index: 0, id: "call_1", function: { name: "final_answer", arguments: '{"answer":"still working"}' } },
+            { index: 0, id: "call_1", function: { name: "settle", arguments: '{"answer":"still working"}' } },
           ]),
         ])
       }
@@ -5691,7 +5691,7 @@ describe("tool_choice required and final_answer", () => {
           {
             index: 0,
             id: "call_2",
-            function: { name: "final_answer", arguments: '{"answer":"blocked on credentials","intent":"blocked"}' },
+            function: { name: "settle", arguments: '{"answer":"blocked on credentials","intent":"blocked"}' },
           },
         ]),
       ])
@@ -5735,7 +5735,7 @@ describe("tool_choice required and final_answer", () => {
             {
               index: 0,
               id: "call_1",
-              function: { name: "final_answer", arguments: '{"answer":"youre right, fixing that","intent":"direct_reply"}' },
+              function: { name: "settle", arguments: '{"answer":"youre right, fixing that","intent":"direct_reply"}' },
             },
           ]),
         ])
@@ -5745,7 +5745,7 @@ describe("tool_choice required and final_answer", () => {
           {
             index: 0,
             id: "call_2",
-            function: { name: "final_answer", arguments: '{"answer":"fixed now","intent":"complete"}' },
+            function: { name: "settle", arguments: '{"answer":"fixed now","intent":"complete"}' },
           },
         ]),
       ])
@@ -5773,7 +5773,7 @@ describe("tool_choice required and final_answer", () => {
     })
 
     expect(callCount).toBe(2)
-    expect(result.outcome).toBe("complete")
+    expect(result.outcome).toBe("settled")
     expect(textChunks).toEqual(["youre right, fixing that", "fixed now"])
   })
 
@@ -5787,7 +5787,7 @@ describe("tool_choice required and final_answer", () => {
             {
               index: 0,
               id: "call_1",
-              function: { name: "final_answer", arguments: '{"answer":"quick status update","intent":"direct_reply"}' },
+              function: { name: "settle", arguments: '{"answer":"quick status update","intent":"direct_reply"}' },
             },
           ]),
         ])
@@ -5797,7 +5797,7 @@ describe("tool_choice required and final_answer", () => {
           {
             index: 0,
             id: "call_2",
-            function: { name: "final_answer", arguments: '{"answer":"finished the audit","intent":"complete"}' },
+            function: { name: "settle", arguments: '{"answer":"finished the audit","intent":"complete"}' },
           },
         ]),
       ])
@@ -5823,7 +5823,7 @@ describe("tool_choice required and final_answer", () => {
     })
 
     expect(callCount).toBe(2)
-    expect(result.outcome).toBe("complete")
+    expect(result.outcome).toBe("settled")
     expect(textChunks).toEqual(["finished the audit"])
   })
 
@@ -5858,7 +5858,7 @@ describe("tool_choice required and final_answer", () => {
           {
             index: 0,
             id: "call_1",
-            function: { name: "final_answer", arguments: '{"answer":"done","intent":"complete"}' },
+            function: { name: "settle", arguments: '{"answer":"done","intent":"complete"}' },
           },
         ]),
       ])
@@ -5881,11 +5881,11 @@ describe("tool_choice required and final_answer", () => {
       drainSteeringFollowUps: () => [{ text: "work autonomously on this", effect: "set_no_handoff" }],
     })
 
-    expect(result.outcome).toBe("complete")
+    expect(result.outcome).toBe("settled")
     expect(setMustResolveBeforeHandoff).toHaveBeenCalledWith(true)
   })
 
-  it("final_answer mixed with other tool calls: other tools execute, final_answer rejected, loop continues", async () => {
+  it("settle mixed with other tool calls: other tools execute, settle rejected, loop continues", async () => {
     vi.mocked(fs.readFileSync).mockReturnValue("file data")
 
     let callCount = 0
@@ -5895,14 +5895,14 @@ describe("tool_choice required and final_answer", () => {
         return makeStream([
           makeChunk(undefined, [
             { index: 0, id: "call_1", function: { name: "read_file", arguments: '{"path":"a.txt"}' } },
-            { index: 1, id: "call_2", function: { name: "final_answer", arguments: '{"answer":"done"}' } },
+            { index: 1, id: "call_2", function: { name: "settle", arguments: '{"answer":"done"}' } },
           ]),
         ])
       }
-      // Second call: model returns final_answer alone
+      // Second call: model returns settle alone
       return makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_3", function: { name: "final_answer", arguments: '{"answer":"the real answer"}' } },
+          { index: 0, id: "call_3", function: { name: "settle", arguments: '{"answer":"the real answer"}' } },
         ]),
       ])
     })
@@ -5922,41 +5922,41 @@ describe("tool_choice required and final_answer", () => {
     const messages: any[] = [{ role: "system", content: "test" }]
     await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
-    // read_file should have been executed, final_answer should NOT
+    // read_file should have been executed, settle should NOT
     expect(toolStarts).toEqual(["read_file"])
-    // Should have 2 API calls (mixed -> sole final_answer)
+    // Should have 2 API calls (mixed -> sole settle)
     expect(callCount).toBe(2)
     // The final assistant message keeps tool_calls (full msg); answer emitted via onTextChunk
     const lastAssistant = [...messages].reverse().find((m: any) => m.role === "assistant")
     expect(lastAssistant.tool_calls).toBeDefined()
-    expect(lastAssistant.tool_calls[0].function.name).toBe("final_answer")
+    expect(lastAssistant.tool_calls[0].function.name).toBe("settle")
     expect(textChunks).toEqual(["the real answer"])
-    // There should be a rejection tool result for the mixed final_answer
+    // There should be a rejection tool result for the mixed settle
     const toolResults = messages.filter((m: any) => m.role === "tool")
     const rejectionMsg = toolResults.find((m: any) => m.tool_call_id === "call_2")
     expect(rejectionMsg).toBeDefined()
     expect(rejectionMsg.content).toContain("rejected")
-    expect(rejectionMsg.content).toContain("final_answer must be the only tool call")
-    // There should also be a synthetic "(delivered)" tool result for the sole final_answer
+    expect(rejectionMsg.content).toContain("settle must be the only tool call")
+    // There should also be a synthetic "(delivered)" tool result for the sole settle
     const deliveredMsg = toolResults.find((m: any) => m.tool_call_id === "call_3")
     expect(deliveredMsg).toBeDefined()
     expect(deliveredMsg.content).toBe("(delivered)")
   })
 
-  it("final_answer with empty object arg: retries (no answer field)", async () => {
+  it("settle with empty object arg: retries (no answer field)", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
       if (callCount === 1) {
         return makeStream([
           makeChunk(undefined, [
-            { index: 0, id: "call_1", function: { name: "final_answer", arguments: '{}' } },
+            { index: 0, id: "call_1", function: { name: "settle", arguments: '{}' } },
           ]),
         ])
       }
       return makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_2", function: { name: "final_answer", arguments: '{"answer":"got it"}' } },
+          { index: 0, id: "call_2", function: { name: "settle", arguments: '{"answer":"got it"}' } },
         ]),
       ])
     })
@@ -5985,12 +5985,12 @@ describe("tool_choice required and final_answer", () => {
     expect(textChunks).toEqual(["got it"])
   })
 
-  it("final_answer is never passed to execTool (intercepted before execution)", async () => {
-    // If final_answer were passed to execTool, it would return "unknown: final_answer"
+  it("settle is never passed to execTool (intercepted before execution)", async () => {
+    // If settle were passed to execTool, it would return "unknown: settle"
     mockCreate.mockReturnValue(
       makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_1", function: { name: "final_answer", arguments: '{"answer":"done"}' } },
+          { index: 0, id: "call_1", function: { name: "settle", arguments: '{"answer":"done"}' } },
         ]),
       ])
     )
@@ -6009,7 +6009,7 @@ describe("tool_choice required and final_answer", () => {
     const messages: any[] = [{ role: "system", content: "test" }]
     await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
-    // No tools should have been started via onToolStart (final_answer is intercepted)
+    // No tools should have been started via onToolStart (settle is intercepted)
     expect(toolStarts).toHaveLength(0)
     // There IS a synthetic tool result "(delivered)" but no execTool-produced results
     const toolResults = messages.filter((m: any) => m.role === "tool")
@@ -6018,7 +6018,7 @@ describe("tool_choice required and final_answer", () => {
     expect(toolResults[0].content).toBe("(delivered)")
   })
 
-  it("Azure: mixed final_answer rejection pushes to azureInput", async () => {
+  it("Azure: mixed settle rejection pushes to azureInput", async () => {
     vi.resetModules()
     vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
     await setupAzure()
@@ -6026,7 +6026,7 @@ describe("tool_choice required and final_answer", () => {
     vi.mocked(fs.readFileSync).mockReturnValue("file data")
 
     const funcItem1 = { type: "function_call", id: "fc1", call_id: "c1", name: "read_file", arguments: '{"path":"a.txt"}', status: "completed" }
-    const funcItem2 = { type: "function_call", id: "fc2", call_id: "c2", name: "final_answer", arguments: '{"answer":"done"}', status: "completed" }
+    const funcItem2 = { type: "function_call", id: "fc2", call_id: "c2", name: "settle", arguments: '{"answer":"done"}', status: "completed" }
 
     let callCount = 0
     mockResponsesCreate.mockImplementation(() => {
@@ -6036,16 +6036,16 @@ describe("tool_choice required and final_answer", () => {
           { type: "response.output_item.added", item: { type: "function_call", call_id: "c1", name: "read_file", arguments: "" } },
           { type: "response.function_call_arguments.delta", delta: '{"path":"a.txt"}' },
           { type: "response.output_item.done", item: funcItem1 },
-          { type: "response.output_item.added", item: { type: "function_call", call_id: "c2", name: "final_answer", arguments: "" } },
+          { type: "response.output_item.added", item: { type: "function_call", call_id: "c2", name: "settle", arguments: "" } },
           { type: "response.function_call_arguments.delta", delta: '{"answer":"done"}' },
           { type: "response.output_item.done", item: funcItem2 },
         ])
       }
-      // Second call: sole final_answer
+      // Second call: sole settle
       return makeResponsesStream([
-        { type: "response.output_item.added", item: { type: "function_call", call_id: "c3", name: "final_answer", arguments: "" } },
+        { type: "response.output_item.added", item: { type: "function_call", call_id: "c3", name: "settle", arguments: "" } },
         { type: "response.function_call_arguments.delta", delta: '{"answer":"the real answer"}' },
-        { type: "response.output_item.done", item: { type: "function_call", call_id: "c3", name: "final_answer", arguments: '{"answer":"the real answer"}' } },
+        { type: "response.output_item.done", item: { type: "function_call", call_id: "c3", name: "settle", arguments: '{"answer":"the real answer"}' } },
       ])
     })
 
@@ -6070,13 +6070,13 @@ describe("tool_choice required and final_answer", () => {
     // Final assistant message keeps tool_calls; answer emitted via onTextChunk
     const lastAssistant = [...messages].reverse().find((m: any) => m.role === "assistant")
     expect(lastAssistant.tool_calls).toBeDefined()
-    expect(lastAssistant.tool_calls[0].function.name).toBe("final_answer")
+    expect(lastAssistant.tool_calls[0].function.name).toBe("settle")
     expect(textChunks).toEqual(["the real answer"])
 
     // config cleanup handled by resetConfigCache in beforeEach
   })
 
-  it("Azure: truncated final_answer retries and pushes function_call_output to azureInput", async () => {
+  it("Azure: truncated settle retries and pushes function_call_output to azureInput", async () => {
     vi.resetModules()
     vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
     await setupAzure()
@@ -6087,16 +6087,16 @@ describe("tool_choice required and final_answer", () => {
       if (callCount === 1) {
         // First call: truncated JSON
         return makeResponsesStream([
-          { type: "response.output_item.added", item: { type: "function_call", call_id: "c1", name: "final_answer", arguments: "" } },
+          { type: "response.output_item.added", item: { type: "function_call", call_id: "c1", name: "settle", arguments: "" } },
           { type: "response.function_call_arguments.delta", delta: '{"answer":"truncated...' },
-          { type: "response.output_item.done", item: { type: "function_call", call_id: "c1", name: "final_answer", arguments: '{"answer":"truncated...' } },
+          { type: "response.output_item.done", item: { type: "function_call", call_id: "c1", name: "settle", arguments: '{"answer":"truncated...' } },
         ])
       }
       // Second call: valid answer
       return makeResponsesStream([
-        { type: "response.output_item.added", item: { type: "function_call", call_id: "c2", name: "final_answer", arguments: "" } },
+        { type: "response.output_item.added", item: { type: "function_call", call_id: "c2", name: "settle", arguments: "" } },
         { type: "response.function_call_arguments.delta", delta: '{"answer":"complete"}' },
-        { type: "response.output_item.done", item: { type: "function_call", call_id: "c2", name: "final_answer", arguments: '{"answer":"complete"}' } },
+        { type: "response.output_item.done", item: { type: "function_call", call_id: "c2", name: "settle", arguments: '{"answer":"complete"}' } },
       ])
     })
 
@@ -6126,20 +6126,20 @@ describe("tool_choice required and final_answer", () => {
     expect(textChunks).toEqual(["complete"])
   })
 
-  it("final_answer with invalid JSON arguments: retries (does not re-emit already-streamed content)", async () => {
+  it("settle with invalid JSON arguments: retries (does not re-emit already-streamed content)", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
       if (callCount === 1) {
         return makeStream([
           makeChunk("some content", [
-            { index: 0, id: "call_1", function: { name: "final_answer", arguments: "not valid json{" } },
+            { index: 0, id: "call_1", function: { name: "settle", arguments: "not valid json{" } },
           ]),
         ])
       }
       return makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_2", function: { name: "final_answer", arguments: '{"answer":"valid now"}' } },
+          { index: 0, id: "call_2", function: { name: "settle", arguments: '{"answer":"valid now"}' } },
         ]),
       ])
     })
@@ -6169,20 +6169,20 @@ describe("tool_choice required and final_answer", () => {
     expect(textChunks).toEqual(["valid now"])
   })
 
-  it("final_answer with valid JSON but no answer field: retries (does not re-emit already-streamed content)", async () => {
+  it("settle with valid JSON but no answer field: retries (does not re-emit already-streamed content)", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
       if (callCount === 1) {
         return makeStream([
           makeChunk("fallback content", [
-            { index: 0, id: "call_1", function: { name: "final_answer", arguments: '{"text":"hello"}' } },
+            { index: 0, id: "call_1", function: { name: "settle", arguments: '{"text":"hello"}' } },
           ]),
         ])
       }
       return makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_2", function: { name: "final_answer", arguments: '{"answer":"proper answer"}' } },
+          { index: 0, id: "call_2", function: { name: "settle", arguments: '{"answer":"proper answer"}' } },
         ]),
       ])
     })
@@ -6212,20 +6212,20 @@ describe("tool_choice required and final_answer", () => {
     expect(textChunks).toEqual(["proper answer"])
   })
 
-  it("final_answer with invalid JSON and no content: retries (pushes error tool result)", async () => {
+  it("settle with invalid JSON and no content: retries (pushes error tool result)", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
       if (callCount === 1) {
         return makeStream([
           makeChunk(undefined, [
-            { index: 0, id: "call_1", function: { name: "final_answer", arguments: "bad json" } },
+            { index: 0, id: "call_1", function: { name: "settle", arguments: "bad json" } },
           ]),
         ])
       }
       return makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_2", function: { name: "final_answer", arguments: '{"answer":"recovered"}' } },
+          { index: 0, id: "call_2", function: { name: "settle", arguments: '{"answer":"recovered"}' } },
         ]),
       ])
     })
@@ -6254,20 +6254,20 @@ describe("tool_choice required and final_answer", () => {
     expect(textChunks).toEqual(["recovered"])
   })
 
-  it("final_answer with valid non-object JSON: retries", async () => {
+  it("settle with valid non-object JSON: retries", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
       if (callCount === 1) {
         return makeStream([
           makeChunk(undefined, [
-            { index: 0, id: "call_1", function: { name: "final_answer", arguments: "123" } },
+            { index: 0, id: "call_1", function: { name: "settle", arguments: "123" } },
           ]),
         ])
       }
       return makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_2", function: { name: "final_answer", arguments: '{"answer":"recovered from scalar"}' } },
+          { index: 0, id: "call_2", function: { name: "settle", arguments: '{"answer":"recovered from scalar"}' } },
         ]),
       ])
     })
@@ -6293,20 +6293,20 @@ describe("tool_choice required and final_answer", () => {
     expect(textChunks).toEqual(["recovered from scalar"])
   })
 
-  it("final_answer with valid JSON, no answer field, and no content: retries", async () => {
+  it("settle with valid JSON, no answer field, and no content: retries", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
       if (callCount === 1) {
         return makeStream([
           makeChunk(undefined, [
-            { index: 0, id: "call_1", function: { name: "final_answer", arguments: '{"text":"hello"}' } },
+            { index: 0, id: "call_1", function: { name: "settle", arguments: '{"text":"hello"}' } },
           ]),
         ])
       }
       return makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_2", function: { name: "final_answer", arguments: '{"answer":"proper"}' } },
+          { index: 0, id: "call_2", function: { name: "settle", arguments: '{"answer":"proper"}' } },
         ]),
       ])
     })
@@ -6335,12 +6335,12 @@ describe("tool_choice required and final_answer", () => {
     expect(textChunks).toEqual(["proper"])
   })
 
-  it("calls onClearText before emitting valid final_answer when content was streamed", async () => {
-    // Model returns both content (refusal noise) and final_answer (real response)
+  it("calls onClearText before emitting valid settle when content was streamed", async () => {
+    // Model returns both content (refusal noise) and settle (real response)
     mockCreate.mockReturnValue(
       makeStream([
         makeChunk("I'm sorry, but I cannot assist with that request.", [
-          { index: 0, id: "call_1", function: { name: "final_answer", arguments: '{"answer":"Here is the real answer"}' } },
+          { index: 0, id: "call_1", function: { name: "settle", arguments: '{"answer":"Here is the real answer"}' } },
         ]),
       ])
     )
@@ -6362,16 +6362,16 @@ describe("tool_choice required and final_answer", () => {
     await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
     expect(clearCalled).toBe(true)
-    // Only the final_answer text is emitted after clear, NOT the refusal
+    // Only the settle text is emitted after clear, NOT the refusal
     expect(textChunks).toEqual(["Here is the real answer"])
   })
 
-  it("emits full final_answer text even when exceeding channel maxMessageLength (splitting is adapter's job)", async () => {
+  it("emits full settle text even when exceeding channel maxMessageLength (splitting is adapter's job)", async () => {
     const longText = "x".repeat(5000) // Teams max is 4000 but core never truncates
     mockCreate.mockReturnValue(
       makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_1", function: { name: "final_answer", arguments: JSON.stringify({ answer: longText }) } },
+          { index: 0, id: "call_1", function: { name: "settle", arguments: JSON.stringify({ answer: longText }) } },
         ]),
       ])
     )
@@ -6394,12 +6394,12 @@ describe("tool_choice required and final_answer", () => {
     expect(textChunks[0]).toBe(longText) // full text, no truncation
   })
 
-  it("does NOT truncate final_answer text within channel maxMessageLength", async () => {
+  it("does NOT truncate settle text within channel maxMessageLength", async () => {
     const shortText = "hello, this is a short response"
     mockCreate.mockReturnValue(
       makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_1", function: { name: "final_answer", arguments: JSON.stringify({ answer: shortText }) } },
+          { index: 0, id: "call_1", function: { name: "settle", arguments: JSON.stringify({ answer: shortText }) } },
         ]),
       ])
     )
@@ -6426,7 +6426,7 @@ describe("tool_choice required and final_answer", () => {
     mockCreate.mockReturnValue(
       makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_1", function: { name: "final_answer", arguments: JSON.stringify({ answer: longText }) } },
+          { index: 0, id: "call_1", function: { name: "settle", arguments: JSON.stringify({ answer: longText }) } },
         ]),
       ])
     )
@@ -6449,14 +6449,14 @@ describe("tool_choice required and final_answer", () => {
     expect(textChunks).toEqual([longText])
   })
 
-  // -- Unit 14b: final_answer answer extraction tests --
+  // -- Unit 14b: settle answer extraction tests --
 
-  it("final_answer with JSON string argument: uses string directly as answer", async () => {
+  it("settle with JSON string argument: uses string directly as answer", async () => {
     // Model passes a plain JSON string instead of {"answer":"..."}
     mockCreate.mockReturnValue(
       makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_1", function: { name: "final_answer", arguments: '"just a plain string response"' } },
+          { index: 0, id: "call_1", function: { name: "settle", arguments: '"just a plain string response"' } },
         ]),
       ])
     )
@@ -6485,7 +6485,7 @@ describe("tool_choice required and final_answer", () => {
     expect(toolResults[0].content).toBe("(delivered)")
   })
 
-  it("final_answer with truncated JSON: retries by pushing error and continuing loop", async () => {
+  it("settle with truncated JSON: retries by pushing error and continuing loop", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
@@ -6493,14 +6493,14 @@ describe("tool_choice required and final_answer", () => {
         // First call: truncated JSON (invalid)
         return makeStream([
           makeChunk(undefined, [
-            { index: 0, id: "call_1", function: { name: "final_answer", arguments: '{"answer":"this is truncated...' } },
+            { index: 0, id: "call_1", function: { name: "settle", arguments: '{"answer":"this is truncated...' } },
           ]),
         ])
       }
       // Second call: model retries successfully
       return makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_2", function: { name: "final_answer", arguments: '{"answer":"complete response"}' } },
+          { index: 0, id: "call_2", function: { name: "settle", arguments: '{"answer":"complete response"}' } },
         ]),
       ])
     })
@@ -6534,7 +6534,7 @@ describe("tool_choice required and final_answer", () => {
     expect(errors).toEqual([])
   })
 
-  it("final_answer with wrong-shape JSON (no answer field): retries", async () => {
+  it("settle with wrong-shape JSON (no answer field): retries", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
@@ -6542,14 +6542,14 @@ describe("tool_choice required and final_answer", () => {
         // First call: valid JSON but wrong shape (no "answer" key)
         return makeStream([
           makeChunk(undefined, [
-            { index: 0, id: "call_1", function: { name: "final_answer", arguments: '{"text":"hello","response":"world"}' } },
+            { index: 0, id: "call_1", function: { name: "settle", arguments: '{"text":"hello","response":"world"}' } },
           ]),
         ])
       }
       // Second call: correct shape
       return makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_2", function: { name: "final_answer", arguments: '{"answer":"correct answer"}' } },
+          { index: 0, id: "call_2", function: { name: "settle", arguments: '{"answer":"correct answer"}' } },
         ]),
       ])
     })
@@ -6579,7 +6579,7 @@ describe("tool_choice required and final_answer", () => {
     expect(textChunks).toEqual(["correct answer"])
   })
 
-  it("final_answer retry then succeed: emits answer on successful retry", async () => {
+  it("settle retry then succeed: emits answer on successful retry", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
@@ -6587,14 +6587,14 @@ describe("tool_choice required and final_answer", () => {
         // First call: invalid JSON
         return makeStream([
           makeChunk(undefined, [
-            { index: 0, id: "call_1", function: { name: "final_answer", arguments: "not json at all" } },
+            { index: 0, id: "call_1", function: { name: "settle", arguments: "not json at all" } },
           ]),
         ])
       }
       // Second call: valid answer
       return makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_2", function: { name: "final_answer", arguments: '{"answer":"success after retry"}' } },
+          { index: 0, id: "call_2", function: { name: "settle", arguments: '{"answer":"success after retry"}' } },
         ]),
       ])
     })
@@ -6625,7 +6625,7 @@ describe("tool_choice required and final_answer", () => {
     expect(toolMsgs[1].content).toBe("(delivered)")
   })
 
-  it("final_answer retry clears streamed noise via onClearText on both attempts", async () => {
+  it("settle retry clears streamed noise via onClearText on both attempts", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
@@ -6633,14 +6633,14 @@ describe("tool_choice required and final_answer", () => {
         // First call: noise content + truncated JSON
         return makeStream([
           makeChunk("some noise from streaming", [
-            { index: 0, id: "call_1", function: { name: "final_answer", arguments: '{"answer":"truncated...' } },
+            { index: 0, id: "call_1", function: { name: "settle", arguments: '{"answer":"truncated...' } },
           ]),
         ])
       }
       // Second call: more noise + valid answer
       return makeStream([
         makeChunk("more noise", [
-          { index: 0, id: "call_2", function: { name: "final_answer", arguments: '{"answer":"clean answer"}' } },
+          { index: 0, id: "call_2", function: { name: "settle", arguments: '{"answer":"clean answer"}' } },
         ]),
       ])
     })
@@ -6662,18 +6662,18 @@ describe("tool_choice required and final_answer", () => {
     await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
     // onClearText is called 3 times:
-    // 1. Streaming layer clears noise when first detecting final_answer (attempt 1)
+    // 1. Streaming layer clears noise when first detecting settle (attempt 1)
     // 2. Core.ts clears partial streamed text on retry (truncated JSON)
-    // 3. Streaming layer clears noise when detecting final_answer (attempt 2)
+    // 3. Streaming layer clears noise when detecting settle (attempt 2)
     expect(clearCount).toBe(3)
     // Only the final clean answer should remain
     expect(textChunks).toEqual(["clean answer"])
   })
 })
 
-// --- Unit 20a: finalAnswerStreamed flag integration tests ---
+// --- Unit 20a: settleStreamed flag integration tests ---
 
-describe("finalAnswerStreamed flag in core.ts", () => {
+describe("settleStreamed flag in core.ts", () => {
   let runAgent: (messages: any[], callbacks: ChannelCallbacks, channel?: string, signal?: AbortSignal, options?: { toolChoiceRequired?: boolean }) => Promise<{ usage?: any }>
 
   function makeStream(chunks: any[]) {
@@ -6704,15 +6704,15 @@ describe("finalAnswerStreamed flag in core.ts", () => {
     runAgent = core.runAgent
   })
 
-  it("when finalAnswerStreamed is true: skips onClearText and onTextChunk in isSoleFinalAnswer block (no double-emit)", async () => {
-    // Set up stream that returns final_answer with name in first delta
-    // FinalAnswerParser will detect it and set finalAnswerStreamed=true
+  it("when settleStreamed is true: skips onClearText and onTextChunk in isSoleSettle block (no double-emit)", async () => {
+    // Set up stream that returns settle with name in first delta
+    // SettleParser will detect it and set settleStreamed=true
     // The streaming layer calls onClearText once and onTextChunk progressively
     // Core.ts should NOT call onClearText or onTextChunk again
     mockCreate.mockReturnValue(
       makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_1", function: { name: "final_answer", arguments: '{"answer":"already streamed"}' } },
+          { index: 0, id: "call_1", function: { name: "settle", arguments: '{"answer":"already streamed"}' } },
         ]),
       ])
     )
@@ -6732,8 +6732,8 @@ describe("finalAnswerStreamed flag in core.ts", () => {
     const messages: any[] = [{ role: "system", content: "test" }]
     await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
-    // With FinalAnswerParser active: streaming layer calls onClearText + onTextChunk
-    // Then core.ts sees finalAnswerStreamed=true and skips its own onClearText + onTextChunk
+    // With SettleParser active: streaming layer calls onClearText + onTextChunk
+    // Then core.ts sees settleStreamed=true and skips its own onClearText + onTextChunk
     // So we should see exactly ONE clear and the text from streaming only
     //
     // Without the feature (current state): streaming layer does NOT call anything
@@ -6745,13 +6745,13 @@ describe("finalAnswerStreamed flag in core.ts", () => {
     // Without the feature: clear + text:already streamed are from core.ts.
     //
     // To make this test FAIL now and PASS after implementation:
-    // Assert that the streaming layer's FinalAnswerParser exists and is used
-    // by checking that TurnResult has finalAnswerStreamed property.
+    // Assert that the streaming layer's SettleParser exists and is used
+    // by checking that TurnResult has settleStreamed property.
     const { TurnResult: _ } = await import("../../heart/streaming") as any
     const streaming = await import("../../heart/streaming")
-    // The FinalAnswerParser class must exist
-    expect(streaming.FinalAnswerParser).toBeDefined()
-    // The result must have finalAnswerStreamed=true (so core.ts skips re-emit)
+    // The SettleParser class must exist
+    expect(streaming.SettleParser).toBeDefined()
+    // The result must have settleStreamed=true (so core.ts skips re-emit)
     // This is verified by ensuring no double clear+text in callSequence
     // Count clear calls: should be exactly 1 (from streaming layer only)
     const clearCount = callSequence.filter(c => c === "clear").length
@@ -6766,23 +6766,23 @@ describe("finalAnswerStreamed flag in core.ts", () => {
     expect(toolResults.some((m: any) => m.content === "(delivered)")).toBe(true)
   })
 
-  it("when finalAnswerStreamed is false: existing behavior unchanged -- core.ts calls onClearText + onTextChunk", async () => {
-    // Use a tool call name that is NOT final_answer, so parser doesn't activate
-    // Then on second iteration, final_answer comes through
+  it("when settleStreamed is false: existing behavior unchanged -- core.ts calls onClearText + onTextChunk", async () => {
+    // Use a tool call name that is NOT settle, so parser doesn't activate
+    // Then on second iteration, settle comes through
     // Since each iteration creates a fresh parser, the second call's parser
-    // detects final_answer and sets finalAnswerStreamed=true
+    // detects settle and sets settleStreamed=true
     //
     // Actually, to test the false case, we need a situation where the model
-    // returns final_answer BUT the parser's prefix never matched (e.g. malformed args).
-    // When parser.active is false, finalAnswerStreamed will be false,
+    // returns settle BUT the parser's prefix never matched (e.g. malformed args).
+    // When parser.active is false, settleStreamed will be false,
     // and core.ts should call onClearText + onTextChunk as before.
     mockCreate.mockReturnValue(
       makeStream([
         makeChunk(undefined, [
-          // final_answer with arguments that don't contain "answer" prefix
+          // settle with arguments that don't contain "answer" prefix
           // (parser won't activate), but JSON is valid with answer field
           // so core.ts will extract and emit
-          { index: 0, id: "call_1", function: { name: "final_answer", arguments: '{"answer":"from core"}' } },
+          { index: 0, id: "call_1", function: { name: "settle", arguments: '{"answer":"from core"}' } },
         ]),
       ])
     )
@@ -6804,22 +6804,22 @@ describe("finalAnswerStreamed flag in core.ts", () => {
 
     // For the false case -- wait, this test has a problem:
     // '{"answer":"from core"}' WILL match the parser prefix.
-    // So this will also have finalAnswerStreamed=true.
+    // So this will also have settleStreamed=true.
     // To get false, we need args like '{"text":"from core"}' which has no answer field.
     // But then core.ts won't extract an answer and will retry.
     //
     // The false case is: parser never activates because args don't start with "answer" prefix.
     // But core.ts can still parse the full JSON string. The two cases are:
-    //   1. parser.active=true -> finalAnswerStreamed=true -> core.ts skips
-    //   2. parser.active=false -> finalAnswerStreamed=false -> core.ts emits
+    //   1. parser.active=true -> settleStreamed=true -> core.ts skips
+    //   2. parser.active=false -> settleStreamed=false -> core.ts emits
     //
     // For case 2, the args would be something unusual that doesn't match the prefix
     // but is still valid JSON with answer field. This is impossible since any
     // '{"answer":"..."}' will match the prefix.
     //
-    // So the false case is only when it's NOT final_answer tool, or when the
+    // So the false case is only when it's NOT settle tool, or when the
     // args are malformed. For malformed: core.ts retries.
-    // The only realistic false case for core.ts emit is when finalAnswerStreamed
+    // The only realistic false case for core.ts emit is when settleStreamed
     // doesn't exist (current state -- undefined is falsy).
     //
     // Actually, this test should verify that when the feature is implemented,
@@ -6878,7 +6878,7 @@ describe("integration: kick + tool_choice required combined", () => {
       }
       return makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_1", function: { name: "final_answer", arguments: '{"answer":"done"}' } },
+          { index: 0, id: "call_1", function: { name: "settle", arguments: '{"answer":"done"}' } },
         ]),
       ])
     })
@@ -6906,7 +6906,7 @@ describe("integration: kick + tool_choice required combined", () => {
 
   // Kick detection disabled — see core.ts
   // skip: kick detection deferred per audit
-  it.skip("after kick, model returns final_answer -- terminates cleanly", async () => {
+  it.skip("after kick, model returns settle -- terminates cleanly", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
@@ -6915,7 +6915,7 @@ describe("integration: kick + tool_choice required combined", () => {
       }
       return makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_1", function: { name: "final_answer", arguments: '{"answer":"the answer is 42"}' } },
+          { index: 0, id: "call_1", function: { name: "settle", arguments: '{"answer":"the answer is 42"}' } },
         ]),
       ])
     })
@@ -7057,12 +7057,12 @@ describe("integration: kick + tool_choice required combined", () => {
     expect(kicks).toHaveLength(0)
   })
 
-  it("final_answer with very long text -- full text preserved", async () => {
+  it("settle with very long text -- full text preserved", async () => {
     const longText = "x".repeat(100000)
     mockCreate.mockReturnValue(
       makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_1", function: { name: "final_answer", arguments: JSON.stringify({ answer: longText }) } },
+          { index: 0, id: "call_1", function: { name: "settle", arguments: JSON.stringify({ answer: longText }) } },
         ]),
       ])
     )
@@ -7103,10 +7103,10 @@ describe("integration: kick + tool_choice required combined", () => {
         // Model returns empty content (reasoning went through separate channel), no tool calls
         return makeStream([{ choices: [{ delta: {} }] }])
       }
-      // After kick, model correctly calls final_answer
+      // After kick, model correctly calls settle
       return makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_1", function: { name: "final_answer", arguments: '{"answer":"here you go"}' } },
+          { index: 0, id: "call_1", function: { name: "settle", arguments: '{"answer":"here you go"}' } },
         ]),
       ])
     })
@@ -7391,7 +7391,7 @@ describe("tool_choice forcing after kick (Bug 4)", () => {
   })
 })
 
-describe("final_answer injection after narration kick", () => {
+describe("settle injection after narration kick", () => {
   let runAgent: (messages: any[], callbacks: ChannelCallbacks, channel?: string, signal?: AbortSignal, options?: { toolChoiceRequired?: boolean }) => Promise<{ usage?: any }>
 
   function makeStream(chunks: any[]) {
@@ -7423,9 +7423,9 @@ describe("final_answer injection after narration kick", () => {
     runAgent = core.runAgent
   })
 
-  // Kick detection disabled — see core.ts (final_answer is now always in tools)
+  // Kick detection disabled — see core.ts (settle is now always in tools)
   // skip: kick detection deferred per audit
-  it.skip("after narration kick, final_answer is present in tools sent to API", async () => {
+  it.skip("after narration kick, settle is present in tools sent to API", async () => {
     const toolsPerCall: any[][] = []
     let callCount = 0
     mockCreate.mockImplementation((params: any) => {
@@ -7454,17 +7454,17 @@ describe("final_answer injection after narration kick", () => {
     await runAgent(messages, callbacks)
 
     expect(callCount).toBe(2)
-    // First call: no final_answer (no prior kick)
+    // First call: no settle (no prior kick)
     const firstToolNames = toolsPerCall[0].map((t: any) => t.function.name)
-    expect(firstToolNames).not.toContain("final_answer")
-    // Second call (after narration kick): final_answer IS present
+    expect(firstToolNames).not.toContain("settle")
+    // Second call (after narration kick): settle IS present
     const secondToolNames = toolsPerCall[1].map((t: any) => t.function.name)
-    expect(secondToolNames).toContain("final_answer")
+    expect(secondToolNames).toContain("settle")
   })
 
-  // Kick detection disabled — see core.ts (final_answer is now always in tools)
+  // Kick detection disabled — see core.ts (settle is now always in tools)
   // skip: kick detection deferred per audit
-  it.skip("after empty kick, final_answer is NOT in tools (narration-only injection)", async () => {
+  it.skip("after empty kick, settle is NOT in tools (narration-only injection)", async () => {
     const toolsPerCall: any[][] = []
     let callCount = 0
     mockCreate.mockImplementation((params: any) => {
@@ -7493,25 +7493,25 @@ describe("final_answer injection after narration kick", () => {
     await runAgent(messages, callbacks)
 
     expect(callCount).toBe(2)
-    // After any kick (including empty): final_answer IS injected so the
+    // After any kick (including empty): settle IS injected so the
     // model can cleanly exit instead of calling no-op tools
     const secondToolNames = toolsPerCall[1].map((t: any) => t.function.name)
-    expect(secondToolNames).toContain("final_answer")
+    expect(secondToolNames).toContain("settle")
   })
 
-  // Kick detection disabled — see core.ts (final_answer is now always in tools)
+  // Kick detection disabled — see core.ts (settle is now always in tools)
   // skip: kick detection deferred per audit
-  it.skip("model calls final_answer after narration kick -- terminates cleanly", async () => {
+  it.skip("model calls settle after narration kick -- terminates cleanly", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
       if (callCount === 1) {
         return makeStream([makeChunk("I'll check that for you")])
       }
-      // After narration kick, model uses final_answer
+      // After narration kick, model uses settle
       return makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_1", function: { name: "final_answer", arguments: '{"answer":"the answer is 42"}' } },
+          { index: 0, id: "call_1", function: { name: "settle", arguments: '{"answer":"the answer is 42"}' } },
         ]),
       ])
     })
@@ -7536,9 +7536,9 @@ describe("final_answer injection after narration kick", () => {
     expect(lastAssistant.tool_calls).toBeUndefined()
   })
 
-  // Kick detection disabled — see core.ts (final_answer is now always in tools)
+  // Kick detection disabled — see core.ts (settle is now always in tools)
   // skip: kick detection deferred per audit
-  it.skip("activeTools computed per-iteration -- first call has no final_answer, after kick it does", async () => {
+  it.skip("activeTools computed per-iteration -- first call has no settle, after kick it does", async () => {
     const toolsPerCall: any[][] = []
     let callCount = 0
     mockCreate.mockImplementation((params: any) => {
@@ -7568,19 +7568,19 @@ describe("final_answer injection after narration kick", () => {
     expect(toolsPerCall.length).toBe(2)
     const firstNames = toolsPerCall[0].map((t: any) => t.function.name)
     const secondNames = toolsPerCall[1].map((t: any) => t.function.name)
-    // First iteration: no final_answer
-    expect(firstNames).not.toContain("final_answer")
-    // Second iteration (after narration kick): final_answer present
-    expect(secondNames).toContain("final_answer")
+    // First iteration: no settle
+    expect(firstNames).not.toContain("settle")
+    // Second iteration (after narration kick): settle present
+    expect(secondNames).toContain("settle")
   })
 
-  it("toolChoiceRequired still includes final_answer even without prior kick", async () => {
+  it("toolChoiceRequired still includes settle even without prior kick", async () => {
     const toolsPerCall: any[][] = []
     mockCreate.mockImplementation((params: any) => {
       toolsPerCall.push(params.tools)
       return makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_1", function: { name: "final_answer", arguments: '{"answer":"done"}' } },
+          { index: 0, id: "call_1", function: { name: "settle", arguments: '{"answer":"done"}' } },
         ]),
       ])
     })
@@ -7598,9 +7598,9 @@ describe("final_answer injection after narration kick", () => {
     const messages: any[] = [{ role: "system", content: "test" }]
     await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
-    // With toolChoiceRequired, final_answer should be in tools from the first call
+    // With toolChoiceRequired, settle should be in tools from the first call
     const toolNames = toolsPerCall[0].map((t: any) => t.function.name)
-    expect(toolNames).toContain("final_answer")
+    expect(toolNames).toContain("settle")
   })
 })
 
@@ -8428,10 +8428,10 @@ describe("repairOrphanedToolCalls", () => {
   })
 })
 
-describe("getFinalAnswerRetryError delegation adherence (removed)", () => {
+describe("getSettleRetryError delegation adherence (removed)", () => {
   it("no longer rejects delegate-inward — delegation is a suggestion, not a gate", async () => {
-    const { getFinalAnswerRetryError } = await import("../../heart/core")
-    const result = getFinalAnswerRetryError(
+    const { getSettleRetryError } = await import("../../heart/core")
+    const result = getSettleRetryError(
       false,
       undefined,
       false,
@@ -8442,17 +8442,17 @@ describe("getFinalAnswerRetryError delegation adherence (removed)", () => {
   })
 
   it("returns null when delegationDecision is undefined", async () => {
-    const { getFinalAnswerRetryError } = await import("../../heart/core")
-    const result = getFinalAnswerRetryError(false, undefined, false, undefined, false)
+    const { getSettleRetryError } = await import("../../heart/core")
+    const result = getSettleRetryError(false, undefined, false, undefined, false)
     expect(result).toBeNull()
   })
 
   it("returns null with delegate-inward even when mustResolveBeforeHandoff and no intent", async () => {
-    const { getFinalAnswerRetryError } = await import("../../heart/core")
+    const { getSettleRetryError } = await import("../../heart/core")
     // Previously this would reject with delegation taking priority.
     // Now delegation check is removed, falls through to mustResolveBeforeHandoff
     // check which rejects for missing intent.
-    const result = getFinalAnswerRetryError(
+    const result = getSettleRetryError(
       true,
       undefined,
       false,
@@ -8501,9 +8501,9 @@ describe("sawSendMessageSelf turn loop tracking", () => {
     runAgent = core.runAgent
   })
 
-  it("sets sawSendMessageSelf=true when send_message(friendId:self) is called in the turn loop, allowing subsequent final_answer with delegate-inward", async () => {
+  it("sets sawSendMessageSelf=true when send_message(friendId:self) is called in the turn loop, allowing subsequent settle with delegate-inward", async () => {
     // First call: agent calls send_message with friendId: "self"
-    // Second call: agent calls final_answer (should succeed, not be rejected)
+    // Second call: agent calls settle (should succeed, not be rejected)
     mockCreate
       .mockReturnValueOnce(
         makeStream([
@@ -8526,7 +8526,7 @@ describe("sawSendMessageSelf turn loop tracking", () => {
               index: 0,
               id: "call_fa",
               function: {
-                name: "final_answer",
+                name: "settle",
                 arguments: JSON.stringify({ answer: "done", intent: "complete" }),
               },
             },
@@ -8552,8 +8552,8 @@ describe("sawSendMessageSelf turn loop tracking", () => {
       delegationDecision: { target: "delegate-inward", reasons: ["explicit_reflection"], outwardClosureRequired: false },
     })
 
-    // The agent should complete successfully (final_answer accepted)
-    // If sawSendMessageSelf wasn't set, the final_answer would be rejected and the agent would loop
+    // The agent should complete successfully (settle accepted)
+    // If sawSendMessageSelf wasn't set, the settle would be rejected and the agent would loop
     // The fact that it completed with 2 LLM calls (not infinite) proves sawSendMessageSelf was set
     expect(mockCreate).toHaveBeenCalledTimes(2)
     expect(customExecTool).toHaveBeenCalledWith("send_message", expect.objectContaining({ friendId: "self" }), undefined)

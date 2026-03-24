@@ -5,7 +5,7 @@ import { getAgentName, getAgentSecretsPath } from "../identity";
 import type { UsageData } from "../../mind/context";
 import { emitNervesEvent } from "../../nerves/runtime";
 import type { ProviderCapability, ProviderErrorClassification, ProviderRuntime, ProviderTurnRequest } from "../core";
-import { FinalAnswerStreamer } from "../streaming";
+import { SettleStreamer } from "../streaming";
 import type { TurnResult } from "../streaming";
 import { getModelCapabilities } from "../model-capabilities";
 
@@ -310,7 +310,7 @@ async function streamAnthropicMessages(
   const toolCalls = new Map<number, { id: string; name: string; arguments: string }>();
   const thinkingBlocks = new Map<number, { type: "thinking"; thinking: string; signature: string }>();
   const redactedBlocks = new Map<number, { type: "redacted_thinking"; data: string }>();
-  const answerStreamer = new FinalAnswerStreamer(request.callbacks, request.eagerFinalAnswerStreaming);
+  const answerStreamer = new SettleStreamer(request.callbacks, request.eagerSettleStreaming);
 
   try {
     for await (const event of response) {
@@ -334,9 +334,9 @@ async function streamAnthropicMessages(
             name,
             arguments: input,
           });
-          // Activate eager streaming for sole final_answer tool call
-          /* v8 ignore next -- final_answer streaming activation, tested via FinalAnswerStreamer unit tests @preserve */
-          if (name === "final_answer" && toolCalls.size === 1) {
+          // Activate eager streaming for sole settle tool call
+          /* v8 ignore next -- settle streaming activation, tested via SettleStreamer unit tests @preserve */
+          if (name === "settle" && toolCalls.size === 1) {
             answerStreamer.activate();
           }
         }
@@ -383,8 +383,8 @@ async function streamAnthropicMessages(
               existing.arguments,
               partialJson,
             );
-            /* v8 ignore next -- final_answer delta streaming, tested via FinalAnswerStreamer unit tests @preserve */
-            if (existing.name === "final_answer" && toolCalls.size === 1) {
+            /* v8 ignore next -- settle delta streaming, tested via SettleStreamer unit tests @preserve */
+            if (existing.name === "settle" && toolCalls.size === 1) {
               answerStreamer.processDelta(partialJson);
             }
           }
@@ -425,7 +425,7 @@ async function streamAnthropicMessages(
     toolCalls: [...toolCalls.values()],
     outputItems,
     usage,
-    finalAnswerStreamed: answerStreamer.streamed,
+    settleStreamed: answerStreamer.streamed,
   };
 }
 

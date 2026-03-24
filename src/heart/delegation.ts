@@ -25,7 +25,7 @@ interface DelegationInput {
 }
 
 const CROSS_SESSION_TOOLS = new Set(["query_session", "send_message", "bridge_manage"])
-const FAST_PATH_TOOLS = new Set(["final_answer"])
+const FAST_PATH_TOOLS = new Set(["settle"])
 const REFLECTION_PATTERN = /\b(think|reflect|ponder|surface|surfaces|surfaced|sit with|metaboli[sz]e)\b/i
 const CROSS_SESSION_PATTERN = /\b(other chat|other session|across chats?|across sessions?|keep .* aligned|relay|carry .* across)\b/i
 
