@@ -6,7 +6,8 @@
       "changes": [
         "Inner return obligations: delegated inner dialog work now tracks a ReturnObligation through queued → running → returned/deferred lifecycle.",
         "Exact-origin routing: inner dialog completions route back to the session that delegated the work, not just the freshest active session.",
-        "Active work frame surfaces pending inner return obligations so the agent knows what's outstanding."
+        "Active work frame surfaces pending inner return obligations so the agent knows what's outstanding.",
+        "BlueBubbles no longer shows redundant \"shared work: errored\" alongside failover messages. Terminal errors are buffered and only displayed when failover doesn't handle them."
       ]
     },
     {
