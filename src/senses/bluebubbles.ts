@@ -731,6 +731,23 @@ async function handleBlueBubblesNormalizedEvent(
 
     // ── Call shared pipeline ──────────────────────────────────────────
 
+    // Buffer terminal errors so failover can suppress them.
+    // If failover produces a message, the buffered error is skipped.
+    // If failover doesn't fire, the buffered error is replayed.
+    let bufferedTerminalError: Error | null = null
+    /* v8 ignore start -- failover-aware error buffering @preserve */
+    const failoverAwareCallbacks: typeof callbacks = {
+      ...callbacks,
+      onError(error: Error, severity: "transient" | "terminal"): void {
+        if (severity === "terminal") {
+          bufferedTerminalError = error
+          return
+        }
+        callbacks.onError(error, severity)
+      },
+    }
+    /* v8 ignore stop */
+
     try {
       const result = await handleInboundTurn({
         channel: "bluebubbles",
@@ -781,7 +798,7 @@ async function handleBlueBubblesNormalizedEvent(
         accumulateFriendTokens: resolvedDeps.accumulateFriendTokens,
         signal: controller.signal,
         runAgentOptions: { mcpManager },
-        callbacks,
+        callbacks: failoverAwareCallbacks,
         failoverState: (() => {
           if (!bbFailoverStates.has(event.chat.sessionKey)) {
             bbFailoverStates.set(event.chat.sessionKey, { pending: null })
@@ -790,9 +807,13 @@ async function handleBlueBubblesNormalizedEvent(
         })(),
       })
 
-      /* v8 ignore start -- failover display: tested via pipeline integration tests @preserve */
+      /* v8 ignore start -- failover display + error replay @preserve */
       if (result.failoverMessage) {
+        // Failover handled it — show the failover message, skip the buffered error
         await client.sendText({ chat: event.chat, text: result.failoverMessage })
+      } else if (bufferedTerminalError) {
+        // No failover — replay the buffered terminal error
+        callbacks.onError(bufferedTerminalError, "terminal")
       }
       /* v8 ignore stop */
 
@@ -842,6 +863,14 @@ async function handleBlueBubblesNormalizedEvent(
         kind: event.kind,
       }
     } finally {
+      // If a terminal error was buffered and never replayed (e.g., handleInboundTurn threw),
+      // replay it now so the user still sees the error.
+      /* v8 ignore start -- error replay on throw: tested via BB error test @preserve */
+      if (bufferedTerminalError) {
+        callbacks.onError(bufferedTerminalError, "terminal")
+        bufferedTerminalError = null
+      }
+      /* v8 ignore stop */
       await callbacks.finish()
     }
   })
