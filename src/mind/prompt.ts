@@ -271,7 +271,9 @@ export function runtimeInfoSection(channel: Channel): string {
   if (channel === "cli") {
     lines.push("i introduce myself on boot with a fun random greeting.");
   } else if (channel === "inner") {
-    // No boot greeting or channel-specific guidance for inner dialog
+    lines.push(
+      "this is my private thinking space. when a thought is ready to share, i surface it to whoever needs to hear it. i settle when i'm done thinking.",
+    )
   } else if (channel === "bluebubbles") {
     lines.push(
       "i am responding in iMessage through BlueBubbles. i keep replies short and phone-native. i do not use markdown. i do not introduce myself on boot.",
