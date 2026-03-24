@@ -121,7 +121,7 @@ describe("surface tool", () => {
         advanceObligation: () => {},
       })
 
-      expect(routeToFriend).toHaveBeenCalledWith("ben", "just thinking of you")
+      expect(routeToFriend).toHaveBeenCalledWith("ben", "just thinking of you", undefined)
       expect(result).toContain("queued")
     })
 
@@ -195,6 +195,38 @@ describe("surface tool", () => {
       })
 
       expect(advanceObligation).not.toHaveBeenCalled()
+    })
+
+    it("passes queueItem to routeToFriend when routing via delegationId", async () => {
+      const queueItem: AttentionItem = {
+        id: "abc123", friendId: "ari", friendName: "Ari", channel: "bluebubbles", key: "c1",
+        bridgeId: "bridge-1", delegatedContent: "think about this", source: "drained", timestamp: 1000,
+      }
+      const queue: AttentionItem[] = [queueItem]
+
+      const routeToFriend = vi.fn().mockResolvedValue({ status: "delivered", detail: "via iMessage" })
+      await handleSurface({
+        content: "here's my answer",
+        delegationId: "abc123",
+        queue,
+        routeToFriend,
+        advanceObligation: () => {},
+      })
+
+      expect(routeToFriend).toHaveBeenCalledWith("ari", "here's my answer", queueItem)
+    })
+
+    it("passes undefined queueItem to routeToFriend for spontaneous outreach", async () => {
+      const routeToFriend = vi.fn().mockResolvedValue({ status: "queued", detail: "pending" })
+      await handleSurface({
+        content: "hey there",
+        friendId: "bob",
+        queue: [],
+        routeToFriend,
+        advanceObligation: () => {},
+      })
+
+      expect(routeToFriend).toHaveBeenCalledWith("bob", "hey there", undefined)
     })
   })
 })
