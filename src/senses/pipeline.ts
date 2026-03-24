@@ -25,6 +25,7 @@ import { listTargetSessionCandidates } from "../heart/target-resolution"
 import { readInnerDialogRawData, deriveInnerDialogStatus, deriveInnerJob, getInnerDialogSessionPath } from "../heart/daemon/thoughts"
 import { getInnerDialogPendingDir } from "../mind/pending"
 import { readPendingObligations } from "../heart/obligations"
+import { listActiveObligations } from "../mind/obligations"
 import type { BoardResult } from "../repertoire/tasks/types"
 import { buildFailoverContext, handleFailoverReply, type FailoverContext } from "../heart/provider-failover"
 import { runHealthInventory } from "../heart/provider-ping"
@@ -434,6 +435,13 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     })(),
     friendActivity: sessionActivity,
     targetCandidates,
+    innerReturnObligations: (() => {
+      try {
+        return listActiveObligations(getAgentName())
+      } catch {
+        return []
+      }
+    })(),
   })
   const delegationDecision = decideDelegation({
     channel: input.channel,

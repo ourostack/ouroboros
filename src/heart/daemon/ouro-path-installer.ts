@@ -35,6 +35,17 @@ fi
 exec node "$ENTRY" "$@"
 `
 
+function writeWrapperScript(
+  scriptPath: string,
+  mkdirSync: NonNullable<OuroPathInstallerDeps["mkdirSync"]>,
+  writeFileSync: NonNullable<OuroPathInstallerDeps["writeFileSync"]>,
+  chmodSync: NonNullable<OuroPathInstallerDeps["chmodSync"]>,
+): void {
+  mkdirSync(path.dirname(scriptPath), { recursive: true })
+  writeFileSync(scriptPath, WRAPPER_SCRIPT, { mode: 0o755 })
+  chmodSync(scriptPath, 0o755)
+}
+
 function detectShellProfile(homeDir: string, shell: string | undefined): string | null {
   if (!shell) return null
   const base = path.basename(shell)
@@ -149,10 +160,11 @@ export function installOuroCommand(deps: OuroPathInstallerDeps = {}): OuroPathIn
     meta: { scriptPath, binDir },
   })
 
+
   try {
-    mkdirSync(binDir, { recursive: true })
-    writeFileSync(scriptPath, WRAPPER_SCRIPT, { mode: 0o755 })
-    chmodSync(scriptPath, 0o755)
+    if (!modernCurrent) {
+      writeWrapperScript(scriptPath, mkdirSync, writeFileSync, chmodSync)
+    }
   } catch (error) {
     emitNervesEvent({
       level: "warn",
@@ -165,8 +177,8 @@ export function installOuroCommand(deps: OuroPathInstallerDeps = {}): OuroPathIn
   }
 
   // Check if ~/.ouro-cli/bin is already in PATH
-  let shellProfileUpdated: string | null = null
   const pathReady = isBinDirInPath(binDir, envPath)
+  let shellProfileUpdated: string | null = null
 
   if (!pathReady) {
     const profilePath = detectShellProfile(homeDir, shell)
@@ -198,7 +210,7 @@ export function installOuroCommand(deps: OuroPathInstallerDeps = {}): OuroPathIn
     component: "daemon",
     event: "daemon.ouro_path_install_end",
     message: "ouro command installed",
-    meta: { scriptPath, pathReady, shellProfileUpdated },
+    meta: { scriptPath, pathReady, shellProfileUpdated, oldScriptPath: oldExists ? oldScriptPath : null },
   })
 
   return { installed: true, scriptPath, pathReady, shellProfileUpdated, repairedOldLauncher }

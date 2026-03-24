@@ -17,6 +17,7 @@ import {
   type PendingMessage,
   type DelegatedFrom,
 } from "../mind/pending"
+import { advanceObligation } from "../mind/obligations"
 import { getChannelCapabilities } from "../mind/friends/channel"
 import { enforceTrustGate } from "./trust-gate"
 import { accumulateFriendTokens } from "../mind/friends/tokens"
@@ -282,6 +283,18 @@ function sessionMatchesActivity(
     && activity.key === session.key
 }
 
+function resolveExactOriginSession(
+  delegatedFrom: NonNullable<PendingMessage["delegatedFrom"]>,
+  sessionActivity: SessionActivityRecord[],
+): SessionActivityRecord | null {
+  return sessionActivity.find((activity) =>
+    activity.friendId === delegatedFrom.friendId
+    && activity.channel === delegatedFrom.channel
+    && activity.key === delegatedFrom.key
+    && activity.channel !== "inner",
+  ) ?? null
+}
+
 function resolveBridgePreferredSession(
   delegatedFrom: NonNullable<PendingMessage["delegatedFrom"]>,
   sessionActivity: SessionActivityRecord[],
@@ -331,6 +344,21 @@ export function enrichDelegatedFromWithBridge(delegatedFrom: DelegatedFrom): Del
   return delegatedFrom
 }
 
+function advanceObligationQuietly(
+  agentName: string,
+  obligationId: string | undefined,
+  update: Parameters<typeof advanceObligation>[2],
+): void {
+  if (!obligationId) return
+  try {
+    advanceObligation(agentName, obligationId, update)
+  /* v8 ignore start -- best-effort: obligation fs errors must never block return routing @preserve */
+  } catch {
+    // swallowed
+  }
+  /* v8 ignore stop */
+}
+
 async function routeDelegatedCompletion(
   agentRoot: string,
   agentName: string,
@@ -344,6 +372,19 @@ async function routeDelegatedCompletion(
   }
 
   const delegatedFrom = enrichDelegatedFromWithBridge(delegated.delegatedFrom)
+  const obligationId = delegated.obligationId
+
+  // Advance any inner return obligations from queued -> running (they were drained this turn).
+  // drainedPending is guaranteed non-null here (we found delegated above).
+  for (const msg of drainedPending!) {
+    if (msg.obligationId) {
+      advanceObligationQuietly(agentName, msg.obligationId, {
+        status: "running",
+        startedAt: timestamp,
+      })
+    }
+  }
+
   if (delegated.obligationStatus === "pending") {
     // Fulfill the persistent obligation in the store
     try {
@@ -378,6 +419,7 @@ async function routeDelegatedCompletion(
     content: completion.answer.trim(),
     timestamp,
     delegatedFrom,
+    ...(obligationId ? { obligationId } : {}),
   }
 
   const sessionActivity = listSessionActivity({
@@ -386,15 +428,31 @@ async function routeDelegatedCompletion(
     agentName,
   })
 
-  const bridgeTarget = resolveBridgePreferredSession(delegatedFrom, sessionActivity)
-  if (bridgeTarget) {
-    if (await tryDeliverDelegatedCompletion(bridgeTarget, outboundEnvelope)) {
+  // Priority 1: Exact origin session (the session that delegated this work).
+  const exactOrigin = resolveExactOriginSession(delegatedFrom, sessionActivity)
+  if (exactOrigin) {
+    if (await tryDeliverDelegatedCompletion(exactOrigin, outboundEnvelope)) {
+      advanceObligationQuietly(agentName, obligationId, { status: "returned", returnedAt: timestamp, returnTarget: "exact-origin" })
       return
     }
-    writePendingEnvelope(getPendingDir(agentName, bridgeTarget.friendId, bridgeTarget.channel, bridgeTarget.key), outboundEnvelope)
+    writePendingEnvelope(getPendingDir(agentName, exactOrigin.friendId, exactOrigin.channel, exactOrigin.key), outboundEnvelope)
+    advanceObligationQuietly(agentName, obligationId, { status: "returned", returnedAt: timestamp, returnTarget: "exact-origin" })
     return
   }
 
+  // Priority 2: Bridge-preferred session (if delegation was within a bridge).
+  const bridgeTarget = resolveBridgePreferredSession(delegatedFrom, sessionActivity)
+  if (bridgeTarget) {
+    if (await tryDeliverDelegatedCompletion(bridgeTarget, outboundEnvelope)) {
+      advanceObligationQuietly(agentName, obligationId, { status: "returned", returnedAt: timestamp, returnTarget: "bridge-session" })
+      return
+    }
+    writePendingEnvelope(getPendingDir(agentName, bridgeTarget.friendId, bridgeTarget.channel, bridgeTarget.key), outboundEnvelope)
+    advanceObligationQuietly(agentName, obligationId, { status: "returned", returnedAt: timestamp, returnTarget: "bridge-session" })
+    return
+  }
+
+  // Priority 3: Freshest active friend session.
   const freshest = findFreshestFriendSession({
     sessionsDir: path.join(agentRoot, "state", "sessions"),
     friendsDir: path.join(agentRoot, "friends"),
@@ -404,13 +462,17 @@ async function routeDelegatedCompletion(
   })
   if (freshest && freshest.channel !== "inner") {
     if (await tryDeliverDelegatedCompletion(freshest, outboundEnvelope)) {
+      advanceObligationQuietly(agentName, obligationId, { status: "returned", returnedAt: timestamp, returnTarget: "freshest-session" })
       return
     }
     writePendingEnvelope(getPendingDir(agentName, freshest.friendId, freshest.channel, freshest.key), outboundEnvelope)
+    advanceObligationQuietly(agentName, obligationId, { status: "returned", returnedAt: timestamp, returnTarget: "freshest-session" })
     return
   }
 
+  // Priority 4: Deferred return queue.
   writePendingEnvelope(getDeferredReturnDir(agentName, delegatedFrom.friendId), outboundEnvelope)
+  advanceObligationQuietly(agentName, obligationId, { status: "deferred", returnedAt: timestamp, returnTarget: "deferred" })
 }
 
 // Self-referencing friend record for inner dialog (agent talking to itself).

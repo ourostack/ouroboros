@@ -37,6 +37,7 @@ import { readMemoryFacts, saveMemoryFact, searchMemoryFacts } from "../mind/memo
 import { getTaskModule } from "./tasks";
 import { getPendingDir, getInnerDialogPendingDir } from "../mind/pending";
 import type { PendingMessage } from "../mind/pending";
+import { createObligation as createInnerObligation, generateObligationId } from "../mind/obligations";
 import type { BridgeRecord, BridgeSessionRef } from "../heart/bridges/store";
 import { buildProgressStory, renderProgressStory } from "../heart/progress-story";
 import { deliverCrossChatMessage, type CrossChatDeliveryResult } from "../heart/cross-chat-delivery";
@@ -1219,6 +1220,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
             ...(delegatingBridgeId ? { bridgeId: delegatingBridgeId } : {}),
           }
         : undefined
+      const obligationId = delegatedFrom ? generateObligationId(now) : undefined
       const envelope: PendingMessage = {
         from: agentName,
         friendId,
@@ -1227,6 +1229,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
         content,
         timestamp: now,
         ...(delegatedFrom ? { delegatedFrom, obligationStatus: "pending" as const } : {}),
+        ...(obligationId ? { obligationId } : {}),
       }
 
       if (isSelf) {
@@ -1244,6 +1247,16 @@ export const baseToolDefinitions: ToolDefinition[] = [
             })
           } catch {
             /* v8 ignore next -- defensive: obligation store write failure should not break send_message @preserve */
+          }
+          /* v8 ignore next -- obligationId always set when delegatedFrom is set (see generateObligationId above) @preserve */
+          if (obligationId) {
+            createInnerObligation(agentName, {
+              id: obligationId,
+              origin: delegatedFrom,
+              status: "queued",
+              delegatedContent: content.length > 120 ? `${content.slice(0, 117)}...` : content,
+              createdAt: now,
+            })
           }
           emitNervesEvent({
             event: "repertoire.obligation_created",

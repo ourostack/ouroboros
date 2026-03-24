@@ -24,6 +24,7 @@ const mockListSessionActivity = vi.fn()
 const mockFindFreshestFriendSession = vi.fn()
 const mockGetBridge = vi.fn()
 const mockSendProactiveBlueBubblesMessageToSession = vi.fn()
+const mockAdvanceObligation = vi.fn()
 
 vi.mock("../../mind/prompt", () => ({
   buildSystem: (...args: any[]) => mockBuildSystem(...args),
@@ -92,6 +93,10 @@ vi.mock("../../senses/bluebubbles", () => ({
     mockSendProactiveBlueBubblesMessageToSession(...args),
 }))
 
+vi.mock("../../mind/obligations", () => ({
+  advanceObligation: (...args: any[]) => mockAdvanceObligation(...args),
+}))
+
 import {
   buildInnerDialogBootstrapMessage,
   buildNonCanonicalCleanupNudge,
@@ -155,6 +160,7 @@ describe("inner dialog runtime", () => {
       delivered: false,
       reason: "unsupported-channel",
     })
+    mockAdvanceObligation.mockReset().mockReturnValue(null)
 
     // Default handleInboundTurn: simulate pipeline running agent and returning result.
     mockHandleInboundTurn.mockReset().mockImplementation(async (input: any) => {
@@ -1661,5 +1667,416 @@ describe("inner dialog runtime", () => {
       (call: any[]) => call[0].event === "senses.inner_dialog_turn",
     )
     expect(nervesCall![0].meta.toolCalls).toEqual(["memory_search"])
+  })
+
+  // ── Exact-origin routing tests ──────────────────────────────────
+
+  it("routes delegated completion to exact origin session before bridge or freshest", async () => {
+    // Exact origin is bluebubbles/chat; bridge-attached is teams/conv; freshest is cli/session.
+    // Should route to bluebubbles/chat (exact origin).
+    const bluebubblesPendingDir = path.join(agentRoot, "state", "pending", "friend-1", "bluebubbles", "chat")
+    const cliPendingDir = path.join(agentRoot, "state", "pending", "friend-1", "cli", "session")
+    mockGetPendingDir.mockImplementation((_agent: string, _friendId: string, channel: string, key: string) => {
+      if (channel === "bluebubbles" && key === "chat") return bluebubblesPendingDir
+      if (channel === "cli" && key === "session") return cliPendingDir
+      return "/tmp/unused"
+    })
+    mockListSessionActivity.mockReturnValue([
+      {
+        friendId: "friend-1",
+        friendName: "Ari",
+        channel: "cli",
+        key: "session",
+        sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+        lastActivityAt: "2026-03-13T20:05:00.000Z",
+        lastActivityMs: Date.parse("2026-03-13T20:05:00.000Z"),
+        activitySource: "friend-facing",
+      },
+      {
+        friendId: "friend-1",
+        friendName: "Ari",
+        channel: "bluebubbles",
+        key: "chat",
+        sessionPath: "/tmp/state/sessions/friend-1/bluebubbles/chat.json",
+        lastActivityAt: "2026-03-13T20:01:00.000Z",
+        lastActivityMs: Date.parse("2026-03-13T20:01:00.000Z"),
+        activitySource: "friend-facing",
+      },
+    ])
+    // Bridge points to teams/conv, not bluebubbles/chat.
+    mockGetBridge.mockReturnValue({
+      id: "bridge-1",
+      objective: "alignment",
+      summary: "relay",
+      lifecycle: "active",
+      runtime: "idle",
+      createdAt: "2026-03-13T20:00:00.000Z",
+      updatedAt: "2026-03-13T20:00:00.000Z",
+      attachedSessions: [
+        { friendId: "friend-1", channel: "teams", key: "conv", sessionPath: "/tmp/teams.json" },
+      ],
+      task: null,
+    })
+    mockHandleInboundTurn.mockResolvedValue({
+      resolvedContext: { friend: { id: "self", name: "test-agent" }, channel: innerCapabilities },
+      gateResult: { allowed: true },
+      usage: undefined,
+      sessionPath: sessionFile,
+      messages: [{ role: "assistant", content: "exact origin wins" }],
+      completion: { answer: "exact origin wins", intent: "complete" },
+      drainedPending: [
+        {
+          from: "test-agent",
+          content: "delegate to inner",
+          timestamp: 1709900001,
+          delegatedFrom: {
+            friendId: "friend-1",
+            channel: "bluebubbles",
+            key: "chat",
+            bridgeId: "bridge-1",
+          },
+        },
+      ],
+    })
+
+    await runInnerDialogTurn({
+      reason: "heartbeat",
+      now: () => new Date("2026-03-13T20:10:00.000Z"),
+    })
+
+    // Should route to exact origin (bluebubbles/chat) not cli/session (freshest) or teams/conv (bridge)
+    const routedFiles = fs.readdirSync(bluebubblesPendingDir)
+    expect(routedFiles.length).toBe(1)
+    const routedPayload = JSON.parse(fs.readFileSync(path.join(bluebubblesPendingDir, routedFiles[0]), "utf8"))
+    expect(routedPayload.content).toBe("exact origin wins")
+    expect(fs.existsSync(cliPendingDir)).toBe(false)
+  })
+
+  it("falls back to bridge when exact origin session is not active", async () => {
+    // Exact origin (bluebubbles/chat) NOT in session activity.
+    // Bridge-attached session (teams/conv) IS active.
+    const teamsPendingDir = path.join(agentRoot, "state", "pending", "friend-1", "teams", "conv")
+    mockGetPendingDir.mockImplementation((_agent: string, _friendId: string, channel: string, key: string) => {
+      if (channel === "teams" && key === "conv") return teamsPendingDir
+      return "/tmp/unused"
+    })
+    mockListSessionActivity.mockReturnValue([
+      {
+        friendId: "friend-1",
+        friendName: "Ari",
+        channel: "teams",
+        key: "conv",
+        sessionPath: "/tmp/state/sessions/friend-1/teams/conv.json",
+        lastActivityAt: "2026-03-13T20:05:00.000Z",
+        lastActivityMs: Date.parse("2026-03-13T20:05:00.000Z"),
+        activitySource: "friend-facing",
+      },
+    ])
+    mockGetBridge.mockReturnValue({
+      id: "bridge-1",
+      objective: "alignment",
+      summary: "relay",
+      lifecycle: "active",
+      runtime: "idle",
+      createdAt: "2026-03-13T20:00:00.000Z",
+      updatedAt: "2026-03-13T20:00:00.000Z",
+      attachedSessions: [
+        { friendId: "friend-1", channel: "teams", key: "conv", sessionPath: "/tmp/teams.json" },
+      ],
+      task: null,
+    })
+    mockHandleInboundTurn.mockResolvedValue({
+      resolvedContext: { friend: { id: "self", name: "test-agent" }, channel: innerCapabilities },
+      gateResult: { allowed: true },
+      usage: undefined,
+      sessionPath: sessionFile,
+      messages: [{ role: "assistant", content: "bridge fallback" }],
+      completion: { answer: "bridge fallback", intent: "complete" },
+      drainedPending: [
+        {
+          from: "test-agent",
+          content: "delegate",
+          timestamp: 1709900001,
+          delegatedFrom: {
+            friendId: "friend-1",
+            channel: "bluebubbles",
+            key: "chat",
+            bridgeId: "bridge-1",
+          },
+        },
+      ],
+    })
+
+    await runInnerDialogTurn({
+      reason: "heartbeat",
+      now: () => new Date("2026-03-13T20:10:00.000Z"),
+    })
+
+    const routedFiles = fs.readdirSync(teamsPendingDir)
+    expect(routedFiles.length).toBe(1)
+    const routedPayload = JSON.parse(fs.readFileSync(path.join(teamsPendingDir, routedFiles[0]), "utf8"))
+    expect(routedPayload.content).toBe("bridge fallback")
+  })
+
+  // ── Obligation lifecycle tests ──────────────────────────────────
+
+  it("advances obligation from queued to running then to returned on successful delivery", async () => {
+    const bluebubblesPendingDir = path.join(agentRoot, "state", "pending", "friend-1", "bluebubbles", "chat")
+    mockGetPendingDir.mockReturnValue(bluebubblesPendingDir)
+    mockListSessionActivity.mockReturnValue([
+      {
+        friendId: "friend-1",
+        friendName: "Ari",
+        channel: "bluebubbles",
+        key: "chat",
+        sessionPath: "/tmp/state/sessions/friend-1/bluebubbles/chat.json",
+        lastActivityAt: "2026-03-13T20:01:00.000Z",
+        lastActivityMs: Date.parse("2026-03-13T20:01:00.000Z"),
+        activitySource: "friend-facing",
+      },
+    ])
+    mockHandleInboundTurn.mockResolvedValue({
+      resolvedContext: { friend: { id: "self", name: "test-agent" }, channel: innerCapabilities },
+      gateResult: { allowed: true },
+      usage: undefined,
+      sessionPath: sessionFile,
+      messages: [{ role: "assistant", content: "done" }],
+      completion: { answer: "done", intent: "complete" },
+      drainedPending: [
+        {
+          from: "test-agent",
+          content: "inner task",
+          timestamp: 1709900001,
+          obligationId: "1709900001-obl123",
+          delegatedFrom: {
+            friendId: "friend-1",
+            channel: "bluebubbles",
+            key: "chat",
+          },
+        },
+      ],
+    })
+
+    await runInnerDialogTurn({
+      reason: "heartbeat",
+      now: () => new Date("2026-03-13T20:10:00.000Z"),
+    })
+
+    // Should advance to running first
+    expect(mockAdvanceObligation).toHaveBeenCalledWith(
+      "test-agent",
+      "1709900001-obl123",
+      expect.objectContaining({ status: "running" }),
+    )
+    // Then advance to returned with exact-origin target
+    expect(mockAdvanceObligation).toHaveBeenCalledWith(
+      "test-agent",
+      "1709900001-obl123",
+      expect.objectContaining({
+        status: "returned",
+        returnTarget: "exact-origin",
+      }),
+    )
+  })
+
+  it("advances obligation to deferred when no session is available", async () => {
+    const deferredDir = path.join(agentRoot, "state", "pending-returns", "friend-1")
+    mockGetDeferredReturnDir.mockReturnValue(deferredDir)
+    mockListSessionActivity.mockReturnValue([])
+    mockFindFreshestFriendSession.mockReturnValue(null)
+    mockHandleInboundTurn.mockResolvedValue({
+      resolvedContext: { friend: { id: "self", name: "test-agent" }, channel: innerCapabilities },
+      gateResult: { allowed: true },
+      usage: undefined,
+      sessionPath: sessionFile,
+      messages: [{ role: "assistant", content: "deferred result" }],
+      completion: { answer: "deferred result", intent: "complete" },
+      drainedPending: [
+        {
+          from: "test-agent",
+          content: "think deeply",
+          timestamp: 1709900001,
+          obligationId: "1709900001-obldefer",
+          delegatedFrom: {
+            friendId: "friend-1",
+            channel: "cli",
+            key: "session",
+          },
+        },
+      ],
+    })
+
+    await runInnerDialogTurn({
+      reason: "heartbeat",
+      now: () => new Date("2026-03-13T20:10:00.000Z"),
+    })
+
+    expect(mockAdvanceObligation).toHaveBeenCalledWith(
+      "test-agent",
+      "1709900001-obldefer",
+      expect.objectContaining({
+        status: "deferred",
+        returnTarget: "deferred",
+      }),
+    )
+  })
+
+  it("delivers proactively via bridge-attached BlueBubbles session when exact origin is not active", async () => {
+    // Origin: cli/session (NOT in session activity).
+    // Bridge-attached: bluebubbles/chat (IS active, proactive delivery succeeds).
+    mockListSessionActivity.mockReturnValue([
+      {
+        friendId: "friend-1",
+        friendName: "Ari",
+        channel: "bluebubbles",
+        key: "chat",
+        sessionPath: "/tmp/state/sessions/friend-1/bluebubbles/chat.json",
+        lastActivityAt: "2026-03-13T20:01:00.000Z",
+        lastActivityMs: Date.parse("2026-03-13T20:01:00.000Z"),
+        activitySource: "friend-facing",
+      },
+    ])
+    mockGetBridge.mockReturnValue({
+      id: "bridge-1",
+      objective: "bridge",
+      summary: "relay",
+      lifecycle: "active",
+      runtime: "idle",
+      createdAt: "2026-03-13T20:00:00.000Z",
+      updatedAt: "2026-03-13T20:00:00.000Z",
+      attachedSessions: [
+        { friendId: "friend-1", channel: "bluebubbles", key: "chat", sessionPath: "/tmp/bb.json" },
+      ],
+      task: null,
+    })
+    mockHandleInboundTurn.mockResolvedValue({
+      resolvedContext: { friend: { id: "self", name: "test-agent" }, channel: innerCapabilities },
+      gateResult: { allowed: true },
+      usage: undefined,
+      sessionPath: sessionFile,
+      messages: [{ role: "assistant", content: "bridge proactive" }],
+      completion: { answer: "bridge proactive", intent: "complete" },
+      drainedPending: [
+        {
+          from: "test-agent",
+          content: "delegate",
+          timestamp: 1709900001,
+          delegatedFrom: {
+            friendId: "friend-1",
+            channel: "cli",
+            key: "session",
+            bridgeId: "bridge-1",
+          },
+        },
+      ],
+    })
+    mockSendProactiveBlueBubblesMessageToSession.mockResolvedValue({ delivered: true })
+
+    await runInnerDialogTurn({
+      reason: "heartbeat",
+      now: () => new Date("2026-03-13T20:10:00.000Z"),
+    })
+
+    expect(mockSendProactiveBlueBubblesMessageToSession).toHaveBeenCalledWith({
+      friendId: "friend-1",
+      sessionKey: "chat",
+      text: "bridge proactive",
+    })
+  })
+
+  it("delivers proactively via freshest BlueBubbles session when exact origin and bridge are unavailable", async () => {
+    // Origin: cli/session (NOT in session activity).
+    // No bridge. Freshest: bluebubbles/chat (proactive delivery succeeds).
+    mockListSessionActivity.mockReturnValue([])
+    mockFindFreshestFriendSession.mockReturnValue({
+      friendId: "friend-1",
+      friendName: "Ari",
+      channel: "bluebubbles",
+      key: "chat",
+      sessionPath: "/tmp/state/sessions/friend-1/bluebubbles/chat.json",
+      lastActivityAt: "2026-03-13T20:05:00.000Z",
+      lastActivityMs: Date.parse("2026-03-13T20:05:00.000Z"),
+      activitySource: "friend-facing",
+    })
+    mockHandleInboundTurn.mockResolvedValue({
+      resolvedContext: { friend: { id: "self", name: "test-agent" }, channel: innerCapabilities },
+      gateResult: { allowed: true },
+      usage: undefined,
+      sessionPath: sessionFile,
+      messages: [{ role: "assistant", content: "freshest proactive" }],
+      completion: { answer: "freshest proactive", intent: "complete" },
+      drainedPending: [
+        {
+          from: "test-agent",
+          content: "delegate",
+          timestamp: 1709900001,
+          delegatedFrom: {
+            friendId: "friend-1",
+            channel: "cli",
+            key: "session",
+          },
+        },
+      ],
+    })
+    mockSendProactiveBlueBubblesMessageToSession.mockResolvedValue({ delivered: true })
+
+    await runInnerDialogTurn({
+      reason: "heartbeat",
+      now: () => new Date("2026-03-13T20:10:00.000Z"),
+    })
+
+    expect(mockSendProactiveBlueBubblesMessageToSession).toHaveBeenCalledWith({
+      friendId: "friend-1",
+      sessionKey: "chat",
+      text: "freshest proactive",
+    })
+  })
+
+  it("preserves obligationId in outbound return envelope", async () => {
+    const bluebubblesPendingDir = path.join(agentRoot, "state", "pending", "friend-1", "bluebubbles", "chat")
+    mockGetPendingDir.mockReturnValue(bluebubblesPendingDir)
+    mockListSessionActivity.mockReturnValue([
+      {
+        friendId: "friend-1",
+        friendName: "Ari",
+        channel: "bluebubbles",
+        key: "chat",
+        sessionPath: "/tmp/state/sessions/friend-1/bluebubbles/chat.json",
+        lastActivityAt: "2026-03-13T20:01:00.000Z",
+        lastActivityMs: Date.parse("2026-03-13T20:01:00.000Z"),
+        activitySource: "friend-facing",
+      },
+    ])
+    mockHandleInboundTurn.mockResolvedValue({
+      resolvedContext: { friend: { id: "self", name: "test-agent" }, channel: innerCapabilities },
+      gateResult: { allowed: true },
+      usage: undefined,
+      sessionPath: sessionFile,
+      messages: [{ role: "assistant", content: "with obligation" }],
+      completion: { answer: "with obligation", intent: "complete" },
+      drainedPending: [
+        {
+          from: "test-agent",
+          content: "delegated content",
+          timestamp: 1709900001,
+          obligationId: "1709900001-oblpreserve",
+          delegatedFrom: {
+            friendId: "friend-1",
+            channel: "bluebubbles",
+            key: "chat",
+          },
+        },
+      ],
+    })
+
+    await runInnerDialogTurn({
+      reason: "heartbeat",
+      now: () => new Date("2026-03-13T20:10:00.000Z"),
+    })
+
+    const routedFiles = fs.readdirSync(bluebubblesPendingDir)
+    expect(routedFiles.length).toBe(1)
+    const routedPayload = JSON.parse(fs.readFileSync(path.join(bluebubblesPendingDir, routedFiles[0]), "utf8"))
+    expect(routedPayload.obligationId).toBe("1709900001-oblpreserve")
   })
 })
