@@ -267,6 +267,14 @@ export type RunAgentOutcome =
   | "observed"
   | "go_inward";
 
+// Sole-call tools must be the only tool call in a turn. When they appear
+// alongside other tools, the sole-call tool is rejected with this message.
+const SOLE_CALL_REJECTION: Record<string, string> = {
+  settle: "rejected: settle must be the only tool call. finish your work first, then call settle alone.",
+  observe: "rejected: observe must be the only tool call. call observe alone when you want to stay silent.",
+  go_inward: "rejected: go_inward must be the only tool call. finish your other work first, then call go_inward alone.",
+};
+
 const DELEGATION_REASON_PROSE_HANDOFF: Record<DelegationReason, string> = {
   explicit_reflection: "something in the conversation called for reflection",
   cross_session: "this touches other conversations",
@@ -915,28 +923,14 @@ export async function runAgent(
         }
 
         messages.push(msg);
-        // SHARED: execute tools (settle, observe, go_inward in mixed calls are rejected inline)
+        // Execute tools (sole-call tools in mixed calls are rejected inline)
         for (const tc of result.toolCalls) {
           if (signal?.aborted) break;
-          // Intercept settle in mixed call: reject it
-          if (tc.name === "settle") {
-            const rejection = "rejected: settle must be the only tool call. finish your work first, then call settle alone.";
-            messages.push({ role: "tool", tool_call_id: tc.id, content: rejection });
-            providerRuntime.appendToolOutput(tc.id, rejection);
-            continue;
-          }
-          // Intercept observe in mixed call: reject it
-          if (tc.name === "observe") {
-            const rejection = "rejected: observe must be the only tool call. call observe alone when you want to stay silent.";
-            messages.push({ role: "tool", tool_call_id: tc.id, content: rejection });
-            providerRuntime.appendToolOutput(tc.id, rejection);
-            continue;
-          }
-          // Intercept go_inward in mixed call: reject it
-          if (tc.name === "go_inward") {
-            const rejection = "rejected: go_inward must be the only tool call. finish your other work first, then call go_inward alone.";
-            messages.push({ role: "tool", tool_call_id: tc.id, content: rejection });
-            providerRuntime.appendToolOutput(tc.id, rejection);
+          // Reject sole-call tools when mixed with other tool calls
+          const soleCallRejection = SOLE_CALL_REJECTION[tc.name];
+          if (soleCallRejection) {
+            messages.push({ role: "tool", tool_call_id: tc.id, content: soleCallRejection });
+            providerRuntime.appendToolOutput(tc.id, soleCallRejection);
             continue;
           }
           let args: Record<string, string> = {};
