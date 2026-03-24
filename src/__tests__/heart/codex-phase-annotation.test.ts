@@ -72,14 +72,14 @@ describe("Codex phase annotation", () => {
       {
         role: "assistant" as const,
         content: "here is my answer",
-        phase: "final_answer",
+        phase: "settle",
       },
     ]
     const result = toResponsesInput(messages as any)
     const assistantItems = result.input.filter((item: any) => item.role === "assistant")
     expect(assistantItems).toHaveLength(2)
     expect(assistantItems[0].phase).toBe("commentary")
-    expect(assistantItems[1].phase).toBe("final_answer")
+    expect(assistantItems[1].phase).toBe("settle")
   })
 
   it("toResponsesInput omits phase when not present on message", async () => {

@@ -153,10 +153,10 @@ function goInwardToolCallChunks(args: Record<string, string>) {
   ]
 }
 
-// Streams a final_answer after go_inward
-function finalAnswerChunks(answer: string) {
+// Streams a settle after go_inward
+function settleChunks(answer: string) {
   return [
-    makeChunk(undefined, [{ index: 0, id: "call_final", function: { name: "final_answer", arguments: "" } }]),
+    makeChunk(undefined, [{ index: 0, id: "call_final", function: { name: "settle", arguments: "" } }]),
     makeChunk(undefined, [{ index: 0, function: { arguments: JSON.stringify({ answer, intent: "complete" }) } }]),
   ]
 }
@@ -183,7 +183,7 @@ describe("go_inward in runAgent", () => {
 
   it("intercepts sole go_inward call, enqueues pending, sets outcome go_inward", async () => {
     mockCreate.mockReturnValueOnce(makeStream(
-      goInwardToolCallChunks({ content: "think about naming" }),
+      goInwardToolCallChunks({ topic: "think about naming" }),
     ))
 
     const callbacks = makeCallbacks()
@@ -208,7 +208,7 @@ describe("go_inward in runAgent", () => {
 
   it("emits answer via callbacks when go_inward has answer parameter", async () => {
     mockCreate.mockReturnValueOnce(makeStream(
-      goInwardToolCallChunks({ content: "think about naming", answer: "let me think about that" }),
+      goInwardToolCallChunks({ topic: "think about naming", answer: "let me think about that" }),
     ))
 
     const callbacks = makeCallbacks()
@@ -224,7 +224,7 @@ describe("go_inward in runAgent", () => {
 
   it("does not emit answer when go_inward has no answer parameter", async () => {
     mockCreate.mockReturnValueOnce(makeStream(
-      goInwardToolCallChunks({ content: "just thinking" }),
+      goInwardToolCallChunks({ topic: "just thinking" }),
     ))
 
     const callbacks = makeCallbacks()
@@ -239,7 +239,7 @@ describe("go_inward in runAgent", () => {
 
   it("uses mode from go_inward parameter", async () => {
     mockCreate.mockReturnValueOnce(makeStream(
-      goInwardToolCallChunks({ content: "work on architecture", mode: "plan" }),
+      goInwardToolCallChunks({ topic: "work on architecture", mode: "plan" }),
     ))
 
     const callbacks = makeCallbacks()
@@ -257,7 +257,7 @@ describe("go_inward in runAgent", () => {
 
   it("defaults to reflect mode when no mode parameter", async () => {
     mockCreate.mockReturnValueOnce(makeStream(
-      goInwardToolCallChunks({ content: "pondering" }),
+      goInwardToolCallChunks({ topic: "pondering" }),
     ))
 
     const callbacks = makeCallbacks()
@@ -281,13 +281,13 @@ describe("go_inward in runAgent", () => {
         { index: 1, id: "call_other", function: { name: "read_memory", arguments: "" } },
       ]),
       makeChunk(undefined, [
-        { index: 0, function: { arguments: JSON.stringify({ content: "test" }) } },
+        { index: 0, function: { arguments: JSON.stringify({ topic: "test" }) } },
         { index: 1, function: { arguments: "{}" } },
       ]),
     ]))
-    // Second call: final_answer to end the loop
+    // Second call: settle to end the loop
     mockCreate.mockReturnValueOnce(makeStream(
-      finalAnswerChunks("done"),
+      settleChunks("done"),
     ))
 
     const callbacks = makeCallbacks()
@@ -303,7 +303,7 @@ describe("go_inward in runAgent", () => {
 
   it("handoff packet includes delegation decision reasons as prose", async () => {
     mockCreate.mockReturnValueOnce(makeStream(
-      goInwardToolCallChunks({ content: "naming conventions" }),
+      goInwardToolCallChunks({ topic: "naming conventions" }),
     ))
 
     const callbacks = makeCallbacks()
@@ -326,9 +326,9 @@ describe("go_inward in runAgent", () => {
     expect(enqueued.content).toContain("this touches other conversations")
   })
 
-  it("handoff packet includes return address from currentSession", async () => {
+  it("handoff packet includes who asked from currentSession", async () => {
     mockCreate.mockReturnValueOnce(makeStream(
-      goInwardToolCallChunks({ content: "naming conventions" }),
+      goInwardToolCallChunks({ topic: "naming conventions" }),
     ))
 
     const callbacks = makeCallbacks()
@@ -345,7 +345,7 @@ describe("go_inward in runAgent", () => {
     )
 
     const enqueued = mockQueuePendingMessage.mock.calls[0][1]
-    expect(enqueued.content).toContain("alex/teams/session1")
+    expect(enqueued.content).toContain("## who asked\nalex")
     expect(enqueued.delegatedFrom).toEqual({
       friendId: "alex",
       channel: "teams",
@@ -354,9 +354,9 @@ describe("go_inward in runAgent", () => {
     expect(enqueued.obligationStatus).toBe("pending")
   })
 
-  it("handoff packet without currentSession says 'no specific return'", async () => {
+  it("handoff packet without currentSession says 'no one -- just thinking'", async () => {
     mockCreate.mockReturnValueOnce(makeStream(
-      goInwardToolCallChunks({ content: "just pondering" }),
+      goInwardToolCallChunks({ topic: "just pondering" }),
     ))
 
     const callbacks = makeCallbacks()
@@ -367,12 +367,12 @@ describe("go_inward in runAgent", () => {
     )
 
     const enqueued = mockQueuePendingMessage.mock.calls[0][1]
-    expect(enqueued.content).toContain("no specific return")
+    expect(enqueued.content).toContain("no one -- just thinking")
   })
 
   it("handoff packet with outwardClosureRequired includes obligation text", async () => {
     mockCreate.mockReturnValueOnce(makeStream(
-      goInwardToolCallChunks({ content: "naming" }),
+      goInwardToolCallChunks({ topic: "naming" }),
     ))
 
     const callbacks = makeCallbacks()
@@ -394,12 +394,12 @@ describe("go_inward in runAgent", () => {
     )
 
     const enqueued = mockQueuePendingMessage.mock.calls[0][1]
-    expect(enqueued.content).toContain("i need to come back to alex with something")
+    expect(enqueued.content).toContain("i'm holding something for alex")
   })
 
   it("handoff packet without outwardClosureRequired says 'no obligation'", async () => {
     mockCreate.mockReturnValueOnce(makeStream(
-      goInwardToolCallChunks({ content: "just thinking" }),
+      goInwardToolCallChunks({ topic: "just thinking" }),
     ))
 
     const callbacks = makeCallbacks()
@@ -410,12 +410,12 @@ describe("go_inward in runAgent", () => {
     )
 
     const enqueued = mockQueuePendingMessage.mock.calls[0][1]
-    expect(enqueued.content).toContain("no obligation")
+    expect(enqueued.content).toContain("nothing -- just thinking")
   })
 
   it("triggers inner wake after enqueue", async () => {
     mockCreate.mockReturnValueOnce(makeStream(
-      goInwardToolCallChunks({ content: "test" }),
+      goInwardToolCallChunks({ topic: "test" }),
     ))
 
     const callbacks = makeCallbacks()
@@ -430,7 +430,7 @@ describe("go_inward in runAgent", () => {
 
   it("emits nerves event for go_inward", async () => {
     mockCreate.mockReturnValueOnce(makeStream(
-      goInwardToolCallChunks({ content: "test content" }),
+      goInwardToolCallChunks({ topic: "test content" }),
     ))
 
     const callbacks = makeCallbacks()
@@ -449,7 +449,7 @@ describe("go_inward in runAgent", () => {
 
   it("does not set delegatedFrom when currentSession is inner channel", async () => {
     mockCreate.mockReturnValueOnce(makeStream(
-      goInwardToolCallChunks({ content: "recursive thought" }),
+      goInwardToolCallChunks({ topic: "recursive thought" }),
     ))
 
     const callbacks = makeCallbacks()
@@ -472,7 +472,7 @@ describe("go_inward in runAgent", () => {
 
   it("handles reasons with no delegation decision gracefully", async () => {
     mockCreate.mockReturnValueOnce(makeStream(
-      goInwardToolCallChunks({ content: "just thinking" }),
+      goInwardToolCallChunks({ topic: "just thinking" }),
     ))
 
     const callbacks = makeCallbacks()

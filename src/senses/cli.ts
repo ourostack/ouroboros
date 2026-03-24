@@ -362,14 +362,14 @@ export function createCliCallbacks(): ChannelCallbacks & { flushMarkdown(): void
     onModelStreamStart: () => {
       // No-op: content callbacks (onTextChunk, onReasoningChunk) handle
       // stopping the spinner. onModelStreamStart fires too early and
-      // doesn't fire at all for final_answer tool streaming.
+      // doesn't fire at all for settle tool streaming.
     },
     onClearText: () => {
       streamer.reset()
       wrapper.reset()
     },
     onTextChunk: (text: string) => {
-      // Stop spinner if still running — final_answer streaming and Anthropic
+      // Stop spinner if still running — settle streaming and Anthropic
       // tool-only responses bypass onModelStreamStart, so the spinner would
       // otherwise keep running (and its \r writes overwrite response text).
       if (currentSpinner) {
@@ -528,7 +528,7 @@ export interface RunCliSessionOptions {
 }
 
 export interface RunCliSessionResult {
-  exitReason: "final_answer" | "tool_exit" | "user_quit";
+  exitReason: "settle" | "tool_exit" | "user_quit";
   toolResult?: unknown;
 }
 
@@ -588,7 +588,7 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
           exitToolResult = result
           exitToolFired = true
           // Abort immediately so the model doesn't generate more output
-          // (e.g. reasoning about calling final_answer after complete_adoption)
+          // (e.g. reasoning about calling settle after complete_adoption)
           currentAbort?.abort()
         }
         return result

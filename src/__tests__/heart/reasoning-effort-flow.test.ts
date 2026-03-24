@@ -374,8 +374,8 @@ describe("reasoning effort flow in runAgent", () => {
     expect((assistantMsg as any).phase).toBe("commentary")
   })
 
-  it("labels assistant messages with phase final_answer for sole final_answer tool call", async () => {
-    emitTestEvent("phase final_answer annotation")
+  it("labels assistant messages with phase settle for sole settle tool call", async () => {
+    emitTestEvent("phase settle annotation")
     vi.resetModules()
     vi.mocked((await import("fs")).readFileSync).mockImplementation(defaultReadFileSync as any)
 
@@ -408,12 +408,12 @@ describe("reasoning effort flow in runAgent", () => {
       },
     })
 
-    // Mock responses.create to return a sole final_answer tool call
+    // Mock responses.create to return a sole settle tool call
     mockResponsesCreate.mockResolvedValue({
       [Symbol.asyncIterator]: async function* () {
-        yield { type: "response.output_item.added", item: { type: "function_call", call_id: "call_fa", name: "final_answer" } }
+        yield { type: "response.output_item.added", item: { type: "function_call", call_id: "call_fa", name: "settle" } }
         yield { type: "response.function_call_arguments.delta", delta: '{"answer":"done"}' }
-        yield { type: "response.output_item.done", item: { type: "function_call", call_id: "call_fa", name: "final_answer", arguments: '{"answer":"done"}', status: "completed" } }
+        yield { type: "response.output_item.done", item: { type: "function_call", call_id: "call_fa", name: "settle", arguments: '{"answer":"done"}', status: "completed" } }
         yield { type: "response.completed", response: { usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } }
       },
     })
@@ -430,9 +430,9 @@ describe("reasoning effort flow in runAgent", () => {
       toolChoiceRequired: true,
     })
 
-    // Find the assistant message with the final_answer tool call
+    // Find the assistant message with the settle tool call
     const assistantMsgs = messages.filter((m: any) => m.role === "assistant")
-    const withFinalAnswer = assistantMsgs.find((m: any) => m.phase === "final_answer")
-    expect(withFinalAnswer).toBeDefined()
+    const withSettle = assistantMsgs.find((m: any) => m.phase === "settle")
+    expect(withSettle).toBeDefined()
   })
 })

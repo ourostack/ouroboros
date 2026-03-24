@@ -579,7 +579,7 @@ describe("streamChatCompletion", () => {
     const client = { chat: { completions: { create: vi.fn().mockReturnValue(makeStream([makeChunk("hello")])) } } }
     const callbacks = makeCallbacks()
     const result = await streamChatCompletion(client, { messages: [], stream: true }, callbacks)
-    expect(result).toEqual({ content: "hello", toolCalls: [], outputItems: [], finalAnswerStreamed: false })
+    expect(result).toEqual({ content: "hello", toolCalls: [], outputItems: [], settleStreamed: false })
   })
 
   it("calls onModelStreamStart once on first content delta", async () => {
@@ -827,7 +827,7 @@ describe("streamResponsesApi", () => {
     ])) } }
     const callbacks = makeCallbacks()
     const result = await streamResponsesApi(client, {}, callbacks)
-    expect(result).toEqual({ content: "hello", toolCalls: [], outputItems: [], finalAnswerStreamed: false })
+    expect(result).toEqual({ content: "hello", toolCalls: [], outputItems: [], settleStreamed: false })
   })
 
   it("silently ignores unknown event types", async () => {
@@ -1096,10 +1096,10 @@ describe("streamResponsesApi", () => {
   })
 })
 
-// --- Unit 20a: FinalAnswerParser unit tests ---
+// --- Unit 20a: SettleParser unit tests ---
 
-describe("FinalAnswerParser", () => {
-  let FinalAnswerParser: any
+describe("SettleParser", () => {
+  let SettleParser: any
 
   beforeEach(async () => {
     vi.resetModules()
@@ -1107,11 +1107,11 @@ describe("FinalAnswerParser", () => {
     config.resetConfigCache()
     config.patchRuntimeConfig({ providers: { azure: { apiKey: "" }, minimax: { apiKey: "test-key", model: "test-model" } } })
     const streaming = await import("../../heart/streaming")
-    FinalAnswerParser = streaming.FinalAnswerParser
+    SettleParser = streaming.SettleParser
   })
 
   it("parses {\"answer\":\"hello world\"} and returns hello world", () => {
-    const parser = new FinalAnswerParser()
+    const parser = new SettleParser()
     const result = parser.process('{"answer":"hello world"}')
     expect(result).toBe("hello world")
     expect(parser.active).toBe(true)
@@ -1119,19 +1119,19 @@ describe("FinalAnswerParser", () => {
   })
 
   it("handles JSON escapes: \\\" -> \", \\\\ -> \\, \\n -> newline, \\t -> tab, \\/ -> /", () => {
-    const parser = new FinalAnswerParser()
+    const parser = new SettleParser()
     const result = parser.process('{"answer":"line1\\nline2\\t\\\\end\\\\\\/quote\\"done"}')
     expect(result).toBe('line1\nline2\t\\end\\/quote"done')
   })
 
   it("handles unknown escape (e.g. \\x) by passing through the character", () => {
-    const parser = new FinalAnswerParser()
+    const parser = new SettleParser()
     const result = parser.process('{"answer":"test\\xvalue"}')
     expect(result).toBe("testxvalue")
   })
 
   it("emits nothing before prefix \"answer\":\" is matched", () => {
-    const parser = new FinalAnswerParser()
+    const parser = new SettleParser()
     const result = parser.process('{"answe')
     expect(result).toBe("")
     expect(parser.active).toBe(false)
@@ -1139,7 +1139,7 @@ describe("FinalAnswerParser", () => {
   })
 
   it("emits incrementally across multiple process() calls (delta chunking)", () => {
-    const parser = new FinalAnswerParser()
+    const parser = new SettleParser()
     let out = ""
     out += parser.process('{"ans')
     out += parser.process('wer":"hel')
@@ -1151,7 +1151,7 @@ describe("FinalAnswerParser", () => {
   })
 
   it("stops at unescaped closing \" -- subsequent process() calls return empty string", () => {
-    const parser = new FinalAnswerParser()
+    const parser = new SettleParser()
     const first = parser.process('{"answer":"done"}')
     expect(first).toBe("done")
     expect(parser.complete).toBe(true)
@@ -1160,14 +1160,14 @@ describe("FinalAnswerParser", () => {
   })
 
   it("active is false before prefix, true after", () => {
-    const parser = new FinalAnswerParser()
+    const parser = new SettleParser()
     expect(parser.active).toBe(false)
     parser.process('{"answer":"')
     expect(parser.active).toBe(true)
   })
 
   it("complete is false until closing \", true after", () => {
-    const parser = new FinalAnswerParser()
+    const parser = new SettleParser()
     parser.process('{"answer":"hello')
     expect(parser.complete).toBe(false)
     parser.process('"')
@@ -1175,7 +1175,7 @@ describe("FinalAnswerParser", () => {
   })
 
   it("handles \"answer\": \" (space after colon) variant", () => {
-    const parser = new FinalAnswerParser()
+    const parser = new SettleParser()
     const result = parser.process('{"answer": "spaced value"}')
     expect(result).toBe("spaced value")
     expect(parser.active).toBe(true)
@@ -1183,14 +1183,14 @@ describe("FinalAnswerParser", () => {
   })
 
   it("returns empty string when prefix never matches (e.g. {\"other\":\"value\"})", () => {
-    const parser = new FinalAnswerParser()
+    const parser = new SettleParser()
     const result = parser.process('{"other":"value"}')
     expect(result).toBe("")
     expect(parser.active).toBe(false)
   })
 
   it("handles empty answer {\"answer\":\"\"}", () => {
-    const parser = new FinalAnswerParser()
+    const parser = new SettleParser()
     const result = parser.process('{"answer":""}')
     expect(result).toBe("")
     expect(parser.active).toBe(true)
@@ -1198,7 +1198,7 @@ describe("FinalAnswerParser", () => {
   })
 
   it("still extracts answer when intent appears before answer in the same payload", () => {
-    const parser = new FinalAnswerParser()
+    const parser = new SettleParser()
     let out = ""
     out += parser.process('{"intent":"blocked","ans')
     out += parser.process('wer":"need a credential"}')
@@ -1208,7 +1208,7 @@ describe("FinalAnswerParser", () => {
   })
 
   it("handles escape sequence split across deltas (e.g. \\ in one delta, n in next)", () => {
-    const parser = new FinalAnswerParser()
+    const parser = new SettleParser()
     let out = ""
     out += parser.process('{"answer":"hello\\')
     out += parser.process('nworld"}')
@@ -1216,17 +1216,17 @@ describe("FinalAnswerParser", () => {
   })
 })
 
-describe("FinalAnswerStreamer", () => {
-  let FinalAnswerStreamer: any
+describe("SettleStreamer", () => {
+  let SettleStreamer: any
 
   beforeAll(async () => {
     const streaming = await import("../../heart/streaming")
-    FinalAnswerStreamer = streaming.FinalAnswerStreamer
+    SettleStreamer = streaming.SettleStreamer
   })
 
   it("activate() calls onClearText and sets detected", () => {
     let cleared = false
-    const streamer = new FinalAnswerStreamer({
+    const streamer = new SettleStreamer({
       onModelStreamStart: () => {},
       onTextChunk: () => {},
       onReasoningChunk: () => {},
@@ -1243,7 +1243,7 @@ describe("FinalAnswerStreamer", () => {
 
   it("activate() is idempotent — second call is no-op", () => {
     let clearCount = 0
-    const streamer = new FinalAnswerStreamer({
+    const streamer = new SettleStreamer({
       onModelStreamStart: () => {},
       onTextChunk: () => {},
       onReasoningChunk: () => {},
@@ -1259,7 +1259,7 @@ describe("FinalAnswerStreamer", () => {
 
   it("processDelta() emits parsed answer text via onTextChunk", () => {
     const chunks: string[] = []
-    const streamer = new FinalAnswerStreamer({
+    const streamer = new SettleStreamer({
       onModelStreamStart: () => {},
       onTextChunk: (t: string) => { chunks.push(t) },
       onReasoningChunk: () => {},
@@ -1276,7 +1276,7 @@ describe("FinalAnswerStreamer", () => {
 
   it("processDelta() is no-op when not detected", () => {
     const chunks: string[] = []
-    const streamer = new FinalAnswerStreamer({
+    const streamer = new SettleStreamer({
       onModelStreamStart: () => {},
       onTextChunk: (t: string) => { chunks.push(t) },
       onReasoningChunk: () => {},
@@ -1292,7 +1292,7 @@ describe("FinalAnswerStreamer", () => {
   it("processDelta() stays silent when eager final-answer streaming is disabled", () => {
     let cleared = false
     const chunks: string[] = []
-    const streamer = new FinalAnswerStreamer({
+    const streamer = new SettleStreamer({
       onModelStreamStart: () => {},
       onTextChunk: (t: string) => { chunks.push(t) },
       onReasoningChunk: () => {},
@@ -1310,9 +1310,9 @@ describe("FinalAnswerStreamer", () => {
   })
 })
 
-// --- Unit 20a: streamChatCompletion final_answer streaming integration tests ---
+// --- Unit 20a: streamChatCompletion settle streaming integration tests ---
 
-describe("streamChatCompletion final_answer streaming", () => {
+describe("streamChatCompletion settle streaming", () => {
   let streamChatCompletion: any
 
   function makeStream(chunks: any[]) {
@@ -1354,10 +1354,10 @@ describe("streamChatCompletion final_answer streaming", () => {
     streamChatCompletion = streaming.streamChatCompletion
   })
 
-  it("streams final_answer argument deltas progressively via onTextChunk", async () => {
+  it("streams settle argument deltas progressively via onTextChunk", async () => {
     const textChunks: string[] = []
     const client = { chat: { completions: { create: vi.fn().mockReturnValue(makeStream([
-      makeChunk(undefined, [{ index: 0, id: "call_1", function: { name: "final_answer", arguments: '{"ans' } }]),
+      makeChunk(undefined, [{ index: 0, id: "call_1", function: { name: "settle", arguments: '{"ans' } }]),
       makeChunk(undefined, [{ index: 0, function: { arguments: 'wer":"hel' } }]),
       makeChunk(undefined, [{ index: 0, function: { arguments: 'lo wor' } }]),
       makeChunk(undefined, [{ index: 0, function: { arguments: 'ld"}' } }]),
@@ -1365,30 +1365,30 @@ describe("streamChatCompletion final_answer streaming", () => {
     const callbacks = makeCallbacks({ onTextChunk: (text: string) => textChunks.push(text) })
     const result = await streamChatCompletion(client, { messages: [], stream: true }, callbacks)
     expect(textChunks.join("")).toBe("hello world")
-    expect(result.finalAnswerStreamed).toBe(true)
+    expect(result.settleStreamed).toBe(true)
   })
 
-  it("calls onClearText when final_answer tool call is first detected", async () => {
+  it("calls onClearText when settle tool call is first detected", async () => {
     const onClearText = vi.fn()
     const client = { chat: { completions: { create: vi.fn().mockReturnValue(makeStream([
       makeChunk("some noise"),
-      makeChunk(undefined, [{ index: 0, id: "call_1", function: { name: "final_answer", arguments: '{"answer":"done"}' } }]),
+      makeChunk(undefined, [{ index: 0, id: "call_1", function: { name: "settle", arguments: '{"answer":"done"}' } }]),
     ])) } } }
     const callbacks = makeCallbacks({ onClearText })
     await streamChatCompletion(client, { messages: [], stream: true }, callbacks)
     expect(onClearText).toHaveBeenCalledTimes(1)
   })
 
-  it("sets finalAnswerStreamed to true when final_answer detected", async () => {
+  it("sets settleStreamed to true when settle detected", async () => {
     const client = { chat: { completions: { create: vi.fn().mockReturnValue(makeStream([
-      makeChunk(undefined, [{ index: 0, id: "call_1", function: { name: "final_answer", arguments: '{"answer":"done"}' } }]),
+      makeChunk(undefined, [{ index: 0, id: "call_1", function: { name: "settle", arguments: '{"answer":"done"}' } }]),
     ])) } } }
     const callbacks = makeCallbacks()
     const result = await streamChatCompletion(client, { messages: [], stream: true }, callbacks)
-    expect(result.finalAnswerStreamed).toBe(true)
+    expect(result.settleStreamed).toBe(true)
   })
 
-  it("does not stream arguments for non-final_answer tool calls", async () => {
+  it("does not stream arguments for non-settle tool calls", async () => {
     const textChunks: string[] = []
     const client = { chat: { completions: { create: vi.fn().mockReturnValue(makeStream([
       makeChunk(undefined, [{ index: 0, id: "call_1", function: { name: "read_file", arguments: '{"path":"a.txt"}' } }]),
@@ -1396,22 +1396,22 @@ describe("streamChatCompletion final_answer streaming", () => {
     const callbacks = makeCallbacks({ onTextChunk: (text: string) => textChunks.push(text) })
     const result = await streamChatCompletion(client, { messages: [], stream: true }, callbacks)
     expect(textChunks).toEqual([])
-    expect(result.finalAnswerStreamed).toBe(false)
+    expect(result.settleStreamed).toBe(false)
   })
 
-  it("sets finalAnswerStreamed to false when prefix never matches", async () => {
+  it("sets settleStreamed to false when prefix never matches", async () => {
     const client = { chat: { completions: { create: vi.fn().mockReturnValue(makeStream([
-      makeChunk(undefined, [{ index: 0, id: "call_1", function: { name: "final_answer", arguments: '{"other":"value"}' } }]),
+      makeChunk(undefined, [{ index: 0, id: "call_1", function: { name: "settle", arguments: '{"other":"value"}' } }]),
     ])) } } }
     const callbacks = makeCallbacks()
     const result = await streamChatCompletion(client, { messages: [], stream: true }, callbacks)
-    expect(result.finalAnswerStreamed).toBe(false)
+    expect(result.settleStreamed).toBe(false)
   })
 })
 
-// --- Unit 20a: streamResponsesApi final_answer streaming integration tests ---
+// --- Unit 20a: streamResponsesApi settle streaming integration tests ---
 
-describe("streamResponsesApi final_answer streaming", () => {
+describe("streamResponsesApi settle streaming", () => {
   let streamResponsesApi: any
 
   function makeResponsesStream(events: any[]) {
@@ -1446,58 +1446,58 @@ describe("streamResponsesApi final_answer streaming", () => {
     streamResponsesApi = streaming.streamResponsesApi
   })
 
-  it("streams final_answer argument deltas progressively via onTextChunk", async () => {
+  it("streams settle argument deltas progressively via onTextChunk", async () => {
     const textChunks: string[] = []
     const client = { responses: { create: vi.fn().mockReturnValue(makeResponsesStream([
-      { type: "response.output_item.added", item: { type: "function_call", call_id: "c1", name: "final_answer", arguments: "" } },
+      { type: "response.output_item.added", item: { type: "function_call", call_id: "c1", name: "settle", arguments: "" } },
       { type: "response.function_call_arguments.delta", delta: '{"answer":"hel' },
       { type: "response.function_call_arguments.delta", delta: 'lo world"}' },
-      { type: "response.output_item.done", item: { type: "function_call", call_id: "c1", name: "final_answer", arguments: '{"answer":"hello world"}' } },
+      { type: "response.output_item.done", item: { type: "function_call", call_id: "c1", name: "settle", arguments: '{"answer":"hello world"}' } },
     ])) } }
     const callbacks = makeCallbacks({ onTextChunk: (text: string) => textChunks.push(text) })
     const result = await streamResponsesApi(client, {}, callbacks)
     expect(textChunks.join("")).toBe("hello world")
-    expect(result.finalAnswerStreamed).toBe(true)
+    expect(result.settleStreamed).toBe(true)
   })
 
-  it("calls onClearText when final_answer function call item is added", async () => {
+  it("calls onClearText when settle function call item is added", async () => {
     const onClearText = vi.fn()
     const client = { responses: { create: vi.fn().mockReturnValue(makeResponsesStream([
       { type: "response.output_text.delta", delta: "noise" },
-      { type: "response.output_item.added", item: { type: "function_call", call_id: "c1", name: "final_answer", arguments: "" } },
+      { type: "response.output_item.added", item: { type: "function_call", call_id: "c1", name: "settle", arguments: "" } },
       { type: "response.function_call_arguments.delta", delta: '{"answer":"done"}' },
-      { type: "response.output_item.done", item: { type: "function_call", call_id: "c1", name: "final_answer", arguments: '{"answer":"done"}' } },
+      { type: "response.output_item.done", item: { type: "function_call", call_id: "c1", name: "settle", arguments: '{"answer":"done"}' } },
     ])) } }
     const callbacks = makeCallbacks({ onClearText })
     await streamResponsesApi(client, {}, callbacks)
     expect(onClearText).toHaveBeenCalledTimes(1)
   })
 
-  it("sets finalAnswerStreamed to true when final_answer detected", async () => {
+  it("sets settleStreamed to true when settle detected", async () => {
     const client = { responses: { create: vi.fn().mockReturnValue(makeResponsesStream([
-      { type: "response.output_item.added", item: { type: "function_call", call_id: "c1", name: "final_answer", arguments: "" } },
+      { type: "response.output_item.added", item: { type: "function_call", call_id: "c1", name: "settle", arguments: "" } },
       { type: "response.function_call_arguments.delta", delta: '{"answer":"done"}' },
-      { type: "response.output_item.done", item: { type: "function_call", call_id: "c1", name: "final_answer", arguments: '{"answer":"done"}' } },
+      { type: "response.output_item.done", item: { type: "function_call", call_id: "c1", name: "settle", arguments: '{"answer":"done"}' } },
     ])) } }
     const callbacks = makeCallbacks()
     const result = await streamResponsesApi(client, {}, callbacks)
-    expect(result.finalAnswerStreamed).toBe(true)
+    expect(result.settleStreamed).toBe(true)
   })
 
   it("does not emit text when delta only contains prefix portion (no answer text yet)", async () => {
     const textChunks: string[] = []
     const client = { responses: { create: vi.fn().mockReturnValue(makeResponsesStream([
-      { type: "response.output_item.added", item: { type: "function_call", call_id: "c1", name: "final_answer", arguments: "" } },
+      { type: "response.output_item.added", item: { type: "function_call", call_id: "c1", name: "settle", arguments: "" } },
       { type: "response.function_call_arguments.delta", delta: '{"ans' },
       { type: "response.function_call_arguments.delta", delta: 'wer":"' },
       { type: "response.function_call_arguments.delta", delta: 'hello"}' },
-      { type: "response.output_item.done", item: { type: "function_call", call_id: "c1", name: "final_answer", arguments: '{"answer":"hello"}' } },
+      { type: "response.output_item.done", item: { type: "function_call", call_id: "c1", name: "settle", arguments: '{"answer":"hello"}' } },
     ])) } }
     const callbacks = makeCallbacks({ onTextChunk: (text: string) => textChunks.push(text) })
     const result = await streamResponsesApi(client, {}, callbacks)
     // First two deltas contain only prefix chars, no text emitted
     // Third delta has answer text
     expect(textChunks.join("")).toBe("hello")
-    expect(result.finalAnswerStreamed).toBe(true)
+    expect(result.settleStreamed).toBe(true)
   })
 })

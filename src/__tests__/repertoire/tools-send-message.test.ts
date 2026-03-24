@@ -1013,7 +1013,7 @@ describe("send_message tool", () => {
       expect(result).toContain("penguins")
     })
 
-    it("extracts surfaced previews from final_answer-only inner turns", async () => {
+    it("extracts surfaced previews from settle-only inner turns", async () => {
       const { baseToolDefinitions } = await import("../../repertoire/tools-base")
       const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
 
@@ -1026,7 +1026,7 @@ describe("send_message tool", () => {
               id: "tc_1",
               type: "function",
               function: {
-                name: "final_answer",
+                name: "settle",
                 arguments: JSON.stringify({
                   answer: "formal little blokes",
                   intent: "complete",

@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { getProviderDisplayLabel } from "../heart/core";
 import { buildChangelogCommand } from "../heart/daemon/ouro-version-manager";
-import { finalAnswerTool, getToolsForChannel } from "../repertoire/tools";
+import { settleTool, getToolsForChannel } from "../repertoire/tools";
 import { listSkills } from "../repertoire/skills";
 import { getAgentRoot, getAgentName, getAgentSecretsPath, loadAgentConfig, type SenseName } from "../heart/identity";
 import { isTrustedLevel, type Channel, type ChannelCapabilities, type ResolvedContext } from "./friends/types";
@@ -271,13 +271,15 @@ export function runtimeInfoSection(channel: Channel): string {
   if (channel === "cli") {
     lines.push("i introduce myself on boot with a fun random greeting.");
   } else if (channel === "inner") {
-    // No boot greeting or channel-specific guidance for inner dialog
+    lines.push(
+      "this is my private thinking space. when a thought is ready to share, i surface it to whoever needs to hear it. i settle when i'm done thinking.",
+    )
   } else if (channel === "bluebubbles") {
     lines.push(
       "i am responding in iMessage through BlueBubbles. i keep replies short and phone-native. i do not use markdown. i do not introduce myself on boot.",
     );
     lines.push(
-      "when a bluebubbles turn arrives from a thread, the harness tells me the current lane and any recent active thread ids. if widening back to top-level or routing into a different active thread is the better move, i use bluebubbles_set_reply_target before final_answer.",
+      "when a bluebubbles turn arrives from a thread, the harness tells me the current lane and any recent active thread ids. if widening back to top-level or routing into a different active thread is the better move, i use bluebubbles_set_reply_target before settle.",
     );
   } else {
     lines.push(
@@ -371,7 +373,7 @@ function dateSection(): string {
 
 function toolsSection(channel: Channel, options?: BuildSystemOptions, context?: ResolvedContext): string {
   const channelTools = getToolsForChannel(getChannelCapabilities(channel), undefined, context, options?.providerCapabilities);
-  const activeTools = (options?.toolChoiceRequired ?? true) ? [...channelTools, finalAnswerTool] : channelTools;
+  const activeTools = (options?.toolChoiceRequired ?? true) ? [...channelTools, settleTool] : channelTools;
   const list = activeTools
     .map((t) => `- ${t.function.name}: ${t.function.description}`)
     .join("\n");
@@ -665,10 +667,10 @@ function toolBehaviorSection(options?: BuildSystemOptions): string {
   return `## tool behavior
 tool_choice is set to "required" -- i must call a tool on every turn.
 - need more information? i call a tool.
-- ready to respond to the user? i call \`final_answer\`.
-\`final_answer\` is a tool call -- it satisfies the tool_choice requirement.
-\`final_answer\` must be the ONLY tool call in that turn. do not combine it with other tool calls.
-do NOT call no-op tools just before \`final_answer\`. if i am done, i call \`final_answer\` directly.`;
+- ready to respond to the user? i call \`settle\`.
+\`settle\` is a tool call -- it satisfies the tool_choice requirement.
+\`settle\` must be the ONLY tool call in that turn. do not combine it with other tool calls.
+do NOT call no-op tools just before \`settle\`. if i am done, i call \`settle\` directly.`;
 }
 
 function workspaceDisciplineSection(): string {
@@ -715,7 +717,7 @@ export function contextSection(context?: ResolvedContext, options?: BuildSystemO
   lines.push("my conversation memory is ephemeral -- it resets between sessions. anything i learn about my friend, i save with save_friend_note so future me remembers.")
   lines.push("the conversation is my source of truth. my notes are a journal for future me -- they may be stale or incomplete.")
   lines.push("when i learn something that might invalidate an existing note, i check related notes and update or override any that are stale.")
-  lines.push("i save ANYTHING i learn about my friend immediately with save_friend_note -- names, preferences, what they do, what they care about. when in doubt, save it. saving comes BEFORE responding: i call save_friend_note first, then final_answer on the next turn.")
+  lines.push("i save ANYTHING i learn about my friend immediately with save_friend_note -- names, preferences, what they do, what they care about. when in doubt, save it. saving comes BEFORE responding: i call save_friend_note first, then settle on the next turn.")
 
   // Onboarding instructions (only below token threshold -- drop once exceeded)
   const impressions = getFirstImpressions(friend, options)
@@ -777,13 +779,13 @@ export function groupChatParticipationSection(context?: ResolvedContext): string
 group chats are conversations between people. i'm one participant, not the host.
 
 i don't need to respond to everything. most reactions, tapbacks, and side
-conversations between others aren't for me. i use no_response to stay quiet
+conversations between others aren't for me. i use observe to stay quiet
 when the moment doesn't call for my voice — same as any person would.
 
 when a reaction or emoji says it better than words, i can react instead of
 typing a full reply. a thumbs-up is often the perfect response.
 
-no_response must be the sole tool call in the turn (same rule as final_answer).
+observe must be the sole tool call in the turn (same rule as settle).
 when unsure whether to chime in, i lean toward silence rather than noise.`
 }
 

@@ -2,6 +2,21 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.134",
+      "changes": [
+        "Metacognitive tool redesign: final_answer renamed to settle, no_response renamed to observe. RunAgentOutcome values now 'settled' and 'observed'.",
+        "New surface tool: inner-dialog-only tool for routing thoughts outward to friends' freshest active sessions. Replaces post-turn routeDelegatedCompletion with inline delivery.",
+        "Attention queue: FIFO queue of delegated work items seeded from drained pending messages and recovered obligations. Visible to the model at inner dialog turn start.",
+        "Surface-before-settle gate: settle rejected in inner dialog until all attention queue items are surfaced.",
+        "Channel-based tool filtering: observe excluded from 1:1 and inner dialog; go_inward and send_message excluded from inner dialog; surface included only in inner dialog.",
+        "go_inward content param renamed to topic with metacognitive handoff framing.",
+        "Shared sole-call interception pattern extracted from duplicated core.ts logic.",
+        "Exact-origin routing removed from routeDelegatedCompletion; routing now bridge, freshest, deferred only.",
+        "ouro attention CLI: list held items, show details by ID, view surfacing history.",
+        "System prompts updated with metacognitive framing for all new tool names."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.133",
       "changes": [
         "Inner return obligations: delegated inner dialog work now tracks a ReturnObligation through queued → running → returned/deferred lifecycle.",
