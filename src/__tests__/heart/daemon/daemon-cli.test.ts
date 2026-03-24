@@ -409,6 +409,30 @@ describe("ouro CLI parsing", () => {
     })
   })
 
+  it("parses attention command (list)", () => {
+    expect(parseOuroCommand(["attention"])).toEqual({ kind: "attention.list" })
+  })
+
+  it("parses attention command with --agent flag", () => {
+    expect(parseOuroCommand(["attention", "--agent", "slugger"])).toEqual({ kind: "attention.list", agent: "slugger" })
+  })
+
+  it("parses attention show <id>", () => {
+    expect(parseOuroCommand(["attention", "show", "obl-123"])).toEqual({ kind: "attention.show", id: "obl-123" })
+  })
+
+  it("parses attention show <id> with --agent", () => {
+    expect(parseOuroCommand(["attention", "show", "obl-123", "--agent", "slugger"])).toEqual({ kind: "attention.show", id: "obl-123", agent: "slugger" })
+  })
+
+  it("parses attention history", () => {
+    expect(parseOuroCommand(["attention", "history"])).toEqual({ kind: "attention.history" })
+  })
+
+  it("parses attention history with --agent", () => {
+    expect(parseOuroCommand(["attention", "history", "--agent", "slugger"])).toEqual({ kind: "attention.history", agent: "slugger" })
+  })
+
   it("rejects malformed session subcommands", () => {
     // bare "session" with no subcommand
     expect(() => parseOuroCommand(["session"])).toThrow("Usage")

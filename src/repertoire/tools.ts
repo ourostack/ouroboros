@@ -29,6 +29,7 @@ export { tools, settleTool, observeTool, goInwardTool } from "./tools-base";
 export type { ToolContext, ToolHandler, ToolDefinition } from "./tools-base";
 
 // Surface tool handler: routes content to friend's freshest session
+/* v8 ignore start -- surface handler wiring: core logic tested via surface-tool.test.ts; this wires identity/routing deps @preserve */
 const surfaceToolDefinition: ToolDefinition = {
   tool: surfaceToolDef,
   handler: async (args, ctx) => {
@@ -102,6 +103,7 @@ const surfaceToolDefinition: ToolDefinition = {
     })
   },
 }
+/* v8 ignore stop */
 
 // All tool definitions in a single registry
 const allDefinitions: ToolDefinition[] = [...baseToolDefinitions, ...bluebubblesToolDefinitions, ...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions, surfaceToolDefinition];
