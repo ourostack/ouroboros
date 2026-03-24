@@ -239,6 +239,69 @@ describe("attention queue", () => {
 
       expect(queue[0].friendName).toBe("unknown-uuid")
     })
+
+    it("includes bridgeId in drained items when present", () => {
+      const drained: PendingMessage[] = [
+        {
+          from: "test",
+          friendId: "self",
+          channel: "inner",
+          key: "dialog",
+          content: "bridged thought",
+          timestamp: 1000,
+          delegatedFrom: { friendId: "ari", channel: "bluebubbles", key: "chat-1", bridgeId: "bridge-99" },
+        },
+      ]
+
+      const queue = buildAttentionQueue({
+        drainedPending: drained,
+        outstandingObligations: [],
+        friendNameResolver: () => "Ari",
+      })
+
+      expect(queue).toHaveLength(1)
+      expect(queue[0].bridgeId).toBe("bridge-99")
+    })
+
+    it("includes bridgeId in obligation-recovery items when present", () => {
+      const queue = buildAttentionQueue({
+        drainedPending: [],
+        outstandingObligations: [
+          {
+            id: "obl-2",
+            origin: { friendId: "ben", channel: "teams", key: "session-3", bridgeId: "bridge-77" },
+            status: "running",
+            delegatedContent: "check the pipeline",
+            createdAt: 600,
+          },
+        ],
+        friendNameResolver: () => "Ben",
+      })
+
+      expect(queue).toHaveLength(1)
+      expect(queue[0].bridgeId).toBe("bridge-77")
+      expect(queue[0].source).toBe("obligation-recovery")
+    })
+
+    it("falls back to friendId for obligation-recovery items when name unavailable", () => {
+      const queue = buildAttentionQueue({
+        drainedPending: [],
+        outstandingObligations: [
+          {
+            id: "obl-3",
+            origin: { friendId: "unknown-friend-id", channel: "cli", key: "session-x" },
+            status: "queued",
+            delegatedContent: "orphaned thought",
+            createdAt: 700,
+          },
+        ],
+        friendNameResolver: () => null,
+      })
+
+      expect(queue).toHaveLength(1)
+      expect(queue[0].friendName).toBe("unknown-friend-id")
+      expect(queue[0].source).toBe("obligation-recovery")
+    })
   })
 
   describe("dequeueAttentionItem", () => {

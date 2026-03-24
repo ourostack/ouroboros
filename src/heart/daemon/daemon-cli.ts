@@ -2520,6 +2520,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   }
 
   // ── attention queue (local, no daemon socket needed) ──
+  /* v8 ignore start -- CLI attention handler: requires real obligation store on disk @preserve */
   if (command.kind === "attention.list" || command.kind === "attention.show" || command.kind === "attention.history") {
     try {
       const agentName = command.agent ?? getAgentName()
@@ -2581,6 +2582,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       return message
     }
   }
+  /* v8 ignore stop */
 
   // ── session list (local, no daemon socket needed) ──
   if (command.kind === "session.list") {
