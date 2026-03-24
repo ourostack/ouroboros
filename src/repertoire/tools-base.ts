@@ -1458,9 +1458,9 @@ export const goInwardTool: OpenAI.ChatCompletionFunctionTool = {
     parameters: {
       type: "object",
       properties: {
-        content: {
+        topic: {
           type: "string",
-          description: "what i need to think about -- the question, the thread, the thing that needs private attention",
+          description: "the question or topic that needs private thought — brief framing, not your analysis. your inner dialog will do the actual thinking.",
         },
         answer: {
           type: "string",
@@ -1472,7 +1472,7 @@ export const goInwardTool: OpenAI.ChatCompletionFunctionTool = {
           description: "reflect: something to sit with. plan: something to work through. relay: something to carry across.",
         },
       },
-      required: ["content"],
+      required: ["topic"],
     },
   },
 };

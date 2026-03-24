@@ -285,7 +285,7 @@ const DELEGATION_REASON_PROSE_HANDOFF: Record<DelegationReason, string> = {
 };
 
 function buildGoInwardHandoffPacket(params: {
-  content: string
+  topic: string
   mode: "reflect" | "plan" | "relay"
   delegationDecision?: DelegationDecision
   currentSession?: { friendId: string; channel: string; key: string } | null
@@ -297,29 +297,29 @@ function buildGoInwardHandoffPacket(params: {
     ? reasons.map((r) => DELEGATION_REASON_PROSE_HANDOFF[r]).join("; ")
     : "this felt like it needed more thought"
 
-  const returnAddress = params.currentSession
-    ? `${params.currentSession.friendId}/${params.currentSession.channel}/${params.currentSession.key}`
-    : "no specific return -- just thinking"
+  const whoAsked = params.currentSession
+    ? params.currentSession.friendId
+    : "no one -- just thinking"
 
-  let obligationLine: string
+  let holdingLine: string
   if (params.outwardClosureRequired && params.currentSession) {
-    obligationLine = `i need to come back to ${params.currentSession.friendId} with something`
+    holdingLine = `i'm holding something for ${params.currentSession.friendId}`
   } else {
-    obligationLine = "no obligation -- just thinking"
+    holdingLine = "nothing -- just thinking"
   }
 
   return [
     "## what i need to think about",
-    params.content,
+    params.topic,
     "",
     "## why this came up",
     reasonProse,
     "",
-    "## where to bring it back",
-    returnAddress,
+    "## who asked",
+    whoAsked,
     "",
-    "## what i owe",
-    obligationLine,
+    "## what i'm holding",
+    holdingLine,
     "",
     "## thinking mode",
     params.mode,
@@ -840,12 +840,12 @@ export async function runAgent(
         // Check for go_inward sole call: intercept before tool execution
         const isSoleGoInward = result.toolCalls.length === 1 && result.toolCalls[0].name === "go_inward";
         if (isSoleGoInward) {
-          let parsedArgs: { content?: string; answer?: string; mode?: string } = {};
+          let parsedArgs: { topic?: string; answer?: string; mode?: string } = {};
           try {
             parsedArgs = JSON.parse(result.toolCalls[0].arguments);
           } catch { /* ignore */ }
-          /* v8 ignore next -- defensive: content always string from model @preserve */
-          const content = typeof parsedArgs.content === "string" ? parsedArgs.content : "";
+          /* v8 ignore next -- defensive: topic always string from model @preserve */
+          const topic = typeof parsedArgs.topic === "string" ? parsedArgs.topic : "";
           const answer = typeof parsedArgs.answer === "string" ? parsedArgs.answer : undefined;
           const parsedMode = parsedArgs.mode === "reflect" || parsedArgs.mode === "plan" || parsedArgs.mode === "relay"
             ? parsedArgs.mode
@@ -860,7 +860,7 @@ export async function runAgent(
 
           // Build handoff packet and enqueue
           const handoffContent = buildGoInwardHandoffPacket({
-            content,
+            topic,
             mode,
             delegationDecision: options?.delegationDecision,
             currentSession: (options?.toolContext as ToolContext | undefined)?.currentSession ?? null,
@@ -896,7 +896,7 @@ export async function runAgent(
                   channel: currentSession.channel,
                   key: currentSession.key,
                 },
-                content,
+                content: topic,
               })
             } catch {
               /* v8 ignore next -- defensive: obligation store write failure should not break go_inward @preserve */
@@ -914,7 +914,7 @@ export async function runAgent(
             component: "engine",
             event: "engine.go_inward",
             message: "taking thread inward",
-            meta: { mode, hasAnswer: answer !== undefined, contentSnippet: content.slice(0, 80) },
+            meta: { mode, hasAnswer: answer !== undefined, contentSnippet: topic.slice(0, 80) },
           });
 
           outcome = "go_inward";
