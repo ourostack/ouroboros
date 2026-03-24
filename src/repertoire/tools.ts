@@ -9,12 +9,13 @@ import type { ChannelCapabilities, ResolvedContext } from "../mind/friends/types
 import { emitNervesEvent } from "../nerves/runtime";
 import type { ProviderCapability } from "../heart/core";
 import { guardInvocation } from "./guardrails";
-import { getAgentRoot } from "../heart/identity";
+import { getAgentRoot, getAgentName } from "../heart/identity";
 import { resolveSafeRepoPath } from "../heart/safe-workspace";
 import { surfaceToolDef, handleSurface, type SurfaceRouteResult } from "../senses/surface-tool";
 import { advanceObligation as advanceInnerObligation } from "../mind/obligations";
-import { findFreshestFriendSession } from "../heart/session-activity";
+import { findFreshestFriendSession, listSessionActivity } from "../heart/session-activity";
 import * as path from "path";
+import type { AttentionItem } from "../senses/attention-queue";
 
 function safeGetAgentRoot(): string | undefined {
   try {
@@ -34,20 +35,78 @@ const surfaceToolDefinition: ToolDefinition = {
   tool: surfaceToolDef,
   handler: async (args, ctx) => {
     const queue = ctx?.delegatedOrigins ?? []
-    const agentName = safeGetAgentRoot() ? getAgentRoot().split("/").pop() ?? "unknown" : "unknown"
+    const agentName = (() => { try { return getAgentName() } catch { return "unknown" } })()
 
-    const routeToFriend = async (friendId: string, content: string): Promise<SurfaceRouteResult> => {
+    const routeToFriend = async (friendId: string, content: string, queueItem?: AttentionItem): Promise<SurfaceRouteResult> => {
       /* v8 ignore start -- routing: integration path tested via inner-dialog routing tests @preserve */
       try {
         const agentRoot = getAgentRoot()
+        const sessionsDir = path.join(agentRoot, "state", "sessions")
+        const friendsDir = path.join(agentRoot, "friends")
+
+        // Priority 1: Bridge-preferred session (if queue item has a bridgeId)
+        if (queueItem?.bridgeId) {
+          const { createBridgeManager } = await import("../heart/bridges/manager")
+          const bridge = createBridgeManager().getBridge(queueItem.bridgeId)
+          if (bridge && bridge.lifecycle !== "completed" && bridge.lifecycle !== "cancelled") {
+            const allSessions = listSessionActivity({ sessionsDir, friendsDir, agentName })
+            const bridgeTarget = allSessions.find((activity) =>
+              activity.friendId === friendId
+              && activity.channel !== "inner"
+              && bridge.attachedSessions.some((s) =>
+                s.friendId === activity.friendId && s.channel === activity.channel && s.key === activity.key
+              ),
+            )
+            if (bridgeTarget) {
+              // Attempt proactive BB delivery for bridge target
+              if (bridgeTarget.channel === "bluebubbles") {
+                const { sendProactiveBlueBubblesMessageToSession } = await import("../senses/bluebubbles")
+                const proactiveResult = await sendProactiveBlueBubblesMessageToSession({
+                  friendId: bridgeTarget.friendId,
+                  sessionKey: bridgeTarget.key,
+                  text: content,
+                })
+                if (proactiveResult.delivered) {
+                  return { status: "delivered", detail: "via iMessage" }
+                }
+              }
+              // Fall back to pending queue for bridge target
+              const { queuePendingMessage, getPendingDir } = await import("../mind/pending")
+              const pendingDir = getPendingDir(agentName, bridgeTarget.friendId, bridgeTarget.channel, bridgeTarget.key)
+              queuePendingMessage(pendingDir, {
+                from: agentName,
+                friendId: bridgeTarget.friendId,
+                channel: bridgeTarget.channel,
+                key: bridgeTarget.key,
+                content,
+                timestamp: Date.now(),
+              })
+              return { status: "queued", detail: `for next interaction via ${bridgeTarget.channel}` }
+            }
+          }
+        }
+
+        // Priority 2: Freshest active friend session
         const freshest = findFreshestFriendSession({
-          sessionsDir: path.join(agentRoot, "state", "sessions"),
-          friendsDir: path.join(agentRoot, "friends"),
+          sessionsDir,
+          friendsDir,
           agentName,
           friendId,
           activeOnly: true,
         })
         if (freshest && freshest.channel !== "inner") {
+          // Attempt proactive BB delivery
+          if (freshest.channel === "bluebubbles") {
+            const { sendProactiveBlueBubblesMessageToSession } = await import("../senses/bluebubbles")
+            const proactiveResult = await sendProactiveBlueBubblesMessageToSession({
+              friendId: freshest.friendId,
+              sessionKey: freshest.key,
+              text: content,
+            })
+            if (proactiveResult.delivered) {
+              return { status: "delivered", detail: "via iMessage" }
+            }
+          }
           // Queue as pending for next interaction
           const { queuePendingMessage, getPendingDir } = await import("../mind/pending")
           const pendingDir = getPendingDir(agentName, freshest.friendId, freshest.channel, freshest.key)
@@ -61,7 +120,8 @@ const surfaceToolDefinition: ToolDefinition = {
           })
           return { status: "queued", detail: `for next interaction via ${freshest.channel}` }
         }
-        // Deferred — no active session found
+
+        // Priority 3: Deferred — no active session found
         const { getDeferredReturnDir } = await import("../mind/pending")
         const { queuePendingMessage: queueDeferred } = await import("../mind/pending")
         const deferredDir = getDeferredReturnDir(agentName, friendId)
@@ -89,7 +149,7 @@ const surfaceToolDefinition: ToolDefinition = {
       advanceObligation: (obligationId, update) => {
         /* v8 ignore start -- obligation advance: tested via attention-queue tests @preserve */
         try {
-          const name = safeGetAgentRoot() ? getAgentRoot().split("/").pop() ?? "unknown" : "unknown"
+          const name = (() => { try { return getAgentName() } catch { return "unknown" } })()
           advanceInnerObligation(name, obligationId, {
             status: update.status as any,
             ...(update.returnedAt !== undefined ? { returnedAt: update.returnedAt } : {}),

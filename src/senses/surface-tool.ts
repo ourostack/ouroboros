@@ -45,7 +45,7 @@ export interface HandleSurfaceInput {
   delegationId?: string
   friendId?: string
   queue: AttentionItem[]
-  routeToFriend: (friendId: string, content: string) => Promise<SurfaceRouteResult>
+  routeToFriend: (friendId: string, content: string, queueItem?: AttentionItem) => Promise<SurfaceRouteResult>
   advanceObligation: (obligationId: string, update: { status: string; returnedAt?: number; returnTarget?: string }) => void
 }
 
@@ -71,7 +71,7 @@ export async function handleSurface(input: HandleSurfaceInput): Promise<string> 
   }
 
   // Route to target
-  const result = await routeToFriend(targetFriendId, content)
+  const result = await routeToFriend(targetFriendId, content, queueItem)
 
   emitNervesEvent({
     event: "senses.surface_routed",
