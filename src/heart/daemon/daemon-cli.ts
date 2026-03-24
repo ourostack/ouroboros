@@ -89,6 +89,9 @@ export type OuroCliCommand =
   | { kind: "hatch.start"; agentName?: string; humanName?: string; provider?: AgentProvider; credentials?: HatchCredentialsInput; migrationPath?: string }
   | { kind: "rollback"; version?: string }
   | { kind: "versions" }
+  | { kind: "attention.list"; agent?: string }
+  | { kind: "attention.show"; id: string; agent?: string }
+  | { kind: "attention.history"; agent?: string }
 
 export interface OuroCliDeps {
   socketPath: string
@@ -898,6 +901,18 @@ function parseSessionCommand(args: string[]): OuroCliCommand {
   throw new Error(`Usage\n${usage()}`)
 }
 
+function parseAttentionCommand(args: string[]): OuroCliCommand {
+  const { agent, rest: cleaned } = extractAgentFlag(args)
+  const sub = cleaned[0]
+  if (sub === "show" && cleaned[1]) {
+    return { kind: "attention.show", id: cleaned[1], ...(agent ? { agent } : {}) }
+  }
+  if (sub === "history") {
+    return { kind: "attention.history", ...(agent ? { agent } : {}) }
+  }
+  return { kind: "attention.list", ...(agent ? { agent } : {}) }
+}
+
 function parseThoughtsCommand(args: string[]): OuroCliCommand {
   const { agent, rest: cleaned } = extractAgentFlag(args)
   let last: number | undefined
@@ -1055,6 +1070,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
     return { kind: "changelog", ...(from ? { from } : {}), ...(agent ? { agent } : {}) }
   }
   if (head === "thoughts") return parseThoughtsCommand(args.slice(1))
+  if (head === "attention") return parseAttentionCommand(args.slice(1))
   if (head === "chat") {
     if (!second) throw new Error(`Usage\n${usage()}`)
     return { kind: "chat.connect", agent: second }
@@ -1568,7 +1584,8 @@ type ConfigModelCliCommand = Extract<OuroCliCommand, { kind: "config.model" }>
 type ConfigModelsCliCommand = Extract<OuroCliCommand, { kind: "config.models" }>
 type RollbackCliCommand = Extract<OuroCliCommand, { kind: "rollback" }>
 type VersionsCliCommand = Extract<OuroCliCommand, { kind: "versions" }>
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand>): DaemonCommand {
+type AttentionCliCommand = Extract<OuroCliCommand, { kind: "attention.list" } | { kind: "attention.show" } | { kind: "attention.history" }>
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand>): DaemonCommand {
   return command
 }
 
@@ -2501,6 +2518,71 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       return message
     }
   }
+
+  // ── attention queue (local, no daemon socket needed) ──
+  /* v8 ignore start -- CLI attention handler: requires real obligation store on disk @preserve */
+  if (command.kind === "attention.list" || command.kind === "attention.show" || command.kind === "attention.history") {
+    try {
+      const agentName = command.agent ?? getAgentName()
+      const { listActiveObligations, readObligation } = await import("../../mind/obligations")
+
+      if (command.kind === "attention.list") {
+        const obligations = listActiveObligations(agentName)
+        if (obligations.length === 0) {
+          const message = "nothing held — attention queue is empty"
+          deps.writeStdout(message)
+          return message
+        }
+        const lines = obligations.map((o) =>
+          `[${o.id}] ${o.origin.friendId} via ${o.origin.channel}/${o.origin.key} — ${o.delegatedContent.slice(0, 60)}${o.delegatedContent.length > 60 ? "..." : ""} (${o.status})`)
+        const message = lines.join("\n")
+        deps.writeStdout(message)
+        return message
+      }
+
+      if (command.kind === "attention.show") {
+        const obligation = readObligation(agentName, (command as Extract<OuroCliCommand, { kind: "attention.show" }>).id)
+        if (!obligation) {
+          const message = `no obligation found with id ${(command as Extract<OuroCliCommand, { kind: "attention.show" }>).id}`
+          deps.writeStdout(message)
+          return message
+        }
+        const message = JSON.stringify(obligation, null, 2)
+        deps.writeStdout(message)
+        return message
+      }
+
+      // attention.history: show returned obligations
+      const { getObligationsDir } = await import("../../mind/obligations")
+      const obligationsDir = getObligationsDir(agentName)
+      let entries: string[] = []
+      try { entries = fs.readdirSync(obligationsDir) } catch { /* empty */ }
+      const returned = entries
+        .filter((e) => e.endsWith(".json"))
+        .map((e) => { try { return JSON.parse(fs.readFileSync(path.join(obligationsDir, e), "utf-8")) } catch { return null } })
+        .filter((o): o is any => o?.status === "returned")
+        .sort((a: any, b: any) => (b.returnedAt ?? 0) - (a.returnedAt ?? 0))
+        .slice(0, 20)
+
+      if (returned.length === 0) {
+        const message = "no surfacing history yet"
+        deps.writeStdout(message)
+        return message
+      }
+      const lines = returned.map((o: any) => {
+        const when = o.returnedAt ? new Date(o.returnedAt).toISOString() : "unknown"
+        return `[${o.id}] → ${o.origin.friendId} via ${o.returnTarget ?? "unknown"} at ${when}`
+      })
+      const message = lines.join("\n")
+      deps.writeStdout(message)
+      return message
+    } catch {
+      const message = "error: no agent context — use --agent <name> to specify"
+      deps.writeStdout(message)
+      return message
+    }
+  }
+  /* v8 ignore stop */
 
   // ── session list (local, no daemon socket needed) ──
   if (command.kind === "session.list") {

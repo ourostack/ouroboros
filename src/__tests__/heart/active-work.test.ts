@@ -1608,7 +1608,7 @@ describe("delegation router", () => {
       ingressTexts: ["sounds good"],
       activeWork,
       mustResolveBeforeHandoff: false,
-      requestedToolNames: ["final_answer"],
+      requestedToolNames: ["settle"],
     })).toEqual({
       target: "fast-path",
       reasons: [],
@@ -1702,7 +1702,7 @@ describe("delegation router", () => {
       ingressTexts: ["carry this across chats for me"],
       activeWork,
       mustResolveBeforeHandoff: false,
-      requestedToolNames: ["final_answer"],
+      requestedToolNames: ["settle"],
     })).toEqual({
       target: "delegate-inward",
       reasons: ["cross_session"],
@@ -1758,7 +1758,7 @@ describe("delegation router", () => {
       ingressTexts: ["sounds good"],
       activeWork,
       mustResolveBeforeHandoff: false,
-      requestedToolNames: ["final_answer"],
+      requestedToolNames: ["settle"],
     })).toEqual({
       target: "fast-path",
       reasons: [],

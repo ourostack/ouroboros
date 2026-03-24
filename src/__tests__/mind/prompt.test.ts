@@ -1101,7 +1101,7 @@ describe("buildSystem", () => {
     const result = await buildSystem("cli", { toolChoiceRequired: true })
     expect(result).toContain("## tool behavior")
     expect(result).toContain("tool_choice is set to \"required\"")
-    expect(result).toContain("final_answer")
+    expect(result).toContain("settle")
     expect(result).toContain("ONLY tool call")
   })
 
@@ -1114,7 +1114,7 @@ describe("buildSystem", () => {
     resetPsycheCache()
     const result = await buildSystem("cli", { toolChoiceRequired: false })
     expect(result).not.toContain("## tool behavior")
-    expect(result).not.toContain("final_answer")
+    expect(result).not.toContain("settle")
   })
 
   it("includes tool behavior section when options is undefined (defaults on)", async () => {
@@ -1136,9 +1136,9 @@ describe("buildSystem", () => {
     const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = await buildSystem("cli", { toolChoiceRequired: true })
-    // Decision tree: mentions calling tools for info and final_answer for responding
+    // Decision tree: mentions calling tools for info and settle for responding
     expect(result).toMatch(/need.*information.*call a tool/i)
-    expect(result).toMatch(/ready to respond.*call.*final_answer/i)
+    expect(result).toMatch(/ready to respond.*call.*settle/i)
   })
 
   it("tool behavior section contains anti-no-op pattern", async () => {
@@ -1149,11 +1149,11 @@ describe("buildSystem", () => {
     const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = await buildSystem("cli", { toolChoiceRequired: true })
-    // Anti-pattern: warns against calling no-op tools before final_answer
+    // Anti-pattern: warns against calling no-op tools before settle
     expect(result).toMatch(/do not call.*no-op|do NOT call.*no-op/i)
   })
 
-  it("tool behavior section clarifies final_answer is a tool call", async () => {
+  it("tool behavior section clarifies settle is a tool call", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
@@ -1161,11 +1161,11 @@ describe("buildSystem", () => {
     const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = await buildSystem("cli", { toolChoiceRequired: true })
-    // Clarification: final_answer IS a tool call satisfying the requirement
-    expect(result).toMatch(/final_answer.*tool call.*satisfies|final_answer.*is a tool call/i)
+    // Clarification: settle IS a tool call satisfying the requirement
+    expect(result).toMatch(/settle.*tool call.*satisfies|settle.*is a tool call/i)
   })
 
-  it("toolsSection includes final_answer in tool list when options undefined (defaults on)", async () => {
+  it("toolsSection includes settle in tool list when options undefined (defaults on)", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
@@ -1173,11 +1173,11 @@ describe("buildSystem", () => {
     const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = await buildSystem("cli")
-    // The tools section should list final_answer when defaults on
-    expect(result).toContain("- final_answer:")
+    // The tools section should list settle when defaults on
+    expect(result).toContain("- settle:")
   })
 
-  it("toolsSection does NOT include final_answer when toolChoiceRequired is false", async () => {
+  it("toolsSection does NOT include settle when toolChoiceRequired is false", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
@@ -1185,7 +1185,7 @@ describe("buildSystem", () => {
     const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = await buildSystem("cli", { toolChoiceRequired: false })
-    expect(result).not.toContain("- final_answer:")
+    expect(result).not.toContain("- settle:")
   })
 
   it("does not export flagsSection (removed)", async () => {
@@ -3326,7 +3326,7 @@ describe("groupChatParticipationSection", () => {
     }
   }
 
-  it("returns non-empty string containing no_response when isGroupChat is true on remote channel", async () => {
+  it("returns non-empty string containing observe when isGroupChat is true on remote channel", async () => {
     const { groupChatParticipationSection } = await import("../../mind/prompt")
     const ctx = {
       friend: makeFriendForGroup(),
@@ -3335,7 +3335,7 @@ describe("groupChatParticipationSection", () => {
     }
     const result = groupChatParticipationSection(ctx as any)
     expect(result).not.toBe("")
-    expect(result).toContain("no_response")
+    expect(result).toContain("observe")
   })
 
   it("returns empty string when isGroupChat is false", async () => {
@@ -3393,8 +3393,8 @@ describe("groupChatParticipationSection", () => {
     expect(result).toMatch(/reaction|tapback/i)
     // Must mention silence or not responding
     expect(result).toMatch(/silent|silence|quiet/i)
-    // Must mention no_response
-    expect(result).toMatch(/no_response/)
+    // Must mention observe
+    expect(result).toMatch(/observe/)
     // Must mention sole tool call rule
     expect(result).toMatch(/only tool call|sole/i)
   })
@@ -3417,7 +3417,7 @@ describe("groupChatParticipationSection", () => {
       isGroupChat: true,
     }
     const result = await buildSystem("bluebubbles", undefined, ctx as any)
-    expect(result).toContain("no_response")
+    expect(result).toContain("observe")
     expect(result).toMatch(/reaction|tapback/i)
   })
 })

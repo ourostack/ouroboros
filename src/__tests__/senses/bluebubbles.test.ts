@@ -710,11 +710,11 @@ describe("BlueBubbles sense runtime", () => {
     )
   })
 
-  it("keeps group no_response turns model-visible while leaving typing off", async () => {
+  it("keeps group observe turns model-visible while leaving typing off", async () => {
     mocks.runAgent.mockImplementationOnce(async (_messages: any, callbacks: any) => {
       callbacks.onModelStart()
       return {
-        outcome: "no_response",
+        outcome: "observed",
         usage: {
           input_tokens: 10,
           output_tokens: 1,

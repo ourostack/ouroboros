@@ -79,6 +79,7 @@ export interface ToolContext {
   activeWorkFrame?: ActiveWorkFrame;
   supportedReasoningEfforts?: readonly string[];
   setReasoningEffort?: (level: string) => void;
+  delegatedOrigins?: import("../senses/attention-queue").AttentionItem[];
 }
 
 export type ToolHandler = (args: Record<string, string>, ctx?: ToolContext) => string | Promise<string>;
@@ -1458,9 +1459,9 @@ export const goInwardTool: OpenAI.ChatCompletionFunctionTool = {
     parameters: {
       type: "object",
       properties: {
-        content: {
+        topic: {
           type: "string",
-          description: "what i need to think about -- the question, the thread, the thing that needs private attention",
+          description: "the question or topic that needs private thought — brief framing, not your analysis. your inner dialog will do the actual thinking.",
         },
         answer: {
           type: "string",
@@ -1472,15 +1473,15 @@ export const goInwardTool: OpenAI.ChatCompletionFunctionTool = {
           description: "reflect: something to sit with. plan: something to work through. relay: something to carry across.",
         },
       },
-      required: ["content"],
+      required: ["topic"],
     },
   },
 };
 
-export const noResponseTool: OpenAI.ChatCompletionFunctionTool = {
+export const observeTool: OpenAI.ChatCompletionFunctionTool = {
   type: "function",
   function: {
-    name: "no_response",
+    name: "observe",
     description: "stay silent in this group chat — the moment doesn't call for a response. must be the only tool call in the turn.",
     parameters: {
       type: "object",
@@ -1491,10 +1492,10 @@ export const noResponseTool: OpenAI.ChatCompletionFunctionTool = {
   },
 };
 
-export const finalAnswerTool: OpenAI.ChatCompletionFunctionTool = {
+export const settleTool: OpenAI.ChatCompletionFunctionTool = {
   type: "function",
   function: {
-    name: "final_answer",
+    name: "settle",
     description:
       "respond to the user with your message. call this tool when you are ready to deliver your response.",
     parameters: {

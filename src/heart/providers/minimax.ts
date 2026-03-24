@@ -73,7 +73,7 @@ export function createMinimaxProviderRuntime(config?: MinimaxProviderConfig): Pr
         params,
         request.callbacks,
         request.signal,
-        request.eagerFinalAnswerStreaming,
+        request.eagerSettleStreaming,
       );
     },
     classifyError(error: Error): ProviderErrorClassification {

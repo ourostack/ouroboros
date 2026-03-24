@@ -105,6 +105,8 @@ export interface InboundTurnInput {
     friendId: string,
     usage?: UsageData,
   ) => Promise<void>
+  /** Optional callback invoked after pending messages are drained. Returns prefix sections to inject before pending. */
+  onPendingDrained?: (drained: PendingMessage[]) => string[]
 }
 
 export interface InboundTurnResult {
@@ -457,8 +459,9 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   const sessionPending = input.drainPending(input.pendingDir)
   const pending = [...deferredReturns, ...sessionPending]
 
-  // Assemble messages: session messages + live world-state checkpoint + pending + inbound user messages
-  const prefixSections = [formatLiveWorldStateCheckpoint(activeWorkFrame)]
+  // Assemble messages: session messages + attention queue + live world-state checkpoint + pending + inbound user messages
+  const extraPrefixSections = input.onPendingDrained?.(pending) ?? []
+  const prefixSections = [...extraPrefixSections, formatLiveWorldStateCheckpoint(activeWorkFrame)]
   if (pending.length > 0) {
     const pendingSection = pending
       .map((msg) => `[pending from ${msg.from}]: ${msg.content}`)
@@ -563,7 +566,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     ...(mustResolveBeforeHandoff ? { mustResolveBeforeHandoff: true } : {}),
     ...(typeof lastFriendActivityAt === "string" ? { lastFriendActivityAt } : {}),
   }
-  const nextState = result.outcome === "complete" || result.outcome === "blocked" || result.outcome === "superseded" || result.outcome === "no_response"
+  const nextState = result.outcome === "settled" || result.outcome === "blocked" || result.outcome === "superseded" || result.outcome === "observed"
     ? (typeof lastFriendActivityAt === "string"
       ? { lastFriendActivityAt }
       : undefined)

@@ -878,16 +878,16 @@ describe("tools array export (backward compat)", () => {
   })
 })
 
-describe("finalAnswerTool", () => {
+describe("settleTool", () => {
   it("has correct name, description, and schema", async () => {
     vi.resetModules()
-    const { finalAnswerTool } = await import("../../repertoire/tools")
-    expect(finalAnswerTool.type).toBe("function")
-    expect(finalAnswerTool.function.name).toBe("final_answer")
+    const { settleTool } = await import("../../repertoire/tools")
+    expect(settleTool.type).toBe("function")
+    expect(settleTool.function.name).toBe("settle")
     // Description should frame as primary response mechanism, not alternative
-    expect(finalAnswerTool.function.description).toMatch(/respond to the user/i)
-    expect(finalAnswerTool.function.description).not.toContain("instead of calling another tool")
-    expect(finalAnswerTool.function.parameters).toEqual({
+    expect(settleTool.function.description).toMatch(/respond to the user/i)
+    expect(settleTool.function.description).not.toContain("instead of calling another tool")
+    expect(settleTool.function.parameters).toEqual({
       type: "object",
       properties: {
         answer: { type: "string" },
@@ -901,7 +901,7 @@ describe("finalAnswerTool", () => {
     vi.resetModules()
     const { tools } = await import("../../repertoire/tools")
     const names = tools.map((t: any) => t.function.name)
-    expect(names).not.toContain("final_answer")
+    expect(names).not.toContain("settle")
   })
 })
 

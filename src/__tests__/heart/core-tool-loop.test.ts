@@ -133,7 +133,7 @@ describe("runAgent tool loop guard", () => {
     await setupMinimax()
   })
 
-  it("blocks repeated no-progress polling and lets the model recover with final_answer", async () => {
+  it("blocks repeated no-progress polling and lets the model recover with settle", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount += 1
@@ -158,7 +158,7 @@ describe("runAgent tool loop guard", () => {
             index: 0,
             id: "call_final",
             function: {
-              name: "final_answer",
+              name: "settle",
               arguments: '{"answer":"using the current coding status"}',
             },
           },

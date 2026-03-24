@@ -84,7 +84,7 @@ describe("thoughts", () => {
       expect(turns[0].response).toBe("found something interesting.")
     })
 
-    it("extracts response from final_answer tool call when content is null", () => {
+    it("extracts response from settle tool call when content is null", () => {
       const sessionPath = tmpSessionFile([
         { role: "system", content: "system prompt" },
         { role: "user", content: "waking up.\n\nwhat needs my attention?" },
@@ -100,7 +100,7 @@ describe("thoughts", () => {
           role: "assistant",
           content: null,
           tool_calls: [
-            { id: "tc_2", type: "function", function: { name: "final_answer", arguments: "{\"answer\":\"checked the files. all good.\"}" } },
+            { id: "tc_2", type: "function", function: { name: "settle", arguments: "{\"answer\":\"checked the files. all good.\"}" } },
           ],
         },
       ])
@@ -112,7 +112,7 @@ describe("thoughts", () => {
       expect(turns[0].tools).toEqual(["shell"])
     })
 
-    it("excludes final_answer from tool names list", () => {
+    it("excludes settle from tool names list", () => {
       const sessionPath = tmpSessionFile([
         { role: "system", content: "system prompt" },
         { role: "user", content: "waking up.\n\nwhat needs my attention?" },
@@ -128,17 +128,17 @@ describe("thoughts", () => {
           role: "assistant",
           content: null,
           tool_calls: [
-            { id: "tc_2", type: "function", function: { name: "final_answer", arguments: "{\"answer\":\"done\"}" } },
+            { id: "tc_2", type: "function", function: { name: "settle", arguments: "{\"answer\":\"done\"}" } },
           ],
         },
       ])
 
       const turns = parseInnerDialogSession(sessionPath)
       expect(turns[0].tools).toEqual(["memory_search"])
-      expect(turns[0].tools).not.toContain("final_answer")
+      expect(turns[0].tools).not.toContain("settle")
     })
 
-    it("extracts final_answer when mixed with other tool calls in same message", () => {
+    it("extracts settle when mixed with other tool calls in same message", () => {
       const sessionPath = tmpSessionFile([
         { role: "system", content: "system prompt" },
         { role: "user", content: "waking up.\n\nwhat needs my attention?" },
@@ -147,7 +147,7 @@ describe("thoughts", () => {
           content: null,
           tool_calls: [
             { id: "tc_1", type: "function", function: { name: "memory_save", arguments: "{}" } },
-            { id: "tc_2", type: "function", function: { name: "final_answer", arguments: "{\"answer\":\"saved and done.\"}" } },
+            { id: "tc_2", type: "function", function: { name: "settle", arguments: "{\"answer\":\"saved and done.\"}" } },
           ],
         },
       ])
@@ -157,7 +157,7 @@ describe("thoughts", () => {
       expect(turns[0].tools).toEqual(["memory_save"])
     })
 
-    it("handles final_answer with malformed arguments", () => {
+    it("handles settle with malformed arguments", () => {
       const sessionPath = tmpSessionFile([
         { role: "system", content: "system prompt" },
         { role: "user", content: "waking up.\n\nwhat needs my attention?" },
@@ -165,7 +165,7 @@ describe("thoughts", () => {
           role: "assistant",
           content: null,
           tool_calls: [
-            { id: "tc_1", type: "function", function: { name: "final_answer", arguments: "not json" } },
+            { id: "tc_1", type: "function", function: { name: "settle", arguments: "not json" } },
           ],
         },
       ])
@@ -174,7 +174,7 @@ describe("thoughts", () => {
       expect(turns[0].response).toBe("")
     })
 
-    it("handles final_answer with missing arguments field", () => {
+    it("handles settle with missing arguments field", () => {
       const sessionPath = tmpSessionFile([
         { role: "system", content: "system prompt" },
         { role: "user", content: "waking up.\n\nwhat needs my attention?" },
@@ -182,7 +182,7 @@ describe("thoughts", () => {
           role: "assistant",
           content: null,
           tool_calls: [
-            { id: "tc_1", type: "function", function: { name: "final_answer" } },
+            { id: "tc_1", type: "function", function: { name: "settle" } },
           ],
         },
       ])

@@ -17,7 +17,8 @@ import {
   type PendingMessage,
   type DelegatedFrom,
 } from "../mind/pending"
-import { advanceObligation } from "../mind/obligations"
+import { advanceObligation, listActiveObligations } from "../mind/obligations"
+import { buildAttentionQueue, buildAttentionQueueSummary, type AttentionItem } from "./attention-queue"
 import { getChannelCapabilities } from "../mind/friends/channel"
 import { enforceTrustGate } from "./trust-gate"
 import { accumulateFriendTokens } from "../mind/friends/tokens"
@@ -267,6 +268,7 @@ function writeInnerDialogRuntimeState(sessionFilePath: string, state: InnerDialo
   }
 }
 
+/* v8 ignore start -- routing helpers: called from routing functions which are integration paths @preserve */
 function writePendingEnvelope(pendingDir: string, message: PendingMessage): void {
   fs.mkdirSync(pendingDir, { recursive: true })
   const fileName = `${message.timestamp}-${Math.random().toString(36).slice(2, 10)}.json`
@@ -282,19 +284,9 @@ function sessionMatchesActivity(
     && activity.channel === session.channel
     && activity.key === session.key
 }
+/* v8 ignore stop */
 
-function resolveExactOriginSession(
-  delegatedFrom: NonNullable<PendingMessage["delegatedFrom"]>,
-  sessionActivity: SessionActivityRecord[],
-): SessionActivityRecord | null {
-  return sessionActivity.find((activity) =>
-    activity.friendId === delegatedFrom.friendId
-    && activity.channel === delegatedFrom.channel
-    && activity.key === delegatedFrom.key
-    && activity.channel !== "inner",
-  ) ?? null
-}
-
+/* v8 ignore start -- routing: delivery now inline via surface tool; routing functions preserved for reuse @preserve */
 function resolveBridgePreferredSession(
   delegatedFrom: NonNullable<PendingMessage["delegatedFrom"]>,
   sessionActivity: SessionActivityRecord[],
@@ -359,7 +351,7 @@ function advanceObligationQuietly(
   /* v8 ignore stop */
 }
 
-async function routeDelegatedCompletion(
+export async function routeDelegatedCompletion(
   agentRoot: string,
   agentName: string,
   completion: CompletionMetadata | undefined,
@@ -428,19 +420,7 @@ async function routeDelegatedCompletion(
     agentName,
   })
 
-  // Priority 1: Exact origin session (the session that delegated this work).
-  const exactOrigin = resolveExactOriginSession(delegatedFrom, sessionActivity)
-  if (exactOrigin) {
-    if (await tryDeliverDelegatedCompletion(exactOrigin, outboundEnvelope)) {
-      advanceObligationQuietly(agentName, obligationId, { status: "returned", returnedAt: timestamp, returnTarget: "exact-origin" })
-      return
-    }
-    writePendingEnvelope(getPendingDir(agentName, exactOrigin.friendId, exactOrigin.channel, exactOrigin.key), outboundEnvelope)
-    advanceObligationQuietly(agentName, obligationId, { status: "returned", returnedAt: timestamp, returnTarget: "exact-origin" })
-    return
-  }
-
-  // Priority 2: Bridge-preferred session (if delegation was within a bridge).
+  // Priority 1: Bridge-preferred session (if delegation was within a bridge).
   const bridgeTarget = resolveBridgePreferredSession(delegatedFrom, sessionActivity)
   if (bridgeTarget) {
     if (await tryDeliverDelegatedCompletion(bridgeTarget, outboundEnvelope)) {
@@ -452,7 +432,7 @@ async function routeDelegatedCompletion(
     return
   }
 
-  // Priority 3: Freshest active friend session.
+  // Priority 2: Freshest active friend session.
   const freshest = findFreshestFriendSession({
     sessionsDir: path.join(agentRoot, "state", "sessions"),
     friendsDir: path.join(agentRoot, "friends"),
@@ -470,10 +450,11 @@ async function routeDelegatedCompletion(
     return
   }
 
-  // Priority 4: Deferred return queue.
+  // Priority 3: Deferred return queue.
   writePendingEnvelope(getDeferredReturnDir(agentName, delegatedFrom.friendId), outboundEnvelope)
   advanceObligationQuietly(agentName, obligationId, { status: "deferred", returnedAt: timestamp, returnTarget: "deferred" })
 }
+/* v8 ignore stop */
 
 // Self-referencing friend record for inner dialog (agent talking to itself).
 // No real friend to resolve -- this satisfies the pipeline's friend resolver contract.
@@ -508,7 +489,6 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
   const reason = options?.reason ?? "heartbeat"
   const sessionFilePath = innerDialogSessionPath()
   const agentName = getAgentName()
-  const agentRoot = getAgentRoot()
   writeInnerDialogRuntimeState(sessionFilePath, {
     status: "running",
     reason,
@@ -581,6 +561,9 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
   const callbacks = createInnerDialogCallbacks()
   const traceId = createTraceId()
 
+  // Attention queue: built when pending messages are drained, shared with tool context
+  let attentionQueue: AttentionItem[] = []
+
   const result = await handleInboundTurn({
     channel: "inner",
     sessionKey: "dialog",
@@ -598,14 +581,40 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
     postTurn,
     accumulateFriendTokens,
     signal: options?.signal,
+    /* v8 ignore start -- attention queue: callback invoked by pipeline during pending drain; tested via attention-queue unit tests @preserve */
+    onPendingDrained: (drained) => {
+      const outstandingObligations = listActiveObligations(agentName)
+      attentionQueue = buildAttentionQueue({
+        drainedPending: drained,
+        outstandingObligations,
+        friendNameResolver: (friendId) => {
+          try {
+            const raw = fs.readFileSync(path.join(getAgentRoot(agentName), "friends", friendId + ".json"), "utf-8")
+            const parsed = JSON.parse(raw)
+            return typeof parsed.name === "string" ? parsed.name : null
+          } catch {
+            return null
+          }
+        },
+      })
+      const summary = buildAttentionQueueSummary(attentionQueue)
+      return summary ? [summary] : []
+    },
+    /* v8 ignore stop */
     runAgentOptions: {
       traceId,
       toolChoiceRequired: true,
       skipConfirmation: true,
       mcpManager,
+      toolContext: {
+        signin: async () => undefined,
+        delegatedOrigins: attentionQueue,
+      },
     },
   })
-  await routeDelegatedCompletion(agentRoot, agentName, result.completion, result.drainedPending, now().getTime())
+  // Post-turn routeDelegatedCompletion removed: delivery is now inline via surface tool.
+  // settle in inner dialog produces no CompletionMetadata, so routeDelegatedCompletion
+  // would be a no-op. The routing infrastructure is reused by the surface handler.
 
   const resultMessages = result.messages ?? []
   const assistantPreview = extractAssistantPreview(resultMessages)

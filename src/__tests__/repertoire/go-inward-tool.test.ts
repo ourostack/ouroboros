@@ -18,13 +18,13 @@ describe("goInwardTool definition", () => {
     expect(goInwardTool.function.description).toContain("i need to")
   })
 
-  it("has content as required parameter", async () => {
+  it("has topic as required parameter", async () => {
     const { goInwardTool } = await import("../../repertoire/tools-base")
     const params = goInwardTool.function.parameters as any
 
-    expect(params.required).toEqual(["content"])
-    expect(params.properties.content).toBeDefined()
-    expect(params.properties.content.type).toBe("string")
+    expect(params.required).toEqual(["topic"])
+    expect(params.properties.topic).toBeDefined()
+    expect(params.properties.topic.type).toBe("string")
   })
 
   it("has optional answer parameter", async () => {

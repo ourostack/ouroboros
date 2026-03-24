@@ -92,7 +92,7 @@ export function createGithubCopilotProviderRuntime(injectedConfig?: GithubCopilo
             params,
             request.callbacks,
             request.signal,
-            request.eagerFinalAnswerStreaming,
+            request.eagerSettleStreaming,
           );
         } catch (error) {
           throw error instanceof Error ? error : new Error(String(error));
@@ -145,7 +145,7 @@ export function createGithubCopilotProviderRuntime(injectedConfig?: GithubCopilo
           params,
           request.callbacks,
           request.signal,
-          request.eagerFinalAnswerStreaming,
+          request.eagerSettleStreaming,
         );
         for (const item of result.outputItems) nativeInput!.push(item);
         return result;
