@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.132",
+      "changes": [
+        "Inner return obligations: delegated inner dialog work now tracks a ReturnObligation through queued → running → returned/deferred lifecycle.",
+        "Exact-origin routing: inner dialog completions route back to the session that delegated the work, not just the freshest active session.",
+        "Active work frame surfaces pending inner return obligations so the agent knows what's outstanding."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.131",
       "changes": [
         "ouro auth --provider anthropic now exchanges the setup token for a refresh token immediately, enabling auto-refresh for subsequent sessions."
