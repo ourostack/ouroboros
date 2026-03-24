@@ -11,6 +11,7 @@ import { loadAgentConfig } from "./identity";
 import { execTool, summarizeArgs, settleTool, observeTool, goInwardTool, getToolsForChannel, isConfirmationRequired } from "../repertoire/tools";
 import type { ToolContext } from "../repertoire/tools";
 import { getChannelCapabilities } from "../mind/friends/channel";
+import { surfaceToolDef } from "../senses/surface-tool";
 import type { AssistantMessageWithReasoning, ResponseItem } from "./streaming";
 import { emitNervesEvent } from "../nerves/runtime";
 import type { TurnResult } from "./streaming";
@@ -677,6 +678,7 @@ export async function runAgent(
       ? [
           ...filteredBaseTools,
           ...(!isInnerDialog ? [goInwardTool] : []),
+          ...(isInnerDialog ? [surfaceToolDef] : []),
           ...(currentContext?.isGroupChat && !isInnerDialog ? [observeTool] : []),
           settleTool,
         ]

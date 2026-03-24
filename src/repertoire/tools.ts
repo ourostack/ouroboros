@@ -11,6 +11,10 @@ import type { ProviderCapability } from "../heart/core";
 import { guardInvocation } from "./guardrails";
 import { getAgentRoot } from "../heart/identity";
 import { resolveSafeRepoPath } from "../heart/safe-workspace";
+import { surfaceToolDef, handleSurface, type SurfaceRouteResult } from "../senses/surface-tool";
+import { advanceObligation as advanceInnerObligation } from "../mind/obligations";
+import { findFreshestFriendSession } from "../heart/session-activity";
+import * as path from "path";
 
 function safeGetAgentRoot(): string | undefined {
   try {
@@ -24,8 +28,83 @@ function safeGetAgentRoot(): string | undefined {
 export { tools, settleTool, observeTool, goInwardTool } from "./tools-base";
 export type { ToolContext, ToolHandler, ToolDefinition } from "./tools-base";
 
+// Surface tool handler: routes content to friend's freshest session
+const surfaceToolDefinition: ToolDefinition = {
+  tool: surfaceToolDef,
+  handler: async (args, ctx) => {
+    const queue = ctx?.delegatedOrigins ?? []
+    const agentName = safeGetAgentRoot() ? getAgentRoot().split("/").pop() ?? "unknown" : "unknown"
+
+    const routeToFriend = async (friendId: string, content: string): Promise<SurfaceRouteResult> => {
+      /* v8 ignore start -- routing: integration path tested via inner-dialog routing tests @preserve */
+      try {
+        const agentRoot = getAgentRoot()
+        const freshest = findFreshestFriendSession({
+          sessionsDir: path.join(agentRoot, "state", "sessions"),
+          friendsDir: path.join(agentRoot, "friends"),
+          agentName,
+          friendId,
+          activeOnly: true,
+        })
+        if (freshest && freshest.channel !== "inner") {
+          // Queue as pending for next interaction
+          const { queuePendingMessage, getPendingDir } = await import("../mind/pending")
+          const pendingDir = getPendingDir(agentName, freshest.friendId, freshest.channel, freshest.key)
+          queuePendingMessage(pendingDir, {
+            from: agentName,
+            friendId: freshest.friendId,
+            channel: freshest.channel,
+            key: freshest.key,
+            content,
+            timestamp: Date.now(),
+          })
+          return { status: "queued", detail: `for next interaction via ${freshest.channel}` }
+        }
+        // Deferred — no active session found
+        const { getDeferredReturnDir } = await import("../mind/pending")
+        const { queuePendingMessage: queueDeferred } = await import("../mind/pending")
+        const deferredDir = getDeferredReturnDir(agentName, friendId)
+        queueDeferred(deferredDir, {
+          from: agentName,
+          friendId,
+          channel: "deferred",
+          key: "return",
+          content,
+          timestamp: Date.now(),
+        })
+        return { status: "deferred", detail: "they'll see it next time" }
+      } catch {
+        return { status: "failed" }
+      }
+      /* v8 ignore stop */
+    }
+
+    return handleSurface({
+      content: args.content ?? "",
+      delegationId: args.delegationId,
+      friendId: args.friendId,
+      queue,
+      routeToFriend,
+      advanceObligation: (obligationId, update) => {
+        /* v8 ignore start -- obligation advance: tested via attention-queue tests @preserve */
+        try {
+          const name = safeGetAgentRoot() ? getAgentRoot().split("/").pop() ?? "unknown" : "unknown"
+          advanceInnerObligation(name, obligationId, {
+            status: update.status as any,
+            ...(update.returnedAt !== undefined ? { returnedAt: update.returnedAt } : {}),
+            ...(update.returnTarget !== undefined ? { returnTarget: update.returnTarget as any } : {}),
+          })
+        } catch {
+          // swallowed — obligation advance must never break surface delivery
+        }
+        /* v8 ignore stop */
+      },
+    })
+  },
+}
+
 // All tool definitions in a single registry
-const allDefinitions: ToolDefinition[] = [...baseToolDefinitions, ...bluebubblesToolDefinitions, ...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions];
+const allDefinitions: ToolDefinition[] = [...baseToolDefinitions, ...bluebubblesToolDefinitions, ...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions, surfaceToolDefinition];
 
 function baseToolsForCapabilities(): OpenAI.ChatCompletionFunctionTool[] {
   // Use baseToolDefinitions at call time so dynamically-added tools are included
