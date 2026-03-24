@@ -408,5 +408,6 @@ describe("observe tool in runAgent", () => {
     expect(toolNames).not.toContain("send_message")
     expect(toolNames).not.toContain("observe")
     expect(toolNames).toContain("settle")
+    expect(toolNames).toContain("surface")
   })
 })
