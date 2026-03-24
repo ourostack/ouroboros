@@ -5564,7 +5564,7 @@ describe("tool_choice required and settle", () => {
     expect(params.tool_choice).toBe("required")
   })
 
-  it("opt-out: does NOT include settle tool when toolChoiceRequired is false", async () => {
+  it("opt-out: still includes settle and go_inward tools when toolChoiceRequired is false", async () => {
     mockCreate.mockReturnValue(makeStream([makeChunk("hello")]))
 
     const callbacks: ChannelCallbacks = {
@@ -5580,7 +5580,8 @@ describe("tool_choice required and settle", () => {
     await runAgent([{ role: "system", content: "test" }], callbacks, undefined, undefined, { toolChoiceRequired: false })
     const params = mockCreate.mock.calls[0][0]
     const toolNames = params.tools.map((t: any) => t.function.name)
-    expect(toolNames).not.toContain("settle")
+    expect(toolNames).toContain("settle")
+    expect(toolNames).toContain("go_inward")
   })
 
   it("opt-out: does NOT set tool_choice when toolChoiceRequired is false", async () => {
