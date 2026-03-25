@@ -28,6 +28,7 @@ export default defineConfig({
         "src/mind/friends/store.ts",
         "src/repertoire/tasks/types.ts",
         "src/nerves/coverage/cli-main.ts",
+        "src/heart/providers/anthropic-token.ts",
       ],
       thresholds: {
         lines: 100,

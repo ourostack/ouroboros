@@ -318,6 +318,7 @@ export const codingToolDefinitions = [
       }
       return JSON.stringify(session)
     },
+    summaryKeys: ["runner", "workdir", "taskRef"],
   },
   {
     tool: codingStatusTool,
@@ -333,6 +334,7 @@ export const codingToolDefinitions = [
       if (!session) return `session not found: ${sessionId}`
       return JSON.stringify(session)
     },
+    summaryKeys: ["sessionId"],
   },
   {
     tool: codingTailTool,
@@ -345,6 +347,7 @@ export const codingToolDefinitions = [
       if (!session) return `session not found: ${sessionId}`
       return formatCodingTail(session)
     },
+    summaryKeys: ["sessionId"],
   },
   {
     tool: codingSendInputTool,
@@ -358,6 +361,7 @@ export const codingToolDefinitions = [
 
       return JSON.stringify(getCodingSessionManager().sendInput(sessionId, input))
     },
+    summaryKeys: ["sessionId", "input"],
   },
   {
     tool: codingKillTool,
@@ -368,5 +372,6 @@ export const codingToolDefinitions = [
 
       return JSON.stringify(getCodingSessionManager().killSession(sessionId))
     },
+    summaryKeys: ["sessionId"],
   },
 ]

@@ -213,12 +213,17 @@ export function recordToolOutcome(
   }
 }
 
+// Tools that must never be blocked by the circuit breaker.
+// settle = end the turn, surface = deliver results outward.
+// Blocking these traps the agent: it can think all it wants but can never speak.
+const CIRCUIT_BREAKER_EXEMPT = new Set(["settle", "surface"])
+
 export function detectToolLoop(
   state: ToolLoopState,
   toolName: string,
   args: Record<string, string>,
 ): ToolLoopDetection {
-  if (state.history.length >= GLOBAL_CIRCUIT_BREAKER_LIMIT) {
+  if (state.history.length >= GLOBAL_CIRCUIT_BREAKER_LIMIT && !CIRCUIT_BREAKER_EXEMPT.has(toolName)) {
     return emitDetection(
       "global_circuit_breaker",
       toolName,

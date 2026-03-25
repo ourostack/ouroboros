@@ -1,16 +1,15 @@
 import type OpenAI from "openai";
 import { baseToolDefinitions, editFileReadTracker } from "./tools-base";
 import type { ToolContext, ToolDefinition } from "./tools-base";
-import { teamsToolDefinitions, summarizeTeamsArgs } from "./tools-teams";
+import { teamsToolDefinitions } from "./tools-teams";
 import { bluebubblesToolDefinitions } from "./tools-bluebubbles";
 import { adoSemanticToolDefinitions } from "./ado-semantic";
-import { githubToolDefinitions, summarizeGithubArgs } from "./tools-github";
+import { githubToolDefinitions } from "./tools-github";
 import type { ChannelCapabilities, ResolvedContext } from "../mind/friends/types";
 import { emitNervesEvent } from "../nerves/runtime";
 import type { ProviderCapability } from "../heart/core";
 import { guardInvocation } from "./guardrails";
 import { getAgentRoot, getAgentName } from "../heart/identity";
-import { resolveSafeRepoPath } from "../heart/safe-workspace";
 import { surfaceToolDef, handleSurface, type SurfaceRouteResult } from "../senses/surface-tool";
 import { advanceObligation as advanceInnerObligation } from "../mind/obligations";
 import { findFreshestFriendSession, listSessionActivity } from "../heart/session-activity";
@@ -26,7 +25,7 @@ function safeGetAgentRoot(): string | undefined {
 }
 
 // Re-export types and constants used by the rest of the codebase
-export { tools, settleTool, observeTool, goInwardTool } from "./tools-base";
+export { tools, settleTool, observeTool, descendTool } from "./tools-base";
 export type { ToolContext, ToolHandler, ToolDefinition } from "./tools-base";
 
 // Surface tool handler: routes content to friend's freshest session
@@ -67,6 +66,10 @@ const surfaceToolDefinition: ToolDefinition = {
                   text: content,
                 })
                 if (proactiveResult.delivered) {
+                  // Inject surfaced content into the target session so it knows what was delivered
+                  const { appendSyntheticAssistantMessage } = await import("../mind/context")
+                  const sessionFilePath = path.join(sessionsDir, bridgeTarget.friendId, bridgeTarget.channel, `${bridgeTarget.key}.json`)
+                  appendSyntheticAssistantMessage(sessionFilePath, `[surfaced from inner dialog] ${content}`)
                   return { status: "delivered", detail: "via iMessage" }
                 }
               }
@@ -104,6 +107,10 @@ const surfaceToolDefinition: ToolDefinition = {
               text: content,
             })
             if (proactiveResult.delivered) {
+              // Inject surfaced content into the target session so it knows what was delivered
+              const { appendSyntheticAssistantMessage } = await import("../mind/context")
+              const sessionFilePath = path.join(sessionsDir, freshest.friendId, freshest.channel, `${freshest.key}.json`)
+              appendSyntheticAssistantMessage(sessionFilePath, `[surfaced from inner dialog] ${content}`)
               return { status: "delivered", detail: "via iMessage" }
             }
           }
@@ -162,6 +169,7 @@ const surfaceToolDefinition: ToolDefinition = {
       },
     })
   },
+  summaryKeys: ["content", "delegationId"],
 }
 /* v8 ignore stop */
 
@@ -256,13 +264,7 @@ export function isConfirmationRequired(toolName: string): boolean {
   return def?.confirmationRequired === true;
 }
 
-function normalizeGuardArgs(name: string, args: Record<string, string>): Record<string, string> {
-  if ((name === "read_file" || name === "write_file" || name === "edit_file") && args.path) {
-    return {
-      ...args,
-      path: resolveSafeRepoPath({ requestedPath: args.path }).resolvedPath,
-    }
-  }
+function normalizeGuardArgs(_name: string, args: Record<string, string>): Record<string, string> {
   return args
 }
 
@@ -347,41 +349,9 @@ function summarizeUnknownArgs(args: Record<string, string>): string {
 }
 
 export function summarizeArgs(name: string, args: Record<string, string>): string {
-  // Check teams tools first
-  const teamsSummary = summarizeTeamsArgs(name, args);
-  if (teamsSummary !== undefined) return teamsSummary;
-
-  // Check github tools
-  const githubSummary = summarizeGithubArgs(name, args);
-  if (githubSummary !== undefined) return githubSummary;
-
-  // Base tools
-  if (name === "read_file" || name === "write_file") return summarizeKeyValues(args, ["path"]);
-  if (name === "edit_file") return summarizeKeyValues(args, ["path"]);
-  if (name === "glob") return summarizeKeyValues(args, ["pattern", "cwd"]);
-  if (name === "grep") return summarizeKeyValues(args, ["pattern", "path", "include"]);
-  if (name === "shell") return summarizeKeyValues(args, ["command"]);
-  if (name === "load_skill") return summarizeKeyValues(args, ["name"]);
-  if (name === "coding_spawn") return summarizeKeyValues(args, ["runner", "workdir", "taskRef"]);
-  if (name === "coding_status") return summarizeKeyValues(args, ["sessionId"]);
-  if (name === "coding_tail") return summarizeKeyValues(args, ["sessionId"]);
-  if (name === "coding_send_input") return summarizeKeyValues(args, ["sessionId", "input"]);
-  if (name === "coding_kill") return summarizeKeyValues(args, ["sessionId"]);
-  if (name === "bluebubbles_set_reply_target") return summarizeKeyValues(args, ["target", "threadOriginatorGuid"]);
-  if (name === "set_reasoning_effort") return summarizeKeyValues(args, ["level"]);
-  if (name === "claude") return summarizeKeyValues(args, ["prompt"]);
-  if (name === "web_search") return summarizeKeyValues(args, ["query"]);
-  if (name === "memory_search") return summarizeKeyValues(args, ["query"]);
-  if (name === "memory_save") return summarizeKeyValues(args, ["text", "about"]);
-  if (name === "get_friend_note") return summarizeKeyValues(args, ["friendId"]);
-  if (name === "save_friend_note") {
-    return summarizeKeyValues(args, ["type", "key", "content"]);
+  const def = allDefinitions.find((d) => d.tool.function.name === name);
+  if (def && def.summaryKeys !== undefined) {
+    return summarizeKeyValues(args, def.summaryKeys);
   }
-  if (name === "bridge_manage") return summarizeKeyValues(args, ["action", "bridgeId", "objective", "friendId", "channel", "key"]);
-  if (name === "ado_backlog_list") return summarizeKeyValues(args, ["organization", "project"]);
-  if (name === "ado_batch_update") return summarizeKeyValues(args, ["organization", "project"]);
-  if (name === "ado_create_epic" || name === "ado_create_issue") return summarizeKeyValues(args, ["organization", "project", "title"]);
-  if (name === "ado_move_items") return summarizeKeyValues(args, ["organization", "project", "workItemIds"]);
-  if (name === "ado_restructure_backlog") return summarizeKeyValues(args, ["organization", "project"]);
   return summarizeUnknownArgs(args);
 }

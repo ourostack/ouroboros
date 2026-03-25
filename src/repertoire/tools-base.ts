@@ -9,7 +9,7 @@ import type { Integration, ResolvedContext, FriendRecord } from "../mind/friends
 import type { FriendStore } from "../mind/friends/store";
 import { emitNervesEvent } from "../nerves/runtime";
 import { getAgentRoot, getAgentName } from "../heart/identity";
-import { ensureSafeRepoWorkspace, resolveSafeRepoPath, resolveSafeShellExecution } from "../heart/safe-workspace";
+import { getRepoRoot } from "../heart/identity";
 import { requestInnerWake } from "../heart/daemon/socket-client";
 import {
   deriveInnerDialogStatus,
@@ -90,6 +90,7 @@ export interface ToolDefinition {
   integration?: Integration;
   confirmationRequired?: boolean;
   requiredCapability?: import("../heart/core").ProviderCapability;
+  summaryKeys?: string[];
 }
 
 // Tracks which file paths have been read via read_file in this session.
@@ -109,7 +110,10 @@ function buildContextDiff(lines: string[], changeStart: number, changeEnd: numbe
 }
 
 function resolveLocalToolPath(targetPath: string): string {
-  return resolveSafeRepoPath({ requestedPath: targetPath }).resolvedPath
+  if (!path.isAbsolute(targetPath)) {
+    return path.resolve(getRepoRoot(), targetPath)
+  }
+  return targetPath
 }
 
 const NO_SESSION_FOUND_MESSAGE = "no session found for that friend/channel/key combination."
@@ -420,6 +424,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
       const end = limit !== undefined ? start + limit : lines.length
       return lines.slice(start, end).join("\n")
     },
+    summaryKeys: ["path"],
   },
   {
     tool: {
@@ -440,6 +445,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
       fs.writeFileSync(resolvedPath, a.content, "utf-8")
       return "ok"
     },
+    summaryKeys: ["path"],
   },
   {
     tool: {
@@ -504,6 +510,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
 
       return buildContextDiff(lines, changeStartLine, changeEndLine)
     },
+    summaryKeys: ["path"],
   },
   {
     tool: {
@@ -526,6 +533,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
       const matches = fg.globSync(a.pattern, { cwd, dot: true })
       return matches.sort().join("\n")
     },
+    summaryKeys: ["pattern", "cwd"],
   },
   {
     tool: {
@@ -638,29 +646,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
       }
       return allResults.join("\n")
     },
-  },
-  {
-    tool: {
-      type: "function",
-      function: {
-        name: "safe_workspace",
-        description: "acquire or inspect the safe harness repo workspace for local edits. returns the real workspace path, branch, and why it was chosen.",
-        parameters: {
-          type: "object",
-          properties: {},
-        },
-      },
-    },
-    handler: () => {
-      const selection = ensureSafeRepoWorkspace()
-      return [
-        `workspace: ${selection.workspaceRoot}`,
-        `branch: ${selection.workspaceBranch}`,
-        `runtime: ${selection.runtimeKind}`,
-        `cleanup_after_merge: ${selection.cleanupAfterMerge ? "yes" : "no"}`,
-        `note: ${selection.note}`,
-      ].join("\n")
-    },
+    summaryKeys: ["pattern", "path", "include"],
   },
   {
     tool: {
@@ -676,13 +662,12 @@ export const baseToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: (a) => {
-      const prepared = resolveSafeShellExecution(a.command)
-      return execSync(prepared.command, {
+      return execSync(a.command, {
         encoding: "utf-8",
         timeout: 30000,
-        ...(prepared.cwd ? { cwd: prepared.cwd } : {}),
       })
     },
+    summaryKeys: ["command"],
   },
   {
     tool: {
@@ -715,6 +700,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
         return `error: ${e}`;
       }
     },
+    summaryKeys: ["name"],
   },
   {
     tool: {
@@ -749,6 +735,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
         return `error: ${e}`;
       }
     },
+    summaryKeys: ["prompt"],
   },
   {
     tool: {
@@ -788,6 +775,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
         return `error: ${e}`;
       }
     },
+    summaryKeys: ["query"],
   },
   {
     tool: {
@@ -816,6 +804,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
         return `error: ${e instanceof Error ? e.message : String(e)}`;
       }
     },
+    summaryKeys: ["query"],
   },
   {
     tool: {
@@ -844,6 +833,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
       });
       return `saved memory fact (added=${result.added}, skipped=${result.skipped})`;
     },
+    summaryKeys: ["text", "about"],
   },
   {
     tool: {
@@ -870,6 +860,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
       if (!friend) return `friend not found: ${friendId}`;
       return JSON.stringify(friend, null, 2);
     },
+    summaryKeys: ["friendId"],
   },
   {
     tool: {
@@ -954,6 +945,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
         return `error saving note: ${err instanceof Error ? err.message : String(err)}`;
       }
     },
+    summaryKeys: ["type", "key", "content"],
   },
   // -- cross-session awareness --
   {
@@ -1067,6 +1059,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
 
       return `unknown bridge action: ${action}`
     },
+    summaryKeys: ["action", "bridgeId", "objective", "friendId", "channel", "key"],
   },
   {
     tool: {
@@ -1445,16 +1438,17 @@ export const baseToolDefinitions: ToolDefinition[] = [
       return `reasoning effort set to "${level}".`;
     },
     requiredCapability: "reasoning-effort" as const,
+    summaryKeys: ["level"],
   },
   ...codingToolDefinitions,
 ];
 
 export const tools: OpenAI.ChatCompletionFunctionTool[] = baseToolDefinitions.map((d) => d.tool);
 
-export const goInwardTool: OpenAI.ChatCompletionFunctionTool = {
+export const descendTool: OpenAI.ChatCompletionFunctionTool = {
   type: "function",
   function: {
-    name: "go_inward",
+    name: "descend",
     description: "i need to think about this privately. this takes the current thread inward -- i'll sit with it, work through it, or carry it to where it needs to go. must be the only tool call in the turn.",
     parameters: {
       type: "object",

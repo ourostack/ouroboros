@@ -276,6 +276,44 @@ function stripOrphanedToolResults(messages: OpenAI.ChatCompletionMessageParam[])
   return repaired
 }
 
+// Tool renames that have shipped. Old names in session history confuse the
+// model into calling tools that no longer exist. Applied on session load so
+// the transcript uses the current vocabulary.
+const TOOL_NAME_MIGRATIONS: Record<string, string> = {
+  final_answer: "settle",
+  no_response: "observe",
+  go_inward: "descend",
+}
+
+export function migrateToolNames(messages: OpenAI.ChatCompletionMessageParam[]): OpenAI.ChatCompletionMessageParam[] {
+  let migrated = 0
+  const result = messages.map((msg) => {
+    if (msg.role !== "assistant" || !Array.isArray(msg.tool_calls) || msg.tool_calls.length === 0) return msg
+    let changed = false
+    const updatedCalls = msg.tool_calls.map((tc) => {
+      if (tc.type !== "function") return tc
+      const newName = TOOL_NAME_MIGRATIONS[tc.function.name]
+      if (!newName) return tc
+      changed = true
+      migrated++
+      return { ...tc, function: { ...tc.function, name: newName } }
+    })
+    return changed ? { ...msg, tool_calls: updatedCalls } : msg
+  })
+
+  if (migrated > 0) {
+    emitNervesEvent({
+      level: "info",
+      event: "mind.session_tool_name_migration",
+      component: "mind",
+      message: "migrated deprecated tool names in session history",
+      meta: { migrated },
+    })
+  }
+
+  return result
+}
+
 export function saveSession(
   filePath: string,
   messages: OpenAI.ChatCompletionMessageParam[],
@@ -311,6 +349,26 @@ export function saveSession(
   fs.writeFileSync(filePath, JSON.stringify(envelope, null, 2))
 }
 
+export function appendSyntheticAssistantMessage(filePath: string, content: string): boolean {
+  try {
+    if (!fs.existsSync(filePath)) return false
+    const raw = fs.readFileSync(filePath, "utf-8")
+    const data = JSON.parse(raw)
+    if (data.version !== 1 || !Array.isArray(data.messages)) return false
+    data.messages.push({ role: "assistant", content })
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2))
+    emitNervesEvent({
+      component: "mind",
+      event: "mind.session_synthetic_message_appended",
+      message: "appended synthetic assistant message to session",
+      meta: { path: filePath, contentLength: content.length },
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
 export function loadSession(filePath: string): SessionData | null {
   try {
     const raw = fs.readFileSync(filePath, "utf-8")
@@ -329,6 +387,7 @@ export function loadSession(filePath: string): SessionData | null {
       messages = repairSessionMessages(messages)
     }
     messages = stripOrphanedToolResults(messages)
+    messages = migrateToolNames(messages)
     const rawState = data?.state && typeof data.state === "object" && data.state !== null
       ? data.state as { mustResolveBeforeHandoff?: unknown; lastFriendActivityAt?: unknown }
       : undefined

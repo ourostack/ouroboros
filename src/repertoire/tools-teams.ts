@@ -33,6 +33,7 @@ export const teamsToolDefinitions: ToolDefinition[] = [
       return graphRequest(ctx.graphToken, "GET", args.path);
     },
     integration: "graph",
+    summaryKeys: ["path"],
   },
   {
     tool: {
@@ -62,6 +63,7 @@ export const teamsToolDefinitions: ToolDefinition[] = [
     },
     integration: "graph",
     confirmationRequired: true,
+    summaryKeys: ["method", "path"],
   },
   // -- Generic ADO tools --
   {
@@ -91,6 +93,7 @@ export const teamsToolDefinitions: ToolDefinition[] = [
       return adoRequest(ctx.adoToken, method, args.organization, args.path, args.body, args.host);
     },
     integration: "ado",
+    summaryKeys: ["method", "organization", "path"],
   },
   {
     tool: {
@@ -122,6 +125,7 @@ export const teamsToolDefinitions: ToolDefinition[] = [
     },
     integration: "ado",
     confirmationRequired: true,
+    summaryKeys: ["method", "organization", "path"],
   },
   // -- Convenience aliases (backward compat) --
   {
@@ -140,6 +144,7 @@ export const teamsToolDefinitions: ToolDefinition[] = [
       return getProfile(ctx.graphToken);
     },
     integration: "graph",
+    summaryKeys: [],
   },
   {
     tool: {
@@ -181,6 +186,7 @@ export const teamsToolDefinitions: ToolDefinition[] = [
       return queryWorkItems(ctx.adoToken, org, query);
     },
     integration: "ado",
+    summaryKeys: ["organization", "query"],
   },
   // -- Proactive messaging --
   {
@@ -231,6 +237,7 @@ export const teamsToolDefinitions: ToolDefinition[] = [
     },
     /* v8 ignore stop */
     confirmationRequired: true,
+    summaryKeys: ["user_name", "user_id"],
   },
   // -- Documentation tools --
   {
@@ -252,6 +259,7 @@ export const teamsToolDefinitions: ToolDefinition[] = [
       return searchEndpoints(graphEndpoints as EndpointEntry[], args.query || "");
     },
     integration: "graph",
+    summaryKeys: ["query"],
   },
   {
     tool: {
@@ -272,6 +280,7 @@ export const teamsToolDefinitions: ToolDefinition[] = [
       return searchEndpoints(adoEndpoints as EndpointEntry[], args.query || "");
     },
     integration: "ado",
+    summaryKeys: ["query"],
   },
 ];
 
@@ -313,30 +322,4 @@ function searchEndpoints(entries: EndpointEntry[], query: string): string {
     if (e.scopes) lines.push(`  Scopes: ${e.scopes}`);
     return lines.join("\n");
   }).join("\n\n");
-}
-
-export function summarizeTeamsArgs(name: string, args: Record<string, string>): string | undefined {
-  function summarizeKeyValues(keys: string[]): string {
-    const parts: string[] = []
-    for (const key of keys) {
-      const raw = args[key]
-      if (raw === undefined || raw === null) continue
-      const compact = String(raw).replace(/\s+/g, " ").trim()
-      if (!compact) continue
-      const clipped = compact.length > 60 ? compact.slice(0, 60) + "..." : compact
-      parts.push(`${key}=${clipped}`)
-    }
-    return parts.join(" ")
-  }
-
-  if (name === "graph_profile") return "";
-  if (name === "ado_work_items") return summarizeKeyValues(["organization", "query"]);
-  if (name === "graph_query") return summarizeKeyValues(["path"]);
-  if (name === "graph_mutate") return summarizeKeyValues(["method", "path"]);
-  if (name === "ado_query") return summarizeKeyValues(["method", "organization", "path"]);
-  if (name === "ado_mutate") return summarizeKeyValues(["method", "organization", "path"]);
-  if (name === "graph_docs") return summarizeKeyValues(["query"]);
-  if (name === "ado_docs") return summarizeKeyValues(["query"]);
-  if (name === "teams_send_message") return summarizeKeyValues(["user_name", "user_id"]);
-  return undefined;
 }

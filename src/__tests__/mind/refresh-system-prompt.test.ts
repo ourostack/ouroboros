@@ -12,12 +12,17 @@ vi.mock("fs", () => ({
 vi.mock("../../heart/identity", () => ({
   getAgentRoot: vi.fn(() => "/mock/agent-root"),
   getAgentName: vi.fn(() => "testagent"),
+  getRepoRoot: vi.fn(() => "/mock/repo"),
   loadAgentConfig: vi.fn(() => ({
     provider: "anthropic",
     context: { maxTokens: 80000, contextMargin: 20 },
     phrases: { thinking: [], tool: [], followup: [] },
   })),
   DEFAULT_AGENT_CONTEXT: { maxTokens: 80000, contextMargin: 20 },
+}))
+
+vi.mock("../../heart/daemon/runtime-mode", () => ({
+  detectRuntimeMode: vi.fn(() => "dev"),
 }))
 
 vi.mock("../../heart/core", () => ({
