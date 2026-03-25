@@ -6,21 +6,21 @@ vi.mock("../../nerves/runtime", () => ({
 
 import { emitNervesEvent } from "../../nerves/runtime"
 
-describe("goInwardTool definition", () => {
+describe("descendTool definition", () => {
   it("exports a valid tool definition with selfhood-framed description", async () => {
-    const { goInwardTool } = await import("../../repertoire/tools-base")
+    const { descendTool } = await import("../../repertoire/tools-base")
 
-    expect(goInwardTool.type).toBe("function")
-    expect(goInwardTool.function.name).toBe("go_inward")
-    expect(goInwardTool.function.description).toContain("think about this privately")
-    expect(goInwardTool.function.description).toContain("must be the only tool call")
+    expect(descendTool.type).toBe("function")
+    expect(descendTool.function.name).toBe("descend")
+    expect(descendTool.function.description).toContain("think about this privately")
+    expect(descendTool.function.description).toContain("must be the only tool call")
     // Selfhood framing -- first person, not dispatcher language
-    expect(goInwardTool.function.description).toContain("i need to")
+    expect(descendTool.function.description).toContain("i need to")
   })
 
   it("has topic as required parameter", async () => {
-    const { goInwardTool } = await import("../../repertoire/tools-base")
-    const params = goInwardTool.function.parameters as any
+    const { descendTool } = await import("../../repertoire/tools-base")
+    const params = descendTool.function.parameters as any
 
     expect(params.required).toEqual(["topic"])
     expect(params.properties.topic).toBeDefined()
@@ -28,8 +28,8 @@ describe("goInwardTool definition", () => {
   })
 
   it("has optional answer parameter", async () => {
-    const { goInwardTool } = await import("../../repertoire/tools-base")
-    const params = goInwardTool.function.parameters as any
+    const { descendTool } = await import("../../repertoire/tools-base")
+    const params = descendTool.function.parameters as any
 
     expect(params.properties.answer).toBeDefined()
     expect(params.properties.answer.type).toBe("string")
@@ -37,8 +37,8 @@ describe("goInwardTool definition", () => {
   })
 
   it("has optional mode parameter with reflect/plan/relay enum", async () => {
-    const { goInwardTool } = await import("../../repertoire/tools-base")
-    const params = goInwardTool.function.parameters as any
+    const { descendTool } = await import("../../repertoire/tools-base")
+    const params = descendTool.function.parameters as any
 
     expect(params.properties.mode).toBeDefined()
     expect(params.properties.mode.type).toBe("string")

@@ -43,18 +43,6 @@ vi.mock("../../repertoire/skills", () => ({
   loadSkill: vi.fn(),
 }))
 
-vi.mock("../../heart/safe-workspace", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../heart/safe-workspace")>()
-  const nodePath = await import("path")
-  return {
-    ...actual,
-    resolveSafeRepoPath: vi.fn((options: { requestedPath: string }) => ({
-      selection: null,
-      resolvedPath: nodePath.resolve("/mock/repo", options.requestedPath),
-    })),
-  }
-})
-
 vi.mock("../../heart/identity", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../heart/identity")>()
   return {
@@ -5564,7 +5552,7 @@ describe("tool_choice required and settle", () => {
     expect(params.tool_choice).toBe("required")
   })
 
-  it("opt-out: still includes settle and go_inward tools when toolChoiceRequired is false", async () => {
+  it("opt-out: still includes settle and descend tools when toolChoiceRequired is false", async () => {
     mockCreate.mockReturnValue(makeStream([makeChunk("hello")]))
 
     const callbacks: ChannelCallbacks = {
@@ -5581,7 +5569,7 @@ describe("tool_choice required and settle", () => {
     const params = mockCreate.mock.calls[0][0]
     const toolNames = params.tools.map((t: any) => t.function.name)
     expect(toolNames).toContain("settle")
-    expect(toolNames).toContain("go_inward")
+    expect(toolNames).toContain("descend")
   })
 
   it("opt-out: does NOT set tool_choice when toolChoiceRequired is false", async () => {
@@ -5654,8 +5642,8 @@ describe("tool_choice required and settle", () => {
     const messages: any[] = [{ role: "system", content: "test" }]
     const result = await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
-    // Should NOT have called any tools through onToolStart (settle is intercepted)
-    expect(toolStarts).toEqual([])
+    // Sole-call tools fire onToolStart/onToolEnd for visibility
+    expect(toolStarts).toEqual(["settle"])
     // The full assistant message is kept (with tool_calls) for debuggability
     const assistantMsg = messages.find((m: any) => m.role === "assistant")
     expect(assistantMsg).toBeDefined()
@@ -5923,8 +5911,8 @@ describe("tool_choice required and settle", () => {
     const messages: any[] = [{ role: "system", content: "test" }]
     await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
-    // read_file should have been executed, settle should NOT
-    expect(toolStarts).toEqual(["read_file"])
+    // read_file executed normally, settle intercepted (but still fires onToolStart for visibility)
+    expect(toolStarts).toEqual(["read_file", "settle"])
     // Should have 2 API calls (mixed -> sole settle)
     expect(callCount).toBe(2)
     // The final assistant message keeps tool_calls (full msg); answer emitted via onTextChunk
@@ -6010,8 +5998,8 @@ describe("tool_choice required and settle", () => {
     const messages: any[] = [{ role: "system", content: "test" }]
     await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
-    // No tools should have been started via onToolStart (settle is intercepted)
-    expect(toolStarts).toHaveLength(0)
+    // Settle fires onToolStart for visibility even though it's intercepted
+    expect(toolStarts).toEqual(["settle"])
     // There IS a synthetic tool result "(delivered)" but no execTool-produced results
     const toolResults = messages.filter((m: any) => m.role === "tool")
     expect(toolResults).toHaveLength(1)
@@ -6067,7 +6055,7 @@ describe("tool_choice required and settle", () => {
     await core.runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
     expect(callCount).toBe(2)
-    expect(toolStarts).toEqual(["read_file"])
+    expect(toolStarts).toEqual(["read_file", "settle"])
     // Final assistant message keeps tool_calls; answer emitted via onTextChunk
     const lastAssistant = [...messages].reverse().find((m: any) => m.role === "assistant")
     expect(lastAssistant.tool_calls).toBeDefined()

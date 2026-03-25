@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.135",
+      "changes": [
+        "Metacognitive tool vocabulary complete: go_inward renamed to descend. RunAgentOutcome value is now 'descended', event is 'engine.descended'.",
+        "summarizeArgs rewritten: reads summaryKeys from ToolDefinition instead of per-tool switch branches. summarizeTeamsArgs and summarizeGithubArgs eliminated."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.134",
       "changes": [
         "Metacognitive tool redesign: final_answer renamed to settle, no_response renamed to observe. RunAgentOutcome values now 'settled' and 'observed'.",

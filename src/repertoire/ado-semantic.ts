@@ -363,6 +363,7 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
       return formatForChannel(items, ctx, organization, project)
     },
     integration: "ado",
+    summaryKeys: ["organization", "project"],
   },
 
   // -- ado_create_epic --
@@ -404,6 +405,7 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
     },
     integration: "ado",
     confirmationRequired: true,
+    summaryKeys: ["organization", "project", "title"],
   },
 
   // -- ado_create_issue --
@@ -447,6 +449,7 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
     },
     integration: "ado",
     confirmationRequired: true,
+    summaryKeys: ["organization", "project", "title"],
   },
 
   // -- ado_move_items --
@@ -503,6 +506,7 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
     },
     integration: "ado",
     confirmationRequired: true,
+    summaryKeys: ["organization", "project", "workItemIds"],
   },
 
   // -- ado_restructure_backlog --
@@ -563,6 +567,7 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
     },
     integration: "ado",
     confirmationRequired: true,
+    summaryKeys: ["organization", "project"],
   },
 
   // -- ado_validate_structure --
@@ -779,6 +784,7 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
     },
     integration: "ado",
     confirmationRequired: true,
+    summaryKeys: ["organization", "project"],
   },
 
   // -- ado_detect_orphans --

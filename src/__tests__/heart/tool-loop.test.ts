@@ -159,6 +159,42 @@ describe("tool loop guard", () => {
     expect(result.message).toContain("already made")
   })
 
+  it("global circuit breaker exempts settle (agent must always be able to end its turn)", async () => {
+    const { GLOBAL_CIRCUIT_BREAKER_LIMIT, createToolLoopState, detectToolLoop, recordToolOutcome } = await import("../../heart/tool-loop")
+
+    const state = createToolLoopState()
+    for (let count = 0; count < GLOBAL_CIRCUIT_BREAKER_LIMIT; count++) {
+      recordToolOutcome(state, `tool_${count}`, { step: String(count) }, `result ${count}`, true)
+    }
+
+    const result = detectToolLoop(state, "settle", { answer: "here's what I found" })
+    expect(result).toEqual({ stuck: false })
+  })
+
+  it("global circuit breaker exempts surface (agent must always be able to deliver results)", async () => {
+    const { GLOBAL_CIRCUIT_BREAKER_LIMIT, createToolLoopState, detectToolLoop, recordToolOutcome } = await import("../../heart/tool-loop")
+
+    const state = createToolLoopState()
+    for (let count = 0; count < GLOBAL_CIRCUIT_BREAKER_LIMIT; count++) {
+      recordToolOutcome(state, `tool_${count}`, { step: String(count) }, `result ${count}`, true)
+    }
+
+    const result = detectToolLoop(state, "surface", { content: "my reflection", delegationId: "abc" })
+    expect(result).toEqual({ stuck: false })
+  })
+
+  it("global circuit breaker still blocks non-exit tools after limit", async () => {
+    const { GLOBAL_CIRCUIT_BREAKER_LIMIT, createToolLoopState, detectToolLoop, recordToolOutcome } = await import("../../heart/tool-loop")
+
+    const state = createToolLoopState()
+    for (let count = 0; count < GLOBAL_CIRCUIT_BREAKER_LIMIT; count++) {
+      recordToolOutcome(state, `tool_${count}`, { step: String(count) }, `result ${count}`, true)
+    }
+
+    const result = detectToolLoop(state, "read_file", { path: "/tmp/foo" })
+    expect(result).toMatchObject({ stuck: true, detector: "global_circuit_breaker" })
+  })
+
   it("does not flag known polls when the observed result changes", async () => {
     const { createToolLoopState, detectToolLoop, recordToolOutcome } = await import("../../heart/tool-loop")
 

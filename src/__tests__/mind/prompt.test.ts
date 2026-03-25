@@ -211,8 +211,8 @@ describe("buildSystem", () => {
     resetPsycheCache()
     const result = await buildSystem()
     expect(result).toContain("## repo workspace discipline")
-    expect(result).toContain("safe_workspace")
-    expect(result).toContain("workspace path/branch")
+    expect(result).toContain("source root")
+    expect(result).toContain("worktree path/branch")
     expect(result).toContain("first concrete action")
   })
 

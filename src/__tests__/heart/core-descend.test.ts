@@ -145,15 +145,15 @@ function makeCallbacks(overrides: Partial<ChannelCallbacks> = {}): ChannelCallba
   }
 }
 
-// Streams a go_inward tool call with given args
-function goInwardToolCallChunks(args: Record<string, string>) {
+// Streams a descend tool call with given args
+function descendToolCallChunks(args: Record<string, string>) {
   return [
-    makeChunk(undefined, [{ index: 0, id: "call_go_inward", function: { name: "go_inward", arguments: "" } }]),
+    makeChunk(undefined, [{ index: 0, id: "call_descend", function: { name: "descend", arguments: "" } }]),
     makeChunk(undefined, [{ index: 0, function: { arguments: JSON.stringify(args) } }]),
   ]
 }
 
-// Streams a settle after go_inward
+// Streams a settle after descend
 function settleChunks(answer: string) {
   return [
     makeChunk(undefined, [{ index: 0, id: "call_final", function: { name: "settle", arguments: "" } }]),
@@ -161,7 +161,7 @@ function settleChunks(answer: string) {
   ]
 }
 
-describe("go_inward in runAgent", () => {
+describe("descend tool in runAgent", () => {
   let runAgent: (
     messages: any[],
     callbacks: ChannelCallbacks,
@@ -181,9 +181,9 @@ describe("go_inward in runAgent", () => {
     runAgent = core.runAgent
   })
 
-  it("intercepts sole go_inward call, enqueues pending, sets outcome go_inward", async () => {
+  it("intercepts sole descend call, enqueues pending, sets outcome descended", async () => {
     mockCreate.mockReturnValueOnce(makeStream(
-      goInwardToolCallChunks({ topic: "think about naming" }),
+      descendToolCallChunks({ topic: "think about naming" }),
     ))
 
     const callbacks = makeCallbacks()
@@ -193,7 +193,7 @@ describe("go_inward in runAgent", () => {
       "cli",
     )
 
-    expect(result.outcome).toBe("go_inward")
+    expect(result.outcome).toBe("descended")
     expect(mockQueuePendingMessage).toHaveBeenCalledWith(
       "/mock/pending/self/inner/dialog",
       expect.objectContaining({
@@ -206,9 +206,9 @@ describe("go_inward in runAgent", () => {
     )
   })
 
-  it("emits answer via callbacks when go_inward has answer parameter", async () => {
+  it("emits answer via callbacks when descend has answer parameter", async () => {
     mockCreate.mockReturnValueOnce(makeStream(
-      goInwardToolCallChunks({ topic: "think about naming", answer: "let me think about that" }),
+      descendToolCallChunks({ topic: "think about naming", answer: "let me think about that" }),
     ))
 
     const callbacks = makeCallbacks()
@@ -222,9 +222,9 @@ describe("go_inward in runAgent", () => {
     expect(callbacks.onTextChunk).toHaveBeenCalledWith("let me think about that")
   })
 
-  it("does not emit answer when go_inward has no answer parameter", async () => {
+  it("does not emit answer when descend has no answer parameter", async () => {
     mockCreate.mockReturnValueOnce(makeStream(
-      goInwardToolCallChunks({ topic: "just thinking" }),
+      descendToolCallChunks({ topic: "just thinking" }),
     ))
 
     const callbacks = makeCallbacks()
@@ -237,9 +237,9 @@ describe("go_inward in runAgent", () => {
     expect(callbacks.onTextChunk).not.toHaveBeenCalled()
   })
 
-  it("uses mode from go_inward parameter", async () => {
+  it("uses mode from descend parameter", async () => {
     mockCreate.mockReturnValueOnce(makeStream(
-      goInwardToolCallChunks({ topic: "work on architecture", mode: "plan" }),
+      descendToolCallChunks({ topic: "work on architecture", mode: "plan" }),
     ))
 
     const callbacks = makeCallbacks()
@@ -257,7 +257,7 @@ describe("go_inward in runAgent", () => {
 
   it("defaults to reflect mode when no mode parameter", async () => {
     mockCreate.mockReturnValueOnce(makeStream(
-      goInwardToolCallChunks({ topic: "pondering" }),
+      descendToolCallChunks({ topic: "pondering" }),
     ))
 
     const callbacks = makeCallbacks()
@@ -273,11 +273,11 @@ describe("go_inward in runAgent", () => {
     )
   })
 
-  it("rejects go_inward in mixed call", async () => {
-    // First call: go_inward + another tool in same turn
+  it("rejects descend in mixed call", async () => {
+    // First call: descend + another tool in same turn
     mockCreate.mockReturnValueOnce(makeStream([
       makeChunk(undefined, [
-        { index: 0, id: "call_go", function: { name: "go_inward", arguments: "" } },
+        { index: 0, id: "call_go", function: { name: "descend", arguments: "" } },
         { index: 1, id: "call_other", function: { name: "read_memory", arguments: "" } },
       ]),
       makeChunk(undefined, [
@@ -297,13 +297,13 @@ describe("go_inward in runAgent", () => {
       "cli",
     )
 
-    // go_inward should NOT have queued a pending message
+    // descend should NOT have queued a pending message
     expect(mockQueuePendingMessage).not.toHaveBeenCalled()
   })
 
   it("handoff packet includes delegation decision reasons as prose", async () => {
     mockCreate.mockReturnValueOnce(makeStream(
-      goInwardToolCallChunks({ topic: "naming conventions" }),
+      descendToolCallChunks({ topic: "naming conventions" }),
     ))
 
     const callbacks = makeCallbacks()
@@ -328,7 +328,7 @@ describe("go_inward in runAgent", () => {
 
   it("handoff packet includes who asked from currentSession", async () => {
     mockCreate.mockReturnValueOnce(makeStream(
-      goInwardToolCallChunks({ topic: "naming conventions" }),
+      descendToolCallChunks({ topic: "naming conventions" }),
     ))
 
     const callbacks = makeCallbacks()
@@ -356,7 +356,7 @@ describe("go_inward in runAgent", () => {
 
   it("handoff packet without currentSession says 'no one -- just thinking'", async () => {
     mockCreate.mockReturnValueOnce(makeStream(
-      goInwardToolCallChunks({ topic: "just pondering" }),
+      descendToolCallChunks({ topic: "just pondering" }),
     ))
 
     const callbacks = makeCallbacks()
@@ -372,7 +372,7 @@ describe("go_inward in runAgent", () => {
 
   it("handoff packet with outwardClosureRequired includes obligation text", async () => {
     mockCreate.mockReturnValueOnce(makeStream(
-      goInwardToolCallChunks({ topic: "naming" }),
+      descendToolCallChunks({ topic: "naming" }),
     ))
 
     const callbacks = makeCallbacks()
@@ -399,7 +399,7 @@ describe("go_inward in runAgent", () => {
 
   it("handoff packet without outwardClosureRequired says 'no obligation'", async () => {
     mockCreate.mockReturnValueOnce(makeStream(
-      goInwardToolCallChunks({ topic: "just thinking" }),
+      descendToolCallChunks({ topic: "just thinking" }),
     ))
 
     const callbacks = makeCallbacks()
@@ -415,7 +415,7 @@ describe("go_inward in runAgent", () => {
 
   it("triggers inner wake after enqueue", async () => {
     mockCreate.mockReturnValueOnce(makeStream(
-      goInwardToolCallChunks({ topic: "test" }),
+      descendToolCallChunks({ topic: "test" }),
     ))
 
     const callbacks = makeCallbacks()
@@ -428,9 +428,9 @@ describe("go_inward in runAgent", () => {
     expect(mockRequestInnerWake).toHaveBeenCalledWith("testagent")
   })
 
-  it("emits nerves event for go_inward", async () => {
+  it("emits engine.descended nerves event", async () => {
     mockCreate.mockReturnValueOnce(makeStream(
-      goInwardToolCallChunks({ topic: "test content" }),
+      descendToolCallChunks({ topic: "test content" }),
     ))
 
     const callbacks = makeCallbacks()
@@ -442,14 +442,14 @@ describe("go_inward in runAgent", () => {
 
     expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       component: "engine",
-      event: "engine.go_inward",
+      event: "engine.descended",
       message: "taking thread inward",
     }))
   })
 
   it("does not set delegatedFrom when currentSession is inner channel", async () => {
     mockCreate.mockReturnValueOnce(makeStream(
-      goInwardToolCallChunks({ topic: "recursive thought" }),
+      descendToolCallChunks({ topic: "recursive thought" }),
     ))
 
     const callbacks = makeCallbacks()
@@ -472,7 +472,7 @@ describe("go_inward in runAgent", () => {
 
   it("handles reasons with no delegation decision gracefully", async () => {
     mockCreate.mockReturnValueOnce(makeStream(
-      goInwardToolCallChunks({ topic: "just thinking" }),
+      descendToolCallChunks({ topic: "just thinking" }),
     ))
 
     const callbacks = makeCallbacks()

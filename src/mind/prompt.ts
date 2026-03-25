@@ -4,7 +4,8 @@ import { getProviderDisplayLabel } from "../heart/core";
 import { buildChangelogCommand } from "../heart/daemon/ouro-version-manager";
 import { settleTool, getToolsForChannel } from "../repertoire/tools";
 import { listSkills } from "../repertoire/skills";
-import { getAgentRoot, getAgentName, getAgentSecretsPath, loadAgentConfig, type SenseName } from "../heart/identity";
+import { getAgentRoot, getAgentName, getAgentSecretsPath, getRepoRoot, loadAgentConfig, type SenseName } from "../heart/identity";
+import { detectRuntimeMode } from "../heart/daemon/runtime-mode";
 import { isTrustedLevel, type Channel, type ChannelCapabilities, type ResolvedContext } from "./friends/types";
 import { describeTrustContext } from "./friends/trust-explanation";
 import { getChannelCapabilities, isRemoteChannel } from "./friends/channel";
@@ -262,6 +263,9 @@ export function runtimeInfoSection(channel: Channel): string {
   }
 
   lines.push(`changelog available at: ${getChangelogPath()}`);
+  const sourceRoot = getRepoRoot()
+  lines.push(`source root: ${sourceRoot}`);
+  lines.push(`runtime mode: ${detectRuntimeMode(sourceRoot)}`);
   lines.push(`cwd: ${process.cwd()}`);
   lines.push(`channel: ${channel}`);
   lines.push(`current sense: ${channel}`);
@@ -602,7 +606,7 @@ i should orient around that live lane first, then decide what still needs to com
     return `## where my attention is
 i have unfinished work that needs attention before i move on.
 
-i can take it inward with go_inward to think privately, or address it directly here.`
+i can take it inward with descend to think privately, or address it directly here.`
   }
 
   if (cog === "shared-work") {
@@ -675,12 +679,13 @@ do NOT call no-op tools just before \`settle\`. if i am done, i call \`settle\` 
 
 function workspaceDisciplineSection(): string {
   return `## repo workspace discipline
-when a shared-harness or local code fix needs repo work, i get the real workspace first with \`safe_workspace\`.
-\`read_file\`, \`write_file\`, and \`edit_file\` already map repo paths into that workspace. shell commands that target the harness run there too.
+my source code lives at the path shown in \`source root\` above. that always matches my running version.
+when i need to read my own code to understand my tools or debug behavior, i read from source root.
+when i need to EDIT harness code (self-fix, feature work), i create a git worktree first so i don't dirty the working tree.
 
 before the first repo edit, i tell the user in 1-2 short lines:
 - the friction i'm fixing
-- the workspace path/branch i'm using
+- the worktree path/branch i'm using
 - the first concrete action i'm taking`
 }
 
