@@ -195,7 +195,7 @@ describe("centerOfGravitySteeringSection", () => {
     const result = centerOfGravitySteeringSection("cli", { activeWorkFrame: frame })
     expect(result).toContain("## where my attention is")
     expect(result).toContain("unfinished work that needs attention")
-    expect(result).toContain("descend")
+    expect(result).toContain("ponder")
   })
 
   it("returns steering for inward-work when a persistent obligation is actively being worked", () => {

@@ -8,7 +8,7 @@ import {
   getOpenAICodexConfig,
 } from "./config";
 import { loadAgentConfig } from "./identity";
-import { execTool, summarizeArgs, settleTool, observeTool, descendTool, getToolsForChannel, isConfirmationRequired } from "../repertoire/tools";
+import { execTool, summarizeArgs, settleTool, observeTool, ponderTool, restTool, getToolsForChannel, isConfirmationRequired } from "../repertoire/tools";
 import type { ToolContext } from "../repertoire/tools";
 import { getChannelCapabilities } from "../mind/friends/channel";
 import { surfaceToolDef } from "../senses/surface-tool";
@@ -266,14 +266,16 @@ export type RunAgentOutcome =
   | "aborted"
   | "errored"
   | "observed"
-  | "descended";
+  | "pondered"
+  | "rested";
 
 // Sole-call tools must be the only tool call in a turn. When they appear
 // alongside other tools, the sole-call tool is rejected with this message.
 const SOLE_CALL_REJECTION: Record<string, string> = {
   settle: "rejected: settle must be the only tool call. finish your work first, then call settle alone.",
   observe: "rejected: observe must be the only tool call. call observe alone when you want to stay silent.",
-  descend: "rejected: descend must be the only tool call. finish your other work first, then call descend alone.",
+  ponder: "rejected: ponder must be the only tool call. finish your other work first, then call ponder alone.",
+  rest: "rejected: rest must be the only tool call. finish your work first, then call rest alone.",
 };
 
 const DELEGATION_REASON_PROSE_HANDOFF: Record<DelegationReason, string> = {
@@ -285,7 +287,7 @@ const DELEGATION_REASON_PROSE_HANDOFF: Record<DelegationReason, string> = {
   unresolved_obligation: "there's an unresolved commitment from an earlier conversation",
 };
 
-function buildDescendHandoffPacket(params: {
+function buildPonderHandoffPacket(params: {
   topic: string
   mode: "reflect" | "plan" | "relay"
   delegationDecision?: DelegationDecision
@@ -363,7 +365,7 @@ export function getSettleRetryError(
   sawSteeringFollowUp: boolean,
   _delegationDecision?: DelegationDecision,
   sawSendMessageSelf?: boolean,
-  sawDescend?: boolean,
+  sawPonder?: boolean,
   _sawQuerySession?: boolean,
   currentObligation?: string | null,
   innerJob?: InnerJob,
@@ -374,8 +376,8 @@ export function getSettleRetryError(
   // rejection loops where the agent couldn't respond to the user at all.
   // The agent is free to follow or ignore the delegation hint.
   // 2. Pending obligation not addressed
-  if (innerJob?.obligationStatus === "pending" && !sawSendMessageSelf && !sawDescend) {
-    return "you're still holding something from an earlier conversation -- someone is waiting for your answer. finish the thought first, or descend to keep working on it privately.";
+  if (innerJob?.obligationStatus === "pending" && !sawSendMessageSelf && !sawPonder) {
+    return "you're still holding something from an earlier conversation -- someone is waiting for your answer. finish the thought first, or ponder to keep working on it privately.";
   }
   // 3. mustResolveBeforeHandoff + missing intent
   if (mustResolveBeforeHandoff && !intent) {
@@ -630,7 +632,7 @@ export async function runAgent(
   let mustResolveBeforeHandoffActive = options?.mustResolveBeforeHandoff === true;
   let currentReasoningEffort = "medium";
   let sawSendMessageSelf = false;
-  let sawDescend = false;
+  let sawPonder = false;
   let sawQuerySession = false;
   let sawBridgeManage = false;
   let sawExternalStateQuery = false;
@@ -662,11 +664,13 @@ export async function runAgent(
 
   while (!done) {
     // Channel-based tool filtering:
-    // - Inner dialog: exclude descend (already inward), send_message (delivery via surface), observe (no one to observe)
+    // - Inner dialog: exclude send_message (delivery via surface), observe (no one to observe)
     // - 1:1 sessions: exclude observe (can't ignore someone talking directly to you)
     // - Group chats: observe available
     //
-    // descend, settle, surface, and observe are always assembled based on channel context.
+    // ponder, settle/rest, surface, and observe are always assembled based on channel context.
+    // ponder is available in ALL channels (outer: think privately, inner: keep turning).
+    // Inner dialog gets restTool instead of settleTool (rest = end turn, gated by attention queue).
     // toolChoiceRequired only controls whether tool_choice: "required" is set in the API call.
     const isInnerDialog = channel === "inner";
     const filteredBaseTools = isInnerDialog
@@ -674,10 +678,10 @@ export async function runAgent(
       : baseTools;
     const activeTools = [
       ...filteredBaseTools,
-      ...(!isInnerDialog ? [descendTool] : []),
-      ...(isInnerDialog ? [surfaceToolDef] : []),
+      ponderTool,
+      ...(isInnerDialog ? [surfaceToolDef, restTool] : []),
       ...(currentContext?.isGroupChat && !isInnerDialog ? [observeTool] : []),
-      settleTool,
+      ...(!isInnerDialog ? [settleTool] : []),
     ];
     const steeringFollowUps = options?.drainSteeringFollowUps?.() ?? [];
     if (steeringFollowUps.length > 0) {
@@ -799,7 +803,7 @@ export async function runAgent(
             sawSteeringFollowUp,
             options?.delegationDecision,
             sawSendMessageSelf,
-            sawDescend,
+            sawPonder,
             sawQuerySession,
             options?.currentObligation ?? null,
             options?.activeWorkFrame?.inner?.job,
@@ -880,94 +884,160 @@ export async function runAgent(
           continue;
         }
 
-        // Check for descend sole call: intercept before tool execution
-        const isSoleDescend = result.toolCalls.length === 1 && result.toolCalls[0].name === "descend";
-        if (isSoleDescend) {
-          let parsedArgs: { topic?: string; answer?: string; mode?: string } = {};
+        // Check for ponder sole call: intercept before tool execution
+        const isSolePonder = result.toolCalls.length === 1 && result.toolCalls[0].name === "ponder";
+        if (isSolePonder) {
+          let parsedArgs: { thought?: string; say?: string } = {};
           try {
             parsedArgs = JSON.parse(result.toolCalls[0].arguments);
           } catch { /* ignore */ }
-          callbacks.onToolStart("descend", parsedArgs as Record<string, string>);
-          /* v8 ignore next -- defensive: topic always string from model @preserve */
-          const topic = typeof parsedArgs.topic === "string" ? parsedArgs.topic : "";
-          const answer = typeof parsedArgs.answer === "string" ? parsedArgs.answer : undefined;
-          const parsedMode = parsedArgs.mode === "reflect" || parsedArgs.mode === "plan" || parsedArgs.mode === "relay"
-            ? parsedArgs.mode
-            : undefined;
-          const mode = parsedMode || "reflect";
+          callbacks.onToolStart("ponder", parsedArgs as Record<string, string>);
 
-          // Emit outward answer if provided
-          if (answer) {
-            callbacks.onClearText?.();
-            callbacks.onTextChunk(answer);
-          }
-
-          // Build handoff packet and enqueue
-          const handoffContent = buildDescendHandoffPacket({
-            topic,
-            mode,
-            delegationDecision: options?.delegationDecision,
-            currentSession: (options?.toolContext as ToolContext | undefined)?.currentSession ?? null,
-            currentObligation: options?.currentObligation ?? null,
-            outwardClosureRequired: options?.delegationDecision?.outwardClosureRequired ?? false,
-          });
-          const pendingDir = getInnerDialogPendingDir(getAgentName());
           const currentSession = (options?.toolContext as ToolContext | undefined)?.currentSession;
           const isInnerChannel = currentSession?.friendId === "self" && currentSession?.channel === "inner";
-          // Create obligation FIRST so we can attach its ID to the pending message
-          let createdObligationId: string | undefined;
-          if (currentSession && !isInnerChannel) {
-            try {
-              const obligation = createObligation(getAgentRoot(), {
-                origin: {
+
+          if (!isInnerChannel) {
+            // Outer session: thought and say are required
+            const thought = typeof parsedArgs.thought === "string" ? parsedArgs.thought : undefined;
+            const say = typeof parsedArgs.say === "string" ? parsedArgs.say : undefined;
+            if (!thought || !say) {
+              callbacks.onToolEnd("ponder", summarizeArgs("ponder", parsedArgs as Record<string, string>), false);
+              messages.push(msg);
+              const errorMsg = "ponder requires both thought and say when called from a conversation. thought is what needs more thinking; say is what you tell them before going quiet.";
+              messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: errorMsg });
+              providerRuntime.appendToolOutput(result.toolCalls[0].id, errorMsg);
+              continue;
+            }
+
+            // Emit outward say text
+            callbacks.onClearText?.();
+            callbacks.onTextChunk(say);
+
+            // Build handoff packet and enqueue
+            const handoffContent = buildPonderHandoffPacket({
+              topic: thought,
+              mode: "reflect",
+              delegationDecision: options?.delegationDecision,
+              currentSession: currentSession ?? null,
+              currentObligation: options?.currentObligation ?? null,
+              outwardClosureRequired: options?.delegationDecision?.outwardClosureRequired ?? false,
+            });
+            const pendingDir = getInnerDialogPendingDir(getAgentName());
+            // Create obligation FIRST so we can attach its ID to the pending message
+            let createdObligationId: string | undefined;
+            if (currentSession) {
+              try {
+                const obligation = createObligation(getAgentRoot(), {
+                  origin: {
+                    friendId: currentSession.friendId,
+                    channel: currentSession.channel,
+                    key: currentSession.key,
+                  },
+                  content: thought,
+                })
+                createdObligationId = obligation.id;
+              } catch {
+                /* v8 ignore next -- defensive: obligation store write failure should not break ponder @preserve */
+              }
+            }
+            const envelope: PendingMessage = {
+              from: getAgentName(),
+              friendId: "self",
+              channel: "inner",
+              key: "dialog",
+              content: handoffContent,
+              timestamp: Date.now(),
+              ...(currentSession ? {
+                delegatedFrom: {
                   friendId: currentSession.friendId,
                   channel: currentSession.channel,
                   key: currentSession.key,
                 },
-                content: topic,
-              })
-              createdObligationId = obligation.id;
-            } catch {
-              /* v8 ignore next -- defensive: obligation store write failure should not break descend @preserve */
-            }
-          }
-          const envelope: PendingMessage = {
-            from: getAgentName(),
-            friendId: "self",
-            channel: "inner",
-            key: "dialog",
-            content: handoffContent,
-            timestamp: Date.now(),
-            mode,
-            ...(currentSession && !isInnerChannel ? {
-              delegatedFrom: {
-                friendId: currentSession.friendId,
-                channel: currentSession.channel,
-                key: currentSession.key,
-              },
-              obligationStatus: "pending" as const,
-              /* v8 ignore next -- defensive: createdObligationId is undefined only when obligation store write fails @preserve */
-              ...(createdObligationId ? { obligationId: createdObligationId } : {}),
-            } : {}),
-          };
-          queuePendingMessage(pendingDir, envelope);
-          try { await requestInnerWake(getAgentName()); } catch { /* daemon may not be running */ }
+                obligationStatus: "pending" as const,
+                /* v8 ignore next -- defensive: createdObligationId is undefined only when obligation store write fails @preserve */
+                ...(createdObligationId ? { obligationId: createdObligationId } : {}),
+              } : {}),
+            };
+            queuePendingMessage(pendingDir, envelope);
+            try { await requestInnerWake(getAgentName()); } catch { /* daemon may not be running */ }
 
-          callbacks.onToolEnd("descend", summarizeArgs("descend", parsedArgs as Record<string, string>), true);
-          sawDescend = true;
+            callbacks.onToolEnd("ponder", summarizeArgs("ponder", parsedArgs as Record<string, string>), true);
+            sawPonder = true;
+            messages.push(msg);
+            const ack = "(pondering)";
+            messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: ack });
+            providerRuntime.appendToolOutput(result.toolCalls[0].id, ack);
+
+            emitNervesEvent({
+              component: "engine",
+              event: "engine.pondered",
+              message: "pondering",
+              meta: { hasThought: true, hasSay: true, contentSnippet: thought.slice(0, 80) },
+            });
+          } else {
+            // Inner dialog: parameterless, enqueue synthetic pending WITHOUT delegatedFrom
+            const pendingDir = getInnerDialogPendingDir(getAgentName());
+            const envelope: PendingMessage = {
+              from: getAgentName(),
+              friendId: "self",
+              channel: "inner",
+              key: "dialog",
+              content: "continuing to think...",
+              timestamp: Date.now(),
+            };
+            queuePendingMessage(pendingDir, envelope);
+
+            callbacks.onToolEnd("ponder", summarizeArgs("ponder", parsedArgs as Record<string, string>), true);
+            sawPonder = true;
+            messages.push(msg);
+            const ack = "(pondering)";
+            messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: ack });
+            providerRuntime.appendToolOutput(result.toolCalls[0].id, ack);
+
+            emitNervesEvent({
+              component: "engine",
+              event: "engine.pondered",
+              message: "pondering from inner dialog",
+              meta: { inner: true },
+            });
+          }
+
+          outcome = "pondered";
+          done = true;
+          continue;
+        }
+
+        // Check for rest sole call: intercept before tool execution
+        const isSoleRest = result.toolCalls.length === 1 && result.toolCalls[0].name === "rest";
+        if (isSoleRest) {
+          const restArgs = (() => { try { return JSON.parse(result.toolCalls[0].arguments) } catch { return {} } })();
+          callbacks.onToolStart("rest", restArgs);
+
+          // Attention queue gate: reject rest if items remain
+          const attentionQueue = (augmentedToolContext ?? options?.toolContext)?.delegatedOrigins;
+          if (attentionQueue && attentionQueue.length > 0) {
+            callbacks.onToolEnd("rest", summarizeArgs("rest", restArgs), false);
+            messages.push(msg);
+            const gateMessage = "you're holding thoughts someone is waiting for — surface them before you rest.";
+            messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: gateMessage });
+            providerRuntime.appendToolOutput(result.toolCalls[0].id, gateMessage);
+            continue;
+          }
+
+          callbacks.onToolEnd("rest", summarizeArgs("rest", restArgs), true);
           messages.push(msg);
-          const ack = "(going inward)";
+          const ack = "(resting)";
           messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: ack });
           providerRuntime.appendToolOutput(result.toolCalls[0].id, ack);
 
           emitNervesEvent({
             component: "engine",
-            event: "engine.descended",
-            message: "taking thread inward",
-            meta: { mode, hasAnswer: answer !== undefined, contentSnippet: topic.slice(0, 80) },
+            event: "engine.rested",
+            message: "resting until next heartbeat",
+            meta: {},
           });
 
-          outcome = "descended";
+          outcome = "rested";
           done = true;
           continue;
         }
@@ -1115,7 +1185,7 @@ export async function runAgent(
     trace_id: traceId,
     component: "engine",
     message: "runAgent turn completed",
-    meta: { done, sawDescend, sawQuerySession, sawBridgeManage },
+    meta: { done, sawPonder, sawQuerySession, sawBridgeManage },
   });
   return {
     usage: lastUsage,

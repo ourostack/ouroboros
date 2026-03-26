@@ -1474,29 +1474,23 @@ export const baseToolDefinitions: ToolDefinition[] = [
 
 export const tools: OpenAI.ChatCompletionFunctionTool[] = baseToolDefinitions.map((d) => d.tool);
 
-export const descendTool: OpenAI.ChatCompletionFunctionTool = {
+export const ponderTool: OpenAI.ChatCompletionFunctionTool = {
   type: "function",
   function: {
-    name: "descend",
-    description: "i need to think about this privately. this takes the current thread inward -- i'll sit with it, work through it, or carry it to where it needs to go. must be the only tool call in the turn.",
+    name: "ponder",
+    description: "i need to sit with this. from a conversation, takes the thread inward with a thought and a parting word. from inner dialog, keeps the wheel turning for another pass. must be the only tool call in the turn.",
     parameters: {
       type: "object",
       properties: {
-        topic: {
+        thought: {
           type: "string",
-          description: "the question or topic that needs private thought — brief framing, not your analysis. your inner dialog will do the actual thinking.",
+          description: "the question or thread that needs more thought — brief framing, not analysis. required from a conversation, ignored from inner dialog.",
         },
-        answer: {
+        say: {
           type: "string",
-          description: "if i want to say something outward before going inward -- an acknowledgment, a 'let me think about that', whatever feels right",
-        },
-        mode: {
-          type: "string",
-          enum: ["reflect", "plan", "relay"],
-          description: "reflect: something to sit with. plan: something to work through. relay: something to carry across.",
+          description: "what you say before going quiet — speak to what caught your attention, not just that something did. required from a conversation, ignored from inner dialog.",
         },
       },
-      required: ["topic"],
     },
   },
 };
@@ -1528,6 +1522,18 @@ export const settleTool: OpenAI.ChatCompletionFunctionTool = {
         intent: { type: "string", enum: ["complete", "blocked", "direct_reply"] },
       },
       required: ["answer"],
+    },
+  },
+};
+
+export const restTool: OpenAI.ChatCompletionFunctionTool = {
+  type: "function",
+  function: {
+    name: "rest",
+    description: "put this down for now — the wheel stops until the next heartbeat. must be the only tool call in the turn.",
+    parameters: {
+      type: "object",
+      properties: {},
     },
   },
 };

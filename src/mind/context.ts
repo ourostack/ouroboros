@@ -282,7 +282,8 @@ function stripOrphanedToolResults(messages: OpenAI.ChatCompletionMessageParam[])
 const TOOL_NAME_MIGRATIONS: Record<string, string> = {
   final_answer: "settle",
   no_response: "observe",
-  go_inward: "descend",
+  go_inward: "ponder",
+  descend: "ponder",
   memory_save: "diary_write",
   memory_search: "recall",
 }
