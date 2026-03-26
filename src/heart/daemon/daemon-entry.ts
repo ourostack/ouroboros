@@ -36,6 +36,17 @@ emitNervesEvent({
   meta: { socketPath, entryPath, mode },
 })
 
+/* v8 ignore next -- dev-mode indicator: false branch (production) tested in daemon-boot-updates.test.ts @preserve */
+if (mode === "dev") {
+  const repoRoot = getRepoRoot()
+  emitNervesEvent({
+    component: "daemon",
+    event: "daemon.dev_mode_indicator",
+    message: `[dev] running from ${repoRoot}`,
+    meta: { repoRoot },
+  })
+}
+
 const managedAgents = listEnabledBundleAgents()
 
 const processManager = new DaemonProcessManager({
@@ -79,6 +90,7 @@ const daemon = new OuroDaemon({
   scheduler,
   healthMonitor,
   router,
+  mode,
 })
 
 void daemon.start().catch(async () => {

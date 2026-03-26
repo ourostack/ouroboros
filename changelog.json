@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.136",
+      "changes": [
+        "Dev mode DX: ouro dev starts daemon from local repo build, skips update checker, prints dev mode indicator.",
+        "ouro up from dev context delegates to installed production binary or errors with install guidance.",
+        "Daemon accepts mode option; update checker suppressed in dev mode with daemon.update_checker_skip event.",
+        "Daemon entry emits daemon.dev_mode_indicator nerves event when running from a dev repo."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.135",
       "changes": [
         "Metacognitive tool vocabulary complete: go_inward renamed to descend. RunAgentOutcome value is now 'descended', event is 'engine.descended'.",

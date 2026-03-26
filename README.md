@@ -8,7 +8,8 @@ Ouroboros is a TypeScript harness for daemon-managed agents that live in externa
 
 - `npx ouro.bot` is the bootstrap path.
 - `ouro` is the installed day-to-day command.
-- `ouro up` starts or repairs the daemon, syncs the launcher, installs workflow helpers, and reconciles stale runtime state.
+- `ouro up` starts the daemon from the installed production version, syncs the launcher, installs workflow helpers, and reconciles stale runtime state.
+- `ouro dev` starts the daemon from a local repo build (skips update checker, writes plist to repo path).
 - Agent bundles live outside the repo at `~/AgentBundles/<agent>.ouro/`.
 - Secrets live outside the repo at `~/.agentsecrets/<agent>/secrets.json`.
 - Machine-scoped test and runtime spillover lives under `~/.agentstate/...`.
@@ -141,7 +142,10 @@ If you are changing runtime code, keep all three green.
 ## Common Commands
 
 ```bash
-ouro up
+ouro up                          # start daemon from installed production version
+ouro dev                         # start daemon from local repo build
+ouro dev --repo-path /path       # start from a specific repo checkout
+ouro dev --clone                 # clone repo to ~/Projects/ouroboros, build, start
 ouro status
 ouro logs
 ouro stop

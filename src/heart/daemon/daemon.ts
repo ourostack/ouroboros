@@ -185,6 +185,7 @@ export interface OuroDaemonOptions {
   router: DaemonRouterLike
   senseManager?: DaemonSenseManagerLike
   bundlesRoot?: string
+  mode?: "dev" | "production"
 }
 
 interface DaemonWorkerRow {
@@ -271,6 +272,7 @@ export class OuroDaemon {
   private readonly router: DaemonRouterLike
   private readonly senseManager: DaemonSenseManagerLike | null
   private readonly bundlesRoot: string
+  private readonly mode: "dev" | "production"
   private server: net.Server | null = null
 
   constructor(options: OuroDaemonOptions) {
@@ -281,6 +283,7 @@ export class OuroDaemon {
     this.router = options.router
     this.senseManager = options.senseManager ?? null
     this.bundlesRoot = options.bundlesRoot ?? getAgentBundlesRoot()
+    this.mode = options.mode ?? "production"
   }
 
   async start(): Promise<void> {
@@ -299,37 +302,47 @@ export class OuroDaemon {
     await applyPendingUpdates(this.bundlesRoot, currentVersion)
 
     // Start periodic update checker (polls npm registry every 30 minutes)
+    // Skip in dev mode — dev builds should not auto-update from npm
     const bundlesRoot = this.bundlesRoot
-    const daemon = this
-    startUpdateChecker({
-      currentVersion,
-      deps: {
-        distTag: "alpha",
-        fetchRegistryJson: /* v8 ignore next -- integration: real HTTP fetch @preserve */ async () => {
-          const res = await fetch("https://registry.npmjs.org/@ouro.bot/cli")
-          return res.json()
-        },
-      },
-      onUpdate: /* v8 ignore start -- integration: real npm install + process spawn @preserve */ async (result) => {
-        if (!result.latestVersion) return
-        await performStagedRestart(result.latestVersion, {
-          execSync: (cmd) => execSync(cmd, { stdio: "inherit" }),
-          spawnSync,
-          resolveNewCodePath: (_version) => {
-            try {
-              const resolved = execSync(`node -e "console.log(require.resolve('@ouro.bot/cli/package.json'))"`, { encoding: "utf-8" }).trim()
-              return resolved ? path.dirname(resolved) : null
-            } catch {
-              return null
-            }
+    if (this.mode === "dev") {
+      emitNervesEvent({
+        component: "daemon",
+        event: "daemon.update_checker_skip",
+        message: "skipping update checker in dev mode",
+        meta: { reason: "dev mode" },
+      })
+    } else {
+      const daemon = this
+      startUpdateChecker({
+        currentVersion,
+        deps: {
+          distTag: "alpha",
+          fetchRegistryJson: /* v8 ignore next -- integration: real HTTP fetch @preserve */ async () => {
+            const res = await fetch("https://registry.npmjs.org/@ouro.bot/cli")
+            return res.json()
           },
-          gracefulShutdown: () => daemon.stop(),
-          nodePath: process.execPath,
-          bundlesRoot,
-        })
-      },
-      /* v8 ignore stop */
-    })
+        },
+        onUpdate: /* v8 ignore start -- integration: real npm install + process spawn @preserve */ async (result) => {
+          if (!result.latestVersion) return
+          await performStagedRestart(result.latestVersion, {
+            execSync: (cmd) => execSync(cmd, { stdio: "inherit" }),
+            spawnSync,
+            resolveNewCodePath: (_version) => {
+              try {
+                const resolved = execSync(`node -e "console.log(require.resolve('@ouro.bot/cli/package.json'))"`, { encoding: "utf-8" }).trim()
+                return resolved ? path.dirname(resolved) : null
+              } catch {
+                return null
+              }
+            },
+            gracefulShutdown: () => daemon.stop(),
+            nodePath: process.execPath,
+            bundlesRoot,
+          })
+        },
+        /* v8 ignore stop */
+      })
+    }
 
     // Pre-initialize MCP connections so they're ready for the first command (non-blocking)
     /* v8 ignore next -- catch callback: getSharedMcpManager logs errors internally @preserve */

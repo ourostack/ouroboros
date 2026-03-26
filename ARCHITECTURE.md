@@ -8,7 +8,8 @@ The harness is daemon-centered.
 
 - `npx ouro.bot` is the bootstrap entrypoint.
 - `ouro` is the installed launcher used after bootstrap.
-- `ouro up` ensures the local launcher is current, repairs stale wrapper state, installs workflow helpers, and starts or replaces the daemon if needed.
+- `ouro up` starts the daemon from the installed production version, repairs stale wrapper state, installs workflow helpers, and replaces the daemon if needed.
+- `ouro dev` starts the daemon from a local repo build (for development — skips update checker, always force-restarts).
 - The daemon discovers bundles from `~/AgentBundles/*.ouro`.
 - Enabled bundles become managed runtime participants.
 
@@ -23,7 +24,7 @@ The important design goal is one coherent runtime truth:
 
 1. Human enters through `npx ouro.bot` or `ouro`.
 2. CLI setup verifies launcher, bundle registration, and helper installs.
-3. `ouro up` ensures the daemon is running the current runtime version.
+3. `ouro up` starts the daemon from the installed version; `ouro dev` starts from a local repo build.
 4. Daemon discovers bundles under `~/AgentBundles`.
 5. Daemon reports:
    - discovered agents
@@ -153,7 +154,8 @@ Important recent additions include:
 
 - Package version comes from `package.json`.
 - Runtime metadata exposes `version` and `lastUpdated`.
-- `ouro up` replaces stale daemons rather than preserving split-brain launcher/runtime behavior.
+- `ouro up` replaces stale daemons rather than preserving split-brain launcher/runtime behavior. `ouro dev` always force-restarts.
+- Dev mode suppresses the npm update checker. Production mode checks every 30 minutes.
 - Update hooks run against bundles using `bundle-meta.json`.
 - The bootstrap wrapper and installed launcher are designed to converge on the same runtime channel.
 
