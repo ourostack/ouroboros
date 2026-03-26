@@ -66,7 +66,7 @@ If:
 - the local launcher/runtime is newer
 - and the running daemon reports an older version
 
-then `ouro up` replaces the stale daemon instead of leaving launcher and daemon on different versions.
+then `ouro up` replaces the stale daemon instead of leaving launcher and daemon on different versions. `ouro dev` always force-restarts from the local repo build regardless of version drift.
 
 That keeps:
 

@@ -1,4 +1,4 @@
-// Thin entrypoint for `npm run dev` / `node dist/senses/cli-entry.js --agent <name>`.
+// Thin entrypoint for `npm run cli` / `node dist/senses/cli-entry.js --agent <name>`.
 // Separated from cli.ts so the CLI adapter is pure library code with clean
 // 100% test coverage -- entrypoints can't be covered by vitest since
 // require.main !== module in the test runner.

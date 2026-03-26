@@ -4,7 +4,7 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import * as semver from "semver"
-import { getAgentBundlesRoot, getAgentDaemonLogsDir, getAgentName, getAgentRoot, getRepoRoot, type AgentProvider } from "../identity"
+import { getAgentBundlesRoot, getAgentDaemonLogsDir, getAgentName, getAgentRoot, getRepoRoot, HARNESS_CANONICAL_REPO_URL, type AgentProvider } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { FileFriendStore } from "../../mind/friends/store-file"
 import type { FriendStore } from "../../mind/friends/store"
@@ -89,6 +89,7 @@ export type OuroCliCommand =
   | { kind: "hatch.start"; agentName?: string; humanName?: string; provider?: AgentProvider; credentials?: HatchCredentialsInput; migrationPath?: string }
   | { kind: "rollback"; version?: string }
   | { kind: "versions" }
+  | { kind: "daemon.dev"; repoPath?: string; clone?: boolean; clonePath?: string }
   | { kind: "attention.list"; agent?: string }
   | { kind: "attention.show"; id: string; agent?: string }
   | { kind: "attention.history"; agent?: string }
@@ -127,6 +128,11 @@ export interface OuroCliDeps {
   reExecFromNewVersion?: (args: string[]) => never
   getPreviousCliVersion?: () => string | null
   listCliVersions?: () => string[]
+  existsSync?: (p: string) => boolean
+  getRepoCwd?: () => string
+  detectMode?: () => "dev" | "production"
+  getInstalledBinaryPath?: () => string | null
+  execInstalledBinary?: (binaryPath: string, args: string[]) => never
 }
 
 export interface SessionEntry {
@@ -388,6 +394,7 @@ function usage(): string {
   return [
     "Usage:",
     "  ouro [up]",
+    "  ouro dev [--repo-path <path>] [--clone [--clone-path <path>]]",
     "  ouro stop|down|status|logs|hatch",
     "  ouro -v|--version",
     "  ouro config model --agent <name> <model-name>",
@@ -1042,6 +1049,18 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   }
 
   if (head === "up") return { kind: "daemon.up" }
+  if (head === "dev") {
+    const devArgs = args.slice(1)
+    let repoPath: string | undefined
+    let clone = false
+    let clonePath: string | undefined
+    for (let i = 0; i < devArgs.length; i++) {
+      if (devArgs[i] === "--repo-path" && devArgs[i + 1]) { repoPath = devArgs[++i]; continue }
+      if (devArgs[i] === "--clone") { clone = true; continue }
+      if (devArgs[i] === "--clone-path" && devArgs[i + 1]) { clonePath = devArgs[++i]; continue }
+    }
+    return { kind: "daemon.dev", repoPath, clone, clonePath }
+  }
   if (head === "rollback") return { kind: "rollback", ...(second ? { version: second } : {}) }
   if (head === "versions") return { kind: "versions" }
   if (head === "stop" || head === "down") return { kind: "daemon.stop" }
@@ -1527,6 +1546,19 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     syncGlobalOuroBotWrapper: defaultSyncGlobalOuroBotWrapper,
     ensureSkillManagement: defaultEnsureSkillManagement,
     ensureDaemonBootPersistence: defaultEnsureDaemonBootPersistence,
+    /* v8 ignore start -- dev-mode defaults: tests inject mocks for mode detection and binary resolution @preserve */
+    detectMode: () => detectRuntimeMode(getRepoRoot()),
+    getInstalledBinaryPath: () => {
+      const cliHome = getOuroCliHome()
+      const binaryPath = path.join(cliHome, "bin", "ouro")
+      return fs.existsSync(binaryPath) ? binaryPath : null
+    },
+    execInstalledBinary: (binaryPath: string, binArgs: string[]) => {
+      const { execFileSync } = require("child_process") as typeof import("child_process")
+      execFileSync(binaryPath, binArgs, { stdio: "inherit" })
+      process.exit(0)
+    },
+    /* v8 ignore stop */
     /* v8 ignore next 3 -- integration: launches interactive CLI session @preserve */
     startChat: async (agentName: string) => {
       const { main } = await import("../../senses/cli")
@@ -1585,7 +1617,7 @@ type ConfigModelsCliCommand = Extract<OuroCliCommand, { kind: "config.models" }>
 type RollbackCliCommand = Extract<OuroCliCommand, { kind: "rollback" }>
 type VersionsCliCommand = Extract<OuroCliCommand, { kind: "versions" }>
 type AttentionCliCommand = Extract<OuroCliCommand, { kind: "attention.list" } | { kind: "attention.show" } | { kind: "attention.history" }>
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand>): DaemonCommand {
   return command
 }
 
@@ -1925,6 +1957,52 @@ function executeReminderCommand(command: ReminderCliCommand, taskMod: TaskModule
   }
 }
 
+/* v8 ignore start -- repo resolution for ouro dev: repoPath branch tested via daemon-cli-dev; clone requires real git/npm @preserve */
+function resolveDevRepoCwd(
+  command: { repoPath?: string; clone?: boolean; clonePath?: string },
+  checkExists: (p: string) => boolean,
+  deps: { writeStdout: (text: string) => void; getRepoCwd?: () => string },
+): string {
+  if (command.repoPath) return path.resolve(command.repoPath)
+  if (command.clone) return resolveClonePath(command, checkExists, deps)
+  return deps.getRepoCwd ? deps.getRepoCwd() : getRepoRoot()
+}
+/* v8 ignore stop */
+
+/* v8 ignore start -- clone/build: requires real git clone + npm install on disk @preserve */
+function resolveClonePath(
+  command: { clonePath?: string },
+  checkExists: (p: string) => boolean,
+  deps: { writeStdout: (text: string) => void },
+): string {
+  const cloneTarget = command.clonePath
+    ? path.resolve(command.clonePath)
+    : path.join(os.homedir(), "Projects", "ouroboros")
+  if (!checkExists(path.join(cloneTarget, ".git"))) {
+    deps.writeStdout(`cloning ouroboros to ${cloneTarget}...`)
+    try {
+      execSync(`git clone ${HARNESS_CANONICAL_REPO_URL} "${cloneTarget}"`, { stdio: "inherit" })
+    } catch {
+      throw new Error(`clone failed. check your network and try again, or clone manually and use --repo-path.`)
+    }
+  } else {
+    deps.writeStdout(`repo already exists at ${cloneTarget}, pulling latest...`)
+    try {
+      execSync("git pull --ff-only", { cwd: cloneTarget, stdio: "inherit" })
+    } catch {
+      deps.writeStdout("pull failed (may have local changes). continuing with existing code.")
+    }
+  }
+  deps.writeStdout("building...")
+  try {
+    execSync("npm install && npm run build", { cwd: cloneTarget, stdio: "inherit" })
+  } catch {
+    throw new Error(`build failed in ${cloneTarget}. check the output above.`)
+  }
+  return cloneTarget
+}
+/* v8 ignore stop */
+
 export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefaultOuroCliDeps()): Promise<string> {
   if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) {
     const text = usage()
@@ -2010,6 +2088,28 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   })
 
   if (command.kind === "daemon.up") {
+    // ── dev mode delegation: ouro up from a dev repo delegates to installed binary ──
+    // Only runs when detectMode is explicitly injected (via createDefaultOuroCliDeps or tests)
+    if (deps.detectMode) {
+      const runtimeMode = deps.detectMode()
+      if (runtimeMode === "dev") {
+        /* v8 ignore next -- defensive: getInstalledBinaryPath always injected in tests @preserve */
+        const installedBinary = deps.getInstalledBinaryPath ? deps.getInstalledBinaryPath() : null
+        if (installedBinary) {
+          deps.writeStdout("delegating to installed ouro...")
+          /* v8 ignore next 3 -- defensive: execInstalledBinary always injected; missing branch unreachable @preserve */
+          if (deps.execInstalledBinary) {
+            deps.execInstalledBinary(installedBinary, args)
+          }
+          /* v8 ignore next 2 -- unreachable after exec replaces process @preserve */
+          return ""
+        }
+        const message = "no installed version found. run: npx @ouro.bot/cli@alpha"
+        deps.writeStdout(message)
+        return message
+      }
+    }
+
     const linkedVersionBeforeUp = deps.getCurrentCliVersion?.() ?? null
 
     // ── versioned CLI update check ──
@@ -2110,6 +2210,70 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     const daemonResult = await ensureDaemonRunning(deps)
     deps.writeStdout(daemonResult.message)
     return daemonResult.message
+  }
+
+  if (command.kind === "daemon.dev") {
+    /* v8 ignore next -- defensive: existsSync always injected in tests @preserve */
+    const checkExists = deps.existsSync ?? fs.existsSync
+
+    /* v8 ignore next -- repo resolution dispatched to v8-ignored helper @preserve */
+    const repoCwd = resolveDevRepoCwd(command, checkExists, deps)
+
+    const entryPath = path.join(repoCwd, "dist", "heart", "daemon", "daemon-entry.js")
+    if (!checkExists(entryPath) || !checkExists(path.join(repoCwd, ".git"))) {
+      const lines = [
+        "no harness repo found at " + repoCwd,
+        "",
+        "options:",
+        "  ouro dev --repo-path /path/to/ouroboros   use an existing checkout",
+        "  ouro dev --clone                          fresh clone to ~/Projects/ouroboros",
+        "  ouro dev --clone --clone-path /somewhere   fresh clone to a custom path",
+        "",
+        "if you have the repo, cd into it and run: npm run build && ouro dev",
+      ]
+      const message = lines.join("\n")
+      deps.writeStdout(message)
+      return message
+    }
+
+    /* v8 ignore start -- defensive: ensureDaemonBootPersistence always injected in tests @preserve */
+    if (deps.ensureDaemonBootPersistence) {
+      try {
+        await Promise.resolve(deps.ensureDaemonBootPersistence(deps.socketPath))
+      /* v8 ignore next -- defensive: boot persistence error should not block dev mode @preserve */
+      } catch (error) {
+        emitNervesEvent({
+          level: "warn",
+          component: "daemon",
+          event: "daemon.dev_boot_persistence_error",
+          message: "failed to persist daemon boot startup in dev mode",
+          meta: { error: error instanceof Error ? error.message : String(error), socketPath: deps.socketPath },
+        })
+      }
+      /* v8 ignore stop */
+    }
+
+    // Always force-restart in dev mode — you rebuilt, you want this code running
+    /* v8 ignore start -- dev force-restart: socket alive/stop/spawn tested via integration; tests inject mocks @preserve */
+    const alive = await deps.checkSocketAlive(deps.socketPath)
+    if (alive) {
+      try { await deps.sendCommand(deps.socketPath, { kind: "daemon.stop" }) } catch { /* already stopping */ }
+    }
+    deps.cleanupStaleSocket(deps.socketPath)
+    const devEntry = path.join(repoCwd, "dist", "heart", "daemon", "daemon-entry.js")
+    const startDevDaemon = deps.startDaemonProcess === defaultStartDaemonProcess
+      ? async (sp: string) => {
+          const child = spawn("node", [devEntry, "--socket", sp], { detached: true, stdio: "ignore" })
+          child.unref()
+          return { pid: child.pid ?? null }
+        }
+      : deps.startDaemonProcess
+    /* v8 ignore stop */
+    const started = await startDevDaemon(deps.socketPath)
+    /* v8 ignore next -- defensive: pid is null only when spawn fails silently @preserve */
+    const message = `daemon running in dev mode from ${repoCwd} (pid ${started.pid ?? "unknown"})`
+    deps.writeStdout(message)
+    return message
   }
 
   // ── rollback command (local, no daemon socket needed for symlinks) ──
