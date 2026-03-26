@@ -2217,23 +2217,46 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     const checkExists = deps.existsSync ?? fs.existsSync
 
     /* v8 ignore next -- repo resolution dispatched to v8-ignored helper @preserve */
-    const repoCwd = resolveDevRepoCwd(command, checkExists, deps)
+    let repoCwd = resolveDevRepoCwd(command, checkExists, deps)
 
-    const entryPath = path.join(repoCwd, "dist", "heart", "daemon", "daemon-entry.js")
+    let entryPath = path.join(repoCwd, "dist", "heart", "daemon", "daemon-entry.js")
     if (!checkExists(entryPath) || !checkExists(path.join(repoCwd, ".git"))) {
-      const lines = [
-        "no harness repo found at " + repoCwd,
-        "",
-        "options:",
-        "  ouro dev --repo-path /path/to/ouroboros   use an existing checkout",
-        "  ouro dev --clone                          fresh clone to ~/Projects/ouroboros",
-        "  ouro dev --clone --clone-path /somewhere   fresh clone to a custom path",
-        "",
-        "if you have the repo, cd into it and run: npm run build && ouro dev",
-      ]
-      const message = lines.join("\n")
-      deps.writeStdout(message)
-      return message
+      if (command.repoPath) {
+        // Explicit --repo-path didn't have a valid repo — error
+        const message = `no harness repo found at ${repoCwd}. run npm run build first.`
+        deps.writeStdout(message)
+        return message
+      }
+      /* v8 ignore start -- auto-clone: interactive prompt + existing repo discovery + real git/npm @preserve */
+      const defaultClonePath = path.join(os.homedir(), "Projects", "ouroboros")
+      if (checkExists(path.join(defaultClonePath, ".git"))) {
+        deps.writeStdout(`found existing repo at ${defaultClonePath}`)
+        try {
+          repoCwd = resolveClonePath({ clonePath: defaultClonePath }, checkExists, deps)
+          entryPath = path.join(repoCwd, "dist", "heart", "daemon", "daemon-entry.js")
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err)
+          deps.writeStdout(message)
+          return message
+        }
+      } else if (deps.promptInput) {
+        deps.writeStdout("no harness repo found.")
+        const answer = await deps.promptInput(`already have a checkout? enter its path, or press enter to clone to ${defaultClonePath}: `)
+        const cloneTarget = answer.trim() || defaultClonePath
+        try {
+          repoCwd = resolveClonePath({ clonePath: cloneTarget }, checkExists, deps)
+          entryPath = path.join(repoCwd, "dist", "heart", "daemon", "daemon-entry.js")
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err)
+          deps.writeStdout(message)
+          return message
+        }
+      } else {
+        const message = `no harness repo found. run: ouro dev --repo-path /path/to/ouroboros`
+        deps.writeStdout(message)
+        return message
+      }
+      /* v8 ignore stop */
     }
 
     /* v8 ignore start -- defensive: ensureDaemonBootPersistence always injected in tests @preserve */
