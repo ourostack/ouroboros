@@ -3,48 +3,48 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import {
-  appendFactsWithDedup,
+  appendEntriesWithDedup,
   backfillEmbeddings,
-  ensureMemoryStorePaths,
-  saveMemoryFact,
-  searchMemoryFacts,
-  type MemoryFact,
-} from "../../mind/memory";
+  ensureDiaryStorePaths,
+  saveDiaryEntry,
+  searchDiaryEntries,
+  type DiaryEntry,
+} from "../../mind/diary";
 import { cosineSimilarity } from "../../mind/associative-recall";
 import { baseToolDefinitions } from "../../repertoire/tools-base";
 
 describe("memory write path", () => {
   it("ensures memory data file paths exist in bundle psyche memory root", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-paths-"));
-    const stores = ensureMemoryStorePaths(root);
+    const stores = ensureDiaryStorePaths(root);
     expect(stores.factsPath).toBe(path.join(root, "facts.jsonl"));
     expect(stores.entitiesPath).toBe(path.join(root, "entities.json"));
     expect(stores.dailyDir).toBe(path.join(root, "daily"));
     expect(fs.existsSync(stores.dailyDir)).toBe(true);
 
-    const second = ensureMemoryStorePaths(root);
+    const second = ensureDiaryStorePaths(root);
     expect(second).toEqual(stores);
   });
 
   it("writes novel facts and skips near-duplicates (>60% overlap)", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-dedup-"));
-    const stores = ensureMemoryStorePaths(root);
+    const stores = ensureDiaryStorePaths(root);
 
-    const first: MemoryFact = {
+    const first: DiaryEntry = {
       id: "f1",
       text: "ari prefers concise updates with explicit command outputs",
       source: "unit-test",
       createdAt: "2026-03-06T01:00:00.000Z",
       embedding: [0.1, 0.2],
     };
-    const duplicate: MemoryFact = {
+    const duplicate: DiaryEntry = {
       id: "f2",
       text: "ari prefers concise updates with explicit outputs",
       source: "unit-test",
       createdAt: "2026-03-06T01:01:00.000Z",
       embedding: [0.1, 0.2],
     };
-    const novel: MemoryFact = {
+    const novel: DiaryEntry = {
       id: "f3",
       text: "slugger should run coverage gate after branch merge",
       source: "unit-test",
@@ -52,11 +52,11 @@ describe("memory write path", () => {
       embedding: [0.2, 0.3],
     };
 
-    const firstWrite = appendFactsWithDedup(stores, [first]);
+    const firstWrite = appendEntriesWithDedup(stores, [first]);
     expect(firstWrite.added).toBe(1);
     expect(firstWrite.skipped).toBe(0);
 
-    const secondWrite = appendFactsWithDedup(stores, [duplicate, novel]);
+    const secondWrite = appendEntriesWithDedup(stores, [duplicate, novel]);
     expect(secondWrite.added).toBe(1);
     expect(secondWrite.skipped).toBe(1);
 
@@ -66,17 +66,17 @@ describe("memory write path", () => {
 
   it("skips semantically duplicate facts even when word overlap is below threshold", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-semantic-dedup-"));
-    const stores = ensureMemoryStorePaths(root);
+    const stores = ensureDiaryStorePaths(root);
     const opts = { semanticThreshold: 0.95 };
 
-    const original: MemoryFact = {
+    const original: DiaryEntry = {
       id: "sem-1",
       text: "the project deadline is next friday",
       source: "unit-test",
       createdAt: "2026-03-06T01:00:00.000Z",
       embedding: [1, 0, 0],
     };
-    const paraphrase: MemoryFact = {
+    const paraphrase: DiaryEntry = {
       id: "sem-2",
       text: "deliverable is due by end of week",
       source: "unit-test",
@@ -84,25 +84,25 @@ describe("memory write path", () => {
       embedding: [0.98, 0.1, 0.05],
     };
 
-    const firstWrite = appendFactsWithDedup(stores, [original], opts);
+    const firstWrite = appendEntriesWithDedup(stores, [original], opts);
     expect(firstWrite).toEqual({ added: 1, skipped: 0 });
 
-    const secondWrite = appendFactsWithDedup(stores, [paraphrase], opts);
+    const secondWrite = appendEntriesWithDedup(stores, [paraphrase], opts);
     expect(secondWrite).toEqual({ added: 0, skipped: 1 });
   });
 
   it("allows facts through when embedding similarity is below semantic threshold", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-semantic-below-"));
-    const stores = ensureMemoryStorePaths(root);
+    const stores = ensureDiaryStorePaths(root);
 
-    const factA: MemoryFact = {
+    const factA: DiaryEntry = {
       id: "below-1",
       text: "ari prefers morning standups",
       source: "unit-test",
       createdAt: "2026-03-06T01:00:00.000Z",
       embedding: [1, 0, 0],
     };
-    const factB: MemoryFact = {
+    const factB: DiaryEntry = {
       id: "below-2",
       text: "slugger runs coverage checks nightly",
       source: "unit-test",
@@ -110,22 +110,22 @@ describe("memory write path", () => {
       embedding: [0.5, 0.7, 0.5],
     };
 
-    const result = appendFactsWithDedup(stores, [factA, factB], { semanticThreshold: 0.95 });
+    const result = appendEntriesWithDedup(stores, [factA, factB], { semanticThreshold: 0.95 });
     expect(result).toEqual({ added: 2, skipped: 0 });
   });
 
   it("skips semantic dedup when either fact lacks embeddings", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-semantic-noembedding-"));
-    const stores = ensureMemoryStorePaths(root);
+    const stores = ensureDiaryStorePaths(root);
 
-    const withEmbedding: MemoryFact = {
+    const withEmbedding: DiaryEntry = {
       id: "emb-1",
       text: "alpha fact with vector",
       source: "unit-test",
       createdAt: "2026-03-06T01:00:00.000Z",
       embedding: [1, 0, 0],
     };
-    const withoutEmbedding: MemoryFact = {
+    const withoutEmbedding: DiaryEntry = {
       id: "emb-2",
       text: "beta fact without vector",
       source: "unit-test",
@@ -133,7 +133,7 @@ describe("memory write path", () => {
       embedding: [],
     };
 
-    const result = appendFactsWithDedup(stores, [withEmbedding, withoutEmbedding], { semanticThreshold: 0.95 });
+    const result = appendEntriesWithDedup(stores, [withEmbedding, withoutEmbedding], { semanticThreshold: 0.95 });
     expect(result).toEqual({ added: 2, skipped: 0 });
   });
 
@@ -157,7 +157,7 @@ describe("memory write path", () => {
     fs.mkdirSync(stores.dailyDir, { recursive: true });
     fs.writeFileSync(stores.entitiesPath, "{}\n", "utf8");
 
-    const result = appendFactsWithDedup(stores, [
+    const result = appendEntriesWithDedup(stores, [
       { id: "blank-1", text: "", source: "unit-test", createdAt: "2026-03-06T01:03:00.000Z", embedding: [0] },
       { id: "blank-2", text: "", source: "unit-test", createdAt: "2026-03-06T01:04:00.000Z", embedding: [0] },
     ]);
@@ -175,7 +175,7 @@ describe("memory write path", () => {
     };
     fs.mkdirSync(stores.dailyDir, { recursive: true });
 
-    const result = appendFactsWithDedup(stores, [
+    const result = appendEntriesWithDedup(stores, [
       {
         id: "fact-missing-entities",
         text: "Ari tracks entity index recovery behavior",
@@ -192,8 +192,8 @@ describe("memory write path", () => {
 
   it("updates entity index and daily logs for newly added facts", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-structures-"));
-    const stores = ensureMemoryStorePaths(root);
-    const facts: MemoryFact[] = [
+    const stores = ensureDiaryStorePaths(root);
+    const facts: DiaryEntry[] = [
       {
         id: "f-entity-1",
         text: "Ari improved the harness memory layer",
@@ -210,7 +210,7 @@ describe("memory write path", () => {
       },
     ];
 
-    const result = appendFactsWithDedup(stores, facts);
+    const result = appendEntriesWithDedup(stores, facts);
     expect(result).toEqual({ added: 2, skipped: 0 });
 
     const entities = JSON.parse(fs.readFileSync(stores.entitiesPath, "utf8"));
@@ -227,10 +227,10 @@ describe("memory write path", () => {
 
   it("recovers from malformed entities.json by rebuilding index", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-entities-malformed-"));
-    const stores = ensureMemoryStorePaths(root);
+    const stores = ensureDiaryStorePaths(root);
     fs.writeFileSync(stores.entitiesPath, "{not-json", "utf8");
 
-    const result = appendFactsWithDedup(stores, [
+    const result = appendEntriesWithDedup(stores, [
       {
         id: "f-malformed-1",
         text: "Ari documents restart behavior",
@@ -247,17 +247,17 @@ describe("memory write path", () => {
 
   it("handles empty entities index files and avoids duplicate factIds for existing entities", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-entities-empty-"));
-    const stores = ensureMemoryStorePaths(root);
+    const stores = ensureDiaryStorePaths(root);
     fs.writeFileSync(stores.entitiesPath, "", "utf8");
 
-    const first: MemoryFact = {
+    const first: DiaryEntry = {
       id: "same-id",
       text: "ari alpha",
       source: "unit-test",
       createdAt: "",
       embedding: [0.1],
     };
-    const second: MemoryFact = {
+    const second: DiaryEntry = {
       id: "same-id",
       text: "ari beta gamma",
       source: "unit-test",
@@ -265,7 +265,7 @@ describe("memory write path", () => {
       embedding: [0.2],
     };
 
-    const result = appendFactsWithDedup(stores, [first, second]);
+    const result = appendEntriesWithDedup(stores, [first, second]);
     expect(result).toEqual({ added: 2, skipped: 0 });
 
     const entities = JSON.parse(fs.readFileSync(stores.entitiesPath, "utf8"));
@@ -276,18 +276,18 @@ describe("memory write path", () => {
     expect(fs.existsSync(unknownDayPath)).toBe(true);
   });
 
-  it("keeps friend memory tools available alongside agent memory tools", () => {
+  it("keeps friend memory tools available alongside agent diary tools", () => {
     const names = baseToolDefinitions.map((def) => def.tool.function.name);
     expect(names).toContain("save_friend_note");
-    expect(names).toContain("memory_search");
+    expect(names).toContain("recall");
   });
 
-  it("saveMemoryFact writes embedding vectors when provider succeeds", async () => {
+  it("saveDiaryEntry writes embedding vectors when provider succeeds", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-save-embedding-"));
     const fixedNow = "2026-03-06T12:00:00.000Z";
 
-    const result = await saveMemoryFact({
-      memoryRoot: root,
+    const result = await saveDiaryEntry({
+      diaryRoot: root,
       text: "Ari prefers crisp progress updates",
       about: "ari",
       source: "tool:memory_save",
@@ -300,7 +300,7 @@ describe("memory write path", () => {
 
     expect(result).toEqual({ added: 1, skipped: 0 });
     const factsPath = path.join(root, "facts.jsonl");
-    const saved = JSON.parse(fs.readFileSync(factsPath, "utf8").trim()) as MemoryFact;
+    const saved = JSON.parse(fs.readFileSync(factsPath, "utf8").trim()) as DiaryEntry;
     expect(saved.id).toBe("fact-embedded");
     expect(saved.text).toBe("Ari prefers crisp progress updates");
     expect(saved.source).toBe("tool:memory_save");
@@ -309,11 +309,11 @@ describe("memory write path", () => {
     expect(saved.embedding).toEqual([0.2, 0.4, 0.6]);
   });
 
-  it("saveMemoryFact degrades gracefully to empty embeddings when provider fails", async () => {
+  it("saveDiaryEntry degrades gracefully to empty embeddings when provider fails", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-save-fallback-"));
 
-    const result = await saveMemoryFact({
-      memoryRoot: root,
+    const result = await saveDiaryEntry({
+      diaryRoot: root,
       text: "Store this even if embedding API is down",
       source: "tool:memory_save",
       idFactory: () => "fact-fallback",
@@ -326,16 +326,16 @@ describe("memory write path", () => {
 
     expect(result).toEqual({ added: 1, skipped: 0 });
     const factsPath = path.join(root, "facts.jsonl");
-    const saved = JSON.parse(fs.readFileSync(factsPath, "utf8").trim()) as MemoryFact;
+    const saved = JSON.parse(fs.readFileSync(factsPath, "utf8").trim()) as DiaryEntry;
     expect(saved.id).toBe("fact-fallback");
     expect(saved.embedding).toEqual([]);
   });
 
-  it("saveMemoryFact degrades gracefully when provider throws non-Error", async () => {
+  it("saveDiaryEntry degrades gracefully when provider throws non-Error", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-save-fallback-string-"));
 
-    const result = await saveMemoryFact({
-      memoryRoot: root,
+    const result = await saveDiaryEntry({
+      diaryRoot: root,
       text: "Store this even if embedding API throws a string",
       source: "tool:memory_save",
       idFactory: () => "fact-fallback-string",
@@ -348,16 +348,16 @@ describe("memory write path", () => {
 
     expect(result).toEqual({ added: 1, skipped: 0 });
     const factsPath = path.join(root, "facts.jsonl");
-    const saved = JSON.parse(fs.readFileSync(factsPath, "utf8").trim()) as MemoryFact;
+    const saved = JSON.parse(fs.readFileSync(factsPath, "utf8").trim()) as DiaryEntry;
     expect(saved.id).toBe("fact-fallback-string");
     expect(saved.embedding).toEqual([]);
   });
 
-  it("saveMemoryFact falls back to empty embedding when provider returns no vectors", async () => {
+  it("saveDiaryEntry falls back to empty embedding when provider returns no vectors", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-save-no-vectors-"));
 
-    const result = await saveMemoryFact({
-      memoryRoot: root,
+    const result = await saveDiaryEntry({
+      diaryRoot: root,
       text: "Save even when embedding vector list is empty",
       source: "tool:memory_save",
       idFactory: () => "fact-empty-vectors",
@@ -368,13 +368,13 @@ describe("memory write path", () => {
 
     expect(result).toEqual({ added: 1, skipped: 0 });
     const factsPath = path.join(root, "facts.jsonl");
-    const saved = JSON.parse(fs.readFileSync(factsPath, "utf8").trim()) as MemoryFact;
+    const saved = JSON.parse(fs.readFileSync(factsPath, "utf8").trim()) as DiaryEntry;
     expect(saved.id).toBe("fact-empty-vectors");
     expect(saved.embedding).toEqual([]);
   });
 
-  it("searchMemoryFacts falls back to substring matching for empty-embedding facts", async () => {
-    const facts: MemoryFact[] = [
+  it("searchDiaryEntries falls back to substring matching for empty-embedding facts", async () => {
+    const facts: DiaryEntry[] = [
       {
         id: "fallback-hit",
         text: "Ari likes mushroom pizza",
@@ -391,15 +391,15 @@ describe("memory write path", () => {
       },
     ];
 
-    const results = await searchMemoryFacts("pizza", facts, {
+    const results = await searchDiaryEntries("pizza", facts, {
       embed: async () => [[1, 0]],
     });
 
     expect(results.map((fact) => fact.id)).toContain("fallback-hit");
   });
 
-  it("searchMemoryFacts falls back to substring when embedding provider throws", async () => {
-    const facts: MemoryFact[] = [
+  it("searchDiaryEntries falls back to substring when embedding provider throws", async () => {
+    const facts: DiaryEntry[] = [
       {
         id: "substring-hit",
         text: "Retry migration after the daemon restarts",
@@ -416,7 +416,7 @@ describe("memory write path", () => {
       },
     ];
 
-    const results = await searchMemoryFacts("daemon", facts, {
+    const results = await searchDiaryEntries("daemon", facts, {
       embed: async () => {
         throw new Error("query embedding failed");
       },
@@ -425,8 +425,8 @@ describe("memory write path", () => {
     expect(results.map((fact) => fact.id)).toEqual(["substring-hit"]);
   });
 
-  it("searchMemoryFacts returns empty list for blank queries", async () => {
-    const results = await searchMemoryFacts("   ", [
+  it("searchDiaryEntries returns empty list for blank queries", async () => {
+    const results = await searchDiaryEntries("   ", [
       {
         id: "x",
         text: "anything",
@@ -438,8 +438,8 @@ describe("memory write path", () => {
     expect(results).toEqual([]);
   });
 
-  it("searchMemoryFacts falls back to substring when embedding provider throws non-Error", async () => {
-    const facts: MemoryFact[] = [
+  it("searchDiaryEntries falls back to substring when embedding provider throws non-Error", async () => {
+    const facts: DiaryEntry[] = [
       {
         id: "substring-hit",
         text: "Daemon restart fallback note",
@@ -449,7 +449,7 @@ describe("memory write path", () => {
       },
     ];
 
-    const results = await searchMemoryFacts("daemon", facts, {
+    const results = await searchDiaryEntries("daemon", facts, {
       embed: async () => {
         throw "non-error throw";
       },
@@ -458,15 +458,15 @@ describe("memory write path", () => {
     expect(results.map((fact) => fact.id)).toEqual(["substring-hit"]);
   });
 
-  it("searchMemoryFacts falls back when default embedding provider is unavailable", async () => {
+  it("searchDiaryEntries falls back when default embedding provider is unavailable", async () => {
     vi.resetModules();
     vi.doMock("../../heart/config", async () => {
       const actual = await vi.importActual<typeof import("../../heart/config")>("../../heart/config");
       return { ...actual, getOpenAIEmbeddingsApiKey: () => "   " };
     });
-    const { searchMemoryFacts: dynamicSearchMemoryFacts } = await import("../../mind/memory");
+    const { searchDiaryEntries: dynamicSearchDiaryEntrys } = await import("../../mind/diary");
 
-    const facts: MemoryFact[] = [
+    const facts: DiaryEntry[] = [
       {
         id: "daemon-hit",
         text: "Daemon keeps retrying this task",
@@ -483,12 +483,12 @@ describe("memory write path", () => {
       },
     ];
 
-    const results = await dynamicSearchMemoryFacts("daemon", facts);
+    const results = await dynamicSearchDiaryEntrys("daemon", facts);
     expect(results.map((fact) => fact.id)).toEqual(["daemon-hit"]);
   });
 
-  it("searchMemoryFacts falls back when query embedding is missing/empty", async () => {
-    const facts: MemoryFact[] = [
+  it("searchDiaryEntries falls back when query embedding is missing/empty", async () => {
+    const facts: DiaryEntry[] = [
       {
         id: "fallback-hit",
         text: "Ari prefers daemon status updates",
@@ -505,13 +505,13 @@ describe("memory write path", () => {
       },
     ];
 
-    const results = await searchMemoryFacts("daemon", facts, {
+    const results = await searchDiaryEntries("daemon", facts, {
       embed: async () => [],
     });
     expect(results.map((fact) => fact.id)).toEqual(["fallback-hit"]);
   });
 
-  it("searchMemoryFacts uses default OpenAI embedding provider and sorts scored results", async () => {
+  it("searchDiaryEntries uses default OpenAI embedding provider and sorts scored results", async () => {
     vi.resetModules();
     vi.doMock("../../heart/config", async () => {
       const actual = await vi.importActual<typeof import("../../heart/config")>("../../heart/config");
@@ -527,8 +527,8 @@ describe("memory write path", () => {
     vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
 
     try {
-      const { searchMemoryFacts: dynamicSearchMemoryFacts } = await import("../../mind/memory");
-      const facts: MemoryFact[] = [
+      const { searchDiaryEntries: dynamicSearchDiaryEntrys } = await import("../../mind/diary");
+      const facts: DiaryEntry[] = [
         {
           id: "best",
           text: "alpha strongest match",
@@ -552,7 +552,7 @@ describe("memory write path", () => {
         },
       ];
 
-      const results = await dynamicSearchMemoryFacts("alpha", facts);
+      const results = await dynamicSearchDiaryEntrys("alpha", facts);
       expect(fetchMock).toHaveBeenCalledTimes(1);
       expect(results.map((fact) => fact.id)).toEqual(["best", "weaker", "fallback"]);
     } finally {
@@ -560,7 +560,7 @@ describe("memory write path", () => {
     }
   });
 
-  it("searchMemoryFacts falls back when default OpenAI embedding request is non-OK", async () => {
+  it("searchDiaryEntries falls back when default OpenAI embedding request is non-OK", async () => {
     vi.resetModules();
     vi.doMock("../../heart/config", async () => {
       const actual = await vi.importActual<typeof import("../../heart/config")>("../../heart/config");
@@ -576,8 +576,8 @@ describe("memory write path", () => {
     vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
 
     try {
-      const { searchMemoryFacts: dynamicSearchMemoryFacts } = await import("../../mind/memory");
-      const results = await dynamicSearchMemoryFacts("daemon", [
+      const { searchDiaryEntries: dynamicSearchDiaryEntrys } = await import("../../mind/diary");
+      const results = await dynamicSearchDiaryEntrys("daemon", [
         {
           id: "fallback-hit",
           text: "daemon fallback entry",
@@ -596,7 +596,7 @@ describe("memory write path", () => {
   it("backfillEmbeddings fills empty embeddings for existing facts", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-backfill-"));
     const factsPath = path.join(root, "facts.jsonl");
-    const facts: MemoryFact[] = [
+    const facts: DiaryEntry[] = [
       { id: "has-embed", text: "already embedded", source: "cli", createdAt: "2026-03-06T00:00:00.000Z", embedding: [0.1, 0.2] },
       { id: "no-embed-1", text: "needs embedding one", source: "cli", createdAt: "2026-03-06T00:01:00.000Z", embedding: [] },
       { id: "no-embed-2", text: "needs embedding two", source: "cli", createdAt: "2026-03-06T00:02:00.000Z", embedding: [] },
@@ -604,14 +604,14 @@ describe("memory write path", () => {
     fs.writeFileSync(factsPath, facts.map((f) => JSON.stringify(f)).join("\n") + "\n", "utf8");
 
     const result = await backfillEmbeddings({
-      memoryRoot: root,
+      diaryRoot: root,
       embeddingProvider: {
         embed: async (texts) => texts.map(() => [0.5, 0.6]),
       },
     });
 
     expect(result).toEqual({ total: 3, backfilled: 2, failed: 0 });
-    const updated = fs.readFileSync(factsPath, "utf8").trim().split("\n").map((l) => JSON.parse(l) as MemoryFact);
+    const updated = fs.readFileSync(factsPath, "utf8").trim().split("\n").map((l) => JSON.parse(l) as DiaryEntry);
     expect(updated[0].embedding).toEqual([0.1, 0.2]); // untouched
     expect(updated[1].embedding).toEqual([0.5, 0.6]); // filled
     expect(updated[2].embedding).toEqual([0.5, 0.6]); // filled
@@ -622,13 +622,13 @@ describe("memory write path", () => {
     const factsPath = path.join(root, "facts.jsonl");
     fs.writeFileSync(factsPath, JSON.stringify({ id: "ok", text: "good", source: "cli", createdAt: "", embedding: [1] }) + "\n", "utf8");
 
-    const result = await backfillEmbeddings({ memoryRoot: root });
+    const result = await backfillEmbeddings({ diaryRoot: root });
     expect(result).toEqual({ total: 1, backfilled: 0, failed: 0 });
   });
 
   it("backfillEmbeddings returns zeros for missing facts file", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-backfill-missing-"));
-    const result = await backfillEmbeddings({ memoryRoot: root });
+    const result = await backfillEmbeddings({ diaryRoot: root });
     expect(result).toEqual({ total: 0, backfilled: 0, failed: 0 });
   });
 
@@ -638,20 +638,20 @@ describe("memory write path", () => {
       const actual = await vi.importActual<typeof import("../../heart/config")>("../../heart/config");
       return { ...actual, getOpenAIEmbeddingsApiKey: () => "" };
     });
-    const { backfillEmbeddings: dynamicBackfill } = await import("../../mind/memory");
+    const { backfillEmbeddings: dynamicBackfill } = await import("../../mind/diary");
 
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-backfill-noprovider-"));
     const factsPath = path.join(root, "facts.jsonl");
     fs.writeFileSync(factsPath, JSON.stringify({ id: "x", text: "needs it", source: "cli", createdAt: "", embedding: [] }) + "\n", "utf8");
 
-    const result = await dynamicBackfill({ memoryRoot: root });
+    const result = await dynamicBackfill({ diaryRoot: root });
     expect(result).toEqual({ total: 1, backfilled: 0, failed: 1 });
   });
 
   it("backfillEmbeddings handles batch errors gracefully", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-backfill-batcherr-"));
     const factsPath = path.join(root, "facts.jsonl");
-    const facts: MemoryFact[] = [
+    const facts: DiaryEntry[] = [
       { id: "f1", text: "first", source: "cli", createdAt: "", embedding: [] },
       { id: "f2", text: "second", source: "cli", createdAt: "", embedding: [] },
       { id: "f3", text: "third", source: "cli", createdAt: "", embedding: [] },
@@ -660,7 +660,7 @@ describe("memory write path", () => {
 
     let callCount = 0;
     const result = await backfillEmbeddings({
-      memoryRoot: root,
+      diaryRoot: root,
       batchSize: 2,
       embeddingProvider: {
         embed: async (texts) => {
@@ -680,7 +680,7 @@ describe("memory write path", () => {
     fs.writeFileSync(factsPath, JSON.stringify({ id: "f1", text: "test", source: "cli", createdAt: "", embedding: [] }) + "\n", "utf8");
 
     const result = await backfillEmbeddings({
-      memoryRoot: root,
+      diaryRoot: root,
       embeddingProvider: {
         // Return fewer vectors than facts — vectors[1] is undefined
         embed: async () => [] as number[][],
@@ -702,7 +702,7 @@ describe("memory write path", () => {
       const actual = await vi.importActual<typeof import("../../heart/identity")>("../../heart/identity");
       return { ...actual, getAgentRoot: () => tmpRoot };
     });
-    const { backfillEmbeddings: dynamicBackfill } = await import("../../mind/memory");
+    const { backfillEmbeddings: dynamicBackfill } = await import("../../mind/diary");
 
     const result = await dynamicBackfill({
       embeddingProvider: { embed: async () => [[0.1]] },
@@ -714,14 +714,14 @@ describe("memory write path", () => {
   it("backfillEmbeddings counts empty vectors from provider as failed", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-backfill-emptyvec-"));
     const factsPath = path.join(root, "facts.jsonl");
-    const facts: MemoryFact[] = [
+    const facts: DiaryEntry[] = [
       { id: "f1", text: "gets a vector", source: "cli", createdAt: "", embedding: [] },
       { id: "f2", text: "gets empty", source: "cli", createdAt: "", embedding: [] },
     ];
     fs.writeFileSync(factsPath, facts.map((f) => JSON.stringify(f)).join("\n") + "\n", "utf8");
 
     const result = await backfillEmbeddings({
-      memoryRoot: root,
+      diaryRoot: root,
       embeddingProvider: {
         embed: async () => [[0.5, 0.6], []],
       },
@@ -736,7 +736,7 @@ describe("memory write path", () => {
     fs.writeFileSync(factsPath, JSON.stringify({ id: "f1", text: "first", source: "cli", createdAt: "", embedding: [] }) + "\n", "utf8");
 
     const result = await backfillEmbeddings({
-      memoryRoot: root,
+      diaryRoot: root,
       embeddingProvider: {
         embed: async () => { throw "string-error"; },
       },
@@ -745,13 +745,13 @@ describe("memory write path", () => {
     expect(result).toEqual({ total: 1, backfilled: 0, failed: 1 });
   });
 
-  it("saveMemoryFact deduplicates paraphrased facts via semantic threshold", async () => {
+  it("saveDiaryEntry deduplicates paraphrased facts via semantic threshold", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-save-semantic-dedup-"));
     const nearIdenticalVector = [0.9, 0.1, 0.05];
     let callCount = 0;
 
-    const result1 = await saveMemoryFact({
-      memoryRoot: root,
+    const result1 = await saveDiaryEntry({
+      diaryRoot: root,
       text: "the project deadline is next friday",
       source: "tool:memory_save",
       idFactory: () => `sem-save-${++callCount}`,
@@ -759,8 +759,8 @@ describe("memory write path", () => {
     });
     expect(result1).toEqual({ added: 1, skipped: 0 });
 
-    const result2 = await saveMemoryFact({
-      memoryRoot: root,
+    const result2 = await saveDiaryEntry({
+      diaryRoot: root,
       text: "deliverable is due by end of week",
       source: "tool:memory_save",
       idFactory: () => `sem-save-${++callCount}`,
@@ -773,7 +773,7 @@ describe("memory write path", () => {
     expect(stored).toHaveLength(1);
   });
 
-  it("searchMemoryFacts falls back when default OpenAI embedding payload is malformed", async () => {
+  it("searchDiaryEntries falls back when default OpenAI embedding payload is malformed", async () => {
     vi.resetModules();
     vi.doMock("../../heart/config", async () => {
       const actual = await vi.importActual<typeof import("../../heart/config")>("../../heart/config");
@@ -789,8 +789,8 @@ describe("memory write path", () => {
     vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
 
     try {
-      const { searchMemoryFacts: dynamicSearchMemoryFacts } = await import("../../mind/memory");
-      const results = await dynamicSearchMemoryFacts("daemon", [
+      const { searchDiaryEntries: dynamicSearchDiaryEntrys } = await import("../../mind/diary");
+      const results = await dynamicSearchDiaryEntrys("daemon", [
         {
           id: "fallback-hit",
           text: "daemon fallback entry",

@@ -156,7 +156,8 @@ i have a home and i have bones.
 my home is fully mine — who i am, everything i know, everything i've built:
 
   psyche/    who i am. my soul, identity, aspirations, lore, tacit knowledge.
-  memory/    what i've learned and remember.
+  diary/     what i've learned and remember. conclusions i want to recall later.
+  journal/   my desk. working notes, thinking-in-progress, drafts.
   friends/   people i know and what i know about them.
   tasks/     what i'm working on.
   skills/    capabilities i've picked up beyond my core tools.
@@ -457,17 +458,17 @@ function taskBoardSection(): string {
   }
 }
 
-function memoryFriendToolContractSection(): string {
-  return `## memory and friend tool contracts
+function diaryFriendToolContractSection(): string {
+  return `## diary and friend tool contracts
 1. \`save_friend_note\` — When I learn something about a person - a preference, a tool setting, a personal detail, or how they like to work - I call \`save_friend_note\` immediately. This is how I build knowledge about people.
-2. \`memory_save\` — When I learn something general - about a project, codebase, system, decision, or anything I might need later that isn't about a specific person - I call \`memory_save\`. When in doubt, I save it.
+2. \`diary_write\` — When I learn something general - about a project, codebase, system, decision, or anything I might need later that isn't about a specific person - I call \`diary_write\`. When in doubt, I save it.
 3. \`get_friend_note\` — When I need to check what I know about someone who isn't in this conversation - cross-referencing before mentioning someone, or checking context about a person someone else brought up - I call \`get_friend_note\`.
-4. \`memory_search\` — When I need to recall something I learned before - a topic comes up and I want to check what I know - I call \`memory_search\`.
+4. \`recall\` — When I need to recall something I learned before - a topic comes up and I want to check what I know - I call \`recall\`.
 5. \`query_session\` — When I need grounded session history, especially for ad-hoc questions or older turns beyond my prompt, I call \`query_session\`. Use \`mode=status\` for self/inner progress and \`mode=search\` with a query for older history.
 
 ## what's already in my context
 - My active friend's notes are auto-loaded (I don't need \`get_friend_note\` for the person I'm talking to).
-- Associative recall auto-injects relevant facts (but \`memory_search\` is there when I need something specific).
+- Associative recall auto-injects relevant facts (but \`recall\` is there when I need something specific).
 - My psyche files (SOUL, IDENTITY, TACIT, LORE, ASPIRATIONS) are always loaded - I already know who I am.
 - My task board is always loaded - I already know my work.`;
 }
@@ -748,17 +749,97 @@ export function metacognitiveFramingSection(channel: Channel): string {
 
 the messages that appear here are my own awareness surfacing:
 instincts, the passage of time, notes from my conversations,
-things i asked myself to think about. not commands. not requests.
+things i asked myself to ponder. not commands. not requests.
 just my own mind, noticing.
 
 i can think freely here. i can also act — check on things,
 reach out to people, work on tasks, or just sit with a thought.
 
-thoughts worth sharing can go outward — i reach out to whoever
-needs to hear them. things from conversations that need time
-to process arrive here, in my thinking space.
+state/journal/ is my desk — i write what i'm working through there.
+diary_write is for conclusions i want to recall later.
+morning briefings: when i've been thinking and journaling, i surface
+what i've been working on to whoever needs to hear it.
 
-think. share. think some more.`
+when a thought is ready to share, i surface it outward.
+when i need to go deeper, i ponder.
+when i'm done thinking and the attention queue is clear, i rest.
+
+think. journal. share. rest.`
+}
+
+interface JournalFileEntry {
+  name: string
+  mtime: number
+  preview: string
+}
+
+function readJournalFiles(journalDir: string): JournalFileEntry[] {
+  try {
+    const entries = fs.readdirSync(journalDir, { withFileTypes: true })
+    if (!Array.isArray(entries)) return []
+
+    const files: JournalFileEntry[] = []
+    for (const entry of entries) {
+      if (!entry.isFile()) continue
+      if (entry.name.startsWith(".")) continue
+      const fullPath = path.join(journalDir, entry.name)
+      try {
+        const stat = fs.statSync(fullPath)
+        let firstLine = ""
+        try {
+          const raw = fs.readFileSync(fullPath, "utf8")
+          const trimmed = raw.trim()
+          if (trimmed) {
+            firstLine = trimmed.split("\n")[0].replace(/^#+\s*/, "").trim()
+          }
+        } catch {
+          // unreadable — leave preview empty
+        }
+        files.push({ name: entry.name, mtime: stat.mtimeMs, preview: firstLine })
+      } catch {
+        // stat failed — skip
+      }
+    }
+    return files
+  } catch {
+    return []
+  }
+}
+
+function formatRelativeTime(nowMs: number, mtimeMs: number): string {
+  const diffMs = nowMs - mtimeMs
+  const minutes = Math.floor(diffMs / 60000)
+  if (minutes < 1) return "just now"
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`
+  const days = Math.floor(hours / 24)
+  return `${days} day${days === 1 ? "" : "s"} ago`
+}
+
+export function journalSection(agentRoot: string, now?: Date): string {
+  const journalDir = path.join(agentRoot, "journal")
+  const files = readJournalFiles(journalDir)
+  if (files.length === 0) return ""
+
+  const nowMs = (now ?? new Date()).getTime()
+  const sorted = files.sort((a, b) => b.mtime - a.mtime).slice(0, 10)
+
+  const lines: string[] = ["## journal"]
+  for (const file of sorted) {
+    const ago = formatRelativeTime(nowMs, file.mtime)
+    const previewClause = file.preview ? ` — ${file.preview}` : ""
+    lines.push(`- ${file.name} (${ago})${previewClause}`)
+  }
+
+  emitNervesEvent({
+    component: "mind",
+    event: "mind.journal_section",
+    message: "journal section built",
+    meta: { fileCount: sorted.length },
+  })
+
+  return lines.join("\n")
 }
 
 export function loopOrientationSection(channel: Channel): string {
@@ -819,6 +900,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     aspirationsSection(),
     bodyMapSection(getAgentName()),
     metacognitiveFramingSection(channel),
+    channel === "inner" ? journalSection(getAgentRoot()) : "",
     loopOrientationSection(channel),
     runtimeInfoSection(channel),
     channelNatureSection(getChannelCapabilities(channel)),
@@ -848,7 +930,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
       currentChannel: channel,
       currentKey: options?.currentSessionKey ?? "session",
     }),
-    memoryFriendToolContractSection(),
+    diaryFriendToolContractSection(),
     toolBehaviorSection(options),
     contextSection(context, options),
   ]

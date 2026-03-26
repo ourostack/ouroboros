@@ -2,14 +2,14 @@ import type OpenAI from "openai"
 import * as fs from "fs"
 import * as path from "path"
 import { getOpenAIEmbeddingsApiKey } from "../heart/config"
-import { getAgentRoot } from "../heart/identity"
 import { emitNervesEvent } from "../nerves/runtime"
+import { resolveDiaryRoot } from "./diary"
 
 export interface EmbeddingProvider {
   embed(texts: string[]): Promise<number[][]>
 }
 
-export interface MemoryFactRecord {
+export interface DiaryEntryRecord {
   id: string
   text: string
   source: string
@@ -17,7 +17,7 @@ export interface MemoryFactRecord {
   embedding: number[]
 }
 
-export interface RecalledFact extends MemoryFactRecord {
+export interface RecalledFact extends DiaryEntryRecord {
   score: number
 }
 
@@ -26,9 +26,23 @@ export interface RecallQueryOptions {
   topK?: number
 }
 
+export interface JournalIndexEntry {
+  filename: string
+  embedding: number[]
+  mtime: number
+  preview: string
+}
+
+export interface RecalledJournalEntry {
+  filename: string
+  preview: string
+  score: number
+}
+
 export interface InjectAssociativeRecallOptions extends RecallQueryOptions {
   provider?: EmbeddingProvider
-  memoryRoot?: string
+  diaryRoot?: string
+  journalDir?: string
 }
 
 const DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
@@ -75,17 +89,17 @@ function createDefaultProvider(): EmbeddingProvider {
   return new OpenAIEmbeddingProvider(apiKey)
 }
 
-function readFacts(memoryRoot: string): MemoryFactRecord[] {
-  const factsPath = path.join(memoryRoot, "facts.jsonl")
+function readFacts(diaryRoot: string): DiaryEntryRecord[] {
+  const factsPath = path.join(diaryRoot, "facts.jsonl")
   if (!fs.existsSync(factsPath)) return []
   const raw = fs.readFileSync(factsPath, "utf8").trim()
   if (!raw) return []
-  const facts: MemoryFactRecord[] = []
+  const facts: DiaryEntryRecord[] = []
   for (const line of raw.split("\n")) {
     const trimmed = line.trim()
     if (!trimmed) continue
     try {
-      facts.push(JSON.parse(trimmed) as MemoryFactRecord)
+      facts.push(JSON.parse(trimmed) as DiaryEntryRecord)
     } catch {
       // Skip corrupt lines (e.g. partial write from a crash).
     }
@@ -120,7 +134,7 @@ export function cosineSimilarity(left: number[], right: number[]): number {
 
 export async function recallFactsForQuery(
   query: string,
-  facts: MemoryFactRecord[],
+  facts: DiaryEntryRecord[],
   provider: EmbeddingProvider,
   options?: RecallQueryOptions,
 ): Promise<RecalledFact[]> {
@@ -140,6 +154,45 @@ export async function recallFactsForQuery(
     .slice(0, topK)
 }
 
+function readJournalIndex(journalDir: string): JournalIndexEntry[] {
+  const indexPath = path.join(journalDir, ".index.json")
+  try {
+    const raw = fs.readFileSync(indexPath, "utf8")
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed as JournalIndexEntry[]
+  } catch {
+    return []
+  }
+}
+
+export function searchJournalIndex(
+  queryEmbedding: number[],
+  entries: JournalIndexEntry[],
+  options?: { minScore?: number; topK?: number },
+): RecalledJournalEntry[] {
+  const minScore = options?.minScore ?? DEFAULT_MIN_SCORE
+  const topK = options?.topK ?? DEFAULT_TOP_K
+
+  return entries
+    .filter((entry) => Array.isArray(entry.embedding) && entry.embedding.length > 0)
+    .map((entry) => ({
+      filename: entry.filename,
+      preview: entry.preview,
+      score: cosineSimilarity(queryEmbedding, entry.embedding),
+    }))
+    .filter((entry) => entry.score >= minScore)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, topK)
+}
+
+function resolveJournalDir(diaryRoot: string, explicitJournalDir?: string): string {
+  if (explicitJournalDir) return explicitJournalDir
+  // journal/ is a sibling of diary/ at the agent root level
+  const agentRoot = path.dirname(diaryRoot)
+  return path.join(agentRoot, "journal")
+}
+
 export async function injectAssociativeRecall(
   messages: OpenAI.ChatCompletionMessageParam[],
   options?: InjectAssociativeRecallOptions,
@@ -149,36 +202,85 @@ export async function injectAssociativeRecall(
     const query = getLatestUserText(messages)
     if (!query) return
 
-    const memoryRoot = options?.memoryRoot ?? path.join(getAgentRoot(), "psyche", "memory")
-    const facts = readFacts(memoryRoot)
-    if (facts.length === 0) return
+    const diaryRoot = options?.diaryRoot ?? resolveDiaryRoot()
+    const facts = readFacts(diaryRoot)
+    const journalDir = resolveJournalDir(diaryRoot, options?.journalDir)
+    const journalEntries = readJournalIndex(journalDir)
 
-    let recalled: RecalledFact[]
-    try {
-      const provider = options?.provider ?? createDefaultProvider()
-      recalled = await recallFactsForQuery(query, facts, provider, options)
-    } catch {
-      // Embeddings unavailable — fall back to substring matching
-      const lowerQuery = query.toLowerCase()
-      const topK = options?.topK ?? DEFAULT_TOP_K
-      recalled = facts
-        .filter((fact) => fact.text.toLowerCase().includes(lowerQuery))
-        .slice(0, topK)
-        .map((fact) => ({ ...fact, score: 1 }))
-      if (recalled.length > 0) {
-        emitNervesEvent({
-          level: "warn",
-          component: "mind",
-          event: "mind.associative_recall_fallback",
-          message: "embeddings unavailable, used substring fallback",
-          meta: { matchCount: recalled.length },
+    if (facts.length === 0 && journalEntries.length === 0) return
+
+    // Build combined result lines tagged by source
+    const resultLines: Array<{ text: string; score: number }> = []
+    let queryEmbedding: number[] | undefined
+
+    // Search diary entries
+    if (facts.length > 0) {
+      let recalled: RecalledFact[]
+      try {
+        const provider = options?.provider ?? createDefaultProvider()
+        recalled = await recallFactsForQuery(query, facts, provider, options)
+
+        // Compute query embedding for journal search while provider is available
+        if (journalEntries.length > 0) {
+          const [qe] = await provider.embed([query.trim()])
+          queryEmbedding = qe
+        }
+      } catch {
+        // Embeddings unavailable — fall back to substring matching
+        const lowerQuery = query.toLowerCase()
+        const topK = options?.topK ?? DEFAULT_TOP_K
+        recalled = facts
+          .filter((fact) => fact.text.toLowerCase().includes(lowerQuery))
+          .slice(0, topK)
+          .map((fact) => ({ ...fact, score: 1 }))
+        if (recalled.length > 0) {
+          emitNervesEvent({
+            level: "warn",
+            component: "mind",
+            event: "mind.associative_recall_fallback",
+            message: "embeddings unavailable, used substring fallback",
+            meta: { matchCount: recalled.length },
+          })
+        }
+      }
+
+      for (const fact of recalled) {
+        resultLines.push({
+          text: `[diary] ${fact.text} [score=${fact.score.toFixed(3)} source=${fact.source}]`,
+          score: fact.score,
         })
       }
     }
-    if (recalled.length === 0) return
 
-    const recallSection = recalled
-      .map((fact, index) => `${index + 1}. ${fact.text} [score=${fact.score.toFixed(3)} source=${fact.source}]`)
+    // Search journal entries (works whether diary had results or not)
+    if (journalEntries.length > 0) {
+      try {
+        if (!queryEmbedding) {
+          const provider = options?.provider ?? createDefaultProvider()
+          const [qe] = await provider.embed([query.trim()])
+          queryEmbedding = qe
+        }
+        if (queryEmbedding) {
+          const journalResults = searchJournalIndex(queryEmbedding, journalEntries, options)
+          for (const entry of journalResults) {
+            resultLines.push({
+              text: `[journal] ${entry.filename}: ${entry.preview} [score=${entry.score.toFixed(3)}]`,
+              score: entry.score,
+            })
+          }
+        }
+      } catch {
+        // Embeddings unavailable — no journal fallback
+      }
+    }
+
+    if (resultLines.length === 0) return
+
+    // Sort all results by score descending
+    resultLines.sort((left, right) => right.score - left.score)
+
+    const recallSection = resultLines
+      .map((entry, index) => `${index + 1}. ${entry.text}`)
       .join("\n")
     messages[0] = {
       role: "system",
@@ -189,7 +291,7 @@ export async function injectAssociativeRecall(
       component: "mind",
       event: "mind.associative_recall",
       message: "associative recall injected",
-      meta: { count: recalled.length },
+      meta: { count: resultLines.length },
     })
   } catch (error) {
     emitNervesEvent({

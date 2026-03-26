@@ -283,6 +283,8 @@ const TOOL_NAME_MIGRATIONS: Record<string, string> = {
   final_answer: "settle",
   no_response: "observe",
   go_inward: "descend",
+  memory_save: "diary_write",
+  memory_search: "recall",
 }
 
 export function migrateToolNames(messages: OpenAI.ChatCompletionMessageParam[]): OpenAI.ChatCompletionMessageParam[] {

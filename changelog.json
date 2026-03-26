@@ -2,6 +2,19 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.138",
+      "changes": [
+        "Memory renamed to diary: memory.ts → diary.ts, MemoryFact → DiaryEntry, memory_save → diary_write, memory_search → recall. All types, functions, events, and variables renamed throughout.",
+        "Diary path: diary/ (top-level) replaces psyche/memory/. Fallback reads from legacy path for existing bundles.",
+        "Journal workspace: journal/ directory for freeform thinking-in-progress. Agent writes with write_file, system reads for heartbeat context.",
+        "Unified recall tool: searches both diary entries and journal files. Results tagged [diary] or [journal].",
+        "Journal embeddings: file-level embeddings indexed during heartbeat via journal/.index.json sidecar.",
+        "Journal section in inner dialog system prompt: index of up to 10 most recently modified journal files with name, recency, and first-line preview.",
+        "Metacognitive framing updated: diary (record), journal (workspace), ponder/rest vocabulary, morning briefing encouragement.",
+        "Session migration: memory_save → diary_write, memory_search → recall added to migrateToolNames()."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.137",
       "changes": [
         "ouro dev auto-discovers existing repo at ~/Projects/ouroboros or prompts for clone path.",
