@@ -2,6 +2,17 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.141",
+      "changes": [
+        "Ponder tool replaces descend: thought+say required from outer sessions, parameterless from inner dialog. Creates heart obligation, enqueues pending with delegatedFrom, emits say text outward.",
+        "Ponder from inner dialog enqueues synthetic pending message (no delegatedFrom) to continue thinking across turns.",
+        "Rest tool for inner dialog: parameterless, gated by attention queue. Rejected with guidance when unsurfaced thoughts remain.",
+        "Settle removed from inner dialog tool set (replaced by rest). Outer sessions still use settle.",
+        "Session migration: descend -> ponder added to migrateToolNames(). go_inward now maps to ponder.",
+        "Ponder and rest added to CIRCUIT_BREAKER_EXEMPT and SOLE_CALL_REJECTION."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.140",
       "changes": [
         "MCP server: agents can serve as MCP peers for dev tools (Claude Code, Codex) via ouro mcp-serve --agent <name>.",

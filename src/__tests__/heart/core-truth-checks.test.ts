@@ -59,8 +59,8 @@ describe("getSettleRetryError with obligation and truth checks", () => {
     getSettleRetryError = core.getSettleRetryError
   })
 
-  const SELFHOOD_INWARD_MSG = "you're reaching for a final answer, but part of you knows this needs more thought. take it inward -- descend will let you think privately, or send_message(self) if you just want to leave yourself a note."
-  const OBLIGATION_MSG = "you're still holding something from an earlier conversation -- someone is waiting for your answer. finish the thought first, or descend to keep working on it privately."
+  const SELFHOOD_INWARD_MSG = "you're reaching for a final answer, but part of you knows this needs more thought. take it inward -- ponder will let you think privately, or send_message(self) if you just want to leave yourself a note."
+  const OBLIGATION_MSG = "you're still holding something from an earlier conversation -- someone is waiting for your answer. finish the thought first, or ponder to keep working on it privately."
 
   it("no longer rejects delegate-inward (delegation is a suggestion, not a gate)", () => {
     const result = getSettleRetryError(
@@ -69,7 +69,7 @@ describe("getSettleRetryError with obligation and truth checks", () => {
       false,
       { target: "delegate-inward", reasons: ["explicit_reflection"], outwardClosureRequired: false },
       false, // sawSendMessageSelf
-      false, // sawDescend
+      false, // sawPonder
       false, // sawQuerySession
     )
     expect(result).toBeNull()
@@ -88,14 +88,14 @@ describe("getSettleRetryError with obligation and truth checks", () => {
     expect(result).toBeNull()
   })
 
-  it("allows delegate-inward when sawDescend", () => {
+  it("allows delegate-inward when sawPonder", () => {
     const result = getSettleRetryError(
       false,
       undefined,
       false,
       { target: "delegate-inward", reasons: ["explicit_reflection"], outwardClosureRequired: false },
       false,
-      true, // sawDescend
+      true, // sawPonder
       false,
     )
     expect(result).toBeNull()
@@ -140,7 +140,7 @@ describe("getSettleRetryError with obligation and truth checks", () => {
     expect(result).toBe(OBLIGATION_MSG)
   })
 
-  it("allows pending obligation when sawDescend", () => {
+  it("allows pending obligation when sawPonder", () => {
     const innerJob = {
       status: "queued" as const,
       content: null,
@@ -158,7 +158,7 @@ describe("getSettleRetryError with obligation and truth checks", () => {
       false,
       undefined,
       false,
-      true, // sawDescend
+      true, // sawPonder
       false,
       undefined,
       innerJob,

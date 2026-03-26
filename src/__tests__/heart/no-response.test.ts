@@ -379,11 +379,11 @@ describe("observe tool in runAgent", () => {
     expect(toolResult.content).toBe("(silenced)")
   })
 
-  it("inner dialog excludes descend, send_message, and observe from tool set", async () => {
+  it("inner dialog excludes send_message, observe, and settle; includes ponder, rest, surface", async () => {
     mockCreate.mockReturnValue(
       makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_1", function: { name: "settle", arguments: '{"answer":"done"}' } },
+          { index: 0, id: "call_1", function: { name: "rest", arguments: '{}' } },
         ]),
       ])
     )
@@ -404,10 +404,11 @@ describe("observe tool in runAgent", () => {
 
     const params = mockCreate.mock.calls[0][0]
     const toolNames = params.tools.map((t: any) => t.function.name)
-    expect(toolNames).not.toContain("descend")
+    expect(toolNames).toContain("ponder")
+    expect(toolNames).toContain("rest")
     expect(toolNames).not.toContain("send_message")
     expect(toolNames).not.toContain("observe")
-    expect(toolNames).toContain("settle")
+    expect(toolNames).not.toContain("settle")
     expect(toolNames).toContain("surface")
   })
 })

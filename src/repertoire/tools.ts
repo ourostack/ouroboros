@@ -25,7 +25,7 @@ function safeGetAgentRoot(): string | undefined {
 }
 
 // Re-export types and constants used by the rest of the codebase
-export { tools, settleTool, observeTool, descendTool } from "./tools-base";
+export { tools, settleTool, observeTool, ponderTool, restTool } from "./tools-base";
 export type { ToolContext, ToolHandler, ToolDefinition } from "./tools-base";
 
 // Surface tool handler: routes content to friend's freshest session

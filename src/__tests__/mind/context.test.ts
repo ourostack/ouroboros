@@ -1066,7 +1066,7 @@ describe("migrateToolNames", () => {
     ]
     const migrated = migrateToolNames(messages)
     expect((migrated[2] as any).tool_calls[0].function.name).toBe("settle")
-    expect((migrated[4] as any).tool_calls[0].function.name).toBe("descend")
+    expect((migrated[4] as any).tool_calls[0].function.name).toBe("ponder")
     expect((migrated[6] as any).tool_calls[0].function.name).toBe("observe")
   })
 
