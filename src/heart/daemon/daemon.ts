@@ -14,6 +14,13 @@ import { startUpdateChecker, stopUpdateChecker } from "./update-checker"
 import { performStagedRestart } from "./staged-restart"
 import { execSync, spawnSync } from "child_process"
 import { drainPending } from "../../mind/pending"
+import {
+  handleAgentAsk, handleAgentCatchup, handleAgentCheckGuidance,
+  handleAgentCheckScope, handleAgentDelegate, handleAgentGetContext,
+  handleAgentGetTask, handleAgentReportBlocker, handleAgentReportComplete,
+  handleAgentReportProgress, handleAgentRequestDecision, handleAgentSearchMemory,
+  handleAgentStatus,
+} from "./agent-service"
 import { getAlwaysOnSenseNames } from "../../mind/friends/channel"
 import { getSharedMcpManager, shutdownSharedMcpManager } from "../../repertoire/mcp-manager"
 
@@ -158,6 +165,19 @@ export type DaemonCommand =
   | { kind: "agent.start"; agent: string }
   | { kind: "agent.stop"; agent: string }
   | { kind: "agent.restart"; agent: string }
+  | { kind: "agent.ask"; agent: string; friendId: string; question?: string; [key: string]: unknown }
+  | { kind: "agent.status"; agent: string; friendId: string; [key: string]: unknown }
+  | { kind: "agent.catchup"; agent: string; friendId: string; [key: string]: unknown }
+  | { kind: "agent.delegate"; agent: string; friendId: string; task?: string; context?: string; [key: string]: unknown }
+  | { kind: "agent.getContext"; agent: string; friendId: string; [key: string]: unknown }
+  | { kind: "agent.searchMemory"; agent: string; friendId: string; query?: string; [key: string]: unknown }
+  | { kind: "agent.getTask"; agent: string; friendId: string; [key: string]: unknown }
+  | { kind: "agent.checkScope"; agent: string; friendId: string; item?: string; [key: string]: unknown }
+  | { kind: "agent.requestDecision"; agent: string; friendId: string; topic?: string; options?: string[]; [key: string]: unknown }
+  | { kind: "agent.checkGuidance"; agent: string; friendId: string; topic?: string; [key: string]: unknown }
+  | { kind: "agent.reportProgress"; agent: string; friendId: string; summary?: string; [key: string]: unknown }
+  | { kind: "agent.reportBlocker"; agent: string; friendId: string; blocker?: string; [key: string]: unknown }
+  | { kind: "agent.reportComplete"; agent: string; friendId: string; summary?: string; [key: string]: unknown }
   | { kind: "cron.list" }
   | { kind: "cron.trigger"; jobId: string }
   | { kind: "inner.wake"; agent: string }
@@ -644,6 +664,32 @@ export class OuroDaemon {
       case "agent.restart":
         await this.processManager.restartAgent?.(command.agent)
         return { ok: true, message: `restarted ${command.agent}` }
+      case "agent.ask":
+        return handleAgentAsk(command)
+      case "agent.status":
+        return handleAgentStatus(command)
+      case "agent.catchup":
+        return handleAgentCatchup(command)
+      case "agent.delegate":
+        return handleAgentDelegate(command)
+      case "agent.getContext":
+        return handleAgentGetContext(command)
+      case "agent.searchMemory":
+        return handleAgentSearchMemory(command)
+      case "agent.getTask":
+        return handleAgentGetTask(command)
+      case "agent.checkScope":
+        return handleAgentCheckScope(command)
+      case "agent.requestDecision":
+        return handleAgentRequestDecision(command)
+      case "agent.checkGuidance":
+        return handleAgentCheckGuidance(command)
+      case "agent.reportProgress":
+        return handleAgentReportProgress(command)
+      case "agent.reportBlocker":
+        return handleAgentReportBlocker(command)
+      case "agent.reportComplete":
+        return handleAgentReportComplete(command)
       case "cron.list": {
         const jobs = this.scheduler.listJobs()
         const summary = jobs.length === 0

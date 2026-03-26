@@ -2,6 +2,18 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.140",
+      "changes": [
+        "MCP server: agents can serve as MCP peers for dev tools (Claude Code, Codex) via ouro mcp-serve --agent <name>.",
+        "13 MCP tools: ask, status, catchup, delegate, get_context, search_memory, get_task, check_scope, request_decision, check_guidance, report_progress, report_blocker, report_complete.",
+        "Standalone mode: MCP shim calls agent-service directly, no daemon dependency for read-only ops.",
+        "Auto-detect framing: supports both Content-Length (Claude Code) and newline-delimited JSON (Codex).",
+        "Harness-level skills: 3-tier fallback (agent > protocol > harness), configure-dev-tools skill ships with npm package.",
+        "Codex spawner refactor: --ephemeral, --json, -c MCP injection, JSONL event parsing replaces magic strings.",
+        "Prompt awareness: body map lists ouro mcp-serve, runtime info mentions MCP serve capability."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.139",
       "changes": [
         "Daemon-internal heartbeat timer: self-correcting setTimeout loop reads cadence from heartbeat task file, computes delay from lastCompletedAt, fires IPC {type: heartbeat}. One timer per managed agent.",

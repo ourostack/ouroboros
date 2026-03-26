@@ -93,6 +93,7 @@ export type OuroCliCommand =
   | { kind: "attention.list"; agent?: string }
   | { kind: "attention.show"; id: string; agent?: string }
   | { kind: "attention.history"; agent?: string }
+  | { kind: "mcp-serve"; agent: string; friendId?: string }
 
 export interface OuroCliDeps {
   socketPath: string
@@ -1040,6 +1041,19 @@ function parseMcpCommand(args: string[]): OuroCliCommand {
   throw new Error(`Usage\n${usage()}`)
 }
 
+function parseMcpServeCommand(args: string[]): OuroCliCommand & { socketOverride?: string } {
+  let agent: string | undefined
+  let friendId: string | undefined
+  let socketOverride: string | undefined
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--agent" && args[i + 1]) { agent = args[++i]; continue }
+    if (args[i] === "--friend" && args[i + 1]) { friendId = args[++i]; continue }
+    if (args[i] === "--socket" && args[i + 1]) { socketOverride = args[++i]; continue }
+  }
+  if (!agent) throw new Error("mcp-serve requires --agent <name>")
+  return { kind: "mcp-serve", agent, ...(friendId ? { friendId } : {}), ...(socketOverride ? { socketOverride } : {}) }
+}
+
 export function parseOuroCommand(args: string[]): OuroCliCommand {
   const [head, second] = args
   if (!head) return { kind: "daemon.up" }
@@ -1097,6 +1111,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "msg") return parseMessageCommand(args.slice(1))
   if (head === "poke") return parsePokeCommand(args.slice(1))
   if (head === "link") return parseLinkCommand(args.slice(1))
+  if (head === "mcp-serve") return parseMcpServeCommand(args.slice(1))
 
   throw new Error(`Unknown command '${args.join(" ")}'.\n${usage()}`)
 }
@@ -1617,7 +1632,8 @@ type ConfigModelsCliCommand = Extract<OuroCliCommand, { kind: "config.models" }>
 type RollbackCliCommand = Extract<OuroCliCommand, { kind: "rollback" }>
 type VersionsCliCommand = Extract<OuroCliCommand, { kind: "versions" }>
 type AttentionCliCommand = Extract<OuroCliCommand, { kind: "attention.list" } | { kind: "attention.show" } | { kind: "attention.history" }>
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand>): DaemonCommand {
+type McpServeCliCommand = Extract<OuroCliCommand, { kind: "mcp-serve" }>
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | McpServeCliCommand>): DaemonCommand {
   return command
 }
 
@@ -2380,6 +2396,37 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     deps.tailLogs()
     return ""
   }
+
+  /* v8 ignore start — mcp-serve block binds to process.stdin/stdout; tested via mcp-server unit tests */
+  // ── mcp-serve: start MCP server in-process on stdin/stdout ──
+  if (command.kind === "mcp-serve") {
+    const { createMcpServer } = await import("./mcp-server")
+    const friendId = command.friendId ?? `local-${os.userInfo().username}`
+    const mcpSocketPath = (command as { socketOverride?: string }).socketOverride ?? deps.socketPath
+    const server = createMcpServer({
+      agent: command.agent,
+      friendId,
+      socketPath: mcpSocketPath,
+      stdin: process.stdin,
+      stdout: process.stdout,
+    })
+    server.start()
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.mcp_serve_started",
+      message: "MCP server started via CLI",
+      meta: { agent: command.agent, friendId },
+    })
+    // Keep process alive until stdin closes
+    await new Promise<void>((resolve) => {
+      process.stdin.on("end", () => {
+        server.stop()
+        resolve()
+      })
+    })
+    return ""
+  }
+  /* v8 ignore stop */
 
   // ── mcp subcommands (routed through daemon socket) ──
   if (command.kind === "mcp.list" || command.kind === "mcp.call") {
