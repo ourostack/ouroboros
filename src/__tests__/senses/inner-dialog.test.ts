@@ -1267,7 +1267,7 @@ describe("inner dialog runtime", () => {
 
     const input = mockHandleInboundTurn.mock.calls[0][0]
     const bootstrap = String(input.messages[0].content)
-    expect(bootstrap).toContain("distill anything valuable into your memory system and remove these files")
+    expect(bootstrap).toContain("distill anything valuable into my diary and remove these files")
     expect(bootstrap).toContain("teams-app/manifest.json")
   })
 

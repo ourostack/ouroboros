@@ -107,7 +107,7 @@ export function buildNonCanonicalCleanupNudge(nonCanonicalPaths: string[]): stri
   }
   return [
     "## canonical cleanup nudge",
-    "I found non-canonical files in my bundle. I should distill anything valuable into your memory system and remove these files.",
+    "I found non-canonical files in my bundle. I should distill anything valuable into my diary and remove these files.",
     ...listed,
   ].join("\n")
 }

@@ -156,12 +156,12 @@ function writeFriendImprint(bundleRoot: string, humanName: string, now: Date): v
   fs.writeFileSync(path.join(friendsDir, `${id}.json`), `${JSON.stringify(record, null, 2)}\n`, "utf-8")
 }
 
-function writeMemoryScaffold(bundleRoot: string): void {
-  const memoryRoot = path.join(bundleRoot, "psyche", "memory")
-  fs.mkdirSync(path.join(memoryRoot, "daily"), { recursive: true })
-  fs.mkdirSync(path.join(memoryRoot, "archive"), { recursive: true })
-  fs.writeFileSync(path.join(memoryRoot, "facts.jsonl"), "", "utf-8")
-  fs.writeFileSync(path.join(memoryRoot, "entities.json"), "{}\n", "utf-8")
+function writeDiaryScaffold(bundleRoot: string): void {
+  const diaryRoot = path.join(bundleRoot, "diary")
+  fs.mkdirSync(path.join(diaryRoot, "daily"), { recursive: true })
+  fs.mkdirSync(path.join(diaryRoot, "archive"), { recursive: true })
+  fs.writeFileSync(path.join(diaryRoot, "facts.jsonl"), "", "utf-8")
+  fs.writeFileSync(path.join(diaryRoot, "entities.json"), "{}\n", "utf-8")
 }
 
 function writeHatchlingAgentConfig(bundleRoot: string, input: HatchFlowInput): void {
@@ -205,7 +205,7 @@ export async function runHatchFlow(input: HatchFlowInput, deps: HatchFlowDeps = 
 
   writeReadme(bundleRoot, "Root of this agent bundle.")
   writeReadme(path.join(bundleRoot, "psyche"), "Identity and behavior files.")
-  writeReadme(path.join(bundleRoot, "psyche", "memory"), "Persistent memory store.")
+  writeReadme(path.join(bundleRoot, "diary"), "Persistent diary — things I've learned and remember.")
   writeReadme(path.join(bundleRoot, "friends"), "Known friend records.")
   writeReadme(path.join(bundleRoot, "tasks"), "Task files.")
   writeReadme(path.join(bundleRoot, "tasks", "habits"), "Recurring tasks.")
@@ -216,7 +216,7 @@ export async function runHatchFlow(input: HatchFlowInput, deps: HatchFlowDeps = 
   writeReadme(path.join(bundleRoot, "senses", "teams"), "Teams sense config.")
 
   writeHatchlingAgentConfig(bundleRoot, input)
-  writeMemoryScaffold(bundleRoot)
+  writeDiaryScaffold(bundleRoot)
   writeFriendImprint(bundleRoot, input.humanName, now)
   writeHeartbeatTask(bundleRoot, now)
 

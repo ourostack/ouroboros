@@ -391,8 +391,8 @@ describe("execTool", () => {
     vi.unstubAllGlobals()
   })
 
-  // ── memory_search ──
-  it("memory_search returns relevant memory facts for a query", async () => {
+  // ── recall (was memory_search) ──
+  it("recall returns relevant diary entries for a query", async () => {
     vi.mocked(fs.existsSync).mockReturnValue(true)
     vi.mocked(fs.readFileSync).mockReturnValue(
       [
@@ -413,39 +413,39 @@ describe("execTool", () => {
       ].join("\n"),
     )
 
-    const result = await execTool("memory_search", { query: "pizza" })
+    const result = await execTool("recall", { query: "pizza" })
     expect(result).toContain("Ari likes mushroom pizza")
     expect(result).not.toContain("strict TypeScript")
   })
 
-  it("memory_search returns a query-required error when query is empty", async () => {
-    const result = await execTool("memory_search", { query: "   " })
+  it("recall returns a query-required error when query is empty", async () => {
+    const result = await execTool("recall", { query: "   " })
     expect(result).toContain("query is required")
   })
 
-  it("memory_search returns a query-required error when query is omitted", async () => {
-    const result = await execTool("memory_search", {})
+  it("recall returns a query-required error when query is omitted", async () => {
+    const result = await execTool("recall", {})
     expect(result).toContain("query is required")
   })
 
-  it("memory_search returns error text when reading memory facts fails", async () => {
+  it("recall returns error text when reading diary entries fails", async () => {
     vi.mocked(fs.existsSync).mockReturnValue(true)
     vi.mocked(fs.readFileSync).mockImplementation(() => {
       throw new Error("disk read failed")
     })
 
-    const result = await execTool("memory_search", { query: "pizza" })
+    const result = await execTool("recall", { query: "pizza" })
     expect(result).toContain("error:")
     expect(result).toContain("disk read failed")
   })
 
-  it("memory_search stringifies non-Error read failures", async () => {
+  it("recall stringifies non-Error read failures", async () => {
     vi.mocked(fs.existsSync).mockReturnValue(true)
     vi.mocked(fs.readFileSync).mockImplementation(() => {
       throw "disk failed as string"
     })
 
-    const result = await execTool("memory_search", { query: "pizza" })
+    const result = await execTool("recall", { query: "pizza" })
     expect(result).toContain("error:")
     expect(result).toContain("disk failed as string")
   })
@@ -581,17 +581,17 @@ describe("summarizeArgs", () => {
     expect(summarizeArgs("web_search", {})).toBe("")
   })
 
-  it("returns truncated query for memory_search", () => {
+  it("returns truncated query for recall", () => {
     const query = "a".repeat(70)
-    expect(summarizeArgs("memory_search", { query })).toBe("query=" + "a".repeat(60) + "...")
+    expect(summarizeArgs("recall", { query })).toBe("query=" + "a".repeat(60) + "...")
   })
 
-  it("returns empty string for memory_search with no query", () => {
-    expect(summarizeArgs("memory_search", {})).toBe("")
+  it("returns empty string for recall with no query", () => {
+    expect(summarizeArgs("recall", {})).toBe("")
   })
 
-  it("returns text/about for memory_save summaries", () => {
-    expect(summarizeArgs("memory_save", { text: "remember this", about: "ari" })).toBe("text=remember this about=ari")
+  it("returns entry/about for diary_write summaries", () => {
+    expect(summarizeArgs("diary_write", { entry: "remember this", about: "ari" })).toBe("entry=remember this about=ari")
   })
 
   it("returns friendId for get_friend_note summaries", () => {
