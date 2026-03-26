@@ -2,6 +2,16 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.139",
+      "changes": [
+        "Daemon-internal heartbeat timer: self-correcting setTimeout loop reads cadence from heartbeat task file, computes delay from lastCompletedAt, fires IPC {type: heartbeat}. One timer per managed agent.",
+        "Heartbeat fires immediately when agent is overdue (elapsed > cadence) or has never run (no runtime state).",
+        "Contextual heartbeat message: journal index (up to 10 files with recency and preview), elapsed time since last turn, pending attention count, journal entries since last surface, stale obligation alerts (>30 min).",
+        "Bare instinct prompt now cold-start fallback only; resumed heartbeat sessions get contextual message.",
+        "Journal embedding indexing piggybacked during heartbeat turns (best-effort, fire-and-forget)."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.138",
       "changes": [
         "Memory renamed to diary: memory.ts → diary.ts, MemoryFact → DiaryEntry, memory_save → diary_write, memory_search → recall. All types, functions, events, and variables renamed throughout.",

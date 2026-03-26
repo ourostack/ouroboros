@@ -767,13 +767,13 @@ when i'm done thinking and the attention queue is clear, i rest.
 think. journal. share. rest.`
 }
 
-interface JournalFileEntry {
+export interface JournalFileEntry {
   name: string
   mtime: number
   preview: string
 }
 
-function readJournalFiles(journalDir: string): JournalFileEntry[] {
+export function readJournalFiles(journalDir: string): JournalFileEntry[] {
   try {
     const entries = fs.readdirSync(journalDir, { withFileTypes: true })
     if (!Array.isArray(entries)) return []

@@ -10,8 +10,9 @@ import { TaskDrivenScheduler } from "./task-scheduler"
 import { configureDaemonRuntimeLogger } from "./runtime-logging"
 import { DaemonSenseManager } from "./sense-manager"
 import { listEnabledBundleAgents } from "./agent-discovery"
-import { getRepoRoot } from "../identity"
+import { getRepoRoot, getAgentBundlesRoot } from "../identity"
 import { detectRuntimeMode } from "./runtime-mode"
+import { HeartbeatTimer } from "./heartbeat-timer"
 
 function parseSocketPath(argv: string[]): string {
   const socketIndex = argv.indexOf("--socket")
@@ -93,7 +94,28 @@ const daemon = new OuroDaemon({
   mode,
 })
 
-void daemon.start().catch(async () => {
+const heartbeatTimers: HeartbeatTimer[] = []
+
+/* v8 ignore start -- heartbeat wiring: lambdas delegate to processManager/fs; tested via HeartbeatTimer unit tests @preserve */
+void daemon.start().then(() => {
+  const bundlesRoot = getAgentBundlesRoot()
+  for (const agent of managedAgents) {
+    const bundleRoot = path.join(bundlesRoot, `${agent}.ouro`)
+    const timer = new HeartbeatTimer({
+      agent,
+      sendToAgent: (a, msg) => processManager.sendToAgent(a, msg),
+      deps: {
+        readFileSync: (p, enc) => fs.readFileSync(p, enc as BufferEncoding),
+        readdirSync: (p) => fs.readdirSync(p).map((e) => (typeof e === "string" ? e : e)),
+        heartbeatTaskDir: path.join(bundleRoot, "tasks", "habits"),
+        runtimeStatePath: path.join(bundleRoot, "state", "sessions", "self", "inner", "runtime.json"),
+      },
+    })
+    timer.start()
+    heartbeatTimers.push(timer)
+  }
+}).catch(async () => {
+/* v8 ignore stop */
   emitNervesEvent({
     level: "error",
     component: "daemon",
@@ -106,9 +128,11 @@ void daemon.start().catch(async () => {
 })
 
 process.on("SIGINT", () => {
+  for (const timer of heartbeatTimers) timer.stop()
   void daemon.stop().then(() => process.exit(0))
 })
 
 process.on("SIGTERM", () => {
+  for (const timer of heartbeatTimers) timer.stop()
   void daemon.stop().then(() => process.exit(0))
 })
