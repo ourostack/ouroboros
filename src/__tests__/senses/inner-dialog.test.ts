@@ -25,9 +25,14 @@ const mockFindFreshestFriendSession = vi.fn()
 const mockGetBridge = vi.fn()
 const mockSendProactiveBlueBubblesMessageToSession = vi.fn()
 const mockAdvanceObligation = vi.fn()
+const mockListActiveObligations = vi.fn(() => [])
+const mockBuildContextualHeartbeat = vi.fn(() => "contextual heartbeat message")
+const mockIndexJournalFiles = vi.fn(async () => 0)
+const mockReadJournalFiles = vi.fn(() => [])
 
 vi.mock("../../mind/prompt", () => ({
   buildSystem: (...args: any[]) => mockBuildSystem(...args),
+  readJournalFiles: (...args: any[]) => mockReadJournalFiles(...args),
 }))
 
 vi.mock("../../heart/core", () => ({
@@ -95,6 +100,15 @@ vi.mock("../../senses/bluebubbles", () => ({
 
 vi.mock("../../mind/obligations", () => ({
   advanceObligation: (...args: any[]) => mockAdvanceObligation(...args),
+  listActiveObligations: (...args: any[]) => mockListActiveObligations(...args),
+}))
+
+vi.mock("../../senses/contextual-heartbeat", () => ({
+  buildContextualHeartbeat: (...args: any[]) => mockBuildContextualHeartbeat(...args),
+}))
+
+vi.mock("../../mind/journal-index", () => ({
+  indexJournalFiles: (...args: any[]) => mockIndexJournalFiles(...args),
 }))
 
 import {
@@ -161,6 +175,10 @@ describe("inner dialog runtime", () => {
       reason: "unsupported-channel",
     })
     mockAdvanceObligation.mockReset().mockReturnValue(null)
+    mockListActiveObligations.mockReset().mockReturnValue([])
+    mockBuildContextualHeartbeat.mockReset().mockReturnValue("contextual heartbeat message")
+    mockIndexJournalFiles.mockReset().mockResolvedValue(0)
+    mockReadJournalFiles.mockReset().mockReturnValue([])
 
     // Default handleInboundTurn: simulate pipeline running agent and returning result.
     mockHandleInboundTurn.mockReset().mockImplementation(async (input: any) => {
@@ -1069,7 +1087,7 @@ describe("inner dialog runtime", () => {
     expect(content).toContain("what needs my attention?")
   })
 
-  it("passes instinct user message as pipeline input.messages on resumed session", async () => {
+  it("passes instinct user message as pipeline input.messages on resumed session with reason instinct", async () => {
     mockLoadSession.mockReturnValue({
       messages: [
         { role: "system", content: "system prompt" },
@@ -1078,7 +1096,7 @@ describe("inner dialog runtime", () => {
     })
 
     await runInnerDialogTurn({
-      reason: "heartbeat",
+      reason: "instinct",
       instincts: [{ id: "backlog", prompt: "Instinct: review pending tasks.", enabled: true }],
       now: () => new Date("2026-03-06T12:05:00.000Z"),
     })
@@ -1092,7 +1110,7 @@ describe("inner dialog runtime", () => {
     expect(content).toContain("last i remember: I will rest until heartbeat.")
   })
 
-  it("includes checkpoint context in instinct message on resumed session", async () => {
+  it("includes checkpoint context in instinct message on resumed session with reason instinct", async () => {
     mockLoadSession.mockReturnValue({
       messages: [
         { role: "system", content: "system prompt" },
@@ -1104,7 +1122,7 @@ describe("inner dialog runtime", () => {
     })
 
     await runInnerDialogTurn({
-      reason: "heartbeat",
+      reason: "instinct",
       instincts: [{ id: "resume", prompt: "what was i working on?", enabled: true }],
       now: () => new Date("2026-03-06T12:06:00.000Z"),
     })
@@ -1114,6 +1132,26 @@ describe("inner dialog runtime", () => {
     expect(content).toContain("what was i working on?")
     expect(content).toContain("last i remember:")
     expect(content).toContain("Unit 2b editing src/repertoire/tools.ts")
+  })
+
+  it("uses contextual heartbeat builder on resumed session with reason heartbeat", async () => {
+    mockLoadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "assistant", content: "ready for next cycle" },
+      ],
+    })
+    mockBuildContextualHeartbeat.mockReturnValueOnce("contextual heartbeat with journal context")
+
+    await runInnerDialogTurn({
+      reason: "heartbeat",
+      now: () => new Date("2026-03-06T12:05:00.000Z"),
+    })
+
+    expect(mockBuildContextualHeartbeat).toHaveBeenCalledTimes(1)
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    const content = String(input.messages[0].content)
+    expect(content).toBe("contextual heartbeat with journal context")
   })
 
   // ── TaskId passthrough tests ──────────────────────────────────────
@@ -1278,13 +1316,15 @@ describe("inner dialog runtime", () => {
         { role: "assistant", content: "ready for next cycle" },
       ],
     })
+    mockBuildContextualHeartbeat.mockReturnValueOnce("contextual heartbeat default")
 
     await runInnerDialogTurn()
 
+    // Default reason is "heartbeat", so on resumed session uses contextual heartbeat
+    expect(mockBuildContextualHeartbeat).toHaveBeenCalledTimes(1)
     const input = mockHandleInboundTurn.mock.calls[0][0]
     const content = String(input.messages[0].content)
-    expect(content).toContain("stirring")
-    expect(content).toContain("last i remember: ready for next cycle")
+    expect(content).toBe("contextual heartbeat default")
   })
 
   // ── Return value propagation ──────────────────────────────────────

@@ -5,7 +5,7 @@ import { sessionPath } from "../heart/config"
 import { runAgent, type ChannelCallbacks, type CompletionMetadata } from "../heart/core"
 import { getAgentName, getAgentRoot } from "../heart/identity"
 import { loadSession, postTurn, type UsageData } from "../mind/context"
-import { buildSystem } from "../mind/prompt"
+import { buildSystem, readJournalFiles } from "../mind/prompt"
 import { getSharedMcpManager } from "../repertoire/mcp-manager"
 import { findNonCanonicalBundlePaths } from "../mind/bundle-manifest"
 import {
@@ -31,6 +31,8 @@ import { createBridgeManager } from "../heart/bridges/manager"
 import { findFreshestFriendSession, listSessionActivity, type SessionActivityRecord } from "../heart/session-activity"
 import { sendProactiveBlueBubblesMessageToSession } from "./bluebubbles"
 import { findPendingObligationForOrigin, fulfillObligation } from "../heart/obligations"
+import { buildContextualHeartbeat } from "./contextual-heartbeat"
+import { indexJournalFiles } from "../mind/journal-index"
 
 export interface InnerDialogInstinct {
   id: string
@@ -526,6 +528,50 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
     if (options?.taskId) {
       const taskContent = readTaskFile(getAgentRoot(), options.taskId)
       userContent = buildTaskTriggeredMessage(options.taskId, taskContent, state.checkpoint)
+    } else if (reason === "heartbeat") {
+      const agentRoot = getAgentRoot()
+      const journalDir = path.join(agentRoot, "journal")
+      const runtimeStatePath = innerDialogRuntimeStatePath(sessionFilePath)
+
+      // Read lastCompletedAt from current runtime state
+      let lastCompletedAt: string | undefined
+      try {
+        const raw = fs.readFileSync(runtimeStatePath, "utf-8")
+        const runtimeState = JSON.parse(raw) as { lastCompletedAt?: string }
+        lastCompletedAt = typeof runtimeState.lastCompletedAt === "string" ? runtimeState.lastCompletedAt : undefined
+      } catch {
+        // no runtime state — will get cold start fallback
+      }
+
+      // Gather pending obligations for display
+      const obligations = listActiveObligations(agentName)
+      const nowMs = now().getTime()
+      const pendingObligations = obligations.map((o) => ({
+        id: o.id,
+        content: o.delegatedContent,
+        friendName: o.origin.friendId,
+        timestamp: o.createdAt,
+        staleness: nowMs - o.createdAt,
+      }))
+
+      userContent = buildContextualHeartbeat({
+        journalDir,
+        lastCompletedAt,
+        pendingObligations,
+        lastSurfaceAt: undefined, // TODO: wire when surface tracking is added
+        checkpoint: state.checkpoint,
+        now,
+        readJournalDir: () => readJournalFiles(journalDir),
+      })
+
+      // Piggyback journal embedding indexing (best-effort, fire-and-forget)
+      /* v8 ignore start -- journal indexing piggyback: embedding provider may not be available; tested via journal-index unit tests @preserve */
+      void indexJournalFiles(journalDir, path.join(journalDir, ".index.json"), {
+        embed: async () => [],
+      }).catch(() => {
+        // swallowed: indexing failure must never block heartbeat
+      })
+      /* v8 ignore stop */
     } else {
       userContent = buildInstinctUserMessage(instincts, reason, state)
     }

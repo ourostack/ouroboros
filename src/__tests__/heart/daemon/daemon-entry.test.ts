@@ -11,6 +11,13 @@ vi.mock("../../../heart/daemon/agent-discovery", () => ({
   listEnabledBundleAgents: listEnabledBundleAgentsMock,
 }))
 
+vi.mock("../../../heart/daemon/heartbeat-timer", () => ({
+  HeartbeatTimer: class MockHeartbeatTimer {
+    start = vi.fn()
+    stop = vi.fn()
+  },
+}))
+
 describe("daemon entrypoint", () => {
   afterEach(() => {
     listEnabledBundleAgentsMock.mockReset()
