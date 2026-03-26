@@ -1,6 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
-import { getAgentRoot } from "../heart/identity";
+import { getAgentRoot, getRepoRoot } from "../heart/identity";
 import { emitNervesEvent } from "../nerves/runtime";
 
 // Skills live in {agentRoot}/skills/ directory
@@ -11,6 +11,11 @@ export function getSkillsDir(): string {
 // Protocol mirror files live in {agentRoot}/skills/protocols/.
 function getProtocolMirrorDir(): string {
   return path.join(getSkillsDir(), "protocols");
+}
+
+// Harness-level skills live in {repoRoot}/skills/ directory.
+export function getHarnessSkillsDir(): string {
+  return path.join(getRepoRoot(), "skills");
 }
 
 function listMarkdownBasenames(dir: string): string[] {
@@ -34,8 +39,11 @@ export function listSkills(): string[] {
   });
   const baseSkills = listMarkdownBasenames(getSkillsDir());
   const protocolMirrors = listMarkdownBasenames(getProtocolMirrorDir());
+  const harnessSkills = listMarkdownBasenames(getHarnessSkillsDir());
 
-  const skills = [...new Set([...baseSkills, ...protocolMirrors])].sort();
+  // Agent skills (base + protocol) come first; harness skills are fallback.
+  // Set deduplicates by name — agent overrides harness.
+  const skills = [...new Set([...baseSkills, ...protocolMirrors, ...harnessSkills])].sort();
   emitNervesEvent({
     event: "repertoire.load_end",
     component: "repertoire",
@@ -54,6 +62,7 @@ export function loadSkill(skillName: string): string {
   });
   const directSkillPath = path.join(getSkillsDir(), `${skillName}.md`);
   const protocolMirrorPath = path.join(getProtocolMirrorDir(), `${skillName}.md`);
+  const harnessSkillPath = path.join(getHarnessSkillsDir(), `${skillName}.md`);
 
   let resolvedPath: string | null = null;
 
@@ -65,6 +74,10 @@ export function loadSkill(skillName: string): string {
   else if (fs.existsSync(protocolMirrorPath)) {
     resolvedPath = protocolMirrorPath;
   }
+  // 3) Harness-level skill (ships with npm package).
+  else if (fs.existsSync(harnessSkillPath)) {
+    resolvedPath = harnessSkillPath;
+  }
 
   if (!resolvedPath) {
     emitNervesEvent({
@@ -75,13 +88,14 @@ export function loadSkill(skillName: string): string {
       meta: {
         operation: "loadSkill",
         skill: skillName,
-        checkedPaths: [directSkillPath, protocolMirrorPath],
+        checkedPaths: [directSkillPath, protocolMirrorPath, harnessSkillPath],
       },
     });
     throw new Error(
       `skill '${skillName}' not found in:\n` +
       `- ${directSkillPath}\n` +
-      `- ${protocolMirrorPath}`
+      `- ${protocolMirrorPath}\n` +
+      `- ${harnessSkillPath}`
     );
   }
 

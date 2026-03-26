@@ -189,6 +189,7 @@ my bones give me the \`ouro\` cli. always pass \`--agent ${agentName}\`:
   ouro auth switch --agent ${agentName} --provider <provider>
   ouro mcp list --agent ${agentName}
   ouro mcp call --agent ${agentName} <server> <tool> --args '{...}'
+  ouro mcp-serve --agent ${agentName}
   ouro versions --agent ${agentName}
   ouro rollback --agent ${agentName} [<version>]
   ouro --help
@@ -272,6 +273,7 @@ export function runtimeInfoSection(channel: Channel): string {
   lines.push(`current sense: ${channel}`);
   lines.push(`process type: ${processTypeLabel(channel)}`);
   lines.push(`daemon: ${daemonStatus()}`);
+  lines.push(`mcp serve: i can expose my tools to dev tools via \`ouro mcp-serve\`. see the configure-dev-tools skill for setup.`);
 
   if (channel === "cli") {
     lines.push("i introduce myself on boot with a fun random greeting.");

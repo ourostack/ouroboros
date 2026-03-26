@@ -23,7 +23,7 @@ export interface SpawnCodingDeps {
   baseEnv?: NodeJS.ProcessEnv
 }
 
-function buildCommandArgs(runner: CodingRunner, workdir: string): { command: string; args: string[] } {
+function buildCommandArgs(runner: CodingRunner, workdir: string, parentAgent?: string): { command: string; args: string[] } {
   if (runner === "claude") {
     return {
       command: "claude",
@@ -40,9 +40,27 @@ function buildCommandArgs(runner: CodingRunner, workdir: string): { command: str
     }
   }
 
+  const mcpConfig = JSON.stringify({
+    mcp_servers: {
+      ouro: {
+        command: "ouro",
+        args: ["mcp-serve", "--agent", parentAgent ?? "unknown"],
+      },
+    },
+  })
+
   return {
     command: "codex",
-    args: ["exec", "--skip-git-repo-check", "--cd", workdir],
+    args: [
+      "exec",
+      "--skip-git-repo-check",
+      "--cd",
+      workdir,
+      "--ephemeral",
+      "--json",
+      "-c",
+      mcpConfig,
+    ],
   }
 }
 
@@ -109,7 +127,7 @@ export function spawnCodingProcess(request: CodingSessionRequest, deps: SpawnCod
   const baseEnv = deps.baseEnv ?? process.env
 
   const prompt = buildPrompt(request, { existsSync, readFileSync })
-  const { command, args } = buildCommandArgs(request.runner, request.workdir)
+  const { command, args } = buildCommandArgs(request.runner, request.workdir, request.parentAgent)
   const env = buildSpawnEnv(baseEnv, homeDir)
 
   emitNervesEvent({
