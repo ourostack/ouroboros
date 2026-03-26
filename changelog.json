@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.142",
+      "changes": [
+        "Surface tool fulfills heart obligations on successful routing: findPendingObligationForOrigin + fulfillObligation called after inner obligation advance, wrapped in try/catch.",
+        "New fulfillHeartObligation callback on HandleSurfaceInput — origin-based lookup independent of inner obligationId.",
+        "ouro inner status command: reads runtime.json, journal dir, heartbeat cadence, attention count. Shows last turn, status, heartbeat health, journal listing, held thoughts."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.141",
       "changes": [
         "Ponder tool replaces descend: thought+say required from outer sessions, parameterless from inner dialog. Creates heart obligation, enqueues pending with delegatedFrom, emits say text outward.",

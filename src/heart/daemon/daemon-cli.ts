@@ -93,6 +93,7 @@ export type OuroCliCommand =
   | { kind: "attention.list"; agent?: string }
   | { kind: "attention.show"; id: string; agent?: string }
   | { kind: "attention.history"; agent?: string }
+  | { kind: "inner.status"; agent?: string }
   | { kind: "mcp-serve"; agent: string; friendId?: string }
 
 export interface OuroCliDeps {
@@ -418,6 +419,7 @@ function usage(): string {
     "  ouro friend create --name <name> [--trust <level>] [--agent <name>]",
     "  ouro friend update <id> --trust <level> [--agent <name>]",
     "  ouro thoughts [--last <n>] [--json] [--follow] [--agent <name>]",
+    "  ouro inner [--agent <name>]",
     "  ouro friend link <agent> --friend <id> --provider <p> --external-id <eid>",
     "  ouro friend unlink <agent> --friend <id> --provider <p> --external-id <eid>",
     "  ouro whoami [--agent <name>]",
@@ -1104,6 +1106,10 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   }
   if (head === "thoughts") return parseThoughtsCommand(args.slice(1))
   if (head === "attention") return parseAttentionCommand(args.slice(1))
+  if (head === "inner") {
+    const { agent } = extractAgentFlag(args.slice(1))
+    return { kind: "inner.status", ...(agent ? { agent } : {}) }
+  }
   if (head === "chat") {
     if (!second) throw new Error(`Usage\n${usage()}`)
     return { kind: "chat.connect", agent: second }
@@ -1632,8 +1638,9 @@ type ConfigModelsCliCommand = Extract<OuroCliCommand, { kind: "config.models" }>
 type RollbackCliCommand = Extract<OuroCliCommand, { kind: "rollback" }>
 type VersionsCliCommand = Extract<OuroCliCommand, { kind: "versions" }>
 type AttentionCliCommand = Extract<OuroCliCommand, { kind: "attention.list" } | { kind: "attention.show" } | { kind: "attention.history" }>
+type InnerStatusCliCommand = Extract<OuroCliCommand, { kind: "inner.status" }>
 type McpServeCliCommand = Extract<OuroCliCommand, { kind: "mcp-serve" }>
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | McpServeCliCommand>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand>): DaemonCommand {
   return command
 }
 
@@ -2808,6 +2815,89 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         return `[${o.id}] → ${o.origin.friendId} via ${o.returnTarget ?? "unknown"} at ${when}`
       })
       const message = lines.join("\n")
+      deps.writeStdout(message)
+      return message
+    } catch {
+      const message = "error: no agent context — use --agent <name> to specify"
+      deps.writeStdout(message)
+      return message
+    }
+  }
+  /* v8 ignore stop */
+
+  // ── inner dialog status (local, no daemon socket needed) ──
+  /* v8 ignore start -- inner status handler: requires real agent state on disk @preserve */
+  if (command.kind === "inner.status") {
+    try {
+      const agentName = command.agent ?? getAgentName()
+      const agentRoot = getAgentRoot(agentName)
+      const { buildInnerStatusOutput } = await import("./inner-status")
+      const { sessionPath: getSessionPath } = await import("../config")
+      const { parseCadenceMs, DEFAULT_CADENCE_MS } = await import("./heartbeat-timer")
+      const { parseFrontmatter } = await import("../../repertoire/tasks/parser")
+      const { listActiveObligations } = await import("../../mind/obligations")
+
+      // Read runtime state
+      const innerSessionPath = getSessionPath("inner-dialog", "inner", "session")
+      const runtimeJsonPath = path.join(path.dirname(innerSessionPath), "runtime.json")
+      let runtimeState: import("./inner-status").InnerRuntimeState | null = null
+      try {
+        const raw = fs.readFileSync(runtimeJsonPath, "utf-8")
+        runtimeState = JSON.parse(raw)
+      } catch { /* missing or corrupt — will show "unknown" */ }
+
+      // Read journal files
+      const journalDir = path.join(agentRoot, "journal")
+      let journalFiles: import("./inner-status").JournalFileEntry[] = []
+      try {
+        const entries = fs.readdirSync(journalDir, { withFileTypes: true })
+        journalFiles = entries
+          .filter((e) => e.isFile() && !e.name.startsWith("."))
+          .map((e) => {
+            const stat = fs.statSync(path.join(journalDir, e.name))
+            return { name: e.name, mtimeMs: stat.mtimeMs }
+          })
+      } catch { /* missing dir — will show (empty) */ }
+
+      // Read heartbeat cadence
+      let heartbeat: import("./inner-status").HeartbeatInfo | null = null
+      try {
+        const habitsDir = path.join(agentRoot, "habits")
+        const habitFiles = fs.readdirSync(habitsDir)
+        const heartbeatFile = habitFiles.find((f) => f.endsWith("-heartbeat.md"))
+        let cadenceMs = DEFAULT_CADENCE_MS
+        if (heartbeatFile) {
+          const content = fs.readFileSync(path.join(habitsDir, heartbeatFile), "utf-8")
+          const lines = content.split(/\r?\n/)
+          if (lines[0]?.trim() === "---") {
+            const closing = lines.findIndex((line, index) => index > 0 && line.trim() === "---")
+            if (closing !== -1) {
+              const rawFrontmatter = lines.slice(1, closing).join("\n")
+              const frontmatter = parseFrontmatter(rawFrontmatter)
+              const parsed = parseCadenceMs(frontmatter.cadence)
+              if (parsed !== null) cadenceMs = parsed
+            }
+          }
+        }
+        let lastCompletedAt: number | null = null
+        if (runtimeState?.lastCompletedAt) {
+          const ms = new Date(runtimeState.lastCompletedAt).getTime()
+          if (!Number.isNaN(ms)) lastCompletedAt = ms
+        }
+        heartbeat = { cadenceMs, lastCompletedAt }
+      } catch { /* no habits — heartbeat unknown */ }
+
+      // Attention count
+      const activeObligations = listActiveObligations(agentName)
+
+      const message = buildInnerStatusOutput({
+        agentName,
+        runtimeState,
+        journalFiles,
+        heartbeat,
+        attentionCount: activeObligations.length,
+        now: Date.now(),
+      })
       deps.writeStdout(message)
       return message
     } catch {

@@ -229,4 +229,146 @@ describe("surface tool", () => {
       expect(routeToFriend).toHaveBeenCalledWith("bob", "hey there", undefined)
     })
   })
+
+  describe("heart obligation fulfillment", () => {
+    it("calls fulfillHeartObligation with origin when surface routes successfully with delegationId", async () => {
+      const queue: AttentionItem[] = [
+        { id: "abc123", friendId: "ari", friendName: "Ari", channel: "bb", key: "c1", delegatedContent: "think", source: "drained", timestamp: 1000, obligationId: "obl-1" },
+      ]
+
+      const fulfillHeartObligation = vi.fn()
+      await handleSurface({
+        content: "here's the answer",
+        delegationId: "abc123",
+        queue,
+        routeToFriend: async () => ({ status: "delivered", detail: "via iMessage" }),
+        advanceObligation: () => {},
+        fulfillHeartObligation,
+      })
+
+      expect(fulfillHeartObligation).toHaveBeenCalledWith({
+        friendId: "ari",
+        channel: "bb",
+        key: "c1",
+      })
+    })
+
+    it("does NOT call fulfillHeartObligation for spontaneous outreach (no delegationId)", async () => {
+      const fulfillHeartObligation = vi.fn()
+      await handleSurface({
+        content: "hello",
+        friendId: "ben",
+        queue: [],
+        routeToFriend: async () => ({ status: "delivered" }),
+        advanceObligation: () => {},
+        fulfillHeartObligation,
+      })
+
+      expect(fulfillHeartObligation).not.toHaveBeenCalled()
+    })
+
+    it("does NOT call fulfillHeartObligation when routing fails", async () => {
+      const queue: AttentionItem[] = [
+        { id: "abc123", friendId: "ari", friendName: "Ari", channel: "bb", key: "c1", delegatedContent: "think", source: "drained", timestamp: 1000, obligationId: "obl-1" },
+      ]
+
+      const fulfillHeartObligation = vi.fn()
+      await handleSurface({
+        content: "here's the answer",
+        delegationId: "abc123",
+        queue,
+        routeToFriend: async () => ({ status: "failed" }),
+        advanceObligation: () => {},
+        fulfillHeartObligation,
+      })
+
+      expect(fulfillHeartObligation).not.toHaveBeenCalled()
+    })
+
+    it("gracefully handles no fulfillHeartObligation callback (backward compat)", async () => {
+      const queue: AttentionItem[] = [
+        { id: "abc123", friendId: "ari", friendName: "Ari", channel: "bb", key: "c1", delegatedContent: "think", source: "drained", timestamp: 1000, obligationId: "obl-1" },
+      ]
+
+      // No fulfillHeartObligation provided — should not throw
+      const result = await handleSurface({
+        content: "here's the answer",
+        delegationId: "abc123",
+        queue,
+        routeToFriend: async () => ({ status: "delivered" }),
+        advanceObligation: () => {},
+      })
+
+      expect(result).toContain("delivered")
+    })
+
+    it("catches fulfillHeartObligation errors without breaking surface delivery", async () => {
+      const queue: AttentionItem[] = [
+        { id: "abc123", friendId: "ari", friendName: "Ari", channel: "bb", key: "c1", delegatedContent: "think", source: "drained", timestamp: 1000, obligationId: "obl-1" },
+      ]
+
+      const fulfillHeartObligation = vi.fn().mockImplementation(() => { throw new Error("obligation store read failure") })
+      const result = await handleSurface({
+        content: "here's the answer",
+        delegationId: "abc123",
+        queue,
+        routeToFriend: async () => ({ status: "delivered" }),
+        advanceObligation: () => {},
+        fulfillHeartObligation,
+      })
+
+      // Surface delivery should still succeed
+      expect(result).toContain("delivered")
+      // The callback was called (it threw, but that's caught)
+      expect(fulfillHeartObligation).toHaveBeenCalled()
+    })
+
+    it("calls fulfillHeartObligation AFTER advanceObligation", async () => {
+      const queue: AttentionItem[] = [
+        { id: "abc123", friendId: "ari", friendName: "Ari", channel: "bb", key: "c1", delegatedContent: "think", source: "drained", timestamp: 1000, obligationId: "obl-1" },
+      ]
+
+      const callOrder: string[] = []
+      const advanceObligation = vi.fn().mockImplementation(() => { callOrder.push("advance-inner") })
+      const fulfillHeartObligation = vi.fn().mockImplementation(() => { callOrder.push("fulfill-heart") })
+
+      await handleSurface({
+        content: "here's the answer",
+        delegationId: "abc123",
+        queue,
+        routeToFriend: async () => ({ status: "delivered" }),
+        advanceObligation,
+        fulfillHeartObligation,
+      })
+
+      expect(callOrder).toEqual(["advance-inner", "fulfill-heart"])
+    })
+
+    it("calls fulfillHeartObligation even when queue item has no obligationId", async () => {
+      const queue: AttentionItem[] = [
+        { id: "abc123", friendId: "ari", friendName: "Ari", channel: "bb", key: "c1", delegatedContent: "think", source: "drained", timestamp: 1000 },
+        // Note: no obligationId on this queue item
+      ]
+
+      const advanceObligation = vi.fn()
+      const fulfillHeartObligation = vi.fn()
+      await handleSurface({
+        content: "here's the answer",
+        delegationId: "abc123",
+        queue,
+        routeToFriend: async () => ({ status: "delivered" }),
+        advanceObligation,
+        fulfillHeartObligation,
+      })
+
+      // advanceObligation should NOT be called (no obligationId)
+      expect(advanceObligation).not.toHaveBeenCalled()
+      // fulfillHeartObligation SHOULD still be called (origin-based lookup)
+      expect(fulfillHeartObligation).toHaveBeenCalledWith({
+        friendId: "ari",
+        channel: "bb",
+        key: "c1",
+      })
+    })
+  })
 })

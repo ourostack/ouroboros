@@ -47,10 +47,11 @@ export interface HandleSurfaceInput {
   queue: AttentionItem[]
   routeToFriend: (friendId: string, content: string, queueItem?: AttentionItem) => Promise<SurfaceRouteResult>
   advanceObligation: (obligationId: string, update: { status: string; returnedAt?: number; returnTarget?: string }) => void
+  fulfillHeartObligation?: (origin: { friendId: string; channel: string; key: string }) => void
 }
 
 export async function handleSurface(input: HandleSurfaceInput): Promise<string> {
-  const { content, delegationId, friendId, queue, routeToFriend, advanceObligation } = input
+  const { content, delegationId, friendId, queue, routeToFriend, advanceObligation, fulfillHeartObligation } = input
 
   // Resolve target friend
   let targetFriendId: string
@@ -95,6 +96,18 @@ export async function handleSurface(input: HandleSurfaceInput): Promise<string> 
         returnedAt: Date.now(),
         returnTarget: "surface",
       })
+    }
+    // Fulfill the heart obligation for this origin (separate from inner/mind obligation)
+    if (fulfillHeartObligation) {
+      try {
+        fulfillHeartObligation({
+          friendId: queueItem.friendId,
+          channel: queueItem.channel,
+          key: queueItem.key,
+        })
+      } catch {
+        // swallowed — heart obligation fulfillment must never break surface delivery
+      }
     }
     dequeueAttentionItem(queue, delegationId)
   }
