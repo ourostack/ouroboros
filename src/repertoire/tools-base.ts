@@ -1508,7 +1508,7 @@ export const observeTool: OpenAI.ChatCompletionFunctionTool = {
   type: "function",
   function: {
     name: "observe",
-    description: "stay silent in this group chat — the moment doesn't call for a response. must be the only tool call in the turn.",
+    description: "absorb what happened without responding — the moment doesn't call for words. must be the only tool call in the turn.",
     parameters: {
       type: "object",
       properties: {
