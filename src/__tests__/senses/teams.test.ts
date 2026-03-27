@@ -43,6 +43,15 @@ vi.mock("../../mind/friends/resolver", () => ({
 
 import { getPhrases } from "../../mind/phrases"
 
+// Helper: match an AI-labeled emit call (object with text + entities + channelData)
+function aiLabeled(text: string) {
+  return expect.objectContaining({
+    text,
+    entities: expect.arrayContaining([expect.objectContaining({ additionalType: ["AIGeneratedContent"] })]),
+    channelData: expect.objectContaining({ feedbackLoopEnabled: true }),
+  })
+}
+
 afterEach(() => {
   fs.rmSync("/tmp/mock-agent-root", { recursive: true, force: true })
 })
@@ -225,7 +234,7 @@ describe("Teams adapter - createTeamsCallbacks (SDK-delegated streaming)", () =>
     // Flush delivers accumulated text
     await callbacks.flush()
     expect(mockStream.emit).toHaveBeenCalledTimes(1)
-    expect(mockStream.emit).toHaveBeenCalledWith("Hello world")
+    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled("Hello world"))
   })
 
   // --- Stop-streaming tests (403 detected during flush, not per-token) ---
@@ -434,7 +443,7 @@ describe("Teams adapter - createTeamsCallbacks (SDK-delegated streaming)", () =>
     expect(mockStream.emit).not.toHaveBeenCalled()
     // Flush delivers it
     await callbacks.flush()
-    expect(mockStream.emit).toHaveBeenCalledWith("just text")
+    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled("just text"))
   })
 
   it("reasoning never leaks into emitted text", async () => {
@@ -451,7 +460,7 @@ describe("Teams adapter - createTeamsCallbacks (SDK-delegated streaming)", () =>
     await callbacks.flush()
     // Only text is emitted, not reasoning
     expect(mockStream.emit).toHaveBeenCalledTimes(1)
-    expect(mockStream.emit).toHaveBeenCalledWith("answer")
+    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled("answer"))
   })
 
   // --- Tool/status callbacks ---
@@ -474,7 +483,7 @@ describe("Teams adapter - createTeamsCallbacks (SDK-delegated streaming)", () =>
     callbacks.onTextChunk("accumulated text")
     callbacks.onToolStart("read_file", { path: "test.txt" })
     // First flush goes to stream.emit (primary output)
-    expect(mockStream.emit).toHaveBeenCalledWith("accumulated text")
+    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled("accumulated text"))
   })
 
   // --- Unified onToolEnd: always via stream.update (transient status) ---
@@ -4105,12 +4114,12 @@ describe("Teams adapter - unified chunked streaming (no disableStreaming)", () =
     // First: emit text to stream (sets streamHasContent)
     callbacks.onTextChunk("first response")
     await callbacks.flush()
-    expect(mockStream.emit).toHaveBeenCalledWith("first response")
+    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled("first response"))
     mockStream.emit.mockClear()
     // Second: accumulate more text, then onToolStart flushes via safeEmit (cumulative stream)
     callbacks.onTextChunk("second text")
     callbacks.onToolStart("read_file", { path: "test.txt" })
-    expect(mockStream.emit).toHaveBeenCalledWith("second text")
+    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled("second text"))
     expect(sendMessage).not.toHaveBeenCalled()
   })
 
@@ -4125,7 +4134,7 @@ describe("Teams adapter - unified chunked streaming (no disableStreaming)", () =
     expect(mockStream.emit).not.toHaveBeenCalled()
     await callbacks.flush()
     expect(mockStream.emit).toHaveBeenCalledTimes(1)
-    expect(mockStream.emit).toHaveBeenCalledWith("Hello world!")
+    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled("Hello world!"))
     expect(sendMessage).not.toHaveBeenCalled()
   })
 
@@ -4140,7 +4149,7 @@ describe("Teams adapter - unified chunked streaming (no disableStreaming)", () =
     // Second iteration: also goes to emit (SDK accumulates cumulatively)
     callbacks.onTextChunk("second response")
     await callbacks.flush()
-    expect(mockStream.emit).toHaveBeenCalledWith("second response")
+    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled("second response"))
   })
 
   it("flush() with prior stream content: subsequent text goes to safeEmit not sendMessage", async () => {
@@ -4155,7 +4164,7 @@ describe("Teams adapter - unified chunked streaming (no disableStreaming)", () =
     // Second iteration: also goes to emit (cumulative stream), not sendMessage
     callbacks.onTextChunk("second response")
     await callbacks.flush()
-    expect(mockStream.emit).toHaveBeenCalledWith("second response")
+    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled("second response"))
     expect(sendMessage).not.toHaveBeenCalled()
   })
 
@@ -4166,7 +4175,7 @@ describe("Teams adapter - unified chunked streaming (no disableStreaming)", () =
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller, sendMessage)
     // No text chunks at all
     await callbacks.flush()
-    expect(mockStream.emit).toHaveBeenCalledWith("(completed with tool calls only \u2014 no text response)")
+    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled("(completed with tool calls only \u2014 no text response)"))
   })
 
   it("flush() with subsequent text uses safeEmit (sync, no await needed)", async () => {
@@ -4181,7 +4190,7 @@ describe("Teams adapter - unified chunked streaming (no disableStreaming)", () =
     // Second flush — goes to safeEmit, not sendMessage
     callbacks.onTextChunk("second")
     await callbacks.flush()
-    expect(mockStream.emit).toHaveBeenCalledWith("second")
+    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled("second"))
     expect(sendMessage).not.toHaveBeenCalled()
   })
 
@@ -4211,7 +4220,7 @@ describe("Teams adapter - unified chunked streaming (no disableStreaming)", () =
     await callbacks.flush()
     // Full text to emit (no splitting)
     expect(mockStream.emit).toHaveBeenCalledTimes(1)
-    expect(mockStream.emit).toHaveBeenCalledWith(longText)
+    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled(longText))
     expect(sendMessage).not.toHaveBeenCalled()
   })
 
@@ -4230,7 +4239,7 @@ describe("Teams adapter - unified chunked streaming (no disableStreaming)", () =
     callbacks.onTextChunk(longText)
     await callbacks.flush()
     expect(mockStream.emit).toHaveBeenCalledTimes(1)
-    expect(mockStream.emit).toHaveBeenCalledWith(longText)
+    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled(longText))
     expect(sendMessage).not.toHaveBeenCalled()
   })
 
@@ -4282,7 +4291,7 @@ describe("Teams adapter - unified chunked streaming (no disableStreaming)", () =
     callbacks.onToolStart("test_tool", { arg: "val" })
     // Full text sent to emit (no splitting)
     expect(mockStream.emit).toHaveBeenCalledTimes(1)
-    expect(mockStream.emit).toHaveBeenCalledWith(longText)
+    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled(longText))
     expect(sendMessage).not.toHaveBeenCalled()
   })
 
@@ -4547,9 +4556,13 @@ describe("Teams adapter - handleTeamsMessage unified chunked streaming", () => {
     await teams.handleTeamsMessage("test", mockStream as any, "conv-123")
 
     // Text should have been emitted once via flush() after runAgent completes
-    const emitCalls = mockStream.emit.mock.calls.filter((c: any) => !c[0].startsWith("Error"))
+    const emitCalls = mockStream.emit.mock.calls.filter((c: any) => {
+      const arg = c[0]
+      const text = typeof arg === "string" ? arg : arg?.text
+      return text && !text.startsWith("Error")
+    })
     expect(emitCalls).toHaveLength(1)
-    expect(emitCalls[0][0]).toBe("Hello world")
+    expect(emitCalls[0][0]).toEqual(aiLabeled("Hello world"))
   })
 
   it("flush() is called after runAgent completes", async () => {
@@ -4569,7 +4582,7 @@ describe("Teams adapter - handleTeamsMessage unified chunked streaming", () => {
     await teams.handleTeamsMessage("test", mockStream as any, "conv-123")
 
     // The emit should have been called (by flush after runAgent)
-    expect(mockStream.emit).toHaveBeenCalledWith("buffered text")
+    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled("buffered text"))
   })
 
   it("RunAgentOptions does not include disableStreaming", async () => {
@@ -5218,7 +5231,7 @@ describe("Teams adapter - handleTeamsMessage with sendMessage", () => {
     await teams.handleTeamsMessage("test", mockStream as any, "conv-send-2", undefined, true, sendMessage)
 
     // Text should have been flushed to emit (first content)
-    expect(mockStream.emit).toHaveBeenCalledWith("response text")
+    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled("response text"))
   })
 
   it("startTeamsApp passes sendMessage wrapping ctx.send to handleTeamsMessage", async () => {
@@ -5658,7 +5671,7 @@ describe("Teams adapter - periodic flush timer", () => {
     // Advance past the flush interval (DEFAULT_FLUSH_INTERVAL_MS = 1000)
     vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
     // After the timer fires, accumulated text should be flushed via safeEmit (first flush)
-    expect(mockStream.emit).toHaveBeenCalledWith("hello ")
+    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled("hello "))
   })
 
   it("multiple flushes across intervals -- all go to safeEmit (cumulative stream)", async () => {
@@ -5668,11 +5681,11 @@ describe("Teams adapter - periodic flush timer", () => {
     // First interval: accumulate and flush
     callbacks.onTextChunk("chunk1 ")
     vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
-    expect(mockStream.emit).toHaveBeenCalledWith("chunk1 ")
+    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled("chunk1 "))
     // Second interval: more text accumulates, also goes to safeEmit (SDK accumulates cumulatively)
     callbacks.onTextChunk("chunk2 ")
     vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
-    expect(mockStream.emit).toHaveBeenCalledWith("chunk2 ")
+    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled("chunk2 "))
     expect(mockStream.emit).toHaveBeenCalledTimes(2)
     // No separate messages -- all via the stream
     expect(sendMessage).not.toHaveBeenCalled()
@@ -5702,7 +5715,7 @@ describe("Teams adapter - periodic flush timer", () => {
     // Now send a text chunk -- timer should start
     callbacks.onTextChunk("delayed start")
     vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
-    expect(mockStream.emit).toHaveBeenCalledWith("delayed start")
+    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled("delayed start"))
   })
 
   it("timer cleared on controller abort -- no leaked intervals", async () => {
@@ -5726,7 +5739,7 @@ describe("Teams adapter - periodic flush timer", () => {
     callbacks.onTextChunk("turn text")
     // Call flush() (end of turn) before timer fires
     await callbacks.flush()
-    expect(mockStream.emit).toHaveBeenCalledWith("turn text")
+    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled("turn text"))
     // Advance time -- periodic timer was stopped by flush(), no spurious flushes
     vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS * 3)
     expect(mockStream.emit).toHaveBeenCalledTimes(1) // only the flush() call
@@ -5777,7 +5790,7 @@ describe("Teams adapter - periodic flush timer", () => {
     // Now text starts -- next tick flushes text via emit
     callbacks.onTextChunk("answer: ")
     vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
-    expect(mockStream.emit).toHaveBeenCalledWith("answer: ")
+    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled("answer: "))
   })
 
   it("flush() at end of turn flushes remaining buffer via correct channel", async () => {
@@ -5787,12 +5800,12 @@ describe("Teams adapter - periodic flush timer", () => {
     // First interval flush
     callbacks.onTextChunk("first ")
     vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
-    expect(mockStream.emit).toHaveBeenCalledWith("first ")
+    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled("first "))
     // More text arrives after first flush
     callbacks.onTextChunk("remaining ")
     // End of turn -- flush() sends remaining via safeEmit (cumulative stream)
     await callbacks.flush()
-    expect(mockStream.emit).toHaveBeenCalledWith("remaining ")
+    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled("remaining "))
     expect(sendMessage).not.toHaveBeenCalled()
   })
 
@@ -5807,7 +5820,7 @@ describe("Teams adapter - periodic flush timer", () => {
     expect(mockStream.emit).not.toHaveBeenCalled()
     // Custom interval should flush
     vi.advanceTimersByTime(1)
-    expect(mockStream.emit).toHaveBeenCalledWith("custom interval")
+    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled("custom interval"))
   })
 })
 
@@ -6516,7 +6529,7 @@ describe("Teams adapter - pipeline integration (U7)", () => {
     })
 
     // Text should be flushed at end of turn
-    expect(mockStream.emit).toHaveBeenCalledWith("response text")
+    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled("response text"))
   })
 
   it("AUTH_REQUIRED signin still works after pipeline refactor", async () => {

@@ -34,10 +34,24 @@ import { drainDeferredReturns, drainPending, getPendingDir } from "../mind/pendi
 import { classifySteeringFollowUpEffect, type SteeringFollowUpEffect } from "./continuity"
 
 // Stream interface matching IStreamer from @microsoft/teams.apps
+// emit() accepts string or object with text+entities+channelData (matches SDK's
+// IStreamer.emit(activity: Partial<IMessageActivity | ITypingActivity> | string))
 interface TeamsStream {
-  emit(activity: string): void
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  emit(activity: string | Record<string, any>): void
   update(text: string): void
   close(): void
+}
+
+// AIGeneratedContent entity and feedbackLoopEnabled channelData for all outbound
+// Teams messages. Required by Teams AI UX best practices.
+export function aiLabelEntities(): Array<{ type: string; "@type": string; "@context": string; additionalType: string[] }> {
+  return [{
+    type: "https://schema.org/Message",
+    "@type": "Message",
+    "@context": "https://schema.org",
+    additionalType: ["AIGeneratedContent"],
+  }]
 }
 
 // Strip @mention markup from incoming messages.
@@ -178,13 +192,13 @@ export function createTeamsCallbacks(
     }
   }
 
-  // Safely emit a text delta to the stream.
+  // Safely emit a text delta to the stream with AI labels.
   // On error (e.g. 403 from Teams stop button), abort the controller.
   function safeEmit(text: string): void {
     /* v8 ignore next -- defensive guard: stopped set by prior 403; tested via flush abort path @preserve */
     if (stopped) return
     try {
-      catchAsync(stream.emit(text))
+      catchAsync(stream.emit({ text, entities: aiLabelEntities(), channelData: { feedbackLoopEnabled: true } }))
       streamHasContent = true
     } catch {
       markStopped()
@@ -199,7 +213,7 @@ export function createTeamsCallbacks(
     try {
       // stream.emit() is typed as void but the Teams SDK returns a Promise
       // internally (async HTTP). Cast to capture the result for awaiting.
-      const result: unknown = stream.emit(text)
+      const result: unknown = stream.emit({ text, entities: aiLabelEntities(), channelData: { feedbackLoopEnabled: true } })
       streamHasContent = true
       if (result && typeof (result as { then?: Function }).then === "function") {
         await (result as Promise<unknown>)
@@ -385,7 +399,7 @@ export function createTeamsCallbacks(
           }
         }
       } else if (!streamHasContent) {
-        safeEmit("(completed with tool calls only \u2014 no text response)")
+        safeEmit("(completed with tool calls only — no text response)")
       }
     },
   }
@@ -902,7 +916,7 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
       const ctxSend = async (t: string) => {
         // Use send with replyToId (not reply, which adds a blockquote).
         // replyToId anchors the message after the user's message in Copilot Chat.
-        await ctx.send({ type: "message", text: t, replyToId: activity.id })
+        await ctx.send({ type: "message", text: t, replyToId: activity.id, entities: aiLabelEntities() as unknown as import("@microsoft/teams.api").Entity[], channelData: { feedbackLoopEnabled: true } })
       }
       await handleTeamsMessage(text, stream, convId, teamsContext, ctxSend)
     } catch (err: unknown) {
