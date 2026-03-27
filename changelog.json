@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.143",
+      "changes": [
+        "Metacognitive framing: self-setup awareness. Agent notices missing heartbeat task and surfaces to family to discuss cadence. Agent notices legacy psyche/memory/ path and can self-migrate to diary/. Agent creates journal/ on first write."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.142",
       "changes": [
         "Surface tool fulfills heart obligations on successful routing: findPendingObligationForOrigin + fulfillObligation called after inner obligation advance, wrapped in try/catch.",
