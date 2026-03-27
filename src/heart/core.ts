@@ -257,6 +257,9 @@ export interface RunAgentOptions {
   tools?: OpenAI.ChatCompletionFunctionTool[];
   execTool?: (name: string, args: Record<string, string>, ctx?: ToolContext) => Promise<string>;
   mcpManager?: McpManager;
+  /** When true, the observe tool is available in 1:1 chats (normally group-only).
+   *  Used for reaction/feedback signals where silence is natural even in DMs. */
+  isReactionSignal?: boolean;
 }
 
 export type RunAgentOutcome =
@@ -680,7 +683,7 @@ export async function runAgent(
       ...filteredBaseTools,
       ponderTool,
       ...(isInnerDialog ? [surfaceToolDef, restTool] : []),
-      ...(currentContext?.isGroupChat && !isInnerDialog ? [observeTool] : []),
+      ...((currentContext?.isGroupChat || options?.isReactionSignal) && !isInnerDialog ? [observeTool] : []),
       ...(!isInnerDialog ? [settleTool] : []),
     ];
     const steeringFollowUps = options?.drainSteeringFollowUps?.() ?? [];
@@ -871,7 +874,7 @@ export async function runAgent(
           emitNervesEvent({
             component: "engine",
             event: "engine.observe",
-            message: "agent declined to respond in group chat",
+            message: "agent observed without responding",
             meta: { ...(reason ? { reason } : {}) },
           });
           callbacks.onToolEnd("observe", summarizeArgs("observe", observeArgs), true);
