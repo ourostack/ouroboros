@@ -82,7 +82,7 @@ describe("HeartbeatTimer", () => {
     return { timer, sendToAgent, readFileSync, readdirSync }
   }
 
-  it("fires immediately when no runtime state exists (never run before)", () => {
+  it("fires after one cadence when no runtime state exists (never run before)", () => {
     const sendToAgent = vi.fn()
     const readFileSync = vi.fn((filePath: string) => {
       if (filePath.includes("heartbeat.md")) {
@@ -95,8 +95,12 @@ describe("HeartbeatTimer", () => {
     const { timer } = createTimer({ sendToAgent, readFileSync, readdirSync })
     timer.start()
 
-    // With no runtime state (lastCompletedAt), should fire immediately (delay = 0)
+    // With no runtime state (lastCompletedAt), should fire after full cadence, not immediately
     vi.advanceTimersByTime(0)
+    expect(sendToAgent).not.toHaveBeenCalled()
+
+    // Fire after 30 minutes (cadence)
+    vi.advanceTimersByTime(30 * 60 * 1000)
     expect(sendToAgent).toHaveBeenCalledWith("slugger", { type: "heartbeat" })
 
     timer.stop()
@@ -373,7 +377,8 @@ describe("HeartbeatTimer", () => {
     const { timer } = createTimer({ sendToAgent, readFileSync, readdirSync })
     timer.start()
 
-    vi.advanceTimersByTime(0)
+    // No runtime state -> fires after cadence (30m default), not immediately
+    vi.advanceTimersByTime(30 * 60 * 1000)
     expect(emitNervesEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         component: "daemon",
@@ -462,8 +467,11 @@ describe("HeartbeatTimer", () => {
     const { timer } = createTimer({ sendToAgent, readFileSync, readdirSync })
     timer.start()
 
-    // Should still fire (default cadence, no runtime state = immediate)
+    // No runtime state -> fires after cadence (30m default), not immediately
     vi.advanceTimersByTime(0)
+    expect(sendToAgent).not.toHaveBeenCalled()
+
+    vi.advanceTimersByTime(30 * 60 * 1000)
     expect(sendToAgent).toHaveBeenCalledTimes(1)
 
     timer.stop()
@@ -560,7 +568,7 @@ describe("HeartbeatTimer", () => {
     timer.stop()
   })
 
-  it("fires immediately when lastCompletedAt is not a string", () => {
+  it("fires after cadence when lastCompletedAt is not a string", () => {
     const sendToAgent = vi.fn()
     const readdirSync = vi.fn(() => [])
     const readFileSync = vi.fn((filePath: string) => {
@@ -573,14 +581,17 @@ describe("HeartbeatTimer", () => {
     const { timer } = createTimer({ sendToAgent, readFileSync, readdirSync })
     timer.start()
 
-    // No valid lastCompletedAt -> fire immediately
+    // No valid lastCompletedAt -> fires after cadence (30m default), not immediately
     vi.advanceTimersByTime(0)
+    expect(sendToAgent).not.toHaveBeenCalled()
+
+    vi.advanceTimersByTime(30 * 60 * 1000)
     expect(sendToAgent).toHaveBeenCalledTimes(1)
 
     timer.stop()
   })
 
-  it("fires immediately when lastCompletedAt is an invalid date", () => {
+  it("fires after cadence when lastCompletedAt is an invalid date", () => {
     const sendToAgent = vi.fn()
     const readdirSync = vi.fn(() => [])
     const readFileSync = vi.fn((filePath: string) => {
@@ -593,8 +604,11 @@ describe("HeartbeatTimer", () => {
     const { timer } = createTimer({ sendToAgent, readFileSync, readdirSync })
     timer.start()
 
-    // Invalid date -> null -> fire immediately
+    // Invalid date -> null -> fires after cadence (30m default), not immediately
     vi.advanceTimersByTime(0)
+    expect(sendToAgent).not.toHaveBeenCalled()
+
+    vi.advanceTimersByTime(30 * 60 * 1000)
     expect(sendToAgent).toHaveBeenCalledTimes(1)
 
     timer.stop()
@@ -624,8 +638,11 @@ describe("HeartbeatTimer", () => {
     })
     timer.start()
 
-    // Should fire immediately (no runtime state)
+    // No runtime state -> fires after cadence (30m default), not immediately
     vi.advanceTimersByTime(0)
+    expect(sendToAgent).not.toHaveBeenCalled()
+
+    vi.advanceTimersByTime(30 * 60 * 1000)
     expect(sendToAgent).toHaveBeenCalledTimes(1)
 
     timer.stop()

@@ -238,6 +238,7 @@ function extractHistoricalLaneSummary(
 function buildConversationScopePrefix(
   event: BlueBubblesNormalizedEvent,
   existingMessages: OpenAI.ChatCompletionMessageParam[],
+  repliedToText?: string | null,
 ): string {
   if (event.kind !== "message") {
     return ""
@@ -249,6 +250,10 @@ function buildConversationScopePrefix(
     lines.push(
       `[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: ${event.threadOriginatorGuid.trim()} | default outbound target for this turn: current_lane]`,
     )
+    if (repliedToText) {
+      lines.push(`[replying to: "${repliedToText}"]`)
+    }
+    lines.push(`[if you need more context about what was being discussed, use query_session to search your session history, or recall to check your memory.]`)
   } else {
     lines.push(
       "[conversation scope: existing chat trunk | current inbound lane: top_level | default outbound target for this turn: top_level]",
@@ -271,8 +276,9 @@ function buildConversationScopePrefix(
 function buildInboundText(
   event: BlueBubblesNormalizedEvent,
   existingMessages: OpenAI.ChatCompletionMessageParam[],
+  repliedToText?: string | null,
 ): string {
-  const metadataPrefix = buildConversationScopePrefix(event, existingMessages)
+  const metadataPrefix = buildConversationScopePrefix(event, existingMessages, repliedToText)
   const baseText = event.repairNotice?.trim()
     ? `${event.textForAgent}\n[${event.repairNotice.trim()}]`
     : event.textForAgent
@@ -289,8 +295,9 @@ function buildInboundText(
 function buildInboundContent(
   event: BlueBubblesNormalizedEvent,
   existingMessages: OpenAI.ChatCompletionMessageParam[],
+  repliedToText?: string | null,
 ): OpenAI.ChatCompletionUserMessageParam["content"] {
-  const text = buildInboundText(event, existingMessages)
+  const text = buildInboundText(event, existingMessages, repliedToText)
   if (event.kind !== "message" || !event.inputPartsForAgent || event.inputPartsForAgent.length === 0) {
     return text
   }
@@ -703,10 +710,23 @@ async function handleBlueBubblesNormalizedEvent(
       })
     }
 
+    // Fetch the text of the message being replied to (if this is a threaded reply)
+    const threadGuid = event.kind === "message" ? event.threadOriginatorGuid?.trim() : undefined
+    let repliedToText: string | null = null
+    if (threadGuid) {
+      repliedToText = await client.getMessageText(threadGuid).catch(/* v8 ignore next */ () => null)
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.bluebubbles_reply_context",
+        message: repliedToText ? "fetched replied-to message text" : "could not fetch replied-to message text",
+        meta: { threadGuid, hasText: !!repliedToText },
+      })
+    }
+
     // Build inbound user message (adapter concern: BB-specific content formatting)
     const userMessage: OpenAI.ChatCompletionMessageParam = {
       role: "user",
-      content: buildInboundContent(event, existing?.messages ?? sessionMessages),
+      content: buildInboundContent(event, existing?.messages ?? sessionMessages, repliedToText),
     }
 
     const callbacks = createBlueBubblesCallbacks(

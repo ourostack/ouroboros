@@ -6,7 +6,7 @@ import { emitNervesEvent } from "../nerves/runtime"
 // ── Types ────────────────────────────────────────────────────────
 
 export type ObligationStatus = "queued" | "running" | "returned" | "deferred"
-export type ReturnTarget = "bridge-session" | "freshest-session" | "deferred" | "surface"
+export type ReturnTarget = "bridge-session" | "direct-originator" | "freshest-session" | "deferred" | "surface"
 
 export interface ReturnObligation {
   id: string

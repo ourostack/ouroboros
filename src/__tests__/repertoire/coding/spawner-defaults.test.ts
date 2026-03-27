@@ -52,7 +52,9 @@ describe("coding spawner defaults", () => {
         "--ephemeral",
         "--json",
         "-c",
-        expect.stringContaining('"mcp_servers"'),
+        "mcp_servers.ouro.command=node",
+        "-c",
+        expect.stringContaining("mcp_servers.ouro.args="),
       ],
       expect.objectContaining({
         cwd: "/Users/test/AgentWorkspaces/ouroboros",

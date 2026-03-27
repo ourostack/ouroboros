@@ -18,6 +18,7 @@ import { getAgentName, getAgentRoot, loadAgentConfig } from "../heart/identity"
 import { getTaskModule } from "../repertoire/tasks"
 import { getCodingSessionManager } from "../repertoire/coding"
 import { listSessionActivity } from "../heart/session-activity"
+import { requestInnerWake } from "../heart/daemon/socket-client"
 import type { SessionActivityRecord } from "../heart/session-activity"
 import { buildActiveWorkFrame, formatLiveWorldStateCheckpoint, type ActiveWorkFrame } from "../heart/active-work"
 import { decideDelegation } from "../heart/delegation"
@@ -585,6 +586,14 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
       friendId: resolvedContext.friend.id,
     },
   })
+
+  // DRY cross-session awareness: notify inner dialog that activity happened on another channel
+  // Inner dialog's next checkpoint will include this session's state
+  if (input.channel !== "inner") {
+    try {
+      requestInnerWake(getAgentName()).catch(/* v8 ignore next */ () => { /* best effort — daemon may not be running */ })
+    } catch { /* getAgentName may fail in test environments */ }
+  }
 
   return {
     resolvedContext,

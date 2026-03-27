@@ -27,6 +27,16 @@ export interface OuroPathInstallerDeps {
 }
 
 const WRAPPER_SCRIPT = `#!/bin/sh
+# Check for dev mode — if dev-config.json exists, dispatch to the dev repo
+DEV_CONFIG="$HOME/.ouro-cli/dev-config.json"
+if [ -f "$DEV_CONFIG" ]; then
+  DEV_REPO=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$DEV_CONFIG','utf-8')).repoPath)}catch{}" 2>/dev/null)
+  DEV_ENTRY="$DEV_REPO/dist/heart/daemon/ouro-entry.js"
+  if [ -n "$DEV_REPO" ] && [ -e "$DEV_ENTRY" ]; then
+    exec node "$DEV_ENTRY" "$@"
+  fi
+fi
+# Fall back to installed version
 ENTRY="$HOME/.ouro-cli/CurrentVersion/node_modules/@ouro.bot/cli/dist/heart/daemon/ouro-entry.js"
 if [ ! -e "$ENTRY" ]; then
   echo "ouro not installed. Run: npx ouro.bot" >&2

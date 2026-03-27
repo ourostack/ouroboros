@@ -6,6 +6,11 @@ import {
   type OuroCliDeps,
 } from "../../../heart/daemon/daemon-cli"
 
+vi.mock("child_process", () => ({
+  execSync: vi.fn(),
+  spawn: vi.fn(),
+}))
+
 vi.mock("../../../heart/identity", () => ({
   getRepoRoot: () => "/mock/repo",
   getAgentBundlesRoot: () => "/mock/AgentBundles",

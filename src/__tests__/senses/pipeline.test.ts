@@ -16,6 +16,13 @@ const mockFindBridgesForSession = vi.fn()
 const mockListTargetSessionCandidates = vi.fn()
 const mockListCodingSessions = vi.fn()
 
+vi.mock("../../heart/daemon/socket-client", () => ({
+  requestInnerWake: vi.fn(async () => null),
+  sendDaemonCommand: vi.fn(),
+  checkDaemonSocketAlive: vi.fn(),
+  DEFAULT_DAEMON_SOCKET_PATH: "/tmp/ouroboros-daemon.sock",
+}))
+
 vi.mock("../../heart/bridges/manager", async () => {
   const actual = await vi.importActual<typeof import("../../heart/bridges/manager")>("../../heart/bridges/manager")
   return {

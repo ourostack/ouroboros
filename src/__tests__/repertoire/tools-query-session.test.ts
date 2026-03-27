@@ -734,4 +734,70 @@ describe("query_session tool", () => {
 
     expect(result).toBe("session exists but has no non-system messages.")
   })
+
+  it("resolves friend name to UUID via ctx.friendStore.listAll", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
+
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        version: 1,
+        messages: [
+          { role: "system", content: "sys" },
+          { role: "user", content: "test message" },
+          { role: "assistant", content: "test reply" },
+        ],
+      }),
+    )
+
+    const ctx = {
+      friendStore: {
+        listAll: vi.fn().mockResolvedValue([
+          { id: "a1b2c3d4-e5f6-7890-abcd-ef0123456789", name: "Jordan" },
+          { id: "f1f2f3f4-a5b6-7890-cdef-1234567890ab", name: "Ari" },
+        ]),
+      },
+    }
+
+    const result = await tool.handler(
+      { friendId: "Jordan", channel: "cli", key: "session" },
+      ctx as any,
+    )
+
+    // Should resolve "Jordan" to the UUID and read session at the resolved path
+    expect(fs.readFileSync).toHaveBeenCalledWith(
+      "/mock/agent-root/state/sessions/a1b2c3d4-e5f6-7890-abcd-ef0123456789/cli/session.json",
+      "utf-8",
+    )
+    expect(result).toContain("test message")
+  })
+
+  it("keeps friend name as-is when no match found in friendStore", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
+
+    vi.mocked(fs.readFileSync).mockImplementation(() => {
+      throw new Error("ENOENT")
+    })
+
+    const ctx = {
+      friendStore: {
+        listAll: vi.fn().mockResolvedValue([
+          { id: "f1f2f3f4-a5b6-7890-cdef-1234567890ab", name: "Ari" },
+        ]),
+      },
+    }
+
+    const result = await tool.handler(
+      { friendId: "Unknown Name", channel: "cli", key: "session" },
+      ctx as any,
+    )
+
+    // Name not found — should use the original name as friendId
+    expect(fs.readFileSync).toHaveBeenCalledWith(
+      "/mock/agent-root/state/sessions/Unknown Name/cli/session.json",
+      "utf-8",
+    )
+    expect(result).toContain("no session found")
+  })
 })
