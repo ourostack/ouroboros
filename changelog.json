@@ -2,16 +2,23 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.143",
+      "version": "0.1.0-alpha.145",
       "changes": [
-        "Metacognitive framing: self-setup awareness. Agent notices missing heartbeat task and surfaces to family to discuss cadence. Agent notices legacy psyche/memory/ path and can self-migrate to diary/. Agent creates journal/ on first write."
+        "MCP conversation channel: send_message runs full agent turns, check_response for async responses.",
+        "Cross-session awareness: pipeline wakes inner dialog after non-inner turns (DRY for all senses).",
+        "Ponder routing: responses route to originating session via direct-originator priority.",
+        "Claude Code hooks: ouro hook command, portable hooks with no hardcoded paths.",
+        "ouro wrapper: dev mode dispatch via dev-config.json.",
+        "ouro dev: persists repo path, detects CWD, disables launchd (removes plist).",
+        "Trust: MCP sessions resolve friend UUID to correct trust level.",
+        "Heartbeat timer: cadence delay on null lastCompletedAt prevents spin loop."
       ]
     },
     {
       "version": "0.1.0-alpha.142",
       "changes": [
         "Surface tool fulfills heart obligations on successful routing: findPendingObligationForOrigin + fulfillObligation called after inner obligation advance, wrapped in try/catch.",
-        "New fulfillHeartObligation callback on HandleSurfaceInput — origin-based lookup independent of inner obligationId.",
+        "New fulfillHeartObligation callback on HandleSurfaceInput \u2014 origin-based lookup independent of inner obligationId.",
         "ouro inner status command: reads runtime.json, journal dir, heartbeat cadence, attention count. Shows last turn, status, heartbeat health, journal listing, held thoughts."
       ]
     },
@@ -51,21 +58,21 @@
     {
       "version": "0.1.0-alpha.138",
       "changes": [
-        "Memory renamed to diary: memory.ts → diary.ts, MemoryFact → DiaryEntry, memory_save → diary_write, memory_search → recall. All types, functions, events, and variables renamed throughout.",
+        "Memory renamed to diary: memory.ts \u2192 diary.ts, MemoryFact \u2192 DiaryEntry, memory_save \u2192 diary_write, memory_search \u2192 recall. All types, functions, events, and variables renamed throughout.",
         "Diary path: diary/ (top-level) replaces psyche/memory/. Fallback reads from legacy path for existing bundles.",
         "Journal workspace: journal/ directory for freeform thinking-in-progress. Agent writes with write_file, system reads for heartbeat context.",
         "Unified recall tool: searches both diary entries and journal files. Results tagged [diary] or [journal].",
         "Journal embeddings: file-level embeddings indexed during heartbeat via journal/.index.json sidecar.",
         "Journal section in inner dialog system prompt: index of up to 10 most recently modified journal files with name, recency, and first-line preview.",
         "Metacognitive framing updated: diary (record), journal (workspace), ponder/rest vocabulary, morning briefing encouragement.",
-        "Session migration: memory_save → diary_write, memory_search → recall added to migrateToolNames()."
+        "Session migration: memory_save \u2192 diary_write, memory_search \u2192 recall added to migrateToolNames()."
       ]
     },
     {
       "version": "0.1.0-alpha.137",
       "changes": [
         "ouro dev auto-discovers existing repo at ~/Projects/ouroboros or prompts for clone path.",
-        "ouro dev never clones without user consent — prompts in interactive mode, errors in non-interactive.",
+        "ouro dev never clones without user consent \u2014 prompts in interactive mode, errors in non-interactive.",
         "ouro dev --repo-path errors clearly when the specified path has no repo."
       ]
     },
@@ -103,7 +110,7 @@
     {
       "version": "0.1.0-alpha.133",
       "changes": [
-        "Inner return obligations: delegated inner dialog work now tracks a ReturnObligation through queued → running → returned/deferred lifecycle.",
+        "Inner return obligations: delegated inner dialog work now tracks a ReturnObligation through queued \u2192 running \u2192 returned/deferred lifecycle.",
         "Exact-origin routing: inner dialog completions route back to the session that delegated the work, not just the freshest active session.",
         "Active work frame surfaces pending inner return obligations so the agent knows what's outstanding."
       ]

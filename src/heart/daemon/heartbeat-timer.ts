@@ -75,8 +75,9 @@ export class HeartbeatTimer {
 
     let delay: number
     if (lastCompletedAt === null) {
-      // Never run before — fire immediately
-      delay = 0
+      // Never run before — fire once after a full cadence (not immediately, to avoid spin loop
+      // when the agent has no inner dialog state to write lastCompletedAt)
+      delay = cadenceMs
     } else {
       const elapsed = nowMs - lastCompletedAt
       delay = Math.max(0, cadenceMs - elapsed)

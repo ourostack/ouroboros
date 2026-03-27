@@ -38,7 +38,7 @@ import { getTaskModule } from "../../repertoire/tasks"
 import { parseInnerDialogSession, formatThoughtTurns, getInnerDialogSessionPath, followThoughts } from "./thoughts"
 import type { TaskModule } from "../../repertoire/tasks/types"
 import { syncGlobalOuroBotWrapper as defaultSyncGlobalOuroBotWrapper } from "./ouro-bot-global-installer"
-import { installLaunchAgent, type LaunchdDeps } from "./launchd"
+import { installLaunchAgent, uninstallLaunchAgent, isDaemonInstalled, type LaunchdDeps } from "./launchd"
 import { DEFAULT_DAEMON_SOCKET_PATH, sendDaemonCommand, checkDaemonSocketAlive } from "./socket-client"
 import type { CheckForUpdateResult } from "./update-checker"
 import { listSessionActivity } from "../session-activity"
@@ -95,6 +95,8 @@ export type OuroCliCommand =
   | { kind: "attention.history"; agent?: string }
   | { kind: "inner.status"; agent?: string }
   | { kind: "mcp-serve"; agent: string; friendId?: string }
+  | { kind: "setup"; tool: "claude-code" | "codex"; agent: string }
+  | { kind: "hook"; event: string }
 
 export interface OuroCliDeps {
   socketPath: string
@@ -432,7 +434,11 @@ function usage(): string {
 }
 
 function formatVersionOutput(): string {
-  return getRuntimeMetadata().version
+  const version = getRuntimeMetadata().version
+  const mode = detectRuntimeMode(getRepoRoot())
+  /* v8 ignore start — cosmetic display toggle; dev mode always true in test env */
+  return mode === "dev" ? `${version} (dev)` : version
+  /* v8 ignore stop */
 }
 
 function buildStoppedStatusPayload(socketPath: string): StatusPayload {
@@ -1056,6 +1062,19 @@ function parseMcpServeCommand(args: string[]): OuroCliCommand & { socketOverride
   return { kind: "mcp-serve", agent, ...(friendId ? { friendId } : {}), ...(socketOverride ? { socketOverride } : {}) }
 }
 
+function parseSetupCommand(args: string[]): OuroCliCommand {
+  let tool: string | undefined
+  let agent: string | undefined
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--tool" && args[i + 1]) { tool = args[++i]; continue }
+    if (args[i] === "--agent" && args[i + 1]) { agent = args[++i]; continue }
+  }
+  if (!tool) throw new Error("setup requires --tool (claude-code | codex)")
+  if (tool !== "claude-code" && tool !== "codex") throw new Error(`Unknown tool: ${tool}. Supported: claude-code, codex`)
+  if (!agent) throw new Error("setup requires --agent <name>")
+  return { kind: "setup", tool, agent }
+}
+
 export function parseOuroCommand(args: string[]): OuroCliCommand {
   const [head, second] = args
   if (!head) return { kind: "daemon.up" }
@@ -1064,6 +1083,11 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
     return parseOuroCommand(args.slice(2))
   }
 
+  if (head === "hook") {
+    const event = second
+    if (!event) throw new Error("hook requires an event name (session-start, stop, post-tool-use)")
+    return { kind: "hook", event }
+  }
   if (head === "up") return { kind: "daemon.up" }
   if (head === "dev") {
     const devArgs = args.slice(1)
@@ -1118,6 +1142,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "poke") return parsePokeCommand(args.slice(1))
   if (head === "link") return parseLinkCommand(args.slice(1))
   if (head === "mcp-serve") return parseMcpServeCommand(args.slice(1))
+  if (head === "setup") return parseSetupCommand(args.slice(1))
 
   throw new Error(`Unknown command '${args.join(" ")}'.\n${usage()}`)
 }
@@ -1640,7 +1665,9 @@ type VersionsCliCommand = Extract<OuroCliCommand, { kind: "versions" }>
 type AttentionCliCommand = Extract<OuroCliCommand, { kind: "attention.list" } | { kind: "attention.show" } | { kind: "attention.history" }>
 type InnerStatusCliCommand = Extract<OuroCliCommand, { kind: "inner.status" }>
 type McpServeCliCommand = Extract<OuroCliCommand, { kind: "mcp-serve" }>
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand>): DaemonCommand {
+type SetupCliCommand = Extract<OuroCliCommand, { kind: "setup" }>
+type HookCliCommand = Extract<OuroCliCommand, { kind: "hook" }>
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | HookCliCommand>): DaemonCommand {
   return command
 }
 
@@ -1981,14 +2008,57 @@ function executeReminderCommand(command: ReminderCliCommand, taskMod: TaskModule
 }
 
 /* v8 ignore start -- repo resolution for ouro dev: repoPath branch tested via daemon-cli-dev; clone requires real git/npm @preserve */
+function getDevConfigPath(): string {
+  return path.join(getOuroCliHome(), "dev-config.json")
+}
+
+function readPersistedDevPath(): string | null {
+  try {
+    const data = JSON.parse(fs.readFileSync(getDevConfigPath(), "utf-8"))
+    return typeof data.repoPath === "string" ? data.repoPath : null
+  } catch {
+    return null
+  }
+}
+
+function persistDevPath(repoPath: string): void {
+  try {
+    fs.mkdirSync(path.dirname(getDevConfigPath()), { recursive: true })
+    fs.writeFileSync(getDevConfigPath(), JSON.stringify({ repoPath }, null, 2))
+  } catch { /* best effort */ }
+}
+
 function resolveDevRepoCwd(
   command: { repoPath?: string; clone?: boolean; clonePath?: string },
   checkExists: (p: string) => boolean,
   deps: { writeStdout: (text: string) => void; getRepoCwd?: () => string },
 ): string {
-  if (command.repoPath) return path.resolve(command.repoPath)
+  // 1. Explicit --repo-path: use it and persist for next time
+  if (command.repoPath) {
+    const resolved = path.resolve(command.repoPath)
+    persistDevPath(resolved)
+    return resolved
+  }
+  // 2. Clone request
   if (command.clone) return resolveClonePath(command, checkExists, deps)
-  return deps.getRepoCwd ? deps.getRepoCwd() : getRepoRoot()
+  // 3. If test/internal deps provide getRepoCwd, use it directly
+  if (deps.getRepoCwd) {
+    return deps.getRepoCwd()
+  }
+  // 4. Check CWD — if we're inside a harness repo, use it
+  const cwd = process.cwd()
+  if (checkExists(path.join(cwd, ".git")) && checkExists(path.join(cwd, "src", "heart", "daemon"))) {
+    persistDevPath(cwd)
+    return cwd
+  }
+  // 5. Read persisted path from last --repo-path
+  const persisted = readPersistedDevPath()
+  if (persisted && checkExists(path.join(persisted, ".git"))) {
+    deps.writeStdout(`using remembered dev path: ${persisted}`)
+    return persisted
+  }
+  // 6. Fall back to getRepoRoot (works when running from installed binary → resolves to npm package)
+  return getRepoRoot()
 }
 /* v8 ignore stop */
 
@@ -2282,6 +2352,19 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       /* v8 ignore stop */
     }
 
+    // Auto-build: always rebuild in dev mode so dist/ matches source
+    /* v8 ignore start -- dev auto-build: execSync in repo cwd, tested manually @preserve */
+    deps.writeStdout(`building from ${repoCwd}...`)
+    try {
+      execSync("npm run build", { cwd: repoCwd, stdio: "inherit" })
+      entryPath = path.join(repoCwd, "dist", "heart", "daemon", "daemon-entry.js")
+    } catch {
+      const message = `build failed in ${repoCwd}. fix compilation errors and retry.`
+      deps.writeStdout(message)
+      return message
+    }
+    /* v8 ignore stop */
+
     /* v8 ignore start -- defensive: ensureDaemonBootPersistence always injected in tests @preserve */
     if (deps.ensureDaemonBootPersistence) {
       try {
@@ -2298,6 +2381,21 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       }
       /* v8 ignore stop */
     }
+
+    // Disable launchd KeepAlive before killing — prevents the installed daemon from respawning
+    /* v8 ignore start -- dev launchd disable: requires real launchctl + plist on disk @preserve */
+    const launchdDevDeps: Pick<LaunchdDeps, "exec" | "existsFile" | "removeFile" | "homeDir" | "userUid"> = {
+      exec: (cmd: string) => { execSync(cmd) },
+      existsFile: (p: string) => fs.existsSync(p),
+      removeFile: (p: string) => { try { fs.unlinkSync(p) } catch { /* best effort */ } },
+      homeDir: os.homedir(),
+      userUid: process.getuid?.() ?? 0,
+    }
+    if (isDaemonInstalled(launchdDevDeps)) {
+      uninstallLaunchAgent(launchdDevDeps as LaunchdDeps)
+      deps.writeStdout("disabled launchd auto-restart for dev mode")
+    }
+    /* v8 ignore stop */
 
     // Always force-restart in dev mode — you rebuilt, you want this code running
     /* v8 ignore start -- dev force-restart: socket alive/stop/spawn tested via integration; tests inject mocks @preserve */
@@ -2317,7 +2415,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     /* v8 ignore stop */
     const started = await startDevDaemon(deps.socketPath)
     /* v8 ignore next -- defensive: pid is null only when spawn fails silently @preserve */
-    const message = `daemon running in dev mode from ${repoCwd} (pid ${started.pid ?? "unknown"})`
+    const message = `daemon running in dev mode from ${repoCwd} (pid ${started.pid ?? "unknown"})\nrun 'ouro up' to return to production mode`
     deps.writeStdout(message)
     return message
   }
@@ -2402,6 +2500,128 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   if (command.kind === "daemon.logs" && deps.tailLogs) {
     deps.tailLogs()
     return ""
+  }
+
+  // ── hook: handle Claude Code lifecycle hooks ──
+  /* v8 ignore start -- hook handler: reads real stdin, sends to real daemon @preserve */
+  if (command.kind === "hook") {
+    let stdinData = ""
+    try {
+      stdinData = require("fs").readFileSync(0, "utf-8")
+    } catch { /* no stdin */ }
+
+    let event: Record<string, unknown> = {}
+    try { event = JSON.parse(stdinData) } catch { /* malformed */ }
+
+    const eventType = command.event
+    const sessionId = (event.session_id as string) ?? "unknown"
+    const cwd = (event.cwd as string) ?? ""
+
+    // Build notification content based on event type
+    let content: string
+    if (eventType === "session-start") {
+      const model = (event.model as string) ?? ""
+      const source = (event.source as string) ?? ""
+      content = `[Claude Code session started: ${sessionId}, cwd: ${cwd}${model ? `, model: ${model}` : ""}${source ? `, source: ${source}` : ""}]`
+    } else if (eventType === "stop") {
+      const lastMsg = (event.last_assistant_message as string) ?? ""
+      content = `[Claude Code session ended: ${sessionId}${lastMsg ? `, last: ${lastMsg.slice(0, 200)}` : ""}]`
+    } else if (eventType === "post-tool-use") {
+      const toolName = (event.tool_name as string) ?? ""
+      content = `[Claude Code used ${toolName} in session ${sessionId}]`
+    } else {
+      content = `[Claude Code hook: ${eventType} in session ${sessionId}]`
+    }
+
+    // Send to daemon (best effort — daemon may not be running)
+    try {
+      const agents = require("fs").readdirSync(path.join(os.homedir(), "AgentBundles"))
+        .filter((f: string) => f.endsWith(".ouro"))
+        .map((f: string) => f.replace(".ouro", ""))
+      for (const agent of agents) {
+        await deps.sendCommand(deps.socketPath, { kind: "message.send", from: `claude-code:${sessionId}`, to: agent, content } as DaemonCommand)
+      }
+      await deps.sendCommand(deps.socketPath, { kind: "inner.wake", agent: agents[0] } as DaemonCommand).catch(() => {})
+    } catch { /* daemon not running — silent */ }
+
+    // Output for Claude Code hook system
+    deps.writeStdout(JSON.stringify({ continue: true }))
+    return JSON.stringify({ continue: true })
+  }
+  /* v8 ignore stop */
+
+  // ── setup: configure dev tool integration ──
+  if (command.kind === "setup") {
+    const { tool, agent: setupAgent } = command
+    const sourceRoot = getRepoRoot()
+    const runtimeMode = detectRuntimeMode(sourceRoot)
+    const mcpServeCommand = runtimeMode === "dev"
+      ? `node ${path.join(sourceRoot, "dist", "heart", "daemon", "ouro-bot-entry.js")} mcp-serve --agent ${setupAgent}`
+      : `ouro mcp-serve --agent ${setupAgent}`
+
+    if (tool === "claude-code") {
+      // 1. Register MCP server with Claude Code
+      const mcpAddCmd = `claude mcp add ouro-${setupAgent} -s user -- ${mcpServeCommand}`
+      execSync(mcpAddCmd, { stdio: "pipe" })
+
+      // 2. Write hooks config to ~/.claude/settings.json
+      const settingsPath = path.join(os.homedir(), ".claude", "settings.json")
+      let settings: Record<string, unknown> = {}
+      if (fs.existsSync(settingsPath)) {
+        try {
+          settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"))
+        } catch { /* start fresh */ }
+      }
+
+      // Use `ouro hook <event>` — resolves the right code based on dev vs installed mode.
+      // Bare `ouro` works because ouro is on PATH via ~/.ouro-cli/bin/.
+      settings.hooks = {
+        ...(settings.hooks as Record<string, unknown> ?? {}),
+        SessionStart: [{ hooks: [{ type: "command", command: "ouro hook session-start", timeout: 5 }] }],
+        Stop: [{ hooks: [{ type: "command", command: "ouro hook stop", timeout: 5 }] }],
+        PostToolUse: [{ matcher: "Bash|Edit|Write", hooks: [{ type: "command", command: "ouro hook post-tool-use", timeout: 5 }] }],
+      }
+
+      fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2))
+
+      emitNervesEvent({
+        component: "daemon",
+        event: "daemon.setup_complete",
+        message: "dev tool setup complete",
+        meta: { tool, agent: setupAgent, runtimeMode },
+      })
+
+      // 3. Write conversation formatting instructions to ~/.claude/CLAUDE.md
+      const claudeMdPath = path.join(os.homedir(), ".claude", "CLAUDE.md")
+      const agentInstructions = `\n## Agent conversations (ouro)\nWhen using MCP \`send_message\` to talk to an ouro agent, format the exchange clearly:\n- Before the tool call, briefly say what you're asking/telling the agent\n- After the response, quote the agent's reply in a blockquote, then add your reaction\n- Example: **Me → Agent:** "question" / > **Agent:** "response" / Your synthesis here\n`
+      let existingClaudeMd = ""
+      if (fs.existsSync(claudeMdPath)) {
+        existingClaudeMd = fs.readFileSync(claudeMdPath, "utf-8")
+      }
+      if (!existingClaudeMd.includes("Agent conversations (ouro)")) {
+        fs.writeFileSync(claudeMdPath, existingClaudeMd + agentInstructions)
+      }
+
+      const message = `setup complete: claude-code + ${setupAgent}\n  MCP server registered\n  hooks configured\n  conversation formatting instructions added`
+      deps.writeStdout(message)
+      return message
+    } else {
+      // tool === "codex" (parseSetupCommand validates tool, so this is the only remaining option)
+      const mcpAddCmd = `codex mcp add ouro-${setupAgent} -- ${mcpServeCommand}`
+      execSync(mcpAddCmd, { stdio: "pipe" })
+
+      emitNervesEvent({
+        component: "daemon",
+        event: "daemon.setup_complete",
+        message: "dev tool setup complete",
+        meta: { tool, agent: setupAgent, runtimeMode },
+      })
+
+      const message = `setup complete: codex + ${setupAgent}\n  MCP server registered`
+      deps.writeStdout(message)
+      return message
+    }
   }
 
   /* v8 ignore start — mcp-serve block binds to process.stdin/stdout; tested via mcp-server unit tests */

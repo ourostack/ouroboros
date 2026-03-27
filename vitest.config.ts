@@ -13,7 +13,7 @@ export default defineConfig({
   },
   test: {
     globals: true,
-    exclude: ["dist/**", "node_modules/**"],
+    exclude: ["dist/**", "node_modules/**", ".claude/**"],
     maxWorkers: 1,
     setupFiles: ["src/__tests__/nerves/global-capture.ts"],
     coverage: {

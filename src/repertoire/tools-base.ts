@@ -1117,7 +1117,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
           type: "object",
           properties: {
             friendId: { type: "string", description: "the friend UUID (or 'self')" },
-            channel: { type: "string", description: "the channel: cli, teams, or inner" },
+            channel: { type: "string", description: "the channel: cli, teams, bluebubbles, inner, or mcp" },
             key: { type: "string", description: "session key (defaults to 'session')" },
             messageCount: { type: "string", description: "how many recent messages to return (default 20)" },
             mode: {
@@ -1132,11 +1132,20 @@ export const baseToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
-      const friendId = args.friendId
+      let friendId = args.friendId
       const channel = args.channel
       const key = args.key || "session"
       const count = parseInt(args.messageCount || "20", 10)
       const mode = args.mode || "transcript"
+
+      // Resolve friend name → UUID if not already a UUID or "self"
+      if (friendId && friendId !== "self" && !/^[0-9a-f]{8}-[0-9a-f]{4}-/.test(friendId) && ctx?.friendStore?.listAll) {
+        const allFriends = await ctx.friendStore.listAll()
+        const match = allFriends.find(f => f.name.toLowerCase() === friendId.toLowerCase())
+        if (match) {
+          friendId = match.id
+        }
+      }
 
       if (mode === "status") {
         if (friendId !== "self" || channel !== "inner") {
@@ -1210,7 +1219,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
           type: "object",
           properties: {
             friendId: { type: "string", description: "the friend UUID (or 'self')" },
-            channel: { type: "string", description: "the channel: cli, teams, or inner" },
+            channel: { type: "string", description: "the channel: cli, teams, bluebubbles, inner, or mcp" },
             key: { type: "string", description: "session key (defaults to 'session')" },
             content: { type: "string", description: "the message content to send" },
           },

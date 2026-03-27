@@ -26,6 +26,23 @@ vi.mock("../../../heart/daemon/agent-service", () => ({
   handleAgentReportComplete: vi.fn(async () => ({ ok: true, message: "Recorded" })),
 }))
 
+// Mock shared-turn (runSenseTurn for send_message/delegate tools)
+const mockRunSenseTurn = vi.fn()
+vi.mock("../../../senses/shared-turn", () => ({
+  runSenseTurn: (...args: any[]) => mockRunSenseTurn(...args),
+}))
+
+// Mock session-id-resolver
+vi.mock("../../../heart/daemon/session-id-resolver", () => ({
+  resolveSessionId: vi.fn(() => "test-session-id"),
+}))
+
+// Mock pending
+vi.mock("../../../mind/pending", () => ({
+  getPendingDir: vi.fn(() => "/tmp/pending"),
+  drainPending: vi.fn(() => []),
+}))
+
 // Mock fs
 vi.mock("fs", () => ({
   existsSync: vi.fn(() => true),
@@ -706,6 +723,210 @@ describe("MCP server protocol layer", () => {
       component: "daemon",
       event: "daemon.mcp_server_test_end",
       message: "newline-delimited test complete",
+      meta: {},
+    })
+  })
+
+  it("returns error when delegate tool throws", async () => {
+    mockRunSenseTurn.mockRejectedValueOnce(new Error("delegate pipeline failed"))
+
+    const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+    const localStdin = new PassThrough()
+    const localStdout = new PassThrough()
+    const server = createMcpServer({
+      agent: "test-agent",
+      friendId: "test-friend",
+      socketPath: "/tmp/test.sock",
+      stdin: localStdin,
+      stdout: localStdout,
+    })
+
+    const outputPromise = collectOutput(localStdout)
+    server.start()
+
+    writeJsonRpc(localStdin, {
+      jsonrpc: "2.0",
+      id: 60,
+      method: "tools/call",
+      params: {
+        name: "delegate",
+        arguments: { task: "test task" },
+      },
+    })
+
+    await new Promise((r) => setTimeout(r, 200))
+    server.stop()
+    localStdin.end()
+
+    const output = await outputPromise
+    const match = output.match(/\{.*\}/s)
+    expect(match).not.toBeNull()
+    const response = JSON.parse(match![0])
+    expect(response.id).toBe(60)
+    expect(response.result.isError).toBe(true)
+    expect(response.result.content[0].text).toContain("delegate pipeline failed")
+
+    localStdin.destroy()
+    localStdout.destroy()
+
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.mcp_server_test_end",
+      message: "delegate error test complete",
+      meta: {},
+    })
+  })
+
+  it("returns response from send_message tool", async () => {
+    mockRunSenseTurn.mockResolvedValueOnce({ response: "hello from agent", ponderDeferred: false })
+
+    const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+    const localStdin = new PassThrough()
+    const localStdout = new PassThrough()
+    const server = createMcpServer({
+      agent: "test-agent",
+      friendId: "test-friend",
+      socketPath: "/tmp/test.sock",
+      stdin: localStdin,
+      stdout: localStdout,
+    })
+
+    const outputPromise = collectOutput(localStdout)
+    server.start()
+
+    writeJsonRpc(localStdin, {
+      jsonrpc: "2.0",
+      id: 61,
+      method: "tools/call",
+      params: {
+        name: "send_message",
+        arguments: { message: "hello agent" },
+      },
+    })
+
+    await new Promise((r) => setTimeout(r, 200))
+    server.stop()
+    localStdin.end()
+
+    const output = await outputPromise
+    const match = output.match(/\{.*\}/s)
+    expect(match).not.toBeNull()
+    const response = JSON.parse(match![0])
+    expect(response.id).toBe(61)
+    expect(response.result.isError).toBe(false)
+    expect(response.result.content[0].text).toContain("hello from agent")
+
+    localStdin.destroy()
+    localStdout.destroy()
+
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.mcp_server_test_end",
+      message: "send_message test complete",
+      meta: {},
+    })
+  })
+
+  it("returns error when send_message throws", async () => {
+    mockRunSenseTurn.mockRejectedValueOnce(new Error("pipeline broke"))
+
+    const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+    const localStdin = new PassThrough()
+    const localStdout = new PassThrough()
+    const server = createMcpServer({
+      agent: "test-agent",
+      friendId: "test-friend",
+      socketPath: "/tmp/test.sock",
+      stdin: localStdin,
+      stdout: localStdout,
+    })
+
+    const outputPromise = collectOutput(localStdout)
+    server.start()
+
+    writeJsonRpc(localStdin, {
+      jsonrpc: "2.0",
+      id: 62,
+      method: "tools/call",
+      params: {
+        name: "send_message",
+        arguments: { message: "hello" },
+      },
+    })
+
+    await new Promise((r) => setTimeout(r, 200))
+    server.stop()
+    localStdin.end()
+
+    const output = await outputPromise
+    const match = output.match(/\{.*\}/s)
+    expect(match).not.toBeNull()
+    const response = JSON.parse(match![0])
+    expect(response.id).toBe(62)
+    expect(response.result.isError).toBe(true)
+    expect(response.result.content[0].text).toContain("pipeline broke")
+
+    localStdin.destroy()
+    localStdout.destroy()
+
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.mcp_server_test_end",
+      message: "send_message error test complete",
+      meta: {},
+    })
+  })
+
+  it("handles check_response tool with pending messages", async () => {
+    const { drainPending } = await import("../../../mind/pending")
+    vi.mocked(drainPending).mockReturnValueOnce([
+      { content: "pending message 1", source: "inner-dialog", timestamp: "2026-03-27T00:00:00Z" },
+      { content: "pending message 2", source: "inner-dialog", timestamp: "2026-03-27T00:01:00Z" },
+    ] as any)
+
+    const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+    const localStdin = new PassThrough()
+    const localStdout = new PassThrough()
+    const server = createMcpServer({
+      agent: "test-agent",
+      friendId: "test-friend",
+      socketPath: "/tmp/test.sock",
+      stdin: localStdin,
+      stdout: localStdout,
+    })
+
+    const outputPromise = collectOutput(localStdout)
+    server.start()
+
+    writeJsonRpc(localStdin, {
+      jsonrpc: "2.0",
+      id: 63,
+      method: "tools/call",
+      params: {
+        name: "check_response",
+        arguments: {},
+      },
+    })
+
+    await new Promise((r) => setTimeout(r, 200))
+    server.stop()
+    localStdin.end()
+
+    const output = await outputPromise
+    const match = output.match(/\{.*\}/s)
+    expect(match).not.toBeNull()
+    const response = JSON.parse(match![0])
+    expect(response.id).toBe(63)
+    expect(response.result.isError).toBe(false)
+    expect(response.result.content[0].text).toContain("pending message 1")
+
+    localStdin.destroy()
+    localStdout.destroy()
+
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.mcp_server_test_end",
+      message: "check_response pending test complete",
       meta: {},
     })
   })

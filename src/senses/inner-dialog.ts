@@ -434,6 +434,24 @@ export async function routeDelegatedCompletion(
     return
   }
 
+  // Priority 1.5: Direct return to originating session (ponder without bridge).
+  // When delegatedFrom has specific channel+key, route directly there instead of searching for freshest.
+  if (delegatedFrom.channel && delegatedFrom.key && delegatedFrom.channel !== "inner") {
+    const directTarget = sessionActivity.find((a) =>
+      a.friendId === delegatedFrom.friendId && a.channel === delegatedFrom.channel && a.key === delegatedFrom.key,
+    )
+    if (directTarget) {
+      if (await tryDeliverDelegatedCompletion(directTarget, outboundEnvelope)) {
+        advanceObligationQuietly(agentName, obligationId, { status: "returned", returnedAt: timestamp, returnTarget: "direct-originator" })
+        return
+      }
+    }
+    // Even if session isn't in activity list (might have ended), queue to its pending dir
+    writePendingEnvelope(getPendingDir(agentName, delegatedFrom.friendId, delegatedFrom.channel, delegatedFrom.key), outboundEnvelope)
+    advanceObligationQuietly(agentName, obligationId, { status: "returned", returnedAt: timestamp, returnTarget: "direct-originator" })
+    return
+  }
+
   // Priority 2: Freshest active friend session.
   const freshest = findFreshestFriendSession({
     sessionsDir: path.join(agentRoot, "state", "sessions"),

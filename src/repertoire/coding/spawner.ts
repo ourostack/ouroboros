@@ -40,14 +40,11 @@ function buildCommandArgs(runner: CodingRunner, workdir: string, parentAgent?: s
     }
   }
 
-  const mcpConfig = JSON.stringify({
-    mcp_servers: {
-      ouro: {
-        command: "ouro",
-        args: ["mcp-serve", "--agent", parentAgent ?? "unknown"],
-      },
-    },
-  })
+  const agent = parentAgent ?? "unknown"
+  // Use absolute path to ouro-entry.js so MCP works in both dev and installed mode
+  // __dirname at runtime is dist/repertoire/coding/ — go up 2 levels to dist/
+  const distRoot = path.resolve(__dirname, "..", "..")
+  const ouroEntryPath = path.join(distRoot, "heart", "daemon", "ouro-entry.js")
 
   return {
     command: "codex",
@@ -59,7 +56,9 @@ function buildCommandArgs(runner: CodingRunner, workdir: string, parentAgent?: s
       "--ephemeral",
       "--json",
       "-c",
-      mcpConfig,
+      `mcp_servers.ouro.command=node`,
+      "-c",
+      `mcp_servers.ouro.args=["${ouroEntryPath}","mcp-serve","--agent","${agent}"]`,
     ],
   }
 }

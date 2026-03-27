@@ -100,17 +100,22 @@ describe("codex spawner MCP injection", () => {
       { spawnFn, existsSync: vi.fn(() => false), readFileSync: vi.fn(() => "") },
     )
 
-    const cIndex = result.args.indexOf("-c")
-    expect(cIndex).toBeGreaterThan(-1)
-    const configArg = result.args[cIndex + 1]
-    expect(configArg).toBeDefined()
-    const config = JSON.parse(configArg)
-    expect(config.mcp_servers).toBeDefined()
-    expect(config.mcp_servers.ouro).toBeDefined()
-    expect(config.mcp_servers.ouro.command).toBe("ouro")
-    expect(config.mcp_servers.ouro.args).toContain("mcp-serve")
-    expect(config.mcp_servers.ouro.args).toContain("--agent")
-    expect(config.mcp_servers.ouro.args).toContain("test-agent")
+    // Two -c flags: one for command, one for args (key=value format)
+    const cIndices = result.args.reduce<number[]>((acc, a, i) => (a === "-c" ? [...acc, i] : acc), [])
+    expect(cIndices.length).toBe(2)
+
+    const commandArg = result.args[cIndices[0] + 1]
+    expect(commandArg).toBe("mcp_servers.ouro.command=node")
+
+    const argsArg = result.args[cIndices[1] + 1]
+    expect(argsArg).toMatch(/^mcp_servers\.ouro\.args=/)
+    // The args value is a JSON array with an absolute path to ouro-entry.js
+    const argsJson = argsArg.replace("mcp_servers.ouro.args=", "")
+    const parsed = JSON.parse(argsJson) as string[]
+    expect(parsed[0]).toMatch(/ouro-entry\.js$/)
+    expect(parsed).toContain("mcp-serve")
+    expect(parsed).toContain("--agent")
+    expect(parsed).toContain("test-agent")
 
     emitNervesEvent({
       component: "repertoire",
