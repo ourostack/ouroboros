@@ -6897,6 +6897,31 @@ describe("Teams adapter - pipeline integration (U7)", () => {
   })
 })
 
+// ── Welcome Adaptive Card ────────────────────────────────────────────────────
+describe("Teams adapter - welcome card", () => {
+  it("buildWelcomeCard returns an Adaptive Card with prompt starters", async () => {
+    vi.resetModules()
+    const teams = await import("../../senses/teams")
+    const card = teams.buildWelcomeCard()
+    expect(card.type).toBe("AdaptiveCard")
+    expect(card.body).toBeDefined()
+    expect(card.body.length).toBeGreaterThan(0)
+    // Card should have actions (prompt starters)
+    expect(card.actions).toBeDefined()
+    expect(card.actions.length).toBeGreaterThanOrEqual(3)
+  })
+
+  it("buildWelcomeCard prompt starters are Action.Submit with messageBack", async () => {
+    vi.resetModules()
+    const teams = await import("../../senses/teams")
+    const card = teams.buildWelcomeCard()
+    for (const action of card.actions) {
+      expect(action.type).toBe("Action.Submit")
+      expect(action.title).toBeDefined()
+    }
+  })
+})
+
 // ── Teams feedback invoke handler ────────────────────────────────────────────
 describe("Teams adapter - feedback handler (message.submit.feedback)", () => {
   it("sanitizeFeedbackComment truncates to 200 chars", async () => {
