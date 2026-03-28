@@ -331,11 +331,14 @@ describe("Teams adapter - proactive >4000 finalization", () => {
     vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
     callbacks.onTextChunk("b".repeat(20))
     vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
-    sendMessage.mockClear()
+    // Let the safeSend promise chain settle
+    await vi.advanceTimersByTimeAsync(0)
+    const callsBefore = sendMessage.mock.calls.length
     // After finalization, more text goes to sendMessage
-    callbacks.onTextChunk("more text after fin")
+    callbacks.onTextChunk("more text after fin!!")  // >= 20 chars (just in case)
     vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
-    expect(sendMessage).toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(sendMessage.mock.calls.length).toBeGreaterThan(callsBefore)
   })
 })
 
@@ -4465,13 +4468,13 @@ describe("Teams adapter - unified chunked streaming (no disableStreaming)", () =
     expect(sendMessage).toHaveBeenCalledWith("hello world")
   })
 
-  it("flushTextBuffer sends full text without splitting", async () => {
+  it("flushTextBuffer sends full text without splitting (under 4000)", async () => {
     vi.resetModules()
     const teams = await import("../../senses/teams")
     const sendMessage = vi.fn().mockResolvedValue(undefined)
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller, sendMessage)
-    // Accumulate long text
-    const longText = "a".repeat(3000) + "\n\n" + "b".repeat(3000)
+    // Accumulate text under 4000 chars
+    const longText = "a".repeat(1900) + "\n\n" + "b".repeat(1900)
     callbacks.onTextChunk(longText)
     // onToolStart triggers flushTextBuffer
     callbacks.onToolStart("test_tool", { arg: "val" })

@@ -157,6 +157,8 @@ export function createTeamsCallbacks(
   let hadToolRun = false
   let hadRealOutput = false // true once reasoning/tool output shown; suppresses phrases
   let reasoningBuf = "" // accumulated reasoning text for status display
+  let totalEmitted = 0 // cumulative chars emitted via safeEmit (for >4000 finalization)
+  let streamFinalized = false // true after stream.close() — subsequent flushes go to safeSend
   let textBuffer = "" // accumulated text output for chunked streaming
   let streamHasContent = false // tracks whether primary output has received content
   let firstContentEmitted = false // true after first content push — disables MIN_INITIAL_CHARS threshold
@@ -220,6 +222,7 @@ export function createTeamsCallbacks(
     try {
       catchAsync(stream.emit({ text, entities: aiLabelEntities(), channelData: { feedbackLoopEnabled: true } }))
       streamHasContent = true
+      totalEmitted += text.length
     } catch {
       markStopped()
     }
@@ -291,6 +294,33 @@ export function createTeamsCallbacks(
   function flushTextBuffer(): void {
     if (!textBuffer) return
     if (!firstContentEmitted && textBuffer.length < MIN_INITIAL_CHARS) return
+
+    // Proactive >4000 finalization: if cumulative emitted + buffer >= RECOVERY_CHUNK_SIZE,
+    // finalize the stream and send overflow via safeSend (follow-up message).
+    if (!streamFinalized && totalEmitted + textBuffer.length >= RECOVERY_CHUNK_SIZE) {
+      const remaining = RECOVERY_CHUNK_SIZE - totalEmitted
+      if (remaining > 0) {
+        safeEmit(textBuffer.slice(0, remaining))
+      }
+      try { stream.close() } catch { /* stream may already be dead */ }
+      streamFinalized = true
+      const overflow = textBuffer.slice(remaining > 0 ? remaining : 0)
+      textBuffer = ""
+      if (overflow) safeSend(overflow)
+      if (!firstContentEmitted) {
+        firstContentEmitted = true
+        stopPhraseRotation()
+      }
+      return
+    }
+
+    if (streamFinalized) {
+      // After finalization, all content goes to safeSend (follow-up messages)
+      safeSend(textBuffer)
+      textBuffer = ""
+      return
+    }
+
     safeEmit(textBuffer)
     textBuffer = ""
     if (!firstContentEmitted) {
