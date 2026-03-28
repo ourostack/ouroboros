@@ -264,6 +264,81 @@ describe("Teams adapter - MIN_INITIAL_CHARS streaming", () => {
   })
 })
 
+// ── Proactive >4000 finalization ─────────────────────────────────────────────
+describe("Teams adapter - proactive >4000 finalization", () => {
+  let mockStream: { emit: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> }
+  let controller: AbortController
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+    controller = new AbortController()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it("at 4000 chars: stream finalized and overflow sent via sendMessage", async () => {
+    vi.resetModules()
+    const teams = await import("../../senses/teams")
+    const sendMessage = vi.fn().mockResolvedValue(undefined)
+    const callbacks = teams.createTeamsCallbacks(mockStream as any, controller, sendMessage)
+    // Emit enough to get past MIN_INITIAL_CHARS first
+    callbacks.onTextChunk("a".repeat(3990))
+    vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
+    expect(mockStream.emit).toHaveBeenCalledTimes(1)
+    // Now add 20 more chars — total hits 4000+
+    callbacks.onTextChunk("b".repeat(20))
+    vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
+    // Stream should be finalized (close called)
+    expect(mockStream.close).toHaveBeenCalled()
+    // Overflow sent via sendMessage
+    expect(sendMessage).toHaveBeenCalled()
+  })
+
+  it("at 3999 chars: no finalization yet", async () => {
+    vi.resetModules()
+    const teams = await import("../../senses/teams")
+    const sendMessage = vi.fn().mockResolvedValue(undefined)
+    const callbacks = teams.createTeamsCallbacks(mockStream as any, controller, sendMessage)
+    callbacks.onTextChunk("a".repeat(3999))
+    vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
+    expect(mockStream.close).not.toHaveBeenCalled()
+    expect(sendMessage).not.toHaveBeenCalled()
+  })
+
+  it("follow-up message includes AI labels", async () => {
+    vi.resetModules()
+    const teams = await import("../../senses/teams")
+    const sendMessage = vi.fn().mockResolvedValue(undefined)
+    const callbacks = teams.createTeamsCallbacks(mockStream as any, controller, sendMessage)
+    // Push enough text to trigger finalization
+    callbacks.onTextChunk("a".repeat(3990))
+    vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
+    callbacks.onTextChunk("b".repeat(20))
+    vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
+    // The sendMessage path (safeSend) sends the overflow text
+    expect(sendMessage).toHaveBeenCalled()
+  })
+
+  it("after finalization: subsequent text goes to sendMessage", async () => {
+    vi.resetModules()
+    const teams = await import("../../senses/teams")
+    const sendMessage = vi.fn().mockResolvedValue(undefined)
+    const callbacks = teams.createTeamsCallbacks(mockStream as any, controller, sendMessage)
+    callbacks.onTextChunk("a".repeat(3990))
+    vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
+    callbacks.onTextChunk("b".repeat(20))
+    vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
+    sendMessage.mockClear()
+    // After finalization, more text goes to sendMessage
+    callbacks.onTextChunk("more text after fin")
+    vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
+    expect(sendMessage).toHaveBeenCalled()
+  })
+})
+
 describe("Teams adapter - createTeamsCallbacks (SDK-delegated streaming)", () => {
   let mockStream: { emit: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> }
   let controller: AbortController
