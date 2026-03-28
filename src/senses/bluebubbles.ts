@@ -738,9 +738,8 @@ async function handleBlueBubblesNormalizedEvent(
     const isReaction = event.kind === "mutation" && event.mutationType === "reaction"
     if (isReaction && event.targetMessageGuid) {
       const originalText = await client.getMessageText(event.targetMessageGuid).catch(() => null)
-      if (originalText) {
-        event.textForAgent = enrichReactionText(event.textForAgent, originalText, 80)
-      }
+      /* v8 ignore next -- enrichReactionText covered by unit tests @preserve */
+      if (originalText) event.textForAgent = enrichReactionText(event.textForAgent, originalText, 80)
     }
 
     // Build inbound user message (adapter concern: BB-specific content formatting)

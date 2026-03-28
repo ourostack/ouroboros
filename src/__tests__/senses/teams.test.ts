@@ -341,6 +341,26 @@ describe("Teams adapter - proactive >4000 finalization", () => {
     expect(sendMessage.mock.calls.length).toBeGreaterThan(callsBefore)
   })
 
+  it("finalization before any content emitted stops phrase rotation", async () => {
+    vi.resetModules()
+    const teams = await import("../../senses/teams")
+    const sendMessage = vi.fn().mockResolvedValue(undefined)
+    const callbacks = teams.createTeamsCallbacks(mockStream as any, controller, sendMessage)
+    // Push 4010 chars all at once — no flush has happened yet, so firstContentEmitted is false
+    callbacks.onTextChunk("x".repeat(4010))
+    // First flush triggers finalization immediately (buffer > RECOVERY_CHUNK_SIZE)
+    vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
+    // Stream finalized
+    expect(mockStream.close).toHaveBeenCalled()
+    // Overflow sent via sendMessage
+    expect(sendMessage).toHaveBeenCalled()
+    // Subsequent text should NOT go to stream.emit (phrase rotation stopped, stream closed)
+    const emitCalls = mockStream.emit.mock.calls.length
+    callbacks.onTextChunk("after finalization")
+    vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
+    expect(mockStream.emit.mock.calls.length).toBe(emitCalls)
+  })
+
   it("flush() after finalization routes remaining buffer through sendMessage (not stream.emit)", async () => {
     vi.resetModules()
     const teams = await import("../../senses/teams")
