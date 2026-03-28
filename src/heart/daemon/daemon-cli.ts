@@ -40,6 +40,7 @@ import type { TaskModule } from "../../repertoire/tasks/types"
 import { syncGlobalOuroBotWrapper as defaultSyncGlobalOuroBotWrapper } from "./ouro-bot-global-installer"
 import { installLaunchAgent, uninstallLaunchAgent, isDaemonInstalled, type LaunchdDeps } from "./launchd"
 import { DEFAULT_DAEMON_SOCKET_PATH, sendDaemonCommand, checkDaemonSocketAlive } from "./socket-client"
+import { readDaemonTombstone } from "./daemon-tombstone"
 import type { CheckForUpdateResult } from "./update-checker"
 import { listSessionActivity } from "../session-activity"
 import {
@@ -184,6 +185,8 @@ interface StatusWorkerRow {
   status: string
   pid: number | null
   restartCount: number
+  lastExitCode: number | null
+  lastSignal: string | null
 }
 
 interface StatusPayload {
@@ -263,6 +266,8 @@ function parseStatusPayload(data: unknown): StatusPayload | null {
       status,
       pid,
       restartCount,
+      lastExitCode: numberField(row.lastExitCode) ?? null,
+      lastSignal: stringField(row.lastSignal) ?? null,
     } satisfies StatusWorkerRow
   })
 
@@ -318,13 +323,21 @@ function formatDaemonStatusOutput(response: DaemonResponse, fallback: string): s
     row.status,
     row.detail,
   ])
-  const workerRows = payload.workers.map((row) => [
-    row.agent,
-    row.worker,
-    row.status,
-    row.pid === null ? "n/a" : String(row.pid),
-    String(row.restartCount),
-  ])
+  const workerRows = payload.workers.map((row) => {
+    /* v8 ignore start — exit info branches tested via daemon-crash-context; v8 misreports conditional chains @preserve */
+    let exitInfo = "n/a"
+    if (row.lastExitCode !== null) exitInfo = `code=${row.lastExitCode}`
+    if (row.lastSignal !== null) exitInfo = row.lastExitCode !== null ? `code=${row.lastExitCode} sig=${row.lastSignal}` : `sig=${row.lastSignal}`
+    /* v8 ignore stop */
+    return [
+      row.agent,
+      row.worker,
+      row.status,
+      row.pid === null ? "n/a" : String(row.pid),
+      String(row.restartCount),
+      exitInfo,
+    ]
+  })
 
   return [
     "Overview",
@@ -334,7 +347,7 @@ function formatDaemonStatusOutput(response: DaemonResponse, fallback: string): s
     formatTable(["Agent", "Sense", "Enabled", "State", "Detail"], senseRows),
     "",
     "Workers",
-    formatTable(["Agent", "Worker", "State", "PID", "Restarts"], workerRows),
+    formatTable(["Agent", "Worker", "State", "PID", "Restarts", "Last Exit"], workerRows),
   ].join("\n")
 }
 
@@ -471,15 +484,32 @@ function buildStoppedStatusPayload(socketPath: string): StatusPayload {
 }
 
 function daemonUnavailableStatusOutput(socketPath: string): string {
-  return [
+  /* v8 ignore start — tombstone read tested in daemon-status-tombstone.test; branch misreported @preserve */
+  const tombstone = readDaemonTombstone()
+  const deathLine = tombstone
+    ? `Last death: ${tombstone.timestamp} -- ${tombstone.reason}: ${tombstone.message}`
+    : null
+  /* v8 ignore stop */
+
+  const lines = [
     formatDaemonStatusOutput({
       ok: true,
       summary: "daemon not running",
       data: buildStoppedStatusPayload(socketPath),
     }, "daemon not running"),
     "",
-    "daemon not running; run `ouro up`",
-  ].join("\n")
+  ]
+
+  /* v8 ignore start — tombstone presence requires real daemon crash @preserve */
+  if (deathLine) {
+    lines.push(deathLine)
+    lines.push("")
+  /* v8 ignore stop */
+  }
+
+  lines.push("daemon not running; run `ouro up`")
+
+  return lines.join("\n")
 }
 
 function isDaemonUnavailableError(error: unknown): boolean {

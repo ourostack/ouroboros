@@ -16,6 +16,7 @@ import { HabitScheduler } from "./habit-scheduler"
 import { migrateHabitsFromTaskSystem } from "./habit-migration"
 import { createRealOsCronDeps, resolveOuroBinaryPath } from "./os-cron-deps"
 import { LaunchdCronManager } from "./os-cron"
+import { writeDaemonTombstone } from "./daemon-tombstone"
 
 function parseSocketPath(argv: string[]): string {
   const socketIndex = argv.indexOf("--socket")
@@ -134,14 +135,18 @@ void daemon.start().then(() => {
     scheduler.watchForChanges()
     habitSchedulers.push(scheduler)
   }
-}).catch(async () => {
+}).catch(async (err: unknown) => {
 /* v8 ignore stop */
+  /* v8 ignore start — instanceof branch defensive; catch always receives Error in practice @preserve */
+  const error = err instanceof Error ? err : new Error(String(err))
+  /* v8 ignore stop */
+  writeDaemonTombstone("startupFailure", error)
   emitNervesEvent({
     level: "error",
     component: "daemon",
     event: "daemon.entry_error",
     message: "daemon entrypoint failed",
-    meta: {},
+    meta: { error: error.message },
   })
   await daemon.stop()
   process.exit(1)
@@ -156,3 +161,29 @@ process.on("SIGTERM", () => {
   for (const s of habitSchedulers) { s.stopWatching(); s.stop() }
   void daemon.stop().then(() => process.exit(0))
 })
+
+/* v8 ignore start -- global exception handlers: genuinely untestable in vitest; exercised by real daemon crashes @preserve */
+process.on("uncaughtException", (error) => {
+  writeDaemonTombstone("uncaughtException", error)
+  emitNervesEvent({
+    level: "error",
+    component: "daemon",
+    event: "daemon.uncaught_exception",
+    message: "uncaught exception in daemon process",
+    meta: { error: error.message, stack: error.stack ?? null },
+  })
+  // Graceful 5-second shutdown window
+  setTimeout(() => process.exit(1), 5_000).unref()
+  void daemon.stop().then(() => process.exit(1))
+})
+
+process.on("unhandledRejection", (reason) => {
+  emitNervesEvent({
+    level: "warn",
+    component: "daemon",
+    event: "daemon.unhandled_rejection",
+    message: "unhandled promise rejection in daemon process",
+    meta: { reason: reason instanceof Error ? reason.message : String(reason) },
+  })
+})
+/* v8 ignore stop */

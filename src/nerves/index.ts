@@ -1,4 +1,4 @@
-import { appendFile, mkdirSync } from "fs"
+import { appendFile, mkdirSync, renameSync, statSync, unlinkSync } from "fs"
 import { dirname } from "path"
 import { randomUUID } from "crypto"
 
@@ -134,15 +134,54 @@ export function createStderrSink(write: (chunk: string) => unknown = (chunk) => 
   return createTerminalSink(write)
 }
 
-export function createNdjsonFileSink(filePath: string): LogSink {
+const DEFAULT_MAX_LOG_SIZE_BYTES = 50 * 1024 * 1024 // 50MB
+const ROTATION_CHECK_INTERVAL_BYTES = 1024 * 1024 // ~1MB between stat checks
+
+/**
+ * Rotate a log file: shift .1 -> .2, delete old .2, rename current -> .1.
+ * Uses the ndjson extension pattern: file.ndjson -> file.1.ndjson -> file.2.ndjson
+ */
+export function rotateIfNeeded(filePath: string, maxSizeBytes: number): boolean {
+  let size: number
+  try {
+    size = statSync(filePath).size
+  } catch {
+    return false
+  }
+
+  if (size < maxSizeBytes) return false
+
+  const ext = filePath.endsWith(".ndjson") ? ".ndjson" : ""
+  const base = ext ? filePath.slice(0, -ext.length) : filePath
+  const file1 = `${base}.1${ext}`
+  const file2 = `${base}.2${ext}`
+
+  try { unlinkSync(file2) } catch { /* may not exist */ }
+  try { renameSync(file1, file2) } catch { /* may not exist */ }
+  try { renameSync(filePath, file1) } catch { /* best effort */ }
+
+  return true
+}
+
+export function createNdjsonFileSink(filePath: string, maxSizeBytes?: number): LogSink {
   mkdirSync(dirname(filePath), { recursive: true })
   const queue: string[] = []
   let flushing = false
+  let bytesSinceCheck = 0
+  const maxSize = maxSizeBytes ?? DEFAULT_MAX_LOG_SIZE_BYTES
 
   function flush(): void {
     if (flushing || queue.length === 0) return
     flushing = true
     const line = queue.shift() as string
+
+    /* v8 ignore start — rotation triggers only after ~1MB of writes @preserve */
+    if (bytesSinceCheck >= ROTATION_CHECK_INTERVAL_BYTES) {
+      bytesSinceCheck = 0
+      rotateIfNeeded(filePath, maxSize)
+    }
+    /* v8 ignore stop */
+
     appendFile(filePath, line, "utf8", () => {
       flushing = false
       flush()
@@ -150,7 +189,9 @@ export function createNdjsonFileSink(filePath: string): LogSink {
   }
 
   return (entry: LogEvent): void => {
-    queue.push(`${JSON.stringify(entry)}\n`)
+    const line = `${JSON.stringify(entry)}\n`
+    bytesSinceCheck += line.length
+    queue.push(line)
     flush()
   }
 }

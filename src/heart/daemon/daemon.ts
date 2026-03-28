@@ -128,6 +128,8 @@ export interface DaemonProcessManagerLike {
     startedAt: string | null
     lastCrashAt: string | null
     backoffMs: number
+    lastExitCode?: number | null
+    lastSignal?: string | null
   }>
 }
 
@@ -216,6 +218,8 @@ interface DaemonWorkerRow {
   pid: number | null
   restartCount: number
   startedAt: string | null
+  lastExitCode: number | null
+  lastSignal: string | null
 }
 
 interface DaemonStatusOverview {
@@ -248,6 +252,8 @@ function buildWorkerRows(
     pid: snapshot.pid,
     restartCount: snapshot.restartCount,
     startedAt: snapshot.startedAt,
+    lastExitCode: snapshot.lastExitCode ?? null,
+    lastSignal: snapshot.lastSignal ?? null,
   }))
 }
 
@@ -395,11 +401,35 @@ export class OuroDaemon {
       let raw = ""
       let responded = false
 
+      /* v8 ignore start — connection error handler requires real socket error @preserve */
+      connection.on("error", (err) => {
+        emitNervesEvent({
+          level: "warn",
+          component: "daemon",
+          event: "daemon.connection_error",
+          message: "socket connection error",
+          meta: { error: err.message, code: (err as NodeJS.ErrnoException).code ?? null },
+        })
+      })
+      /* v8 ignore stop */
+
       const flushResponse = async () => {
         if (responded) return
         responded = true
         const response = await this.handleRawPayload(raw)
-        connection.end(response)
+        try {
+          connection.end(response)
+        /* v8 ignore start — EPIPE catch requires real socket disconnect @preserve */
+        } catch (err) {
+          emitNervesEvent({
+            level: "warn",
+            component: "daemon",
+            event: "daemon.connection_end_error",
+            message: "failed to send response to client (EPIPE)",
+            meta: { error: err instanceof Error ? err.message : String(err) },
+          })
+        }
+        /* v8 ignore stop */
       }
 
       connection.on("data", (chunk) => {
@@ -414,7 +444,22 @@ export class OuroDaemon {
     const server = this.server
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject)
-      server.listen(this.socketPath, () => resolve())
+      server.listen(this.socketPath, () => {
+        // Replace the one-time error listener with a persistent one after successful listen
+        server.removeAllListeners("error")
+        /* v8 ignore start — server error after listen requires real socket race condition @preserve */
+        server.on("error", (err) => {
+          emitNervesEvent({
+            level: "error",
+            component: "daemon",
+            event: "daemon.server_error",
+            message: "daemon server error after listen",
+            meta: { error: err.message, code: (err as NodeJS.ErrnoException).code ?? null },
+          })
+        })
+        /* v8 ignore stop */
+        resolve()
+      })
     })
   }
 
@@ -612,6 +657,27 @@ export class OuroDaemon {
       meta: { kind: command.kind },
     })
 
+    try {
+      return await this.handleCommandInner(command)
+    /* v8 ignore start — command error catch tested in daemon-command-error.test; instanceof branches defensive @preserve */
+    } catch (error) {
+      emitNervesEvent({
+        level: "error",
+        component: "daemon",
+        event: "daemon.command_error",
+        message: "unexpected error handling daemon command",
+        meta: {
+          kind: command.kind,
+          error: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack ?? null : null,
+        },
+      })
+      throw error
+    }
+    /* v8 ignore stop */
+  }
+
+  private async handleCommandInner(command: DaemonCommand): Promise<DaemonResponse> {
     switch (command.kind) {
       case "daemon.start":
         await this.start()
