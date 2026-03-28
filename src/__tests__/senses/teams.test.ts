@@ -164,6 +164,106 @@ describe("Teams adapter - AI labels on outbound messages", () => {
   })
 })
 
+// ── MIN_INITIAL_CHARS: hybrid phrase rotation + text buffering ──────────────
+describe("Teams adapter - MIN_INITIAL_CHARS streaming", () => {
+  let mockStream: { emit: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> }
+  let controller: AbortController
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+    controller = new AbortController()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it("under MIN_INITIAL_CHARS: periodic flush does not emit", async () => {
+    vi.resetModules()
+    const teams = await import("../../senses/teams")
+    const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
+    callbacks.onTextChunk("short")  // 5 chars < 20
+    vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
+    expect(mockStream.emit).not.toHaveBeenCalled()
+  })
+
+  it("at MIN_INITIAL_CHARS: periodic flush emits full buffer and stops phrases", async () => {
+    vi.resetModules()
+    const teams = await import("../../senses/teams")
+    const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
+    callbacks.onModelStart()  // start phrase rotation
+    mockStream.update.mockClear()
+    callbacks.onTextChunk("a".repeat(20))  // exactly 20 chars
+    vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
+    expect(mockStream.emit).toHaveBeenCalledTimes(1)
+    // After first content emit, phrase rotation should be stopped
+    mockStream.update.mockClear()
+    vi.advanceTimersByTime(3000)
+    // Phrase rotation timer (1500ms) should not fire any more
+    const phraseUpdates = mockStream.update.mock.calls.filter((c: any) => {
+      const text = c[0] as string
+      return text.endsWith("...")
+    })
+    expect(phraseUpdates.length).toBe(0)
+  })
+
+  it("after first emit: normal periodic flush (no threshold)", async () => {
+    vi.resetModules()
+    const teams = await import("../../senses/teams")
+    const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
+    callbacks.onTextChunk("a".repeat(25))  // over threshold
+    vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
+    expect(mockStream.emit).toHaveBeenCalledTimes(1)
+    // After first emit, small chunks should flush normally
+    callbacks.onTextChunk("hi")  // 2 chars, under 20
+    vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
+    expect(mockStream.emit).toHaveBeenCalledTimes(2)
+  })
+
+  it("short response: flush() delivers remaining buffer regardless of threshold", async () => {
+    vi.resetModules()
+    const teams = await import("../../senses/teams")
+    const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
+    callbacks.onTextChunk("ok")  // 2 chars, well under 20
+    // No periodic flush fires yet
+    vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
+    expect(mockStream.emit).not.toHaveBeenCalled()
+    // End of turn: flush() should deliver regardless of threshold
+    await callbacks.flush()
+    expect(mockStream.emit).toHaveBeenCalledTimes(1)
+    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled("ok"))
+  })
+
+  it("phrase rotation continues while text accumulates silently", async () => {
+    vi.resetModules()
+    const teams = await import("../../senses/teams")
+    const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
+    callbacks.onModelStart()  // starts phrases
+    mockStream.update.mockClear()
+    callbacks.onTextChunk("hi")  // under threshold, does not stop phrases
+    vi.advanceTimersByTime(1500)  // phrase timer interval
+    // Phrase rotation should still be running
+    expect(mockStream.update).toHaveBeenCalled()
+  })
+
+  it("onReasoningChunk still stops phrase rotation immediately", async () => {
+    vi.resetModules()
+    const teams = await import("../../senses/teams")
+    const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
+    callbacks.onModelStart()  // starts phrases
+    mockStream.update.mockClear()
+    callbacks.onReasoningChunk("thinking")
+    // Reasoning stops phrases immediately
+    vi.advanceTimersByTime(3000)
+    const phraseUpdates = mockStream.update.mock.calls.filter((c: any) => {
+      const text = c[0] as string
+      return text.endsWith("...") && !text.startsWith("thinking")
+    })
+    expect(phraseUpdates.length).toBe(0)
+  })
+})
+
 describe("Teams adapter - createTeamsCallbacks (SDK-delegated streaming)", () => {
   let mockStream: { emit: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> }
   let controller: AbortController
