@@ -2,6 +2,18 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.147",
+      "changes": [
+        "Feedback signals as social cues: Teams thumbs-up/down and BlueBubbles reactions reach the agent as first-class social signals with full cognitive tools.",
+        "AI-generated labels: all outbound Teams messages include AIGeneratedContent entity and feedbackLoopEnabled for native AI badge and feedback UI.",
+        "BlueBubbles reaction enrichment: reactions include original message text (truncated to 80 chars) via best-effort BB API lookup.",
+        "Streaming refinements: hybrid MIN_INITIAL_CHARS (phrase rotation until 20+ real chars), proactive >4000 finalization with follow-up messages.",
+        "Welcome card: Adaptive Card with prompt starters on Teams bot install.",
+        "Observe gate: available in 1:1 chats for reaction signals (natural silence case).",
+        "Per-context prompt framing: 1:1 vs group framing for feedback signal processing."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.146",
       "changes": [
         "fix(hook): target specific agent only, ouro up breaks dev dispatch loop"
