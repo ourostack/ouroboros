@@ -918,6 +918,7 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
         conversationId: convId,
         text: syntheticText,
         receivedAt: Date.now(),
+        effect: classifySteeringFollowUpEffect(syntheticText),
       })
       return
     }
