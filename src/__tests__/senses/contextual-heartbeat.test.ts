@@ -10,7 +10,7 @@ import {
   type ContextualHeartbeatOptions,
 } from "../../senses/contextual-heartbeat"
 
-function makeOptions(overrides: Partial<ContextualHeartbeatOptions> = {}): ContextualHeartbeatOptions {
+function makeOptions(overrides: Partial<ContextualHeartbeatOptions> & { habitBody?: string } = {}): ContextualHeartbeatOptions {
   return {
     journalDir: overrides.journalDir ?? "/bundles/slugger.ouro/journal",
     lastCompletedAt: overrides.lastCompletedAt ?? undefined,
@@ -19,6 +19,7 @@ function makeOptions(overrides: Partial<ContextualHeartbeatOptions> = {}): Conte
     checkpoint: overrides.checkpoint ?? undefined,
     now: overrides.now ?? (() => new Date("2026-03-26T12:00:00Z")),
     readJournalDir: overrides.readJournalDir ?? (() => []),
+    habitBody: overrides.habitBody,
   }
 }
 
@@ -459,5 +460,39 @@ describe("buildContextualHeartbeat", () => {
     }))
 
     expect(result).toContain("5 minutes ago")
+  })
+
+  it("includes habit body when habitBody option is provided", () => {
+    const result = buildContextualHeartbeat(makeOptions({
+      lastCompletedAt: new Date("2026-03-26T11:30:00Z").toISOString(),
+      habitBody: "Check in on responsibilities and reflect on what needs attention.",
+      readJournalDir: () => [],
+    }))
+
+    expect(result).toContain("Check in on responsibilities and reflect on what needs attention.")
+  })
+
+  it("does not include habit body section when habitBody is not provided", () => {
+    const result = buildContextualHeartbeat(makeOptions({
+      lastCompletedAt: new Date("2026-03-26T11:30:00Z").toISOString(),
+      readJournalDir: () => [],
+    }))
+
+    expect(result).not.toContain("## habit")
+  })
+
+  it("includes habit body after elapsed time section", () => {
+    const nowDate = new Date("2026-03-26T12:00:00Z")
+    const result = buildContextualHeartbeat(makeOptions({
+      lastCompletedAt: new Date("2026-03-26T11:30:00Z").toISOString(),
+      now: () => nowDate,
+      habitBody: "Review the week and plan ahead.",
+      readJournalDir: () => [],
+    }))
+
+    const elapsedIndex = result.indexOf("30 minutes")
+    const bodyIndex = result.indexOf("Review the week and plan ahead.")
+    expect(elapsedIndex).toBeGreaterThanOrEqual(0)
+    expect(bodyIndex).toBeGreaterThan(elapsedIndex)
   })
 })

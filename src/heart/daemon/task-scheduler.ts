@@ -5,6 +5,7 @@ import { getAgentBundlesRoot } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { parseTaskFile, renderTaskFile } from "../../repertoire/tasks/parser"
 import type { OsCronManager } from "./os-cron"
+import { parseCadenceToCron } from "./cadence"
 
 export interface ScheduledTaskJob {
   id: string
@@ -50,28 +51,6 @@ function walkMarkdownFiles(
       files.push(fullPath)
     }
   }
-}
-
-function parseCadence(raw: unknown): string | null {
-  if (typeof raw !== "string") return null
-  const value = raw.trim()
-  if (!value) return null
-
-  // Cron format (minute hour day month weekday)
-  if (/^\S+\s+\S+\s+\S+\s+\S+\s+\S+$/.test(value)) {
-    return value
-  }
-
-  const cadenceMatch = /^(\d+)(m|h|d)$/.exec(value)
-  if (!cadenceMatch) return null
-
-  const interval = Number.parseInt(cadenceMatch[1], 10)
-  if (!Number.isFinite(interval) || interval <= 0) return null
-
-  const unit = cadenceMatch[2]
-  if (unit === "m") return `*/${interval} * * * *`
-  if (unit === "h") return `0 */${interval} * * *`
-  return `0 0 */${interval} * *`
 }
 
 function parseScheduledAt(raw: unknown): string | null {
@@ -147,7 +126,7 @@ export class TaskDrivenScheduler {
 
     for (const agent of this.agents) {
       const taskRoot = path.join(this.bundlesRoot, `${agent}.ouro`, "tasks")
-      const collections = ["one-shots", "ongoing", "habits"]
+      const collections = ["one-shots", "ongoing"]
       const files: string[] = []
       for (const collection of collections) {
         walkMarkdownFiles(path.join(taskRoot, collection), this.readdirSync, this.existsSync, files)
@@ -166,7 +145,7 @@ export class TaskDrivenScheduler {
 
         if (task.status === "done") continue
 
-        const cadence = parseCadence(task.frontmatter.cadence)
+        const cadence = parseCadenceToCron(task.frontmatter.cadence)
         if (cadence) {
           const id = `${agent}:${taskId}:cadence`
           nextJobs.set(id, {

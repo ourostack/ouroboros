@@ -97,6 +97,9 @@ export type OuroCliCommand =
   | { kind: "mcp-serve"; agent: string; friendId?: string }
   | { kind: "setup"; tool: "claude-code" | "codex"; agent: string }
   | { kind: "hook"; event: string; agent: string }
+  | { kind: "habit.list"; agent?: string }
+  | { kind: "habit.create"; agent?: string; name: string; cadence?: string }
+  | { kind: "habit.poke"; agent: string; habitName: string }
 
 export interface OuroCliDeps {
   socketPath: string
@@ -137,6 +140,7 @@ export interface OuroCliDeps {
   detectMode?: () => "dev" | "production"
   getInstalledBinaryPath?: () => string | null
   execInstalledBinary?: (binaryPath: string, args: string[]) => never
+  agentBundleRoot?: string
 }
 
 export interface SessionEntry {
@@ -409,6 +413,9 @@ function usage(): string {
     "  ouro chat <agent>",
     "  ouro msg --to <agent> [--session <id>] [--task <ref>] <message>",
     "  ouro poke <agent> --task <task-id>",
+    "  ouro poke <agent> --habit <name>",
+    "  ouro habit list [--agent <name>]",
+    "  ouro habit create [--agent <name>] <name> [--cadence <interval>]",
     "  ouro link <agent> --friend <id> --provider <provider> --external-id <external-id>",
     "  ouro task board [<status>] [--agent <name>]",
     "  ouro task create <title> [--type <type>] [--agent <name>]",
@@ -526,15 +533,55 @@ function parsePokeCommand(args: string[]): OuroCliCommand {
   if (!agent) throw new Error(`Usage\n${usage()}`)
 
   let taskId: string | undefined
+  let habitName: string | undefined
   for (let i = 1; i < args.length; i += 1) {
     if (args[i] === "--task") {
       taskId = args[i + 1]
       i += 1
     }
+    if (args[i] === "--habit") {
+      habitName = args[i + 1]
+      i += 1
+    }
   }
 
+  // --habit takes priority over --task
+  if (habitName) return { kind: "habit.poke", agent, habitName }
   if (!taskId) throw new Error(`Usage\n${usage()}`)
   return { kind: "task.poke", agent, taskId }
+}
+
+function parseHabitCommand(args: string[]): OuroCliCommand {
+  const { agent, rest } = extractAgentFlag(args)
+
+  const sub = rest[0]
+  if (sub === "list") {
+    return { kind: "habit.list", ...(agent ? { agent } : {}) }
+  }
+  if (sub === "create") {
+    const nameArgs = rest.slice(1)
+    let name: string | undefined
+    let cadence: string | undefined
+    const positional: string[] = []
+    for (let i = 0; i < nameArgs.length; i++) {
+      if (nameArgs[i] === "--cadence" && nameArgs[i + 1]) {
+        cadence = nameArgs[++i]
+        continue
+      }
+      /* v8 ignore start -- defensive: --agent already extracted by extractAgentFlag; guard prevents regression if parsing flow changes @preserve */
+      if (nameArgs[i] === "--agent" && nameArgs[i + 1]) {
+        i++ // skip --agent value (already extracted)
+        continue
+      }
+      /* v8 ignore stop */
+      positional.push(nameArgs[i])
+    }
+    name = positional[0]
+    if (!name) throw new Error(`Usage\n${usage()}`)
+    return { kind: "habit.create", name, ...(agent ? { agent } : {}), ...(cadence ? { cadence } : {}) }
+  }
+
+  throw new Error(`Usage\n${usage()}`)
 }
 
 function parseLinkCommand(args: string[], kind: "friend.link" | "friend.unlink" = "friend.link"): OuroCliCommand {
@@ -1119,6 +1166,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "auth") return parseAuthCommand(args.slice(1))
   if (head === "task") return parseTaskCommand(args.slice(1))
   if (head === "reminder") return parseReminderCommand(args.slice(1))
+  if (head === "habit") return parseHabitCommand(args.slice(1))
   if (head === "friend") return parseFriendCommand(args.slice(1))
   if (head === "config") return parseConfigCommand(args.slice(1))
   if (head === "mcp") return parseMcpCommand(args.slice(1))
@@ -1676,7 +1724,8 @@ type InnerStatusCliCommand = Extract<OuroCliCommand, { kind: "inner.status" }>
 type McpServeCliCommand = Extract<OuroCliCommand, { kind: "mcp-serve" }>
 type SetupCliCommand = Extract<OuroCliCommand, { kind: "setup" }>
 type HookCliCommand = Extract<OuroCliCommand, { kind: "hook" }>
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | HookCliCommand>): DaemonCommand {
+type HabitLocalCliCommand = Extract<OuroCliCommand, { kind: "habit.list" } | { kind: "habit.create" }>
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand>): DaemonCommand {
   return command
 }
 
@@ -2003,7 +2052,7 @@ function executeReminderCommand(command: ReminderCliCommand, taskMod: TaskModule
   try {
     const created = taskMod.createTask({
       title: command.title,
-      type: command.cadence ? "habit" : "one-shot",
+      type: command.cadence ? "ongoing" : "one-shot",
       category: command.category ?? "reminder",
       body: command.body,
       scheduledAt: command.scheduledAt,
@@ -2712,6 +2761,66 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     return message
   }
 
+  // ── habit subcommands (local, no daemon socket needed) ──
+  if (command.kind === "habit.list" || command.kind === "habit.create") {
+    const { parseHabitFile, renderHabitFile } = await import("./habit-parser")
+    /* v8 ignore start -- production default: uses real bundle root @preserve */
+    const agentName = command.agent ?? getAgentName()
+    const bundleRoot = deps.agentBundleRoot ?? path.join(getAgentBundlesRoot(), `${agentName}.ouro`)
+    /* v8 ignore stop */
+    const habitsDir = path.join(bundleRoot, "habits")
+
+    if (command.kind === "habit.list") {
+      let files: string[]
+      try {
+        files = fs.readdirSync(habitsDir).filter((f) => f.endsWith(".md") && f !== "README.md")
+      } catch {
+        const message = "no habits found"
+        deps.writeStdout(message)
+        return message
+      }
+      if (files.length === 0) {
+        const message = "no habits found"
+        deps.writeStdout(message)
+        return message
+      }
+      const lines: string[] = []
+      for (const file of files) {
+        const content = fs.readFileSync(path.join(habitsDir, file), "utf-8")
+        const habit = parseHabitFile(content, path.join(habitsDir, file))
+        const lastRunStr = habit.lastRun ?? "never"
+        lines.push(`${habit.name}  cadence=${habit.cadence ?? "none"}  status=${habit.status}  lastRun=${lastRunStr}`)
+      }
+      const message = lines.join("\n")
+      deps.writeStdout(message)
+      return message
+    }
+
+    // habit.create
+    const filePath = path.join(habitsDir, `${command.name}.md`)
+    if (fs.existsSync(filePath)) {
+      const message = `error: habit '${command.name}' already exists`
+      deps.writeStdout(message)
+      return message
+    }
+    fs.mkdirSync(habitsDir, { recursive: true })
+    const now = new Date().toISOString()
+    const content = renderHabitFile(
+      {
+        title: command.name,
+        cadence: command.cadence ?? "null",
+        status: "active",
+        lastRun: now,
+        created: now,
+      },
+      `Habit: ${command.name}`,
+    )
+    fs.writeFileSync(filePath, content, "utf-8")
+    const message = `created: ${filePath}`
+    deps.writeStdout(message)
+    return message
+  }
+
   // ── friend subcommands (local, no daemon socket needed) ──
   if (command.kind === "friend.list" || command.kind === "friend.show" || command.kind === "friend.create" ||
       command.kind === "friend.update" || command.kind === "friend.link" || command.kind === "friend.unlink") {
@@ -3067,7 +3176,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       const agentRoot = getAgentRoot(agentName)
       const { buildInnerStatusOutput } = await import("./inner-status")
       const { sessionPath: getSessionPath } = await import("../config")
-      const { parseCadenceMs, DEFAULT_CADENCE_MS } = await import("./heartbeat-timer")
+      const { parseCadenceToMs: parseCadenceMs, DEFAULT_CADENCE_MS } = await import("./cadence")
       const { parseFrontmatter } = await import("../../repertoire/tasks/parser")
       const { listActiveObligations } = await import("../../mind/obligations")
 
@@ -3097,11 +3206,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       let heartbeat: import("./inner-status").HeartbeatInfo | null = null
       try {
         const habitsDir = path.join(agentRoot, "habits")
-        const habitFiles = fs.readdirSync(habitsDir)
-        const heartbeatFile = habitFiles.find((f) => f.endsWith("-heartbeat.md"))
+        const heartbeatPath = path.join(habitsDir, "heartbeat.md")
         let cadenceMs = DEFAULT_CADENCE_MS
-        if (heartbeatFile) {
-          const content = fs.readFileSync(path.join(habitsDir, heartbeatFile), "utf-8")
+        if (fs.existsSync(heartbeatPath)) {
+          const content = fs.readFileSync(heartbeatPath, "utf-8")
           const lines = content.split(/\r?\n/)
           if (lines[0]?.trim() === "---") {
             const closing = lines.findIndex((line, index) => index > 0 && line.trim() === "---")

@@ -183,6 +183,7 @@ export type DaemonCommand =
   | { kind: "inner.wake"; agent: string }
   | { kind: "chat.connect"; agent: string }
   | { kind: "task.poke"; agent: string; taskId: string }
+  | { kind: "habit.poke"; agent: string; habitName: string }
   | { kind: "message.send"; from: string; to: string; content: string; priority?: string; sessionId?: string; taskRef?: string }
   | { kind: "message.poll"; agent: string }
   | { kind: "mcp.list" }
@@ -748,6 +749,13 @@ export class OuroDaemon {
           ok: true,
           message: `queued poke ${receipt.id}`,
           data: receipt,
+        }
+      }
+      case "habit.poke": {
+        this.processManager.sendToAgent?.(command.agent, { type: "habit", habitName: command.habitName })
+        return {
+          ok: true,
+          message: `poked habit ${command.habitName} for ${command.agent}`,
         }
       }
       case "mcp.list": {

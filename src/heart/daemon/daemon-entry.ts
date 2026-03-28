@@ -12,7 +12,10 @@ import { DaemonSenseManager } from "./sense-manager"
 import { listEnabledBundleAgents } from "./agent-discovery"
 import { getRepoRoot, getAgentBundlesRoot } from "../identity"
 import { detectRuntimeMode } from "./runtime-mode"
-import { HeartbeatTimer } from "./heartbeat-timer"
+import { HabitScheduler } from "./habit-scheduler"
+import { migrateHabitsFromTaskSystem } from "./habit-migration"
+import { createRealOsCronDeps, resolveOuroBinaryPath } from "./os-cron-deps"
+import { LaunchdCronManager } from "./os-cron"
 
 function parseSocketPath(argv: string[]): string {
   const socketIndex = argv.indexOf("--socket")
@@ -94,25 +97,42 @@ const daemon = new OuroDaemon({
   mode,
 })
 
-const heartbeatTimers: HeartbeatTimer[] = []
+const habitSchedulers: HabitScheduler[] = []
 
-/* v8 ignore start -- heartbeat wiring: lambdas delegate to processManager/fs; tested via HeartbeatTimer unit tests @preserve */
+/* v8 ignore start -- habit wiring: lambdas delegate to processManager/fs; tested via HabitScheduler unit tests @preserve */
 void daemon.start().then(() => {
   const bundlesRoot = getAgentBundlesRoot()
+  const ouroPath = resolveOuroBinaryPath()
+  const osCronDeps = createRealOsCronDeps()
+
   for (const agent of managedAgents) {
     const bundleRoot = path.join(bundlesRoot, `${agent}.ouro`)
-    const timer = new HeartbeatTimer({
+    const habitsDir = path.join(bundleRoot, "habits")
+
+    // Migrate old tasks/habits/ to habits/ at bundle root
+    migrateHabitsFromTaskSystem(bundleRoot)
+
+    const osCronManager = new LaunchdCronManager(osCronDeps)
+    const scheduler = new HabitScheduler({
       agent,
-      sendToAgent: (a, msg) => processManager.sendToAgent(a, msg),
+      habitsDir,
+      osCronManager,
+      onHabitFire: (habitName) => {
+        processManager.sendToAgent(agent, { type: "habit", habitName })
+      },
       deps: {
-        readFileSync: (p, enc) => fs.readFileSync(p, enc as BufferEncoding),
-        readdirSync: (p) => fs.readdirSync(p).map((e) => (typeof e === "string" ? e : e)),
-        heartbeatTaskDir: path.join(bundleRoot, "tasks", "habits"),
-        runtimeStatePath: path.join(bundleRoot, "state", "sessions", "self", "inner", "runtime.json"),
+        readdir: (dir) => fs.readdirSync(dir),
+        readFile: (p, enc) => fs.readFileSync(p, enc as BufferEncoding),
+        writeFile: (p, c, enc) => fs.writeFileSync(p, c, enc as BufferEncoding),
+        existsSync: (p) => fs.existsSync(p),
+        now: () => Date.now(),
+        ouroPath,
+        watch: (dir, cb) => fs.watch(dir, cb),
       },
     })
-    timer.start()
-    heartbeatTimers.push(timer)
+    scheduler.start()
+    scheduler.watchForChanges()
+    habitSchedulers.push(scheduler)
   }
 }).catch(async () => {
 /* v8 ignore stop */
@@ -128,11 +148,11 @@ void daemon.start().then(() => {
 })
 
 process.on("SIGINT", () => {
-  for (const timer of heartbeatTimers) timer.stop()
+  for (const s of habitSchedulers) { s.stopWatching(); s.stop() }
   void daemon.stop().then(() => process.exit(0))
 })
 
 process.on("SIGTERM", () => {
-  for (const timer of heartbeatTimers) timer.stop()
+  for (const s of habitSchedulers) { s.stopWatching(); s.stop() }
   void daemon.stop().then(() => process.exit(0))
 })
