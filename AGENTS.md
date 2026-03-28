@@ -57,6 +57,19 @@ Do not create agent-specific task directories inside this repo.
 - Branches must be agent-specific. If the current branch does not clearly encode a single agent and the human has not explicitly asked to control branch/worktree naming, create or switch to an agent-specific branch/worktree yourself before continuing. Only stop and ask when the human wants to control the naming/layout or automatic creation fails.
 - Do not hardcode agent names in instructions. This workflow must support arbitrary agents.
 
+### MCP Workflow And Dev Tool Integration
+
+Agents can be connected to developer tools (Claude Code, Codex) via the MCP bridge. This is particularly useful during harness development:
+
+1. Start the daemon in dev mode: `ouro dev` (from the repo) or `ouro dev --repo-path /path/to/repo`.
+2. Register the MCP server and hooks: `ouro setup --tool claude-code --agent <name>`.
+3. The dev tool now has access to `send_message`, `check_response`, `status`, `delegate`, and other MCP tools.
+4. Lifecycle hooks (SessionStart, Stop, PostToolUse) fire automatically, giving the agent passive awareness of coding activity.
+
+When working on the harness itself, `ouro dev` auto-builds from source, disables launchd auto-restart for the production daemon, and persists the repo path for convenience. Run `ouro up` to return to production mode.
+
+Hook events are fire-and-forget — they never block the dev tool. If the daemon isn't running, hooks exit silently.
+
 ### Runtime-Specific Invocation
 
 - **Codex app**: Use skills by name: `$work-planner`, `$work-doer`, and `$work-merger`.
