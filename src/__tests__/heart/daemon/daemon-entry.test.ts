@@ -49,6 +49,14 @@ vi.mock("../../../heart/daemon/os-cron-deps", () => ({
   resolveOuroBinaryPath: vi.fn(() => "/usr/local/bin/ouro"),
 }))
 
+const { writeDaemonTombstoneMock } = vi.hoisted(() => ({
+  writeDaemonTombstoneMock: vi.fn(),
+}))
+
+vi.mock("../../../heart/daemon/daemon-tombstone", () => ({
+  writeDaemonTombstone: writeDaemonTombstoneMock,
+}))
+
 describe("daemon entrypoint", () => {
   afterEach(() => {
     listEnabledBundleAgentsMock.mockReset()
@@ -58,6 +66,7 @@ describe("daemon entrypoint", () => {
     habitSchedulerWatchMock.mockReset()
     habitSchedulerStopWatchMock.mockReset()
     migrateHabitsFromTaskSystemMock.mockReset()
+    writeDaemonTombstoneMock.mockReset()
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
   })
@@ -372,6 +381,10 @@ describe("daemon entrypoint", () => {
 
     expect(emitNervesEvent).toHaveBeenCalledWith(
       expect.objectContaining({ event: "daemon.entry_error" }),
+    )
+    expect(writeDaemonTombstoneMock).toHaveBeenCalledWith(
+      "startupFailure",
+      expect.objectContaining({ message: "boom" }),
     )
     expect(configureDaemonRuntimeLogger).toHaveBeenCalledWith("daemon")
     expect(processManagerCtor).toHaveBeenCalledTimes(1)

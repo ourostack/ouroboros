@@ -2,6 +2,18 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.149",
+      "changes": [
+        "Daemon tombstone: writeDaemonTombstone persists crash context (reason, stack, uptime) to ~/.ouro-cli/daemon-death.json on uncaught exceptions and startup failures.",
+        "Global exception handlers: daemon-entry installs uncaughtException (tombstone + graceful 5s shutdown) and unhandledRejection (warn, no exit) handlers.",
+        "Log rotation: ndjson file sink rotates logs at 50MB (configurable), keeping .1 and .2 backups. Throttled stat checks via byte counter.",
+        "Socket connection error handling: connection.on('error') prevents server crash on client disconnect, connection.end() wrapped for EPIPE safety, persistent server.on('error') after listen.",
+        "Crash context in status: DaemonAgentSnapshot includes lastExitCode/lastSignal, Workers table shows last exit info, stopped-daemon status reads tombstone for 'Last death' line.",
+        "Cooldown recovery: after restart exhaustion, agents schedule recovery after cooldownRecoveryMs (default 5min). Reset crash history on recovery. maxCooldownRetries (default 3) before permanent give-up.",
+        "Defensive handleCommand: extracted handleCommandInner, outer handleCommand wraps with try/catch logging daemon.command_error with kind/error/stack before re-throw."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.148",
       "changes": [
         "Habits extracted from task system as first-class bundle concept at habits/ (peer to diary/, friends/, tasks/).",
