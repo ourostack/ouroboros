@@ -123,6 +123,33 @@ export function buildFeedbackSyntheticText(reaction: string, comment?: string): 
   return `[reacted with ${emoji} to your message]`
 }
 
+// Build a welcome Adaptive Card with prompt starters for new bot installs.
+export function buildWelcomeCard(): { type: string; version: string; body: Array<Record<string, unknown>>; actions: Array<{ type: string; title: string; data: Record<string, unknown> }> } {
+  const promptStarters = [
+    "What can you help me with?",
+    "Tell me about yourself",
+    "What's on my calendar today?",
+    "Summarize my recent emails",
+  ]
+  return {
+    type: "AdaptiveCard",
+    version: "1.5",
+    body: [
+      {
+        type: "TextBlock",
+        text: "Hey! I'm here and ready to help. Try one of these to get started, or just ask me anything.",
+        wrap: true,
+        size: "Medium",
+      },
+    ],
+    actions: promptStarters.map((prompt) => ({
+      type: "Action.Submit",
+      title: prompt,
+      data: { msteams: { type: "messageBack", text: prompt, displayText: prompt } },
+    })),
+  }
+}
+
 // Options for createTeamsCallbacks controlling streaming behavior.
 export interface TeamsCallbackOptions {
   flushIntervalMs?: number
