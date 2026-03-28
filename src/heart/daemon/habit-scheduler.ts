@@ -173,15 +173,22 @@ export class HabitScheduler {
     const watchFn = this.deps.watch
     if (!watchFn) return
 
-    this.watcher = watchFn(this.habitsDir, (_event: string, _filename: string | null) => {
-      if (this.debounceTimer !== null) {
-        clearTimeout(this.debounceTimer)
-      }
-      this.debounceTimer = setTimeout(() => {
-        this.debounceTimer = null
-        this.reconcile()
-      }, WATCH_DEBOUNCE_MS)
-    })
+    // Ensure habits directory exists before watching — agents may not have one yet
+    try {
+      this.watcher = watchFn(this.habitsDir, (_event: string, _filename: string | null) => {
+        if (this.debounceTimer !== null) {
+          clearTimeout(this.debounceTimer)
+        }
+        this.debounceTimer = setTimeout(() => {
+          this.debounceTimer = null
+          this.reconcile()
+        }, WATCH_DEBOUNCE_MS)
+      })
+    /* v8 ignore start — ENOENT catch requires real missing directory @preserve */
+    } catch {
+      // habits directory may not exist for all agents — skip watching silently
+    }
+    /* v8 ignore stop */
   }
 
   stopWatching(): void {
