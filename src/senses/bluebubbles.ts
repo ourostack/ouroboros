@@ -42,6 +42,17 @@ type BlueBubblesCallbacks = ChannelCallbacks & {
   finish(): Promise<void>
 }
 
+// Enrich reaction text with the original message content for context.
+// If originalText is provided and non-empty, format as: baseText to: "truncated"
+// Otherwise return baseText unchanged.
+export function enrichReactionText(baseText: string, originalText: string | null, maxLen: number): string {
+  if (!originalText) return baseText
+  const truncated = originalText.length > maxLen
+    ? originalText.slice(0, maxLen - 3) + "..."
+    : originalText
+  return `${baseText} to: "${truncated}"`
+}
+
 export interface BlueBubblesHandleResult {
   handled: boolean
   notifiedAgent: boolean
@@ -723,6 +734,15 @@ async function handleBlueBubblesNormalizedEvent(
       })
     }
 
+    // Enrich reaction mutations with the original message text for context
+    const isReaction = event.kind === "mutation" && event.mutationType === "reaction"
+    if (isReaction && event.targetMessageGuid) {
+      /* v8 ignore start -- best-effort lookup; enrichReactionText covered by unit tests @preserve */
+      const originalText = await client.getMessageText(event.targetMessageGuid).catch(() => null)
+      if (originalText) event.textForAgent = enrichReactionText(event.textForAgent, originalText, 80)
+      /* v8 ignore stop */
+    }
+
     // Build inbound user message (adapter concern: BB-specific content formatting)
     const userMessage: OpenAI.ChatCompletionMessageParam = {
       role: "user",
@@ -817,7 +837,7 @@ async function handleBlueBubblesNormalizedEvent(
         postTurn: resolvedDeps.postTurn,
         accumulateFriendTokens: resolvedDeps.accumulateFriendTokens,
         signal: controller.signal,
-        runAgentOptions: { mcpManager },
+        runAgentOptions: { mcpManager, ...(isReaction ? { isReactionSignal: true } : {}) },
         callbacks: failoverAwareCallbacks,
         failoverState: (() => {
           if (!bbFailoverStates.has(event.chat.sessionKey)) {

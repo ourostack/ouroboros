@@ -51,10 +51,10 @@ describe("observeTool", () => {
     expect(observeTool.function.name).toBe("observe")
   })
 
-  it("has a description mentioning group chat and staying silent", async () => {
+  it("has a description about absorbing without responding", async () => {
     const { observeTool } = await import("../../repertoire/tools-base")
-    expect(observeTool.function.description).toMatch(/silent/i)
-    expect(observeTool.function.description).toMatch(/group chat/i)
+    expect(observeTool.function.description).toMatch(/absorb/i)
+    expect(observeTool.function.description).toMatch(/without responding/i)
   })
 
   it("has a reason string parameter", async () => {

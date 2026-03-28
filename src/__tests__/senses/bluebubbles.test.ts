@@ -5596,3 +5596,43 @@ describe("sendProactiveBlueBubblesMessageToSession", () => {
     expect(result).toEqual({ delivered: false, reason: "send_error" })
   })
 })
+
+// ── Reaction enrichment (Unit 4) ──────────────────────────────────────────
+describe("BlueBubbles adapter - reaction enrichment", () => {
+  it("enrichReactionText: enriches with original message text (under 80 chars)", async () => {
+    vi.resetModules()
+    const bb = await import("../../senses/bluebubbles")
+    const result = bb.enrichReactionText("reacted with love", "great idea!", 80)
+    expect(result).toBe('reacted with love to: "great idea!"')
+  })
+
+  it("enrichReactionText: truncates text over 80 chars", async () => {
+    vi.resetModules()
+    const bb = await import("../../senses/bluebubbles")
+    const longText = "a".repeat(81)
+    const result = bb.enrichReactionText("reacted with love", longText, 80)
+    expect(result).toBe(`reacted with love to: "${"a".repeat(77)}..."`)
+  })
+
+  it("enrichReactionText: 80 chars passes through untouched", async () => {
+    vi.resetModules()
+    const bb = await import("../../senses/bluebubbles")
+    const exact = "a".repeat(80)
+    const result = bb.enrichReactionText("reacted with love", exact, 80)
+    expect(result).toBe(`reacted with love to: "${exact}"`)
+  })
+
+  it("enrichReactionText: null text returns bare text", async () => {
+    vi.resetModules()
+    const bb = await import("../../senses/bluebubbles")
+    const result = bb.enrichReactionText("reacted with love", null, 80)
+    expect(result).toBe("reacted with love")
+  })
+
+  it("enrichReactionText: empty string returns bare text", async () => {
+    vi.resetModules()
+    const bb = await import("../../senses/bluebubbles")
+    const result = bb.enrichReactionText("reacted with love", "", 80)
+    expect(result).toBe("reacted with love")
+  })
+})
