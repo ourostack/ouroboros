@@ -474,14 +474,17 @@ export function createTeamsCallbacks(
         firstContentEmitted = true
         const text = textBuffer
         textBuffer = ""
-        if (!stopped) {
+        if (streamFinalized && sendMessage) {
+          // Stream already finalized (>4000 path) — send remaining content as follow-up
+          safeSend(text)
+        } else if (!stopped) {
           // Stream is alive — await the emit so we can catch async 413/failure
           // and fall through to sendMessage recovery.
           const ok = await tryEmit(text)
           if (!ok) markStopped()
         }
-        if (stopped && sendMessage) {
-          // Stream is dead — fall back to sendMessage; split on failure as recovery.
+        if (stopped && !streamFinalized && sendMessage) {
+          // Stream is dead (not from finalization) — fall back to sendMessage; split on failure as recovery.
           try {
             await sendMessage(text)
           } catch {
@@ -891,6 +894,75 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
     emitNervesEvent({ level: "warn", event: "channel.verify_state", component: "channels", message: `[${label}] verify-state failed for all connections`, meta: {} })
     return { status: 412 }
   })
+
+  // Handle Teams feedback reactions (thumbs up/down on AI-generated messages).
+  // SDK routes message/submitAction with actionName "feedback" to this event.
+  /* v8 ignore start -- Teams SDK invoke handler; requires live SDK context @preserve */
+  app.on("message.submit.feedback" as any, async (ctx: any) => {
+    const { stream, activity } = ctx
+    const reaction = activity.value?.actionValue?.reaction
+    const comment = activity.value?.actionValue?.feedback
+    const convId = activity.conversation?.id || "unknown"
+    const turnKey = teamsTurnKey(convId)
+
+    // Validate payload — graceful no-op for malformed invocations
+    if (activity.value?.actionName !== "feedback" || !reaction) {
+      return
+    }
+
+    const syntheticText = buildFeedbackSyntheticText(reaction, comment)
+
+    // Turn coordination: if a turn is active, enqueue as steering follow-up
+    if (!_turnCoordinator.tryBeginTurn(turnKey)) {
+      _turnCoordinator.enqueueFollowUp(turnKey, {
+        conversationId: convId,
+        text: syntheticText,
+        receivedAt: Date.now(),
+      })
+      return
+    }
+
+    try {
+      const teamsContext: TeamsMessageContext = {
+        signin: async () => undefined,
+        aadObjectId: activity.from?.aadObjectId,
+        tenantId: activity.conversation?.tenantId,
+        displayName: activity.from?.name,
+      }
+
+      const ctxSend = async (t: string) => {
+        await ctx.send({ type: "message", text: t, replyToId: activity.replyToId, entities: aiLabelEntities() as unknown as import("@microsoft/teams.api").Entity[], channelData: { feedbackLoopEnabled: true } })
+      }
+      await handleTeamsMessage(syntheticText, stream, convId, teamsContext, ctxSend, { isReactionSignal: true, suppressEmptyStreamMessage: true })
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      emitNervesEvent({ level: "error", event: "channel.feedback_handler_error", component: "channels", message: msg.slice(0, 200), meta: {} })
+    } finally {
+      _turnCoordinator.endTurn(turnKey)
+    }
+  })
+  /* v8 ignore stop */
+
+  // Handle bot install — send welcome Adaptive Card with prompt starters.
+  /* v8 ignore start -- Teams SDK install handler; requires live SDK context @preserve */
+  app.on("install.add" as any, async (ctx: any) => {
+    try {
+      const card = buildWelcomeCard()
+      await ctx.send({
+        type: "message",
+        attachments: [{
+          contentType: "application/vnd.microsoft.card.adaptive",
+          content: card,
+        }],
+        entities: aiLabelEntities() as unknown as import("@microsoft/teams.api").Entity[],
+        channelData: { feedbackLoopEnabled: true },
+      })
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      emitNervesEvent({ level: "error", event: "channel.welcome_handler_error", component: "channels", message: msg.slice(0, 200), meta: {} })
+    }
+  })
+  /* v8 ignore stop */
 
   app.on("message", async (ctx) => {
     const { stream, activity, api, signin } = ctx

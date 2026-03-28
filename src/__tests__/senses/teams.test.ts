@@ -340,6 +340,30 @@ describe("Teams adapter - proactive >4000 finalization", () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(sendMessage.mock.calls.length).toBeGreaterThan(callsBefore)
   })
+
+  it("flush() after finalization routes remaining buffer through sendMessage (not stream.emit)", async () => {
+    vi.resetModules()
+    const teams = await import("../../senses/teams")
+    const sendMessage = vi.fn().mockResolvedValue(undefined)
+    const callbacks = teams.createTeamsCallbacks(mockStream as any, controller, sendMessage)
+    // Fill up to trigger finalization
+    callbacks.onTextChunk("a".repeat(3990))
+    vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
+    callbacks.onTextChunk("b".repeat(20))
+    vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
+    await vi.advanceTimersByTimeAsync(0)
+    // Reset mocks to track only flush behavior
+    const emitCallsBefore = mockStream.emit.mock.calls.length
+    const sendCallsBefore = sendMessage.mock.calls.length
+    // Add more text, then flush (end-of-turn)
+    callbacks.onTextChunk("tail content for flush")
+    await callbacks.flush()
+    await vi.advanceTimersByTimeAsync(0)
+    // Stream.emit should NOT be called again (stream is closed)
+    expect(mockStream.emit.mock.calls.length).toBe(emitCallsBefore)
+    // sendMessage should receive the remaining content
+    expect(sendMessage.mock.calls.length).toBeGreaterThan(sendCallsBefore)
+  })
 })
 
 describe("Teams adapter - createTeamsCallbacks (SDK-delegated streaming)", () => {
