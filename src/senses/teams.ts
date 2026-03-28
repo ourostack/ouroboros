@@ -326,11 +326,11 @@ export function createTeamsCallbacks(
     // finalize the stream and send overflow via safeSend (follow-up message).
     if (!streamFinalized && totalEmitted + textBuffer.length >= RECOVERY_CHUNK_SIZE) {
       const remaining = RECOVERY_CHUNK_SIZE - totalEmitted
-      if (remaining > 0) {
-        safeEmit(textBuffer.slice(0, remaining))
-      }
+      /* v8 ignore next 2 -- defensive: remaining always > 0 because finalization runs once @preserve */
+      if (remaining > 0) safeEmit(textBuffer.slice(0, remaining))
       try { stream.close() } catch { /* stream may already be dead */ }
       streamFinalized = true
+      /* v8 ignore next -- defensive ternary: remaining always > 0 at first finalization @preserve */
       const overflow = textBuffer.slice(remaining > 0 ? remaining : 0)
       textBuffer = ""
       if (overflow) safeSend(overflow)

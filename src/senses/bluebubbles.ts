@@ -737,8 +737,8 @@ async function handleBlueBubblesNormalizedEvent(
     // Enrich reaction mutations with the original message text for context
     const isReaction = event.kind === "mutation" && event.mutationType === "reaction"
     if (isReaction && event.targetMessageGuid) {
+      /* v8 ignore next 2 -- best-effort lookup; enrichReactionText covered by unit tests @preserve */
       const originalText = await client.getMessageText(event.targetMessageGuid).catch(() => null)
-      /* v8 ignore next -- enrichReactionText covered by unit tests @preserve */
       if (originalText) event.textForAgent = enrichReactionText(event.textForAgent, originalText, 80)
     }
 

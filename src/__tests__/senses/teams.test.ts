@@ -341,6 +341,23 @@ describe("Teams adapter - proactive >4000 finalization", () => {
     expect(sendMessage.mock.calls.length).toBeGreaterThan(callsBefore)
   })
 
+  it("finalization at exact boundary: no overflow when remaining equals buffer", async () => {
+    vi.resetModules()
+    const teams = await import("../../senses/teams")
+    const sendMessage = vi.fn().mockResolvedValue(undefined)
+    const callbacks = teams.createTeamsCallbacks(mockStream as any, controller, sendMessage)
+    // Emit exactly 3980 chars first
+    callbacks.onTextChunk("a".repeat(3980))
+    vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
+    // Now add exactly 20 chars — totalEmitted=3980, buffer=20, remaining=20=buffer length
+    // overflow = textBuffer.slice(20) = "" (empty), so safeSend is NOT called
+    callbacks.onTextChunk("b".repeat(20))
+    vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
+    expect(mockStream.close).toHaveBeenCalled()
+    // No overflow → sendMessage should NOT be called
+    expect(sendMessage).not.toHaveBeenCalled()
+  })
+
   it("finalization before any content emitted stops phrase rotation", async () => {
     vi.resetModules()
     const teams = await import("../../senses/teams")
