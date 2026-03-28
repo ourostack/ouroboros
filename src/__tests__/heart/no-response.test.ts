@@ -411,4 +411,104 @@ describe("observe tool in runAgent", () => {
     expect(toolNames).not.toContain("settle")
     expect(toolNames).toContain("surface")
   })
+
+  // ── isReactionSignal observe gate extension ──────────────────────────────
+  it("includes observe in activeTools when isReactionSignal:true + 1:1 (not group)", async () => {
+    mockCreate.mockReturnValue(
+      makeStream([
+        makeChunk(undefined, [
+          { index: 0, id: "call_1", function: { name: "observe", arguments: '{"reason":"just a thumbs up"}' } },
+        ]),
+      ])
+    )
+
+    const callbacks = makeCallbacks()
+    const messages: any[] = [{ role: "system", content: "test" }]
+    await runAgent(messages, callbacks, undefined, undefined, {
+      toolChoiceRequired: true,
+      isReactionSignal: true,
+      toolContext: {
+        signin: async () => undefined,
+        context: { isGroupChat: false, channel: { channel: "teams", senseType: "closed", availableIntegrations: [], supportsMarkdown: true, supportsStreaming: true, supportsRichCards: true, maxMessageLength: 28000 } },
+      },
+    })
+
+    const params = mockCreate.mock.calls[0][0]
+    const toolNames = params.tools.map((t: any) => t.function.name)
+    expect(toolNames).toContain("observe")
+  })
+
+  it("does NOT include observe when isReactionSignal is undefined + 1:1", async () => {
+    mockCreate.mockReturnValue(
+      makeStream([
+        makeChunk(undefined, [
+          { index: 0, id: "call_1", function: { name: "settle", arguments: '{"answer":"done"}' } },
+        ]),
+      ])
+    )
+
+    const callbacks = makeCallbacks()
+    const messages: any[] = [{ role: "system", content: "test" }]
+    await runAgent(messages, callbacks, undefined, undefined, {
+      toolChoiceRequired: true,
+      toolContext: {
+        signin: async () => undefined,
+        context: { isGroupChat: false, channel: { channel: "teams", senseType: "closed", availableIntegrations: [], supportsMarkdown: true, supportsStreaming: true, supportsRichCards: true, maxMessageLength: 28000 } },
+      },
+    })
+
+    const params = mockCreate.mock.calls[0][0]
+    const toolNames = params.tools.map((t: any) => t.function.name)
+    expect(toolNames).not.toContain("observe")
+  })
+
+  it("includes observe when isReactionSignal:true + group chat (still works)", async () => {
+    mockCreate.mockReturnValue(
+      makeStream([
+        makeChunk(undefined, [
+          { index: 0, id: "call_1", function: { name: "observe", arguments: '{}' } },
+        ]),
+      ])
+    )
+
+    const callbacks = makeCallbacks()
+    const messages: any[] = [{ role: "system", content: "test" }]
+    await runAgent(messages, callbacks, undefined, undefined, {
+      toolChoiceRequired: true,
+      isReactionSignal: true,
+      toolContext: {
+        signin: async () => undefined,
+        context: { isGroupChat: true, channel: { channel: "teams", senseType: "closed", availableIntegrations: [], supportsMarkdown: true, supportsStreaming: true, supportsRichCards: true, maxMessageLength: 28000 } },
+      },
+    })
+
+    const params = mockCreate.mock.calls[0][0]
+    const toolNames = params.tools.map((t: any) => t.function.name)
+    expect(toolNames).toContain("observe")
+  })
+
+  it("does NOT include observe when isReactionSignal:true + inner dialog", async () => {
+    mockCreate.mockReturnValue(
+      makeStream([
+        makeChunk(undefined, [
+          { index: 0, id: "call_1", function: { name: "rest", arguments: '{}' } },
+        ]),
+      ])
+    )
+
+    const callbacks = makeCallbacks()
+    const messages: any[] = [{ role: "system", content: "test" }]
+    await runAgent(messages, callbacks, "inner", undefined, {
+      toolChoiceRequired: true,
+      isReactionSignal: true,
+      toolContext: {
+        signin: async () => undefined,
+        context: { isGroupChat: false, channel: { channel: "inner", senseType: "open", availableIntegrations: [], supportsMarkdown: false, supportsStreaming: true, supportsRichCards: false, maxMessageLength: Infinity } },
+      },
+    })
+
+    const params = mockCreate.mock.calls[0][0]
+    const toolNames = params.tools.map((t: any) => t.function.name)
+    expect(toolNames).not.toContain("observe")
+  })
 })

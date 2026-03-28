@@ -34,10 +34,24 @@ import { drainDeferredReturns, drainPending, getPendingDir } from "../mind/pendi
 import { classifySteeringFollowUpEffect, type SteeringFollowUpEffect } from "./continuity"
 
 // Stream interface matching IStreamer from @microsoft/teams.apps
+// emit() accepts string or object with text+entities+channelData (matches SDK's
+// IStreamer.emit(activity: Partial<IMessageActivity | ITypingActivity> | string))
 interface TeamsStream {
-  emit(activity: string): void
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  emit(activity: string | Record<string, any>): void
   update(text: string): void
   close(): void
+}
+
+// AIGeneratedContent entity and feedbackLoopEnabled channelData for all outbound
+// Teams messages. Required by Teams AI UX best practices.
+export function aiLabelEntities(): Array<{ type: string; "@type": string; "@context": string; additionalType: string[] }> {
+  return [{
+    type: "https://schema.org/Message",
+    "@type": "Message",
+    "@context": "https://schema.org",
+    additionalType: ["AIGeneratedContent"],
+  }]
 }
 
 // Strip @mention markup from incoming messages.
@@ -93,10 +107,55 @@ export function splitMessage(text: string, maxLen: number): string[] {
   return chunks
 }
 
+// Sanitize user-provided feedback comments: truncate, strip control chars and newlines.
+export function sanitizeFeedbackComment(comment: string): string {
+  const cleaned = comment.replace(/[\x00-\x1f\n\r]/g, "")
+  return cleaned.length > 200 ? cleaned.slice(0, 200) : cleaned
+}
+
+// Build synthetic message text from a Teams feedback reaction.
+export function buildFeedbackSyntheticText(reaction: string, comment?: string): string {
+  const emoji = reaction === "like" ? "thumbs-up" : "thumbs-down"
+  if (comment) {
+    const sanitized = sanitizeFeedbackComment(comment)
+    return `[reacted with ${emoji} to your message: "${sanitized}"]`
+  }
+  return `[reacted with ${emoji} to your message]`
+}
+
+// Build a welcome Adaptive Card with prompt starters for new bot installs.
+export function buildWelcomeCard(): { type: string; version: string; body: Array<Record<string, unknown>>; actions: Array<{ type: string; title: string; data: Record<string, unknown> }> } {
+  const promptStarters = [
+    "What can you help me with?",
+    "Tell me about yourself",
+    "What's on my calendar today?",
+    "Summarize my recent emails",
+  ]
+  return {
+    type: "AdaptiveCard",
+    version: "1.5",
+    body: [
+      {
+        type: "TextBlock",
+        text: "Hey! I'm here and ready to help. Try one of these to get started, or just ask me anything.",
+        wrap: true,
+        size: "Medium",
+      },
+    ],
+    actions: promptStarters.map((prompt) => ({
+      type: "Action.Submit",
+      title: prompt,
+      data: { msteams: { type: "messageBack", text: prompt, displayText: prompt } },
+    })),
+  }
+}
+
 // Options for createTeamsCallbacks controlling streaming behavior.
 export interface TeamsCallbackOptions {
   flushIntervalMs?: number
   conversationId?: string
+  /** When true, suppress the "(completed with tool calls only)" fallback in flush(). */
+  suppressEmptyStreamMessage?: boolean
 }
 
 // Extended callbacks type that includes flush() for chunked streaming.
@@ -120,12 +179,16 @@ export function createTeamsCallbacks(
   sendMessage?: (text: string) => Promise<void>,
   options?: TeamsCallbackOptions,
 ): TeamsCallbacksWithFlush {
+  const MIN_INITIAL_CHARS = 20
   let stopped = false // set when stream signals cancellation (403)
   let hadToolRun = false
   let hadRealOutput = false // true once reasoning/tool output shown; suppresses phrases
   let reasoningBuf = "" // accumulated reasoning text for status display
+  let totalEmitted = 0 // cumulative chars emitted via safeEmit (for >4000 finalization)
+  let streamFinalized = false // true after stream.close() — subsequent flushes go to safeSend
   let textBuffer = "" // accumulated text output for chunked streaming
   let streamHasContent = false // tracks whether primary output has received content
+  let firstContentEmitted = false // true after first content push — disables MIN_INITIAL_CHARS threshold
   let phraseTimer: NodeJS.Timeout | null = null
   let lastPhrase = ""
   let flushTimer: NodeJS.Timeout | null = null
@@ -178,14 +241,15 @@ export function createTeamsCallbacks(
     }
   }
 
-  // Safely emit a text delta to the stream.
+  // Safely emit a text delta to the stream with AI labels.
   // On error (e.g. 403 from Teams stop button), abort the controller.
   function safeEmit(text: string): void {
     /* v8 ignore next -- defensive guard: stopped set by prior 403; tested via flush abort path @preserve */
     if (stopped) return
     try {
-      catchAsync(stream.emit(text))
+      catchAsync(stream.emit({ text, entities: aiLabelEntities(), channelData: { feedbackLoopEnabled: true } }))
       streamHasContent = true
+      totalEmitted += text.length
     } catch {
       markStopped()
     }
@@ -199,7 +263,7 @@ export function createTeamsCallbacks(
     try {
       // stream.emit() is typed as void but the Teams SDK returns a Promise
       // internally (async HTTP). Cast to capture the result for awaiting.
-      const result: unknown = stream.emit(text)
+      const result: unknown = stream.emit({ text, entities: aiLabelEntities(), channelData: { feedbackLoopEnabled: true } })
       streamHasContent = true
       if (result && typeof (result as { then?: Function }).then === "function") {
         await (result as Promise<unknown>)
@@ -251,10 +315,45 @@ export function createTeamsCallbacks(
   // emitted text into a single streaming message (cumulative), so every
   // periodic flush appends to the same response — not separate messages.
   // No preemptive splitting — sends full text. Error recovery happens in flush().
+  // Hybrid MIN_INITIAL_CHARS: hold back until >= MIN_INITIAL_CHARS accumulated
+  // before the first content emit, so phrase rotation shows while real content
+  // buffers. After first emit, flush normally (no threshold).
   function flushTextBuffer(): void {
     if (!textBuffer) return
+    if (!firstContentEmitted && textBuffer.length < MIN_INITIAL_CHARS) return
+
+    // Proactive >4000 finalization: if cumulative emitted + buffer >= RECOVERY_CHUNK_SIZE,
+    // finalize the stream and send overflow via safeSend (follow-up message).
+    if (!streamFinalized && totalEmitted + textBuffer.length >= RECOVERY_CHUNK_SIZE) {
+      const remaining = RECOVERY_CHUNK_SIZE - totalEmitted
+      /* v8 ignore next 2 -- defensive: remaining always > 0 because finalization runs once @preserve */
+      if (remaining > 0) safeEmit(textBuffer.slice(0, remaining))
+      try { stream.close() } catch { /* stream may already be dead */ }
+      streamFinalized = true
+      /* v8 ignore next -- defensive ternary: remaining always > 0 at first finalization @preserve */
+      const overflow = textBuffer.slice(remaining > 0 ? remaining : 0)
+      textBuffer = ""
+      if (overflow) safeSend(overflow)
+      if (!firstContentEmitted) {
+        firstContentEmitted = true
+        stopPhraseRotation()
+      }
+      return
+    }
+
+    if (streamFinalized) {
+      // After finalization, all content goes to safeSend (follow-up messages)
+      safeSend(textBuffer)
+      textBuffer = ""
+      return
+    }
+
     safeEmit(textBuffer)
     textBuffer = ""
+    if (!firstContentEmitted) {
+      firstContentEmitted = true
+      stopPhraseRotation()
+    }
   }
 
   function startPhraseRotation(pool: readonly string[]): void {
@@ -294,7 +393,8 @@ export function createTeamsCallbacks(
     },
     onTextChunk: (text: string) => {
       if (stopped) return
-      stopPhraseRotation()
+      // Don't stop phrase rotation here — let it continue until first content
+      // emit (handled in flushTextBuffer when MIN_INITIAL_CHARS threshold met).
       textBuffer += text
       startFlushTimer()
     },
@@ -303,6 +403,8 @@ export function createTeamsCallbacks(
     },
     onToolStart: (name: string, args: Record<string, string>) => {
       stopPhraseRotation()
+      // Force-flush any accumulated text, bypassing MIN_INITIAL_CHARS threshold
+      firstContentEmitted = true
       flushTextBuffer()
       // Emit a placeholder to satisfy the 15s Copilot timeout for initial
       // stream.emit(). Without this, long tool chains (e.g. ADO batch ops)
@@ -366,17 +468,23 @@ export function createTeamsCallbacks(
       : undefined,
     flush: async () => {
       stopFlushTimer()
+      stopPhraseRotation()
       if (textBuffer) {
+        // Bypass MIN_INITIAL_CHARS threshold — flush delivers all remaining content
+        firstContentEmitted = true
         const text = textBuffer
         textBuffer = ""
-        if (!stopped) {
+        if (streamFinalized && sendMessage) {
+          // Stream already finalized (>4000 path) — send remaining content as follow-up
+          safeSend(text)
+        } else if (!stopped) {
           // Stream is alive — await the emit so we can catch async 413/failure
           // and fall through to sendMessage recovery.
           const ok = await tryEmit(text)
           if (!ok) markStopped()
         }
-        if (stopped && sendMessage) {
-          // Stream is dead — fall back to sendMessage; split on failure as recovery.
+        if (stopped && !streamFinalized && sendMessage) {
+          // Stream is dead (not from finalization) — fall back to sendMessage; split on failure as recovery.
           try {
             await sendMessage(text)
           } catch {
@@ -384,8 +492,8 @@ export function createTeamsCallbacks(
             for (const chunk of chunks) await sendMessage(chunk)
           }
         }
-      } else if (!streamHasContent) {
-        safeEmit("(completed with tool calls only \u2014 no text response)")
+      } else if (!streamHasContent && !options?.suppressEmptyStreamMessage) {
+        safeEmit("(completed with tool calls only — no text response)")
       }
     },
   }
@@ -488,7 +596,7 @@ function handleTeamsSlashCommand(
 }
 
 // Handle an incoming Teams message
-export async function handleTeamsMessage(text: string, stream: TeamsStream, conversationId: string, teamsContext?: TeamsMessageContext, sendMessage?: (text: string) => Promise<void>): Promise<void> {
+export async function handleTeamsMessage(text: string, stream: TeamsStream, conversationId: string, teamsContext?: TeamsMessageContext, sendMessage?: (text: string) => Promise<void>, reactionOverrides?: { isReactionSignal?: boolean; suppressEmptyStreamMessage?: boolean }): Promise<void> {
   const turnKey = teamsTurnKey(conversationId)
   // NOTE: Confirmation resolution is handled in the app.on("message") handler
   // BEFORE the conversation lock.  By the time we get here, any pending
@@ -496,7 +604,10 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
 
   // Send first thinking phrase immediately so the user sees feedback
   // before sync I/O (session load, trim) blocks the event loop.
-  stream.update(pickPhrase(getPhrases().thinking) + "...")
+  // Skip for reaction signals — they should be processed quietly.
+  if (!reactionOverrides) {
+    stream.update(pickPhrase(getPhrases().thinking) + "...")
+  }
   await new Promise(r => setImmediate(r))
 
   // Resolve identity provider early for friend resolution + slash command session path
@@ -527,7 +638,7 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
   // ── Teams adapter concerns: controller, callbacks, session path ──────────
   const controller = new AbortController()
   const channelConfig = getTeamsChannelConfig()
-  const callbacks = createTeamsCallbacks(stream, controller, sendMessage, { conversationId, flushIntervalMs: channelConfig.flushIntervalMs })
+  const callbacks = createTeamsCallbacks(stream, controller, sendMessage, { conversationId, flushIntervalMs: channelConfig.flushIntervalMs, ...(reactionOverrides?.suppressEmptyStreamMessage ? { suppressEmptyStreamMessage: true } : {}) })
   const traceId = createTraceId()
   const sessPath = sessionPath(friendId, "teams", conversationId)
   const teamsCapabilities = getChannelCapabilities("teams")
@@ -560,6 +671,7 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
           .map(({ text: followUpText, effect }) => ({ text: followUpText, effect }))
         return drainedSteeringFollowUps
       },
+      ...(reactionOverrides?.isReactionSignal ? { isReactionSignal: true } : {}),
     }
     if (channelConfig.skipConfirmation) agentOptions.skipConfirmation = true
 
@@ -783,6 +895,76 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
     return { status: 412 }
   })
 
+  // Handle Teams feedback reactions (thumbs up/down on AI-generated messages).
+  // SDK routes message/submitAction with actionName "feedback" to this event.
+  /* v8 ignore start -- Teams SDK invoke handler; requires live SDK context @preserve */
+  app.on("message.submit.feedback" as any, async (ctx: any) => {
+    const { stream, activity } = ctx
+    const reaction = activity.value?.actionValue?.reaction
+    const comment = activity.value?.actionValue?.feedback
+    const convId = activity.conversation?.id || "unknown"
+    const turnKey = teamsTurnKey(convId)
+
+    // Validate payload — graceful no-op for malformed invocations
+    if (activity.value?.actionName !== "feedback" || !reaction) {
+      return
+    }
+
+    const syntheticText = buildFeedbackSyntheticText(reaction, comment)
+
+    // Turn coordination: if a turn is active, enqueue as steering follow-up
+    if (!_turnCoordinator.tryBeginTurn(turnKey)) {
+      _turnCoordinator.enqueueFollowUp(turnKey, {
+        conversationId: convId,
+        text: syntheticText,
+        receivedAt: Date.now(),
+        effect: classifySteeringFollowUpEffect(syntheticText),
+      })
+      return
+    }
+
+    try {
+      const teamsContext: TeamsMessageContext = {
+        signin: async () => undefined,
+        aadObjectId: activity.from?.aadObjectId,
+        tenantId: activity.conversation?.tenantId,
+        displayName: activity.from?.name,
+      }
+
+      const ctxSend = async (t: string) => {
+        await ctx.send({ type: "message", text: t, replyToId: activity.replyToId, entities: aiLabelEntities() as unknown as import("@microsoft/teams.api").Entity[], channelData: { feedbackLoopEnabled: true } })
+      }
+      await handleTeamsMessage(syntheticText, stream, convId, teamsContext, ctxSend, { isReactionSignal: true, suppressEmptyStreamMessage: true })
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      emitNervesEvent({ level: "error", event: "channel.feedback_handler_error", component: "channels", message: msg.slice(0, 200), meta: {} })
+    } finally {
+      _turnCoordinator.endTurn(turnKey)
+    }
+  })
+  /* v8 ignore stop */
+
+  // Handle bot install — send welcome Adaptive Card with prompt starters.
+  /* v8 ignore start -- Teams SDK install handler; requires live SDK context @preserve */
+  app.on("install.add" as any, async (ctx: any) => {
+    try {
+      const card = buildWelcomeCard()
+      await ctx.send({
+        type: "message",
+        attachments: [{
+          contentType: "application/vnd.microsoft.card.adaptive",
+          content: card,
+        }],
+        entities: aiLabelEntities() as unknown as import("@microsoft/teams.api").Entity[],
+        channelData: { feedbackLoopEnabled: true },
+      })
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      emitNervesEvent({ level: "error", event: "channel.welcome_handler_error", component: "channels", message: msg.slice(0, 200), meta: {} })
+    }
+  })
+  /* v8 ignore stop */
+
   app.on("message", async (ctx) => {
     const { stream, activity, api, signin } = ctx
     const text = activity.text || ""
@@ -902,7 +1084,7 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
       const ctxSend = async (t: string) => {
         // Use send with replyToId (not reply, which adds a blockquote).
         // replyToId anchors the message after the user's message in Copilot Chat.
-        await ctx.send({ type: "message", text: t, replyToId: activity.id })
+        await ctx.send({ type: "message", text: t, replyToId: activity.id, entities: aiLabelEntities() as unknown as import("@microsoft/teams.api").Entity[], channelData: { feedbackLoopEnabled: true } })
       }
       await handleTeamsMessage(text, stream, convId, teamsContext, ctxSend)
     } catch (err: unknown) {
