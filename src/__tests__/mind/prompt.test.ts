@@ -3591,7 +3591,8 @@ describe("feedbackSignalSection", () => {
   it("1:1 mentions Teams format", async () => {
     const { feedbackSignalSection } = await import("../../mind/prompt")
     const result = feedbackSignalSection({ friend: makeFriend(), channel: makeCaps("teams", "closed"), isGroupChat: false } as any)
-    expect(result).toContain("thumbs-up or thumbs-down, sometimes with a written comment")
+    expect(result).toContain("thumbs-up or thumbs-down")
+    expect(result).toContain("sometimes with a written comment")
   })
 
   it("1:1 includes course-correction nudge", async () => {
@@ -3604,8 +3605,10 @@ describe("feedbackSignalSection", () => {
   it("group mentions group texture and reaction to someone else", async () => {
     const { feedbackSignalSection } = await import("../../mind/prompt")
     const result = feedbackSignalSection({ friend: makeFriend(), channel: makeCaps("teams", "closed"), isGroupChat: true } as any)
-    expect(result).toContain("reaction to someone else's message is group texture")
-    expect(result).toContain("thumbs-up or thumbs-down, sometimes with a written comment")
+    expect(result).toContain("reaction to someone else's message is group")
+    expect(result).toContain("texture (observe is natural)")
+    expect(result).toContain("thumbs-up or thumbs-down")
+    expect(result).toContain("sometimes with a written comment")
   })
 
   it("group includes invitation to adjust", async () => {
