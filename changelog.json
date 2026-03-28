@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.146",
+      "changes": [
+        "fix(hook): target specific agent only, ouro up breaks dev dispatch loop"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.145",
       "changes": [
         "MCP conversation channel: send_message runs full agent turns, check_response for async responses.",
