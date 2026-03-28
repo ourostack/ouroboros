@@ -66,12 +66,46 @@ describe("metacognitiveFramingSection vocabulary", () => {
     expect(result.toLowerCase()).toMatch(/morning|briefing/)
   })
 
-  it("mentions heartbeat self-setup awareness", async () => {
+  it("mentions habits/ directory as home for autonomous rhythms", async () => {
+    const { metacognitiveFramingSection } = await import("../../mind/prompt")
+    const result = metacognitiveFramingSection("inner")
+    expect(result).toContain("habits/")
+    // Should NOT reference old tasks/habits/ path
+    expect(result).not.toContain("tasks/habits/")
+  })
+
+  it("mentions heartbeat as the agent's breathing rhythm", async () => {
     const { metacognitiveFramingSection } = await import("../../mind/prompt")
     const result = metacognitiveFramingSection("inner")
     expect(result).toContain("heartbeat")
-    expect(result).toContain("tasks/habits/")
     expect(result).toContain("cadence")
+  })
+
+  it("mentions agent can create and modify habits via read_file/write_file", async () => {
+    const { metacognitiveFramingSection } = await import("../../mind/prompt")
+    const result = metacognitiveFramingSection("inner")
+    expect(result).toContain("read_file")
+    expect(result).toContain("write_file")
+  })
+
+  it("mentions habit schema format (title, cadence, status)", async () => {
+    const { metacognitiveFramingSection } = await import("../../mind/prompt")
+    const result = metacognitiveFramingSection("inner")
+    expect(result).toContain("title")
+    expect(result).toContain("cadence")
+    expect(result).toContain("status")
+  })
+
+  it("mentions ouro habit CLI commands", async () => {
+    const { metacognitiveFramingSection } = await import("../../mind/prompt")
+    const result = metacognitiveFramingSection("inner")
+    expect(result).toMatch(/ouro habit/)
+  })
+
+  it("mentions rhythms are the agent's to shape", async () => {
+    const { metacognitiveFramingSection } = await import("../../mind/prompt")
+    const result = metacognitiveFramingSection("inner")
+    expect(result.toLowerCase()).toMatch(/rhythm/)
   })
 
   it("mentions diary migration awareness", async () => {

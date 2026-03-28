@@ -10,7 +10,7 @@ import type { OsCronManager } from "../../../heart/daemon/os-cron"
 function makeTaskFile(
   bundlesRoot: string,
   agent: string,
-  collection: "habits" | "one-shots" | "ongoing",
+  collection: "one-shots" | "ongoing",
   stem: string,
   frontmatter: Record<string, unknown>,
   body = "## scope\nrun task",
@@ -35,8 +35,8 @@ describe("task-driven scheduler", () => {
   it("reconciles cadence/scheduledAt tasks into ouro poke jobs", async () => {
     bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "task-scheduler-"))
 
-    makeTaskFile(bundlesRoot, "slugger", "habits", "2026-03-07-0800-heartbeat", {
-      type: "habit",
+    makeTaskFile(bundlesRoot, "slugger", "ongoing", "2026-03-07-0800-heartbeat", {
+      type: "ongoing",
       category: "operations",
       title: "Heartbeat",
       status: "processing",
@@ -59,8 +59,8 @@ describe("task-driven scheduler", () => {
       updated: "2026-03-07",
     })
 
-    makeTaskFile(bundlesRoot, "slugger", "habits", "2026-03-07-0820-invalid", {
-      type: "habit",
+    makeTaskFile(bundlesRoot, "slugger", "ongoing", "2026-03-07-0820-invalid", {
+      type: "ongoing",
       category: "operations",
       title: "Invalid cadence",
       status: "processing",
@@ -71,8 +71,8 @@ describe("task-driven scheduler", () => {
       updated: "2026-03-07",
     })
 
-    makeTaskFile(bundlesRoot, "slugger", "habits", "2026-03-07-0825-empty-values", {
-      type: "habit",
+    makeTaskFile(bundlesRoot, "slugger", "ongoing", "2026-03-07-0825-empty-values", {
+      type: "ongoing",
       category: "operations",
       title: "Empty values",
       status: "processing",
@@ -95,7 +95,7 @@ describe("task-driven scheduler", () => {
       updated: "2026-03-07",
     })
 
-    const nonMarkdownPath = path.join(bundlesRoot, "slugger.ouro", "tasks", "habits", "note.txt")
+    const nonMarkdownPath = path.join(bundlesRoot, "slugger.ouro", "tasks", "ongoing", "note.txt")
     fs.writeFileSync(nonMarkdownPath, "ignore me", "utf-8")
 
     const scheduler = new TaskDrivenScheduler({
@@ -121,8 +121,8 @@ describe("task-driven scheduler", () => {
   it("records lastRun when task poke executes", async () => {
     bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "task-scheduler-"))
 
-    const taskPath = makeTaskFile(bundlesRoot, "slugger", "habits", "2026-03-07-0900-checkin", {
-      type: "habit",
+    const taskPath = makeTaskFile(bundlesRoot, "slugger", "ongoing", "2026-03-07-0900-checkin", {
+      type: "ongoing",
       category: "operations",
       title: "Checkin",
       status: "processing",
@@ -133,8 +133,8 @@ describe("task-driven scheduler", () => {
       updated: null,
     })
 
-    makeTaskFile(bundlesRoot, "slugger", "habits", "2026-03-07-0905-secondary", {
-      type: "habit",
+    makeTaskFile(bundlesRoot, "slugger", "ongoing", "2026-03-07-0905-secondary", {
+      type: "ongoing",
       category: "operations",
       title: "Secondary",
       status: "processing",
@@ -164,8 +164,8 @@ describe("task-driven scheduler", () => {
   it("supports triggerJob for known and unknown ids", async () => {
     bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "task-scheduler-"))
 
-    makeTaskFile(bundlesRoot, "slugger", "habits", "2026-03-07-1000-ping", {
-      type: "habit",
+    makeTaskFile(bundlesRoot, "slugger", "ongoing", "2026-03-07-1000-ping", {
+      type: "ongoing",
       category: "operations",
       title: "Ping",
       status: "processing",
@@ -196,8 +196,8 @@ describe("task-driven scheduler", () => {
   it("supports day cadence and ignores completed/invalid schedules", async () => {
     bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "task-scheduler-"))
 
-    makeTaskFile(bundlesRoot, "slugger", "habits", "2026-03-07-1100-daily", {
-      type: "habit",
+    makeTaskFile(bundlesRoot, "slugger", "ongoing", "2026-03-07-1100-daily", {
+      type: "ongoing",
       category: "operations",
       title: "Daily",
       status: "processing",
@@ -208,8 +208,8 @@ describe("task-driven scheduler", () => {
       updated: "2026-03-07",
     })
 
-    makeTaskFile(bundlesRoot, "slugger", "habits", "2026-03-07-1115-zero", {
-      type: "habit",
+    makeTaskFile(bundlesRoot, "slugger", "ongoing", "2026-03-07-1115-zero", {
+      type: "ongoing",
       category: "operations",
       title: "Zero cadence",
       status: "processing",
@@ -258,8 +258,8 @@ describe("task-driven scheduler", () => {
 
     await expect(scheduler.recordTaskRun("slugger", "missing-task")).resolves.toBeUndefined()
 
-    const taskPath = makeTaskFile(bundlesRoot, "slugger", "habits", "2026-03-07-1200-break", {
-      type: "habit",
+    const taskPath = makeTaskFile(bundlesRoot, "slugger", "ongoing", "2026-03-07-1200-break", {
+      type: "ongoing",
       category: "operations",
       title: "Break parse",
       status: "processing",
@@ -278,14 +278,14 @@ describe("task-driven scheduler", () => {
   it("walks nested task directories and skips malformed markdown files during reconcile", async () => {
     bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "task-scheduler-"))
 
-    const nestedDir = path.join(bundlesRoot, "slugger.ouro", "tasks", "habits", "nested")
+    const nestedDir = path.join(bundlesRoot, "slugger.ouro", "tasks", "ongoing", "nested")
     fs.mkdirSync(nestedDir, { recursive: true })
     const nestedTaskPath = path.join(nestedDir, "2026-03-07-1300-nested.md")
     fs.writeFileSync(
       nestedTaskPath,
       renderTaskFile(
         {
-          type: "habit",
+          type: "ongoing",
           category: "operations",
           title: "Nested task",
           status: "processing",
@@ -333,8 +333,8 @@ describe("task-driven scheduler", () => {
   it("calls osCronManager.sync after reconcile when provided", async () => {
     bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "task-scheduler-"))
 
-    makeTaskFile(bundlesRoot, "slugger", "habits", "2026-03-07-1400-cron-sync", {
-      type: "habit",
+    makeTaskFile(bundlesRoot, "slugger", "ongoing", "2026-03-07-1400-cron-sync", {
+      type: "ongoing",
       category: "operations",
       title: "Cron sync test",
       status: "processing",
@@ -391,5 +391,57 @@ describe("task-driven scheduler", () => {
 
     await expect(scheduler.reconcile()).resolves.toBeUndefined()
     expect(() => scheduler.stop()).not.toThrow()
+  })
+
+  it("does not scan tasks/habits/ collection", async () => {
+    bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "task-scheduler-"))
+
+    // Manually put a task file in tasks/habits/ (not via helper since "habits" is not a valid collection)
+    const habitsDir = path.join(bundlesRoot, "slugger.ouro", "tasks", "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    const habitsFilePath = path.join(habitsDir, "2026-03-07-0800-heartbeat.md")
+    fs.writeFileSync(
+      habitsFilePath,
+      renderTaskFile(
+        {
+          type: "ongoing",
+          category: "operations",
+          title: "Heartbeat",
+          status: "processing",
+          cadence: "30m",
+          scheduledAt: null,
+          lastRun: null,
+          created: "2026-03-07",
+          updated: "2026-03-07",
+        },
+        "## scope\nrun task",
+      ),
+      "utf-8",
+    )
+
+    // Put a real task in one-shots — it SHOULD be found
+    makeTaskFile(bundlesRoot, "slugger", "one-shots", "2026-03-07-0815-real-task", {
+      type: "one-shot",
+      category: "ops",
+      title: "Real task",
+      status: "processing",
+      cadence: "1h",
+      scheduledAt: null,
+      lastRun: null,
+      created: "2026-03-07",
+      updated: "2026-03-07",
+    })
+
+    const scheduler = new TaskDrivenScheduler({
+      bundlesRoot,
+      agents: ["slugger"],
+    })
+
+    scheduler.start()
+
+    const jobs = scheduler.listJobs()
+    // Should only find the one-shots task, not the habits one
+    expect(jobs.every((job) => !job.id.includes("heartbeat"))).toBe(true)
+    expect(jobs.some((job) => job.id.includes("real-task"))).toBe(true)
   })
 })

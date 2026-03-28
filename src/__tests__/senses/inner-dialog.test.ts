@@ -356,13 +356,23 @@ describe("inner dialog runtime", () => {
   })
 
   it("finds task file by stem across collection subdirectories", () => {
-    const habitsDir = path.join(agentRoot, "tasks", "habits")
-    fs.mkdirSync(habitsDir, { recursive: true })
-    fs.writeFileSync(path.join(habitsDir, "2026-0311-0900-daily-standup.md"), "---\ntype: habit\n---\nDo standup.", "utf8")
+    const ongoingDir = path.join(agentRoot, "tasks", "ongoing")
+    fs.mkdirSync(ongoingDir, { recursive: true })
+    fs.writeFileSync(path.join(ongoingDir, "2026-0311-0900-daily-standup.md"), "---\ntype: ongoing\n---\nDo standup.", "utf8")
 
     // Scheduler sends bare stem, not collection-prefixed path
     const content = readTaskFile(agentRoot, "2026-0311-0900-daily-standup")
     expect(content).toContain("Do standup.")
+  })
+
+  it("does not search tasks/habits/ collection (habits moved to bundle root)", () => {
+    const habitsDir = path.join(agentRoot, "tasks", "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(path.join(habitsDir, "2026-0311-0900-heartbeat.md"), "---\ntype: habit\n---\nHeartbeat.", "utf8")
+
+    // Bare stem should NOT find the file in tasks/habits/ anymore
+    const content = readTaskFile(agentRoot, "2026-0311-0900-heartbeat")
+    expect(content).toBe("")
   })
 
   it("finds task in one-shots collection by stem", () => {
@@ -1134,7 +1144,16 @@ describe("inner dialog runtime", () => {
     expect(content).toContain("Unit 2b editing src/repertoire/tools.ts")
   })
 
-  it("uses contextual heartbeat builder on resumed session with reason heartbeat", async () => {
+  it("uses contextual heartbeat builder on resumed session with reason habit + heartbeat", async () => {
+    // Create heartbeat habit file
+    const habitsDir = path.join(agentRoot, "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(habitsDir, "heartbeat.md"),
+      "---\ntitle: Heartbeat\ncadence: 30m\nstatus: active\nlastRun: 2026-03-06T11:30:00.000Z\ncreated: 2026-03-01\n---\n\nCheck in on responsibilities.",
+      "utf8",
+    )
+
     mockLoadSession.mockReturnValue({
       messages: [
         { role: "system", content: "system prompt" },
@@ -1144,7 +1163,8 @@ describe("inner dialog runtime", () => {
     mockBuildContextualHeartbeat.mockReturnValueOnce("contextual heartbeat with journal context")
 
     await runInnerDialogTurn({
-      reason: "heartbeat",
+      reason: "habit",
+      habitName: "heartbeat",
       now: () => new Date("2026-03-06T12:05:00.000Z"),
     })
 
@@ -1152,6 +1172,235 @@ describe("inner dialog runtime", () => {
     const input = mockHandleInboundTurn.mock.calls[0][0]
     const content = String(input.messages[0].content)
     expect(content).toBe("contextual heartbeat with journal context")
+  })
+
+  // ── Habit turn tests ──────────────────────────────────────────────
+
+  it("builds contextual heartbeat message for habit turn with habitName heartbeat", async () => {
+    // Create habits directory with heartbeat.md
+    const habitsDir = path.join(agentRoot, "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(habitsDir, "heartbeat.md"),
+      "---\ntitle: Heartbeat\ncadence: 30m\nstatus: active\nlastRun: 2026-03-06T11:30:00.000Z\ncreated: 2026-03-01\n---\n\nCheck in on my responsibilities and reflect on what needs attention.",
+      "utf8",
+    )
+
+    mockLoadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "assistant", content: "ready for next cycle" },
+      ],
+    })
+    mockBuildContextualHeartbeat.mockReturnValueOnce("contextual heartbeat with habit body")
+
+    await runInnerDialogTurn({
+      reason: "habit",
+      habitName: "heartbeat",
+      now: () => new Date("2026-03-06T12:05:00.000Z"),
+    })
+
+    expect(mockBuildContextualHeartbeat).toHaveBeenCalledTimes(1)
+    const heartbeatCall = mockBuildContextualHeartbeat.mock.calls[0][0]
+    expect(heartbeatCall.habitBody).toContain("Check in on my responsibilities")
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    const content = String(input.messages[0].content)
+    expect(content).toContain("contextual heartbeat with habit body")
+  })
+
+  it("builds basic context message for non-heartbeat habit turns", async () => {
+    const habitsDir = path.join(agentRoot, "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(habitsDir, "daily-reflection.md"),
+      "---\ntitle: Daily Reflection\ncadence: 1d\nstatus: active\nlastRun: 2026-03-05T22:00:00.000Z\ncreated: 2026-03-01\n---\n\nReflect on the day's accomplishments and plan for tomorrow.",
+      "utf8",
+    )
+
+    mockLoadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "assistant", content: "checkpoint: reviewed tasks" },
+      ],
+    })
+
+    await runInnerDialogTurn({
+      reason: "habit",
+      habitName: "daily-reflection",
+      now: () => new Date("2026-03-06T22:00:00.000Z"),
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    const content = String(input.messages[0].content)
+    expect(content).toContain("daily-reflection")
+    expect(content).toContain("Reflect on the day's accomplishments")
+  })
+
+  it("includes also-due habits in habit turn messages", async () => {
+    const habitsDir = path.join(agentRoot, "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(habitsDir, "daily-reflection.md"),
+      "---\ntitle: Daily Reflection\ncadence: 1d\nstatus: active\nlastRun: 2026-03-05T22:00:00.000Z\ncreated: 2026-03-01\n---\n\nReflect on the day.",
+      "utf8",
+    )
+    // Another overdue habit
+    fs.writeFileSync(
+      path.join(habitsDir, "weekly-review.md"),
+      "---\ntitle: Weekly Review\ncadence: 7d\nstatus: active\nlastRun: 2026-02-20T10:00:00.000Z\ncreated: 2026-02-01\n---\n\nReview the week.",
+      "utf8",
+    )
+
+    mockLoadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "assistant", content: "checkpoint" },
+      ],
+    })
+
+    await runInnerDialogTurn({
+      reason: "habit",
+      habitName: "daily-reflection",
+      now: () => new Date("2026-03-06T22:00:00.000Z"),
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    const content = String(input.messages[0].content)
+    expect(content).toContain("also due")
+    expect(content).toContain("weekly-review")
+  })
+
+  it("handles missing habit file gracefully in habit turn", async () => {
+    // Do NOT create the habit file
+    mockLoadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "assistant", content: "ready" },
+      ],
+    })
+
+    await runInnerDialogTurn({
+      reason: "habit",
+      habitName: "nonexistent",
+      now: () => new Date("2026-03-06T12:00:00.000Z"),
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    const content = String(input.messages[0].content)
+    expect(content).toContain("nonexistent")
+    // Should indicate the file was not found but still produce a turn
+    expect(content).toMatch(/not found|missing|could not read/i)
+  })
+
+  it("reason heartbeat is no longer handled (falls through to instinct)", async () => {
+    mockLoadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "assistant", content: "ready" },
+      ],
+    })
+
+    await runInnerDialogTurn({
+      reason: "habit",
+      habitName: "heartbeat",
+      now: () => new Date("2026-03-06T12:05:00.000Z"),
+    })
+
+    // Should use habit path, not old heartbeat path
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    const content = String(input.messages[0].content)
+    // The old heartbeat path called buildContextualHeartbeat without habitBody
+    // Now the habit path should pass habitBody
+    expect(content).toBeDefined()
+  })
+
+  // ── Parse error nudge tests ──────────────────────────────────────
+
+  it("includes parse error nudge in habit turn when parseErrors provided", async () => {
+    const habitsDir = path.join(agentRoot, "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(habitsDir, "daily-reflection.md"),
+      "---\ntitle: Daily Reflection\ncadence: 1d\nstatus: active\nlastRun: 2026-03-05T22:00:00.000Z\ncreated: 2026-03-01\n---\n\nReflect on the day.",
+      "utf8",
+    )
+
+    mockLoadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "assistant", content: "checkpoint: reviewed" },
+      ],
+    })
+
+    await runInnerDialogTurn({
+      reason: "habit",
+      habitName: "daily-reflection",
+      now: () => new Date("2026-03-06T22:00:00.000Z"),
+      parseErrors: [{ file: "broken-habit.md", error: "invalid frontmatter" }],
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    const content = String(input.messages[0].content)
+    expect(content).toContain("broken-habit.md")
+    expect(content).toContain("invalid frontmatter")
+  })
+
+  it("does not include parse error nudge when parseErrors is empty", async () => {
+    const habitsDir = path.join(agentRoot, "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(habitsDir, "daily-reflection.md"),
+      "---\ntitle: Daily Reflection\ncadence: 1d\nstatus: active\nlastRun: 2026-03-05T22:00:00.000Z\ncreated: 2026-03-01\n---\n\nReflect on the day.",
+      "utf8",
+    )
+
+    mockLoadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "assistant", content: "checkpoint: reviewed" },
+      ],
+    })
+
+    await runInnerDialogTurn({
+      reason: "habit",
+      habitName: "daily-reflection",
+      now: () => new Date("2026-03-06T22:00:00.000Z"),
+      parseErrors: [],
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    const content = String(input.messages[0].content)
+    expect(content).not.toContain("invalid frontmatter")
+    expect(content).not.toContain("noticed my habit file")
+  })
+
+  it("does not include parse error nudge when parseErrors not provided", async () => {
+    const habitsDir = path.join(agentRoot, "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(habitsDir, "heartbeat.md"),
+      "---\ntitle: Heartbeat\ncadence: 30m\nstatus: active\nlastRun: 2026-03-06T11:30:00.000Z\ncreated: 2026-03-01\n---\n\nCheck in.",
+      "utf8",
+    )
+
+    mockLoadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "assistant", content: "checkpoint: reviewed" },
+      ],
+    })
+    mockBuildContextualHeartbeat.mockReturnValueOnce("heartbeat content")
+
+    await runInnerDialogTurn({
+      reason: "habit",
+      habitName: "heartbeat",
+      now: () => new Date("2026-03-06T12:05:00.000Z"),
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    const content = String(input.messages[0].content)
+    expect(content).not.toContain("noticed my habit file")
   })
 
   // ── TaskId passthrough tests ──────────────────────────────────────
@@ -1316,15 +1565,13 @@ describe("inner dialog runtime", () => {
         { role: "assistant", content: "ready for next cycle" },
       ],
     })
-    mockBuildContextualHeartbeat.mockReturnValueOnce("contextual heartbeat default")
 
     await runInnerDialogTurn()
 
-    // Default reason is "heartbeat", so on resumed session uses contextual heartbeat
-    expect(mockBuildContextualHeartbeat).toHaveBeenCalledTimes(1)
+    // Default reason is now "instinct", so on resumed session uses instinct message
     const input = mockHandleInboundTurn.mock.calls[0][0]
     const content = String(input.messages[0].content)
-    expect(content).toBe("contextual heartbeat default")
+    expect(content).toContain("stirring")
   })
 
   // ── Return value propagation ──────────────────────────────────────

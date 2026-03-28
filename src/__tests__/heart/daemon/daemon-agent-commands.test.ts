@@ -204,6 +204,7 @@ describe("daemon agent service command routing", () => {
       { kind: "agent.reportProgress", agent: "a", friendId: "f", summary: "s" },
       { kind: "agent.reportBlocker", agent: "a", friendId: "f", blocker: "b" },
       { kind: "agent.reportComplete", agent: "a", friendId: "f", summary: "s" },
+      { kind: "habit.poke", agent: "a", habitName: "heartbeat" },
     ]
 
     for (const command of commands) {

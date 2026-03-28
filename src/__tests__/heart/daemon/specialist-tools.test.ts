@@ -314,6 +314,11 @@ describe("complete_adoption via createSpecialistExecTool", () => {
     expect(fs.existsSync(path.join(finalBundle, "skills"))).toBe(true)
     expect(fs.existsSync(path.join(finalBundle, "senses"))).toBe(true)
 
+    // habits/ at bundle root (not tasks/habits/)
+    expect(fs.existsSync(path.join(finalBundle, "habits"))).toBe(true)
+    expect(fs.existsSync(path.join(finalBundle, "habits", "README.md"))).toBe(true)
+    expect(fs.existsSync(path.join(finalBundle, "tasks", "habits"))).toBe(false)
+
     // Psyche files should be present
     expect(fs.existsSync(path.join(finalBundle, "psyche", "SOUL.md"))).toBe(true)
 

@@ -2,6 +2,21 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.148",
+      "changes": [
+        "Habits extracted from task system as first-class bundle concept at habits/ (peer to diary/, friends/, tasks/).",
+        "Name-based identity: heartbeat.md, not YYYY-MM-DD-HHMM-heartbeat.md. Simple schema: title, cadence, status (active/paused), body, lastRun, created.",
+        "HabitScheduler with OS cron (LaunchdCronManager/CrontabCronManager): each habit fires independently via its own cron entry.",
+        "Event-driven discovery: fs.watch + CLI notify trigger reconcile. No polling.",
+        "Worker rerun queue replaces single-slot mechanism, prevents dropped pokes. Each habit turn includes also-due line for agent triage.",
+        "Contextual heartbeat includes habit body: agent sees own instructions when heartbeat fires.",
+        "Daemon auto-migration from tasks/habits/ on startup. Strips timestamp prefix, maps statuses, removes task-only fields.",
+        "ouro habit list and ouro habit create CLI commands. Parse error reporting via nerves events + inner dialog nudge.",
+        "Metacognitive framing teaches agent about habits/ directory, rhythms, schema, read_file/write_file, and CLI commands.",
+        "HeartbeatTimer deleted, replaced by HabitScheduler. habit type removed from task system entirely."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.147",
       "changes": [
         "Feedback signals as social cues: Teams thumbs-up/down and BlueBubbles reactions reach the agent as first-class social signals with full cognitive tools.",

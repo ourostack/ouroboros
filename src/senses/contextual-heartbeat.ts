@@ -22,6 +22,7 @@ export interface ContextualHeartbeatOptions {
   checkpoint?: string
   now: () => Date
   readJournalDir: () => JournalFileInfo[]
+  habitBody?: string
 }
 
 const STALE_THRESHOLD_MS = 30 * 60 * 1000 // 30 minutes
@@ -55,6 +56,7 @@ export function buildContextualHeartbeat(options: ContextualHeartbeatOptions): s
     checkpoint,
     now,
     readJournalDir,
+    habitBody,
   } = options
 
   const nowDate = now()
@@ -83,6 +85,11 @@ export function buildContextualHeartbeat(options: ContextualHeartbeatOptions): s
     const lastMs = new Date(lastCompletedAt).getTime()
     const elapsed = nowMs - lastMs
     sections.push(`it's been ${formatElapsed(elapsed)} since your last turn.`)
+  }
+
+  // Habit body (instructions from habit file)
+  if (habitBody) {
+    sections.push(habitBody)
   }
 
   // Pending attention count

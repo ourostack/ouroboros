@@ -75,16 +75,16 @@ describe("task module", () => {
       }),
     ).toThrow("invalid task status")
 
-    const habitPath = module.createTask({
+    const ongoingPath = module.createTask({
       title: "!!!",
-      type: "habit",
+      type: "ongoing",
       category: "",
       body: "body",
     })
-    expect(path.basename(habitPath)).toContain("-task.md")
+    expect(path.basename(ongoingPath)).toContain("-task.md")
 
-    const parsed = parser.parseTaskFile(fs.readFileSync(habitPath, "utf-8"), habitPath)
-    expect(parsed.collection).toBe("habits")
+    const parsed = parser.parseTaskFile(fs.readFileSync(ongoingPath, "utf-8"), ongoingPath)
+    expect(parsed.collection).toBe("ongoing")
     expect(parsed.category).toBe("infrastructure")
     expect(parsed.frontmatter.cadence).toBeNull()
     expect(parsed.frontmatter.lastRun).toBeNull()
@@ -103,21 +103,21 @@ describe("task module", () => {
       scheduledAt: "2026-03-10T17:00:00.000Z",
     })
 
-    const habitPath = module.createTask({
+    const ongoingPath = module.createTask({
       title: "Heartbeat",
-      type: "habit",
+      type: "ongoing",
       category: "operations",
       body: "Run heartbeat",
       cadence: "30m",
     })
 
     const oneShot = parser.parseTaskFile(fs.readFileSync(oneShotPath, "utf-8"), oneShotPath)
-    const habit = parser.parseTaskFile(fs.readFileSync(habitPath, "utf-8"), habitPath)
+    const ongoing = parser.parseTaskFile(fs.readFileSync(ongoingPath, "utf-8"), ongoingPath)
 
     expect(oneShot.frontmatter.scheduledAt).toBe("2026-03-10T17:00:00.000Z")
     expect(oneShot.frontmatter.cadence).toBeNull()
-    expect(habit.frontmatter.cadence).toBe("30m")
-    expect(habit.frontmatter.scheduledAt).toBeNull()
+    expect(ongoing.frontmatter.cadence).toBe("30m")
+    expect(ongoing.frontmatter.scheduledAt).toBeNull()
   })
 
   it("links reminder task metadata to daemon scheduler jobs", async () => {
@@ -160,6 +160,14 @@ describe("task module", () => {
     const second = tasks.getTaskModule()
     expect(second).toBe(first)
     expect(first.boardStatus("not-a-status")).toEqual([])
+  })
+
+  it("ensureTaskLayout does not create tasks/habits/", async () => {
+    const scanner = await import("../../../repertoire/tasks/scanner")
+    scanner.ensureTaskLayout()
+
+    const habitsDir = path.join(agentRoot, "tasks", "habits")
+    expect(fs.existsSync(habitsDir)).toBe(false)
   })
 
   it("reuses scanner cache when filesystem fingerprint is unchanged", async () => {
@@ -620,13 +628,13 @@ describe("task module", () => {
     expect(index.tasks.some((task) => task.path === reservedFile)).toBe(false)
     expect(index.parseErrors.some((line) => line.includes("unterminated frontmatter"))).toBe(true)
 
-    const fallbackPath = path.join(agentRoot, "tasks", "custom", "2026-03-02-1100-custom-habit.md")
+    const fallbackPath = path.join(agentRoot, "tasks", "custom", "2026-03-02-1100-custom-ongoing.md")
     const parsedFallback = parser.parseTaskFile(
       parser.renderTaskFile(
         {
-          type: "habit",
+          type: "ongoing",
           category: "ops",
-          title: "Custom Habit",
+          title: "Custom Ongoing",
           status: "drafting",
           created: "2026-03-02",
           updated: "2026-03-02",
@@ -637,7 +645,7 @@ describe("task module", () => {
       ),
       fallbackPath,
     )
-    expect(parsedFallback.collection).toBe("habits")
+    expect(parsedFallback.collection).toBe("ongoing")
 
     expect(() => parser.parseTaskFile("---\ntype: one-shot", fallbackPath)).toThrow("unterminated frontmatter")
     expect(() =>
@@ -673,24 +681,63 @@ describe("task module", () => {
       ),
     ).toThrow("invalid status")
 
-    const habitsPath = path.join(agentRoot, "tasks", "habits", "2026-03-02-1105-habit-task.md")
-    const habitFromCollection = parser.parseTaskFile(
+    const ongoingPath2 = path.join(agentRoot, "tasks", "ongoing", "2026-03-02-1105-ongoing-task.md")
+    const ongoingFromCollection = parser.parseTaskFile(
       parser.renderTaskFile(
         {
-          type: "habit",
+          type: "ongoing",
           status: "drafting",
           child_tasks: [],
           artifacts: [],
         },
         "body",
       ),
-      habitsPath,
+      ongoingPath2,
     )
-    expect(habitFromCollection.collection).toBe("habits")
-    expect(habitFromCollection.title).toBe("2026-03-02-1105-habit-task")
-    expect(habitFromCollection.category).toBe("infrastructure")
-    expect(habitFromCollection.created).toBe("")
-    expect(habitFromCollection.updated).toBe("")
+    expect(ongoingFromCollection.collection).toBe("ongoing")
+    expect(ongoingFromCollection.title).toBe("2026-03-02-1105-ongoing-task")
+    expect(ongoingFromCollection.category).toBe("infrastructure")
+    expect(ongoingFromCollection.created).toBe("")
+    expect(ongoingFromCollection.updated).toBe("")
+  })
+
+  it("parser collection inference does not return habits for paths containing habits", async () => {
+    const parser = await import("../../../repertoire/tasks/parser")
+    // A task file in a path containing "habits" should NOT get collection "habits"
+    // since "habits" is no longer a canonical collection.
+    // With "habit" removed as a type, the parser should reject this entirely.
+    expect(() =>
+      parser.parseTaskFile(
+        parser.renderTaskFile(
+          {
+            type: "ongoing",
+            category: "ops",
+            title: "Not a habit",
+            status: "drafting",
+            created: "2026-03-02",
+            updated: "2026-03-02",
+          },
+          "body",
+        ),
+        path.join(agentRoot, "tasks", "habits", "2026-03-02-1105-not-a-habit.md"),
+      ),
+    ).not.toThrow()
+
+    const parsed = parser.parseTaskFile(
+      parser.renderTaskFile(
+        {
+          type: "ongoing",
+          category: "ops",
+          title: "Not a habit",
+          status: "drafting",
+          created: "2026-03-02",
+          updated: "2026-03-02",
+        },
+        "body",
+      ),
+      path.join(agentRoot, "tasks", "habits", "2026-03-02-1105-not-a-habit.md"),
+    )
+    expect(parsed.collection).not.toBe("habits")
   })
 
   it("parses frontmatter with quotes, blank lines, and non-key lines", async () => {
@@ -978,6 +1025,15 @@ describe("task transition helpers", () => {
     expect(transitions.isCanonicalTaskFilename("2026-03-01-1015-good-name.md")).toBe(true)
     expect(transitions.isCanonicalTaskFilename("bad.md")).toBe(false)
     expect(transitions.renderTaskTransitionLines().length).toBeGreaterThan(0)
+  })
+
+  it("does not include habit or habits in canonical task types and collections", async () => {
+    const transitions = await import("../../../repertoire/tasks/transitions")
+    expect(transitions.TASK_CANONICAL_COLLECTIONS).not.toContain("habits")
+    expect(transitions.TASK_CANONICAL_TYPES).not.toContain("habit")
+    expect(transitions.normalizeTaskType("habit")).toBeNull()
+    expect(transitions.TASK_TYPE_TO_COLLECTION).not.toHaveProperty("habit")
+    expect(transitions.TASK_REQUIRED_TEMPLATE_FIELDS).not.toHaveProperty("habit")
   })
 
   it("falls back to an empty board status list for missing status keys", async () => {

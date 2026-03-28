@@ -11,17 +11,53 @@ vi.mock("../../../heart/daemon/agent-discovery", () => ({
   listEnabledBundleAgents: listEnabledBundleAgentsMock,
 }))
 
-vi.mock("../../../heart/daemon/heartbeat-timer", () => ({
-  HeartbeatTimer: class MockHeartbeatTimer {
-    start = vi.fn()
-    stop = vi.fn()
+const { habitSchedulerStartMock, habitSchedulerStopMock, habitSchedulerWatchMock, habitSchedulerStopWatchMock } = vi.hoisted(() => ({
+  habitSchedulerStartMock: vi.fn(),
+  habitSchedulerStopMock: vi.fn(),
+  habitSchedulerWatchMock: vi.fn(),
+  habitSchedulerStopWatchMock: vi.fn(),
+}))
+
+const { migrateHabitsFromTaskSystemMock } = vi.hoisted(() => ({
+  migrateHabitsFromTaskSystemMock: vi.fn(),
+}))
+
+vi.mock("../../../heart/daemon/habit-scheduler", () => ({
+  HabitScheduler: class MockHabitScheduler {
+    constructor(public options: unknown) {}
+    start = habitSchedulerStartMock
+    stop = habitSchedulerStopMock
+    watchForChanges = habitSchedulerWatchMock
+    stopWatching = habitSchedulerStopWatchMock
   },
+}))
+
+vi.mock("../../../heart/daemon/habit-migration", () => ({
+  migrateHabitsFromTaskSystem: migrateHabitsFromTaskSystemMock,
+}))
+
+vi.mock("../../../heart/daemon/os-cron-deps", () => ({
+  createRealOsCronDeps: vi.fn(() => ({
+    exec: vi.fn(),
+    writeFile: vi.fn(),
+    removeFile: vi.fn(),
+    existsFile: vi.fn(() => false),
+    listDir: vi.fn(() => []),
+    mkdirp: vi.fn(),
+    homeDir: "/mock/home",
+  })),
+  resolveOuroBinaryPath: vi.fn(() => "/usr/local/bin/ouro"),
 }))
 
 describe("daemon entrypoint", () => {
   afterEach(() => {
     listEnabledBundleAgentsMock.mockReset()
     listEnabledBundleAgentsMock.mockReturnValue([])
+    habitSchedulerStartMock.mockReset()
+    habitSchedulerStopMock.mockReset()
+    habitSchedulerWatchMock.mockReset()
+    habitSchedulerStopWatchMock.mockReset()
+    migrateHabitsFromTaskSystemMock.mockReset()
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
   })
@@ -149,9 +185,16 @@ describe("daemon entrypoint", () => {
     expect(onSpy).toHaveBeenCalledWith("SIGINT", expect.any(Function))
     expect(onSpy).toHaveBeenCalledWith("SIGTERM", expect.any(Function))
 
+    // HabitScheduler should be started (not HeartbeatTimer)
+    expect(habitSchedulerStartMock).toHaveBeenCalled()
+    // Migration should be called before scheduler start
+    expect(migrateHabitsFromTaskSystemMock).toHaveBeenCalled()
+
     onHandlers.SIGINT?.()
     await Promise.resolve()
     expect(stop).toHaveBeenCalled()
+    // HabitScheduler should be stopped on SIGINT
+    expect(habitSchedulerStopMock).toHaveBeenCalled()
     expect(exitSpy).toHaveBeenCalledWith(0)
 
     onHandlers.SIGTERM?.()
