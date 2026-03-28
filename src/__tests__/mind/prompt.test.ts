@@ -3517,3 +3517,121 @@ describe("active-work prompting", () => {
     expect(result).toContain("i do not rebuild whole-self status from scratch with query_session and coding_status unless i need to verify a specific gap.")
   })
 })
+
+// ── feedbackSignalSection ──────────────────────────────────────────────
+describe("feedbackSignalSection", () => {
+  beforeEach(() => {
+    vi.resetModules()
+    setAgentProvider("minimax")
+  })
+
+  function makeFriend() {
+    return {
+      id: "uuid-1", name: "TestFriend",
+      externalIds: [{ provider: "local" as const, externalId: "test", linkedAt: "2026-01-01" }],
+      tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0,
+      createdAt: "2026-01-01", updatedAt: "2026-01-01", schemaVersion: 1, trustLevel: "friend",
+    }
+  }
+  function makeCaps(channel: string, senseType: string) {
+    return { channel, senseType, availableIntegrations: [] as any[], supportsMarkdown: false, supportsStreaming: true, supportsRichCards: false, maxMessageLength: Infinity }
+  }
+
+  it("returns non-empty for Teams channel 1:1", async () => {
+    const { feedbackSignalSection } = await import("../../mind/prompt")
+    const result = feedbackSignalSection({ friend: makeFriend(), channel: makeCaps("teams", "closed"), isGroupChat: false } as any)
+    expect(result).not.toBe("")
+    expect(result).toContain("## feedback signals")
+  })
+
+  it("returns non-empty for Teams channel group", async () => {
+    const { feedbackSignalSection } = await import("../../mind/prompt")
+    const result = feedbackSignalSection({ friend: makeFriend(), channel: makeCaps("teams", "closed"), isGroupChat: true } as any)
+    expect(result).not.toBe("")
+    expect(result).toContain("## feedback signals")
+  })
+
+  it("returns non-empty for BlueBubbles channel 1:1", async () => {
+    const { feedbackSignalSection } = await import("../../mind/prompt")
+    const result = feedbackSignalSection({ friend: makeFriend(), channel: makeCaps("bluebubbles", "open") } as any)
+    expect(result).not.toBe("")
+  })
+
+  it("returns non-empty for BlueBubbles channel group", async () => {
+    const { feedbackSignalSection } = await import("../../mind/prompt")
+    const result = feedbackSignalSection({ friend: makeFriend(), channel: makeCaps("bluebubbles", "open"), isGroupChat: true } as any)
+    expect(result).not.toBe("")
+  })
+
+  it("returns empty for CLI channel", async () => {
+    const { feedbackSignalSection } = await import("../../mind/prompt")
+    const result = feedbackSignalSection({ friend: makeFriend(), channel: makeCaps("cli", "local") } as any)
+    expect(result).toBe("")
+  })
+
+  it("returns empty for inner dialog", async () => {
+    const { feedbackSignalSection } = await import("../../mind/prompt")
+    const result = feedbackSignalSection({ friend: makeFriend(), channel: makeCaps("inner", "internal") } as any)
+    expect(result).toBe("")
+  })
+
+  it("returns empty with no context", async () => {
+    const { feedbackSignalSection } = await import("../../mind/prompt")
+    expect(feedbackSignalSection()).toBe("")
+    expect(feedbackSignalSection(undefined)).toBe("")
+  })
+
+  it("1:1 mentions observe and silence in a direct conversation", async () => {
+    const { feedbackSignalSection } = await import("../../mind/prompt")
+    const result = feedbackSignalSection({ friend: makeFriend(), channel: makeCaps("teams", "closed"), isGroupChat: false } as any)
+    expect(result).toContain("observe")
+    expect(result).toMatch(/silence.*direct conversation/i)
+  })
+
+  it("1:1 mentions Teams format", async () => {
+    const { feedbackSignalSection } = await import("../../mind/prompt")
+    const result = feedbackSignalSection({ friend: makeFriend(), channel: makeCaps("teams", "closed"), isGroupChat: false } as any)
+    expect(result).toContain("thumbs-up or thumbs-down, sometimes with a written comment")
+  })
+
+  it("1:1 includes course-correction nudge", async () => {
+    const { feedbackSignalSection } = await import("../../mind/prompt")
+    const result = feedbackSignalSection({ friend: makeFriend(), channel: makeCaps("teams", "closed"), isGroupChat: false } as any)
+    expect(result).toContain("worth sitting with")
+    expect(result).toContain("course-correct")
+  })
+
+  it("group mentions group texture and reaction to someone else", async () => {
+    const { feedbackSignalSection } = await import("../../mind/prompt")
+    const result = feedbackSignalSection({ friend: makeFriend(), channel: makeCaps("teams", "closed"), isGroupChat: true } as any)
+    expect(result).toContain("reaction to someone else's message is group texture")
+    expect(result).toContain("thumbs-up or thumbs-down, sometimes with a written comment")
+  })
+
+  it("group includes invitation to adjust", async () => {
+    const { feedbackSignalSection } = await import("../../mind/prompt")
+    const result = feedbackSignalSection({ friend: makeFriend(), channel: makeCaps("teams", "closed"), isGroupChat: true } as any)
+    expect(result).toContain("invitation to adjust")
+  })
+
+  it("1:1 does NOT mention diary_write", async () => {
+    const { feedbackSignalSection } = await import("../../mind/prompt")
+    const result = feedbackSignalSection({ friend: makeFriend(), channel: makeCaps("teams", "closed"), isGroupChat: false } as any)
+    expect(result).not.toContain("diary_write")
+  })
+
+  it("group does NOT mention diary_write", async () => {
+    const { feedbackSignalSection } = await import("../../mind/prompt")
+    const result = feedbackSignalSection({ friend: makeFriend(), channel: makeCaps("teams", "closed"), isGroupChat: true } as any)
+    expect(result).not.toContain("diary_write")
+  })
+
+  it("sections use first-person voice", async () => {
+    const { feedbackSignalSection } = await import("../../mind/prompt")
+    const oneOnOne = feedbackSignalSection({ friend: makeFriend(), channel: makeCaps("teams", "closed"), isGroupChat: false } as any)
+    const group = feedbackSignalSection({ friend: makeFriend(), channel: makeCaps("teams", "closed"), isGroupChat: true } as any)
+    // Both should use "i" (first person) not "you"
+    expect(oneOnOne).toMatch(/\bi\b/)
+    expect(group).toMatch(/\bi\b/)
+  })
+})
