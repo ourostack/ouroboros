@@ -107,10 +107,28 @@ export function splitMessage(text: string, maxLen: number): string[] {
   return chunks
 }
 
+// Sanitize user-provided feedback comments: truncate, strip control chars and newlines.
+export function sanitizeFeedbackComment(comment: string): string {
+  const cleaned = comment.replace(/[\x00-\x1f\n\r]/g, "")
+  return cleaned.length > 200 ? cleaned.slice(0, 200) : cleaned
+}
+
+// Build synthetic message text from a Teams feedback reaction.
+export function buildFeedbackSyntheticText(reaction: string, comment?: string): string {
+  const emoji = reaction === "like" ? "thumbs-up" : "thumbs-down"
+  if (comment) {
+    const sanitized = sanitizeFeedbackComment(comment)
+    return `[reacted with ${emoji} to your message: "${sanitized}"]`
+  }
+  return `[reacted with ${emoji} to your message]`
+}
+
 // Options for createTeamsCallbacks controlling streaming behavior.
 export interface TeamsCallbackOptions {
   flushIntervalMs?: number
   conversationId?: string
+  /** When true, suppress the "(completed with tool calls only)" fallback in flush(). */
+  suppressEmptyStreamMessage?: boolean
 }
 
 // Extended callbacks type that includes flush() for chunked streaming.
@@ -398,7 +416,7 @@ export function createTeamsCallbacks(
             for (const chunk of chunks) await sendMessage(chunk)
           }
         }
-      } else if (!streamHasContent) {
+      } else if (!streamHasContent && !options?.suppressEmptyStreamMessage) {
         safeEmit("(completed with tool calls only — no text response)")
       }
     },
@@ -502,7 +520,7 @@ function handleTeamsSlashCommand(
 }
 
 // Handle an incoming Teams message
-export async function handleTeamsMessage(text: string, stream: TeamsStream, conversationId: string, teamsContext?: TeamsMessageContext, sendMessage?: (text: string) => Promise<void>): Promise<void> {
+export async function handleTeamsMessage(text: string, stream: TeamsStream, conversationId: string, teamsContext?: TeamsMessageContext, sendMessage?: (text: string) => Promise<void>, reactionOverrides?: { isReactionSignal?: boolean; suppressEmptyStreamMessage?: boolean }): Promise<void> {
   const turnKey = teamsTurnKey(conversationId)
   // NOTE: Confirmation resolution is handled in the app.on("message") handler
   // BEFORE the conversation lock.  By the time we get here, any pending
@@ -510,7 +528,10 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
 
   // Send first thinking phrase immediately so the user sees feedback
   // before sync I/O (session load, trim) blocks the event loop.
-  stream.update(pickPhrase(getPhrases().thinking) + "...")
+  // Skip for reaction signals — they should be processed quietly.
+  if (!reactionOverrides) {
+    stream.update(pickPhrase(getPhrases().thinking) + "...")
+  }
   await new Promise(r => setImmediate(r))
 
   // Resolve identity provider early for friend resolution + slash command session path
@@ -541,7 +562,7 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
   // ── Teams adapter concerns: controller, callbacks, session path ──────────
   const controller = new AbortController()
   const channelConfig = getTeamsChannelConfig()
-  const callbacks = createTeamsCallbacks(stream, controller, sendMessage, { conversationId, flushIntervalMs: channelConfig.flushIntervalMs })
+  const callbacks = createTeamsCallbacks(stream, controller, sendMessage, { conversationId, flushIntervalMs: channelConfig.flushIntervalMs, ...(reactionOverrides?.suppressEmptyStreamMessage ? { suppressEmptyStreamMessage: true } : {}) })
   const traceId = createTraceId()
   const sessPath = sessionPath(friendId, "teams", conversationId)
   const teamsCapabilities = getChannelCapabilities("teams")
@@ -574,6 +595,7 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
           .map(({ text: followUpText, effect }) => ({ text: followUpText, effect }))
         return drainedSteeringFollowUps
       },
+      ...(reactionOverrides?.isReactionSignal ? { isReactionSignal: true } : {}),
     }
     if (channelConfig.skipConfirmation) agentOptions.skipConfirmation = true
 
