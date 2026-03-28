@@ -92,14 +92,18 @@ describe("ouro CLI parsing", () => {
     })
   })
 
-  it("parses hook command with event name", () => {
-    expect(parseOuroCommand(["hook", "session-start"])).toEqual({ kind: "hook", event: "session-start" })
-    expect(parseOuroCommand(["hook", "stop"])).toEqual({ kind: "hook", event: "stop" })
-    expect(parseOuroCommand(["hook", "post-tool-use"])).toEqual({ kind: "hook", event: "post-tool-use" })
+  it("parses hook command with event name and agent", () => {
+    expect(parseOuroCommand(["hook", "session-start", "--agent", "slugger"])).toEqual({ kind: "hook", event: "session-start", agent: "slugger" })
+    expect(parseOuroCommand(["hook", "stop", "--agent", "slugger"])).toEqual({ kind: "hook", event: "stop", agent: "slugger" })
+    expect(parseOuroCommand(["hook", "post-tool-use", "--agent", "slugger"])).toEqual({ kind: "hook", event: "post-tool-use", agent: "slugger" })
   })
 
   it("throws when hook command has no event name", () => {
     expect(() => parseOuroCommand(["hook"])).toThrow("hook requires an event name")
+  })
+
+  it("throws when hook command has no agent", () => {
+    expect(() => parseOuroCommand(["hook", "stop"])).toThrow("hook requires --agent")
   })
 
   it("strips leading --agent flag and parses underlying command", () => {

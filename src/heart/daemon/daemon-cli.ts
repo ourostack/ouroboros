@@ -96,7 +96,7 @@ export type OuroCliCommand =
   | { kind: "inner.status"; agent?: string }
   | { kind: "mcp-serve"; agent: string; friendId?: string }
   | { kind: "setup"; tool: "claude-code" | "codex"; agent: string }
-  | { kind: "hook"; event: string }
+  | { kind: "hook"; event: string; agent: string }
 
 export interface OuroCliDeps {
   socketPath: string
@@ -1084,9 +1084,18 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   }
 
   if (head === "hook") {
-    const event = second
+    const hookArgs = args.slice(1)
+    let event: string | undefined
+    let hookAgent: string | undefined
+    for (let i = 0; i < hookArgs.length; i++) {
+      if (hookArgs[i] === "--agent" && hookArgs[i + 1]) { hookAgent = hookArgs[++i]; continue }
+      /* v8 ignore start -- false branch: extra positional args after event are ignored */
+      if (!event) { event = hookArgs[i] }
+      /* v8 ignore stop */
+    }
     if (!event) throw new Error("hook requires an event name (session-start, stop, post-tool-use)")
-    return { kind: "hook", event }
+    if (!hookAgent) throw new Error("hook requires --agent <name>")
+    return { kind: "hook", event, agent: hookAgent }
   }
   if (head === "up") return { kind: "daemon.up" }
   if (head === "dev") {
@@ -2181,6 +2190,16 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   })
 
   if (command.kind === "daemon.up") {
+    // ── dev mode cleanup: delete dev-config.json so the wrapper stops dispatching to dev repo ──
+    /* v8 ignore start -- dev-config cleanup: requires real filesystem state @preserve */
+    try {
+      const devConfigPath = getDevConfigPath()
+      if (fs.existsSync(devConfigPath)) {
+        fs.unlinkSync(devConfigPath)
+      }
+    } catch { /* best effort */ }
+    /* v8 ignore stop */
+
     // ── dev mode delegation: ouro up from a dev repo delegates to installed binary ──
     // Only runs when detectMode is explicitly injected (via createDefaultOuroCliDeps or tests)
     if (deps.detectMode) {
@@ -2533,15 +2552,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       content = `[Claude Code hook: ${eventType} in session ${sessionId}]`
     }
 
-    // Send to daemon (best effort — daemon may not be running)
+    // Send to the specific agent configured for this hook
     try {
-      const agents = require("fs").readdirSync(path.join(os.homedir(), "AgentBundles"))
-        .filter((f: string) => f.endsWith(".ouro"))
-        .map((f: string) => f.replace(".ouro", ""))
-      for (const agent of agents) {
-        await deps.sendCommand(deps.socketPath, { kind: "message.send", from: `claude-code:${sessionId}`, to: agent, content } as DaemonCommand)
-      }
-      await deps.sendCommand(deps.socketPath, { kind: "inner.wake", agent: agents[0] } as DaemonCommand).catch(() => {})
+      await deps.sendCommand(deps.socketPath, { kind: "message.send", from: `claude-code:${sessionId}`, to: command.agent, content } as DaemonCommand).catch(() => {})
+      await deps.sendCommand(deps.socketPath, { kind: "inner.wake", agent: command.agent } as DaemonCommand).catch(() => {})
     } catch { /* daemon not running — silent */ }
 
     // Output for Claude Code hook system
@@ -2577,9 +2591,9 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       // Bare `ouro` works because ouro is on PATH via ~/.ouro-cli/bin/.
       settings.hooks = {
         ...(settings.hooks as Record<string, unknown> ?? {}),
-        SessionStart: [{ hooks: [{ type: "command", command: "ouro hook session-start", timeout: 5 }] }],
-        Stop: [{ hooks: [{ type: "command", command: "ouro hook stop", timeout: 5 }] }],
-        PostToolUse: [{ matcher: "Bash|Edit|Write", hooks: [{ type: "command", command: "ouro hook post-tool-use", timeout: 5 }] }],
+        SessionStart: [{ hooks: [{ type: "command", command: `ouro hook session-start --agent ${setupAgent}`, timeout: 5 }] }],
+        Stop: [{ hooks: [{ type: "command", command: `ouro hook stop --agent ${setupAgent}`, timeout: 5 }] }],
+        PostToolUse: [{ matcher: "Bash|Edit|Write", hooks: [{ type: "command", command: `ouro hook post-tool-use --agent ${setupAgent}`, timeout: 5 }] }],
       }
 
       fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
