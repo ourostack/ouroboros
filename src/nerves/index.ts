@@ -113,7 +113,7 @@ export function registerSpinnerHooks(pause: () => void, resume: () => void): voi
 }
 
 export function createTerminalSink(
-  write: (chunk: string) => unknown = (chunk) => process.stderr.write(chunk),
+  write: (chunk: string) => unknown = (chunk) => { try { process.stderr.write(chunk) } catch { /* EPIPE: daemon detached, no terminal */ } },
   colorize = true,
 ): LogSink {
   return (entry: LogEvent): void => {
