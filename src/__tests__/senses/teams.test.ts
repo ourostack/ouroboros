@@ -3479,7 +3479,7 @@ describe("Teams adapter - phrase rotation", () => {
     callbacks.onTextChunk("done")
   })
 
-  it("onTextChunk stops phrase rotation", async () => {
+  it("onTextChunk does not stop phrase rotation until MIN_INITIAL_CHARS met", async () => {
     vi.resetModules()
     const teams = await import("../../senses/teams")
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
@@ -3487,10 +3487,21 @@ describe("Teams adapter - phrase rotation", () => {
     callbacks.onModelStart()
     vi.advanceTimersByTime(1500) // rotation fires
     mockStream.update.mockClear()
-    callbacks.onTextChunk("hello") // stops rotation
+    // Short text: phrases continue
+    callbacks.onTextChunk("hello")
+    vi.advanceTimersByTime(1500)
+    expect(mockStream.update).toHaveBeenCalled()
+    // Once enough chars arrive and flush fires, phrases stop
+    mockStream.update.mockClear()
+    callbacks.onTextChunk("a".repeat(20))
+    vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
+    mockStream.update.mockClear()
     vi.advanceTimersByTime(3000)
-    // No more rotation after text arrives
-    expect(mockStream.update).not.toHaveBeenCalled()
+    const phraseUpdates = mockStream.update.mock.calls.filter((c: any) => {
+      const t = c[0] as string
+      return t.endsWith("...")
+    })
+    expect(phraseUpdates.length).toBe(0)
   })
 
   it("onModelStart uses FOLLOWUP_PHRASES after a tool run (no prior text)", async () => {
@@ -5765,24 +5776,26 @@ describe("Teams adapter - periodic flush timer", () => {
     vi.resetModules()
     const teams = await import("../../senses/teams")
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller, sendMessage)
-    callbacks.onTextChunk("hello ")
+    const text = "hello world enough!! "  // >= 20 chars
+    callbacks.onTextChunk(text)
     // Text should be buffered, not emitted yet
     expect(mockStream.emit).not.toHaveBeenCalled()
     // Advance past the flush interval (DEFAULT_FLUSH_INTERVAL_MS = 1000)
     vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
     // After the timer fires, accumulated text should be flushed via safeEmit (first flush)
-    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled("hello "))
+    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled(text))
   })
 
   it("multiple flushes across intervals -- all go to safeEmit (cumulative stream)", async () => {
     vi.resetModules()
     const teams = await import("../../senses/teams")
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller, sendMessage)
-    // First interval: accumulate and flush
-    callbacks.onTextChunk("chunk1 ")
+    // First interval: accumulate and flush (>= 20 chars)
+    const chunk1 = "chunk1 with padding!!"  // >= 20 chars
+    callbacks.onTextChunk(chunk1)
     vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
-    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled("chunk1 "))
-    // Second interval: more text accumulates, also goes to safeEmit (SDK accumulates cumulatively)
+    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled(chunk1))
+    // Second interval: after first emit, no threshold — small chunks flush
     callbacks.onTextChunk("chunk2 ")
     vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
     expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled("chunk2 "))
@@ -5795,7 +5808,8 @@ describe("Teams adapter - periodic flush timer", () => {
     vi.resetModules()
     const teams = await import("../../senses/teams")
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller, sendMessage)
-    callbacks.onTextChunk("start")
+    const text = "starting with enough!"  // >= 20 chars
+    callbacks.onTextChunk(text)
     vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
     // First flush happened
     expect(mockStream.emit).toHaveBeenCalledTimes(1)
@@ -5812,10 +5826,11 @@ describe("Teams adapter - periodic flush timer", () => {
     // Before any text chunk, advancing time should not cause any flush
     vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS * 3)
     expect(mockStream.emit).not.toHaveBeenCalled()
-    // Now send a text chunk -- timer should start
-    callbacks.onTextChunk("delayed start")
+    // Now send a text chunk >= 20 chars -- timer should start and flush
+    const text = "delayed start enough!"  // >= 20 chars
+    callbacks.onTextChunk(text)
     vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
-    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled("delayed start"))
+    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled(text))
   })
 
   it("timer cleared on controller abort -- no leaked intervals", async () => {
@@ -5868,7 +5883,7 @@ describe("Teams adapter - periodic flush timer", () => {
     expect(teams.DEFAULT_FLUSH_INTERVAL_MS).toBeLessThanOrEqual(2000)
     expect(teams.DEFAULT_FLUSH_INTERVAL_MS).toBeGreaterThan(0)
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller, sendMessage)
-    callbacks.onTextChunk("first token ")
+    callbacks.onTextChunk("first token enough!!")  // >= 20 chars
     // Advance exactly to the flush interval
     vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
     // First content should arrive at flush interval (e.g. 1000ms) -- well within 15s
@@ -5887,21 +5902,23 @@ describe("Teams adapter - periodic flush timer", () => {
     expect(mockStream.update).toHaveBeenCalledWith("thinking about it...more reasoning...")
     expect(mockStream.emit).not.toHaveBeenCalled()
     expect(sendMessage).not.toHaveBeenCalled()
-    // Now text starts -- next tick flushes text via emit
-    callbacks.onTextChunk("answer: ")
+    // Now text starts -- next tick flushes text via emit (>= 20 chars)
+    const answer = "answer: here it is!!"  // >= 20 chars
+    callbacks.onTextChunk(answer)
     vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
-    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled("answer: "))
+    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled(answer))
   })
 
   it("flush() at end of turn flushes remaining buffer via correct channel", async () => {
     vi.resetModules()
     const teams = await import("../../senses/teams")
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller, sendMessage)
-    // First interval flush
-    callbacks.onTextChunk("first ")
+    // First interval flush (>= 20 chars)
+    const first = "first chunk enough!!"  // >= 20 chars
+    callbacks.onTextChunk(first)
     vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
-    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled("first "))
-    // More text arrives after first flush
+    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled(first))
+    // More text arrives after first flush (now any size flushes)
     callbacks.onTextChunk("remaining ")
     // End of turn -- flush() sends remaining via safeEmit (cumulative stream)
     await callbacks.flush()
@@ -5914,13 +5931,14 @@ describe("Teams adapter - periodic flush timer", () => {
     const teams = await import("../../senses/teams")
     const customInterval = 500
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller, sendMessage, { flushIntervalMs: customInterval })
-    callbacks.onTextChunk("custom interval")
+    const text = "custom interval test!!"  // >= 20 chars
+    callbacks.onTextChunk(text)
     // Default interval should NOT have flushed yet
     vi.advanceTimersByTime(customInterval - 1)
     expect(mockStream.emit).not.toHaveBeenCalled()
     // Custom interval should flush
     vi.advanceTimersByTime(1)
-    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled("custom interval"))
+    expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled(text))
   })
 })
 

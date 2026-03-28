@@ -152,12 +152,14 @@ export function createTeamsCallbacks(
   sendMessage?: (text: string) => Promise<void>,
   options?: TeamsCallbackOptions,
 ): TeamsCallbacksWithFlush {
+  const MIN_INITIAL_CHARS = 20
   let stopped = false // set when stream signals cancellation (403)
   let hadToolRun = false
   let hadRealOutput = false // true once reasoning/tool output shown; suppresses phrases
   let reasoningBuf = "" // accumulated reasoning text for status display
   let textBuffer = "" // accumulated text output for chunked streaming
   let streamHasContent = false // tracks whether primary output has received content
+  let firstContentEmitted = false // true after first content push — disables MIN_INITIAL_CHARS threshold
   let phraseTimer: NodeJS.Timeout | null = null
   let lastPhrase = ""
   let flushTimer: NodeJS.Timeout | null = null
@@ -283,10 +285,18 @@ export function createTeamsCallbacks(
   // emitted text into a single streaming message (cumulative), so every
   // periodic flush appends to the same response — not separate messages.
   // No preemptive splitting — sends full text. Error recovery happens in flush().
+  // Hybrid MIN_INITIAL_CHARS: hold back until >= MIN_INITIAL_CHARS accumulated
+  // before the first content emit, so phrase rotation shows while real content
+  // buffers. After first emit, flush normally (no threshold).
   function flushTextBuffer(): void {
     if (!textBuffer) return
+    if (!firstContentEmitted && textBuffer.length < MIN_INITIAL_CHARS) return
     safeEmit(textBuffer)
     textBuffer = ""
+    if (!firstContentEmitted) {
+      firstContentEmitted = true
+      stopPhraseRotation()
+    }
   }
 
   function startPhraseRotation(pool: readonly string[]): void {
@@ -326,7 +336,8 @@ export function createTeamsCallbacks(
     },
     onTextChunk: (text: string) => {
       if (stopped) return
-      stopPhraseRotation()
+      // Don't stop phrase rotation here — let it continue until first content
+      // emit (handled in flushTextBuffer when MIN_INITIAL_CHARS threshold met).
       textBuffer += text
       startFlushTimer()
     },
@@ -335,6 +346,8 @@ export function createTeamsCallbacks(
     },
     onToolStart: (name: string, args: Record<string, string>) => {
       stopPhraseRotation()
+      // Force-flush any accumulated text, bypassing MIN_INITIAL_CHARS threshold
+      firstContentEmitted = true
       flushTextBuffer()
       // Emit a placeholder to satisfy the 15s Copilot timeout for initial
       // stream.emit(). Without this, long tool chains (e.g. ADO batch ops)
@@ -398,7 +411,10 @@ export function createTeamsCallbacks(
       : undefined,
     flush: async () => {
       stopFlushTimer()
+      stopPhraseRotation()
       if (textBuffer) {
+        // Bypass MIN_INITIAL_CHARS threshold — flush delivers all remaining content
+        firstContentEmitted = true
         const text = textBuffer
         textBuffer = ""
         if (!stopped) {
