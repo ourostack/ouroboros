@@ -62,6 +62,17 @@ export function resetToolChoiceRequired(): void {
   _toolChoiceRequired = false
 }
 
+// Module-level toggle for debug mode
+let _debugMode = false
+
+export function getDebugMode(): boolean {
+  return _debugMode
+}
+
+export function resetDebugMode(): void {
+  _debugMode = false
+}
+
 export function registerDefaultCommands(registry: CommandRegistry): void {
   emitNervesEvent({
     event: "repertoire.load_start",
@@ -105,12 +116,36 @@ export function registerDefaultCommands(registry: CommandRegistry): void {
     },
   })
 
+  registry.register({
+    name: "debug",
+    description: "toggle debug mode (verbose tool output)",
+    channels: ["cli", "teams", "bluebubbles"],
+    handler: () => {
+      _debugMode = !_debugMode
+      return { action: "response", message: `debug mode: ${_debugMode ? "ON" : "OFF"}` }
+    },
+  })
+
   emitNervesEvent({
     event: "repertoire.load_end",
     component: "repertoire",
     message: "registered default commands",
     meta: {},
   })
+}
+
+let _sharedRegistry: CommandRegistry | null = null
+
+export function getSharedCommandRegistry(): CommandRegistry {
+  if (!_sharedRegistry) {
+    _sharedRegistry = createCommandRegistry()
+    registerDefaultCommands(_sharedRegistry)
+  }
+  return _sharedRegistry
+}
+
+export function resetSharedCommandRegistry(): void {
+  _sharedRegistry = null
 }
 
 export function parseSlashCommand(input: string): { command: string; args: string } | null {

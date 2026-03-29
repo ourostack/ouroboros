@@ -704,14 +704,12 @@ describe("Teams adapter - createTeamsCallbacks (SDK-delegated streaming)", () =>
 
   // --- Tool/status callbacks ---
 
-  it("onToolStart sends informative status", async () => {
+  it("onToolStart sends human-readable description", async () => {
     vi.resetModules()
     const teams = await import("../../senses/teams")
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
     callbacks.onToolStart("read_file", { path: "package.json" })
-    expect(mockStream.update).toHaveBeenCalledWith(
-      "shared work: processing\nrunning read_file (path=package.json)...",
-    )
+    expect(mockStream.update).toHaveBeenCalledWith("reading package.json...")
   })
 
   it("onToolStart always flushes accumulated textBuffer before showing tool status", async () => {
@@ -727,30 +725,31 @@ describe("Teams adapter - createTeamsCallbacks (SDK-delegated streaming)", () =>
 
   // --- Unified onToolEnd: always via stream.update (transient status) ---
 
-  it("onToolEnd success shows formatted result via stream.update (not emit)", async () => {
+  it("onToolEnd success is silent in default mode (no stream.update)", async () => {
     vi.resetModules()
     const teams = await import("../../senses/teams")
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
     callbacks.onToolEnd("read_file", "package.json", true)
-    expect(mockStream.update).toHaveBeenCalledWith("shared work: processing\n\u2713 read_file (package.json)")
+    // Default mode: successful tool END does not send a status update
+    expect(mockStream.update).not.toHaveBeenCalled()
     expect(mockStream.emit).not.toHaveBeenCalled()
   })
 
-  it("onToolEnd with empty summary shows formatted result via stream.update", async () => {
+  it("onToolEnd with empty summary is silent in default mode", async () => {
     vi.resetModules()
     const teams = await import("../../senses/teams")
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
     callbacks.onToolEnd("get_current_time", "", true)
-    expect(mockStream.update).toHaveBeenCalledWith("shared work: processing\n\u2713 get_current_time")
+    expect(mockStream.update).not.toHaveBeenCalled()
     expect(mockStream.emit).not.toHaveBeenCalled()
   })
 
-  it("onToolEnd failure shows formatted error via stream.update (not emit)", async () => {
+  it("onToolEnd failure shows error via stream.update (not emit)", async () => {
     vi.resetModules()
     const teams = await import("../../senses/teams")
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
     callbacks.onToolEnd("read_file", "missing.txt", false)
-    expect(mockStream.update).toHaveBeenCalledWith("shared work: processing\n\u2717 read_file: missing.txt")
+    expect(mockStream.update).toHaveBeenCalledWith("\u2717 read_file failed: missing.txt")
     expect(mockStream.emit).not.toHaveBeenCalled()
   })
 
@@ -864,6 +863,12 @@ describe("Teams adapter - message handling", () => {
       }),
       registerDefaultCommands: vi.fn(),
       parseSlashCommand: vi.fn().mockReturnValue(null),
+      getSharedCommandRegistry: vi.fn().mockReturnValue({ register: vi.fn(), get: vi.fn(), list: vi.fn().mockReturnValue([]), dispatch: vi.fn().mockReturnValue({ handled: false }) }),
+      resetSharedCommandRegistry: vi.fn(),
+      getDebugMode: vi.fn().mockReturnValue(false),
+      resetDebugMode: vi.fn(),
+      getToolChoiceRequired: vi.fn().mockReturnValue(false),
+      resetToolChoiceRequired: vi.fn(),
     }))
   }
 
@@ -1320,6 +1325,12 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       parseSlashCommand: vi.fn().mockImplementation((input: string) =>
         input.startsWith("/") ? { command: input.slice(1).toLowerCase(), args: "" } : null
       ),
+      getSharedCommandRegistry: vi.fn().mockReturnValue({ register: vi.fn(), get: vi.fn(), list: vi.fn().mockReturnValue([]), dispatch: vi.fn().mockReturnValue({ handled: false }) }),
+      resetSharedCommandRegistry: vi.fn(),
+      getDebugMode: vi.fn().mockReturnValue(false),
+      resetDebugMode: vi.fn(),
+      getToolChoiceRequired: vi.fn().mockReturnValue(false),
+      resetToolChoiceRequired: vi.fn(),
     }))
     vi.doMock("../../mind/prompt", () => ({
       buildSystem: vi.fn().mockResolvedValue("system prompt"),
@@ -1726,6 +1737,12 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       parseSlashCommand: vi.fn().mockImplementation((input: string) =>
         input.startsWith("/") ? { command: input.slice(1).toLowerCase(), args: "" } : null
       ),
+      getSharedCommandRegistry: vi.fn().mockReturnValue({ register: vi.fn(), get: vi.fn(), list: vi.fn().mockReturnValue([]), dispatch: vi.fn().mockReturnValue({ handled: false }) }),
+      resetSharedCommandRegistry: vi.fn(),
+      getDebugMode: vi.fn().mockReturnValue(false),
+      resetDebugMode: vi.fn(),
+      getToolChoiceRequired: vi.fn().mockReturnValue(false),
+      resetToolChoiceRequired: vi.fn(),
     }))
     vi.doMock("../../mind/prompt", () => ({
       buildSystem: vi.fn().mockResolvedValue("system prompt"),
@@ -1831,6 +1848,12 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       parseSlashCommand: vi.fn().mockImplementation((input: string) =>
         input.startsWith("/") ? { command: input.slice(1).toLowerCase(), args: "" } : null
       ),
+      getSharedCommandRegistry: vi.fn().mockReturnValue({ register: vi.fn(), get: vi.fn(), list: vi.fn().mockReturnValue([]), dispatch: vi.fn().mockReturnValue({ handled: false }) }),
+      resetSharedCommandRegistry: vi.fn(),
+      getDebugMode: vi.fn().mockReturnValue(false),
+      resetDebugMode: vi.fn(),
+      getToolChoiceRequired: vi.fn().mockReturnValue(false),
+      resetToolChoiceRequired: vi.fn(),
     }))
     vi.doMock("../../mind/prompt", () => ({
       buildSystem: vi.fn().mockResolvedValue("system prompt"),
@@ -1917,6 +1940,12 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       parseSlashCommand: vi.fn().mockImplementation((input: string) =>
         input.startsWith("/") ? { command: input.slice(1).toLowerCase(), args: "" } : null
       ),
+      getSharedCommandRegistry: vi.fn().mockReturnValue({ register: vi.fn(), get: vi.fn(), list: vi.fn().mockReturnValue([]), dispatch: vi.fn().mockReturnValue({ handled: false }) }),
+      resetSharedCommandRegistry: vi.fn(),
+      getDebugMode: vi.fn().mockReturnValue(false),
+      resetDebugMode: vi.fn(),
+      getToolChoiceRequired: vi.fn().mockReturnValue(false),
+      resetToolChoiceRequired: vi.fn(),
     }))
     vi.doMock("../../mind/prompt", () => ({
       buildSystem: vi.fn().mockResolvedValue("system prompt"),
@@ -2006,6 +2035,12 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       parseSlashCommand: vi.fn().mockImplementation((input: string) =>
         input.startsWith("/") ? { command: input.slice(1).toLowerCase(), args: "" } : null
       ),
+      getSharedCommandRegistry: vi.fn().mockReturnValue({ register: vi.fn(), get: vi.fn(), list: vi.fn().mockReturnValue([]), dispatch: vi.fn().mockReturnValue({ handled: false }) }),
+      resetSharedCommandRegistry: vi.fn(),
+      getDebugMode: vi.fn().mockReturnValue(false),
+      resetDebugMode: vi.fn(),
+      getToolChoiceRequired: vi.fn().mockReturnValue(false),
+      resetToolChoiceRequired: vi.fn(),
     }))
     vi.doMock("../../mind/prompt", () => ({
       buildSystem: vi.fn().mockResolvedValue("system prompt"),
@@ -2097,6 +2132,12 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       parseSlashCommand: vi.fn().mockImplementation((input: string) =>
         input.startsWith("/") ? { command: input.slice(1).toLowerCase(), args: "" } : null
       ),
+      getSharedCommandRegistry: vi.fn().mockReturnValue({ register: vi.fn(), get: vi.fn(), list: vi.fn().mockReturnValue([]), dispatch: vi.fn().mockReturnValue({ handled: false }) }),
+      resetSharedCommandRegistry: vi.fn(),
+      getDebugMode: vi.fn().mockReturnValue(false),
+      resetDebugMode: vi.fn(),
+      getToolChoiceRequired: vi.fn().mockReturnValue(false),
+      resetToolChoiceRequired: vi.fn(),
     }))
     vi.doMock("../../mind/prompt", () => ({
       buildSystem: vi.fn().mockResolvedValue("system prompt"),
@@ -3778,15 +3819,22 @@ describe("Teams adapter - session persistence", () => {
 
       postTurn: vi.fn().mockImplementation((...args: any[]) => { postTurnCalls.push(args) }),
     }))
+    const _cmdMockRegistry = {
+      register: vi.fn(),
+      get: vi.fn(),
+      list: vi.fn().mockReturnValue([]),
+      dispatch: vi.fn().mockImplementation(dispatchFn),
+    }
     vi.doMock("../../senses/commands", () => ({
-      createCommandRegistry: vi.fn().mockReturnValue({
-        register: vi.fn(),
-        get: vi.fn(),
-        list: vi.fn().mockReturnValue([]),
-        dispatch: vi.fn().mockImplementation(dispatchFn),
-      }),
+      createCommandRegistry: vi.fn().mockReturnValue(_cmdMockRegistry),
       registerDefaultCommands: vi.fn(),
       parseSlashCommand: vi.fn().mockImplementation(parseSlashCommandFn),
+      getSharedCommandRegistry: vi.fn().mockReturnValue(_cmdMockRegistry),
+      resetSharedCommandRegistry: vi.fn(),
+      getDebugMode: vi.fn().mockReturnValue(false),
+      resetDebugMode: vi.fn(),
+      getToolChoiceRequired: vi.fn().mockReturnValue(false),
+      resetToolChoiceRequired: vi.fn(),
     }))
     const MockFileFriendStore = vi.fn(function (this: any) {
       this.get = vi.fn()
@@ -3935,7 +3983,10 @@ describe("Teams adapter - session persistence", () => {
     const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
     await teams.handleTeamsMessage("/commands", mockStream as any, "conv-123")
 
-    expect(mockStream.emit).toHaveBeenCalledWith(expect.stringContaining("/new"))
+    // Command response routed through pipeline callbacks -> stream.emit with Teams envelope
+    expect(mockStream.emit).toHaveBeenCalledWith(
+      expect.objectContaining({ text: expect.stringContaining("/new") }),
+    )
     expect(runAgentFn).not.toHaveBeenCalled()
   })
 
@@ -3987,7 +4038,7 @@ describe("Teams adapter - session persistence", () => {
     expect(runAgentFn).toHaveBeenCalled()
   })
 
-  it("/commands with no message field emits empty string", async () => {
+  it("/commands with no message field emits fallback text via flush", async () => {
     vi.resetModules()
     const runAgentFn = vi.fn().mockResolvedValue({ usage: undefined })
     mockTeamsDeps({
@@ -4002,11 +4053,11 @@ describe("Teams adapter - session persistence", () => {
     const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
     await teams.handleTeamsMessage("/commands", mockStream as any, "conv-123")
 
-    expect(mockStream.emit).toHaveBeenCalledWith("")
+    // Pipeline emits no text (message is undefined), flush handles empty buffer
     expect(runAgentFn).not.toHaveBeenCalled()
   })
 
-  it("slash command with unrecognized action falls through to normal handling", async () => {
+  it("slash command with exit action is intercepted by pipeline (not forwarded to agent)", async () => {
     vi.resetModules()
     const runAgentFn = vi.fn().mockResolvedValue({ usage: undefined })
     mockTeamsDeps({
@@ -4018,8 +4069,8 @@ describe("Teams adapter - session persistence", () => {
     const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
     await teams.handleTeamsMessage("/exit", mockStream as any, "conv-123")
 
-    // "exit" action is not handled in Teams, so falls through to runAgent
-    expect(runAgentFn).toHaveBeenCalled()
+    // Pipeline intercepts all handled commands — "exit" returns as command outcome
+    expect(runAgentFn).not.toHaveBeenCalled()
   })
 
   it("withConversationLock serializes messages for same conversation", async () => {
@@ -4200,6 +4251,12 @@ describe("Teams adapter - session persistence", () => {
       }),
       registerDefaultCommands: vi.fn(),
       parseSlashCommand: vi.fn().mockReturnValue(null),
+      getSharedCommandRegistry: vi.fn().mockReturnValue({ register: vi.fn(), get: vi.fn(), list: vi.fn().mockReturnValue([]), dispatch: vi.fn().mockReturnValue({ handled: false }) }),
+      resetSharedCommandRegistry: vi.fn(),
+      getDebugMode: vi.fn().mockReturnValue(false),
+      resetDebugMode: vi.fn(),
+      getToolChoiceRequired: vi.fn().mockReturnValue(false),
+      resetToolChoiceRequired: vi.fn(),
     }))
     vi.doMock("../../mind/friends/store-file", () => ({
       FileFriendStore: vi.fn(function (this: any) {
@@ -4742,15 +4799,22 @@ describe("Teams adapter - handleTeamsMessage unified chunked streaming", () => {
 
       postTurn: vi.fn().mockImplementation((...args: any[]) => { postTurnCalls.push(args) }),
     }))
+    const _cmdMockRegistry = {
+      register: vi.fn(),
+      get: vi.fn(),
+      list: vi.fn().mockReturnValue([]),
+      dispatch: vi.fn().mockImplementation(dispatchFn),
+    }
     vi.doMock("../../senses/commands", () => ({
-      createCommandRegistry: vi.fn().mockReturnValue({
-        register: vi.fn(),
-        get: vi.fn(),
-        list: vi.fn().mockReturnValue([]),
-        dispatch: vi.fn().mockImplementation(dispatchFn),
-      }),
+      createCommandRegistry: vi.fn().mockReturnValue(_cmdMockRegistry),
       registerDefaultCommands: vi.fn(),
       parseSlashCommand: vi.fn().mockImplementation(parseSlashCommandFn),
+      getSharedCommandRegistry: vi.fn().mockReturnValue(_cmdMockRegistry),
+      resetSharedCommandRegistry: vi.fn(),
+      getDebugMode: vi.fn().mockReturnValue(false),
+      resetDebugMode: vi.fn(),
+      getToolChoiceRequired: vi.fn().mockReturnValue(false),
+      resetToolChoiceRequired: vi.fn(),
     }))
     const MockFileFriendStore = vi.fn(function (this: any) {
       this.get = vi.fn()
@@ -4989,6 +5053,12 @@ describe("Teams adapter - confirmation callback", () => {
       }),
       registerDefaultCommands: vi.fn(),
       parseSlashCommand: vi.fn().mockReturnValue(null),
+      getSharedCommandRegistry: vi.fn().mockReturnValue({ register: vi.fn(), get: vi.fn(), list: vi.fn().mockReturnValue([]), dispatch: vi.fn().mockReturnValue({ handled: false }) }),
+      resetSharedCommandRegistry: vi.fn(),
+      getDebugMode: vi.fn().mockReturnValue(false),
+      resetDebugMode: vi.fn(),
+      getToolChoiceRequired: vi.fn().mockReturnValue(false),
+      resetToolChoiceRequired: vi.fn(),
     }))
     const MockFileFriendStore = vi.fn(function (this: any) {
       this.get = vi.fn()
@@ -5318,6 +5388,12 @@ describe("Teams adapter - confirmation callback", () => {
       }),
       registerDefaultCommands: vi.fn(),
       parseSlashCommand: vi.fn().mockReturnValue(null),
+      getSharedCommandRegistry: vi.fn().mockReturnValue({ register: vi.fn(), get: vi.fn(), list: vi.fn().mockReturnValue([]), dispatch: vi.fn().mockReturnValue({ handled: false }) }),
+      resetSharedCommandRegistry: vi.fn(),
+      getDebugMode: vi.fn().mockReturnValue(false),
+      resetDebugMode: vi.fn(),
+      getToolChoiceRequired: vi.fn().mockReturnValue(false),
+      resetToolChoiceRequired: vi.fn(),
     }))
 
     vi.spyOn(console, "log").mockImplementation(() => {})
@@ -5407,6 +5483,12 @@ describe("Teams adapter - handleTeamsMessage with sendMessage", () => {
       }),
       registerDefaultCommands: vi.fn(),
       parseSlashCommand: vi.fn().mockReturnValue(null),
+      getSharedCommandRegistry: vi.fn().mockReturnValue({ register: vi.fn(), get: vi.fn(), list: vi.fn().mockReturnValue([]), dispatch: vi.fn().mockReturnValue({ handled: false }) }),
+      resetSharedCommandRegistry: vi.fn(),
+      getDebugMode: vi.fn().mockReturnValue(false),
+      resetDebugMode: vi.fn(),
+      getToolChoiceRequired: vi.fn().mockReturnValue(false),
+      resetToolChoiceRequired: vi.fn(),
     }))
     const MockFileFriendStore = vi.fn(function (this: any) {
       this.get = vi.fn()
@@ -5461,9 +5543,9 @@ describe("Teams adapter - handleTeamsMessage with sendMessage", () => {
 
     await teams.handleTeamsMessage("show file", mockStream as any, "conv-send-1", undefined, true, sendMessage)
 
-    // onToolEnd now uses safeUpdate (stream.update) not safeSend in buffered mode
-    expect(mockStream.update).toHaveBeenCalledWith("shared work: processing\n\u2713 read_file (package.json)")
-    expect(sendMessage).not.toHaveBeenCalledWith("shared work: processing\n\u2713 read_file (package.json)")
+    // Default mode: successful onToolEnd is silent — no update sent
+    expect(mockStream.update).not.toHaveBeenCalled()
+    expect(sendMessage).not.toHaveBeenCalled()
   })
 
   it("handleTeamsMessage awaits flush() (which is now async)", async () => {
@@ -5604,6 +5686,12 @@ describe("Teams adapter - context kernel wiring (Unit 1Hc)", () => {
       }),
       registerDefaultCommands: vi.fn(),
       parseSlashCommand: vi.fn().mockReturnValue(null),
+      getSharedCommandRegistry: vi.fn().mockReturnValue({ register: vi.fn(), get: vi.fn(), list: vi.fn().mockReturnValue([]), dispatch: vi.fn().mockReturnValue({ handled: false }) }),
+      resetSharedCommandRegistry: vi.fn(),
+      getDebugMode: vi.fn().mockReturnValue(false),
+      resetDebugMode: vi.fn(),
+      getToolChoiceRequired: vi.fn().mockReturnValue(false),
+      resetToolChoiceRequired: vi.fn(),
     }))
 
     const mockResolve = vi.fn().mockResolvedValue({
@@ -6126,6 +6214,12 @@ describe("Teams adapter - GitHub token handling", () => {
       }),
       registerDefaultCommands: vi.fn(),
       parseSlashCommand: vi.fn().mockReturnValue(null),
+      getSharedCommandRegistry: vi.fn().mockReturnValue({ register: vi.fn(), get: vi.fn(), list: vi.fn().mockReturnValue([]), dispatch: vi.fn().mockReturnValue({ handled: false }) }),
+      resetSharedCommandRegistry: vi.fn(),
+      getDebugMode: vi.fn().mockReturnValue(false),
+      resetDebugMode: vi.fn(),
+      getToolChoiceRequired: vi.fn().mockReturnValue(false),
+      resetToolChoiceRequired: vi.fn(),
     }))
     const MockFileFriendStore = vi.fn(function (this: any) {
       this.get = vi.fn()
@@ -6308,15 +6402,22 @@ describe("Teams adapter - pipeline integration (U7)", () => {
       drainPending: vi.fn(() => []),
       drainDeferredReturns: mockDrainDeferredReturns,
     }))
+    const _cmdMockRegistry = {
+      register: vi.fn(),
+      get: vi.fn(),
+      list: vi.fn().mockReturnValue([]),
+      dispatch: vi.fn().mockImplementation(dispatchFn),
+    }
     vi.doMock("../../senses/commands", () => ({
-      createCommandRegistry: vi.fn().mockReturnValue({
-        register: vi.fn(),
-        get: vi.fn(),
-        list: vi.fn().mockReturnValue([]),
-        dispatch: vi.fn().mockImplementation(dispatchFn),
-      }),
+      createCommandRegistry: vi.fn().mockReturnValue(_cmdMockRegistry),
       registerDefaultCommands: vi.fn(),
       parseSlashCommand: vi.fn().mockImplementation(parseSlashCommandFn),
+      getSharedCommandRegistry: vi.fn().mockReturnValue(_cmdMockRegistry),
+      resetSharedCommandRegistry: vi.fn(),
+      getDebugMode: vi.fn().mockReturnValue(false),
+      resetDebugMode: vi.fn(),
+      getToolChoiceRequired: vi.fn().mockReturnValue(false),
+      resetToolChoiceRequired: vi.fn(),
     }))
     const MockFileFriendStore = vi.fn(function (this: any) {
       this.get = vi.fn()
@@ -6744,7 +6845,7 @@ describe("Teams adapter - pipeline integration (U7)", () => {
     expect(mockStream.emit).not.toHaveBeenCalled()
   })
 
-  it("slash commands still work before pipeline call", async () => {
+  it("slash commands route through pipeline and handle /new via command result", async () => {
     vi.resetModules()
     const { mockHandleInboundTurn } = mockPipelineDeps({
       parseSlashCommandFn: (input: string) => input.startsWith("/") ? { command: input.slice(1).toLowerCase(), args: "" } : null,
@@ -6752,6 +6853,16 @@ describe("Teams adapter - pipeline integration (U7)", () => {
         if (name === "new") return { handled: true, result: { action: "new" } }
         return { handled: false }
       },
+    })
+    // Override mock to return command result for /new
+    mockHandleInboundTurn.mockImplementation(async (input: any) => {
+      const resolvedContext = await input.friendResolver.resolve()
+      return {
+        resolvedContext,
+        gateResult: { allowed: true },
+        turnOutcome: "command",
+        commandAction: "new",
+      }
     })
     const teams = await import("../../senses/teams")
     const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
@@ -6763,8 +6874,8 @@ describe("Teams adapter - pipeline integration (U7)", () => {
       displayName: "Test User",
     })
 
-    // Slash commands bypass pipeline entirely
-    expect(mockHandleInboundTurn).not.toHaveBeenCalled()
+    // Slash commands now route through pipeline
+    expect(mockHandleInboundTurn).toHaveBeenCalled()
     expect(mockStream.emit).toHaveBeenCalledWith(expect.stringContaining("session cleared"))
   })
 

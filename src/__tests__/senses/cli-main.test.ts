@@ -23,15 +23,33 @@ const mocks = vi.hoisted(() => ({
   parseSlashCommand: vi.fn().mockReturnValue(null),
   getToolChoiceRequired: vi.fn().mockReturnValue(false),
   enforceTrustGate: vi.fn().mockReturnValue({ allowed: true }),
-  handleInboundTurn: vi.fn().mockResolvedValue({
-    resolvedContext: {
-      friend: { id: "mock-uuid", name: "testuser" },
-      channel: { channel: "cli", senseType: "local" },
-    },
-    gateResult: { allowed: true },
-    usage: undefined,
-    sessionPath: "/tmp/test-session.json",
-    messages: [],
+  handleInboundTurn: vi.fn().mockImplementation(async (input: any) => {
+    const userText = input.messages?.[0]?.content ?? ""
+    const isCommand = typeof userText === "string" && userText.startsWith("/") && !userText.startsWith("//")
+    const commandName = isCommand ? userText.slice(1).trim().split(" ")[0].toLowerCase() : null
+    const knownCommands = ["exit", "new", "commands", "debug", "tool-required"]
+    if (commandName && knownCommands.includes(commandName)) {
+      const action = commandName === "exit" ? "exit" : commandName === "new" ? "new" : "response"
+      return {
+        resolvedContext: {
+          friend: { id: "mock-uuid", name: "testuser" },
+          channel: { channel: "cli", senseType: "local" },
+        },
+        gateResult: { allowed: true },
+        turnOutcome: "command",
+        commandAction: action,
+      }
+    }
+    return {
+      resolvedContext: {
+        friend: { id: "mock-uuid", name: "testuser" },
+        channel: { channel: "cli", senseType: "local" },
+      },
+      gateResult: { allowed: true },
+      usage: undefined,
+      sessionPath: "/tmp/test-session.json",
+      messages: [],
+    }
   }),
   createInterface: vi.fn(),
   cursorTo: vi.fn(),
@@ -104,6 +122,16 @@ vi.mock("../../senses/commands", () => ({
   registerDefaultCommands: (...a: any[]) => mocks.registerDefaultCommands(...a),
   parseSlashCommand: (...a: any[]) => mocks.parseSlashCommand(...a),
   getToolChoiceRequired: (...a: any[]) => mocks.getToolChoiceRequired(...a),
+  getSharedCommandRegistry: vi.fn().mockReturnValue({
+    register: vi.fn(),
+    get: vi.fn(),
+    list: vi.fn().mockReturnValue([]),
+    dispatch: vi.fn().mockReturnValue({ handled: false }),
+  }),
+  resetSharedCommandRegistry: vi.fn(),
+  getDebugMode: vi.fn().mockReturnValue(false),
+  resetDebugMode: vi.fn(),
+  resetToolChoiceRequired: vi.fn(),
 }))
 vi.mock("../../heart/identity", () => ({
   getAgentName: vi.fn(() => "testagent"),
@@ -254,6 +282,24 @@ function resetMocks() {
   mocks.getToolChoiceRequired.mockReset().mockReturnValue(false)
   mocks.enforceTrustGate.mockReset().mockReturnValue({ allowed: true })
   mocks.handleInboundTurn.mockReset().mockImplementation(async (input: any) => {
+    // Check for slash commands (pipeline intercepts these before agent)
+    const userText = input.messages?.[0]?.content ?? ""
+    if (typeof userText === "string" && userText.startsWith("/") && !userText.startsWith("//")) {
+      const cmdName = userText.slice(1).trim().split(" ")[0].toLowerCase()
+      const knownActions: Record<string, string> = { exit: "exit", new: "new", commands: "response", debug: "response", "tool-required": "response" }
+      if (cmdName in knownActions) {
+        const resolvedContext = await input.friendResolver.resolve()
+        if (knownActions[cmdName] === "response") {
+          input.callbacks.onTextChunk?.(`${cmdName} handled`)
+        }
+        return {
+          resolvedContext,
+          gateResult: { allowed: true },
+          turnOutcome: "command",
+          commandAction: knownActions[cmdName],
+        }
+      }
+    }
     // Default: mirror real pipeline behavior:
     // 1. Resolve friend
     const resolvedContext = await input.friendResolver.resolve()
@@ -623,8 +669,8 @@ describe("agent.ts main() - session persistence", () => {
 
     // postTurn should NOT be called directly by main() -- pipeline handles it
     expect(mocks.postTurn).not.toHaveBeenCalled()
-    // But handleInboundTurn should have been called
-    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
+    // handleInboundTurn called for "hello" + "/exit" (commands now route through pipeline)
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(2)
   })
 
   it("does not call trimMessages directly (postTurn handles it)", async () => {
@@ -687,8 +733,8 @@ describe("agent.ts main() - session persistence", () => {
 
     await main(undefined, { pasteDebounceMs: 0 })
 
-    // handleInboundTurn called once per user message (msg1, msg2)
-    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(2)
+    // handleInboundTurn called for msg1, msg2, and /exit (commands route through pipeline)
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(3)
     // postTurn not called directly by main()
     expect(mocks.postTurn).not.toHaveBeenCalled()
   })
@@ -751,7 +797,7 @@ describe("agent.ts main() - session persistence", () => {
     expect(runAgentCalls.length).toBe(1)
   })
 
-  it("/commands with empty message prints empty line", async () => {
+  it("/commands with empty message is handled by pipeline (no console output)", async () => {
     setupBasic({
       inputSequence: ["/commands", "/exit"],
       dispatchFn: (name: string) => {
@@ -763,8 +809,9 @@ describe("agent.ts main() - session persistence", () => {
 
     await main(undefined, { pasteDebounceMs: 0 })
 
-    const flatLogs = logCalls.flat()
-    expect(flatLogs.some((l) => l === "")).toBe(true)
+    // Pipeline handles the command — no onTextChunk called for undefined message
+    // CLI just continues to next prompt
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(2)
   })
 
   it("welcome banner shows slash command hints", async () => {
@@ -981,8 +1028,8 @@ describe("agent.ts main() - onKick and toolChoiceRequired", () => {
 
     // main() should NOT call drainPending directly -- pipeline handles pending drain
     expect(drainPending).not.toHaveBeenCalled()
-    // But handleInboundTurn should have been called (which internally drains pending)
-    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
+    // handleInboundTurn called for "hello" + "/exit" (commands now route through pipeline)
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(2)
   })
 
   it("gate rejection via pipeline returns auto reply and skips runAgent", async () => {
@@ -1002,8 +1049,8 @@ describe("agent.ts main() - onKick and toolChoiceRequired", () => {
 
     await main(undefined, { pasteDebounceMs: 0 })
 
-    // runAgent should not be called directly by main() -- pipeline returned rejection
-    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
+    // Pipeline called for "hello" (gate rejection) + "/exit" (command)
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(2)
     expect(stdoutChunks.join("")).toContain("I'm sorry, I'm not allowed to talk to strangers")
   })
 
@@ -1380,7 +1427,8 @@ describe("agent.ts main() - pipeline integration", () => {
 
     await main(undefined, { pasteDebounceMs: 0 })
 
-    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
+    // "hello" + "/exit" both route through pipeline (commands handled there now)
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(2)
   })
 
   it("does NOT directly call enforceTrustGate (pipeline handles gate)", async () => {
@@ -1451,15 +1499,17 @@ describe("agent.ts main() - pipeline integration", () => {
 
     await main(undefined, { pasteDebounceMs: 0 })
 
-    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
+    // "hello" + "/exit" both route through pipeline
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(2)
   })
 
-  it("calls handleInboundTurn once per user turn (multiple turns)", async () => {
+  it("calls handleInboundTurn for each user turn including commands", async () => {
     setupBasic({ inputSequence: ["msg1", "msg2", "/exit"] })
 
     await main(undefined, { pasteDebounceMs: 0 })
 
-    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(2)
+    // "msg1" + "msg2" + "/exit" = 3 pipeline calls
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(3)
   })
 
   it("pipeline input includes channel='cli' and senseType='local'", async () => {
@@ -1467,7 +1517,7 @@ describe("agent.ts main() - pipeline integration", () => {
 
     await main(undefined, { pasteDebounceMs: 0 })
 
-    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(2)
     const pipelineInput = mocks.handleInboundTurn.mock.calls[0][0]
     expect(pipelineInput.channel).toBe("cli")
     expect(pipelineInput.capabilities.senseType).toBe("local")
@@ -1527,6 +1577,18 @@ describe("agent.ts main() - pipeline integration", () => {
     mocks.handleInboundTurn.mockImplementation(async (input: any) => {
       turnCount += 1
       const resolvedContext = await input.friendResolver.resolve()
+      const userText = input.messages?.[0]?.content ?? ""
+
+      // Handle /exit as command (pipeline intercepts commands)
+      if (typeof userText === "string" && userText === "/exit") {
+        return {
+          resolvedContext,
+          gateResult: { allowed: true },
+          turnOutcome: "command",
+          commandAction: "exit",
+        }
+      }
+
       const session = await input.sessionLoader.loadOrCreate()
 
       if (turnCount === 1) {
@@ -1554,7 +1616,8 @@ describe("agent.ts main() - pipeline integration", () => {
 
     await main(undefined, { pasteDebounceMs: 0 })
 
-    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(2)
+    // "first" + "second" + "/exit" = 3 pipeline calls
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(3)
     expect(mocks.postTurn).toHaveBeenNthCalledWith(
       1,
       expect.any(Array),

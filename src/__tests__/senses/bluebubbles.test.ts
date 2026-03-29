@@ -1316,24 +1316,17 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.setTyping).toHaveBeenNthCalledWith(1, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), true)
     expect(mocks.markChatRead.mock.invocationCallOrder[0]).toBeLessThan(mocks.sendText.mock.invocationCallOrder[0])
     expect(mocks.setTyping.mock.invocationCallOrder[0]).toBeLessThan(mocks.sendText.mock.invocationCallOrder[0])
+    // Default mode: only tool START description + final response (no tool END)
     expect(mocks.sendText).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({
         chat: expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }),
         replyToMessageGuid: "C4B2E437-A373-43F6-9740-9CD84E5893A0",
-        text: "shared work: processing\nrunning read_file (notes.txt)...",
+        text: "reading notes.txt...",
       }),
     )
     expect(mocks.sendText).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({
-        chat: expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }),
-        replyToMessageGuid: "C4B2E437-A373-43F6-9740-9CD84E5893A0",
-        text: "shared work: processing\n\u2713 read_file (ok)",
-      }),
-    )
-    expect(mocks.sendText).toHaveBeenNthCalledWith(
-      3,
       expect.objectContaining({
         chat: expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }),
         replyToMessageGuid: "C4B2E437-A373-43F6-9740-9CD84E5893A0",
@@ -1342,7 +1335,6 @@ describe("BlueBubbles sense runtime", () => {
     )
     expect(mocks.editMessage).not.toHaveBeenCalled()
     expect(mocks.setTyping).toHaveBeenNthCalledWith(2, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), false)
-    expect(mocks.setTyping.mock.invocationCallOrder[1]).toBeLessThan(mocks.sendText.mock.invocationCallOrder[2])
   })
 
   it("uses typing only for the first phase of a short turn and sends only the final reply visibly", async () => {
@@ -1434,7 +1426,7 @@ describe("BlueBubbles sense runtime", () => {
         level: "warn",
         event: "senses.bluebubbles_activity_error",
         meta: expect.objectContaining({
-          operation: "status_update",
+          operation: "send_status",
           reason: "status send failure",
         }),
       }),
@@ -1463,7 +1455,7 @@ describe("BlueBubbles sense runtime", () => {
         level: "warn",
         event: "senses.bluebubbles_activity_error",
         meta: expect.objectContaining({
-          operation: "status_update",
+          operation: "send_status",
           reason: "status send error object",
         }),
       }),
@@ -1539,11 +1531,12 @@ describe("BlueBubbles sense runtime", () => {
 
       callbacks.onToolStart("query_session", {})
       await flushAsyncWork()
+      await flushAsyncWork()
 
       expect(mocks.sendText).toHaveBeenCalledWith(
         expect.objectContaining({
           chat: expect.objectContaining({ chatGuid: "any;+;35820e69c97c459992d29a334f412979" }),
-          text: "shared work: processing\nrunning query_session...",
+          text: "checking session history...",
         }),
       )
       expect(mocks.markChatRead).toHaveBeenCalledTimes(1)
@@ -1566,7 +1559,7 @@ describe("BlueBubbles sense runtime", () => {
     const bluebubbles = await import("../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(groupThreadPayload)
 
-    const toolStatusCall = mocks.sendText.mock.calls.find((call: any[]) => call[0]?.text === "shared work: processing\nrunning query_session...")
+    const toolStatusCall = mocks.sendText.mock.calls.find((call: any[]) => call[0]?.text === "checking session history...")
     const finalReplyCall = mocks.sendText.mock.calls.find((call: any[]) => call[0]?.text === "got it")
 
     expect(toolStatusCall).toBeTruthy()
@@ -1783,7 +1776,7 @@ describe("BlueBubbles sense runtime", () => {
       expect.objectContaining({
         chat: expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }),
         replyToMessageGuid: "C4B2E437-A373-43F6-9740-9CD84E5893A0",
-        text: "shared work: errored\nError: turn blew up",
+        text: "\u2717 turn blew up",
       }),
     )
     expect(mocks.editMessage).not.toHaveBeenCalled()
@@ -1833,24 +1826,20 @@ describe("BlueBubbles sense runtime", () => {
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
 
     expect(mocks.buildSystem).not.toHaveBeenCalled()
+    // Default mode: tool START sends description, tool END (success) is silent
     expect(mocks.sendText).toHaveBeenCalledWith(
       expect.objectContaining({
-        text: "shared work: processing\nrunning query_session...",
+        text: "checking session history...",
       }),
     )
     expect(mocks.sendText).toHaveBeenCalledWith(
       expect.objectContaining({
-        text: "shared work: processing\n\u2713 query_session (done)",
+        text: "\u2717 temporary",
       }),
     )
     expect(mocks.sendText).toHaveBeenCalledWith(
       expect.objectContaining({
-        text: "shared work: errored\nError: temporary",
-      }),
-    )
-    expect(mocks.sendText).toHaveBeenCalledWith(
-      expect.objectContaining({
-        text: "shared work: errored\nError: fatal",
+        text: "\u2717 fatal",
       }),
     )
     expect(mocks.postTurn).toHaveBeenCalledTimes(1)

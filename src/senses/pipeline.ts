@@ -12,6 +12,7 @@ import type { FriendStore } from "../mind/friends/store"
 import type { TrustGateInput, TrustGateResult } from "./trust-gate"
 import type { PendingMessage } from "../mind/pending"
 import { emitNervesEvent } from "../nerves/runtime"
+import { parseSlashCommand, getSharedCommandRegistry } from "./commands"
 import { resolveMustResolveBeforeHandoff } from "./continuity"
 import { createBridgeManager, formatBridgeContext } from "../heart/bridges/manager"
 import { getAgentName, getAgentRoot, loadAgentConfig } from "../heart/identity"
@@ -117,8 +118,8 @@ export interface InboundTurnResult {
   gateResult: TrustGateResult
   /** Usage data from runAgent. Undefined when gate rejects. */
   usage?: UsageData
-  /** Structured turn outcome from runAgent. Undefined when gate rejects. */
-  turnOutcome?: RunAgentOutcome
+  /** Structured turn outcome from runAgent, or "command" for intercepted slash commands. Undefined when gate rejects. */
+  turnOutcome?: RunAgentOutcome | "command"
   /** Explicit completion metadata from runAgent when available. */
   completion?: CompletionMetadata
   /** Session file path. Undefined when gate rejects. */
@@ -131,6 +132,8 @@ export interface InboundTurnResult {
   failoverMessage?: string
   /** If set, a provider switch was executed via failover reply. */
   switchedProvider?: string
+  /** If turnOutcome is "command", the action from the dispatched command (exit, new, response). */
+  commandAction?: "exit" | "new" | "response"
 }
 
 function emptyTaskBoard(): BoardResult {
@@ -280,6 +283,42 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
         input.switchedProvider = failoverAction.provider
       }
       // Switch failed OR succeeded — either way, fall through to normal processing.
+    }
+  }
+
+  // Step 0b: Slash command interception (before friend resolution / agent turn)
+  {
+    const firstUserMsg = input.messages.find((m) => m.role === "user")
+    const userText = firstUserMsg
+      ? (typeof firstUserMsg.content === "string"
+        ? firstUserMsg.content
+        : Array.isArray(firstUserMsg.content)
+          ? (firstUserMsg.content.find((p: any) => p.type === "text") as any)?.text ?? ""
+          : /* v8 ignore next -- defensive: content is always string or array @preserve */ "")
+      : ""
+    const parsed = parseSlashCommand(userText)
+    if (parsed) {
+      const registry = getSharedCommandRegistry()
+      const dispatchResult = registry.dispatch(parsed.command, { channel: input.channel })
+      if (dispatchResult.handled && dispatchResult.result) {
+        emitNervesEvent({
+          component: "senses",
+          event: "senses.pipeline_command",
+          message: `slash command intercepted: /${parsed.command}`,
+          meta: { command: parsed.command, channel: input.channel },
+        })
+        if (dispatchResult.result.message) {
+          input.callbacks.onTextChunk(dispatchResult.result.message)
+        }
+        // Return a minimal result — no agent turn, no session write
+        const resolvedContext = await input.friendResolver.resolve()
+        return {
+          resolvedContext,
+          gateResult: { allowed: true },
+          turnOutcome: "command",
+          commandAction: dispatchResult.result.action,
+        }
+      }
     }
   }
 

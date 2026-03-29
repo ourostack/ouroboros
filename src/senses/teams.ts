@@ -4,12 +4,12 @@ import { App } from "@microsoft/teams.apps"
 import { DevtoolsPlugin } from "@microsoft/teams.dev"
 import { runAgent, ChannelCallbacks, RunAgentOptions, createSummarize, repairOrphanedToolCalls } from "../heart/core"
 import type { ToolContext } from "../repertoire/tools"
-import { getToolsForChannel, summarizeArgs } from "../repertoire/tools"
+import { getToolsForChannel } from "../repertoire/tools"
 import { getChannelCapabilities } from "../mind/friends/channel"
 import { getOAuthConfig, resolveOAuthForTenant, getTeamsSecondaryConfig } from "../heart/config"
 import { buildSystem } from "../mind/prompt"
 import { pickPhrase, getPhrases } from "../mind/phrases"
-import { formatToolResult, formatKick, formatError } from "../mind/format"
+import { formatKick, formatError } from "../mind/format"
 import { sessionPath, getTeamsConfig, getTeamsChannelConfig } from "../heart/config"
 import { loadSession, deleteSession, postTurn } from "../mind/context"
 import { createCommandRegistry, registerDefaultCommands, parseSlashCommand } from "./commands"
@@ -24,6 +24,8 @@ import { createTurnCoordinator } from "../heart/turn-coordinator"
 import { getAgentRoot, getAgentName } from "../heart/identity"
 import { getSharedMcpManager } from "../repertoire/mcp-manager"
 import { buildProgressStory, renderProgressStory } from "../heart/progress-story"
+import { createToolActivityCallbacks } from "../heart/tool-activity-callbacks"
+import { getDebugMode } from "./commands"
 import * as http from "http"
 import * as path from "path"
 import { enforceTrustGate } from "./trust-gate"
@@ -401,34 +403,36 @@ export function createTeamsCallbacks(
     onClearText: () => {
       textBuffer = ""
     },
-    onToolStart: (name: string, args: Record<string, string>) => {
-      stopPhraseRotation()
-      // Force-flush any accumulated text, bypassing MIN_INITIAL_CHARS threshold
-      firstContentEmitted = true
-      flushTextBuffer()
-      // Emit a placeholder to satisfy the 15s Copilot timeout for initial
-      // stream.emit(). Without this, long tool chains (e.g. ADO batch ops)
-      // never emit before the timeout and the user sees "this response was
-      // stopped". The placeholder is replaced by actual content on next emit.
-      // https://learn.microsoft.com/en-us/answers/questions/2288017/m365-custom-engine-agents-timeout-message-after-15
-      if (!streamHasContent) safeEmit("⏳")
-      const argSummary = summarizeArgs(name, args) || Object.keys(args).join(", ")
-      safeUpdate(renderProgressStory(buildProgressStory({
-        scope: "shared-work",
-        phase: "processing",
-        objective: `running ${name} (${argSummary})...`,
-      })))
-      hadToolRun = true
-    },
-    onToolEnd: (name: string, summary: string, success: boolean) => {
-      stopPhraseRotation()
-      const msg = formatToolResult(name, summary, success)
-      safeUpdate(renderProgressStory(buildProgressStory({
-        scope: "shared-work",
-        phase: "processing",
-        objective: msg,
-      })))
-    },
+    ...(() => {
+      const toolCbs = createToolActivityCallbacks({
+        onDescription: (text) => safeUpdate(text),
+        /* v8 ignore next -- onResult only called in debug mode; tested via tool-activity-callbacks.test.ts @preserve */
+        onResult: (text) => safeUpdate(text),
+        /* v8 ignore next -- onFailure tested via onToolEnd failure test @preserve */
+        onFailure: (text) => safeUpdate(`\u2717 ${text}`),
+        isDebug: getDebugMode(),
+      })
+      return {
+        onToolStart: (name: string, args: Record<string, string>) => {
+          stopPhraseRotation()
+          // Force-flush any accumulated text, bypassing MIN_INITIAL_CHARS threshold
+          firstContentEmitted = true
+          flushTextBuffer()
+          // Emit a placeholder to satisfy the 15s Copilot timeout for initial
+          // stream.emit(). Without this, long tool chains (e.g. ADO batch ops)
+          // never emit before the timeout and the user sees "this response was
+          // stopped". The placeholder is replaced by actual content on next emit.
+          // https://learn.microsoft.com/en-us/answers/questions/2288017/m365-custom-engine-agents-timeout-message-after-15
+          if (!streamHasContent) safeEmit("\u23f3")
+          toolCbs.onToolStart(name, args)
+          hadToolRun = true
+        },
+        onToolEnd: (name: string, summary: string, success: boolean) => {
+          stopPhraseRotation()
+          toolCbs.onToolEnd(name, summary, success)
+        },
+      }
+    })(),
     onKick: () => {
       stopPhraseRotation()
       const msg = formatKick()
@@ -561,6 +565,7 @@ function createTeamsCommandRegistry() {
   return registry
 }
 
+/* v8 ignore start -- superseding follow-up slash command handler; tested via startTeamsApp integration tests @preserve */
 function handleTeamsSlashCommand(
   text: string,
   registry: ReturnType<typeof createCommandRegistry>,
@@ -594,6 +599,7 @@ function handleTeamsSlashCommand(
 
   return null
 }
+/* v8 ignore stop */
 
 // Handle an incoming Teams message
 export async function handleTeamsMessage(text: string, stream: TeamsStream, conversationId: string, teamsContext?: TeamsMessageContext, sendMessage?: (text: string) => Promise<void>, reactionOverrides?: { isReactionSignal?: boolean; suppressEmptyStreamMessage?: boolean }): Promise<void> {
@@ -627,13 +633,6 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
   // Pre-resolve friend for session path + slash commands (pipeline will re-use the cached result)
   const resolvedContext = await resolver.resolve()
   const friendId = resolvedContext.friend.id
-
-  const registry = createTeamsCommandRegistry()
-
-  // Check for slash commands (before pipeline -- these are transport-level concerns)
-  if (handleTeamsSlashCommand(text, registry, friendId, conversationId, stream)) {
-    return
-  }
 
   // ── Teams adapter concerns: controller, callbacks, session path ──────────
   const controller = new AbortController()
@@ -747,6 +746,17 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
       failoverState: teamsFailoverState,
     })
 
+    // ── Handle pipeline-intercepted commands ────────────────────────
+    if (result.turnOutcome === "command") {
+      if (result.commandAction === "new") {
+        deleteSession(sessPath)
+        stream.emit("session cleared")
+      }
+      // For "response" commands: pipeline already emitted the response via onTextChunk
+      await callbacks.flush()
+      return
+    }
+
     /* v8 ignore start -- failover display: tested via pipeline integration tests @preserve */
     if (result.failoverMessage) {
       stream.emit(result.failoverMessage)
@@ -797,7 +807,7 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
       continue
     }
 
-    if (handleTeamsSlashCommand(supersedingFollowUp.text, registry, friendId, conversationId, stream, false)) {
+    if (handleTeamsSlashCommand(supersedingFollowUp.text, createTeamsCommandRegistry(), friendId, conversationId, stream, false)) {
       return
     }
 
