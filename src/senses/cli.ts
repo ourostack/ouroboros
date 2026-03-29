@@ -524,7 +524,7 @@ export interface RunCliSessionOptions {
     callbacks: ChannelCallbacks & { flushMarkdown(): void },
     signal?: AbortSignal,
     toolContext?: ToolContext,
-  ) => Promise<{ usage?: UsageData }>;
+  ) => Promise<{ usage?: UsageData; turnOutcome?: string; commandAction?: string }>;
 }
 
 export interface RunCliSessionResult {
@@ -693,26 +693,28 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
         }
       }
 
-      // Check for slash commands
-      const parsed = parseSlashCommand(input)
-      if (parsed) {
-        const dispatchResult = registry.dispatch(parsed.command, { channel: "cli" })
-        if (dispatchResult.handled && dispatchResult.result) {
-          if (dispatchResult.result.action === "exit") {
-            break
-          } else if (dispatchResult.result.action === "new") {
-            messages.length = 0
-            messages.push({ role: "system", content: await buildSystem("cli") })
-            await options.onNewSession?.()
-            // eslint-disable-next-line no-console -- terminal UX: session cleared
-            console.log("session cleared")
-            process.stdout.write(CLI_PROMPT)
-            continue
-          } else if (dispatchResult.result.action === "response") {
-            // eslint-disable-next-line no-console -- terminal UX: command dispatch result
-            console.log(dispatchResult.result.message || "")
-            process.stdout.write(CLI_PROMPT)
-            continue
+      // Check for slash commands (legacy path only — pipeline handles commands for runTurn path)
+      if (!options.runTurn) {
+        const parsed = parseSlashCommand(input)
+        if (parsed) {
+          const dispatchResult = registry.dispatch(parsed.command, { channel: "cli" })
+          if (dispatchResult.handled && dispatchResult.result) {
+            if (dispatchResult.result.action === "exit") {
+              break
+            } else if (dispatchResult.result.action === "new") {
+              messages.length = 0
+              messages.push({ role: "system", content: await buildSystem("cli") })
+              await options.onNewSession?.()
+              // eslint-disable-next-line no-console -- terminal UX: session cleared
+              console.log("session cleared")
+              process.stdout.write(CLI_PROMPT)
+              continue
+            } else if (dispatchResult.result.action === "response") {
+              // eslint-disable-next-line no-console -- terminal UX: command dispatch result
+              console.log(dispatchResult.result.message || "")
+              process.stdout.write(CLI_PROMPT)
+              continue
+            }
           }
         }
       }
@@ -725,12 +727,32 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
 
       currentAbort = new AbortController()
       ctrl.suppress(() => currentAbort!.abort())
-      let result: { usage?: UsageData } | undefined
+      let result: { usage?: UsageData; turnOutcome?: string; commandAction?: string } | undefined
       try {
         if (options.runTurn) {
           // Pipeline-based turn: the runTurn callback handles user message assembly,
           // pending drain, trust gate, runAgent, postTurn, and token accumulation.
+          // Commands (e.g. /debug, /exit, /new) are intercepted in the pipeline.
           result = await options.runTurn(messages, input, cliCallbacks, currentAbort.signal, effectiveToolContext)
+
+          // Handle pipeline-intercepted commands with loop-control side effects
+          if (result?.turnOutcome === "command") {
+            if (result.commandAction === "exit") {
+              break
+            } else if (result.commandAction === "new") {
+              messages.length = 0
+              messages.push({ role: "system", content: await buildSystem("cli") })
+              await options.onNewSession?.()
+              // eslint-disable-next-line no-console -- terminal UX: session cleared
+              console.log("session cleared")
+              process.stdout.write(CLI_PROMPT)
+              continue
+            }
+            // For "response" commands: the pipeline already emitted the response via onTextChunk
+            cliCallbacks.flushMarkdown()
+            process.stdout.write(CLI_PROMPT)
+            continue
+          }
         } else {
           // Legacy path: inline runAgent (used by adoption specialist and tests)
           const prefix = options.getContentPrefix?.()
@@ -947,7 +969,7 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
           }
         }
 
-        return { usage: result.usage }
+        return { usage: result.usage, turnOutcome: result.turnOutcome, commandAction: result.commandAction }
       },
       onNewSession: () => {
         deleteSession(sessPath)

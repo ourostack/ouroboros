@@ -16,7 +16,7 @@ import { getChannelCapabilities } from "../mind/friends/channel"
 import { getPendingDir, drainDeferredReturns, drainPending } from "../mind/pending"
 import { buildSystem } from "../mind/prompt"
 import { getSharedMcpManager } from "../repertoire/mcp-manager"
-import { getPhrases } from "../mind/phrases"
+// getPhrases removed — no longer needed after debug-activity cleanup
 import { emitNervesEvent } from "../nerves/runtime"
 import type { BlueBubblesReplyTargetSelection } from "../repertoire/tools-base"
 import {
@@ -31,7 +31,8 @@ import { hasRecordedBlueBubblesInbound, recordBlueBubblesInbound, type BlueBubbl
 import { listBlueBubblesRecoveryCandidates, recordBlueBubblesMutation, type BlueBubblesMutationLogEntry } from "./bluebubbles-mutation-log"
 import { writeBlueBubblesRuntimeState } from "./bluebubbles-runtime-state"
 import { findObsoleteBlueBubblesThreadSessions } from "./bluebubbles-session-cleanup"
-import { createDebugActivityController } from "./debug-activity"
+import { createToolActivityCallbacks } from "../heart/tool-activity-callbacks"
+import { getDebugMode } from "./commands"
 import { enforceTrustGate } from "./trust-gate"
 import { handleInboundTurn, type FailoverState } from "./pipeline"
 
@@ -429,67 +430,61 @@ function createBlueBubblesCallbacks(
   isGroupChat: boolean,
 ): BlueBubblesCallbacks {
   let textBuffer = ""
-  const phrases = getPhrases()
-  const activity = createDebugActivityController({
-    thinkingPhrases: phrases.thinking,
-    followupPhrases: phrases.followup,
-    startTypingOnModelStart: !isGroupChat,
-    startTypingOnFirstTextChunk: isGroupChat,
-    suppressInitialModelStatus: true,
-    suppressFollowupPhraseStatus: true,
-    transport: {
-      sendStatus: async (text: string) => {
-        const sent = await client.sendText({
-          chat,
-          text,
-          replyToMessageGuid: replyTarget.getReplyToMessageGuid(),
-        })
-        return sent.messageGuid
-      },
-      editStatus: async (_messageGuid: string, text: string) => {
-        await client.sendText({
-          chat,
-          text,
-          replyToMessageGuid: replyTarget.getReplyToMessageGuid(),
-        })
-      },
-      setTyping: async (active: boolean) => {
-        if (!active) {
-          await client.setTyping(chat, false)
-          return
-        }
+  let typingActive = false
+  let queue = Promise.resolve()
 
-        const [markReadResult, typingResult] = await Promise.allSettled([
-          client.markChatRead(chat),
-          client.setTyping(chat, true),
-        ])
-
-        if (markReadResult.status === "rejected") {
-          emitBlueBubblesMarkReadWarning(chat, markReadResult.reason)
-        }
-
-        if (typingResult.status === "rejected") {
-          throw typingResult.reason
-        }
-      },
-    },
-    onTransportError: (operation, error) => {
+  function enqueue(operation: string, task: () => Promise<void>): void {
+    queue = queue.then(task).catch((error) => {
       emitNervesEvent({
         level: "warn",
         component: "senses",
         event: "senses.bluebubbles_activity_error",
         message: "bluebubbles activity transport failed",
-        meta: {
-          operation,
-          reason: error instanceof Error ? error.message : String(error),
-        },
+        meta: { operation, reason: error instanceof Error ? error.message : String(error) },
       })
-    },
+    })
+  }
+
+  function startTypingNow(): void {
+    /* v8 ignore next -- defensive guard: callers already check typingActive @preserve */
+    if (typingActive) return
+    typingActive = true
+    enqueue("typing_start", async () => {
+      const [markReadResult, typingResult] = await Promise.allSettled([
+        client.markChatRead(chat),
+        client.setTyping(chat, true),
+      ])
+      if (markReadResult.status === "rejected") {
+        emitBlueBubblesMarkReadWarning(chat, markReadResult.reason)
+      }
+      if (typingResult.status === "rejected") {
+        throw typingResult.reason
+      }
+    })
+  }
+
+  function sendStatus(text: string): void {
+    enqueue("send_status", async () => {
+      await client.sendText({
+        chat,
+        text,
+        replyToMessageGuid: replyTarget.getReplyToMessageGuid(),
+      })
+    })
+  }
+
+  const toolCallbacks = createToolActivityCallbacks({
+    onDescription: (text) => sendStatus(text),
+    /* v8 ignore next -- onResult only called in debug mode; tested via tool-activity-callbacks.test.ts @preserve */
+    onResult: (text) => sendStatus(text),
+    /* v8 ignore next -- onFailure only called on tool failure; tested via tool-activity-callbacks.test.ts @preserve */
+    onFailure: (text) => sendStatus(`\u2717 ${text}`),
+    isDebug: getDebugMode(),
   })
 
   return {
     onModelStart(): void {
-      activity.onModelStart()
+      if (!isGroupChat) startTypingNow()
       emitNervesEvent({
         component: "senses",
         event: "senses.bluebubbles_turn_start",
@@ -508,14 +503,16 @@ function createBlueBubblesCallbacks(
     },
 
     onTextChunk(text: string): void {
-      activity.onTextChunk(text)
+      if (isGroupChat && !typingActive) startTypingNow()
       textBuffer += text
     },
 
     onReasoningChunk(_text: string): void {},
 
     onToolStart(name: string, _args: Record<string, string>): void {
-      activity.onToolStart(name, _args)
+      // Tool activity is a reply commitment — start typing if not already
+      if (!typingActive) startTypingNow()
+      toolCallbacks.onToolStart(name, _args)
       emitNervesEvent({
         component: "senses",
         event: "senses.bluebubbles_tool_start",
@@ -525,7 +522,7 @@ function createBlueBubblesCallbacks(
     },
 
     onToolEnd(name: string, summary: string, success: boolean): void {
-      activity.onToolEnd(name, summary, success)
+      toolCallbacks.onToolEnd(name, summary, success)
       emitNervesEvent({
         component: "senses",
         event: "senses.bluebubbles_tool_end",
@@ -535,7 +532,7 @@ function createBlueBubblesCallbacks(
     },
 
     onError(error: Error, severity: "transient" | "terminal"): void {
-      activity.onError(error)
+      sendStatus(`\u2717 ${error.message}`)
       emitNervesEvent({
         level: severity === "terminal" ? "error" : "warn",
         component: "senses",
@@ -550,14 +547,23 @@ function createBlueBubblesCallbacks(
     },
 
     async flush(): Promise<void> {
-      await activity.drain()
+      await queue
       const trimmed = textBuffer.trim()
       if (!trimmed) {
-        await activity.finish()
+        if (typingActive) {
+          typingActive = false
+          enqueue("typing_stop", async () => { await client.setTyping(chat, false) })
+          await queue
+        }
         return
       }
       textBuffer = ""
-      await activity.finish()
+      /* v8 ignore next 4 -- branch: typing may already be stopped before flush @preserve */
+      if (typingActive) {
+        typingActive = false
+        enqueue("typing_stop", async () => { await client.setTyping(chat, false) })
+        await queue
+      }
       await client.sendText({
         chat,
         text: trimmed,
@@ -566,7 +572,13 @@ function createBlueBubblesCallbacks(
     },
 
     async finish(): Promise<void> {
-      await activity.finish()
+      if (!typingActive) {
+        await queue
+        return
+      }
+      typingActive = false
+      enqueue("typing_stop", async () => { await client.setTyping(chat, false) })
+      await queue
     },
   }
 }

@@ -2,6 +2,16 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.154",
+      "changes": [
+        "feat: clean tool status messages \u2014 human-readable by default, /debug toggle",
+        "humanReadableToolDescription derives from tool name+args, not hardcoded map",
+        "Shared tool activity callbacks (DRY) \u2014 senses only provide render function",
+        "Slash command handling moved to pipeline \u2014 all senses get /debug for free",
+        "BlueBubbles: one clean iMessage per tool, not raw shared work: processing"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.153",
       "changes": [
         "Daemon health file: DaemonHealthWriter writes atomic daemon-health.json on every state change. readHealth() standalone reader for CLI and agent processes.",
