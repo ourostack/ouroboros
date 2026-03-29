@@ -25,11 +25,18 @@ export interface HabitSchedulerOptions {
   osCronManager: OsCronManager
   onHabitFire: (habitName: string) => void
   deps: HabitSchedulerDeps
+  execForVerify?: (cmd: string) => string
+  platform?: string
 }
 
 export interface OverdueHabit {
   name: string
   elapsedMs: number
+}
+
+export interface DegradedHabit {
+  name: string
+  reason: string
 }
 
 export interface HabitParseError {
@@ -45,9 +52,14 @@ export class HabitScheduler {
   private readonly osCronManager: OsCronManager
   private readonly onHabitFire: (habitName: string) => void
   private readonly deps: HabitSchedulerDeps
+  private readonly execForVerify?: (cmd: string) => string
+  private readonly platform: string
   private watcher: FsWatcher | null = null
   private debounceTimer: ReturnType<typeof setTimeout> | null = null
   private parseErrors: HabitParseError[] = []
+  private timerFallbacks: Map<string, ReturnType<typeof setTimeout>> = new Map()
+  private degradedHabitNames: Map<string, string> = new Map()
+  private periodicTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(options: HabitSchedulerOptions) {
     this.agent = options.agent
@@ -55,6 +67,8 @@ export class HabitScheduler {
     this.osCronManager = options.osCronManager
     this.onHabitFire = options.onHabitFire
     this.deps = options.deps
+    this.execForVerify = options.execForVerify
+    this.platform = options.platform ?? process.platform
   }
 
   start(): void {
@@ -68,6 +82,7 @@ export class HabitScheduler {
     const habits = this.scanHabits()
     const jobs = this.buildJobs(habits)
     this.osCronManager.sync(jobs)
+    this.verifyCronAndCreateFallbacks(jobs)
 
     // Fire overdue habits immediately
     for (const habit of habits) {
@@ -112,9 +127,13 @@ export class HabitScheduler {
       meta: { agent: this.agent },
     })
 
+    // Clear ALL existing timers FIRST to prevent overlap window
+    this.clearAllTimerFallbacks()
+
     const habits = this.scanHabits()
     const jobs = this.buildJobs(habits)
     this.osCronManager.sync(jobs)
+    this.verifyCronAndCreateFallbacks(jobs)
   }
 
   stop(): void {
@@ -125,6 +144,8 @@ export class HabitScheduler {
       meta: { agent: this.agent },
     })
 
+    this.stopPeriodicReconciliation()
+    this.clearAllTimerFallbacks()
     this.osCronManager.removeAll()
   }
 
@@ -200,6 +221,121 @@ export class HabitScheduler {
       this.watcher.close()
       this.watcher = null
     }
+  }
+
+  getDegradedHabits(): DegradedHabit[] {
+    const result: DegradedHabit[] = []
+    for (const [name, reason] of this.degradedHabitNames) {
+      result.push({ name, reason })
+    }
+    return result
+  }
+
+  private static readonly DEFAULT_PERIODIC_INTERVAL_MS = 300_000 // 5 minutes
+  private static readonly INITIAL_RECONCILIATION_DELAY_MS = 30_000 // 30 seconds
+
+  startPeriodicReconciliation(intervalMs?: number): void {
+    const interval = intervalMs ?? HabitScheduler.DEFAULT_PERIODIC_INTERVAL_MS
+
+    // First reconciliation after a short delay (30s)
+    this.periodicTimer = setTimeout(() => {
+      this.reconcile()
+      this.scheduleNextReconciliation(interval)
+    }, HabitScheduler.INITIAL_RECONCILIATION_DELAY_MS)
+  }
+
+  stopPeriodicReconciliation(): void {
+    if (this.periodicTimer !== null) {
+      clearTimeout(this.periodicTimer)
+      this.periodicTimer = null
+    }
+  }
+
+  private scheduleNextReconciliation(intervalMs: number): void {
+    this.periodicTimer = setTimeout(() => {
+      this.reconcile()
+      this.scheduleNextReconciliation(intervalMs)
+    }, intervalMs)
+  }
+
+  private verifyCronAndCreateFallbacks(jobs: ScheduledTaskJob[]): void {
+    if (!this.execForVerify) return
+
+    const verifiedLabels = this.verifyCronEntries()
+
+    for (const job of jobs) {
+      const label = `bot.ouro.${job.agent}.${job.taskId}`
+      const isVerified = this.platform === "darwin"
+        ? verifiedLabels.has(label)
+        : verifiedLabels.has(job.taskId)
+
+      if (!isVerified) {
+        emitNervesEvent({
+          component: "daemon",
+          event: "daemon.habit_cron_verification_failed",
+          message: `cron verification failed for habit: ${job.taskId}`,
+          meta: { habitName: job.taskId, agent: job.agent, label },
+        })
+
+        // Parse cadence from the original habit file for timer interval
+        const habitFile = this.getHabitFile(job.taskId)
+        const ms = habitFile?.cadence ? parseCadenceToMs(habitFile.cadence) : null
+        if (ms !== null) {
+          this.createTimerFallback(job.taskId, ms)
+        }
+
+        this.degradedHabitNames.set(job.taskId, "cron registration failed — using timer fallback")
+      }
+    }
+  }
+
+  private verifyCronEntries(): Set<string> {
+    const verified = new Set<string>()
+
+    try {
+      if (this.platform === "darwin") {
+        const output = this.execForVerify!("launchctl list")
+        const lines = output.split("\n")
+        for (const line of lines) {
+          const match = line.match(/bot\.ouro\.\S+\.\S+/)
+          if (match) {
+            verified.add(match[0])
+          }
+        }
+      } else {
+        const output = this.execForVerify!("crontab -l")
+        const lines = output.split("\n")
+        for (const line of lines) {
+          const match = line.match(/ouro poke \S+ --habit (\S+)/)
+          if (match) {
+            verified.add(match[1])
+          }
+        }
+      }
+    } catch {
+      // Verification command failed — return empty set (all habits unverified)
+    }
+
+    return verified
+  }
+
+  private createTimerFallback(habitName: string, cadenceMs: number): void {
+    const schedule = (): void => {
+      const timer = setTimeout(() => {
+        this.onHabitFire(habitName)
+        schedule()
+      }, cadenceMs)
+      this.timerFallbacks.set(habitName, timer)
+    }
+    schedule()
+  }
+
+  private clearAllTimerFallbacks(): void {
+    for (const timer of this.timerFallbacks.values()) {
+      clearTimeout(timer)
+    }
+    this.timerFallbacks.clear()
+    this.degradedHabitNames.clear()
   }
 
   private scanHabits(): HabitFile[] {

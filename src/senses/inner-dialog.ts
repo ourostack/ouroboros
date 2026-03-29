@@ -35,6 +35,7 @@ import { buildContextualHeartbeat } from "./contextual-heartbeat"
 import { indexJournalFiles } from "../mind/journal-index"
 import { parseHabitFile } from "../heart/daemon/habit-parser"
 import { parseCadenceToMs } from "../heart/daemon/cadence"
+import { readHealth, getDefaultHealthPath } from "../heart/daemon/daemon-health"
 
 export interface InnerDialogInstinct {
   id: string
@@ -706,6 +707,17 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
       } else {
         // Habit file not found
         userContent = `habit "${habitName}" could not be read (file not found or unreadable). check habits/${habitName}.md exists.`
+      }
+
+      // Degraded state nudge (best-effort: never crash on health file read failure)
+      try {
+        const health = readHealth(getDefaultHealthPath())
+        if (health && health.degraded.length > 0) {
+          const reasons = health.degraded.map((d) => `${d.component}: ${d.reason}`).join("; ")
+          userContent = `${userContent}\n\n[note: my scheduling is degraded: ${reasons}]`
+        }
+      } catch {
+        // Best-effort: missing file or parse error -> no nudge, no crash
       }
     } else {
       userContent = buildInstinctUserMessage(instincts, reason, state)
