@@ -29,6 +29,8 @@ const mockListActiveObligations = vi.fn(() => [])
 const mockBuildContextualHeartbeat = vi.fn(() => "contextual heartbeat message")
 const mockIndexJournalFiles = vi.fn(async () => 0)
 const mockReadJournalFiles = vi.fn(() => [])
+const mockReadHealth = vi.fn(() => null)
+const mockGetDefaultHealthPath = vi.fn(() => "/tmp/fake-health-path/daemon-health.json")
 
 vi.mock("../../mind/prompt", () => ({
   buildSystem: (...args: any[]) => mockBuildSystem(...args),
@@ -111,6 +113,11 @@ vi.mock("../../mind/journal-index", () => ({
   indexJournalFiles: (...args: any[]) => mockIndexJournalFiles(...args),
 }))
 
+vi.mock("../../heart/daemon/daemon-health", () => ({
+  readHealth: (...args: any[]) => mockReadHealth(...args),
+  getDefaultHealthPath: (...args: any[]) => mockGetDefaultHealthPath(...args),
+}))
+
 import {
   buildInnerDialogBootstrapMessage,
   buildNonCanonicalCleanupNudge,
@@ -179,6 +186,8 @@ describe("inner dialog runtime", () => {
     mockBuildContextualHeartbeat.mockReset().mockReturnValue("contextual heartbeat message")
     mockIndexJournalFiles.mockReset().mockResolvedValue(0)
     mockReadJournalFiles.mockReset().mockReturnValue([])
+    mockReadHealth.mockReset().mockReturnValue(null)
+    mockGetDefaultHealthPath.mockReset().mockReturnValue("/tmp/fake-health-path/daemon-health.json")
 
     // Default handleInboundTurn: simulate pipeline running agent and returning result.
     mockHandleInboundTurn.mockReset().mockImplementation(async (input: any) => {
@@ -1401,6 +1410,220 @@ describe("inner dialog runtime", () => {
     const input = mockHandleInboundTurn.mock.calls[0][0]
     const content = String(input.messages[0].content)
     expect(content).not.toContain("noticed my habit file")
+  })
+
+  // ── Degraded state nudge tests ────────────────────────────────────
+
+  it("includes degraded state nudge in habit turn when health file reports degraded components", async () => {
+    const habitsDir = path.join(agentRoot, "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(habitsDir, "daily-reflection.md"),
+      "---\ntitle: Daily Reflection\ncadence: 1d\nstatus: active\nlastRun: 2026-03-05T22:00:00.000Z\ncreated: 2026-03-01\n---\n\nReflect on the day.",
+      "utf8",
+    )
+
+    mockLoadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "assistant", content: "checkpoint: reviewed" },
+      ],
+    })
+
+    mockReadHealth.mockReturnValue({
+      status: "running",
+      mode: "prod",
+      pid: 12345,
+      startedAt: "2026-03-06T10:00:00.000Z",
+      uptimeSeconds: 3600,
+      safeMode: null,
+      degraded: [{ component: "heartbeat", reason: "cron registration failed", since: "2026-03-06T09:00:00.000Z" }],
+      agents: {},
+      habits: { heartbeat: { cronStatus: "failed", lastFired: null, fallback: true } },
+    })
+
+    await runInnerDialogTurn({
+      reason: "habit",
+      habitName: "daily-reflection",
+      now: () => new Date("2026-03-06T22:00:00.000Z"),
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    const content = String(input.messages[0].content)
+    expect(content).toContain("scheduling is degraded")
+    expect(content).toContain("cron registration failed")
+  })
+
+  it("does not include degraded state nudge when health file has no degraded components", async () => {
+    const habitsDir = path.join(agentRoot, "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(habitsDir, "daily-reflection.md"),
+      "---\ntitle: Daily Reflection\ncadence: 1d\nstatus: active\nlastRun: 2026-03-05T22:00:00.000Z\ncreated: 2026-03-01\n---\n\nReflect on the day.",
+      "utf8",
+    )
+
+    mockLoadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "assistant", content: "checkpoint: reviewed" },
+      ],
+    })
+
+    mockReadHealth.mockReturnValue({
+      status: "running",
+      mode: "prod",
+      pid: 12345,
+      startedAt: "2026-03-06T10:00:00.000Z",
+      uptimeSeconds: 3600,
+      safeMode: null,
+      degraded: [],
+      agents: {},
+      habits: {},
+    })
+
+    await runInnerDialogTurn({
+      reason: "habit",
+      habitName: "daily-reflection",
+      now: () => new Date("2026-03-06T22:00:00.000Z"),
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    const content = String(input.messages[0].content)
+    expect(content).not.toContain("scheduling is degraded")
+  })
+
+  it("does not include degraded state nudge when health file is missing", async () => {
+    const habitsDir = path.join(agentRoot, "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(habitsDir, "daily-reflection.md"),
+      "---\ntitle: Daily Reflection\ncadence: 1d\nstatus: active\nlastRun: 2026-03-05T22:00:00.000Z\ncreated: 2026-03-01\n---\n\nReflect on the day.",
+      "utf8",
+    )
+
+    mockLoadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "assistant", content: "checkpoint: reviewed" },
+      ],
+    })
+
+    mockReadHealth.mockReturnValue(null)
+
+    await runInnerDialogTurn({
+      reason: "habit",
+      habitName: "daily-reflection",
+      now: () => new Date("2026-03-06T22:00:00.000Z"),
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    const content = String(input.messages[0].content)
+    expect(content).not.toContain("scheduling is degraded")
+  })
+
+  it("does not crash when readHealth throws", async () => {
+    const habitsDir = path.join(agentRoot, "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(habitsDir, "daily-reflection.md"),
+      "---\ntitle: Daily Reflection\ncadence: 1d\nstatus: active\nlastRun: 2026-03-05T22:00:00.000Z\ncreated: 2026-03-01\n---\n\nReflect on the day.",
+      "utf8",
+    )
+
+    mockLoadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "assistant", content: "checkpoint: reviewed" },
+      ],
+    })
+
+    mockReadHealth.mockImplementation(() => { throw new Error("disk error") })
+
+    await runInnerDialogTurn({
+      reason: "habit",
+      habitName: "daily-reflection",
+      now: () => new Date("2026-03-06T22:00:00.000Z"),
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    const content = String(input.messages[0].content)
+    // Should still produce a turn without crashing
+    expect(content).toContain("daily-reflection")
+    expect(content).not.toContain("scheduling is degraded")
+  })
+
+  it("includes degraded state nudge in heartbeat habit turns too", async () => {
+    const habitsDir = path.join(agentRoot, "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(habitsDir, "heartbeat.md"),
+      "---\ntitle: Heartbeat\ncadence: 30m\nstatus: active\nlastRun: 2026-03-06T11:30:00.000Z\ncreated: 2026-03-01\n---\n\nCheck in.",
+      "utf8",
+    )
+
+    mockLoadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "assistant", content: "checkpoint: reviewed" },
+      ],
+    })
+
+    mockBuildContextualHeartbeat.mockReturnValueOnce("heartbeat content")
+
+    mockReadHealth.mockReturnValue({
+      status: "running",
+      mode: "prod",
+      pid: 12345,
+      startedAt: "2026-03-06T10:00:00.000Z",
+      uptimeSeconds: 3600,
+      safeMode: null,
+      degraded: [{ component: "heartbeat", reason: "timer fallback active", since: "2026-03-06T09:00:00.000Z" }],
+      agents: {},
+      habits: {},
+    })
+
+    await runInnerDialogTurn({
+      reason: "habit",
+      habitName: "heartbeat",
+      now: () => new Date("2026-03-06T12:05:00.000Z"),
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    const content = String(input.messages[0].content)
+    expect(content).toContain("scheduling is degraded")
+    expect(content).toContain("timer fallback active")
+  })
+
+  it("does not include degraded state nudge for non-habit turns", async () => {
+    mockLoadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "assistant", content: "checkpoint: reviewed" },
+      ],
+    })
+
+    mockReadHealth.mockReturnValue({
+      status: "running",
+      mode: "prod",
+      pid: 12345,
+      startedAt: "2026-03-06T10:00:00.000Z",
+      uptimeSeconds: 3600,
+      safeMode: null,
+      degraded: [{ component: "cron", reason: "broken", since: "2026-03-06T09:00:00.000Z" }],
+      agents: {},
+      habits: {},
+    })
+
+    await runInnerDialogTurn({
+      reason: "instinct",
+      now: () => new Date("2026-03-06T12:05:00.000Z"),
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    const content = String(input.messages[0].content)
+    // Non-habit turns should NOT get the degraded nudge
+    expect(content).not.toContain("scheduling is degraded")
   })
 
   // ── TaskId passthrough tests ──────────────────────────────────────

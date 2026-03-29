@@ -10,6 +10,7 @@ export interface DaemonTombstone {
   timestamp: string
   pid: number
   uptimeSeconds: number
+  recentCrashes: string[]
 }
 
 let _tombstonePath: string | null = null
@@ -27,16 +28,32 @@ export function setTombstonePath(p: string | null): void {
 }
 
 export function writeDaemonTombstone(reason: string, error?: Error): void {
+  const now = new Date().toISOString()
+  const filePath = getTombstonePath()
+
+  // Read existing recentCrashes from previous tombstone (best-effort)
+  let existingCrashes: string[] = []
+  try {
+    const raw = fs.readFileSync(filePath, "utf-8")
+    const existing = JSON.parse(raw) as Record<string, unknown>
+    if (Array.isArray(existing.recentCrashes)) {
+      existingCrashes = existing.recentCrashes.filter(
+        (entry: unknown): entry is string => typeof entry === "string"
+      )
+    }
+  } catch {
+    // No existing tombstone or unreadable — start fresh
+  }
+
   const tombstone: DaemonTombstone = {
     reason,
     message: error?.message ?? reason,
     stack: error?.stack ?? null,
-    timestamp: new Date().toISOString(),
+    timestamp: now,
     pid: process.pid,
     uptimeSeconds: Math.floor(process.uptime()),
+    recentCrashes: [...existingCrashes, now],
   }
-
-  const filePath = getTombstonePath()
 
   try {
     fs.mkdirSync(path.dirname(filePath), { recursive: true })
@@ -78,6 +95,9 @@ export function readDaemonTombstone(): DaemonTombstone | null {
       timestamp: parsed.timestamp,
       pid: typeof parsed.pid === "number" ? parsed.pid : 0,
       uptimeSeconds: typeof parsed.uptimeSeconds === "number" ? parsed.uptimeSeconds : 0,
+      recentCrashes: Array.isArray(parsed.recentCrashes)
+        ? (parsed.recentCrashes as unknown[]).filter((e): e is string => typeof e === "string")
+        : [],
     }
   } catch {
     return null

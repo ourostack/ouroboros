@@ -41,6 +41,7 @@ import { syncGlobalOuroBotWrapper as defaultSyncGlobalOuroBotWrapper } from "./o
 import { installLaunchAgent, uninstallLaunchAgent, isDaemonInstalled, type LaunchdDeps } from "./launchd"
 import { DEFAULT_DAEMON_SOCKET_PATH, sendDaemonCommand, checkDaemonSocketAlive } from "./socket-client"
 import { readDaemonTombstone } from "./daemon-tombstone"
+import { readHealth, getDefaultHealthPath } from "./daemon-health"
 import type { CheckForUpdateResult } from "./update-checker"
 import { listSessionActivity } from "../session-activity"
 import {
@@ -142,6 +143,7 @@ export interface OuroCliDeps {
   getInstalledBinaryPath?: () => string | null
   execInstalledBinary?: (binaryPath: string, args: string[]) => never
   agentBundleRoot?: string
+  healthFilePath?: string
 }
 
 export interface SessionEntry {
@@ -483,7 +485,7 @@ function buildStoppedStatusPayload(socketPath: string): StatusPayload {
   }
 }
 
-function daemonUnavailableStatusOutput(socketPath: string): string {
+function daemonUnavailableStatusOutput(socketPath: string, healthFilePath?: string): string {
   /* v8 ignore start — tombstone read tested in daemon-status-tombstone.test; branch misreported @preserve */
   const tombstone = readDaemonTombstone()
   const deathLine = tombstone
@@ -505,6 +507,27 @@ function daemonUnavailableStatusOutput(socketPath: string): string {
     lines.push(deathLine)
     lines.push("")
   /* v8 ignore stop */
+  }
+
+  // Read health file for last-known state (best-effort)
+  const resolvedHealthPath = healthFilePath ?? getDefaultHealthPath()
+  const health = readHealth(resolvedHealthPath)
+  if (health) {
+    lines.push(`Last known status: ${health.status} (pid ${health.pid}, uptime ${health.uptimeSeconds}s)`)
+
+    if (health.safeMode?.active) {
+      lines.push(`SAFE MODE: ${health.safeMode.reason}`)
+    }
+
+    if (health.degraded.length > 0) {
+      lines.push("")
+      lines.push("Degraded:")
+      for (const d of health.degraded) {
+        lines.push(`  ${d.component}: ${d.reason} (since ${d.since})`)
+      }
+    }
+
+    lines.push("")
   }
 
   lines.push("daemon not running; run `ouro up`")
@@ -3362,7 +3385,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       return message
     }
     if (command.kind === "daemon.status" && isDaemonUnavailableError(error)) {
-      const message = daemonUnavailableStatusOutput(deps.socketPath)
+      const message = daemonUnavailableStatusOutput(deps.socketPath, deps.healthFilePath)
       deps.writeStdout(message)
       return message
     }
