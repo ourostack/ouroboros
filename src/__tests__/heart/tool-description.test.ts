@@ -8,7 +8,17 @@ describe("humanReadableToolDescription", () => {
         .toBe("running npm test...")
     })
 
-    it("truncates long commands", () => {
+    it("truncates long commands at word boundary", () => {
+      // truncate(cmd, 50) — slice(0, 49) then find last space
+      // "npm run build && npm run lint && npm run test && echo done" (58 chars)
+      // slice(0,49) = "npm run build && npm run lint && npm run test && "
+      // lastSpace = 48 (after "&&"), so cuts to "npm run build && npm run lint && npm run test &&"
+      const longCmd = "npm run build && npm run lint && npm run test && echo done"
+      const result = humanReadableToolDescription("shell", { command: longCmd })
+      expect(result).toBe("running npm run build && npm run lint && npm run test &&\u2026...")
+    })
+
+    it("hard truncates single long word with no spaces", () => {
       const longCmd = "a".repeat(100)
       const result = humanReadableToolDescription("shell", { command: longCmd })
       expect(result!.length).toBeLessThan(70)
@@ -150,9 +160,9 @@ describe("humanReadableToolDescription", () => {
   })
 
   describe("observe", () => {
-    it("returns static description", () => {
+    it("returns null (hidden, like settle)", () => {
       expect(humanReadableToolDescription("observe", {}))
-        .toBe("listening...")
+        .toBeNull()
     })
   })
 
