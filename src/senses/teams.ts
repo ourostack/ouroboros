@@ -409,8 +409,8 @@ export function createTeamsCallbacks(
         /* v8 ignore next -- onResult only called in debug mode; tested via tool-activity-callbacks.test.ts @preserve */
         onResult: (text) => safeUpdate(text),
         /* v8 ignore next -- onFailure tested via onToolEnd failure test @preserve */
-        onFailure: (text) => safeUpdate(`\u2717 ${text}`),
-        isDebug: getDebugMode(),
+        onFailure: (text) => safeUpdate(text),
+        isDebug: getDebugMode,
       })
       return {
         onToolStart: (name: string, args: Record<string, string>) => {

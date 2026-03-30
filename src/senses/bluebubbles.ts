@@ -478,8 +478,8 @@ function createBlueBubblesCallbacks(
     /* v8 ignore next -- onResult only called in debug mode; tested via tool-activity-callbacks.test.ts @preserve */
     onResult: (text) => sendStatus(text),
     /* v8 ignore next -- onFailure only called on tool failure; tested via tool-activity-callbacks.test.ts @preserve */
-    onFailure: (text) => sendStatus(`\u2717 ${text}`),
-    isDebug: getDebugMode(),
+    onFailure: (text) => sendStatus(text),
+    isDebug: getDebugMode,
   })
 
   return {

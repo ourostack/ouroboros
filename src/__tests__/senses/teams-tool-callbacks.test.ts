@@ -28,7 +28,7 @@ describe("Teams tool callbacks via createToolActivityCallbacks", () => {
         onDescription: safeUpdate,
         onResult: vi.fn(),
         onFailure: vi.fn(),
-        isDebug: false,
+        isDebug: () => false,
       })
 
       onToolStart("shell", { command: "npm test" })
@@ -43,7 +43,7 @@ describe("Teams tool callbacks via createToolActivityCallbacks", () => {
         onDescription: vi.fn(),
         onResult: safeUpdate,
         onFailure: vi.fn(),
-        isDebug: false,
+        isDebug: () => false,
       })
 
       onToolEnd("read_file", "200 lines", true)
@@ -59,7 +59,7 @@ describe("Teams tool callbacks via createToolActivityCallbacks", () => {
         onDescription: capture,
         onResult: capture,
         onFailure: capture,
-        isDebug: false,
+        isDebug: () => false,
       })
 
       onToolStart("read_file", { path: "/a/b.ts" })
@@ -82,11 +82,11 @@ describe("Teams tool callbacks via createToolActivityCallbacks", () => {
         onDescription: vi.fn(),
         onResult: safeUpdate,
         onFailure: vi.fn(),
-        isDebug: true,
+        isDebug: () => true,
       })
 
       onToolEnd("read_file", "200 lines", true)
-      expect(safeUpdate).toHaveBeenCalledWith("read_file: 200 lines")
+      expect(safeUpdate).toHaveBeenCalledWith("✓ read_file")
     })
 
     it("onFailure called with x mark prefix on failure", async () => {
@@ -97,11 +97,11 @@ describe("Teams tool callbacks via createToolActivityCallbacks", () => {
         onDescription: vi.fn(),
         onResult: vi.fn(),
         onFailure,
-        isDebug: true,
+        isDebug: () => true,
       })
 
       onToolEnd("shell", "exit code 1", false)
-      expect(onFailure).toHaveBeenCalledWith("shell failed: exit code 1")
+      expect(onFailure).toHaveBeenCalledWith("✗ shell — exit code 1")
     })
   })
 })

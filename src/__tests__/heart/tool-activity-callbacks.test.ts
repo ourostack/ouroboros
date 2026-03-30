@@ -23,7 +23,7 @@ describe("createToolActivityCallbacks", () => {
         onDescription,
         onResult,
         onFailure,
-        isDebug: false,
+        isDebug: () => false,
       })
 
       onToolStart("read_file", { file_path: "/foo/bar.ts" })
@@ -38,7 +38,7 @@ describe("createToolActivityCallbacks", () => {
         onDescription: vi.fn(),
         onResult,
         onFailure: vi.fn(),
-        isDebug: false,
+        isDebug: () => false,
       })
 
       onToolEnd("read_file", "200 lines read", true)
@@ -53,11 +53,11 @@ describe("createToolActivityCallbacks", () => {
         onDescription: vi.fn(),
         onResult: vi.fn(),
         onFailure,
-        isDebug: false,
+        isDebug: () => false,
       })
 
       onToolEnd("shell", "exit code 1", false)
-      expect(onFailure).toHaveBeenCalledWith("shell failed: exit code 1")
+      expect(onFailure).toHaveBeenCalledWith("✗ shell — exit code 1")
     })
 
     it("does NOT call onDescription for settle (hidden)", async () => {
@@ -68,7 +68,7 @@ describe("createToolActivityCallbacks", () => {
         onDescription,
         onResult: vi.fn(),
         onFailure: vi.fn(),
-        isDebug: false,
+        isDebug: () => false,
       })
 
       onToolStart("settle", {})
@@ -83,7 +83,7 @@ describe("createToolActivityCallbacks", () => {
         onDescription,
         onResult: vi.fn(),
         onFailure: vi.fn(),
-        isDebug: false,
+        isDebug: () => false,
       })
 
       onToolStart("rest", {})
@@ -100,7 +100,7 @@ describe("createToolActivityCallbacks", () => {
         onDescription,
         onResult: vi.fn(),
         onFailure: vi.fn(),
-        isDebug: true,
+        isDebug: () => true,
       })
 
       onToolStart("shell", { command: "npm test" })
@@ -115,11 +115,11 @@ describe("createToolActivityCallbacks", () => {
         onDescription: vi.fn(),
         onResult,
         onFailure: vi.fn(),
-        isDebug: true,
+        isDebug: () => true,
       })
 
       onToolEnd("read_file", "200 lines read", true)
-      expect(onResult).toHaveBeenCalledWith("read_file: 200 lines read")
+      expect(onResult).toHaveBeenCalledWith("✓ read_file")
     })
 
     it("calls onFailure (not onResult) on tool END when success=false", async () => {
@@ -131,12 +131,12 @@ describe("createToolActivityCallbacks", () => {
         onDescription: vi.fn(),
         onResult,
         onFailure,
-        isDebug: true,
+        isDebug: () => true,
       })
 
       onToolEnd("shell", "exit code 1", false)
       expect(onResult).not.toHaveBeenCalled()
-      expect(onFailure).toHaveBeenCalledWith("shell failed: exit code 1")
+      expect(onFailure).toHaveBeenCalledWith("✗ shell — exit code 1")
     })
 
     it("does NOT call onDescription for settle even in debug mode", async () => {
@@ -147,7 +147,7 @@ describe("createToolActivityCallbacks", () => {
         onDescription,
         onResult: vi.fn(),
         onFailure: vi.fn(),
-        isDebug: true,
+        isDebug: () => true,
       })
 
       onToolStart("settle", {})
@@ -164,7 +164,7 @@ describe("createToolActivityCallbacks", () => {
         onDescription,
         onResult: vi.fn(),
         onFailure: vi.fn(),
-        isDebug: false,
+        isDebug: () => false,
       })
 
       onToolStart("some_custom_tool", {})

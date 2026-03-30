@@ -18,6 +18,7 @@ function truncate(text: string, max: number): string {
 }
 
 const TOOL_DESCRIPTIONS: Record<string, DescriptionBuilder> = {
+  // File operations
   shell: (args) => {
     const cmd = args.command
     if (!cmd) return "running a command..."
@@ -38,30 +39,77 @@ const TOOL_DESCRIPTIONS: Record<string, DescriptionBuilder> = {
     if (!fp) return "editing a file..."
     return `editing ${basename(fp)}...`
   },
-  recall: (args) => {
-    const q = args.query
-    if (!q) return "searching memory..."
-    return `searching memory for '${truncate(q, 40)}'...`
+  glob: (args) => {
+    const p = args.pattern
+    if (!p) return "searching for files..."
+    return `searching for ${truncate(p, 40)}...`
   },
   grep: (args) => {
     const p = args.pattern
     if (!p) return "searching code..."
     return `searching code for '${truncate(p, 40)}'...`
   },
-  glob: (args) => {
-    const p = args.pattern
-    if (!p) return "searching for files..."
-    return `searching for ${truncate(p, 40)}...`
+
+  // Memory and knowledge
+  recall: (args) => {
+    const q = args.query
+    if (!q) return "searching memory..."
+    return `searching memory for '${truncate(q, 40)}'...`
   },
-  query_session: () => "checking session history...",
-  web_search: () => "searching the web...",
-  coding_spawn: () => "starting coding session...",
-  ponder: () => "thinking deeper...",
+  diary_write: (args) => {
+    const about = args.about
+    return about ? `noting something about ${truncate(about, 30)}...` : "noting something down..."
+  },
+  save_friend_note: () => "making a note about you...",
+  get_friend_note: () => "checking my notes...",
+  load_skill: (args) => {
+    const name = args.name || args.skill
+    return name ? `loading ${name} skill...` : "loading a skill..."
+  },
+
+  // Session and context
+  query_session: (args) => {
+    const mode = args.mode
+    if (mode === "search") return `searching session for '${truncate(args.query || "", 30)}'...`
+    if (mode === "status") return "checking inner dialog status..."
+    return "checking session history..."
+  },
+  web_search: (args) => {
+    const q = args.query
+    return q ? `searching the web for '${truncate(q, 35)}'...` : "searching the web..."
+  },
+  coding_spawn: (args) => {
+    const runner = args.runner
+    return runner ? `starting ${runner} coding session...` : "starting coding session..."
+  },
+  coding_status: () => "checking coding sessions...",
+  coding_tail: () => "reading coding output...",
+  coding_kill: () => "stopping coding session...",
+  bridge_manage: () => "managing conversation bridge...",
+
+  // Communication
+  send_message: (args) => {
+    const to = args.to
+    return to ? `sending a message to ${to}...` : "sending a message..."
+  },
+  surface: () => "sharing a thought...",
+
+  // Metacognitive (agent's inner life)
+  ponder: (args) => {
+    const thought = args.thought
+    return thought ? `thinking about ${truncate(thought, 40)}...` : "thinking deeper..."
+  },
   observe: () => "listening...",
-  diary_write: () => "noting something down...",
-  save_friend_note: () => "making a note...",
+  claude: () => "reasoning...",
+  set_reasoning_effort: (args) => {
+    const level = args.level
+    return level ? `setting thinking depth to ${level}...` : "adjusting thinking depth..."
+  },
+
+  // Hidden — these ARE the response or end-of-turn
   settle: () => null,
   rest: () => null,
+  descend: () => null,
 }
 
 export function humanReadableToolDescription(

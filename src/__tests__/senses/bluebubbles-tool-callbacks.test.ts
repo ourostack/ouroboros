@@ -28,7 +28,7 @@ describe("BlueBubbles tool callbacks via createToolActivityCallbacks", () => {
         onDescription: sendText,
         onResult: vi.fn(),
         onFailure: vi.fn(),
-        isDebug: false,
+        isDebug: () => false,
       })
 
       onToolStart("read_file", { file_path: "/foo/bar/mcp-server.ts" })
@@ -44,7 +44,7 @@ describe("BlueBubbles tool callbacks via createToolActivityCallbacks", () => {
         onDescription: vi.fn(),
         onResult,
         onFailure: vi.fn(),
-        isDebug: false,
+        isDebug: () => false,
       })
 
       onToolEnd("shell", "exit code 0", true)
@@ -59,11 +59,11 @@ describe("BlueBubbles tool callbacks via createToolActivityCallbacks", () => {
         onDescription: vi.fn(),
         onResult: vi.fn(),
         onFailure,
-        isDebug: false,
+        isDebug: () => false,
       })
 
       onToolEnd("shell", "exit code 1", false)
-      expect(onFailure).toHaveBeenCalledWith("shell failed: exit code 1")
+      expect(onFailure).toHaveBeenCalledWith("✗ shell — exit code 1")
     })
 
     it("settle: NO message sent (hidden)", async () => {
@@ -74,7 +74,7 @@ describe("BlueBubbles tool callbacks via createToolActivityCallbacks", () => {
         onDescription,
         onResult: vi.fn(),
         onFailure: vi.fn(),
-        isDebug: false,
+        isDebug: () => false,
       })
 
       onToolStart("settle", {})
@@ -91,7 +91,7 @@ describe("BlueBubbles tool callbacks via createToolActivityCallbacks", () => {
         onDescription,
         onResult: vi.fn(),
         onFailure: vi.fn(),
-        isDebug: true,
+        isDebug: () => true,
       })
 
       onToolStart("shell", { command: "npm test" })
@@ -106,11 +106,11 @@ describe("BlueBubbles tool callbacks via createToolActivityCallbacks", () => {
         onDescription: vi.fn(),
         onResult,
         onFailure: vi.fn(),
-        isDebug: true,
+        isDebug: () => true,
       })
 
       onToolEnd("read_file", "200 lines", true)
-      expect(onResult).toHaveBeenCalledWith("read_file: 200 lines")
+      expect(onResult).toHaveBeenCalledWith("✓ read_file")
     })
   })
 
@@ -124,7 +124,7 @@ describe("BlueBubbles tool callbacks via createToolActivityCallbacks", () => {
         onDescription,
         onResult: vi.fn(),
         onFailure: vi.fn(),
-        isDebug: false,
+        isDebug: () => false,
       })
 
       onToolStart("read_file", { file_path: "/a/b.ts" })

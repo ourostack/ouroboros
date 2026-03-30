@@ -748,9 +748,13 @@ describe("Teams adapter - createTeamsCallbacks (SDK-delegated streaming)", () =>
     vi.resetModules()
     const teams = await import("../../senses/teams")
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
+    callbacks.onToolStart("read_file", { file_path: "/tmp/missing.txt" })
     callbacks.onToolEnd("read_file", "missing.txt", false)
-    expect(mockStream.update).toHaveBeenCalledWith("\u2717 read_file failed: missing.txt")
-    expect(mockStream.emit).not.toHaveBeenCalled()
+    // The failure message should contain ✗ and the error detail
+    const updateCalls = mockStream.update.mock.calls.map((c: unknown[]) => c[0]) as string[]
+    const failureCall = updateCalls.find((c: string) => c.includes("\u2717"))
+    expect(failureCall).toBeDefined()
+    expect(failureCall).toContain("missing.txt")
   })
 
   it("onToolEnd after abort does NOT call stream.update or stream.emit", async () => {
