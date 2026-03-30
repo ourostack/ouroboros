@@ -83,8 +83,28 @@ export class HabitScheduler {
     const jobs = this.buildJobs(habits)
     this.osCronManager.sync(jobs)
     this.verifyCronAndCreateFallbacks(jobs)
+    this.fireOverdueHabits(habits)
+  }
 
-    // Fire overdue habits immediately
+  reconcile(): void {
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.habit_scheduler_reconcile",
+      message: "habit scheduler reconciling",
+      meta: { agent: this.agent },
+    })
+
+    // Clear ALL existing timers FIRST to prevent overlap window
+    this.clearAllTimerFallbacks()
+
+    const habits = this.scanHabits()
+    const jobs = this.buildJobs(habits)
+    this.osCronManager.sync(jobs)
+    this.verifyCronAndCreateFallbacks(jobs)
+    this.fireOverdueHabits(habits)
+  }
+
+  private fireOverdueHabits(habits: HabitFile[]): void {
     for (const habit of habits) {
       if (habit.status !== "active") continue
       if (!habit.cadence) continue
@@ -117,23 +137,6 @@ export class HabitScheduler {
         this.onHabitFire(habit.name)
       }
     }
-  }
-
-  reconcile(): void {
-    emitNervesEvent({
-      component: "daemon",
-      event: "daemon.habit_scheduler_reconcile",
-      message: "habit scheduler reconciling",
-      meta: { agent: this.agent },
-    })
-
-    // Clear ALL existing timers FIRST to prevent overlap window
-    this.clearAllTimerFallbacks()
-
-    const habits = this.scanHabits()
-    const jobs = this.buildJobs(habits)
-    this.osCronManager.sync(jobs)
-    this.verifyCronAndCreateFallbacks(jobs)
   }
 
   stop(): void {

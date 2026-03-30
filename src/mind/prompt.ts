@@ -20,6 +20,7 @@ import { formatActiveWorkFrame, formatOtherActiveSessionSummaries, type ActiveWo
 import type { DelegationDecision } from "../heart/delegation";
 import { deriveCommitments, formatCommitments } from "../heart/commitments";
 import { findActivePersistentObligation, findStatusObligation, renderActiveObligationSteering, renderConcreteStatusGuidance, renderLiveThreadStatusShape } from "./obligation-steering";
+import { readHealth, getDefaultHealthPath } from "../heart/daemon/daemon-health";
 
 // Lazy-loaded psyche text cache
 let _psycheCache: {
@@ -940,6 +941,42 @@ export function mixedTrustGroupSection(context?: ResolvedContext): string {
   return "## mixed trust group\nin this group chat, my capabilities depend on who's talking. some people here have full trust, others don't — i adjust what i can do based on who's asking."
 }
 
+function formatElapsedBrief(ms: number): string {
+  const minutes = Math.floor(ms / 60000)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  return `${hours}h ago`
+}
+
+export function rhythmStatusSection(): string {
+  try {
+    const health = readHealth(getDefaultHealthPath())
+    if (!health) return ""
+
+    const habitNames = Object.keys(health.habits)
+    if (habitNames.length === 0) return ""
+
+    const nowMs = Date.now()
+    const parts: string[] = []
+
+    for (const name of habitNames) {
+      const h = health.habits[name]
+      const lastFired = h.lastFired ? formatElapsedBrief(nowMs - new Date(h.lastFired).getTime()) : "never"
+      parts.push(`${name} last fired ${lastFired}`)
+    }
+
+    const degradedNote = health.degraded.length > 0
+      ? health.degraded.map((d) => `${d.component}: ${d.reason}`).join("; ") + "."
+      : "healthy."
+
+    return `my rhythms: ${parts.join(". ")}. ${degradedNote}`
+  /* v8 ignore start -- defensive: readHealth handles its own errors; this catch is a safety net for truly unexpected failures @preserve */
+  } catch {
+    return ""
+  }
+  /* v8 ignore stop */
+}
+
 export async function buildSystem(channel: Channel = "cli", options?: BuildSystemOptions, context?: ResolvedContext): Promise<string> {
   emitNervesEvent({
     event: "mind.step_start",
@@ -962,6 +999,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     channel === "inner" ? journalSection(getAgentRoot()) : "",
     loopOrientationSection(channel),
     runtimeInfoSection(channel),
+    rhythmStatusSection(),
     channelNatureSection(getChannelCapabilities(channel)),
     providerSection(),
     dateSection(),
