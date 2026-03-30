@@ -118,11 +118,16 @@ export function registerDefaultCommands(registry: CommandRegistry): void {
 
   registry.register({
     name: "debug",
-    description: "toggle debug mode (verbose tool output)",
-    channels: ["cli", "teams", "bluebubbles"],
+    description: "toggle debug mode — see more detail about what I'm doing",
+    channels: ["cli", "teams", "bluebubbles", "mcp"],
     handler: () => {
       _debugMode = !_debugMode
-      return { action: "response", message: `debug mode: ${_debugMode ? "ON" : "OFF"}` }
+      return {
+        action: "response",
+        message: _debugMode
+          ? "debug mode on — you'll see more detail about what I'm doing"
+          : "debug mode off — back to clean output",
+      }
     },
   })
 

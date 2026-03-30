@@ -348,12 +348,12 @@ describe("/debug command", () => {
 
     const result1 = registry.dispatch("debug", { channel: "cli" })
     expect(result1.handled).toBe(true)
-    expect(result1.result!.message).toContain("ON")
+    expect(result1.result!.message).toBe("debug mode on — you'll see more detail about what I'm doing")
     expect(getDebugMode()).toBe(true)
 
     const result2 = registry.dispatch("debug", { channel: "cli" })
     expect(result2.handled).toBe(true)
-    expect(result2.result!.message).toContain("OFF")
+    expect(result2.result!.message).toBe("debug mode off — back to clean output")
     expect(getDebugMode()).toBe(false)
   })
 
