@@ -1334,7 +1334,9 @@ describe("BlueBubbles sense runtime", () => {
       }),
     )
     expect(mocks.editMessage).not.toHaveBeenCalled()
-    expect(mocks.setTyping).toHaveBeenNthCalledWith(2, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), false)
+    // After status sendText, typing is re-enabled; then stopped before final text
+    expect(mocks.setTyping).toHaveBeenNthCalledWith(2, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), true)
+    expect(mocks.setTyping).toHaveBeenNthCalledWith(3, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), false)
   })
 
   it("uses typing only for the first phase of a short turn and sends only the final reply visibly", async () => {
@@ -1524,12 +1526,15 @@ describe("BlueBubbles sense runtime", () => {
   })
 
   it("treats group chat tool progress as reply commitment before final text", async () => {
+    vi.useFakeTimers()
     mocks.runAgent.mockImplementationOnce(async (_messages: any, callbacks: any) => {
       callbacks.onModelStart()
       expect(mocks.markChatRead).not.toHaveBeenCalled()
       expect(mocks.setTyping).not.toHaveBeenCalled()
 
       callbacks.onToolStart("query_session", {})
+      // Advance past status batcher debounce window (500ms)
+      vi.advanceTimersByTime(500)
       await flushAsyncWork()
       await flushAsyncWork()
 
@@ -1566,6 +1571,49 @@ describe("BlueBubbles sense runtime", () => {
     expect(finalReplyCall).toBeTruthy()
     expect(mocks.markChatRead.mock.invocationCallOrder[0]).toBeLessThan(finalReplyCall[0].chat ? mocks.sendText.mock.invocationCallOrder[mocks.sendText.mock.calls.indexOf(finalReplyCall)] : Number.MAX_SAFE_INTEGER)
     expect(mocks.setTyping.mock.invocationCallOrder[0]).toBeLessThan(finalReplyCall[0].chat ? mocks.sendText.mock.invocationCallOrder[mocks.sendText.mock.calls.indexOf(finalReplyCall)] : Number.MAX_SAFE_INTEGER)
+    vi.useRealTimers()
+  })
+
+  it("re-enables typing indicator after each status message", async () => {
+    vi.useFakeTimers()
+    mocks.runAgent.mockImplementationOnce(async (_messages: any, callbacks: any) => {
+      callbacks.onModelStart()
+      callbacks.onToolStart("query_session", {})
+      // Advance past status batcher debounce window
+      vi.advanceTimersByTime(500)
+      await flushAsyncWork()
+      await flushAsyncWork()
+
+      // After the status sendText, setTyping(true) should be called again
+      // First setTyping(true) is from startTypingNow, second is after sendStatus
+      const typingTrueCalls = mocks.setTyping.mock.calls.filter(
+        (call: any[]) => call[1] === true,
+      )
+      expect(typingTrueCalls.length).toBeGreaterThanOrEqual(2)
+
+      // Verify the second setTyping(true) happened after the status sendText
+      const statusSendOrder = mocks.sendText.mock.invocationCallOrder[0]
+      const secondTypingOrder = mocks.setTyping.mock.invocationCallOrder[
+        mocks.setTyping.mock.calls.findIndex(
+          (call: any[], idx: number) => idx > 0 && call[1] === true,
+        )
+      ]
+      expect(secondTypingOrder).toBeGreaterThan(statusSendOrder)
+
+      callbacks.onTextChunk("done")
+      return {
+        usage: {
+          input_tokens: 10,
+          output_tokens: 5,
+          reasoning_tokens: 0,
+          total_tokens: 15,
+        },
+      }
+    })
+
+    const bluebubbles = await import("../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(groupThreadPayload)
+    vi.useRealTimers()
   })
 
   it("uses group chat identity rather than sender handle instability for group sessions", async () => {
@@ -1780,7 +1828,9 @@ describe("BlueBubbles sense runtime", () => {
       }),
     )
     expect(mocks.editMessage).not.toHaveBeenCalled()
-    expect(mocks.setTyping).toHaveBeenNthCalledWith(2, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), false)
+    // After error status sendText, typing is re-enabled; then stopped by finish
+    expect(mocks.setTyping).toHaveBeenNthCalledWith(2, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), true)
+    expect(mocks.setTyping).toHaveBeenNthCalledWith(3, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), false)
   })
 
   it("can still run a turn when only chat identifier routing is present", async () => {

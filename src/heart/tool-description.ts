@@ -14,7 +14,12 @@ function basename(filePath: string): string {
 
 function truncate(text: string, max: number): string {
   if (text.length <= max) return text
-  return text.slice(0, max - 1) + "\u2026"
+  // Cut at last space before maxLen to avoid mid-word truncation
+  const slice = text.slice(0, max - 1)
+  const lastSpace = slice.lastIndexOf(" ")
+  if (lastSpace > 0) return text.slice(0, lastSpace) + "\u2026"
+  // No space found (single long word) — hard truncate
+  return slice + "\u2026"
 }
 
 const TOOL_DESCRIPTIONS: Record<string, DescriptionBuilder> = {
@@ -99,7 +104,7 @@ const TOOL_DESCRIPTIONS: Record<string, DescriptionBuilder> = {
     const thought = args.thought
     return thought ? `thinking about ${truncate(thought, 40)}...` : "thinking deeper..."
   },
-  observe: () => "listening...",
+  observe: () => null,
   claude: () => "reasoning...",
   set_reasoning_effort: (args) => {
     const level = args.level

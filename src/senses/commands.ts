@@ -101,7 +101,7 @@ export function registerDefaultCommands(registry: CommandRegistry): void {
     channels: ["cli", "teams"],
     handler: (ctx) => {
       const cmds = registry.list(ctx.channel)
-      const lines = cmds.map((c) => `/${c.name} - ${c.description}`)
+      const lines = cmds.map((c) => `/${c.name} \u2014 ${c.description}`)
       return { action: "response", message: lines.join("\n") }
     },
   })

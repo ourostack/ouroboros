@@ -90,7 +90,7 @@ describe("registerDefaultCommands", () => {
     expect(result).toEqual({ handled: true, result: { action: "new" } })
   })
 
-  it("/commands handler returns formatted list for cli channel", async () => {
+  it("/commands handler returns formatted list for cli channel with em dash separators", async () => {
     const { createCommandRegistry, registerDefaultCommands } = await import("../../senses/commands")
     const registry = createCommandRegistry()
     registerDefaultCommands(registry)
@@ -101,6 +101,9 @@ describe("registerDefaultCommands", () => {
     expect(result.result!.message).toContain("/exit")
     expect(result.result!.message).toContain("/new")
     expect(result.result!.message).toContain("/commands")
+    // Each line uses em dash separator between name and description
+    expect(result.result!.message).toContain("/new \u2014 start a new conversation")
+    expect(result.result!.message).toContain("/commands \u2014 list available commands")
   })
 
   it("/commands handler for teams does NOT include /exit", async () => {
