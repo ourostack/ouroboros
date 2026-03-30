@@ -5,7 +5,7 @@ import { sessionPath } from "../heart/config"
 import { runAgent, type ChannelCallbacks, type CompletionMetadata } from "../heart/core"
 import { getAgentName, getAgentRoot } from "../heart/identity"
 import { loadSession, postTurn, type UsageData } from "../mind/context"
-import { buildSystem, readJournalFiles } from "../mind/prompt"
+import { buildSystem } from "../mind/prompt"
 import { getSharedMcpManager } from "../repertoire/mcp-manager"
 import { findNonCanonicalBundlePaths } from "../mind/bundle-manifest"
 import {
@@ -31,7 +31,7 @@ import { createBridgeManager } from "../heart/bridges/manager"
 import { findFreshestFriendSession, listSessionActivity, type SessionActivityRecord } from "../heart/session-activity"
 import { sendProactiveBlueBubblesMessageToSession } from "./bluebubbles"
 import { findPendingObligationForOrigin, fulfillObligation } from "../heart/obligations"
-import { buildContextualHeartbeat } from "./contextual-heartbeat"
+import { buildHabitTurnMessage } from "./habit-turn-message"
 import { indexJournalFiles } from "../mind/journal-index"
 import { parseHabitFile } from "../heart/daemon/habit-parser"
 import { parseCadenceToMs } from "../heart/daemon/cadence"
@@ -615,109 +615,66 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
 
       // Read and parse the habit file
       let habitBody: string | undefined
+      let habitTitle: string = habitName
       let habitLastRun: string | null = null
       try {
         const habitContent = fs.readFileSync(habitFilePath, "utf-8")
         const parsed = parseHabitFile(habitContent, habitFilePath)
-        habitBody = parsed.body
+        habitBody = parsed.body || undefined
+        habitTitle = parsed.title || habitName
         habitLastRun = parsed.lastRun
       } catch {
         // Habit file missing or unreadable
       }
 
-      if (habitName === "heartbeat") {
-        // Heartbeat habit: use contextual heartbeat builder with habit body
-        const journalDir = path.join(agentRoot, "journal")
-        const runtimeStatePath = innerDialogRuntimeStatePath(sessionFilePath)
-
-        let lastCompletedAt: string | undefined
-        try {
-          const raw = fs.readFileSync(runtimeStatePath, "utf-8")
-          const runtimeState = JSON.parse(raw) as { lastCompletedAt?: string }
-          lastCompletedAt = typeof runtimeState.lastCompletedAt === "string" ? runtimeState.lastCompletedAt : undefined
-        } catch {
-          // no runtime state — will get cold start fallback
-        }
-
+      // If the habit file couldn't be read at all (no body, no title parsed), error message
+      if (habitBody === undefined && habitTitle === habitName) {
+        userContent = `habit "${habitName}" could not be read (file not found or unreadable). check habits/${habitName}.md exists.`
+      } else {
+        // Unified path: gather context for ALL habits (heartbeat included)
         const obligations = listActiveObligations(agentName)
         const nowMs = now().getTime()
-        const pendingObligations = obligations.map((o) => ({
-          id: o.id,
-          content: o.delegatedContent,
+        const staleObligations = obligations.map((o) => ({
           friendName: o.origin.friendId,
-          timestamp: o.createdAt,
-          staleness: nowMs - o.createdAt,
+          content: o.delegatedContent,
+          stalenessMs: nowMs - o.createdAt,
         }))
 
-        const heartbeatContent = buildContextualHeartbeat({
-          journalDir,
-          lastCompletedAt,
-          pendingObligations,
-          lastSurfaceAt: undefined,
-          checkpoint: state.checkpoint,
-          now,
-          readJournalDir: () => readJournalFiles(journalDir),
+        const alsoDue = buildAlsoDueLine(agentRoot, habitName, now)
+
+        // Degraded state (best-effort: never crash)
+        let degradedComponents: { component: string; reason: string }[] = []
+        try {
+          const health = readHealth(getDefaultHealthPath())
+          if (health && health.degraded.length > 0) {
+            degradedComponents = health.degraded.map((d) => ({ component: d.component, reason: d.reason }))
+          }
+        } catch {
+          // Best-effort: missing file or parse error -> empty array, no crash
+        }
+
+        userContent = buildHabitTurnMessage({
+          habitName,
+          habitTitle,
           habitBody,
+          lastRun: habitLastRun,
+          checkpoint: displayCheckpoint(state.checkpoint),
+          alsoDue: alsoDue || undefined,
+          staleObligations,
+          parseErrors: options?.parseErrors ?? [],
+          degradedComponents,
+          now,
         })
 
-        // Build also-due line
-        const alsoDue = buildAlsoDueLine(agentRoot, habitName, now)
-        userContent = alsoDue ? `${heartbeatContent}\n\n${alsoDue}` : heartbeatContent
-
-        // Parse error nudge
-        const parseErrorNudge = buildParseErrorNudge(options?.parseErrors ?? [])
-        if (parseErrorNudge) userContent = `${userContent}\n\n${parseErrorNudge}`
-
         // Piggyback journal embedding indexing (best-effort, fire-and-forget)
+        const journalDir = path.join(agentRoot, "journal")
         /* v8 ignore start -- journal indexing piggyback: embedding provider may not be available; tested via journal-index unit tests @preserve */
         void indexJournalFiles(journalDir, path.join(journalDir, ".index.json"), {
           embed: async () => [],
         }).catch(() => {
-          // swallowed: indexing failure must never block heartbeat
+          // swallowed: indexing failure must never block habit turn
         })
         /* v8 ignore stop */
-      } else if (habitBody !== undefined) {
-        // Non-heartbeat habit: basic context + body
-        const sections: string[] = []
-
-        // Elapsed time since last run
-        if (habitLastRun) {
-          const lastRunMs = new Date(habitLastRun).getTime()
-          const elapsed = now().getTime() - lastRunMs
-          const minutes = Math.floor(elapsed / 60000)
-          if (minutes < 60) {
-            sections.push(`it's been ${minutes} ${minutes === 1 ? "minute" : "minutes"} since ${habitName} last ran.`)
-          } else {
-            const hours = Math.floor(minutes / 60)
-            sections.push(`it's been ${hours} ${hours === 1 ? "hour" : "hours"} since ${habitName} last ran.`)
-          }
-        }
-
-        sections.push(`## habit: ${habitName}\n${habitBody}`)
-
-        // Also due line
-        const alsoDue = buildAlsoDueLine(agentRoot, habitName, now)
-        if (alsoDue) sections.push(alsoDue)
-
-        // Parse error nudge
-        const parseErrorNudge = buildParseErrorNudge(options?.parseErrors ?? [])
-        if (parseErrorNudge) sections.push(parseErrorNudge)
-
-        userContent = sections.join("\n\n")
-      } else {
-        // Habit file not found
-        userContent = `habit "${habitName}" could not be read (file not found or unreadable). check habits/${habitName}.md exists.`
-      }
-
-      // Degraded state nudge (best-effort: never crash on health file read failure)
-      try {
-        const health = readHealth(getDefaultHealthPath())
-        if (health && health.degraded.length > 0) {
-          const reasons = health.degraded.map((d) => `${d.component}: ${d.reason}`).join("; ")
-          userContent = `${userContent}\n\n[note: my scheduling is degraded: ${reasons}]`
-        }
-      } catch {
-        // Best-effort: missing file or parse error -> no nudge, no crash
       }
     } else {
       userContent = buildInstinctUserMessage(instincts, reason, state)

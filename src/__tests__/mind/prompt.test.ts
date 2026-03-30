@@ -3638,3 +3638,129 @@ describe("feedbackSignalSection", () => {
     expect(group).toMatch(/\bi\b/)
   })
 })
+
+describe("rhythmStatusSection", () => {
+  beforeEach(() => {
+    vi.resetModules()
+  })
+
+  it("returns brief rhythm status when health file has habits", async () => {
+    vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => {
+      const p = String(filePath)
+      if (p.endsWith("daemon-health.json")) {
+        return JSON.stringify({
+          status: "running",
+          mode: "prod",
+          pid: 1234,
+          startedAt: new Date(Date.now() - 3600000).toISOString(),
+          uptimeSeconds: 3600,
+          safeMode: null,
+          degraded: [],
+          agents: {},
+          habits: {
+            heartbeat: { cronStatus: "verified", lastFired: new Date(Date.now() - 12 * 60 * 1000).toISOString(), fallback: false },
+          },
+        })
+      }
+      return ""
+    })
+
+    const { rhythmStatusSection } = await import("../../mind/prompt")
+    const result = rhythmStatusSection()
+    expect(result).toContain("my rhythms:")
+    expect(result).toContain("heartbeat")
+    expect(result).toContain("healthy")
+  })
+
+  it("includes degraded note when components are degraded", async () => {
+    vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => {
+      const p = String(filePath)
+      if (p.endsWith("daemon-health.json")) {
+        return JSON.stringify({
+          status: "running",
+          mode: "prod",
+          pid: 1234,
+          startedAt: new Date(Date.now() - 3600000).toISOString(),
+          uptimeSeconds: 3600,
+          safeMode: null,
+          degraded: [{ component: "heartbeat", reason: "timer fallback", since: new Date().toISOString() }],
+          agents: {},
+          habits: {
+            heartbeat: { cronStatus: "failed", lastFired: new Date(Date.now() - 2 * 3600000).toISOString(), fallback: true },
+          },
+        })
+      }
+      return ""
+    })
+
+    const { rhythmStatusSection } = await import("../../mind/prompt")
+    const result = rhythmStatusSection()
+    expect(result).toContain("my rhythms:")
+    expect(result).toContain("heartbeat")
+    expect(result).toContain("timer fallback")
+  })
+
+  it("returns empty string when health file is missing", async () => {
+    vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => {
+      const p = String(filePath)
+      if (p.endsWith("daemon-health.json")) {
+        throw new Error("ENOENT")
+      }
+      return ""
+    })
+
+    const { rhythmStatusSection } = await import("../../mind/prompt")
+    const result = rhythmStatusSection()
+    expect(result).toBe("")
+  })
+
+  it("shows 'never' for habits that have not fired yet", async () => {
+    vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => {
+      const p = String(filePath)
+      if (p.endsWith("daemon-health.json")) {
+        return JSON.stringify({
+          status: "running",
+          mode: "prod",
+          pid: 1234,
+          startedAt: new Date().toISOString(),
+          uptimeSeconds: 100,
+          safeMode: null,
+          degraded: [],
+          agents: {},
+          habits: {
+            "daily-reflection": { cronStatus: "verified", lastFired: null, fallback: false },
+          },
+        })
+      }
+      return ""
+    })
+
+    const { rhythmStatusSection } = await import("../../mind/prompt")
+    const result = rhythmStatusSection()
+    expect(result).toContain("daily-reflection last fired never")
+  })
+
+  it("returns empty string when no habits in health file", async () => {
+    vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => {
+      const p = String(filePath)
+      if (p.endsWith("daemon-health.json")) {
+        return JSON.stringify({
+          status: "running",
+          mode: "prod",
+          pid: 1234,
+          startedAt: new Date().toISOString(),
+          uptimeSeconds: 100,
+          safeMode: null,
+          degraded: [],
+          agents: {},
+          habits: {},
+        })
+      }
+      return ""
+    })
+
+    const { rhythmStatusSection } = await import("../../mind/prompt")
+    const result = rhythmStatusSection()
+    expect(result).toBe("")
+  })
+})

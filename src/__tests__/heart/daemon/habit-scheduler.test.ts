@@ -485,6 +485,81 @@ describe("HabitScheduler", () => {
       expect(secondSyncJobs).toHaveLength(1)
       expect(secondSyncJobs[0].taskId).toBe("heartbeat")
     })
+
+    it("fires habits with lastRun: null (new habits) on reconcile", () => {
+      const nowMs = new Date("2026-03-27T12:00:00.000Z").getTime()
+      const readdir = vi.fn(() => ["heartbeat.md"])
+      const readFile = vi.fn(() => "content")
+      const nowFn = vi.fn(() => nowMs)
+      deps = makeDeps({ readdir, readFile, now: nowFn })
+
+      mockParseHabitFile.mockReturnValue({
+        ...makeHeartbeatHabit(),
+        lastRun: null,
+      })
+
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/bundles/slugger.ouro/habits",
+        osCronManager: cronManager,
+        onHabitFire,
+        deps,
+      })
+
+      scheduler.reconcile()
+
+      expect(onHabitFire).toHaveBeenCalledWith("heartbeat")
+    })
+
+    it("fires overdue habits on reconcile (elapsed > cadence)", () => {
+      const nowMs = new Date("2026-03-27T12:00:00.000Z").getTime()
+      const readdir = vi.fn(() => ["heartbeat.md"])
+      const readFile = vi.fn(() => "content")
+      const nowFn = vi.fn(() => nowMs)
+      deps = makeDeps({ readdir, readFile, now: nowFn })
+
+      mockParseHabitFile.mockReturnValue({
+        ...makeHeartbeatHabit(),
+        lastRun: "2026-03-27T10:00:00.000Z", // 2 hours ago, cadence 30m
+      })
+
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/bundles/slugger.ouro/habits",
+        osCronManager: cronManager,
+        onHabitFire,
+        deps,
+      })
+
+      scheduler.reconcile()
+
+      expect(onHabitFire).toHaveBeenCalledWith("heartbeat")
+    })
+
+    it("does not re-fire recently-fired habits on reconcile", () => {
+      const nowMs = new Date("2026-03-27T10:10:00.000Z").getTime()
+      const readdir = vi.fn(() => ["heartbeat.md"])
+      const readFile = vi.fn(() => "content")
+      const nowFn = vi.fn(() => nowMs)
+      deps = makeDeps({ readdir, readFile, now: nowFn })
+
+      mockParseHabitFile.mockReturnValue({
+        ...makeHeartbeatHabit(),
+        lastRun: "2026-03-27T10:00:00.000Z", // 10 min ago, cadence 30m => NOT overdue
+      })
+
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/bundles/slugger.ouro/habits",
+        osCronManager: cronManager,
+        onHabitFire,
+        deps,
+      })
+
+      scheduler.reconcile()
+
+      expect(onHabitFire).not.toHaveBeenCalled()
+    })
   })
 
   describe("stop()", () => {
@@ -1382,7 +1457,11 @@ describe("HabitScheduler", () => {
       onHabitFire.mockClear()
 
       // Now simulate reconciliation where cron is now verified
-      mockParseHabitFile.mockReturnValueOnce(makeHeartbeatHabit())
+      // Use a recent lastRun so the habit is NOT overdue during reconcile
+      mockParseHabitFile.mockReturnValueOnce({
+        ...makeHeartbeatHabit(),
+        lastRun: new Date(Date.now() - 5 * 60 * 1000).toISOString(), // 5 min ago, cadence 30m
+      })
       readdir.mockReturnValueOnce(["heartbeat.md"])
       execForVerify.mockReturnValueOnce("bot.ouro.slugger.heartbeat\n")
 

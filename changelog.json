@@ -2,6 +2,16 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.157",
+      "changes": [
+        "Habit turns as awareness: unified buildHabitTurnMessage replaces contextual-heartbeat. Continuity-first format (checkpoint leads, not elapsed time). Same format for all habits \u2014 no heartbeat special-casing.",
+        "First beat experience: new habits get \"your [Title] is alive. this is its first breath\" on first fire.",
+        "Fix: reconcile() now fires new/overdue habits immediately (was start()-only). New habits created via write_file fire within seconds.",
+        "Rhythm awareness across all channels: rhythmStatusSection() in system prompt shows heartbeat health in every conversation.",
+        "Removed contextual-heartbeat.ts entirely. Dead lastSurfaceAt parameter removed."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.156",
       "changes": [
         "polish: observe tool now hidden (like settle/rest/descend)",

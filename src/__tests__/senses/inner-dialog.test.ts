@@ -26,7 +26,7 @@ const mockGetBridge = vi.fn()
 const mockSendProactiveBlueBubblesMessageToSession = vi.fn()
 const mockAdvanceObligation = vi.fn()
 const mockListActiveObligations = vi.fn(() => [])
-const mockBuildContextualHeartbeat = vi.fn(() => "contextual heartbeat message")
+const mockBuildHabitTurnMessage = vi.fn(() => "habit turn message")
 const mockIndexJournalFiles = vi.fn(async () => 0)
 const mockReadJournalFiles = vi.fn(() => [])
 const mockReadHealth = vi.fn(() => null)
@@ -105,8 +105,8 @@ vi.mock("../../mind/obligations", () => ({
   listActiveObligations: (...args: any[]) => mockListActiveObligations(...args),
 }))
 
-vi.mock("../../senses/contextual-heartbeat", () => ({
-  buildContextualHeartbeat: (...args: any[]) => mockBuildContextualHeartbeat(...args),
+vi.mock("../../senses/habit-turn-message", () => ({
+  buildHabitTurnMessage: (...args: any[]) => mockBuildHabitTurnMessage(...args),
 }))
 
 vi.mock("../../mind/journal-index", () => ({
@@ -183,7 +183,7 @@ describe("inner dialog runtime", () => {
     })
     mockAdvanceObligation.mockReset().mockReturnValue(null)
     mockListActiveObligations.mockReset().mockReturnValue([])
-    mockBuildContextualHeartbeat.mockReset().mockReturnValue("contextual heartbeat message")
+    mockBuildHabitTurnMessage.mockReset().mockReturnValue("habit turn message")
     mockIndexJournalFiles.mockReset().mockResolvedValue(0)
     mockReadJournalFiles.mockReset().mockReturnValue([])
     mockReadHealth.mockReset().mockReturnValue(null)
@@ -1153,8 +1153,7 @@ describe("inner dialog runtime", () => {
     expect(content).toContain("Unit 2b editing src/repertoire/tools.ts")
   })
 
-  it("uses contextual heartbeat builder on resumed session with reason habit + heartbeat", async () => {
-    // Create heartbeat habit file
+  it("uses buildHabitTurnMessage for heartbeat habit on resumed session", async () => {
     const habitsDir = path.join(agentRoot, "habits")
     fs.mkdirSync(habitsDir, { recursive: true })
     fs.writeFileSync(
@@ -1169,7 +1168,7 @@ describe("inner dialog runtime", () => {
         { role: "assistant", content: "ready for next cycle" },
       ],
     })
-    mockBuildContextualHeartbeat.mockReturnValueOnce("contextual heartbeat with journal context")
+    mockBuildHabitTurnMessage.mockReturnValueOnce("unified habit turn message")
 
     await runInnerDialogTurn({
       reason: "habit",
@@ -1177,16 +1176,15 @@ describe("inner dialog runtime", () => {
       now: () => new Date("2026-03-06T12:05:00.000Z"),
     })
 
-    expect(mockBuildContextualHeartbeat).toHaveBeenCalledTimes(1)
+    expect(mockBuildHabitTurnMessage).toHaveBeenCalledTimes(1)
     const input = mockHandleInboundTurn.mock.calls[0][0]
     const content = String(input.messages[0].content)
-    expect(content).toBe("contextual heartbeat with journal context")
+    expect(content).toBe("unified habit turn message")
   })
 
   // ── Habit turn tests ──────────────────────────────────────────────
 
-  it("builds contextual heartbeat message for habit turn with habitName heartbeat", async () => {
-    // Create habits directory with heartbeat.md
+  it("passes habitBody and habitTitle to buildHabitTurnMessage for heartbeat", async () => {
     const habitsDir = path.join(agentRoot, "habits")
     fs.mkdirSync(habitsDir, { recursive: true })
     fs.writeFileSync(
@@ -1201,7 +1199,7 @@ describe("inner dialog runtime", () => {
         { role: "assistant", content: "ready for next cycle" },
       ],
     })
-    mockBuildContextualHeartbeat.mockReturnValueOnce("contextual heartbeat with habit body")
+    mockBuildHabitTurnMessage.mockReturnValueOnce("habit turn with body")
 
     await runInnerDialogTurn({
       reason: "habit",
@@ -1209,16 +1207,15 @@ describe("inner dialog runtime", () => {
       now: () => new Date("2026-03-06T12:05:00.000Z"),
     })
 
-    expect(mockBuildContextualHeartbeat).toHaveBeenCalledTimes(1)
-    const heartbeatCall = mockBuildContextualHeartbeat.mock.calls[0][0]
-    expect(heartbeatCall.habitBody).toContain("Check in on my responsibilities")
-
-    const input = mockHandleInboundTurn.mock.calls[0][0]
-    const content = String(input.messages[0].content)
-    expect(content).toContain("contextual heartbeat with habit body")
+    expect(mockBuildHabitTurnMessage).toHaveBeenCalledTimes(1)
+    const call = mockBuildHabitTurnMessage.mock.calls[0][0]
+    expect(call.habitBody).toContain("Check in on my responsibilities")
+    expect(call.habitTitle).toBe("Heartbeat")
+    expect(call.habitName).toBe("heartbeat")
+    expect(call.lastRun).toBe("2026-03-06T11:30:00.000Z")
   })
 
-  it("builds basic context message for non-heartbeat habit turns", async () => {
+  it("uses buildHabitTurnMessage for non-heartbeat habits (same path as heartbeat)", async () => {
     const habitsDir = path.join(agentRoot, "habits")
     fs.mkdirSync(habitsDir, { recursive: true })
     fs.writeFileSync(
@@ -1233,6 +1230,7 @@ describe("inner dialog runtime", () => {
         { role: "assistant", content: "checkpoint: reviewed tasks" },
       ],
     })
+    mockBuildHabitTurnMessage.mockReturnValueOnce("daily reflection habit turn")
 
     await runInnerDialogTurn({
       reason: "habit",
@@ -1240,13 +1238,83 @@ describe("inner dialog runtime", () => {
       now: () => new Date("2026-03-06T22:00:00.000Z"),
     })
 
-    const input = mockHandleInboundTurn.mock.calls[0][0]
-    const content = String(input.messages[0].content)
-    expect(content).toContain("daily-reflection")
-    expect(content).toContain("Reflect on the day's accomplishments")
+    expect(mockBuildHabitTurnMessage).toHaveBeenCalledTimes(1)
+    const call = mockBuildHabitTurnMessage.mock.calls[0][0]
+    expect(call.habitName).toBe("daily-reflection")
+    expect(call.habitTitle).toBe("Daily Reflection")
+    expect(call.habitBody).toContain("Reflect on the day's accomplishments")
+    expect(call.lastRun).toBe("2026-03-05T22:00:00.000Z")
+    expect(call.checkpoint).toBe("reviewed tasks")
   })
 
-  it("includes also-due habits in habit turn messages", async () => {
+  it("passes checkpoint from session state to buildHabitTurnMessage", async () => {
+    const habitsDir = path.join(agentRoot, "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(habitsDir, "heartbeat.md"),
+      "---\ntitle: Heartbeat\ncadence: 30m\nstatus: active\nlastRun: 2026-03-06T11:30:00.000Z\ncreated: 2026-03-01\n---\n\nCheck in.",
+      "utf8",
+    )
+
+    mockLoadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "assistant", content: "checkpoint: refactoring tool registry" },
+      ],
+    })
+    mockBuildHabitTurnMessage.mockReturnValueOnce("turn with checkpoint")
+
+    await runInnerDialogTurn({
+      reason: "habit",
+      habitName: "heartbeat",
+      now: () => new Date("2026-03-06T12:05:00.000Z"),
+    })
+
+    const call = mockBuildHabitTurnMessage.mock.calls[0][0]
+    expect(call.checkpoint).toBe("refactoring tool registry")
+  })
+
+  it("passes stale obligations to buildHabitTurnMessage for all habits", async () => {
+    const habitsDir = path.join(agentRoot, "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(habitsDir, "daily-reflection.md"),
+      "---\ntitle: Daily Reflection\ncadence: 1d\nstatus: active\nlastRun: 2026-03-05T22:00:00.000Z\ncreated: 2026-03-01\n---\n\nReflect.",
+      "utf8",
+    )
+
+    const nowDate = new Date("2026-03-06T22:00:00.000Z")
+    const nowMs = nowDate.getTime()
+    mockListActiveObligations.mockReturnValueOnce([
+      {
+        id: "obl-1",
+        delegatedContent: "review the architecture doc",
+        origin: { friendId: "ari" },
+        createdAt: nowMs - 45 * 60 * 1000,
+      },
+    ])
+
+    mockLoadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "assistant", content: "checkpoint" },
+      ],
+    })
+    mockBuildHabitTurnMessage.mockReturnValueOnce("turn with obligations")
+
+    await runInnerDialogTurn({
+      reason: "habit",
+      habitName: "daily-reflection",
+      now: () => nowDate,
+    })
+
+    const call = mockBuildHabitTurnMessage.mock.calls[0][0]
+    expect(call.staleObligations).toHaveLength(1)
+    expect(call.staleObligations[0].friendName).toBe("ari")
+    expect(call.staleObligations[0].stalenessMs).toBe(45 * 60 * 1000)
+  })
+
+  it("passes also-due to buildHabitTurnMessage", async () => {
     const habitsDir = path.join(agentRoot, "habits")
     fs.mkdirSync(habitsDir, { recursive: true })
     fs.writeFileSync(
@@ -1267,6 +1335,7 @@ describe("inner dialog runtime", () => {
         { role: "assistant", content: "checkpoint" },
       ],
     })
+    mockBuildHabitTurnMessage.mockReturnValueOnce("turn with also-due")
 
     await runInnerDialogTurn({
       reason: "habit",
@@ -1274,10 +1343,9 @@ describe("inner dialog runtime", () => {
       now: () => new Date("2026-03-06T22:00:00.000Z"),
     })
 
-    const input = mockHandleInboundTurn.mock.calls[0][0]
-    const content = String(input.messages[0].content)
-    expect(content).toContain("also due")
-    expect(content).toContain("weekly-review")
+    const call = mockBuildHabitTurnMessage.mock.calls[0][0]
+    expect(call.alsoDue).toContain("also due")
+    expect(call.alsoDue).toContain("weekly-review")
   })
 
   it("handles missing habit file gracefully in habit turn", async () => {
@@ -1302,7 +1370,8 @@ describe("inner dialog runtime", () => {
     expect(content).toMatch(/not found|missing|could not read/i)
   })
 
-  it("reason heartbeat is no longer handled (falls through to instinct)", async () => {
+  it("heartbeat habit without file still calls buildHabitTurnMessage (missing file path)", async () => {
+    // No habit file created -- should fall through to "could not be read" message
     mockLoadSession.mockReturnValue({
       messages: [
         { role: "system", content: "system prompt" },
@@ -1316,17 +1385,15 @@ describe("inner dialog runtime", () => {
       now: () => new Date("2026-03-06T12:05:00.000Z"),
     })
 
-    // Should use habit path, not old heartbeat path
     const input = mockHandleInboundTurn.mock.calls[0][0]
     const content = String(input.messages[0].content)
-    // The old heartbeat path called buildContextualHeartbeat without habitBody
-    // Now the habit path should pass habitBody
-    expect(content).toBeDefined()
+    // Missing file falls through to error message, not buildHabitTurnMessage
+    expect(content).toMatch(/could not be read/i)
   })
 
   // ── Parse error nudge tests ──────────────────────────────────────
 
-  it("includes parse error nudge in habit turn when parseErrors provided", async () => {
+  it("passes parseErrors to buildHabitTurnMessage when provided", async () => {
     const habitsDir = path.join(agentRoot, "habits")
     fs.mkdirSync(habitsDir, { recursive: true })
     fs.writeFileSync(
@@ -1341,6 +1408,7 @@ describe("inner dialog runtime", () => {
         { role: "assistant", content: "checkpoint: reviewed" },
       ],
     })
+    mockBuildHabitTurnMessage.mockReturnValueOnce("turn with parse errors")
 
     await runInnerDialogTurn({
       reason: "habit",
@@ -1349,13 +1417,13 @@ describe("inner dialog runtime", () => {
       parseErrors: [{ file: "broken-habit.md", error: "invalid frontmatter" }],
     })
 
-    const input = mockHandleInboundTurn.mock.calls[0][0]
-    const content = String(input.messages[0].content)
-    expect(content).toContain("broken-habit.md")
-    expect(content).toContain("invalid frontmatter")
+    const call = mockBuildHabitTurnMessage.mock.calls[0][0]
+    expect(call.parseErrors).toHaveLength(1)
+    expect(call.parseErrors[0].file).toBe("broken-habit.md")
+    expect(call.parseErrors[0].error).toBe("invalid frontmatter")
   })
 
-  it("does not include parse error nudge when parseErrors is empty", async () => {
+  it("passes empty parseErrors to buildHabitTurnMessage when none provided", async () => {
     const habitsDir = path.join(agentRoot, "habits")
     fs.mkdirSync(habitsDir, { recursive: true })
     fs.writeFileSync(
@@ -1370,51 +1438,21 @@ describe("inner dialog runtime", () => {
         { role: "assistant", content: "checkpoint: reviewed" },
       ],
     })
+    mockBuildHabitTurnMessage.mockReturnValueOnce("turn without parse errors")
 
     await runInnerDialogTurn({
       reason: "habit",
       habitName: "daily-reflection",
       now: () => new Date("2026-03-06T22:00:00.000Z"),
-      parseErrors: [],
     })
 
-    const input = mockHandleInboundTurn.mock.calls[0][0]
-    const content = String(input.messages[0].content)
-    expect(content).not.toContain("invalid frontmatter")
-    expect(content).not.toContain("noticed my habit file")
-  })
-
-  it("does not include parse error nudge when parseErrors not provided", async () => {
-    const habitsDir = path.join(agentRoot, "habits")
-    fs.mkdirSync(habitsDir, { recursive: true })
-    fs.writeFileSync(
-      path.join(habitsDir, "heartbeat.md"),
-      "---\ntitle: Heartbeat\ncadence: 30m\nstatus: active\nlastRun: 2026-03-06T11:30:00.000Z\ncreated: 2026-03-01\n---\n\nCheck in.",
-      "utf8",
-    )
-
-    mockLoadSession.mockReturnValue({
-      messages: [
-        { role: "system", content: "system prompt" },
-        { role: "assistant", content: "checkpoint: reviewed" },
-      ],
-    })
-    mockBuildContextualHeartbeat.mockReturnValueOnce("heartbeat content")
-
-    await runInnerDialogTurn({
-      reason: "habit",
-      habitName: "heartbeat",
-      now: () => new Date("2026-03-06T12:05:00.000Z"),
-    })
-
-    const input = mockHandleInboundTurn.mock.calls[0][0]
-    const content = String(input.messages[0].content)
-    expect(content).not.toContain("noticed my habit file")
+    const call = mockBuildHabitTurnMessage.mock.calls[0][0]
+    expect(call.parseErrors).toEqual([])
   })
 
   // ── Degraded state nudge tests ────────────────────────────────────
 
-  it("includes degraded state nudge in habit turn when health file reports degraded components", async () => {
+  it("passes degradedComponents to buildHabitTurnMessage when health file reports degraded", async () => {
     const habitsDir = path.join(agentRoot, "habits")
     fs.mkdirSync(habitsDir, { recursive: true })
     fs.writeFileSync(
@@ -1441,6 +1479,7 @@ describe("inner dialog runtime", () => {
       agents: {},
       habits: { heartbeat: { cronStatus: "failed", lastFired: null, fallback: true } },
     })
+    mockBuildHabitTurnMessage.mockReturnValueOnce("turn with degraded")
 
     await runInnerDialogTurn({
       reason: "habit",
@@ -1448,13 +1487,13 @@ describe("inner dialog runtime", () => {
       now: () => new Date("2026-03-06T22:00:00.000Z"),
     })
 
-    const input = mockHandleInboundTurn.mock.calls[0][0]
-    const content = String(input.messages[0].content)
-    expect(content).toContain("scheduling is degraded")
-    expect(content).toContain("cron registration failed")
+    const call = mockBuildHabitTurnMessage.mock.calls[0][0]
+    expect(call.degradedComponents).toHaveLength(1)
+    expect(call.degradedComponents[0].component).toBe("heartbeat")
+    expect(call.degradedComponents[0].reason).toBe("cron registration failed")
   })
 
-  it("does not include degraded state nudge when health file has no degraded components", async () => {
+  it("passes empty degradedComponents when health file has no degraded", async () => {
     const habitsDir = path.join(agentRoot, "habits")
     fs.mkdirSync(habitsDir, { recursive: true })
     fs.writeFileSync(
@@ -1481,6 +1520,7 @@ describe("inner dialog runtime", () => {
       agents: {},
       habits: {},
     })
+    mockBuildHabitTurnMessage.mockReturnValueOnce("turn without degraded")
 
     await runInnerDialogTurn({
       reason: "habit",
@@ -1488,12 +1528,11 @@ describe("inner dialog runtime", () => {
       now: () => new Date("2026-03-06T22:00:00.000Z"),
     })
 
-    const input = mockHandleInboundTurn.mock.calls[0][0]
-    const content = String(input.messages[0].content)
-    expect(content).not.toContain("scheduling is degraded")
+    const call = mockBuildHabitTurnMessage.mock.calls[0][0]
+    expect(call.degradedComponents).toEqual([])
   })
 
-  it("does not include degraded state nudge when health file is missing", async () => {
+  it("passes empty degradedComponents when health file is missing", async () => {
     const habitsDir = path.join(agentRoot, "habits")
     fs.mkdirSync(habitsDir, { recursive: true })
     fs.writeFileSync(
@@ -1510,6 +1549,7 @@ describe("inner dialog runtime", () => {
     })
 
     mockReadHealth.mockReturnValue(null)
+    mockBuildHabitTurnMessage.mockReturnValueOnce("turn without health")
 
     await runInnerDialogTurn({
       reason: "habit",
@@ -1517,9 +1557,8 @@ describe("inner dialog runtime", () => {
       now: () => new Date("2026-03-06T22:00:00.000Z"),
     })
 
-    const input = mockHandleInboundTurn.mock.calls[0][0]
-    const content = String(input.messages[0].content)
-    expect(content).not.toContain("scheduling is degraded")
+    const call = mockBuildHabitTurnMessage.mock.calls[0][0]
+    expect(call.degradedComponents).toEqual([])
   })
 
   it("does not crash when readHealth throws", async () => {
@@ -1539,6 +1578,7 @@ describe("inner dialog runtime", () => {
     })
 
     mockReadHealth.mockImplementation(() => { throw new Error("disk error") })
+    mockBuildHabitTurnMessage.mockReturnValueOnce("turn despite health error")
 
     await runInnerDialogTurn({
       reason: "habit",
@@ -1546,14 +1586,12 @@ describe("inner dialog runtime", () => {
       now: () => new Date("2026-03-06T22:00:00.000Z"),
     })
 
-    const input = mockHandleInboundTurn.mock.calls[0][0]
-    const content = String(input.messages[0].content)
-    // Should still produce a turn without crashing
-    expect(content).toContain("daily-reflection")
-    expect(content).not.toContain("scheduling is degraded")
+    // Should still call buildHabitTurnMessage with empty degradedComponents
+    const call = mockBuildHabitTurnMessage.mock.calls[0][0]
+    expect(call.degradedComponents).toEqual([])
   })
 
-  it("includes degraded state nudge in heartbeat habit turns too", async () => {
+  it("passes degradedComponents for heartbeat habit turns too (same path)", async () => {
     const habitsDir = path.join(agentRoot, "habits")
     fs.mkdirSync(habitsDir, { recursive: true })
     fs.writeFileSync(
@@ -1569,7 +1607,7 @@ describe("inner dialog runtime", () => {
       ],
     })
 
-    mockBuildContextualHeartbeat.mockReturnValueOnce("heartbeat content")
+    mockBuildHabitTurnMessage.mockReturnValueOnce("heartbeat with degraded")
 
     mockReadHealth.mockReturnValue({
       status: "running",
@@ -1589,10 +1627,9 @@ describe("inner dialog runtime", () => {
       now: () => new Date("2026-03-06T12:05:00.000Z"),
     })
 
-    const input = mockHandleInboundTurn.mock.calls[0][0]
-    const content = String(input.messages[0].content)
-    expect(content).toContain("scheduling is degraded")
-    expect(content).toContain("timer fallback active")
+    const call = mockBuildHabitTurnMessage.mock.calls[0][0]
+    expect(call.degradedComponents).toHaveLength(1)
+    expect(call.degradedComponents[0].reason).toBe("timer fallback active")
   })
 
   it("does not include degraded state nudge for non-habit turns", async () => {
