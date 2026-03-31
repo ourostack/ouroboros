@@ -3,6 +3,7 @@ import * as path from "path"
 import { slugify } from "../../heart/config"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { boardAction, boardDeps, boardSessions, boardStatus, buildTaskBoard } from "./board"
+import { applyFixes } from "./fix"
 import { archiveCompletedTasks, detectStaleTasks } from "./lifecycle"
 import { parseTaskFile, renderTaskFile } from "./parser"
 import { clearTaskScanCache, getTaskRoot, scanTasks } from "./scanner"
@@ -11,6 +12,8 @@ import type {
   BoardResult,
   BindBridgeResult,
   CreateTaskInput,
+  FixOptions,
+  FixResult,
   SpawnValidation,
   TaskFile,
   TaskIndex,
@@ -202,6 +205,10 @@ class FileTaskModule implements TaskModule {
     }
 
     return validateSpawn(task, spawnType)
+  }
+
+  fix(options: FixOptions): FixResult {
+    return applyFixes(options, getTaskRoot())
   }
 
   detectStale(thresholdDays: number): TaskFile[] {
