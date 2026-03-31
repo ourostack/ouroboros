@@ -16,7 +16,7 @@ import { getChannelCapabilities } from "../mind/friends/channel"
 import { getPendingDir, drainDeferredReturns, drainPending } from "../mind/pending"
 import { buildSystem } from "../mind/prompt"
 import { getSharedMcpManager } from "../repertoire/mcp-manager"
-import { getPhrases } from "../mind/phrases"
+// getPhrases removed — no longer needed after debug-activity cleanup
 import { emitNervesEvent } from "../nerves/runtime"
 import type { BlueBubblesReplyTargetSelection } from "../repertoire/tools-base"
 import {
@@ -31,13 +31,72 @@ import { hasRecordedBlueBubblesInbound, recordBlueBubblesInbound, type BlueBubbl
 import { listBlueBubblesRecoveryCandidates, recordBlueBubblesMutation, type BlueBubblesMutationLogEntry } from "./bluebubbles-mutation-log"
 import { writeBlueBubblesRuntimeState } from "./bluebubbles-runtime-state"
 import { findObsoleteBlueBubblesThreadSessions } from "./bluebubbles-session-cleanup"
-import { createDebugActivityController } from "./debug-activity"
+import { createToolActivityCallbacks } from "../heart/tool-activity-callbacks"
+import { getDebugMode } from "./commands"
 import { enforceTrustGate } from "./trust-gate"
-import { handleInboundTurn } from "./pipeline"
+import { handleInboundTurn, type FailoverState } from "./pipeline"
+
+const bbFailoverStates = new Map<string, FailoverState>()
 
 type BlueBubblesCallbacks = ChannelCallbacks & {
   flush(): Promise<void>
   finish(): Promise<void>
+}
+
+// Enrich reaction text with the original message content for context.
+// If originalText is provided and non-empty, format as: baseText to: "truncated"
+// Otherwise return baseText unchanged.
+export function enrichReactionText(baseText: string, originalText: string | null, maxLen: number): string {
+  if (!originalText) return baseText
+  const truncated = originalText.length > maxLen
+    ? originalText.slice(0, maxLen - 3) + "..."
+    : originalText
+  return `${baseText} to: "${truncated}"`
+}
+
+export interface StatusBatcher {
+  add(text: string): void
+  flush(): void
+}
+
+/**
+ * Accumulates status descriptions and debounces them.
+ * If multiple descriptions arrive within `delayMs`, they are joined with ` · `
+ * and sent as a single message. Flush sends immediately and clears the timer.
+ */
+export function createStatusBatcher(send: (text: string) => void, delayMs: number): StatusBatcher {
+  emitNervesEvent({
+    component: "senses",
+    event: "senses.bluebubbles_status_batcher_created",
+    message: "status batcher initialized",
+    meta: { delayMs },
+  })
+
+  let pending: string[] = []
+  let timer: ReturnType<typeof setTimeout> | null = null
+
+  function fire(): void {
+    if (pending.length === 0) return
+    const combined = pending.join(" \u00b7 ")
+    pending = []
+    timer = null
+    send(combined)
+  }
+
+  return {
+    add(text: string): void {
+      pending.push(text)
+      if (timer !== null) clearTimeout(timer)
+      timer = setTimeout(fire, delayMs)
+    },
+    flush(): void {
+      if (timer !== null) {
+        clearTimeout(timer)
+        timer = null
+      }
+      fire()
+    },
+  }
 }
 
 export interface BlueBubblesHandleResult {
@@ -236,6 +295,7 @@ function extractHistoricalLaneSummary(
 function buildConversationScopePrefix(
   event: BlueBubblesNormalizedEvent,
   existingMessages: OpenAI.ChatCompletionMessageParam[],
+  repliedToText?: string | null,
 ): string {
   if (event.kind !== "message") {
     return ""
@@ -247,6 +307,10 @@ function buildConversationScopePrefix(
     lines.push(
       `[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: ${event.threadOriginatorGuid.trim()} | default outbound target for this turn: current_lane]`,
     )
+    if (repliedToText) {
+      lines.push(`[replying to: "${repliedToText}"]`)
+    }
+    lines.push(`[if you need more context about what was being discussed, use query_session to search your session history, or recall to check your memory.]`)
   } else {
     lines.push(
       "[conversation scope: existing chat trunk | current inbound lane: top_level | default outbound target for this turn: top_level]",
@@ -269,8 +333,9 @@ function buildConversationScopePrefix(
 function buildInboundText(
   event: BlueBubblesNormalizedEvent,
   existingMessages: OpenAI.ChatCompletionMessageParam[],
+  repliedToText?: string | null,
 ): string {
-  const metadataPrefix = buildConversationScopePrefix(event, existingMessages)
+  const metadataPrefix = buildConversationScopePrefix(event, existingMessages, repliedToText)
   const baseText = event.repairNotice?.trim()
     ? `${event.textForAgent}\n[${event.repairNotice.trim()}]`
     : event.textForAgent
@@ -287,8 +352,9 @@ function buildInboundText(
 function buildInboundContent(
   event: BlueBubblesNormalizedEvent,
   existingMessages: OpenAI.ChatCompletionMessageParam[],
+  repliedToText?: string | null,
 ): OpenAI.ChatCompletionUserMessageParam["content"] {
-  const text = buildInboundText(event, existingMessages)
+  const text = buildInboundText(event, existingMessages, repliedToText)
   if (event.kind !== "message" || !event.inputPartsForAgent || event.inputPartsForAgent.length === 0) {
     return text
   }
@@ -409,67 +475,65 @@ function createBlueBubblesCallbacks(
   isGroupChat: boolean,
 ): BlueBubblesCallbacks {
   let textBuffer = ""
-  const phrases = getPhrases()
-  const activity = createDebugActivityController({
-    thinkingPhrases: phrases.thinking,
-    followupPhrases: phrases.followup,
-    startTypingOnModelStart: !isGroupChat,
-    startTypingOnFirstTextChunk: isGroupChat,
-    suppressInitialModelStatus: true,
-    suppressFollowupPhraseStatus: true,
-    transport: {
-      sendStatus: async (text: string) => {
-        const sent = await client.sendText({
-          chat,
-          text,
-          replyToMessageGuid: replyTarget.getReplyToMessageGuid(),
-        })
-        return sent.messageGuid
-      },
-      editStatus: async (_messageGuid: string, text: string) => {
-        await client.sendText({
-          chat,
-          text,
-          replyToMessageGuid: replyTarget.getReplyToMessageGuid(),
-        })
-      },
-      setTyping: async (active: boolean) => {
-        if (!active) {
-          await client.setTyping(chat, false)
-          return
-        }
+  let typingActive = false
+  let queue = Promise.resolve()
 
-        const [markReadResult, typingResult] = await Promise.allSettled([
-          client.markChatRead(chat),
-          client.setTyping(chat, true),
-        ])
-
-        if (markReadResult.status === "rejected") {
-          emitBlueBubblesMarkReadWarning(chat, markReadResult.reason)
-        }
-
-        if (typingResult.status === "rejected") {
-          throw typingResult.reason
-        }
-      },
-    },
-    onTransportError: (operation, error) => {
+  function enqueue(operation: string, task: () => Promise<void>): void {
+    queue = queue.then(task).catch((error) => {
       emitNervesEvent({
         level: "warn",
         component: "senses",
         event: "senses.bluebubbles_activity_error",
         message: "bluebubbles activity transport failed",
-        meta: {
-          operation,
-          reason: error instanceof Error ? error.message : String(error),
-        },
+        meta: { operation, reason: error instanceof Error ? error.message : String(error) },
       })
-    },
+    })
+  }
+
+  function startTypingNow(): void {
+    /* v8 ignore next -- defensive guard: callers already check typingActive @preserve */
+    if (typingActive) return
+    typingActive = true
+    enqueue("typing_start", async () => {
+      const [markReadResult, typingResult] = await Promise.allSettled([
+        client.markChatRead(chat),
+        client.setTyping(chat, true),
+      ])
+      if (markReadResult.status === "rejected") {
+        emitBlueBubblesMarkReadWarning(chat, markReadResult.reason)
+      }
+      if (typingResult.status === "rejected") {
+        throw typingResult.reason
+      }
+    })
+  }
+
+  function sendStatus(text: string): void {
+    enqueue("send_status", async () => {
+      await client.sendText({
+        chat,
+        text,
+        replyToMessageGuid: replyTarget.getReplyToMessageGuid(),
+      })
+      // Re-enable typing indicator — sending a message clears the typing bubble
+      await client.setTyping(chat, true)
+    })
+  }
+
+  const statusBatcher = createStatusBatcher((text) => sendStatus(text), 500)
+
+  const toolCallbacks = createToolActivityCallbacks({
+    onDescription: (text) => statusBatcher.add(text),
+    /* v8 ignore next -- onResult only called in debug mode; tested via tool-activity-callbacks.test.ts @preserve */
+    onResult: (text) => { statusBatcher.flush(); sendStatus(text) },
+    /* v8 ignore next -- onFailure only called on tool failure; tested via tool-activity-callbacks.test.ts @preserve */
+    onFailure: (text) => { statusBatcher.flush(); sendStatus(text) },
+    isDebug: getDebugMode,
   })
 
   return {
     onModelStart(): void {
-      activity.onModelStart()
+      if (!isGroupChat) startTypingNow()
       emitNervesEvent({
         component: "senses",
         event: "senses.bluebubbles_turn_start",
@@ -488,14 +552,16 @@ function createBlueBubblesCallbacks(
     },
 
     onTextChunk(text: string): void {
-      activity.onTextChunk(text)
+      if (isGroupChat && !typingActive) startTypingNow()
       textBuffer += text
     },
 
     onReasoningChunk(_text: string): void {},
 
     onToolStart(name: string, _args: Record<string, string>): void {
-      activity.onToolStart(name, _args)
+      // Tool activity is a reply commitment — start typing if not already
+      if (!typingActive) startTypingNow()
+      toolCallbacks.onToolStart(name, _args)
       emitNervesEvent({
         component: "senses",
         event: "senses.bluebubbles_tool_start",
@@ -505,7 +571,7 @@ function createBlueBubblesCallbacks(
     },
 
     onToolEnd(name: string, summary: string, success: boolean): void {
-      activity.onToolEnd(name, summary, success)
+      toolCallbacks.onToolEnd(name, summary, success)
       emitNervesEvent({
         component: "senses",
         event: "senses.bluebubbles_tool_end",
@@ -515,7 +581,7 @@ function createBlueBubblesCallbacks(
     },
 
     onError(error: Error, severity: "transient" | "terminal"): void {
-      activity.onError(error)
+      sendStatus(`\u2717 ${error.message}`)
       emitNervesEvent({
         level: severity === "terminal" ? "error" : "warn",
         component: "senses",
@@ -530,14 +596,24 @@ function createBlueBubblesCallbacks(
     },
 
     async flush(): Promise<void> {
-      await activity.drain()
+      statusBatcher.flush()
+      await queue
       const trimmed = textBuffer.trim()
       if (!trimmed) {
-        await activity.finish()
+        if (typingActive) {
+          typingActive = false
+          enqueue("typing_stop", async () => { await client.setTyping(chat, false) })
+          await queue
+        }
         return
       }
       textBuffer = ""
-      await activity.finish()
+      /* v8 ignore next 4 -- branch: typing may already be stopped before flush @preserve */
+      if (typingActive) {
+        typingActive = false
+        enqueue("typing_stop", async () => { await client.setTyping(chat, false) })
+        await queue
+      }
       await client.sendText({
         chat,
         text: trimmed,
@@ -546,7 +622,14 @@ function createBlueBubblesCallbacks(
     },
 
     async finish(): Promise<void> {
-      await activity.finish()
+      statusBatcher.flush()
+      if (!typingActive) {
+        await queue
+        return
+      }
+      typingActive = false
+      enqueue("typing_stop", async () => { await client.setTyping(chat, false) })
+      await queue
     },
   }
 }
@@ -670,6 +753,10 @@ async function handleBlueBubblesNormalizedEvent(
         return { handled: true, notifiedAgent: false, kind: event.kind, reason: "already_processed" }
       }
 
+      // Record EARLY to prevent duplicate processing. BB webhooks can retry
+      // before the first turn completes — recording after the turn is too late.
+      recordBlueBubblesInbound(agentName, event, source)
+
       if (source !== "webhook" && sessionLikelyContainsMessage(event, existing?.messages ?? sessionMessages)) {
         recordBlueBubblesInbound(agentName, event, "recovery-bootstrap")
         emitNervesEvent({
@@ -697,10 +784,32 @@ async function handleBlueBubblesNormalizedEvent(
       })
     }
 
+    // Fetch the text of the message being replied to (if this is a threaded reply)
+    const threadGuid = event.kind === "message" ? event.threadOriginatorGuid?.trim() : undefined
+    let repliedToText: string | null = null
+    if (threadGuid) {
+      repliedToText = await client.getMessageText(threadGuid).catch(/* v8 ignore next */ () => null)
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.bluebubbles_reply_context",
+        message: repliedToText ? "fetched replied-to message text" : "could not fetch replied-to message text",
+        meta: { threadGuid, hasText: !!repliedToText },
+      })
+    }
+
+    // Enrich reaction mutations with the original message text for context
+    const isReaction = event.kind === "mutation" && event.mutationType === "reaction"
+    if (isReaction && event.targetMessageGuid) {
+      /* v8 ignore start -- best-effort lookup; enrichReactionText covered by unit tests @preserve */
+      const originalText = await client.getMessageText(event.targetMessageGuid).catch(() => null)
+      if (originalText) event.textForAgent = enrichReactionText(event.textForAgent, originalText, 80)
+      /* v8 ignore stop */
+    }
+
     // Build inbound user message (adapter concern: BB-specific content formatting)
     const userMessage: OpenAI.ChatCompletionMessageParam = {
       role: "user",
-      content: buildInboundContent(event, existing?.messages ?? sessionMessages),
+      content: buildInboundContent(event, existing?.messages ?? sessionMessages, repliedToText),
     }
 
     const callbacks = createBlueBubblesCallbacks(
@@ -725,6 +834,23 @@ async function handleBlueBubblesNormalizedEvent(
 
     // ── Call shared pipeline ──────────────────────────────────────────
 
+    // Buffer terminal errors so failover can suppress them.
+    // If failover produces a message, the buffered error is skipped.
+    // If failover doesn't fire, the buffered error is replayed.
+    let bufferedTerminalError: Error | null = null
+    /* v8 ignore start -- failover-aware error buffering @preserve */
+    const failoverAwareCallbacks: typeof callbacks = {
+      ...callbacks,
+      onError(error: Error, severity: "transient" | "terminal"): void {
+        if (severity === "terminal") {
+          bufferedTerminalError = error
+          return
+        }
+        callbacks.onError(error, severity)
+      },
+    }
+    /* v8 ignore stop */
+
     try {
       const result = await handleInboundTurn({
         channel: "bluebubbles",
@@ -732,9 +858,14 @@ async function handleBlueBubblesNormalizedEvent(
         capabilities: bbCapabilities,
         messages: [userMessage],
         continuityIngressTexts: getBlueBubblesContinuityIngressTexts(event),
-        callbacks,
         friendResolver: { resolve: () => Promise.resolve(context) },
-        sessionLoader: { loadOrCreate: () => Promise.resolve({ messages: sessionMessages, sessionPath: sessPath, state: existing?.state }) },
+        sessionLoader: {
+          loadOrCreate: () => Promise.resolve({
+            messages: sessionMessages,
+            sessionPath: sessPath,
+            state: existing?.state,
+          }),
+        },
         pendingDir,
         friendStore: store,
         provider: "imessage-handle",
@@ -769,8 +900,25 @@ async function handleBlueBubblesNormalizedEvent(
         postTurn: resolvedDeps.postTurn,
         accumulateFriendTokens: resolvedDeps.accumulateFriendTokens,
         signal: controller.signal,
-        runAgentOptions: { mcpManager },
+        runAgentOptions: { mcpManager, ...(isReaction ? { isReactionSignal: true } : {}) },
+        callbacks: failoverAwareCallbacks,
+        failoverState: (() => {
+          if (!bbFailoverStates.has(event.chat.sessionKey)) {
+            bbFailoverStates.set(event.chat.sessionKey, { pending: null })
+          }
+          return bbFailoverStates.get(event.chat.sessionKey)!
+        })(),
       })
+
+      /* v8 ignore start -- failover display + error replay @preserve */
+      if (result.failoverMessage) {
+        // Failover handled it — show the failover message, skip the buffered error
+        await client.sendText({ chat: event.chat, text: result.failoverMessage })
+      } else if (bufferedTerminalError) {
+        // No failover — replay the buffered terminal error
+        callbacks.onError(bufferedTerminalError, "terminal")
+      }
+      /* v8 ignore stop */
 
       // ── Handle gate result ────────────────────────────────────────
 
@@ -818,6 +966,14 @@ async function handleBlueBubblesNormalizedEvent(
         kind: event.kind,
       }
     } finally {
+      // If a terminal error was buffered and never replayed (e.g., handleInboundTurn threw),
+      // replay it now so the user still sees the error.
+      /* v8 ignore start -- error replay on throw: tested via BB error test @preserve */
+      if (bufferedTerminalError) {
+        callbacks.onError(bufferedTerminalError, "terminal")
+        bufferedTerminalError = null
+      }
+      /* v8 ignore stop */
       await callbacks.finish()
     }
   })

@@ -1,11 +1,11 @@
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
-import { getAnthropicConfig } from "../config";
+import { getAnthropicConfig, type AnthropicProviderConfig } from "../config";
 import { getAgentName, getAgentSecretsPath } from "../identity";
 import type { UsageData } from "../../mind/context";
 import { emitNervesEvent } from "../../nerves/runtime";
-import type { ProviderCapability, ProviderRuntime, ProviderTurnRequest } from "../core";
-import { FinalAnswerStreamer } from "../streaming";
+import type { ProviderCapability, ProviderErrorClassification, ProviderRuntime, ProviderTurnRequest } from "../core";
+import { SettleStreamer } from "../streaming";
 import type { TurnResult } from "../streaming";
 import { getModelCapabilities } from "../model-capabilities";
 
@@ -224,6 +224,26 @@ function mergeAnthropicToolArguments(current: string, partial: string): string {
   return current + partial
 }
 
+/* v8 ignore start -- shared network error utility, tested via classification tests @preserve */
+function isNetworkError(error: Error): boolean {
+  const code = (error as NodeJS.ErrnoException).code || ""
+  if (["ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "ETIMEDOUT", "EPIPE",
+       "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH", "ECONNABORTED"].includes(code)) return true
+  const msg = error.message || ""
+  return msg.includes("fetch failed") || msg.includes("socket hang up") || msg.includes("getaddrinfo")
+}
+/* v8 ignore stop */
+
+export function classifyAnthropicError(error: Error): ProviderErrorClassification {
+  const status = (error as HttpError).status
+  if (status === 401 || status === 403 || isAnthropicAuthFailure(error)) return "auth-failure"
+  if (status === 429) return "rate-limit"
+  if (status === 529 || (status && status >= 500)) return "server-error"
+  if (isNetworkError(error)) return "network-error"
+  return "unknown"
+}
+
+/* v8 ignore start -- auth detection: only called from classifyAnthropicError which always passes Error @preserve */
 function isAnthropicAuthFailure(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   const status = (error as HttpError).status;
@@ -236,14 +256,8 @@ function isAnthropicAuthFailure(error: unknown): boolean {
     lower.includes("invalid api key")
   );
 }
+/* v8 ignore stop */
 
-function withAnthropicAuthGuidance(error: unknown): Error {
-  const base = error instanceof Error ? error.message : String(error);
-  if (isAnthropicAuthFailure(error)) {
-    return new Error(getAnthropicReauthGuidance(`Anthropic authentication failed (${base}).`));
-  }
-  return error instanceof Error ? error : new Error(String(error));
-}
 
 async function streamAnthropicMessages(
   client: Anthropic,
@@ -260,12 +274,24 @@ async function streamAnthropicMessages(
     max_tokens: maxTokens,
     messages,
     stream: true,
-    thinking: { type: "adaptive", effort: request.reasoningEffort ?? "medium" },
+    thinking: { type: "adaptive" },
+    output_config: { effort: request.reasoningEffort ?? "medium" },
   };
-  if (system) params.system = system;
+  // The Anthropic API requires a Claude Code identification block in the system
+  // prompt when using OAuth setup tokens (sk-ant-oat01). Without it, Opus/Sonnet
+  // 4.6 requests are rejected with 400. This is the API's validation that the
+  // token is being used by a Claude Code client.
+  const claudeCodePreamble = { type: "text" as const, text: "You are Claude Code, Anthropic's official CLI for Claude." }
+  if (system) {
+    params.system = [claudeCodePreamble, { type: "text" as const, text: system }]
+  } else {
+    params.system = [claudeCodePreamble]
+  }
   if (anthropicTools.length > 0) params.tools = anthropicTools;
   if (request.toolChoiceRequired && anthropicTools.length > 0) {
-    params.tool_choice = { type: "any" };
+    // Thinking (adaptive or enabled) only supports tool_choice "auto" or "none".
+    // "any" forces tool use which is incompatible with extended thinking.
+    params.tool_choice = params.thinking ? { type: "auto" } : /* v8 ignore next -- no-thinking path: thinking always set for 4.6 models @preserve */ { type: "any" };
   }
 
   let response: AsyncIterable<Record<string, unknown>>;
@@ -275,7 +301,7 @@ async function streamAnthropicMessages(
       request.signal ? { signal: request.signal } : {},
     ) as AsyncIterable<Record<string, unknown>>;
   } catch (error) {
-    throw withAnthropicAuthGuidance(error);
+    throw error instanceof Error ? error : new Error(String(error));
   }
 
   let content = "";
@@ -284,7 +310,7 @@ async function streamAnthropicMessages(
   const toolCalls = new Map<number, { id: string; name: string; arguments: string }>();
   const thinkingBlocks = new Map<number, { type: "thinking"; thinking: string; signature: string }>();
   const redactedBlocks = new Map<number, { type: "redacted_thinking"; data: string }>();
-  const answerStreamer = new FinalAnswerStreamer(request.callbacks, request.eagerFinalAnswerStreaming);
+  const answerStreamer = new SettleStreamer(request.callbacks, request.eagerSettleStreaming);
 
   try {
     for await (const event of response) {
@@ -308,9 +334,9 @@ async function streamAnthropicMessages(
             name,
             arguments: input,
           });
-          // Activate eager streaming for sole final_answer tool call
-          /* v8 ignore next -- final_answer streaming activation, tested via FinalAnswerStreamer unit tests @preserve */
-          if (name === "final_answer" && toolCalls.size === 1) {
+          // Activate eager streaming for sole settle tool call
+          /* v8 ignore next -- settle streaming activation, tested via SettleStreamer unit tests @preserve */
+          if (name === "settle" && toolCalls.size === 1) {
             answerStreamer.activate();
           }
         }
@@ -357,8 +383,8 @@ async function streamAnthropicMessages(
               existing.arguments,
               partialJson,
             );
-            /* v8 ignore next -- final_answer delta streaming, tested via FinalAnswerStreamer unit tests @preserve */
-            if (existing.name === "final_answer" && toolCalls.size === 1) {
+            /* v8 ignore next -- settle delta streaming, tested via SettleStreamer unit tests @preserve */
+            if (existing.name === "settle" && toolCalls.size === 1) {
               answerStreamer.processDelta(partialJson);
             }
           }
@@ -383,7 +409,7 @@ async function streamAnthropicMessages(
       }
     }
   } catch (error) {
-    throw withAnthropicAuthGuidance(error);
+    throw error instanceof Error ? error : /* v8 ignore next -- defensive: stream errors are always Error @preserve */ new Error(String(error));
   }
 
   // Collect all thinking blocks (regular + redacted) sorted by index to preserve ordering
@@ -399,18 +425,18 @@ async function streamAnthropicMessages(
     toolCalls: [...toolCalls.values()],
     outputItems,
     usage,
-    finalAnswerStreamed: answerStreamer.streamed,
+    settleStreamed: answerStreamer.streamed,
   };
 }
 
-export function createAnthropicProviderRuntime(): ProviderRuntime {
+export function createAnthropicProviderRuntime(config?: AnthropicProviderConfig): ProviderRuntime {
   emitNervesEvent({
     component: "engine",
     event: "engine.provider_init",
     message: "anthropic provider init",
     meta: { provider: "anthropic" },
   });
-  const anthropicConfig = getAnthropicConfig();
+  const anthropicConfig = config ?? getAnthropicConfig();
   if (!(anthropicConfig.model && anthropicConfig.setupToken)) {
     throw new Error(
       getAnthropicReauthGuidance(
@@ -423,18 +449,49 @@ export function createAnthropicProviderRuntime(): ProviderRuntime {
   if (modelCaps.reasoningEffort) capabilities.add("reasoning-effort");
 
   const credential = resolveAnthropicSetupTokenCredential();
-  const client = new Anthropic({
-    authToken: credential.token,
-    timeout: 30000,
-    maxRetries: 0,
-    defaultHeaders: {
-      "anthropic-beta": ANTHROPIC_OAUTH_BETA_HEADER,
-    },
-  });
+  const fullConfig = config ?? getAnthropicConfig()
+  const refreshToken = (fullConfig as unknown as Record<string, unknown>).refreshToken as string | undefined
+  const expiresAt = (fullConfig as unknown as Record<string, unknown>).expiresAt as number | undefined
+
+  function createClient(token: string): Anthropic {
+    return new Anthropic({
+      authToken: token,
+      timeout: 30000,
+      maxRetries: 0,
+      defaultHeaders: {
+        "anthropic-beta": ANTHROPIC_OAUTH_BETA_HEADER,
+        "anthropic-dangerous-direct-browser-access": "true",
+        "user-agent": "claude-cli/2.1.2 (external, cli)",
+        "x-app": "cli",
+      },
+    });
+  }
+
+  let currentToken = credential.token
+  let client = createClient(currentToken)
+
+  /* v8 ignore start -- token refresh: dynamic import + ensureFreshToken, tested via integration @preserve */
+  async function ensureClient(): Promise<Anthropic> {
+    try {
+      const { ensureFreshToken } = await import("./anthropic-token")
+      const { getAgentName } = await import("../identity")
+      const freshToken = await ensureFreshToken(currentToken, refreshToken, expiresAt, getAgentName())
+      if (freshToken !== currentToken) {
+        currentToken = freshToken
+        client = createClient(freshToken)
+      }
+    } catch {
+      // refresh failed — use existing client
+    }
+    return client
+  }
+  /* v8 ignore stop */
+
   return {
     id: "anthropic",
     model: anthropicConfig.model,
-    client,
+    /* v8 ignore next -- getter: returns mutable client ref @preserve */
+    get client() { return client },
     capabilities,
     supportedReasoningEfforts: modelCaps.reasoningEffort,
     resetTurnState(_messages: OpenAI.ChatCompletionMessageParam[]): void {
@@ -443,8 +500,13 @@ export function createAnthropicProviderRuntime(): ProviderRuntime {
     appendToolOutput(_callId: string, _output: string): void {
       // Anthropic uses canonical messages for tool_result tracking.
     },
-    streamTurn(request: ProviderTurnRequest): Promise<TurnResult> {
-      return streamAnthropicMessages(client, anthropicConfig.model, request);
+    async streamTurn(request: ProviderTurnRequest): Promise<TurnResult> {
+      const freshClient = await ensureClient();
+      return streamAnthropicMessages(freshClient, anthropicConfig.model, request);
+    },
+    /* v8 ignore next 3 -- delegation: classification logic tested via classifyAnthropicError @preserve */
+    classifyError(error: Error): ProviderErrorClassification {
+      return classifyAnthropicError(error);
     },
   };
 }

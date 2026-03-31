@@ -2,6 +2,393 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.157",
+      "changes": [
+        "Habit turns as awareness: unified buildHabitTurnMessage replaces contextual-heartbeat. Continuity-first format (checkpoint leads, not elapsed time). Same format for all habits \u2014 no heartbeat special-casing.",
+        "First beat experience: new habits get \"your [Title] is alive. this is its first breath\" on first fire.",
+        "Fix: reconcile() now fires new/overdue habits immediately (was start()-only). New habits created via write_file fire within seconds.",
+        "Rhythm awareness across all channels: rhythmStatusSection() in system prompt shows heartbeat health in every conversation.",
+        "Removed contextual-heartbeat.ts entirely. Dead lastSurfaceAt parameter removed."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.156",
+      "changes": [
+        "polish: observe tool now hidden (like settle/rest/descend)",
+        "polish(bb): batch rapid tool status messages within 500ms debounce window",
+        "polish(tools): word-boundary truncation instead of mid-word cut",
+        "polish(commands): /commands output uses em dash separators",
+        "polish(bb): re-enable typing indicator after each status message"
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.155",
+      "changes": [
+        "polish(debug): dynamic toggle, richer descriptions, human-readable results"
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.154",
+      "changes": [
+        "feat: clean tool status messages \u2014 human-readable by default, /debug toggle",
+        "humanReadableToolDescription derives from tool name+args, not hardcoded map",
+        "Shared tool activity callbacks (DRY) \u2014 senses only provide render function",
+        "Slash command handling moved to pipeline \u2014 all senses get /debug for free",
+        "BlueBubbles: one clean iMessage per tool, not raw shared work: processing"
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.153",
+      "changes": [
+        "Daemon health file: DaemonHealthWriter writes atomic daemon-health.json on every state change. readHealth() standalone reader for CLI and agent processes.",
+        "Nerves event buffer: createBufferedSink wraps sinks with bounded ring buffer (1000 events), auto-flushes on recovery, TTL discards after 5 min of unhealthy sink.",
+        "Cron verification + timer fallback: after cron sync, verifyCronEntries checks launchctl/crontab for registered habits. Unverified habits get in-process setTimeout fallback. getDegradedHabits() for health reporting.",
+        "Periodic reconciliation: 30s initial delay then 5-minute setTimeout chain re-scans habits and re-verifies cron entries.",
+        "Safe mode: detectSafeMode reads crash history (recentCrashes in tombstone). 3+ crashes in 5 minutes triggers safe mode - daemon stays alive, socket works, agents/habits paused. ouro up --force writes override file.",
+        "Health nerves sink: createHealthNervesSink registers as global sink, listens for daemon events (agent_started, agent_exit, habit_fire, safe_mode_entered, etc.), triggers debounced health writes.",
+        "ouro status health fallback: when daemon socket is unreachable, reads health file to show last-known status, safe mode, and degraded components.",
+        "Degraded state in agent dialog: habit turns read daemon-health.json and append scheduling degradation nudge when components are degraded."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.152",
+      "changes": [
+        "fix(nerves): catch EPIPE on terminal sink for detached daemon"
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.151",
+      "changes": [
+        "docs: comprehensive update for MCP bridge, daemon resilience, dev mode, hooks"
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.150",
+      "changes": [
+        "fix(habits): catch ENOENT when watching habits dir that does not exist"
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.149",
+      "changes": [
+        "Daemon tombstone: writeDaemonTombstone persists crash context (reason, stack, uptime) to ~/.ouro-cli/daemon-death.json on uncaught exceptions and startup failures.",
+        "Global exception handlers: daemon-entry installs uncaughtException (tombstone + graceful 5s shutdown) and unhandledRejection (warn, no exit) handlers.",
+        "Log rotation: ndjson file sink rotates logs at 50MB (configurable), keeping .1 and .2 backups. Throttled stat checks via byte counter.",
+        "Socket connection error handling: connection.on('error') prevents server crash on client disconnect, connection.end() wrapped for EPIPE safety, persistent server.on('error') after listen.",
+        "Crash context in status: DaemonAgentSnapshot includes lastExitCode/lastSignal, Workers table shows last exit info, stopped-daemon status reads tombstone for 'Last death' line.",
+        "Cooldown recovery: after restart exhaustion, agents schedule recovery after cooldownRecoveryMs (default 5min). Reset crash history on recovery. maxCooldownRetries (default 3) before permanent give-up.",
+        "Defensive handleCommand: extracted handleCommandInner, outer handleCommand wraps with try/catch logging daemon.command_error with kind/error/stack before re-throw."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.148",
+      "changes": [
+        "Habits extracted from task system as first-class bundle concept at habits/ (peer to diary/, friends/, tasks/).",
+        "Name-based identity: heartbeat.md, not YYYY-MM-DD-HHMM-heartbeat.md. Simple schema: title, cadence, status (active/paused), body, lastRun, created.",
+        "HabitScheduler with OS cron (LaunchdCronManager/CrontabCronManager): each habit fires independently via its own cron entry.",
+        "Event-driven discovery: fs.watch + CLI notify trigger reconcile. No polling.",
+        "Worker rerun queue replaces single-slot mechanism, prevents dropped pokes. Each habit turn includes also-due line for agent triage.",
+        "Contextual heartbeat includes habit body: agent sees own instructions when heartbeat fires.",
+        "Daemon auto-migration from tasks/habits/ on startup. Strips timestamp prefix, maps statuses, removes task-only fields.",
+        "ouro habit list and ouro habit create CLI commands. Parse error reporting via nerves events + inner dialog nudge.",
+        "Metacognitive framing teaches agent about habits/ directory, rhythms, schema, read_file/write_file, and CLI commands.",
+        "HeartbeatTimer deleted, replaced by HabitScheduler. habit type removed from task system entirely."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.147",
+      "changes": [
+        "Feedback signals as social cues: Teams thumbs-up/down and BlueBubbles reactions reach the agent as first-class social signals with full cognitive tools.",
+        "AI-generated labels: all outbound Teams messages include AIGeneratedContent entity and feedbackLoopEnabled for native AI badge and feedback UI.",
+        "BlueBubbles reaction enrichment: reactions include original message text (truncated to 80 chars) via best-effort BB API lookup.",
+        "Streaming refinements: hybrid MIN_INITIAL_CHARS (phrase rotation until 20+ real chars), proactive >4000 finalization with follow-up messages.",
+        "Welcome card: Adaptive Card with prompt starters on Teams bot install.",
+        "Observe gate: available in 1:1 chats for reaction signals (natural silence case).",
+        "Per-context prompt framing: 1:1 vs group framing for feedback signal processing."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.146",
+      "changes": [
+        "fix(hook): target specific agent only, ouro up breaks dev dispatch loop"
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.145",
+      "changes": [
+        "MCP conversation channel: send_message runs full agent turns, check_response for async responses.",
+        "Cross-session awareness: pipeline wakes inner dialog after non-inner turns (DRY for all senses).",
+        "Ponder routing: responses route to originating session via direct-originator priority.",
+        "Claude Code hooks: ouro hook command, portable hooks with no hardcoded paths.",
+        "ouro wrapper: dev mode dispatch via dev-config.json.",
+        "ouro dev: persists repo path, detects CWD, disables launchd (removes plist).",
+        "Trust: MCP sessions resolve friend UUID to correct trust level.",
+        "Heartbeat timer: cadence delay on null lastCompletedAt prevents spin loop."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.142",
+      "changes": [
+        "Surface tool fulfills heart obligations on successful routing: findPendingObligationForOrigin + fulfillObligation called after inner obligation advance, wrapped in try/catch.",
+        "New fulfillHeartObligation callback on HandleSurfaceInput \u2014 origin-based lookup independent of inner obligationId.",
+        "ouro inner status command: reads runtime.json, journal dir, heartbeat cadence, attention count. Shows last turn, status, heartbeat health, journal listing, held thoughts."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.141",
+      "changes": [
+        "Ponder tool replaces descend: thought+say required from outer sessions, parameterless from inner dialog. Creates heart obligation, enqueues pending with delegatedFrom, emits say text outward.",
+        "Ponder from inner dialog enqueues synthetic pending message (no delegatedFrom) to continue thinking across turns.",
+        "Rest tool for inner dialog: parameterless, gated by attention queue. Rejected with guidance when unsurfaced thoughts remain.",
+        "Settle removed from inner dialog tool set (replaced by rest). Outer sessions still use settle.",
+        "Session migration: descend -> ponder added to migrateToolNames(). go_inward now maps to ponder.",
+        "Ponder and rest added to CIRCUIT_BREAKER_EXEMPT and SOLE_CALL_REJECTION."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.140",
+      "changes": [
+        "MCP server: agents can serve as MCP peers for dev tools (Claude Code, Codex) via ouro mcp-serve --agent <name>.",
+        "13 MCP tools: ask, status, catchup, delegate, get_context, search_memory, get_task, check_scope, request_decision, check_guidance, report_progress, report_blocker, report_complete.",
+        "Standalone mode: MCP shim calls agent-service directly, no daemon dependency for read-only ops.",
+        "Auto-detect framing: supports both Content-Length (Claude Code) and newline-delimited JSON (Codex).",
+        "Harness-level skills: 3-tier fallback (agent > protocol > harness), configure-dev-tools skill ships with npm package.",
+        "Codex spawner refactor: --ephemeral, --json, -c MCP injection, JSONL event parsing replaces magic strings.",
+        "Prompt awareness: body map lists ouro mcp-serve, runtime info mentions MCP serve capability."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.139",
+      "changes": [
+        "Daemon-internal heartbeat timer: self-correcting setTimeout loop reads cadence from heartbeat task file, computes delay from lastCompletedAt, fires IPC {type: heartbeat}. One timer per managed agent.",
+        "Heartbeat fires immediately when agent is overdue (elapsed > cadence) or has never run (no runtime state).",
+        "Contextual heartbeat message: journal index (up to 10 files with recency and preview), elapsed time since last turn, pending attention count, journal entries since last surface, stale obligation alerts (>30 min).",
+        "Bare instinct prompt now cold-start fallback only; resumed heartbeat sessions get contextual message.",
+        "Journal embedding indexing piggybacked during heartbeat turns (best-effort, fire-and-forget)."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.138",
+      "changes": [
+        "Memory renamed to diary: memory.ts \u2192 diary.ts, MemoryFact \u2192 DiaryEntry, memory_save \u2192 diary_write, memory_search \u2192 recall. All types, functions, events, and variables renamed throughout.",
+        "Diary path: diary/ (top-level) replaces psyche/memory/. Fallback reads from legacy path for existing bundles.",
+        "Journal workspace: journal/ directory for freeform thinking-in-progress. Agent writes with write_file, system reads for heartbeat context.",
+        "Unified recall tool: searches both diary entries and journal files. Results tagged [diary] or [journal].",
+        "Journal embeddings: file-level embeddings indexed during heartbeat via journal/.index.json sidecar.",
+        "Journal section in inner dialog system prompt: index of up to 10 most recently modified journal files with name, recency, and first-line preview.",
+        "Metacognitive framing updated: diary (record), journal (workspace), ponder/rest vocabulary, morning briefing encouragement.",
+        "Session migration: memory_save \u2192 diary_write, memory_search \u2192 recall added to migrateToolNames()."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.137",
+      "changes": [
+        "ouro dev auto-discovers existing repo at ~/Projects/ouroboros or prompts for clone path.",
+        "ouro dev never clones without user consent \u2014 prompts in interactive mode, errors in non-interactive.",
+        "ouro dev --repo-path errors clearly when the specified path has no repo."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.136",
+      "changes": [
+        "Dev mode DX: ouro dev starts daemon from local repo build, skips update checker, prints dev mode indicator.",
+        "ouro up from dev context delegates to installed production binary or errors with install guidance.",
+        "Daemon accepts mode option; update checker suppressed in dev mode with daemon.update_checker_skip event.",
+        "Daemon entry emits daemon.dev_mode_indicator nerves event when running from a dev repo."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.135",
+      "changes": [
+        "Metacognitive tool vocabulary complete: go_inward renamed to descend. RunAgentOutcome value is now 'descended', event is 'engine.descended'.",
+        "summarizeArgs rewritten: reads summaryKeys from ToolDefinition instead of per-tool switch branches. summarizeTeamsArgs and summarizeGithubArgs eliminated."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.134",
+      "changes": [
+        "Metacognitive tool redesign: final_answer renamed to settle, no_response renamed to observe. RunAgentOutcome values now 'settled' and 'observed'.",
+        "New surface tool: inner-dialog-only tool for routing thoughts outward to friends' freshest active sessions. Replaces post-turn routeDelegatedCompletion with inline delivery.",
+        "Attention queue: FIFO queue of delegated work items seeded from drained pending messages and recovered obligations. Visible to the model at inner dialog turn start.",
+        "Surface-before-settle gate: settle rejected in inner dialog until all attention queue items are surfaced.",
+        "Channel-based tool filtering: observe excluded from 1:1 and inner dialog; go_inward and send_message excluded from inner dialog; surface included only in inner dialog.",
+        "go_inward content param renamed to topic with metacognitive handoff framing.",
+        "Shared sole-call interception pattern extracted from duplicated core.ts logic.",
+        "Exact-origin routing removed from routeDelegatedCompletion; routing now bridge, freshest, deferred only.",
+        "ouro attention CLI: list held items, show details by ID, view surfacing history.",
+        "System prompts updated with metacognitive framing for all new tool names."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.133",
+      "changes": [
+        "Inner return obligations: delegated inner dialog work now tracks a ReturnObligation through queued \u2192 running \u2192 returned/deferred lifecycle.",
+        "Exact-origin routing: inner dialog completions route back to the session that delegated the work, not just the freshest active session.",
+        "Active work frame surfaces pending inner return obligations so the agent knows what's outstanding."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.132",
+      "changes": [
+        "BlueBubbles no longer shows redundant \"shared work: errored\" alongside failover messages. Terminal errors are buffered and only displayed when failover doesn't handle them."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.131",
+      "changes": [
+        "ouro auth --provider anthropic now exchanges the setup token for a refresh token immediately, enabling auto-refresh for subsequent sessions."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.130",
+      "changes": [
+        "Removed delegation adherence gate on final_answer: agents can now deliver answers regardless of delegation suggestions. Fixes infinite rejection loop.",
+        "CLI help: ouro auth -h now correctly shows auth-specific help instead of triggering top-level help."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.129",
+      "changes": [
+        "Fixed final_answer truth-check false positive: agents with intent=complete can now deliver answers even when delegation suggests going inward.",
+        "Fixed BlueBubbles message deduplication: messages are recorded immediately to prevent duplicate processing on webhook retries.",
+        "Fixed session key normalization: listSessionActivity now compares sanitized keys so the current session is correctly excluded from other-session lists.",
+        "ouro auth with no args now shows auth-specific help instead of full CLI help."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.128",
+      "changes": [
+        "Error message sanitizer now strips HTML responses (Cloudflare challenge pages, error pages) in addition to JSON."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.127",
+      "changes": [
+        "Anthropic OAuth tokens now work with Opus and Sonnet 4.6. Added Claude Code identification in system prompt and headers that the API requires to grant model access to setup tokens."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.126",
+      "changes": [
+        "Fixed Anthropic tool_choice incompatibility with thinking \u2014 uses auto instead of any when thinking is enabled.",
+        "auth verify and auth switch now use pingProvider for real API verification instead of format-only checks. auth switch verifies credentials work before switching."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.125",
+      "changes": [
+        "Fixed Anthropic tool_choice incompatibility with thinking \u2014 uses auto instead of any when thinking is enabled.",
+        "auth verify and auth switch now use pingProvider for real API verification instead of format-only checks. auth switch verifies credentials work before switching."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.125",
+      "changes": [
+        "Fix: Default runtime logger is now silent (no stderr sink) so nerves events emitted before logger configuration no longer interleave with the CLI spinner animation.",
+        "Fix: MCP server connect failures now include the command name, args, and a hint to check agent.json mcpServers configuration."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.124",
+      "changes": [
+        "Anthropic OAuth tokens now auto-refresh before expiry. The provider checks token freshness before each turn, exchanges the refresh token for a new access token, and persists the result. No more 400 errors from expired setup tokens."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.123",
+      "changes": [
+        "Fixed Anthropic API request format: effort parameter moved from thinking object to output_config. Was causing 400 errors that masked real model access restrictions."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.122",
+      "changes": [
+        "Daemon now uses a pidfile (~/.ouro-cli/daemon.pids) for process cleanup instead of fragile ps-based name matching. All managed PIDs (daemon, agents, senses) are written on startup and reaped on next restart.",
+        "Failover reply matching now uses includes() instead of exact match, fixing switch commands in BlueBubbles where channel metadata prefixes the user text."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.121",
+      "changes": [
+        "Daemon orphan cleanup now also kills standalone sense entry processes (bluebubbles-entry.js, teams-entry.js) which were persisting across updates and handling requests on stale code."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.120",
+      "changes": [
+        "Daemon startup now kills ALL orphaned ouro processes (daemons AND agents) from previous instances \u2014 fixes stale-version processes handling requests after every update.",
+        "Failover error messages no longer contain raw JSON API response bodies. Error messages are sanitized at the source and the failover summary uses clean classification labels only."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.119",
+      "changes": [
+        "Anthropic ping now uses haiku (widest token access) with minimal beta headers, fixing 400 errors from thinking beta requirements and model access restrictions on setup tokens."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.118",
+      "changes": [
+        "Daemon now kills orphaned agent processes from previous instances on startup, preventing stale-version agents from handling requests after an update."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.117",
+      "changes": [
+        "Failover messages now show human-readable reasons for failing providers instead of raw JSON API errors.",
+        "ouro auth now pings the provider after saving credentials and reports whether they work."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.116",
+      "changes": [
+        "Provider ping now uses a minimal direct API call (max_tokens:1, no thinking/reasoning params) instead of streamTurn, which was adding provider-specific features that could cause 400 errors unrelated to auth."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.115",
+      "changes": [
+        "Failover message now shows providers with expired/failing credentials separately with refresh instructions ('run ouro auth --agent X --provider Y to refresh') instead of silently omitting them."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.114",
+      "changes": [
+        "Fix: Default runtime logger is now silent (no stderr sink) so nerves events emitted before logger configuration no longer interleave with the CLI spinner animation.",
+        "Fix: MCP server connect failures now include the command name, args, and a hint to check agent.json mcpServers configuration. Retry-exhaustion messages also identify the failing command.",
+        "Verification: StreamingWordWrapper integration in CLI chat confirmed working \u2014 wraps at word boundaries during streaming output.",
+        "When a model provider fails mid-conversation (auth error, usage limit, outage), the harness now classifies the error, pings alternative configured providers, and surfaces validated failover options to the user in-channel. Reply 'switch to <provider>' to continue on a working provider.",
+        "Each provider now has a `classifyError` method that distinguishes auth failures, usage/subscription limits, rate limits, server errors, and network errors. The old auth guidance wrappers are replaced by this unified classification system.",
+        "New `pingProvider` function makes a real heartbeat completion call to verify provider credentials and quota are live \u2014 no more format-only checks.",
+        "Provider factories now accept optional config parameters, enabling credential injection for health inventory pings without touching disk config."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.113",
+      "changes": [
+        "`ouro changelog --from` now uses semver comparison instead of lexicographic string ordering, so alpha prerelease numbers sort correctly."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.112",
+      "changes": [
+        "`ouro up` no longer prints the 'ouro updated to X (was Y)' message twice when the update flow re-execs from a newly installed version."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.111",
+      "changes": [
+        "The PATH installer now repairs a stale ~/.local/bin/ouro launcher in place instead of deleting it, so a shadowing old wrapper can no longer cause the wrong CLI version to load and produce backwards 'ouro updated to X (was Y)' messages."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.110",
+      "changes": [
+        "Pi-style capability salvage now lands fully inside the active-work-first architecture: coding lanes inherit a live world-state checkpoint, session recall stays evidence-based, and no parallel session-orientation self-model remains.",
+        "Repeated no-progress polling is now blocked across active-work, coding, and session status surfaces, while coding checkpoints/artifacts persist cleanly enough for the same agent to resume real work instead of narrating around it."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.109",
       "changes": [
         "Each inbound turn now carries a fresh live world-state checkpoint, so natural questions like 'what are you up to?' anchor on current sessions, obligations, coding lanes, and next actions instead of stale transcript history.",
@@ -107,7 +494,7 @@
     {
       "version": "0.1.0-alpha.94",
       "changes": [
-        "Fix stale CurrentVersion symlink not healing during `ouro up` — the daemon now detects and repairs dangling version symlinks before reading the active version.",
+        "Fix stale CurrentVersion symlink not healing during `ouro up` \u2014 the daemon now detects and repairs dangling version symlinks before reading the active version.",
         "Fix homedir regression in daemon-cli-defaults test and cover changelog-null branch."
       ]
     },
@@ -201,14 +588,14 @@
     {
       "version": "0.1.0-alpha.80",
       "changes": [
-        "Bootstrap package (npx ouro.bot) now installs into ~/.ouro-cli/ versioned layout directly. No more silent npx updates — every install and update is logged. Cleans up old ~/.local/bin/ouro wrapper."
+        "Bootstrap package (npx ouro.bot) now installs into ~/.ouro-cli/ versioned layout directly. No more silent npx updates \u2014 every install and update is logged. Cleans up old ~/.local/bin/ouro wrapper."
       ]
     },
     {
       "version": "0.1.0-alpha.79",
       "changes": [
         "New: Versioned CLI directory layout (~/.ouro-cli/) replaces npx-based ouro wrapper. Explicit version management, rollback support, and deterministic updates.",
-        "New: `ouro up` now checks the registry for newer CLI versions, installs them into ~/.ouro-cli/versions/, activates via symlink flip, and re-execs — no more silent npx downloads.",
+        "New: `ouro up` now checks the registry for newer CLI versions, installs them into ~/.ouro-cli/versions/, activates via symlink flip, and re-execs \u2014 no more silent npx downloads.",
         "New: `ouro rollback [<version>]` swaps CurrentVersion/previous symlinks, stops the daemon. With a version arg, installs if needed then activates.",
         "New: `ouro versions` lists cached CLI versions with * current and (previous) markers.",
         "Migration: On first run, old ~/.local/bin/ouro wrapper is removed, old PATH entry cleaned from shell profile, new ~/.ouro-cli/bin added to PATH.",
@@ -230,10 +617,10 @@
     {
       "version": "0.1.0-alpha.76",
       "changes": [
-        "Fix: CLI chat terminal logging now filters to warn/error only — info-level nerves logs go to ndjson file only, keeping the interactive TUI clean.",
+        "Fix: CLI chat terminal logging now filters to warn/error only \u2014 info-level nerves logs go to ndjson file only, keeping the interactive TUI clean.",
         "Fix: Streamed model output now wraps at word boundaries instead of mid-word. A new StreamingWordWrapper buffers partial lines and breaks at spaces when approaching terminal width.",
         "New: `ouro up` now prints 'ouro updated to <version> (was <previous>)' when npx downloads a newer CLI binary, separate from the agent bundle update message.",
-        "Fix: Spinner/log interleave verified — terminal sink reads pause/resume hooks at call time, not creation time, so the filterSink wrapper in CLI logging does not break spinner coordination."
+        "Fix: Spinner/log interleave verified \u2014 terminal sink reads pause/resume hooks at call time, not creation time, so the filterSink wrapper in CLI logging does not break spinner coordination."
       ]
     },
     {

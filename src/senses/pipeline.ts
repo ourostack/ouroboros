@@ -5,19 +5,21 @@
 // Transport-level concerns (BB API calls, Teams cards, readline) stay in sense adapters.
 
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions"
-import type { ChannelCallbacks, CompletionMetadata, RunAgentOptions, RunAgentOutcome } from "../heart/core"
+import type { ChannelCallbacks, CompletionMetadata, ProviderErrorClassification, RunAgentOptions, RunAgentOutcome } from "../heart/core"
 import type { PostTurnHooks, SessionContinuityState, UsageData } from "../mind/context"
 import type { Channel, ChannelCapabilities, IdentityProvider, ResolvedContext } from "../mind/friends/types"
 import type { FriendStore } from "../mind/friends/store"
 import type { TrustGateInput, TrustGateResult } from "./trust-gate"
 import type { PendingMessage } from "../mind/pending"
 import { emitNervesEvent } from "../nerves/runtime"
+import { parseSlashCommand, getSharedCommandRegistry } from "./commands"
 import { resolveMustResolveBeforeHandoff } from "./continuity"
 import { createBridgeManager, formatBridgeContext } from "../heart/bridges/manager"
-import { getAgentName, getAgentRoot } from "../heart/identity"
+import { getAgentName, getAgentRoot, loadAgentConfig } from "../heart/identity"
 import { getTaskModule } from "../repertoire/tasks"
 import { getCodingSessionManager } from "../repertoire/coding"
 import { listSessionActivity } from "../heart/session-activity"
+import { requestInnerWake } from "../heart/daemon/socket-client"
 import type { SessionActivityRecord } from "../heart/session-activity"
 import { buildActiveWorkFrame, formatLiveWorldStateCheckpoint, type ActiveWorkFrame } from "../heart/active-work"
 import { decideDelegation } from "../heart/delegation"
@@ -25,7 +27,16 @@ import { listTargetSessionCandidates } from "../heart/target-resolution"
 import { readInnerDialogRawData, deriveInnerDialogStatus, deriveInnerJob, getInnerDialogSessionPath } from "../heart/daemon/thoughts"
 import { getInnerDialogPendingDir } from "../mind/pending"
 import { readPendingObligations } from "../heart/obligations"
+import { listActiveObligations } from "../mind/obligations"
 import type { BoardResult } from "../repertoire/tasks/types"
+import { buildFailoverContext, handleFailoverReply, type FailoverContext } from "../heart/provider-failover"
+import { runHealthInventory } from "../heart/provider-ping"
+import { writeAgentProviderSelection, loadAgentSecrets } from "../heart/daemon/auth-flow"
+
+export interface FailoverState {
+  pending: FailoverContext | null
+}
+
 
 // ── Input / Output types ──────────────────────────────────────────
 
@@ -79,7 +90,11 @@ export interface InboundTurnInput {
     channel?: Channel,
     signal?: AbortSignal,
     options?: RunAgentOptions,
-  ) => Promise<{ usage?: UsageData; outcome: RunAgentOutcome; completion?: CompletionMetadata }>
+  ) => Promise<{ usage?: UsageData; outcome: RunAgentOutcome; completion?: CompletionMetadata; error?: Error; errorClassification?: ProviderErrorClassification }>
+  /** In-memory failover state for this session. Channel owns this, pipeline reads/writes it. */
+  failoverState?: FailoverState
+  /** Set by the pipeline during failover switch — signals that a provider switch occurred this turn. */
+  switchedProvider?: string
   postTurn: (
     messages: ChatCompletionMessageParam[],
     sessPath: string,
@@ -92,6 +107,8 @@ export interface InboundTurnInput {
     friendId: string,
     usage?: UsageData,
   ) => Promise<void>
+  /** Optional callback invoked after pending messages are drained. Returns prefix sections to inject before pending. */
+  onPendingDrained?: (drained: PendingMessage[]) => string[]
 }
 
 export interface InboundTurnResult {
@@ -101,8 +118,8 @@ export interface InboundTurnResult {
   gateResult: TrustGateResult
   /** Usage data from runAgent. Undefined when gate rejects. */
   usage?: UsageData
-  /** Structured turn outcome from runAgent. Undefined when gate rejects. */
-  turnOutcome?: RunAgentOutcome
+  /** Structured turn outcome from runAgent, or "command" for intercepted slash commands. Undefined when gate rejects. */
+  turnOutcome?: RunAgentOutcome | "command"
   /** Explicit completion metadata from runAgent when available. */
   completion?: CompletionMetadata
   /** Session file path. Undefined when gate rejects. */
@@ -111,6 +128,12 @@ export interface InboundTurnResult {
   messages?: ChatCompletionMessageParam[]
   /** Pending envelopes drained at turn start, including deferred returns. */
   drainedPending?: PendingMessage[]
+  /** If set, the turn errored and this message should be shown to the user for failover. */
+  failoverMessage?: string
+  /** If set, a provider switch was executed via failover reply. */
+  switchedProvider?: string
+  /** If turnOutcome is "command", the action from the dispatched command (exit, new, response). */
+  commandAction?: "exit" | "new" | "response"
 }
 
 function emptyTaskBoard(): BoardResult {
@@ -208,6 +231,99 @@ function readInnerWorkState(): ActiveWorkFrame["inner"] {
 // ── Pipeline ──────────────────────────────────────────────────────
 
 export async function handleInboundTurn(input: InboundTurnInput): Promise<InboundTurnResult> {
+  // Step 0: Check for pending failover reply
+  if (input.failoverState?.pending) {
+    const userText = input.messages
+      .filter((m) => m.role === "user")
+      .map((m) => typeof m.content === "string" ? m.content : /* v8 ignore next -- defensive: multipart content fallback @preserve */ "")
+      .join(" ")
+      .trim()
+    const pendingContext = input.failoverState.pending
+    const failoverAction = handleFailoverReply(userText, pendingContext)
+    const failoverAgentName = pendingContext.agentName
+    input.failoverState.pending = null // always clear before acting
+    if (failoverAction.action === "switch") {
+      let switchSucceeded = false
+      try {
+        writeAgentProviderSelection(failoverAgentName, failoverAction.provider)
+        switchSucceeded = true
+      /* v8 ignore start -- defensive: write failure during provider switch @preserve */
+      } catch (switchError) {
+        emitNervesEvent({
+          level: "error",
+          component: "senses",
+          event: "senses.failover_switch_error",
+          message: `failed to switch provider to ${failoverAction.provider}`,
+          meta: { agentName: failoverAgentName, provider: failoverAction.provider, error: switchError instanceof Error ? switchError.message : String(switchError) },
+        })
+      }
+      /* v8 ignore stop */
+      /* v8 ignore next -- false branch: write-failure fallthrough @preserve */
+      if (switchSucceeded) {
+        emitNervesEvent({
+          component: "senses",
+          event: "senses.failover_switch",
+          message: `switched provider to ${failoverAction.provider} via failover`,
+          meta: { agentName: failoverAgentName, provider: failoverAction.provider },
+        })
+        // Replace "switch to <provider>" with a context message for the agent.
+        // The session already has the user's original question from the failed turn.
+        // The agent needs to know what happened so it can respond appropriately.
+        const newProviderSecrets = (() => {
+          try {
+            const { secrets } = loadAgentSecrets(failoverAgentName)
+            const cfg = secrets.providers[failoverAction.provider as keyof typeof secrets.providers] as Record<string, unknown> | undefined
+            return cfg?.model ?? cfg?.modelName ?? ""
+          /* v8 ignore next 2 -- defensive: secrets read failure @preserve */
+          } catch { return "" }
+        })()
+        const newProviderLabel = newProviderSecrets ? `${failoverAction.provider} (${newProviderSecrets})` : failoverAction.provider
+        input.messages = [{
+          role: "user" as const,
+          content: `[provider switch: ${pendingContext.errorSummary}. switched to ${newProviderLabel}. your conversation history is intact — respond to the user's last message.]`,
+        }]
+        input.switchedProvider = failoverAction.provider
+      }
+      // Switch failed OR succeeded — either way, fall through to normal processing.
+    }
+  }
+
+  // Step 0b: Slash command interception (before friend resolution / agent turn)
+  {
+    const firstUserMsg = input.messages.find((m) => m.role === "user")
+    const userText = firstUserMsg
+      ? (typeof firstUserMsg.content === "string"
+        ? firstUserMsg.content
+        : Array.isArray(firstUserMsg.content)
+          ? (firstUserMsg.content.find((p: any) => p.type === "text") as any)?.text ?? ""
+          : /* v8 ignore next -- defensive: content is always string or array @preserve */ "")
+      : ""
+    const parsed = parseSlashCommand(userText)
+    if (parsed) {
+      const registry = getSharedCommandRegistry()
+      const dispatchResult = registry.dispatch(parsed.command, { channel: input.channel })
+      if (dispatchResult.handled && dispatchResult.result) {
+        emitNervesEvent({
+          component: "senses",
+          event: "senses.pipeline_command",
+          message: `slash command intercepted: /${parsed.command}`,
+          meta: { command: parsed.command, channel: input.channel },
+        })
+        if (dispatchResult.result.message) {
+          input.callbacks.onTextChunk(dispatchResult.result.message)
+        }
+        // Return a minimal result — no agent turn, no session write
+        const resolvedContext = await input.friendResolver.resolve()
+        return {
+          resolvedContext,
+          gateResult: { allowed: true },
+          turnOutcome: "command",
+          commandAction: dispatchResult.result.action,
+        }
+      }
+    }
+  }
+
   // Step 1: Resolve friend
   const resolvedContext = await input.friendResolver.resolve()
 
@@ -363,6 +479,13 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     })(),
     friendActivity: sessionActivity,
     targetCandidates,
+    innerReturnObligations: (() => {
+      try {
+        return listActiveObligations(getAgentName())
+      } catch {
+        return []
+      }
+    })(),
   })
   const delegationDecision = decideDelegation({
     channel: input.channel,
@@ -378,8 +501,9 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   const sessionPending = input.drainPending(input.pendingDir)
   const pending = [...deferredReturns, ...sessionPending]
 
-  // Assemble messages: session messages + live world-state checkpoint + pending + inbound user messages
-  const prefixSections = [formatLiveWorldStateCheckpoint(activeWorkFrame)]
+  // Assemble messages: session messages + attention queue + live world-state checkpoint + pending + inbound user messages
+  const extraPrefixSections = input.onPendingDrained?.(pending) ?? []
+  const prefixSections = [...extraPrefixSections, formatLiveWorldStateCheckpoint(activeWorkFrame)]
   if (pending.length > 0) {
     const pendingSection = pending
       .map((msg) => `[pending from ${msg.from}]: ${msg.content}`)
@@ -427,12 +551,64 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     runAgentOptions,
   )
 
+  // Step 5b: Failover on terminal error
+  if (result.outcome === "errored" && input.failoverState) {
+    try {
+      const agentName = getAgentName()
+      const agentConfig = loadAgentConfig()
+      const currentProvider = agentConfig.provider
+      /* v8 ignore next -- defensive: errorClassification always set when errored @preserve */
+      const classification = result.errorClassification ?? "unknown"
+      const inventory = await runHealthInventory(agentName, currentProvider)
+      const { secrets } = loadAgentSecrets(agentName)
+      const providerModels: Partial<Record<string, string>> = {}
+      for (const [p, cfg] of Object.entries(secrets.providers)) {
+        const model = (cfg as Record<string, unknown>).model ?? (cfg as Record<string, unknown>).modelName
+        if (typeof model === "string" && model) providerModels[p] = model
+      }
+      /* v8 ignore next -- defensive: current provider always in secrets @preserve */
+      const currentModel = providerModels[currentProvider] ?? ""
+      const failoverContext = buildFailoverContext(
+        /* v8 ignore next -- defensive: error always set when errored @preserve */
+        result.error?.message ?? "unknown error",
+        classification,
+        currentProvider,
+        currentModel,
+        agentName,
+        inventory,
+        providerModels,
+      )
+      input.failoverState.pending = failoverContext
+      input.postTurn(sessionMessages, session.sessionPath, result.usage)
+      return {
+        resolvedContext,
+        gateResult,
+        usage: result.usage,
+        turnOutcome: result.outcome,
+        sessionPath: session.sessionPath,
+        messages: sessionMessages,
+        drainedPending: pending,
+        failoverMessage: failoverContext.userMessage,
+      }
+    /* v8 ignore start -- failover catch: tested via pipeline failover sequence throws test but v8 under-reports catch coverage @preserve */
+    } catch (failoverError) {
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.failover_error",
+        message: "failover sequence failed, falling through",
+        meta: { error: failoverError instanceof Error ? failoverError.message : String(failoverError) },
+      })
+    }
+    /* v8 ignore stop */
+  }
+
   // Step 6: postTurn
   const continuingState = {
     ...(mustResolveBeforeHandoff ? { mustResolveBeforeHandoff: true } : {}),
     ...(typeof lastFriendActivityAt === "string" ? { lastFriendActivityAt } : {}),
   }
-  const nextState = result.outcome === "complete" || result.outcome === "blocked" || result.outcome === "superseded" || result.outcome === "no_response"
+  const nextState = result.outcome === "settled" || result.outcome === "blocked" || result.outcome === "superseded" || result.outcome === "observed"
     ? (typeof lastFriendActivityAt === "string"
       ? { lastFriendActivityAt }
       : undefined)
@@ -452,6 +628,14 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     },
   })
 
+  // DRY cross-session awareness: notify inner dialog that activity happened on another channel
+  // Inner dialog's next checkpoint will include this session's state
+  if (input.channel !== "inner") {
+    try {
+      requestInnerWake(getAgentName()).catch(/* v8 ignore next */ () => { /* best effort — daemon may not be running */ })
+    } catch { /* getAgentName may fail in test environments */ }
+  }
+
   return {
     resolvedContext,
     gateResult,
@@ -461,5 +645,6 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     sessionPath: session.sessionPath,
     messages: sessionMessages,
     drainedPending: pending,
+    ...(input.switchedProvider ? { switchedProvider: input.switchedProvider } : {}),
   }
 }

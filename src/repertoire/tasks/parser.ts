@@ -74,7 +74,6 @@ function collectionFromPath(taskPath: string, type: CanonicalTaskType): Canonica
   const parts = taskPath.split(path.sep)
   if (parts.includes("one-shots")) return "one-shots"
   if (parts.includes("ongoing")) return "ongoing"
-  if (parts.includes("habits")) return "habits"
   return canonicalCollectionForTaskType(type)
 }
 

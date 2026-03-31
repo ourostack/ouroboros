@@ -11,10 +11,62 @@ vi.mock("../../../heart/daemon/agent-discovery", () => ({
   listEnabledBundleAgents: listEnabledBundleAgentsMock,
 }))
 
+const { habitSchedulerStartMock, habitSchedulerStopMock, habitSchedulerWatchMock, habitSchedulerStopWatchMock } = vi.hoisted(() => ({
+  habitSchedulerStartMock: vi.fn(),
+  habitSchedulerStopMock: vi.fn(),
+  habitSchedulerWatchMock: vi.fn(),
+  habitSchedulerStopWatchMock: vi.fn(),
+}))
+
+const { migrateHabitsFromTaskSystemMock } = vi.hoisted(() => ({
+  migrateHabitsFromTaskSystemMock: vi.fn(),
+}))
+
+vi.mock("../../../heart/daemon/habit-scheduler", () => ({
+  HabitScheduler: class MockHabitScheduler {
+    constructor(public options: unknown) {}
+    start = habitSchedulerStartMock
+    stop = habitSchedulerStopMock
+    watchForChanges = habitSchedulerWatchMock
+    stopWatching = habitSchedulerStopWatchMock
+  },
+}))
+
+vi.mock("../../../heart/daemon/habit-migration", () => ({
+  migrateHabitsFromTaskSystem: migrateHabitsFromTaskSystemMock,
+}))
+
+vi.mock("../../../heart/daemon/os-cron-deps", () => ({
+  createRealOsCronDeps: vi.fn(() => ({
+    exec: vi.fn(),
+    writeFile: vi.fn(),
+    removeFile: vi.fn(),
+    existsFile: vi.fn(() => false),
+    listDir: vi.fn(() => []),
+    mkdirp: vi.fn(),
+    homeDir: "/mock/home",
+  })),
+  resolveOuroBinaryPath: vi.fn(() => "/usr/local/bin/ouro"),
+}))
+
+const { writeDaemonTombstoneMock } = vi.hoisted(() => ({
+  writeDaemonTombstoneMock: vi.fn(),
+}))
+
+vi.mock("../../../heart/daemon/daemon-tombstone", () => ({
+  writeDaemonTombstone: writeDaemonTombstoneMock,
+}))
+
 describe("daemon entrypoint", () => {
   afterEach(() => {
     listEnabledBundleAgentsMock.mockReset()
     listEnabledBundleAgentsMock.mockReturnValue([])
+    habitSchedulerStartMock.mockReset()
+    habitSchedulerStopMock.mockReset()
+    habitSchedulerWatchMock.mockReset()
+    habitSchedulerStopWatchMock.mockReset()
+    migrateHabitsFromTaskSystemMock.mockReset()
+    writeDaemonTombstoneMock.mockReset()
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
   })
@@ -142,9 +194,16 @@ describe("daemon entrypoint", () => {
     expect(onSpy).toHaveBeenCalledWith("SIGINT", expect.any(Function))
     expect(onSpy).toHaveBeenCalledWith("SIGTERM", expect.any(Function))
 
+    // HabitScheduler should be started (not HeartbeatTimer)
+    expect(habitSchedulerStartMock).toHaveBeenCalled()
+    // Migration should be called before scheduler start
+    expect(migrateHabitsFromTaskSystemMock).toHaveBeenCalled()
+
     onHandlers.SIGINT?.()
     await Promise.resolve()
     expect(stop).toHaveBeenCalled()
+    // HabitScheduler should be stopped on SIGINT
+    expect(habitSchedulerStopMock).toHaveBeenCalled()
     expect(exitSpy).toHaveBeenCalledWith(0)
 
     onHandlers.SIGTERM?.()
@@ -323,6 +382,10 @@ describe("daemon entrypoint", () => {
     expect(emitNervesEvent).toHaveBeenCalledWith(
       expect.objectContaining({ event: "daemon.entry_error" }),
     )
+    expect(writeDaemonTombstoneMock).toHaveBeenCalledWith(
+      "startupFailure",
+      expect.objectContaining({ message: "boom" }),
+    )
     expect(configureDaemonRuntimeLogger).toHaveBeenCalledWith("daemon")
     expect(processManagerCtor).toHaveBeenCalledTimes(1)
     expect(daemonCtor).toHaveBeenCalledTimes(1)
@@ -383,6 +446,64 @@ describe("daemon entrypoint", () => {
       }),
     )
     expect(configureDaemonRuntimeLogger).toHaveBeenCalledWith("daemon")
+
+    argvSpy.mockRestore()
+  })
+
+  it("emits dev mode indicator event when running from a dev context", async () => {
+    vi.resetModules()
+
+    const start = vi.fn(async () => undefined)
+    const stop = vi.fn(async () => undefined)
+    const emitNervesEvent = vi.fn()
+    const configureDaemonRuntimeLogger = vi.fn()
+    vi.spyOn(process, "on").mockImplementation(((
+      _event: string,
+      _cb: () => void,
+    ) => process) as any)
+
+    class MockOuroDaemon {
+      start = start
+      stop = stop
+    }
+
+    class MockProcessManager {
+      listAgentSnapshots = vi.fn(() => [])
+    }
+
+    vi.doMock("../../../heart/daemon/daemon", () => ({
+      OuroDaemon: MockOuroDaemon,
+    }))
+    vi.doMock("../../../heart/daemon/process-manager", () => ({
+      DaemonProcessManager: MockProcessManager,
+    }))
+    vi.doMock("../../../heart/daemon/sense-manager", () => ({
+      DaemonSenseManager: class MockSenseManager {
+        listSenseRows = vi.fn(() => [])
+        startAutoStartSenses = vi.fn(async () => undefined)
+        stopAll = vi.fn(async () => undefined)
+      },
+    }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
+    vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
+    vi.doMock("../../../heart/daemon/runtime-mode", () => ({
+      detectRuntimeMode: () => "dev",
+    }))
+
+    const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
+
+    await import("../../../heart/daemon/daemon-entry")
+    await Promise.resolve()
+
+    expect(emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "daemon.dev_mode_indicator",
+        message: expect.stringContaining("[dev] running from"),
+        meta: expect.objectContaining({
+          repoRoot: expect.any(String),
+        }),
+      }),
+    )
 
     argvSpy.mockRestore()
   })

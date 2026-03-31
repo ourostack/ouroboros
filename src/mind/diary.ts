@@ -6,14 +6,14 @@ import { getAgentRoot } from "../heart/identity";
 import { emitNervesEvent } from "../nerves/runtime";
 import { cosineSimilarity } from "./associative-recall";
 
-export interface MemoryStorePaths {
+export interface DiaryStorePaths {
   rootDir: string;
   factsPath: string;
   entitiesPath: string;
   dailyDir: string;
 }
 
-export interface MemoryFact {
+export interface DiaryEntry {
   id: string;
   text: string;
   source: string;
@@ -22,23 +22,23 @@ export interface MemoryFact {
   embedding: number[];
 }
 
-export interface MemoryWriteResult {
+export interface DiaryWriteResult {
   added: number;
   skipped: number;
 }
 
-export interface MemoryEmbeddingProvider {
+export interface DiaryEmbeddingProvider {
   embed(texts: string[]): Promise<number[][]>;
 }
 
-export interface SaveMemoryFactOptions {
+export interface SaveDiaryEntryOptions {
   text: string;
   source: string;
   about?: string;
-  memoryRoot?: string;
+  diaryRoot?: string;
   now?: () => Date;
   idFactory?: () => string;
-  embeddingProvider?: MemoryEmbeddingProvider;
+  embeddingProvider?: DiaryEmbeddingProvider;
 }
 
 export interface EntityIndexEntry {
@@ -54,7 +54,7 @@ const SEMANTIC_DEDUP_THRESHOLD = 0.95;
 const ENTITY_TOKEN = /[a-z0-9]+/g;
 const DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small";
 
-class OpenAIEmbeddingProvider implements MemoryEmbeddingProvider {
+class OpenAIEmbeddingProvider implements DiaryEmbeddingProvider {
   constructor(private readonly apiKey: string, private readonly model: string = DEFAULT_EMBEDDING_MODEL) {}
 
   async embed(texts: string[]): Promise<number[][]> {
@@ -83,7 +83,7 @@ class OpenAIEmbeddingProvider implements MemoryEmbeddingProvider {
   }
 }
 
-export function ensureMemoryStorePaths(rootDir: string): MemoryStorePaths {
+export function ensureDiaryStorePaths(rootDir: string): DiaryStorePaths {
   const factsPath = path.join(rootDir, "facts.jsonl");
   const entitiesPath = path.join(rootDir, "entities.json");
   const dailyDir = path.join(rootDir, "daily");
@@ -95,8 +95,8 @@ export function ensureMemoryStorePaths(rootDir: string): MemoryStorePaths {
 
   emitNervesEvent({
     component: "mind",
-    event: "mind.memory_paths_ready",
-    message: "memory store paths ready",
+    event: "mind.diary_paths_ready",
+    message: "diary store paths ready",
     meta: { rootDir },
   });
   return { rootDir, factsPath, entitiesPath, dailyDir };
@@ -124,14 +124,14 @@ function overlapScore(left: string, right: string): number {
   return common / Math.min(leftWords.size, rightWords.size);
 }
 
-function readExistingFacts(factsPath: string): MemoryFact[] {
+function readExistingEntries(factsPath: string): DiaryEntry[] {
   if (!fs.existsSync(factsPath)) return [];
   const raw = fs.readFileSync(factsPath, "utf8").trim();
   if (!raw) return [];
-  const facts: MemoryFact[] = [];
+  const facts: DiaryEntry[] = [];
   for (const line of raw.split("\n")) {
     try {
-      facts.push(JSON.parse(line) as MemoryFact);
+      facts.push(JSON.parse(line) as DiaryEntry);
     } catch {
       // Skip corrupt lines (e.g. partial write from a crash).
     }
@@ -159,7 +159,7 @@ function extractEntityTokens(text: string): string[] {
   return [...new Set(matches.filter((token) => token.length >= 3))];
 }
 
-function updateEntityIndex(entitiesPath: string, fact: MemoryFact): void {
+function updateEntityIndex(entitiesPath: string, fact: DiaryEntry): void {
   const index = readEntityIndex(entitiesPath);
   const tokens = extractEntityTokens(fact.text);
   for (const token of tokens) {
@@ -179,19 +179,19 @@ function updateEntityIndex(entitiesPath: string, fact: MemoryFact): void {
   writeEntityIndex(entitiesPath, index);
 }
 
-function appendDailyFact(dailyDir: string, fact: MemoryFact): void {
+function appendDailyFact(dailyDir: string, fact: DiaryEntry): void {
   fs.mkdirSync(dailyDir, { recursive: true });
   const day = fact.createdAt.slice(0, 10) || "unknown";
   const dayPath = path.join(dailyDir, `${day}.jsonl`);
   fs.appendFileSync(dayPath, `${JSON.stringify(fact)}\n`, "utf8");
 }
 
-export interface AppendFactsOptions {
+export interface AppendEntriesOptions {
   semanticThreshold?: number;
 }
 
-export function appendFactsWithDedup(stores: MemoryStorePaths, incoming: MemoryFact[], options?: AppendFactsOptions): MemoryWriteResult {
-  const existing = readExistingFacts(stores.factsPath);
+export function appendEntriesWithDedup(stores: DiaryStorePaths, incoming: DiaryEntry[], options?: AppendEntriesOptions): DiaryWriteResult {
+  const existing = readExistingEntries(stores.factsPath);
   const all = [...existing];
   let added = 0;
   let skipped = 0;
@@ -223,27 +223,27 @@ export function appendFactsWithDedup(stores: MemoryStorePaths, incoming: MemoryF
 
   emitNervesEvent({
     component: "mind",
-    event: "mind.memory_write",
-    message: "memory write completed",
+    event: "mind.diary_write",
+    message: "diary write completed",
     meta: { added, skipped },
   });
   return { added, skipped };
 }
 
-function createDefaultEmbeddingProvider(): MemoryEmbeddingProvider | null {
+function createDefaultEmbeddingProvider(): DiaryEmbeddingProvider | null {
   const apiKey = getOpenAIEmbeddingsApiKey().trim();
   if (!apiKey) return null;
   return new OpenAIEmbeddingProvider(apiKey);
 }
 
-async function buildEmbedding(text: string, embeddingProvider?: MemoryEmbeddingProvider): Promise<number[]> {
+async function buildEmbedding(text: string, embeddingProvider?: DiaryEmbeddingProvider): Promise<number[]> {
   const provider = embeddingProvider ?? createDefaultEmbeddingProvider();
   if (!provider) {
     emitNervesEvent({
       level: "warn",
       component: "mind",
-      event: "mind.memory_embedding_unavailable",
-      message: "embedding provider unavailable for memory write",
+      event: "mind.diary_embedding_unavailable",
+      message: "embedding provider unavailable for diary write",
       meta: { reason: "missing_openai_embeddings_key" },
     });
     return [];
@@ -256,8 +256,8 @@ async function buildEmbedding(text: string, embeddingProvider?: MemoryEmbeddingP
     emitNervesEvent({
       level: "warn",
       component: "mind",
-      event: "mind.memory_embedding_unavailable",
-      message: "embedding provider unavailable for memory write",
+      event: "mind.diary_embedding_unavailable",
+      message: "embedding provider unavailable for diary write",
       meta: {
         reason: error instanceof Error ? error.message : String(error),
       },
@@ -266,17 +266,27 @@ async function buildEmbedding(text: string, embeddingProvider?: MemoryEmbeddingP
   }
 }
 
-export function readMemoryFacts(memoryRoot = path.join(getAgentRoot(), "psyche", "memory")): MemoryFact[] {
-  return readExistingFacts(path.join(memoryRoot, "facts.jsonl"));
+export function resolveDiaryRoot(explicitRoot?: string): string {
+  if (explicitRoot) return explicitRoot;
+  const agentRoot = getAgentRoot();
+  const diaryPath = path.join(agentRoot, "diary");
+  if (fs.existsSync(diaryPath)) return diaryPath;
+  const legacyPath = path.join(agentRoot, "psyche", "memory");
+  if (fs.existsSync(legacyPath)) return legacyPath;
+  return diaryPath; // default to new path (will be created on first write)
 }
 
-export async function saveMemoryFact(options: SaveMemoryFactOptions): Promise<MemoryWriteResult> {
+export function readDiaryEntries(diaryRoot?: string): DiaryEntry[] {
+  return readExistingEntries(path.join(resolveDiaryRoot(diaryRoot), "facts.jsonl"));
+}
+
+export async function saveDiaryEntry(options: SaveDiaryEntryOptions): Promise<DiaryWriteResult> {
   const text = options.text.trim();
-  const memoryRoot = options.memoryRoot ?? path.join(getAgentRoot(), "psyche", "memory");
-  const stores = ensureMemoryStorePaths(memoryRoot);
+  const diaryRoot = resolveDiaryRoot(options.diaryRoot);
+  const stores = ensureDiaryStorePaths(diaryRoot);
   const embedding = await buildEmbedding(text, options.embeddingProvider);
 
-  const fact: MemoryFact = {
+  const fact: DiaryEntry = {
     id: options.idFactory ? options.idFactory() : randomUUID(),
     text,
     source: options.source,
@@ -285,7 +295,7 @@ export async function saveMemoryFact(options: SaveMemoryFactOptions): Promise<Me
     embedding,
   };
 
-  return appendFactsWithDedup(stores, [fact], { semanticThreshold: SEMANTIC_DEDUP_THRESHOLD });
+  return appendEntriesWithDedup(stores, [fact], { semanticThreshold: SEMANTIC_DEDUP_THRESHOLD });
 }
 
 export interface BackfillEmbeddingsResult {
@@ -295,15 +305,15 @@ export interface BackfillEmbeddingsResult {
 }
 
 export async function backfillEmbeddings(options?: {
-  memoryRoot?: string;
-  embeddingProvider?: MemoryEmbeddingProvider;
+  diaryRoot?: string;
+  embeddingProvider?: DiaryEmbeddingProvider;
   batchSize?: number;
 }): Promise<BackfillEmbeddingsResult> {
-  const memoryRoot = options?.memoryRoot ?? path.join(getAgentRoot(), "psyche", "memory");
-  const factsPath = path.join(memoryRoot, "facts.jsonl");
+  const diaryRoot = resolveDiaryRoot(options?.diaryRoot);
+  const factsPath = path.join(diaryRoot, "facts.jsonl");
   if (!fs.existsSync(factsPath)) return { total: 0, backfilled: 0, failed: 0 };
 
-  const facts = readExistingFacts(factsPath);
+  const facts = readExistingEntries(factsPath);
   const needsEmbedding = facts.filter((f) => !Array.isArray(f.embedding) || f.embedding.length === 0);
   if (needsEmbedding.length === 0) return { total: facts.length, backfilled: 0, failed: 0 };
 
@@ -312,7 +322,7 @@ export async function backfillEmbeddings(options?: {
     emitNervesEvent({
       level: "warn",
       component: "mind",
-      event: "mind.memory_backfill_skipped",
+      event: "mind.diary_backfill_skipped",
       message: "embedding provider unavailable for backfill",
       meta: { needsEmbedding: needsEmbedding.length },
     });
@@ -337,7 +347,7 @@ export async function backfillEmbeddings(options?: {
       emitNervesEvent({
         level: "warn",
         component: "mind",
-        event: "mind.memory_backfill_batch_error",
+        event: "mind.diary_backfill_batch_error",
         message: "embedding backfill batch failed",
         meta: {
           batchStart: i,
@@ -354,7 +364,7 @@ export async function backfillEmbeddings(options?: {
 
   emitNervesEvent({
     component: "mind",
-    event: "mind.memory_backfill_complete",
+    event: "mind.diary_backfill_complete",
     message: "embedding backfill completed",
     meta: { total: facts.length, backfilled, failed },
   });
@@ -362,13 +372,13 @@ export async function backfillEmbeddings(options?: {
   return { total: facts.length, backfilled, failed };
 }
 
-function substringMatches(queryLower: string, facts: MemoryFact[]): MemoryFact[] {
+function substringMatches(queryLower: string, facts: DiaryEntry[]): DiaryEntry[] {
   return facts.filter((fact) => fact.text.toLowerCase().includes(queryLower));
 }
 
-function uniqueFacts(facts: MemoryFact[]): MemoryFact[] {
+function uniqueFacts(facts: DiaryEntry[]): DiaryEntry[] {
   const seen = new Set<string>();
-  const unique: MemoryFact[] = [];
+  const unique: DiaryEntry[] = [];
   for (const fact of facts) {
     if (seen.has(fact.id)) continue;
     seen.add(fact.id);
@@ -377,11 +387,11 @@ function uniqueFacts(facts: MemoryFact[]): MemoryFact[] {
   return unique;
 }
 
-export async function searchMemoryFacts(
+export async function searchDiaryEntries(
   query: string,
-  facts: MemoryFact[],
-  embeddingProvider?: MemoryEmbeddingProvider,
-): Promise<MemoryFact[]> {
+  facts: DiaryEntry[],
+  embeddingProvider?: DiaryEmbeddingProvider,
+): Promise<DiaryEntry[]> {
   const trimmed = query.trim();
   if (!trimmed) return [];
   const queryLower = trimmed.toLowerCase();
@@ -420,8 +430,8 @@ export async function searchMemoryFacts(
     emitNervesEvent({
       level: "warn",
       component: "mind",
-      event: "mind.memory_embedding_unavailable",
-      message: "embedding provider unavailable for memory search",
+      event: "mind.diary_embedding_unavailable",
+      message: "embedding provider unavailable for diary search",
       meta: {
         reason: error instanceof Error ? error.message : String(error),
       },

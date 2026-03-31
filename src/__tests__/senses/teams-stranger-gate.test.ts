@@ -41,10 +41,24 @@ vi.mock("../../heart/config", () => ({
 
 vi.mock("../../senses/commands", () => ({
   createCommandRegistry: vi.fn(() => ({
+    register: vi.fn(),
+    get: vi.fn(),
+    list: vi.fn().mockReturnValue([]),
     dispatch: vi.fn(() => ({ handled: false })),
   })),
   registerDefaultCommands: vi.fn(),
   parseSlashCommand: vi.fn(() => null),
+  getSharedCommandRegistry: vi.fn(() => ({
+    register: vi.fn(),
+    get: vi.fn(),
+    list: vi.fn().mockReturnValue([]),
+    dispatch: vi.fn(() => ({ handled: false })),
+  })),
+  resetSharedCommandRegistry: vi.fn(),
+  getDebugMode: vi.fn(() => false),
+  resetDebugMode: vi.fn(),
+  getToolChoiceRequired: vi.fn(() => false),
+  resetToolChoiceRequired: vi.fn(),
 }))
 
 vi.mock("../../nerves", () => ({

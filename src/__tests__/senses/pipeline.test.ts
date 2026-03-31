@@ -16,6 +16,13 @@ const mockFindBridgesForSession = vi.fn()
 const mockListTargetSessionCandidates = vi.fn()
 const mockListCodingSessions = vi.fn()
 
+vi.mock("../../heart/daemon/socket-client", () => ({
+  requestInnerWake: vi.fn(async () => null),
+  sendDaemonCommand: vi.fn(),
+  checkDaemonSocketAlive: vi.fn(),
+  DEFAULT_DAEMON_SOCKET_PATH: "/tmp/ouroboros-daemon.sock",
+}))
+
 vi.mock("../../heart/bridges/manager", async () => {
   const actual = await vi.importActual<typeof import("../../heart/bridges/manager")>("../../heart/bridges/manager")
   return {
@@ -41,6 +48,37 @@ vi.mock("../../repertoire/coding", async () => {
     getCodingSessionManager: () => ({
       listSessions: (...args: any[]) => mockListCodingSessions(...args),
     }),
+  }
+})
+
+const mockRunHealthInventory = vi.fn()
+const mockWriteAgentProviderSelection = vi.fn()
+const mockLoadAgentSecrets = vi.fn().mockReturnValue({
+  secretsPath: "/mock/secrets.json",
+  secrets: {
+    providers: {
+      anthropic: { model: "claude-opus-4-6", setupToken: "valid" },
+      "openai-codex": { model: "gpt-5.4", oauthAccessToken: "valid" },
+      minimax: { model: "", apiKey: "" },
+      azure: { modelName: "", apiKey: "", endpoint: "", deployment: "", apiVersion: "" },
+    },
+  },
+})
+
+vi.mock("../../heart/provider-ping", async () => {
+  const actual = await vi.importActual<typeof import("../../heart/provider-ping")>("../../heart/provider-ping")
+  return {
+    ...actual,
+    runHealthInventory: (...args: any[]) => mockRunHealthInventory(...args),
+  }
+})
+
+vi.mock("../../heart/daemon/auth-flow", async () => {
+  const actual = await vi.importActual<typeof import("../../heart/daemon/auth-flow")>("../../heart/daemon/auth-flow")
+  return {
+    ...actual,
+    writeAgentProviderSelection: (...args: any[]) => mockWriteAgentProviderSelection(...args),
+    loadAgentSecrets: (...args: any[]) => mockLoadAgentSecrets(...args),
   }
 })
 
@@ -134,7 +172,7 @@ function makeInput(overrides: Partial<InboundTurnInput> = {}): InboundTurnInput 
     // Deps injected for testability
     enforceTrustGate: vi.fn().mockReturnValue({ allowed: true } as TrustGateResult),
     drainPending: vi.fn().mockReturnValue([] as PendingMessage[]),
-    runAgent: vi.fn().mockResolvedValue({ usage: usageData, outcome: "complete" }),
+    runAgent: vi.fn().mockResolvedValue({ usage: usageData, outcome: "settled" }),
     postTurn: vi.fn(),
     accumulateFriendTokens: vi.fn().mockResolvedValue(undefined),
     ...overrides,
@@ -1145,7 +1183,7 @@ describe("handleInboundTurn", () => {
       const input = makeInput({
         channel: "inner",
         capabilities: makeCapabilities({ channel: "inner", senseType: "local" }),
-        runAgent: vi.fn().mockResolvedValue({ usage: usageData, outcome: "complete" }),
+        runAgent: vi.fn().mockResolvedValue({ usage: usageData, outcome: "settled" }),
       })
 
       await handleInboundTurn(input)
@@ -1335,16 +1373,16 @@ describe("handleInboundTurn", () => {
       expect((result as any).turnOutcome).toBe("blocked")
     })
 
-    it("passes through no_response outcome from runAgent", async () => {
+    it("passes through observe outcome from runAgent", async () => {
       const input = makeInput({
-        runAgent: vi.fn().mockResolvedValue({ usage: usageData, outcome: "no_response" }),
+        runAgent: vi.fn().mockResolvedValue({ usage: usageData, outcome: "observed" }),
       })
 
       const result = await handleInboundTurn(input)
-      expect((result as any).turnOutcome).toBe("no_response")
+      expect((result as any).turnOutcome).toBe("observed")
     })
 
-    it.each(["complete", "blocked", "superseded", "no_response"] as const)(
+    it.each(["settled", "blocked", "superseded", "observed"] as const)(
       "clears mustResolveBeforeHandoff after terminal %s outcome",
       async (outcome) => {
         const input = makeInput({
@@ -1366,5 +1404,165 @@ describe("handleInboundTurn", () => {
         expect(savedState?.mustResolveBeforeHandoff).toBeUndefined()
       },
     )
+
+    it("injects the live world-state checkpoint into the inbound user message", async () => {
+      const input = makeInput({
+        messages: [{ role: "user", content: "hello" }],
+      })
+
+      const result = await handleInboundTurn(input)
+
+      const userMessage = (result.messages ?? []).find((message) => message.role === "user")
+      expect(userMessage).toEqual(expect.objectContaining({
+        role: "user",
+        content: expect.stringContaining("## live world-state checkpoint"),
+      }))
+      expect(typeof userMessage?.content === "string" ? userMessage.content : "").toContain("hello")
+    })
+  })
+
+  describe("provider failover", () => {
+    beforeEach(() => {
+      mockRunHealthInventory.mockReset()
+      mockWriteAgentProviderSelection.mockReset()
+    })
+
+    it("returns failoverMessage when runAgent returns errored outcome", async () => {
+      vi.spyOn(identity, "getAgentName").mockReturnValue("slugger")
+      vi.spyOn(identity, "loadAgentConfig").mockReturnValue({
+        version: 1,
+        enabled: true,
+        provider: "openai-codex",
+        phrases: { thinking: [], tool: [], followup: [] },
+      } as any)
+      mockRunHealthInventory.mockResolvedValue({
+        anthropic: { ok: true },
+      })
+      const failoverState = { pending: null }
+      const input = makeInput({
+        failoverState,
+        runAgent: vi.fn().mockResolvedValue({
+          usage: usageData,
+          outcome: "errored",
+          error: new Error("usage limit exceeded"),
+          errorClassification: "usage-limit",
+        }),
+      })
+
+      const result = await handleInboundTurn(input)
+
+      expect(result.failoverMessage).toBeDefined()
+      expect(result.failoverMessage).toContain("openai-codex")
+      expect(result.failoverMessage).toContain("switch to anthropic")
+      expect(failoverState.pending).not.toBeNull()
+    })
+
+    it("handles failover reply to switch provider and auto-retries on new provider", async () => {
+      const mockRunAgent = vi.fn().mockResolvedValue({ usage: usageData, outcome: "settled" })
+      const failoverState = {
+        pending: {
+          errorSummary: "openai-codex hit its usage limit",
+          classification: "usage-limit" as const,
+          currentProvider: "openai-codex" as const,
+          agentName: "slugger",
+          workingProviders: ["anthropic" as const],
+          unconfiguredProviders: [],
+          userMessage: "switch available",
+        },
+      }
+      const input = makeInput({
+        failoverState,
+        messages: [{ role: "user", content: "switch to anthropic" }],
+        runAgent: mockRunAgent,
+      })
+
+      const result = await handleInboundTurn(input)
+
+      expect(result.switchedProvider).toBe("anthropic")
+      expect(mockWriteAgentProviderSelection).toHaveBeenCalledWith("slugger", "anthropic")
+      expect(failoverState.pending).toBeNull()
+      // The pipeline should have auto-retried: runAgent was called on the new provider
+      expect(mockRunAgent).toHaveBeenCalledTimes(1)
+      // "switch to anthropic" should NOT be in the messages passed to runAgent —
+      // replaced with a context message telling the agent about the switch
+      const passedMessages = mockRunAgent.mock.calls[0][0] as Array<{ role: string; content: string }>
+      const lastUserMsg = [...passedMessages].reverse().find((m) => m.role === "user")
+      expect(lastUserMsg?.content).not.toContain("switch to anthropic")
+      expect(lastUserMsg?.content).toContain("provider switch")
+      expect(lastUserMsg?.content).toContain("openai-codex")
+      expect(lastUserMsg?.content).toContain("anthropic")
+      // Turn completed successfully on the new provider
+      expect(result.turnOutcome).toBe("settled")
+    })
+
+    it("dismisses failover on unrelated reply and processes normally", async () => {
+      const failoverState = {
+        pending: {
+          errorSummary: "openai-codex hit its usage limit",
+          classification: "usage-limit" as const,
+          currentProvider: "openai-codex" as const,
+          agentName: "slugger",
+          workingProviders: ["anthropic" as const],
+          unconfiguredProviders: [],
+          userMessage: "switch available",
+        },
+      }
+      const input = makeInput({
+        failoverState,
+        messages: [{ role: "user", content: "never mind, just continue" }],
+      })
+
+      const result = await handleInboundTurn(input)
+
+      expect(result.switchedProvider).toBeUndefined()
+      expect(result.failoverMessage).toBeUndefined()
+      expect(failoverState.pending).toBeNull()
+      // Should have processed normally — runAgent was called
+      expect(result.turnOutcome).toBe("settled")
+    })
+
+    it("falls back to normal error handling when failover sequence throws", async () => {
+      vi.spyOn(identity, "getAgentName").mockReturnValue("slugger")
+      vi.spyOn(identity, "loadAgentConfig").mockReturnValue({
+        version: 1,
+        enabled: true,
+        provider: "openai-codex",
+        phrases: { thinking: [], tool: [], followup: [] },
+      } as any)
+      mockRunHealthInventory.mockRejectedValue(new Error("inventory failed"))
+      const failoverState = { pending: null }
+      const input = makeInput({
+        failoverState,
+        runAgent: vi.fn().mockResolvedValue({
+          usage: usageData,
+          outcome: "errored",
+          error: new Error("server down"),
+          errorClassification: "server-error",
+        }),
+      })
+
+      const result = await handleInboundTurn(input)
+
+      // Should complete without failoverMessage since the sequence failed
+      expect(result.failoverMessage).toBeUndefined()
+      expect(result.turnOutcome).toBe("errored")
+    })
+
+    it("does not trigger failover when failoverState is not provided", async () => {
+      const input = makeInput({
+        runAgent: vi.fn().mockResolvedValue({
+          usage: usageData,
+          outcome: "errored",
+          error: new Error("server down"),
+          errorClassification: "server-error",
+        }),
+      })
+
+      const result = await handleInboundTurn(input)
+
+      expect(result.failoverMessage).toBeUndefined()
+      expect(result.turnOutcome).toBe("errored")
+      expect(mockRunHealthInventory).not.toHaveBeenCalled()
+    })
   })
 })

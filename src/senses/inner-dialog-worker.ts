@@ -1,23 +1,34 @@
+import * as fs from "fs"
+import * as path from "path"
 import { runInnerDialogTurn } from "./inner-dialog"
 import { emitNervesEvent } from "../nerves/runtime"
-import { getAgentName } from "../heart/identity"
+import { getAgentName, getAgentRoot } from "../heart/identity"
 import { getInnerDialogPendingDir, hasPendingMessages } from "../mind/pending"
+import { parseHabitFile, renderHabitFile } from "../heart/daemon/habit-parser"
 
-export type InnerDialogWorkerReason = "boot" | "heartbeat" | "instinct"
+export type InnerDialogWorkerReason = "boot" | "habit" | "instinct"
 
 export interface InnerDialogWorkerMessage {
-  type: "heartbeat" | "shutdown" | "poke" | "chat" | "message" | string
+  type: "heartbeat" | "habit" | "shutdown" | "poke" | "chat" | "message" | string
   taskId?: string
+  habitName?: string
 }
 
 export interface InnerDialogWorkerRunOptions {
   reason: InnerDialogWorkerReason
   taskId?: string
+  habitName?: string
 }
 
 export interface InnerDialogWorkerController {
-  run(reason: InnerDialogWorkerReason, taskId?: string): Promise<void>
+  run(reason: InnerDialogWorkerReason, taskId?: string, habitName?: string): Promise<void>
   handleMessage(message: unknown): Promise<void>
+}
+
+interface QueueEntry {
+  reason: InnerDialogWorkerReason
+  taskId?: string
+  habitName?: string
 }
 
 export function createInnerDialogWorker(
@@ -25,17 +36,11 @@ export function createInnerDialogWorker(
   hasPendingWork: () => boolean = () => hasPendingMessages(getInnerDialogPendingDir(getAgentName())),
 ): InnerDialogWorkerController {
   let running = false
-  let rerunRequested = false
-  let rerunReason: InnerDialogWorkerReason = "instinct"
-  let rerunTaskId: string | undefined
+  const queue: QueueEntry[] = []
 
-  async function run(reason: InnerDialogWorkerReason, taskId?: string): Promise<void> {
+  async function run(reason: InnerDialogWorkerReason, taskId?: string, habitName?: string): Promise<void> {
     if (running) {
-      rerunRequested = true
-      rerunReason = reason
-      if (taskId !== undefined) {
-        rerunTaskId = taskId
-      }
+      queue.push({ reason, taskId, habitName })
       return
     }
 
@@ -43,11 +48,11 @@ export function createInnerDialogWorker(
     try {
       let nextReason = reason
       let nextTaskId = taskId
+      let nextHabitName = habitName
 
       do {
-        rerunRequested = false
         try {
-          await runTurn({ reason: nextReason, taskId: nextTaskId })
+          await runTurn({ reason: nextReason, taskId: nextTaskId, habitName: nextHabitName })
         } catch (error) {
           emitNervesEvent({
             level: "error",
@@ -60,15 +65,47 @@ export function createInnerDialogWorker(
             },
           })
         }
-        if (!rerunRequested && hasPendingWork()) {
-          rerunRequested = true
-          rerunReason = "instinct"
+
+        // Update lastRun in habit frontmatter after a habit turn
+        if (nextReason === "habit" && nextHabitName) {
+          try {
+            const agentRoot = getAgentRoot()
+            const habitFilePath = path.join(agentRoot, "habits", `${nextHabitName}.md`)
+            const content = fs.readFileSync(habitFilePath, "utf-8")
+            const parsed = parseHabitFile(content, habitFilePath)
+            const frontmatter: Record<string, unknown> = {
+              title: parsed.title,
+              cadence: parsed.cadence,
+              status: parsed.status,
+              lastRun: new Date().toISOString(),
+              created: parsed.created,
+            }
+            const rendered = renderHabitFile(frontmatter, parsed.body)
+            fs.writeFileSync(habitFilePath, rendered, "utf-8")
+          } catch {
+            // Habit file may have been deleted during the turn — skip gracefully
+          }
         }
-        nextReason = rerunReason
-        nextTaskId = rerunTaskId
-        rerunReason = "instinct"
-        rerunTaskId = undefined
-      } while (rerunRequested)
+
+        // Drain queue first
+        if (queue.length > 0) {
+          const next = queue.shift()!
+          nextReason = next.reason
+          nextTaskId = next.taskId
+          nextHabitName = next.habitName
+          continue
+        }
+
+        // Then check hasPendingWork fallback
+        if (hasPendingWork()) {
+          nextReason = "instinct"
+          nextTaskId = undefined
+          nextHabitName = undefined
+          continue
+        }
+
+        break
+      } while (true)
     } finally {
       running = false
     }
@@ -77,8 +114,13 @@ export function createInnerDialogWorker(
   async function handleMessage(message: unknown): Promise<void> {
     if (!message || typeof message !== "object") return
     const maybeMessage = message as Partial<InnerDialogWorkerMessage>
+    if (maybeMessage.type === "habit") {
+      await run("habit", undefined, maybeMessage.habitName)
+      return
+    }
     if (maybeMessage.type === "heartbeat") {
-      await run("heartbeat")
+      // Backward compatibility: heartbeat -> habit/heartbeat
+      await run("habit", undefined, "heartbeat")
       return
     }
     if (maybeMessage.type === "poke") {

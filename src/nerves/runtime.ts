@@ -14,7 +14,11 @@ let runtimeLogger: Logger | null = null
 
 function getRuntimeLogger(): Logger {
   if (!runtimeLogger) {
-    runtimeLogger = createLogger({ level: "info" })
+    // Default logger has no sinks — events emitted before the real logger is
+    // configured (e.g. identity resolution during startup) are silently dropped.
+    // This prevents INFO lines from leaking to stderr and interleaving with
+    // the CLI spinner when the ouro subprocess hasn't configured its logger yet.
+    runtimeLogger = createLogger({ level: "info", sinks: [] })
   }
   return runtimeLogger
 }

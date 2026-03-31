@@ -2259,4 +2259,133 @@ describe("BlueBubbles client", () => {
       }),
     ).rejects.toThrow("BlueBubbles send failed (500): unknown")
   })
+
+  describe("getMessageText", () => {
+    it("returns text when API responds with valid payload", async () => {
+      global.fetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ data: { text: "Hello from the thread" } }), { status: 200 }),
+      ) as typeof fetch
+
+      const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+      const client = createBlueBubblesClient(
+        { serverUrl: "http://bluebubbles.local", password: "secret-token", accountId: "default" },
+        { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 },
+      )
+
+      const text = await client.getMessageText("msg-guid-123")
+      expect(text).toBe("Hello from the thread")
+    })
+
+    it("returns null when API returns non-ok status", async () => {
+      global.fetch = vi.fn().mockResolvedValue(
+        new Response("Not Found", { status: 404 }),
+      ) as typeof fetch
+
+      const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+      const client = createBlueBubblesClient(
+        { serverUrl: "http://bluebubbles.local", password: "secret-token", accountId: "default" },
+        { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 },
+      )
+
+      const text = await client.getMessageText("msg-guid-404")
+      expect(text).toBeNull()
+      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: "senses.bluebubbles_get_message_text_error",
+      }))
+    })
+
+    it("returns null when payload is missing text field", async () => {
+      global.fetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ data: { guid: "msg-guid-no-text" } }), { status: 200 }),
+      ) as typeof fetch
+
+      const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+      const client = createBlueBubblesClient(
+        { serverUrl: "http://bluebubbles.local", password: "secret-token", accountId: "default" },
+        { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 },
+      )
+
+      const text = await client.getMessageText("msg-guid-no-text")
+      expect(text).toBeNull()
+    })
+
+    it("returns null when fetch throws a non-Error value", async () => {
+      global.fetch = vi.fn().mockRejectedValue("string rejection") as typeof fetch
+
+      const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+      const client = createBlueBubblesClient(
+        { serverUrl: "http://bluebubbles.local", password: "secret-token", accountId: "default" },
+        { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 },
+      )
+
+      const text = await client.getMessageText("msg-guid-string-err")
+      expect(text).toBeNull()
+      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: "senses.bluebubbles_get_message_text_error",
+        meta: expect.objectContaining({ reason: "string rejection" }),
+      }))
+    })
+
+    it("returns null when fetch throws (network error)", async () => {
+      global.fetch = vi.fn().mockRejectedValue(new Error("Network error")) as typeof fetch
+
+      const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+      const client = createBlueBubblesClient(
+        { serverUrl: "http://bluebubbles.local", password: "secret-token", accountId: "default" },
+        { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 },
+      )
+
+      const text = await client.getMessageText("msg-guid-err")
+      expect(text).toBeNull()
+      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: "senses.bluebubbles_get_message_text_error",
+        meta: expect.objectContaining({ reason: "Network error" }),
+      }))
+    })
+
+    it("returns null when text is empty after trimming", async () => {
+      global.fetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ data: { text: "   " } }), { status: 200 }),
+      ) as typeof fetch
+
+      const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+      const client = createBlueBubblesClient(
+        { serverUrl: "http://bluebubbles.local", password: "secret-token", accountId: "default" },
+        { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 },
+      )
+
+      const text = await client.getMessageText("msg-guid-empty")
+      expect(text).toBeNull()
+    })
+
+    it("returns null when payload data is null (extractRepairData returns null)", async () => {
+      global.fetch = vi.fn().mockResolvedValue(
+        new Response("null", { status: 200 }),
+      ) as typeof fetch
+
+      const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+      const client = createBlueBubblesClient(
+        { serverUrl: "http://bluebubbles.local", password: "secret-token", accountId: "default" },
+        { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 },
+      )
+
+      const text = await client.getMessageText("msg-guid-null-payload")
+      expect(text).toBeNull()
+    })
+
+    it("returns null when data has no text property (not a string)", async () => {
+      global.fetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ data: { text: 42 } }), { status: 200 }),
+      ) as typeof fetch
+
+      const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+      const client = createBlueBubblesClient(
+        { serverUrl: "http://bluebubbles.local", password: "secret-token", accountId: "default" },
+        { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 },
+      )
+
+      const text = await client.getMessageText("msg-guid-nonstring")
+      expect(text).toBeNull()
+    })
+  })
 })

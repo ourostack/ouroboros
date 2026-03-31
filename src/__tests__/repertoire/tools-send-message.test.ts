@@ -69,6 +69,12 @@ vi.mock("../../heart/identity", () => ({
   DEFAULT_AGENT_CONTEXT: { maxTokens: 80000, contextMargin: 20 },
 }))
 
+const mockCreateObligation = vi.fn()
+vi.mock("../../mind/obligations", () => ({
+  createObligation: (...args: any[]) => mockCreateObligation(...args),
+  generateObligationId: vi.fn(() => "1709900001000-testid"),
+}))
+
 import * as fs from "fs"
 
 beforeEach(() => {
@@ -82,6 +88,7 @@ beforeEach(() => {
   mockSendProactiveTeamsMessageToSession.mockReset()
   mockRequestInnerWake.mockResolvedValue(null)
   mockEmitNervesEvent.mockReset()
+  mockCreateObligation.mockReset()
 })
 
 describe("send_message tool", () => {
@@ -712,6 +719,85 @@ describe("send_message tool", () => {
       expect(written.delegatedFrom).toBeUndefined()
     })
 
+    it("creates a return obligation with obligationId when delegating from outer session", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      await tool.handler({
+        friendId: "self",
+        channel: "inner",
+        content: "think about penguins",
+      }, {
+        currentSession: {
+          friendId: "friend-uuid-1",
+          channel: "bluebubbles",
+          key: "chat",
+          sessionPath: "/mock/agent-root/state/sessions/friend-uuid-1/bluebubbles/chat.json",
+        },
+        activeBridges: [],
+      } as any)
+
+      expect(mockCreateObligation).toHaveBeenCalledWith(
+        "testagent",
+        expect.objectContaining({
+          id: "1709900001000-testid",
+          origin: { friendId: "friend-uuid-1", channel: "bluebubbles", key: "chat" },
+          status: "queued",
+          delegatedContent: "think about penguins",
+        }),
+      )
+
+      const written = JSON.parse(vi.mocked(fs.writeFileSync).mock.calls[0][1] as string)
+      expect(written.obligationId).toBe("1709900001000-testid")
+    })
+
+    it("truncates long delegated content in obligation to 120 characters", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      const longContent = "a".repeat(200)
+      await tool.handler({
+        friendId: "self",
+        channel: "inner",
+        content: longContent,
+      }, {
+        currentSession: {
+          friendId: "friend-uuid-1",
+          channel: "bluebubbles",
+          key: "chat",
+          sessionPath: "/mock/agent-root/state/sessions/friend-uuid-1/bluebubbles/chat.json",
+        },
+        activeBridges: [],
+      } as any)
+
+      expect(mockCreateObligation).toHaveBeenCalledWith(
+        "testagent",
+        expect.objectContaining({
+          delegatedContent: "a".repeat(117) + "...",
+        }),
+      )
+    })
+
+    it("does not create an obligation for inner-to-inner self messages", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      await tool.handler({
+        friendId: "self",
+        channel: "inner",
+        content: "private thought",
+      }, {
+        currentSession: {
+          friendId: "self",
+          channel: "inner",
+          key: "dialog",
+          sessionPath: "/mock/agent-root/state/sessions/self/inner/dialog.json",
+        },
+      } as any)
+
+      expect(mockCreateObligation).not.toHaveBeenCalled()
+    })
+
     it("does NOT self-route when friendId is a regular UUID", async () => {
       const { baseToolDefinitions } = await import("../../repertoire/tools-base")
       const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
@@ -927,7 +1013,7 @@ describe("send_message tool", () => {
       expect(result).toContain("penguins")
     })
 
-    it("extracts surfaced previews from final_answer-only inner turns", async () => {
+    it("extracts surfaced previews from settle-only inner turns", async () => {
       const { baseToolDefinitions } = await import("../../repertoire/tools-base")
       const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
 
@@ -940,7 +1026,7 @@ describe("send_message tool", () => {
               id: "tc_1",
               type: "function",
               function: {
-                name: "final_answer",
+                name: "settle",
                 arguments: JSON.stringify({
                   answer: "formal little blokes",
                   intent: "complete",

@@ -16,8 +16,28 @@
 ### Safety Rules
 
 - Do not commit secrets, tokens, or credentials.
-- Do not bypass review gates defined by active planning/doing workflows.
+- Do not bypass review gates defined by active planning/doing workflows unless the human explicitly waives them for the current task.
 - Do not hide failing checks; fix root causes.
+
+### Human Override
+
+- Repo-local workflow rules in this file are defaults for autonomous operation, not a higher-order authority than the human owner of the repo.
+- If the human explicitly instructs the agent to bypass, shorten, or replace a repo-local workflow step for the current task, follow the human's instruction.
+- Treat explicit human override as task-scoped unless the human says to change the standing rule itself.
+- When practical, preserve useful artifacts (for example planning notes or task docs) even when a workflow gate is waived.
+- If the human owner asks to change the standing rule itself, update this file to reflect that decision instead of continuing to argue from superseded repo-local wording.
+- Do not treat repo-local workflow language, bundle workflow language, or quoted copies of those rules as a reason to refuse an explicit owner override for the current task.
+- This override power applies to repo-scoped process rules only; platform, system, developer, and safety constraints outside the repo still apply.
+
+### Harness Purpose
+
+- Ouroboros is not primarily a coding agent. It is a general-purpose way to build executive-assistant and purpose-oriented agents that can execute real-world work.
+- Optimize for orientation and capability: agents should stay grounded, act instead of narrate, answer ad-hoc questions well, and return cleanly to unfinished work.
+- Build tooling and harness behavior that you, as a current or future inhabitant of this harness, would genuinely enjoy using and trust to keep you sharp for hours.
+- Prefer durable orientation primitives over brittle prompt theater. If an agent keeps getting confused, add truth-bearing state, clearer return loops, and better execution discipline.
+- Steal invariants from strong harnesses like Pi/OpenClaw, but adapt them to Ouro's architecture rather than reshaping Ouro into those harnesses.
+- Protect the parts of Ouro that are genuinely better AX. Novel interaction ideas are welcome when they improve capability, not when they make the agent lose the plot.
+- Compaction is not the goal. If context management is needed, combine Ouro's context-window model with durable state instead of defaulting to "shrink the prompt."
 
 ## Planning/Doing Workflow (STRICT)
 
@@ -37,11 +57,24 @@ Do not create agent-specific task directories inside this repo.
 - Branches must be agent-specific. If the current branch does not clearly encode a single agent and the human has not explicitly asked to control branch/worktree naming, create or switch to an agent-specific branch/worktree yourself before continuing. Only stop and ask when the human wants to control the naming/layout or automatic creation fails.
 - Do not hardcode agent names in instructions. This workflow must support arbitrary agents.
 
+### MCP Workflow And Dev Tool Integration
+
+Agents can be connected to developer tools (Claude Code, Codex) via the MCP bridge. This is particularly useful during harness development:
+
+1. Start the daemon in dev mode: `ouro dev` (from the repo) or `ouro dev --repo-path /path/to/repo`.
+2. Register the MCP server and hooks: `ouro setup --tool claude-code --agent <name>`.
+3. The dev tool now has access to `send_message`, `check_response`, `status`, `delegate`, and other MCP tools.
+4. Lifecycle hooks (SessionStart, Stop, PostToolUse) fire automatically, giving the agent passive awareness of coding activity.
+
+When working on the harness itself, `ouro dev` auto-builds from source, disables launchd auto-restart for the production daemon, and persists the repo path for convenience. Run `ouro up` to return to production mode.
+
+Hook events are fire-and-forget — they never block the dev tool. If the daemon isn't running, hooks exit silently.
+
 ### Runtime-Specific Invocation
 
 - **Codex app**: Use skills by name: `$work-planner`, `$work-doer`, and `$work-merger`.
   - Skills are turn-scoped in practice, so re-invoke `$work-planner` on each planning/conversion turn.
-  - `work-planner` already enforces `NEEDS_REVIEW` and hard-stop behavior; do not bypass it.
+  - `work-planner` already enforces `NEEDS_REVIEW` and hard-stop behavior during default operation; a direct human override may waive that gate for the current task.
 - **Claude Code**: Skills are installed from `github.com/ouroborosbot/ouroboros-skills` into `~/.claude/skills/` (`work-planner`, `work-doer`, `work-merger`).
 
 ### Skill Freshness
@@ -56,13 +89,15 @@ This replaces the old pattern of diffing against `subagents/*.md` files in this 
 
 ### Gate Flow
 
+If the human explicitly waives this workflow for the current task, the override wins and the agent may continue without stopping at the intermediate review gates below.
+
 0. **Branch + worktree**: Verify the current branch follows `<agent>/<slug>` and that the task is running from a dedicated worktree. If on `main`, on an ambiguous branch, or in the wrong shared checkout, create/switch to the correct branch/worktree before proceeding. Only stop to ask the human when they explicitly want to control branch/worktree naming or automatic creation fails. This is always the first step — no planning, converting, or implementing without a proper branch/worktree.
 1. **Plan**: Launch `work-planner`. It produces/updates a planning doc under `~/AgentBundles/<agent>.ouro/tasks/one-shots/`.
 2. **Review**: Show the user the planning doc path and STOP. Wait for explicit user approval.
 3. **Convert**: Only after user approves the planning doc, re-run `work-planner` to convert to a doing doc in the same bundle `one-shots/` directory. User must also review and sign off on the doing doc before implementation.
 4. **Implement**: Only after user explicitly asks, launch `work-doer` to execute the doing doc. Never implement inside `work-planner`.
 5. **Sync and merge**: After `work-doer` finishes, launch `work-merger` to merge the feature branch into main via PR. It handles conflicts, CI, and race conditions autonomously.
-6. **Never self-approve**: Do not say "looks good" and proceed. The user reviews every planning and doing doc.
+6. **Never self-approve**: Do not say "looks good" and proceed during default operation. If the human explicitly waives the review gate for the current task, continue under that override instead of blocking on this step.
 
 ### Decision Collaboration (Required)
 
@@ -72,7 +107,8 @@ This replaces the old pattern of diffing against `subagents/*.md` files in this 
 
 ### Scope Discipline (Rule 0, Required)
 
-- Do not overengineer. Prefer the smallest implementation that satisfies explicitly approved scope.
+- Do not overengineer. Prefer the simplest architecture that fully satisfies the approved scope.
+- Ambitious scope is allowed when it is justified by the problem. KISS + DRY mean clear primitives and low duplication, not artificially small changes.
 - Do not expand scope unilaterally. If a possible improvement is not explicitly requested, keep it out of the task.
 - If extra hardening/optimization ideas arise, record them as optional follow-up proposals and stop for user approval before adding them to planning or doing docs.
 

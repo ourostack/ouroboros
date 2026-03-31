@@ -74,12 +74,32 @@ describe("hatch flow", () => {
     expect(friend.externalIds[0].provider).toBe("local")
     expect(friend.externalIds[0].externalId).toBe(`${os.userInfo().username}@${os.hostname()}`)
 
-    const habitsDir = path.join(result.bundleRoot, "tasks", "habits")
-    const heartbeatFiles = fs.readdirSync(habitsDir).filter((name) => name.includes("heartbeat"))
-    expect(heartbeatFiles.length).toBe(1)
-    const heartbeat = fs.readFileSync(path.join(habitsDir, heartbeatFiles[0]), "utf-8")
-    expect(heartbeat).toContain("cadence: \"30m\"")
-    expect(heartbeat).toContain("status: processing")
+    // habits/ dir at bundle root (not tasks/habits/)
+    const habitsDir = path.join(result.bundleRoot, "habits")
+    expect(fs.existsSync(habitsDir)).toBe(true)
+    expect(fs.existsSync(path.join(habitsDir, "README.md"))).toBe(true)
+
+    // heartbeat.md with new simple schema (no timestamp prefix, no task cruft)
+    const heartbeatPath = path.join(habitsDir, "heartbeat.md")
+    expect(fs.existsSync(heartbeatPath)).toBe(true)
+    const heartbeat = fs.readFileSync(heartbeatPath, "utf-8")
+    expect(heartbeat).toContain("title: Heartbeat check-in")
+    expect(heartbeat).toContain("cadence: 30m")
+    expect(heartbeat).toContain("status: active")
+    expect(heartbeat).toContain("lastRun: null")
+    expect(heartbeat).toContain("created:")
+    // Should NOT have task-system fields
+    expect(heartbeat).not.toContain("type:")
+    expect(heartbeat).not.toContain("category:")
+    expect(heartbeat).not.toContain("requester:")
+    expect(heartbeat).not.toContain("validator:")
+    expect(heartbeat).not.toContain("scheduledAt:")
+    expect(heartbeat).not.toContain("updated:")
+    // Body should still be present
+    expect(heartbeat).toContain("Run a lightweight heartbeat cycle")
+
+    // tasks/habits/ should NOT be created
+    expect(fs.existsSync(path.join(result.bundleRoot, "tasks", "habits"))).toBe(false)
   })
 
   it("fails fast when required provider credentials are missing", async () => {

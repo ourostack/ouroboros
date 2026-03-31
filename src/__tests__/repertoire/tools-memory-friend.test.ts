@@ -66,7 +66,7 @@ function makeFriend(overrides: Partial<FriendRecord> = {}): FriendRecord {
 describe("memory/friend tools", () => {
   beforeEach(() => {
     agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tools-memory-friend-"))
-    fs.mkdirSync(path.join(agentRoot, "psyche", "memory"), { recursive: true })
+    fs.mkdirSync(path.join(agentRoot, "diary"), { recursive: true })
     fs.mkdirSync(path.join(agentRoot, "friends"), { recursive: true })
 
     mockTaskModule.getBoard.mockReset().mockReturnValue({
@@ -94,14 +94,14 @@ describe("memory/friend tools", () => {
     mockTaskModule.boardSessions.mockReset().mockReturnValue([])
   })
 
-  it("memory_save writes a memory fact through execTool", async () => {
+  it("diary_write writes a diary entry through execTool", async () => {
     const { execTool } = await import("../../repertoire/tools")
 
-    const result = await execTool("memory_save", { text: "Ari prefers terse progress updates", about: "ari" })
+    const result = await execTool("diary_write", { entry: "Ari prefers terse progress updates", about: "ari" })
 
     expect(result.toLowerCase()).toContain("saved")
 
-    const factsPath = path.join(agentRoot, "psyche", "memory", "facts.jsonl")
+    const factsPath = path.join(agentRoot, "diary", "facts.jsonl")
     const raw = fs.readFileSync(factsPath, "utf8").trim()
     expect(raw.length).toBeGreaterThan(0)
     const saved = JSON.parse(raw.split("\n")[0]) as {
@@ -112,31 +112,31 @@ describe("memory/friend tools", () => {
     }
 
     expect(saved.text).toBe("Ari prefers terse progress updates")
-    expect(saved.source).toBe("tool:memory_save")
+    expect(saved.source).toBe("tool:diary_write")
     expect(saved.about).toBe("ari")
     expect(Array.isArray(saved.embedding)).toBe(true)
   })
 
-  it("memory_save validates text argument", async () => {
+  it("diary_write validates entry argument", async () => {
     const { execTool } = await import("../../repertoire/tools")
 
-    const result = await execTool("memory_save", { text: "   " })
-    expect(result.toLowerCase()).toContain("text")
+    const result = await execTool("diary_write", { entry: "   " })
+    expect(result.toLowerCase()).toContain("entry")
     expect(result.toLowerCase()).toContain("required")
   })
 
-  it("memory_save validates missing text argument", async () => {
+  it("diary_write validates missing entry argument", async () => {
     const { execTool } = await import("../../repertoire/tools")
-    const result = await execTool("memory_save", {})
-    expect(result.toLowerCase()).toContain("text")
+    const result = await execTool("diary_write", {})
+    expect(result.toLowerCase()).toContain("entry")
     expect(result.toLowerCase()).toContain("required")
   })
 
-  it("memory_save ignores non-string about values", async () => {
+  it("diary_write ignores non-string about values", async () => {
     const { execTool } = await import("../../repertoire/tools")
 
-    await execTool("memory_save", { text: "Persist without about", about: { bad: "value" } as unknown as string })
-    const factsPath = path.join(agentRoot, "psyche", "memory", "facts.jsonl")
+    await execTool("diary_write", { entry: "Persist without about", about: { bad: "value" } as unknown as string })
+    const factsPath = path.join(agentRoot, "diary", "facts.jsonl")
     const saved = JSON.parse(fs.readFileSync(factsPath, "utf8").trim().split("\n")[0]) as {
       about?: string
     }

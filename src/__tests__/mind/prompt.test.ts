@@ -212,8 +212,8 @@ describe("buildSystem", () => {
     resetPsycheCache()
     const result = await buildSystem()
     expect(result).toContain("## repo workspace discipline")
-    expect(result).toContain("safe_workspace")
-    expect(result).toContain("workspace path/branch")
+    expect(result).toContain("source root")
+    expect(result).toContain("worktree path/branch")
     expect(result).toContain("first concrete action")
   })
 
@@ -1103,7 +1103,7 @@ describe("buildSystem", () => {
     const result = await buildSystem("cli", { toolChoiceRequired: true })
     expect(result).toContain("## tool behavior")
     expect(result).toContain("tool_choice is set to \"required\"")
-    expect(result).toContain("final_answer")
+    expect(result).toContain("settle")
     expect(result).toContain("ONLY tool call")
   })
 
@@ -1116,7 +1116,7 @@ describe("buildSystem", () => {
     resetPsycheCache()
     const result = await buildSystem("cli", { toolChoiceRequired: false })
     expect(result).not.toContain("## tool behavior")
-    expect(result).not.toContain("final_answer")
+    expect(result).not.toContain("settle")
   })
 
   it("includes tool behavior section when options is undefined (defaults on)", async () => {
@@ -1138,9 +1138,9 @@ describe("buildSystem", () => {
     const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = await buildSystem("cli", { toolChoiceRequired: true })
-    // Decision tree: mentions calling tools for info and final_answer for responding
+    // Decision tree: mentions calling tools for info and settle for responding
     expect(result).toMatch(/need.*information.*call a tool/i)
-    expect(result).toMatch(/ready to respond.*call.*final_answer/i)
+    expect(result).toMatch(/ready to respond.*call.*settle/i)
   })
 
   it("tool behavior section contains anti-no-op pattern", async () => {
@@ -1151,11 +1151,11 @@ describe("buildSystem", () => {
     const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = await buildSystem("cli", { toolChoiceRequired: true })
-    // Anti-pattern: warns against calling no-op tools before final_answer
+    // Anti-pattern: warns against calling no-op tools before settle
     expect(result).toMatch(/do not call.*no-op|do NOT call.*no-op/i)
   })
 
-  it("tool behavior section clarifies final_answer is a tool call", async () => {
+  it("tool behavior section clarifies settle is a tool call", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
@@ -1163,11 +1163,11 @@ describe("buildSystem", () => {
     const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = await buildSystem("cli", { toolChoiceRequired: true })
-    // Clarification: final_answer IS a tool call satisfying the requirement
-    expect(result).toMatch(/final_answer.*tool call.*satisfies|final_answer.*is a tool call/i)
+    // Clarification: settle IS a tool call satisfying the requirement
+    expect(result).toMatch(/settle.*tool call.*satisfies|settle.*is a tool call/i)
   })
 
-  it("toolsSection includes final_answer in tool list when options undefined (defaults on)", async () => {
+  it("toolsSection includes settle in tool list when options undefined (defaults on)", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
@@ -1175,11 +1175,11 @@ describe("buildSystem", () => {
     const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = await buildSystem("cli")
-    // The tools section should list final_answer when defaults on
-    expect(result).toContain("- final_answer:")
+    // The tools section should list settle when defaults on
+    expect(result).toContain("- settle:")
   })
 
-  it("toolsSection does NOT include final_answer when toolChoiceRequired is false", async () => {
+  it("toolsSection does NOT include settle when toolChoiceRequired is false", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
@@ -1187,7 +1187,7 @@ describe("buildSystem", () => {
     const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = await buildSystem("cli", { toolChoiceRequired: false })
-    expect(result).not.toContain("- final_answer:")
+    expect(result).not.toContain("- settle:")
   })
 
   it("does not export flagsSection (removed)", async () => {
@@ -2660,7 +2660,7 @@ describe("buildSystem with context", () => {
     expect(result).toContain("## my aspirations")
   })
 
-  it("buildSystem('inner') includes runtimeInfoSection, toolsSection, taskBoardSection, skillsSection, memoryFriendToolContractSection", async () => {
+  it("buildSystem('inner') includes runtimeInfoSection, toolsSection, taskBoardSection, skillsSection, diaryFriendToolContractSection", async () => {
     setupReadFileSync()
     vi.mocked(listSkills).mockReturnValue(["code-review"])
     mockGetBoard.mockReturnValueOnce({
@@ -2681,7 +2681,9 @@ describe("buildSystem with context", () => {
     expect(result).toContain("## my tools")
     expect(result).toContain("## task board")
     expect(result).toContain("## my skills")
-    expect(result).toContain("## memory and friend tool contracts")
+    expect(result).toContain("## diary and friend tool contracts")
+    expect(result).toContain("query_session")
+    expect(result).toContain("mode=search")
   })
 
   it("buildSystem('inner') does NOT include contextSection output (no friend context, no onboarding)", async () => {
@@ -2760,8 +2762,8 @@ describe("buildSystem with context", () => {
     const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = await buildSystem("inner")
-    expect(result).toContain("thoughts worth sharing can go outward")
-    expect(result).toContain("think. share. think some more.")
+    expect(result).toContain("when a thought is ready to share, i surface it outward")
+    expect(result).toContain("think. journal. share. rest.")
   })
 
   it("buildSystem('cli') does NOT include metacognitive framing", async () => {
@@ -3025,7 +3027,7 @@ describe("loopOrientationSection", () => {
     resetPsycheCache()
     const result = await buildSystem("inner")
     // Inner dialog has metacognitive framing with its own loop text
-    expect(result).toContain("think. share. think some more.")
+    expect(result).toContain("think. journal. share. rest.")
     // But not the external channel version
     expect(result).not.toContain("sometimes a thought of mine surfaces")
   })
@@ -3326,7 +3328,7 @@ describe("groupChatParticipationSection", () => {
     }
   }
 
-  it("returns non-empty string containing no_response when isGroupChat is true on remote channel", async () => {
+  it("returns non-empty string containing observe when isGroupChat is true on remote channel", async () => {
     const { groupChatParticipationSection } = await import("../../mind/prompt")
     const ctx = {
       friend: makeFriendForGroup(),
@@ -3335,7 +3337,7 @@ describe("groupChatParticipationSection", () => {
     }
     const result = groupChatParticipationSection(ctx as any)
     expect(result).not.toBe("")
-    expect(result).toContain("no_response")
+    expect(result).toContain("observe")
   })
 
   it("returns empty string when isGroupChat is false", async () => {
@@ -3393,8 +3395,8 @@ describe("groupChatParticipationSection", () => {
     expect(result).toMatch(/reaction|tapback/i)
     // Must mention silence or not responding
     expect(result).toMatch(/silent|silence|quiet/i)
-    // Must mention no_response
-    expect(result).toMatch(/no_response/)
+    // Must mention observe
+    expect(result).toMatch(/observe/)
     // Must mention sole tool call rule
     expect(result).toMatch(/only tool call|sole/i)
   })
@@ -3417,7 +3419,350 @@ describe("groupChatParticipationSection", () => {
       isGroupChat: true,
     }
     const result = await buildSystem("bluebubbles", undefined, ctx as any)
-    expect(result).toContain("no_response")
+    expect(result).toContain("observe")
     expect(result).toMatch(/reaction|tapback/i)
+  })
+})
+
+describe("active-work prompting", () => {
+  beforeEach(() => {
+    setupReadFileSync()
+  })
+
+  it("buildSystem teaches query_session search mode in the diary contract", async () => {
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("cli")
+
+    expect(result).toContain("## diary and friend tool contracts")
+    expect(result).toContain("Use `mode=status` for self/inner progress and `mode=search` with a query for older history.")
+  })
+
+  it("buildSystem reinforces active-work as the top-level truth for family status questions", async () => {
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("cli", {
+      activeWorkFrame: {
+        currentSession: {
+          friendId: "friend-1",
+          channel: "cli",
+          key: "session",
+          sessionPath: "/tmp/session.json",
+        },
+        currentObligation: "report back with the current status",
+        mustResolveBeforeHandoff: false,
+        centerOfGravity: "inward-work",
+        inner: {
+          status: "idle",
+          hasPending: false,
+          job: {
+            status: "idle",
+            content: null,
+            origin: null,
+            mode: "reflect",
+            obligationStatus: null,
+            surfacedResult: null,
+            queuedAt: null,
+            startedAt: null,
+            surfacedAt: null,
+          },
+        },
+        bridges: [],
+        taskPressure: {
+          compactBoard: "",
+          liveTaskNames: [],
+          activeBridges: [],
+        },
+        friendActivity: {
+          freshestForCurrentFriend: null,
+          otherLiveSessionsForCurrentFriend: [],
+        },
+        codingSessions: [],
+        otherCodingSessions: [],
+        pendingObligations: [],
+        bridgeSuggestion: null,
+      },
+    }, {
+      friend: {
+        id: "uuid-1",
+        name: "Family Tester",
+        externalIds: [{ provider: "local", externalId: "test", linkedAt: "2026-01-01T00:00:00.000Z" }],
+        tenantMemberships: [],
+        toolPreferences: {},
+        notes: {},
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        schemaVersion: 1,
+        trustLevel: "family",
+      },
+      channel: {
+        channel: "cli",
+        senseType: "local",
+        availableIntegrations: [],
+        supportsMarkdown: false,
+        supportsStreaming: true,
+        supportsRichCards: false,
+        maxMessageLength: Infinity,
+      },
+    })
+
+    expect(result).toContain("## cross-session truth")
+    expect(result).toContain("i answer naturally from the live world-state in this prompt.")
+    expect(result).toContain("i do not rebuild whole-self status from scratch with query_session and coding_status unless i need to verify a specific gap.")
+  })
+})
+
+// ── feedbackSignalSection ──────────────────────────────────────────────
+describe("feedbackSignalSection", () => {
+  beforeEach(() => {
+    vi.resetModules()
+    setAgentProvider("minimax")
+  })
+
+  function makeFriend() {
+    return {
+      id: "uuid-1", name: "TestFriend",
+      externalIds: [{ provider: "local" as const, externalId: "test", linkedAt: "2026-01-01" }],
+      tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0,
+      createdAt: "2026-01-01", updatedAt: "2026-01-01", schemaVersion: 1, trustLevel: "friend",
+    }
+  }
+  function makeCaps(channel: string, senseType: string) {
+    return { channel, senseType, availableIntegrations: [] as any[], supportsMarkdown: false, supportsStreaming: true, supportsRichCards: false, maxMessageLength: Infinity }
+  }
+
+  it("returns non-empty for Teams channel 1:1", async () => {
+    const { feedbackSignalSection } = await import("../../mind/prompt")
+    const result = feedbackSignalSection({ friend: makeFriend(), channel: makeCaps("teams", "closed"), isGroupChat: false } as any)
+    expect(result).not.toBe("")
+    expect(result).toContain("## feedback signals")
+  })
+
+  it("returns non-empty for Teams channel group", async () => {
+    const { feedbackSignalSection } = await import("../../mind/prompt")
+    const result = feedbackSignalSection({ friend: makeFriend(), channel: makeCaps("teams", "closed"), isGroupChat: true } as any)
+    expect(result).not.toBe("")
+    expect(result).toContain("## feedback signals")
+  })
+
+  it("returns non-empty for BlueBubbles channel 1:1", async () => {
+    const { feedbackSignalSection } = await import("../../mind/prompt")
+    const result = feedbackSignalSection({ friend: makeFriend(), channel: makeCaps("bluebubbles", "open") } as any)
+    expect(result).not.toBe("")
+  })
+
+  it("returns non-empty for BlueBubbles channel group", async () => {
+    const { feedbackSignalSection } = await import("../../mind/prompt")
+    const result = feedbackSignalSection({ friend: makeFriend(), channel: makeCaps("bluebubbles", "open"), isGroupChat: true } as any)
+    expect(result).not.toBe("")
+  })
+
+  it("returns empty for CLI channel", async () => {
+    const { feedbackSignalSection } = await import("../../mind/prompt")
+    const result = feedbackSignalSection({ friend: makeFriend(), channel: makeCaps("cli", "local") } as any)
+    expect(result).toBe("")
+  })
+
+  it("returns empty for inner dialog", async () => {
+    const { feedbackSignalSection } = await import("../../mind/prompt")
+    const result = feedbackSignalSection({ friend: makeFriend(), channel: makeCaps("inner", "internal") } as any)
+    expect(result).toBe("")
+  })
+
+  it("returns empty with no context", async () => {
+    const { feedbackSignalSection } = await import("../../mind/prompt")
+    expect(feedbackSignalSection()).toBe("")
+    expect(feedbackSignalSection(undefined)).toBe("")
+  })
+
+  it("1:1 mentions observe and silence in a direct conversation", async () => {
+    const { feedbackSignalSection } = await import("../../mind/prompt")
+    const result = feedbackSignalSection({ friend: makeFriend(), channel: makeCaps("teams", "closed"), isGroupChat: false } as any)
+    expect(result).toContain("observe")
+    expect(result).toMatch(/silence.*direct conversation/i)
+  })
+
+  it("1:1 mentions Teams format", async () => {
+    const { feedbackSignalSection } = await import("../../mind/prompt")
+    const result = feedbackSignalSection({ friend: makeFriend(), channel: makeCaps("teams", "closed"), isGroupChat: false } as any)
+    expect(result).toContain("thumbs-up or thumbs-down")
+    expect(result).toContain("sometimes with a written comment")
+  })
+
+  it("1:1 includes course-correction nudge", async () => {
+    const { feedbackSignalSection } = await import("../../mind/prompt")
+    const result = feedbackSignalSection({ friend: makeFriend(), channel: makeCaps("teams", "closed"), isGroupChat: false } as any)
+    expect(result).toContain("worth sitting with")
+    expect(result).toContain("course-correct")
+  })
+
+  it("group mentions group texture and reaction to someone else", async () => {
+    const { feedbackSignalSection } = await import("../../mind/prompt")
+    const result = feedbackSignalSection({ friend: makeFriend(), channel: makeCaps("teams", "closed"), isGroupChat: true } as any)
+    expect(result).toContain("reaction to someone else's message is group")
+    expect(result).toContain("texture (observe is natural)")
+    expect(result).toContain("thumbs-up or thumbs-down")
+    expect(result).toContain("sometimes with a written comment")
+  })
+
+  it("group includes invitation to adjust", async () => {
+    const { feedbackSignalSection } = await import("../../mind/prompt")
+    const result = feedbackSignalSection({ friend: makeFriend(), channel: makeCaps("teams", "closed"), isGroupChat: true } as any)
+    expect(result).toContain("invitation to adjust")
+  })
+
+  it("1:1 does NOT mention diary_write", async () => {
+    const { feedbackSignalSection } = await import("../../mind/prompt")
+    const result = feedbackSignalSection({ friend: makeFriend(), channel: makeCaps("teams", "closed"), isGroupChat: false } as any)
+    expect(result).not.toContain("diary_write")
+  })
+
+  it("group does NOT mention diary_write", async () => {
+    const { feedbackSignalSection } = await import("../../mind/prompt")
+    const result = feedbackSignalSection({ friend: makeFriend(), channel: makeCaps("teams", "closed"), isGroupChat: true } as any)
+    expect(result).not.toContain("diary_write")
+  })
+
+  it("sections use first-person voice", async () => {
+    const { feedbackSignalSection } = await import("../../mind/prompt")
+    const oneOnOne = feedbackSignalSection({ friend: makeFriend(), channel: makeCaps("teams", "closed"), isGroupChat: false } as any)
+    const group = feedbackSignalSection({ friend: makeFriend(), channel: makeCaps("teams", "closed"), isGroupChat: true } as any)
+    // Both should use "i" (first person) not "you"
+    expect(oneOnOne).toMatch(/\bi\b/)
+    expect(group).toMatch(/\bi\b/)
+  })
+})
+
+describe("rhythmStatusSection", () => {
+  beforeEach(() => {
+    vi.resetModules()
+  })
+
+  it("returns brief rhythm status when health file has habits", async () => {
+    vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => {
+      const p = String(filePath)
+      if (p.endsWith("daemon-health.json")) {
+        return JSON.stringify({
+          status: "running",
+          mode: "prod",
+          pid: 1234,
+          startedAt: new Date(Date.now() - 3600000).toISOString(),
+          uptimeSeconds: 3600,
+          safeMode: null,
+          degraded: [],
+          agents: {},
+          habits: {
+            heartbeat: { cronStatus: "verified", lastFired: new Date(Date.now() - 12 * 60 * 1000).toISOString(), fallback: false },
+          },
+        })
+      }
+      return ""
+    })
+
+    const { rhythmStatusSection } = await import("../../mind/prompt")
+    const result = rhythmStatusSection()
+    expect(result).toContain("my rhythms:")
+    expect(result).toContain("heartbeat")
+    expect(result).toContain("healthy")
+  })
+
+  it("includes degraded note when components are degraded", async () => {
+    vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => {
+      const p = String(filePath)
+      if (p.endsWith("daemon-health.json")) {
+        return JSON.stringify({
+          status: "running",
+          mode: "prod",
+          pid: 1234,
+          startedAt: new Date(Date.now() - 3600000).toISOString(),
+          uptimeSeconds: 3600,
+          safeMode: null,
+          degraded: [{ component: "heartbeat", reason: "timer fallback", since: new Date().toISOString() }],
+          agents: {},
+          habits: {
+            heartbeat: { cronStatus: "failed", lastFired: new Date(Date.now() - 2 * 3600000).toISOString(), fallback: true },
+          },
+        })
+      }
+      return ""
+    })
+
+    const { rhythmStatusSection } = await import("../../mind/prompt")
+    const result = rhythmStatusSection()
+    expect(result).toContain("my rhythms:")
+    expect(result).toContain("heartbeat")
+    expect(result).toContain("timer fallback")
+  })
+
+  it("returns empty string when health file is missing", async () => {
+    vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => {
+      const p = String(filePath)
+      if (p.endsWith("daemon-health.json")) {
+        throw new Error("ENOENT")
+      }
+      return ""
+    })
+
+    const { rhythmStatusSection } = await import("../../mind/prompt")
+    const result = rhythmStatusSection()
+    expect(result).toBe("")
+  })
+
+  it("shows 'never' for habits that have not fired yet", async () => {
+    vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => {
+      const p = String(filePath)
+      if (p.endsWith("daemon-health.json")) {
+        return JSON.stringify({
+          status: "running",
+          mode: "prod",
+          pid: 1234,
+          startedAt: new Date().toISOString(),
+          uptimeSeconds: 100,
+          safeMode: null,
+          degraded: [],
+          agents: {},
+          habits: {
+            "daily-reflection": { cronStatus: "verified", lastFired: null, fallback: false },
+          },
+        })
+      }
+      return ""
+    })
+
+    const { rhythmStatusSection } = await import("../../mind/prompt")
+    const result = rhythmStatusSection()
+    expect(result).toContain("daily-reflection last fired never")
+  })
+
+  it("returns empty string when no habits in health file", async () => {
+    vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => {
+      const p = String(filePath)
+      if (p.endsWith("daemon-health.json")) {
+        return JSON.stringify({
+          status: "running",
+          mode: "prod",
+          pid: 1234,
+          startedAt: new Date().toISOString(),
+          uptimeSeconds: 100,
+          safeMode: null,
+          degraded: [],
+          agents: {},
+          habits: {},
+        })
+      }
+      return ""
+    })
+
+    const { rhythmStatusSection } = await import("../../mind/prompt")
+    const result = rhythmStatusSection()
+    expect(result).toBe("")
   })
 })

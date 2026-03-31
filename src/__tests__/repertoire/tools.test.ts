@@ -145,41 +145,16 @@ describe("execTool", () => {
     expect(fs.writeFileSync).toHaveBeenCalledWith("/tmp/out.txt", "hello", "utf-8")
   })
 
-  it("relative read/edit paths mutate the acquired safe workspace", async () => {
-    vi.spyOn(Date, "now").mockReturnValue(125)
+  it("relative paths resolve against repo root (no workspace indirection)", async () => {
     vi.mocked(fs.readFileSync).mockImplementation((targetPath: any) => {
-      if (targetPath === "/mock/repo/testagent/state/workspaces/ouroboros-main-125/src/mind/prompt.ts") {
+      if (targetPath === "/mock/repo/src/mind/prompt.ts") {
         return "hello world"
       }
       return undefined as any
     })
-    vi.mocked(spawnSync).mockImplementation((command: any, args: any) => {
-      expect(command).toBe("git")
-      if (args.join(" ") === "rev-parse --is-inside-work-tree") return { stdout: Buffer.from("true\n"), stderr: Buffer.from(""), status: 0 } as any
-      if (args.join(" ") === "rev-parse --abbrev-ref HEAD") return { stdout: Buffer.from("main\n"), stderr: Buffer.from(""), status: 0 } as any
-      if (args.join(" ") === "fetch origin") return { stdout: Buffer.from(""), stderr: Buffer.from(""), status: 0 } as any
-      if (args.join(" ") === "pull --ff-only origin main") return { stdout: Buffer.from(""), stderr: Buffer.from(""), status: 0 } as any
-      if (args.join(" ") === "worktree add -B slugger/safe-workspace-125 /mock/repo/testagent/state/workspaces/ouroboros-main-125 origin/main") {
-        return { stdout: Buffer.from(""), stderr: Buffer.from(""), status: 0 } as any
-      }
-      throw new Error(`unexpected git args: ${args.join(" ")}`)
-    })
 
     const read = await execTool("read_file", { path: "src/mind/prompt.ts" })
     expect(read).toBe("hello world")
-
-    const edited = await execTool("edit_file", {
-      path: "src/mind/prompt.ts",
-      old_string: "hello world",
-      new_string: "hello slugger",
-    })
-
-    expect(edited).toContain("hello slugger")
-    expect(fs.writeFileSync).toHaveBeenCalledWith(
-      "/mock/repo/testagent/state/workspaces/ouroboros-main-125/src/mind/prompt.ts",
-      "hello slugger",
-      "utf-8",
-    )
   })
 
   // ── shell ──
@@ -190,70 +165,18 @@ describe("execTool", () => {
     expect(execSync).toHaveBeenCalledWith("echo hello", { encoding: "utf-8", timeout: 30000 })
   })
 
-  it("safe_workspace acquires a dedicated worktree and reports the path and branch", async () => {
-    vi.spyOn(Date, "now").mockReturnValue(123)
-    vi.mocked(spawnSync).mockImplementation((command: any, args: any) => {
-      expect(command).toBe("git")
-      if (args.join(" ") === "rev-parse --is-inside-work-tree") return { stdout: Buffer.from("true\n"), stderr: Buffer.from(""), status: 0 } as any
-      if (args.join(" ") === "rev-parse --abbrev-ref HEAD") return { stdout: Buffer.from("main\n"), stderr: Buffer.from(""), status: 0 } as any
-      if (args.join(" ") === "fetch origin") return { stdout: Buffer.from(""), stderr: Buffer.from(""), status: 0 } as any
-      if (args.join(" ") === "pull --ff-only origin main") return { stdout: Buffer.from(""), stderr: Buffer.from(""), status: 0 } as any
-      if (args.join(" ") === "worktree add -B slugger/safe-workspace-123 /mock/repo/testagent/state/workspaces/ouroboros-main-123 origin/main") {
-        return { stdout: Buffer.from(""), stderr: Buffer.from(""), status: 0 } as any
-      }
-      throw new Error(`unexpected git args: ${args.join(" ")}`)
-    })
-
+  it("safe_workspace is no longer a registered tool", async () => {
     const result = await execTool("safe_workspace", {})
-
-    expect(result).toContain("workspace: /mock/repo/testagent/state/workspaces/ouroboros-main-123")
-    expect(result).toContain("branch: slugger/safe-workspace-123")
-    expect(result).toContain("runtime: clone-main")
+    expect(result).toBe("unknown: safe_workspace")
   })
 
-  it("safe_workspace reports installed-runtime cleanup and branch cleanly", async () => {
-    vi.spyOn(Date, "now").mockReturnValue(124)
-    vi.mocked(spawnSync).mockImplementation((command: any, args: any) => {
-      expect(command).toBe("git")
-      if (args.join(" ") === "rev-parse --is-inside-work-tree") return { stdout: Buffer.from(""), stderr: Buffer.from("fatal: not a git repository"), status: 128 } as any
-      if (args.join(" ") === "clone --depth 1 --branch main https://github.com/ouroborosbot/ouroboros.git /mock/repo/testagent/state/workspaces/ouroboros-scratch-124") {
-        return { stdout: Buffer.from(""), stderr: Buffer.from(""), status: 0 } as any
-      }
-      throw new Error(`unexpected git args: ${args.join(" ")}`)
-    })
-    const result = await execTool("safe_workspace", {})
-
-    expect(result).toContain("workspace: /mock/repo/testagent/state/workspaces/ouroboros-scratch-124")
-    expect(result).toContain("branch: main")
-    expect(result).toContain("runtime: installed-runtime")
-    expect(result).toContain("cleanup_after_merge: yes")
-  })
-
-  it("shell routes repo-local commands into the acquired safe workspace", async () => {
-    vi.spyOn(Date, "now").mockReturnValue(456)
-    vi.mocked(execSync).mockReturnValue("routed output")
-    vi.mocked(spawnSync).mockImplementation((command: any, args: any) => {
-      expect(command).toBe("git")
-      if (args.join(" ") === "rev-parse --is-inside-work-tree") return { stdout: Buffer.from("true\n"), stderr: Buffer.from(""), status: 0 } as any
-      if (args.join(" ") === "rev-parse --abbrev-ref HEAD") return { stdout: Buffer.from("main\n"), stderr: Buffer.from(""), status: 0 } as any
-      if (args.join(" ") === "fetch origin") return { stdout: Buffer.from(""), stderr: Buffer.from(""), status: 0 } as any
-      if (args.join(" ") === "pull --ff-only origin main") return { stdout: Buffer.from(""), stderr: Buffer.from(""), status: 0 } as any
-      if (args.join(" ") === "worktree add -B slugger/safe-workspace-456 /mock/repo/testagent/state/workspaces/ouroboros-main-456 origin/main") {
-        return { stdout: Buffer.from(""), stderr: Buffer.from(""), status: 0 } as any
-      }
-      throw new Error(`unexpected git args: ${args.join(" ")}`)
-    })
-
+  it("shell does not rewrite commands (no workspace routing)", async () => {
+    vi.mocked(execSync).mockReturnValue("direct output")
     const result = await execTool("shell", { command: "cd /mock/repo && git status" })
-
-    expect(result).toBe("routed output")
+    expect(result).toBe("direct output")
     expect(execSync).toHaveBeenCalledWith(
-      "cd /mock/repo/testagent/state/workspaces/ouroboros-main-456 && git status",
-      {
-        encoding: "utf-8",
-        timeout: 30000,
-        cwd: "/mock/repo/testagent/state/workspaces/ouroboros-main-456",
-      },
+      "cd /mock/repo && git status",
+      { encoding: "utf-8", timeout: 30000 },
     )
   })
 
@@ -469,8 +392,8 @@ describe("execTool", () => {
     vi.unstubAllGlobals()
   })
 
-  // ── memory_search ──
-  it("memory_search returns relevant memory facts for a query", async () => {
+  // ── recall (was memory_search) ──
+  it("recall returns relevant diary entries for a query", async () => {
     vi.mocked(fs.existsSync).mockReturnValue(true)
     vi.mocked(fs.readFileSync).mockReturnValue(
       [
@@ -491,39 +414,39 @@ describe("execTool", () => {
       ].join("\n"),
     )
 
-    const result = await execTool("memory_search", { query: "pizza" })
+    const result = await execTool("recall", { query: "pizza" })
     expect(result).toContain("Ari likes mushroom pizza")
     expect(result).not.toContain("strict TypeScript")
   })
 
-  it("memory_search returns a query-required error when query is empty", async () => {
-    const result = await execTool("memory_search", { query: "   " })
+  it("recall returns a query-required error when query is empty", async () => {
+    const result = await execTool("recall", { query: "   " })
     expect(result).toContain("query is required")
   })
 
-  it("memory_search returns a query-required error when query is omitted", async () => {
-    const result = await execTool("memory_search", {})
+  it("recall returns a query-required error when query is omitted", async () => {
+    const result = await execTool("recall", {})
     expect(result).toContain("query is required")
   })
 
-  it("memory_search returns error text when reading memory facts fails", async () => {
+  it("recall returns error text when reading diary entries fails", async () => {
     vi.mocked(fs.existsSync).mockReturnValue(true)
     vi.mocked(fs.readFileSync).mockImplementation(() => {
       throw new Error("disk read failed")
     })
 
-    const result = await execTool("memory_search", { query: "pizza" })
+    const result = await execTool("recall", { query: "pizza" })
     expect(result).toContain("error:")
     expect(result).toContain("disk read failed")
   })
 
-  it("memory_search stringifies non-Error read failures", async () => {
+  it("recall stringifies non-Error read failures", async () => {
     vi.mocked(fs.existsSync).mockReturnValue(true)
     vi.mocked(fs.readFileSync).mockImplementation(() => {
       throw "disk failed as string"
     })
 
-    const result = await execTool("memory_search", { query: "pizza" })
+    const result = await execTool("recall", { query: "pizza" })
     expect(result).toContain("error:")
     expect(result).toContain("disk failed as string")
   })
@@ -659,17 +582,17 @@ describe("summarizeArgs", () => {
     expect(summarizeArgs("web_search", {})).toBe("")
   })
 
-  it("returns truncated query for memory_search", () => {
+  it("returns truncated query for recall", () => {
     const query = "a".repeat(70)
-    expect(summarizeArgs("memory_search", { query })).toBe("query=" + "a".repeat(60) + "...")
+    expect(summarizeArgs("recall", { query })).toBe("query=" + "a".repeat(60) + "...")
   })
 
-  it("returns empty string for memory_search with no query", () => {
-    expect(summarizeArgs("memory_search", {})).toBe("")
+  it("returns empty string for recall with no query", () => {
+    expect(summarizeArgs("recall", {})).toBe("")
   })
 
-  it("returns text/about for memory_save summaries", () => {
-    expect(summarizeArgs("memory_save", { text: "remember this", about: "ari" })).toBe("text=remember this about=ari")
+  it("returns entry/about for diary_write summaries", () => {
+    expect(summarizeArgs("diary_write", { entry: "remember this", about: "ari" })).toBe("entry=remember this about=ari")
   })
 
   it("returns friendId for get_friend_note summaries", () => {
@@ -712,6 +635,26 @@ describe("summarizeArgs", () => {
       key: "value",
     })
     expect(result).toBe("key=value")
+  })
+
+  it("returns empty string for tools with summaryKeys: [] (graph_profile)", () => {
+    expect(summarizeArgs("graph_profile", {})).toBe("")
+    expect(summarizeArgs("graph_profile", { foo: "bar" })).toBe("")
+  })
+
+  it("uses summaryKeys from tool definition rather than switch branch", () => {
+    // file_ouroboros_bug has summaryKeys: ["title"] -- should return key=value format
+    expect(summarizeArgs("file_ouroboros_bug", { title: "Fix the login bug" })).toBe("title=Fix the login bug")
+  })
+
+  it("falls back to showing all args for tools not in any definition registry", () => {
+    // A completely hypothetical tool name that doesn't exist in any definition
+    expect(summarizeArgs("totally_unknown_tool_xyz", { a: "1", b: "2" })).toBe("a=1 b=2")
+  })
+
+  it("falls back to showing all args for registered tools without summaryKeys", () => {
+    // query_active_work is in allDefinitions but has no summaryKeys
+    expect(summarizeArgs("query_active_work", { status: "all" })).toBe("status=all")
   })
 })
 
@@ -879,16 +822,16 @@ describe("tools array export (backward compat)", () => {
   })
 })
 
-describe("finalAnswerTool", () => {
+describe("settleTool", () => {
   it("has correct name, description, and schema", async () => {
     vi.resetModules()
-    const { finalAnswerTool } = await import("../../repertoire/tools")
-    expect(finalAnswerTool.type).toBe("function")
-    expect(finalAnswerTool.function.name).toBe("final_answer")
+    const { settleTool } = await import("../../repertoire/tools")
+    expect(settleTool.type).toBe("function")
+    expect(settleTool.function.name).toBe("settle")
     // Description should frame as primary response mechanism, not alternative
-    expect(finalAnswerTool.function.description).toMatch(/respond to the user/i)
-    expect(finalAnswerTool.function.description).not.toContain("instead of calling another tool")
-    expect(finalAnswerTool.function.parameters).toEqual({
+    expect(settleTool.function.description).toMatch(/respond to the user/i)
+    expect(settleTool.function.description).not.toContain("instead of calling another tool")
+    expect(settleTool.function.parameters).toEqual({
       type: "object",
       properties: {
         answer: { type: "string" },
@@ -902,7 +845,7 @@ describe("finalAnswerTool", () => {
     vi.resetModules()
     const { tools } = await import("../../repertoire/tools")
     const names = tools.map((t: any) => t.function.name)
-    expect(names).not.toContain("final_answer")
+    expect(names).not.toContain("settle")
   })
 })
 
@@ -2700,10 +2643,10 @@ describe("github tool registration", () => {
     expect(isConfirmationRequired("file_ouroboros_bug")).toBe(true)
   })
 
-  it("summarizeArgs returns title for file_ouroboros_bug", async () => {
+  it("summarizeArgs returns title key=value for file_ouroboros_bug", async () => {
     vi.resetModules()
     const { summarizeArgs } = await import("../../repertoire/tools")
-    expect(summarizeArgs("file_ouroboros_bug", { title: "Fix bug" })).toBe("Fix bug")
+    expect(summarizeArgs("file_ouroboros_bug", { title: "Fix bug" })).toBe("title=Fix bug")
   })
 
   it("summarizeArgs returns empty string for file_ouroboros_bug with no title", async () => {

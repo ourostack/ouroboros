@@ -6,7 +6,7 @@ vi.mock("../../repertoire/github-client", () => ({
 
 
 import { githubRequest } from "../../repertoire/github-client"
-import { githubToolDefinitions, summarizeGithubArgs } from "../../repertoire/tools-github"
+import { githubToolDefinitions } from "../../repertoire/tools-github"
 
 describe("githubToolDefinitions", () => {
   it("contains file_ouroboros_bug tool", () => {
@@ -156,19 +156,3 @@ describe("file_ouroboros_bug handler", () => {
   })
 })
 
-describe("summarizeGithubArgs", () => {
-  it("returns truncated title for file_ouroboros_bug", () => {
-    const result = summarizeGithubArgs("file_ouroboros_bug", { title: "Fix the login bug" })
-    expect(result).toBe("Fix the login bug")
-  })
-
-  it("returns empty string when title is missing", () => {
-    const result = summarizeGithubArgs("file_ouroboros_bug", {})
-    expect(result).toBe("")
-  })
-
-  it("returns undefined for unknown tool", () => {
-    const result = summarizeGithubArgs("unknown_tool", { title: "test" })
-    expect(result).toBeUndefined()
-  })
-})

@@ -23,7 +23,7 @@ export interface SpawnCodingDeps {
   baseEnv?: NodeJS.ProcessEnv
 }
 
-function buildCommandArgs(runner: CodingRunner, workdir: string): { command: string; args: string[] } {
+function buildCommandArgs(runner: CodingRunner, workdir: string, parentAgent?: string): { command: string; args: string[] } {
   if (runner === "claude") {
     return {
       command: "claude",
@@ -40,9 +40,26 @@ function buildCommandArgs(runner: CodingRunner, workdir: string): { command: str
     }
   }
 
+  const agent = parentAgent ?? "unknown"
+  // Use absolute path to ouro-entry.js so MCP works in both dev and installed mode
+  // __dirname at runtime is dist/repertoire/coding/ — go up 2 levels to dist/
+  const distRoot = path.resolve(__dirname, "..", "..")
+  const ouroEntryPath = path.join(distRoot, "heart", "daemon", "ouro-entry.js")
+
   return {
     command: "codex",
-    args: ["exec", "--skip-git-repo-check", "--cd", workdir],
+    args: [
+      "exec",
+      "--skip-git-repo-check",
+      "--cd",
+      workdir,
+      "--ephemeral",
+      "--json",
+      "-c",
+      `mcp_servers.ouro.command=node`,
+      "-c",
+      `mcp_servers.ouro.args=["${ouroEntryPath}","mcp-serve","--agent","${agent}"]`,
+    ],
   }
 }
 
@@ -59,8 +76,31 @@ function buildSpawnEnv(baseEnv: NodeJS.ProcessEnv, homeDir: string): NodeJS.Proc
   }
 }
 
+function appendFileSection(
+  sections: string[],
+  label: string,
+  filePath: string | undefined,
+  deps: Required<Pick<SpawnCodingDeps, "existsSync" | "readFileSync">>,
+): void {
+  if (!filePath || !deps.existsSync(filePath)) return
+  const content = deps.readFileSync(filePath, "utf-8").trim()
+  if (content.length === 0) return
+  sections.push(`${label} (${filePath}):\n${content}`)
+}
+
 function buildPrompt(request: CodingSessionRequest, deps: Required<Pick<SpawnCodingDeps, "existsSync" | "readFileSync">>): string {
   const sections: string[] = []
+
+  sections.push(
+    [
+      "Execution contract:",
+      "- You are a subordinate coding session launched by a parent Ouro agent.",
+      "- Execute the concrete request in the supplied workdir directly.",
+      "- Do not switch into planning/doing workflows, approval gates, or repo-management rituals unless the request explicitly asks for them.",
+      "- Treat the request, scope file, and state file as the authoritative briefing for this session.",
+      "- Prefer direct execution and verification over narration.",
+    ].join("\n"),
+  )
 
   sections.push(
     [
@@ -71,12 +111,8 @@ function buildPrompt(request: CodingSessionRequest, deps: Required<Pick<SpawnCod
     ].join("\n"),
   )
 
-  if (request.stateFile && deps.existsSync(request.stateFile)) {
-    const stateContent = deps.readFileSync(request.stateFile, "utf-8").trim()
-    if (stateContent.length > 0) {
-      sections.push(`State file (${request.stateFile}):\n${stateContent}`)
-    }
-  }
+  appendFileSection(sections, "Scope file", request.scopeFile, deps)
+  appendFileSection(sections, "State file", request.stateFile, deps)
 
   sections.push(request.prompt)
   return sections.join("\n\n---\n\n")
@@ -90,7 +126,7 @@ export function spawnCodingProcess(request: CodingSessionRequest, deps: SpawnCod
   const baseEnv = deps.baseEnv ?? process.env
 
   const prompt = buildPrompt(request, { existsSync, readFileSync })
-  const { command, args } = buildCommandArgs(request.runner, request.workdir)
+  const { command, args } = buildCommandArgs(request.runner, request.workdir, request.parentAgent)
   const env = buildSpawnEnv(baseEnv, homeDir)
 
   emitNervesEvent({

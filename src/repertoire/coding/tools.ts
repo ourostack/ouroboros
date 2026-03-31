@@ -1,6 +1,7 @@
 import type OpenAI from "openai"
 
 import { attachCodingSessionFeedback, formatCodingTail, getCodingSessionManager } from "./index"
+import { prepareCodingContextPack } from "./context-pack"
 import type { ToolContext } from "../tools-base"
 import { getAgentRoot } from "../../heart/identity"
 import { advanceObligation, createObligation, findPendingObligationForOrigin } from "../../heart/obligations"
@@ -51,12 +52,15 @@ function matchesReusableCodingSession(session: CodingSession, request: CodingSes
     return false
   }
 
+  const scopeMatches = request.scopeFile ? session.scopeFile === request.scopeFile : true
+  const stateMatches = request.stateFile ? session.stateFile === request.stateFile : true
+
   return (
     session.runner === request.runner &&
     session.workdir === request.workdir &&
     session.taskRef === request.taskRef &&
-    session.scopeFile === request.scopeFile &&
-    session.stateFile === request.stateFile &&
+    scopeMatches &&
+    stateMatches &&
     session.obligationId === request.obligationId &&
     sameOriginSession(request.originSession, session.originSession)
   )
@@ -258,7 +262,8 @@ export const codingToolDefinitions = [
       if (stateFile) request.stateFile = stateFile
 
       const manager = getCodingSessionManager()
-      const existingSession = findReusableCodingSession(manager.listSessions(), request)
+      const existingSessions = manager.listSessions()
+      const existingSession = findReusableCodingSession(existingSessions, request)
       if (existingSession) {
         emitNervesEvent({
           component: "repertoire",
@@ -278,6 +283,16 @@ export const codingToolDefinitions = [
           content: buildCodingObligationContent(taskRef),
         })
         request.obligationId = created.id
+      }
+
+      if (!request.scopeFile || !request.stateFile) {
+        const generated = prepareCodingContextPack({
+          request: { ...request },
+          existingSessions,
+          activeWorkFrame: ctx?.activeWorkFrame,
+        })
+        if (!request.scopeFile) request.scopeFile = generated.scopeFile
+        if (!request.stateFile) request.stateFile = generated.stateFile
       }
 
       const session = await manager.spawnSession(request)
@@ -303,6 +318,7 @@ export const codingToolDefinitions = [
       }
       return JSON.stringify(session)
     },
+    summaryKeys: ["runner", "workdir", "taskRef"],
   },
   {
     tool: codingStatusTool,
@@ -318,6 +334,7 @@ export const codingToolDefinitions = [
       if (!session) return `session not found: ${sessionId}`
       return JSON.stringify(session)
     },
+    summaryKeys: ["sessionId"],
   },
   {
     tool: codingTailTool,
@@ -330,6 +347,7 @@ export const codingToolDefinitions = [
       if (!session) return `session not found: ${sessionId}`
       return formatCodingTail(session)
     },
+    summaryKeys: ["sessionId"],
   },
   {
     tool: codingSendInputTool,
@@ -343,6 +361,7 @@ export const codingToolDefinitions = [
 
       return JSON.stringify(getCodingSessionManager().sendInput(sessionId, input))
     },
+    summaryKeys: ["sessionId", "input"],
   },
   {
     tool: codingKillTool,
@@ -353,5 +372,6 @@ export const codingToolDefinitions = [
 
       return JSON.stringify(getCodingSessionManager().killSession(sessionId))
     },
+    summaryKeys: ["sessionId"],
   },
 ]

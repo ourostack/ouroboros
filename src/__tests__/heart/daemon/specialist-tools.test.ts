@@ -38,10 +38,10 @@ describe("getSpecialistTools", () => {
     expect(params.properties.teams_handle).toBeDefined()
   })
 
-  it("includes final_answer tool", async () => {
+  it("includes settle tool", async () => {
     const { getSpecialistTools } = await import("../../../heart/daemon/specialist-tools")
     const tools = getSpecialistTools()
-    const faTool = tools.find((t) => t.function.name === "final_answer")
+    const faTool = tools.find((t) => t.function.name === "settle")
     expect(faTool).toBeDefined()
   })
 
@@ -49,7 +49,7 @@ describe("getSpecialistTools", () => {
     const { getSpecialistTools } = await import("../../../heart/daemon/specialist-tools")
     const tools = getSpecialistTools()
     const names = tools.map((t) => t.function.name).sort()
-    expect(names).toEqual(["complete_adoption", "final_answer", "list_directory", "read_file", "write_file"])
+    expect(names).toEqual(["complete_adoption", "list_directory", "read_file", "settle", "write_file"])
   })
 })
 
@@ -313,6 +313,11 @@ describe("complete_adoption via createSpecialistExecTool", () => {
     expect(fs.existsSync(path.join(finalBundle, "tasks"))).toBe(true)
     expect(fs.existsSync(path.join(finalBundle, "skills"))).toBe(true)
     expect(fs.existsSync(path.join(finalBundle, "senses"))).toBe(true)
+
+    // habits/ at bundle root (not tasks/habits/)
+    expect(fs.existsSync(path.join(finalBundle, "habits"))).toBe(true)
+    expect(fs.existsSync(path.join(finalBundle, "habits", "README.md"))).toBe(true)
+    expect(fs.existsSync(path.join(finalBundle, "tasks", "habits"))).toBe(false)
 
     // Psyche files should be present
     expect(fs.existsSync(path.join(finalBundle, "psyche", "SOUL.md"))).toBe(true)

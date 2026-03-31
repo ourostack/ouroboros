@@ -4,6 +4,8 @@ This is the operator smoke guide for the current runtime. It focuses on the real
 
 `npx ouro.bot` -> `ouro up` -> `ouro status` -> `ouro chat` / daemon senses -> `ouro stop`
 
+For local development: `npm run dev` (builds and starts daemon from local repo) or `ouro dev` (if the `ouro` binary is current).
+
 ## 1. Bootstrap And Launcher Truth
 
 Run this from outside the repo so you exercise the published bootstrap path rather than a local workspace binary:

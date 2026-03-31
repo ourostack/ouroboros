@@ -2,6 +2,7 @@ import type { Channel } from "../mind/friends/types"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { BoardResult } from "../repertoire/tasks/types"
 import type { CodingSession } from "../repertoire/coding/types"
+import type { ReturnObligation } from "../mind/obligations"
 import { bridgeStateLabel } from "./bridges/state-machine"
 import type { BridgeRecord } from "./bridges/store"
 import type { InnerJob } from "./daemon/thoughts"
@@ -61,6 +62,7 @@ export interface ActiveWorkFrame {
   otherCodingSessions?: CodingSession[]
   pendingObligations: Obligation[]
   targetCandidates?: TargetSessionCandidate[]
+  innerReturnObligations: ReturnObligation[]
   bridgeSuggestion: BridgeSuggestion | null
 }
 
@@ -76,6 +78,7 @@ interface BuildActiveWorkFrameInput {
   taskBoard: BoardResult
   friendActivity: SessionActivityRecord[]
   targetCandidates?: TargetSessionCandidate[]
+  innerReturnObligations?: ReturnObligation[]
 }
 
 export interface BridgeSuggestionInput {
@@ -119,6 +122,12 @@ function hasSharedObligationPressure(input: Pick<BuildActiveWorkFrameInput, "mus
 
 function formatCodingLaneLabel(session: CodingSession): string {
   return `${session.runner} ${session.id}`
+}
+
+function compactCodingCheckpoint(session: CodingSession): string {
+  const checkpoint = session.checkpoint?.replace(/\s+/g, " ").trim()
+  if (!checkpoint) return ""
+  return checkpoint.length <= 80 ? checkpoint : `${checkpoint.slice(0, 77)}...`
 }
 
 function describeCodingSessionScope(session: CodingSession, currentSession: ActiveWorkFrame["currentSession"]): string {
@@ -264,6 +273,14 @@ function formatActiveLane(frame: ActiveWorkFrame, obligation: Obligation | null)
   return null
 }
 
+function formatCodingArtifact(session: CodingSession): string
+function formatCodingArtifact(session: CodingSession | null | undefined): string | null
+function formatCodingArtifact(session: CodingSession | null | undefined): string | null {
+  const artifactPath = session?.artifactPath?.trim()
+  if (artifactPath) return artifactPath
+  return session ? "no PR or merge artifact yet" : null
+}
+
 function formatCurrentArtifact(frame: ActiveWorkFrame, obligation: Obligation | null): string | null {
   if (obligation?.currentArtifact?.trim()) {
     return obligation.currentArtifact.trim()
@@ -271,8 +288,9 @@ function formatCurrentArtifact(frame: ActiveWorkFrame, obligation: Obligation | 
   if (obligation?.currentSurface?.kind === "merge" && obligation.currentSurface.label.trim()) {
     return obligation.currentSurface.label.trim()
   }
-  if ((frame.codingSessions ?? []).length > 0) {
-    return "no PR or merge artifact yet"
+  const liveCodingArtifact = formatCodingArtifact(frame.codingSessions?.[0])
+  if (liveCodingArtifact) {
+    return liveCodingArtifact
   }
   if (obligation) {
     return "no artifact yet"
@@ -346,7 +364,8 @@ function formatOtherSessionArtifact(
   if (obligation?.currentSurface?.kind === "merge" && obligation.currentSurface.label.trim()) {
     return obligation.currentSurface.label.trim()
   }
-  if (codingSession) return "no PR or merge artifact yet"
+  const codingArtifact = formatCodingArtifact(codingSession)
+  if (codingArtifact) return codingArtifact
   return obligation ? "no artifact yet" : "no explicit artifact yet"
 }
 
@@ -407,7 +426,7 @@ export function formatOtherActiveSessionSummaries(frame: ActiveWorkFrame, nowMs 
         "another session",
         session.status,
         formatCodingLaneLabel(session),
-        "no PR or merge artifact yet",
+        formatCodingArtifact(session),
         formatOtherSessionNextAction(null, session),
       ),
     }))
@@ -581,6 +600,7 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
     otherCodingSessions,
     pendingObligations,
     targetCandidates: input.targetCandidates ?? [],
+    innerReturnObligations: input.innerReturnObligations ?? [],
     bridgeSuggestion: suggestBridgeForActiveWork({
       currentSession: input.currentSession,
       currentObligation: input.currentObligation,
@@ -692,7 +712,10 @@ export function formatActiveWorkFrame(frame: ActiveWorkFrame): string {
     lines.push("")
     lines.push("## live coding work")
     for (const session of frame.codingSessions) {
-      lines.push(`- [${session.status}] ${formatCodingLaneLabel(session)}${describeCodingSessionScope(session, frame.currentSession)}`)
+      const checkpoint = compactCodingCheckpoint(session)
+      lines.push(
+        `- [${session.status}] ${formatCodingLaneLabel(session)}${describeCodingSessionScope(session, frame.currentSession)}${checkpoint ? `: ${checkpoint}` : ""}`,
+      )
     }
   }
 
@@ -735,6 +758,17 @@ export function formatActiveWorkFrame(frame: ActiveWorkFrame): string {
         obligationLine += `\n  latest: ${obligation.latestNote.trim()}`
       }
       lines.push(obligationLine)
+    }
+  }
+
+  if (frame.innerReturnObligations && frame.innerReturnObligations.length > 0) {
+    lines.push("")
+    lines.push("## inner return obligations")
+    for (const ob of frame.innerReturnObligations) {
+      const preview = ob.delegatedContent.length > 60
+        ? `${ob.delegatedContent.slice(0, 57)}...`
+        : ob.delegatedContent
+      lines.push(`- [${ob.status}] ${ob.origin.friendId}/${ob.origin.channel}/${ob.origin.key}: ${preview}`)
     }
   }
 

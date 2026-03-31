@@ -31,58 +31,58 @@ vi.mock("../../heart/identity", () => ({
   resetIdentity: vi.fn(),
 }))
 
-describe("noResponseTool", () => {
+describe("observeTool", () => {
   beforeEach(() => {
     vi.resetModules()
   })
 
   it("is exported from tools-base", async () => {
-    const { noResponseTool } = await import("../../repertoire/tools-base")
-    expect(noResponseTool).toBeDefined()
+    const { observeTool } = await import("../../repertoire/tools-base")
+    expect(observeTool).toBeDefined()
   })
 
   it("has type 'function'", async () => {
-    const { noResponseTool } = await import("../../repertoire/tools-base")
-    expect(noResponseTool.type).toBe("function")
+    const { observeTool } = await import("../../repertoire/tools-base")
+    expect(observeTool.type).toBe("function")
   })
 
-  it("has function.name 'no_response'", async () => {
-    const { noResponseTool } = await import("../../repertoire/tools-base")
-    expect(noResponseTool.function.name).toBe("no_response")
+  it("has function.name 'observe'", async () => {
+    const { observeTool } = await import("../../repertoire/tools-base")
+    expect(observeTool.function.name).toBe("observe")
   })
 
-  it("has a description mentioning group chat and staying silent", async () => {
-    const { noResponseTool } = await import("../../repertoire/tools-base")
-    expect(noResponseTool.function.description).toMatch(/silent/i)
-    expect(noResponseTool.function.description).toMatch(/group chat/i)
+  it("has a description about absorbing without responding", async () => {
+    const { observeTool } = await import("../../repertoire/tools-base")
+    expect(observeTool.function.description).toMatch(/absorb/i)
+    expect(observeTool.function.description).toMatch(/without responding/i)
   })
 
   it("has a reason string parameter", async () => {
-    const { noResponseTool } = await import("../../repertoire/tools-base")
-    const params = noResponseTool.function.parameters as any
+    const { observeTool } = await import("../../repertoire/tools-base")
+    const params = observeTool.function.parameters as any
     expect(params.type).toBe("object")
     expect(params.properties.reason).toBeDefined()
     expect(params.properties.reason.type).toBe("string")
   })
 
   it("reason parameter is optional (not in required)", async () => {
-    const { noResponseTool } = await import("../../repertoire/tools-base")
-    const params = noResponseTool.function.parameters as any
+    const { observeTool } = await import("../../repertoire/tools-base")
+    const params = observeTool.function.parameters as any
     // required should either not exist or not include "reason"
     expect(params.required ?? []).not.toContain("reason")
   })
 
-  it("is exported alongside finalAnswerTool", async () => {
-    const { noResponseTool, finalAnswerTool } = await import("../../repertoire/tools-base")
-    expect(noResponseTool).toBeDefined()
-    expect(finalAnswerTool).toBeDefined()
+  it("is exported alongside settleTool", async () => {
+    const { observeTool, settleTool } = await import("../../repertoire/tools-base")
+    expect(observeTool).toBeDefined()
+    expect(settleTool).toBeDefined()
     // They should be different tools
-    expect(noResponseTool.function.name).not.toBe(finalAnswerTool.function.name)
+    expect(observeTool.function.name).not.toBe(settleTool.function.name)
   })
 
   it("is re-exported from tools.ts", async () => {
-    const { noResponseTool } = await import("../../repertoire/tools")
-    expect(noResponseTool).toBeDefined()
-    expect(noResponseTool.function.name).toBe("no_response")
+    const { observeTool } = await import("../../repertoire/tools")
+    expect(observeTool).toBeDefined()
+    expect(observeTool.function.name).toBe("observe")
   })
 })

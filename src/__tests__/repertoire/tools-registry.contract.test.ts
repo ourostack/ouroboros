@@ -114,10 +114,9 @@ describe("tool registry contract", () => {
     expect(names).toContain("query_active_work");
     expect(names).toContain("query_session");
     expect(names).toContain("web_search");
-    expect(names).toContain("memory_save");
-    expect(names).toContain("memory_search");
+    expect(names).toContain("diary_write");
+    expect(names).toContain("recall");
     expect(names).toContain("save_friend_note");
-    expect(names).toContain("safe_workspace");
     expect(names).toContain("get_friend_note");
     expect(names).toContain("list_skills");
     expect(names).toContain("load_skill");
@@ -130,6 +129,6 @@ describe("tool registry contract", () => {
     expect(names).toContain("set_reasoning_effort");
 
     // Exact count: 25 tools total
-    expect(names).toHaveLength(25);
+    expect(names).toHaveLength(24);
   });
 });

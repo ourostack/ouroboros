@@ -49,14 +49,14 @@ export interface TurnResult {
   toolCalls: { id: string; name: string; arguments: string }[];
   outputItems: ResponseItem[];
   usage?: UsageData;
-  finalAnswerStreamed?: boolean;
+  settleStreamed?: boolean;
 }
 
 // Character-level state machine that extracts the answer value from
-// `final_answer` tool call JSON arguments as they stream in.
+// `settle` tool call JSON arguments as they stream in.
 // Scans for prefix `"answer":"` or `"answer": "` in the character stream,
 // then emits text handling JSON escapes, stopping at unescaped closing `"`.
-export class FinalAnswerParser {
+export class SettleParser {
   // Possible prefixes to match (with and without space after colon)
   private static readonly PREFIXES = ['"answer":"', '"answer": "'];
   // Buffer of characters seen so far (pre-activation only)
@@ -76,7 +76,7 @@ export class FinalAnswerParser {
       if (!this._active) {
         this.buf += ch;
         // Check if any prefix has been fully matched in the buffer
-        for (const prefix of FinalAnswerParser.PREFIXES) {
+        for (const prefix of SettleParser.PREFIXES) {
           if (this.buf.endsWith(prefix)) {
             this._active = true;
             break;
@@ -108,11 +108,11 @@ export class FinalAnswerParser {
   }
 }
 
-// Shared helper: wraps FinalAnswerParser with onClearText + onTextChunk wiring.
+// Shared helper: wraps SettleParser with onClearText + onTextChunk wiring.
 // Used by all streaming providers (Chat Completions, Responses API, Anthropic)
-// so the eager-match streaming pattern lives in one place.
-export class FinalAnswerStreamer {
-  private parser = new FinalAnswerParser();
+// so the eager-match settle streaming pattern lives in one place.
+export class SettleStreamer {
+  private parser = new SettleParser();
   private _detected = false;
   private callbacks: ChannelCallbacks;
   private enabled: boolean;
@@ -125,7 +125,7 @@ export class FinalAnswerStreamer {
   get detected(): boolean { return this._detected; }
   get streamed(): boolean { return this.parser.active; }
 
-  /** Mark final_answer as detected. Calls onClearText on the callbacks. */
+  /** Mark settle as detected. Calls onClearText on the callbacks. */
   activate(): void {
     if (!this.enabled) return;
     if (this._detected) return;
@@ -145,7 +145,7 @@ export class FinalAnswerStreamer {
 // Assistant message with optional reasoning items and phase (persisted through sessions)
 export interface AssistantMessageWithReasoning extends OpenAI.ChatCompletionAssistantMessageParam {
   _reasoning_items?: ResponseItem[];
-  phase?: "commentary" | "final_answer";
+  phase?: "commentary" | "settle";
 }
 
 function toResponsesUserContent(
@@ -290,7 +290,7 @@ export async function streamChatCompletion(
   createParams: Record<string, unknown>,
   callbacks: ChannelCallbacks,
   signal?: AbortSignal,
-  eagerFinalAnswerStreaming = true,
+  eagerSettleStreaming = true,
 ): Promise<TurnResult> {
   emitNervesEvent({
     component: "engine",
@@ -312,7 +312,7 @@ export async function streamChatCompletion(
   > = {};
   let streamStarted = false;
   let usage: UsageData | undefined;
-  const answerStreamer = new FinalAnswerStreamer(callbacks, eagerFinalAnswerStreaming);
+  const answerStreamer = new SettleStreamer(callbacks, eagerSettleStreaming);
 
   // State machine for parsing inline <think> tags (MiniMax pattern)
   let contentBuf = "";
@@ -420,19 +420,19 @@ export async function streamChatCompletion(
         if (tc.id) toolCalls[tc.index].id = tc.id;
         if (tc.function?.name) {
           toolCalls[tc.index].name = tc.function.name;
-          // Detect final_answer tool call on first name delta.
+          // Detect settle tool call on first name delta.
           // Only activate streaming if this is the sole tool call (index 0
           // and no other indices seen). Mixed calls are rejected by core.ts.
-          if (tc.function.name === "final_answer" && !answerStreamer.detected
+          if (tc.function.name === "settle" && !answerStreamer.detected
               && tc.index === 0 && Object.keys(toolCalls).length === 1) {
             answerStreamer.activate();
           }
         }
         if (tc.function?.arguments) {
           toolCalls[tc.index].arguments += tc.function.arguments;
-          // Feed final_answer argument deltas to the parser for progressive
+          // Feed settle argument deltas to the parser for progressive
           // streaming, but only when it appears to be the sole tool call.
-          if (answerStreamer.detected && toolCalls[tc.index].name === "final_answer"
+          if (answerStreamer.detected && toolCalls[tc.index].name === "settle"
               && Object.keys(toolCalls).length === 1) {
             answerStreamer.processDelta(tc.function.arguments);
           }
@@ -448,7 +448,7 @@ export async function streamChatCompletion(
     toolCalls: Object.values(toolCalls),
     outputItems: [],
     usage,
-    finalAnswerStreamed: answerStreamer.streamed,
+    settleStreamed: answerStreamer.streamed,
   };
 }
 
@@ -457,7 +457,7 @@ export async function streamResponsesApi(
   createParams: Record<string, unknown>,
   callbacks: ChannelCallbacks,
   signal?: AbortSignal,
-  eagerFinalAnswerStreaming = true,
+  eagerSettleStreaming = true,
 ): Promise<TurnResult> {
   emitNervesEvent({
     component: "engine",
@@ -477,7 +477,7 @@ export async function streamResponsesApi(
   const outputItems: ResponseItem[] = [];
   let currentToolCall: { call_id: string; name: string; arguments: string } | null = null;
   let usage: UsageData | undefined;
-  const answerStreamer = new FinalAnswerStreamer(callbacks, eagerFinalAnswerStreaming);
+  const answerStreamer = new SettleStreamer(callbacks, eagerSettleStreaming);
   let functionCallCount = 0;
 
   for await (const event of response) {
@@ -507,10 +507,10 @@ export async function streamResponsesApi(
             name: String(event.item.name),
             arguments: "",
           };
-          // Detect final_answer function call -- clear any streamed noise.
+          // Detect settle function call -- clear any streamed noise.
           // Only activate when this is the first (and so far only) function call.
           // Mixed calls are rejected by core.ts; no need to stream their args.
-          if (String(event.item.name) === "final_answer" && functionCallCount === 1) {
+          if (String(event.item.name) === "settle" && functionCallCount === 1) {
             answerStreamer.activate();
           }
         }
@@ -519,9 +519,9 @@ export async function streamResponsesApi(
       case "response.function_call_arguments.delta": {
         if (currentToolCall) {
           currentToolCall.arguments += event.delta;
-          // Feed final_answer argument deltas to the parser for progressive
+          // Feed settle argument deltas to the parser for progressive
           // streaming, but only when it appears to be the sole function call.
-          if (answerStreamer.detected && currentToolCall.name === "final_answer"
+          if (answerStreamer.detected && currentToolCall.name === "settle"
               && functionCallCount === 1) {
             answerStreamer.processDelta(String(event.delta));
           }
@@ -564,6 +564,6 @@ export async function streamResponsesApi(
     toolCalls,
     outputItems,
     usage,
-    finalAnswerStreamed: answerStreamer.streamed,
+    settleStreamed: answerStreamer.streamed,
   };
 }

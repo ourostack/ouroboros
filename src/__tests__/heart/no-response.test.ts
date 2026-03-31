@@ -125,7 +125,7 @@ function makeCallbacks(overrides: Partial<ChannelCallbacks> = {}): ChannelCallba
   }
 }
 
-describe("no_response tool in runAgent", () => {
+describe("observe tool in runAgent", () => {
   let runAgent: (
     messages: any[],
     callbacks: ChannelCallbacks,
@@ -145,17 +145,17 @@ describe("no_response tool in runAgent", () => {
     runAgent = core.runAgent
   })
 
-  it("RunAgentOutcome includes no_response (type-level compile check)", async () => {
-    // If this compiles, no_response is part of the union
-    const outcome: RunAgentOutcome = "no_response"
-    expect(outcome).toBe("no_response")
+  it("RunAgentOutcome includes observed (type-level compile check)", async () => {
+    // If this compiles, observed is part of the union
+    const outcome: RunAgentOutcome = "observed"
+    expect(outcome).toBe("observed")
   })
 
-  it("returns outcome 'no_response' when no_response is the sole tool call", async () => {
+  it("returns outcome 'observed' when observe is the sole tool call", async () => {
     mockCreate.mockReturnValue(
       makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_1", function: { name: "no_response", arguments: '{"reason":"not directed at me"}' } },
+          { index: 0, id: "call_1", function: { name: "observe", arguments: '{"reason":"not directed at me"}' } },
         ]),
       ])
     )
@@ -170,15 +170,15 @@ describe("no_response tool in runAgent", () => {
       },
     })
 
-    expect(result.outcome).toBe("no_response")
+    expect(result.outcome).toBe("observed")
     expect(result.completion).toBeUndefined()
   })
 
-  it("does not invoke onTextChunk or onClearText when no_response is used", async () => {
+  it("does not invoke onTextChunk or onClearText when observe is used", async () => {
     mockCreate.mockReturnValue(
       makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_1", function: { name: "no_response", arguments: '{}' } },
+          { index: 0, id: "call_1", function: { name: "observe", arguments: '{}' } },
         ]),
       ])
     )
@@ -199,22 +199,22 @@ describe("no_response tool in runAgent", () => {
     expect(onClearText).not.toHaveBeenCalled()
   })
 
-  it("rejects no_response when mixed with other tool calls", async () => {
+  it("rejects observe when mixed with other tool calls", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
       if (callCount === 1) {
         return makeStream([
           makeChunk(undefined, [
-            { index: 0, id: "call_1", function: { name: "no_response", arguments: '{}' } },
+            { index: 0, id: "call_1", function: { name: "observe", arguments: '{}' } },
             { index: 1, id: "call_2", function: { name: "read_file", arguments: '{"path":"a.txt"}' } },
           ]),
         ])
       }
-      // Second call: model returns final_answer alone to end the loop
+      // Second call: model returns settle alone to end the loop
       return makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_3", function: { name: "final_answer", arguments: '{"answer":"done"}' } },
+          { index: 0, id: "call_3", function: { name: "settle", arguments: '{"answer":"done"}' } },
         ]),
       ])
     })
@@ -231,19 +231,19 @@ describe("no_response tool in runAgent", () => {
       },
     })
 
-    // Find rejection message for no_response
+    // Find rejection message for observe
     const toolResults = messages.filter((m: any) => m.role === "tool")
     const rejection = toolResults.find((m: any) => m.tool_call_id === "call_1")
     expect(rejection).toBeDefined()
     expect(rejection.content).toContain("rejected")
-    expect(rejection.content).toContain("no_response must be the only tool call")
+    expect(rejection.content).toContain("observe must be the only tool call")
   })
 
-  it("includes no_response in activeTools when toolChoiceRequired and isGroupChat", async () => {
+  it("includes observe in activeTools when toolChoiceRequired and isGroupChat", async () => {
     mockCreate.mockReturnValue(
       makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_1", function: { name: "final_answer", arguments: '{"answer":"done"}' } },
+          { index: 0, id: "call_1", function: { name: "settle", arguments: '{"answer":"done"}' } },
         ]),
       ])
     )
@@ -261,15 +261,15 @@ describe("no_response tool in runAgent", () => {
     // The MiniMax provider passes tools through to the API
     const params = mockCreate.mock.calls[0][0]
     const toolNames = params.tools.map((t: any) => t.function.name)
-    expect(toolNames).toContain("no_response")
-    expect(toolNames).toContain("final_answer")
+    expect(toolNames).toContain("observe")
+    expect(toolNames).toContain("settle")
   })
 
-  it("does NOT include no_response in activeTools when isGroupChat is false", async () => {
+  it("does NOT include observe in activeTools when isGroupChat is false", async () => {
     mockCreate.mockReturnValue(
       makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_1", function: { name: "final_answer", arguments: '{"answer":"done"}' } },
+          { index: 0, id: "call_1", function: { name: "settle", arguments: '{"answer":"done"}' } },
         ]),
       ])
     )
@@ -286,14 +286,14 @@ describe("no_response tool in runAgent", () => {
 
     const params = mockCreate.mock.calls[0][0]
     const toolNames = params.tools.map((t: any) => t.function.name)
-    expect(toolNames).not.toContain("no_response")
+    expect(toolNames).not.toContain("observe")
   })
 
-  it("does NOT include no_response when isGroupChat is undefined", async () => {
+  it("does NOT include observe when isGroupChat is undefined", async () => {
     mockCreate.mockReturnValue(
       makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_1", function: { name: "final_answer", arguments: '{"answer":"done"}' } },
+          { index: 0, id: "call_1", function: { name: "settle", arguments: '{"answer":"done"}' } },
         ]),
       ])
     )
@@ -310,10 +310,10 @@ describe("no_response tool in runAgent", () => {
 
     const params = mockCreate.mock.calls[0][0]
     const toolNames = params.tools.map((t: any) => t.function.name)
-    expect(toolNames).not.toContain("no_response")
+    expect(toolNames).not.toContain("observe")
   })
 
-  it("emits a nerves event when no_response is used", async () => {
+  it("emits a nerves event when observe is used", async () => {
     vi.resetModules()
     vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
     await setupMinimax()
@@ -326,7 +326,7 @@ describe("no_response tool in runAgent", () => {
     mockCreate.mockReturnValue(
       makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_1", function: { name: "no_response", arguments: '{"reason":"just a reaction"}' } },
+          { index: 0, id: "call_1", function: { name: "observe", arguments: '{"reason":"just a reaction"}' } },
         ]),
       ])
     )
@@ -342,20 +342,20 @@ describe("no_response tool in runAgent", () => {
       },
     })
 
-    // Check that emitNervesEvent was called with the no_response event
-    const noResponseEvent = emitNervesEvent.mock.calls.find(
-      (call: any[]) => call[0].event === "engine.no_response"
+    // Check that emitNervesEvent was called with the observe event
+    const observeEvent = emitNervesEvent.mock.calls.find(
+      (call: any[]) => call[0].event === "engine.observe"
     )
-    expect(noResponseEvent).toBeDefined()
-    expect(noResponseEvent![0].component).toBe("engine")
-    expect(noResponseEvent![0].meta).toHaveProperty("reason", "just a reaction")
+    expect(observeEvent).toBeDefined()
+    expect(observeEvent![0].component).toBe("engine")
+    expect(observeEvent![0].meta).toHaveProperty("reason", "just a reaction")
   })
 
   it("pushes assistant message and silenced tool result to messages", async () => {
     mockCreate.mockReturnValue(
       makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_1", function: { name: "no_response", arguments: '{}' } },
+          { index: 0, id: "call_1", function: { name: "observe", arguments: '{}' } },
         ]),
       ])
     )
@@ -372,10 +372,143 @@ describe("no_response tool in runAgent", () => {
 
     const assistantMsg = messages.find((m: any) => m.role === "assistant")
     expect(assistantMsg).toBeDefined()
-    expect(assistantMsg.tool_calls[0].function.name).toBe("no_response")
+    expect(assistantMsg.tool_calls[0].function.name).toBe("observe")
 
     const toolResult = messages.find((m: any) => m.role === "tool" && m.tool_call_id === "call_1")
     expect(toolResult).toBeDefined()
     expect(toolResult.content).toBe("(silenced)")
+  })
+
+  it("inner dialog excludes send_message, observe, and settle; includes ponder, rest, surface", async () => {
+    mockCreate.mockReturnValue(
+      makeStream([
+        makeChunk(undefined, [
+          { index: 0, id: "call_1", function: { name: "rest", arguments: '{}' } },
+        ]),
+      ])
+    )
+
+    await runAgent(
+      [{ role: "user", content: "heartbeat" }],
+      makeCallbacks(),
+      "inner",
+      undefined,
+      {
+        toolChoiceRequired: true,
+        toolContext: {
+          signin: async () => undefined,
+          context: { isGroupChat: false, channel: { channel: "inner", senseType: "open", availableIntegrations: [], supportsMarkdown: false, supportsStreaming: true, supportsRichCards: false, maxMessageLength: Infinity } },
+        },
+      },
+    )
+
+    const params = mockCreate.mock.calls[0][0]
+    const toolNames = params.tools.map((t: any) => t.function.name)
+    expect(toolNames).toContain("ponder")
+    expect(toolNames).toContain("rest")
+    expect(toolNames).not.toContain("send_message")
+    expect(toolNames).not.toContain("observe")
+    expect(toolNames).not.toContain("settle")
+    expect(toolNames).toContain("surface")
+  })
+
+  // ── isReactionSignal observe gate extension ──────────────────────────────
+  it("includes observe in activeTools when isReactionSignal:true + 1:1 (not group)", async () => {
+    mockCreate.mockReturnValue(
+      makeStream([
+        makeChunk(undefined, [
+          { index: 0, id: "call_1", function: { name: "observe", arguments: '{"reason":"just a thumbs up"}' } },
+        ]),
+      ])
+    )
+
+    const callbacks = makeCallbacks()
+    const messages: any[] = [{ role: "system", content: "test" }]
+    await runAgent(messages, callbacks, undefined, undefined, {
+      toolChoiceRequired: true,
+      isReactionSignal: true,
+      toolContext: {
+        signin: async () => undefined,
+        context: { isGroupChat: false, channel: { channel: "teams", senseType: "closed", availableIntegrations: [], supportsMarkdown: true, supportsStreaming: true, supportsRichCards: true, maxMessageLength: 28000 } },
+      },
+    })
+
+    const params = mockCreate.mock.calls[0][0]
+    const toolNames = params.tools.map((t: any) => t.function.name)
+    expect(toolNames).toContain("observe")
+  })
+
+  it("does NOT include observe when isReactionSignal is undefined + 1:1", async () => {
+    mockCreate.mockReturnValue(
+      makeStream([
+        makeChunk(undefined, [
+          { index: 0, id: "call_1", function: { name: "settle", arguments: '{"answer":"done"}' } },
+        ]),
+      ])
+    )
+
+    const callbacks = makeCallbacks()
+    const messages: any[] = [{ role: "system", content: "test" }]
+    await runAgent(messages, callbacks, undefined, undefined, {
+      toolChoiceRequired: true,
+      toolContext: {
+        signin: async () => undefined,
+        context: { isGroupChat: false, channel: { channel: "teams", senseType: "closed", availableIntegrations: [], supportsMarkdown: true, supportsStreaming: true, supportsRichCards: true, maxMessageLength: 28000 } },
+      },
+    })
+
+    const params = mockCreate.mock.calls[0][0]
+    const toolNames = params.tools.map((t: any) => t.function.name)
+    expect(toolNames).not.toContain("observe")
+  })
+
+  it("includes observe when isReactionSignal:true + group chat (still works)", async () => {
+    mockCreate.mockReturnValue(
+      makeStream([
+        makeChunk(undefined, [
+          { index: 0, id: "call_1", function: { name: "observe", arguments: '{}' } },
+        ]),
+      ])
+    )
+
+    const callbacks = makeCallbacks()
+    const messages: any[] = [{ role: "system", content: "test" }]
+    await runAgent(messages, callbacks, undefined, undefined, {
+      toolChoiceRequired: true,
+      isReactionSignal: true,
+      toolContext: {
+        signin: async () => undefined,
+        context: { isGroupChat: true, channel: { channel: "teams", senseType: "closed", availableIntegrations: [], supportsMarkdown: true, supportsStreaming: true, supportsRichCards: true, maxMessageLength: 28000 } },
+      },
+    })
+
+    const params = mockCreate.mock.calls[0][0]
+    const toolNames = params.tools.map((t: any) => t.function.name)
+    expect(toolNames).toContain("observe")
+  })
+
+  it("does NOT include observe when isReactionSignal:true + inner dialog", async () => {
+    mockCreate.mockReturnValue(
+      makeStream([
+        makeChunk(undefined, [
+          { index: 0, id: "call_1", function: { name: "rest", arguments: '{}' } },
+        ]),
+      ])
+    )
+
+    const callbacks = makeCallbacks()
+    const messages: any[] = [{ role: "system", content: "test" }]
+    await runAgent(messages, callbacks, "inner", undefined, {
+      toolChoiceRequired: true,
+      isReactionSignal: true,
+      toolContext: {
+        signin: async () => undefined,
+        context: { isGroupChat: false, channel: { channel: "inner", senseType: "open", availableIntegrations: [], supportsMarkdown: false, supportsStreaming: true, supportsRichCards: false, maxMessageLength: Infinity } },
+      },
+    })
+
+    const params = mockCreate.mock.calls[0][0]
+    const toolNames = params.tools.map((t: any) => t.function.name)
+    expect(toolNames).not.toContain("observe")
   })
 })

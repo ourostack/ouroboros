@@ -8,9 +8,10 @@ import {
   getOpenAICodexConfig,
 } from "./config";
 import { loadAgentConfig } from "./identity";
-import { execTool, summarizeArgs, finalAnswerTool, noResponseTool, goInwardTool, getToolsForChannel, isConfirmationRequired } from "../repertoire/tools";
+import { execTool, summarizeArgs, settleTool, observeTool, ponderTool, restTool, getToolsForChannel, isConfirmationRequired } from "../repertoire/tools";
 import type { ToolContext } from "../repertoire/tools";
 import { getChannelCapabilities } from "../mind/friends/channel";
+import { surfaceToolDef } from "../senses/surface-tool";
 import type { AssistantMessageWithReasoning, ResponseItem } from "./streaming";
 import { emitNervesEvent } from "../nerves/runtime";
 import type { TurnResult } from "./streaming";
@@ -34,10 +35,19 @@ import type { PendingMessage } from "../mind/pending";
 import { getAgentName, getAgentRoot } from "./identity";
 import { requestInnerWake } from "./daemon/socket-client";
 import { createObligation } from "./obligations";
+import { createToolLoopState, detectToolLoop, recordToolOutcome } from "./tool-loop";
 
 export type ProviderId = "azure" | "anthropic" | "minimax" | "openai-codex" | "github-copilot";
 
 export type ProviderCapability = "reasoning-effort" | "phase-annotation";
+
+export type ProviderErrorClassification =
+  | "auth-failure"
+  | "usage-limit"
+  | "rate-limit"
+  | "server-error"
+  | "network-error"
+  | "unknown";
 
 export interface CompletionMetadata {
   answer: string;
@@ -53,6 +63,7 @@ export interface ProviderRuntime {
   streamTurn(request: ProviderTurnRequest): Promise<TurnResult>;
   appendToolOutput(callId: string, output: string): void;
   resetTurnState(messages: OpenAI.ChatCompletionMessageParam[]): void;
+  classifyError(error: Error): ProviderErrorClassification;
 }
 
 export interface ProviderTurnRequest {
@@ -63,7 +74,7 @@ export interface ProviderTurnRequest {
   traceId?: string;
   toolChoiceRequired?: boolean;
   reasoningEffort?: string;
-  eagerFinalAnswerStreaming?: boolean;
+  eagerSettleStreaming?: boolean;
 }
 
 interface ProviderRegistry {
@@ -225,7 +236,7 @@ export interface ChannelCallbacks {
   onKick?(): void;
   onConfirmAction?(name: string, args: Record<string, string>): Promise<"confirmed" | "denied">;
   // Clear any buffered text accumulated during streaming. Called before emitting
-  // the final_answer so streamed noise (e.g. refusal text) is discarded.
+  // the settle answer so streamed noise (e.g. refusal text) is discarded.
   onClearText?(): void;
 }
 
@@ -246,16 +257,29 @@ export interface RunAgentOptions {
   tools?: OpenAI.ChatCompletionFunctionTool[];
   execTool?: (name: string, args: Record<string, string>, ctx?: ToolContext) => Promise<string>;
   mcpManager?: McpManager;
+  /** When true, the observe tool is available in 1:1 chats (normally group-only).
+   *  Used for reaction/feedback signals where silence is natural even in DMs. */
+  isReactionSignal?: boolean;
 }
 
 export type RunAgentOutcome =
-  | "complete"
+  | "settled"
   | "blocked"
   | "superseded"
   | "aborted"
   | "errored"
-  | "no_response"
-  | "go_inward";
+  | "observed"
+  | "pondered"
+  | "rested";
+
+// Sole-call tools must be the only tool call in a turn. When they appear
+// alongside other tools, the sole-call tool is rejected with this message.
+const SOLE_CALL_REJECTION: Record<string, string> = {
+  settle: "rejected: settle must be the only tool call. finish your work first, then call settle alone.",
+  observe: "rejected: observe must be the only tool call. call observe alone when you want to stay silent.",
+  ponder: "rejected: ponder must be the only tool call. finish your other work first, then call ponder alone.",
+  rest: "rejected: rest must be the only tool call. finish your work first, then call rest alone.",
+};
 
 const DELEGATION_REASON_PROSE_HANDOFF: Record<DelegationReason, string> = {
   explicit_reflection: "something in the conversation called for reflection",
@@ -266,8 +290,8 @@ const DELEGATION_REASON_PROSE_HANDOFF: Record<DelegationReason, string> = {
   unresolved_obligation: "there's an unresolved commitment from an earlier conversation",
 };
 
-function buildGoInwardHandoffPacket(params: {
-  content: string
+function buildPonderHandoffPacket(params: {
+  topic: string
   mode: "reflect" | "plan" | "relay"
   delegationDecision?: DelegationDecision
   currentSession?: { friendId: string; channel: string; key: string } | null
@@ -279,38 +303,38 @@ function buildGoInwardHandoffPacket(params: {
     ? reasons.map((r) => DELEGATION_REASON_PROSE_HANDOFF[r]).join("; ")
     : "this felt like it needed more thought"
 
-  const returnAddress = params.currentSession
-    ? `${params.currentSession.friendId}/${params.currentSession.channel}/${params.currentSession.key}`
-    : "no specific return -- just thinking"
+  const whoAsked = params.currentSession
+    ? params.currentSession.friendId
+    : "no one -- just thinking"
 
-  let obligationLine: string
+  let holdingLine: string
   if (params.outwardClosureRequired && params.currentSession) {
-    obligationLine = `i need to come back to ${params.currentSession.friendId} with something`
+    holdingLine = `i'm holding something for ${params.currentSession.friendId}`
   } else {
-    obligationLine = "no obligation -- just thinking"
+    holdingLine = "nothing -- just thinking"
   }
 
   return [
     "## what i need to think about",
-    params.content,
+    params.topic,
     "",
     "## why this came up",
     reasonProse,
     "",
-    "## where to bring it back",
-    returnAddress,
+    "## who asked",
+    whoAsked,
     "",
-    "## what i owe",
-    obligationLine,
+    "## what i'm holding",
+    holdingLine,
     "",
     "## thinking mode",
     params.mode,
   ].join("\n")
 }
 
-type FinalAnswerIntent = "complete" | "blocked" | "direct_reply";
+type SettleIntent = "complete" | "blocked" | "direct_reply";
 
-function parseFinalAnswerPayload(argumentsText: string): { answer?: string; intent?: FinalAnswerIntent } {
+function parseSettlePayload(argumentsText: string): { answer?: string; intent?: SettleIntent } {
   try {
     const parsed = JSON.parse(argumentsText);
     if (typeof parsed === "string") {
@@ -338,42 +362,33 @@ export function isExternalStateQuery(toolName: string, args: Record<string, unkn
   return /\bgh\s+(pr|run|api|issue)\b/.test(cmd) || /\bnpm\s+(view|info|show)\b/.test(cmd);
 }
 
-export function getFinalAnswerRetryError(
+export function getSettleRetryError(
   mustResolveBeforeHandoff: boolean,
-  intent: FinalAnswerIntent | undefined,
+  intent: SettleIntent | undefined,
   sawSteeringFollowUp: boolean,
-  delegationDecision?: DelegationDecision,
+  _delegationDecision?: DelegationDecision,
   sawSendMessageSelf?: boolean,
-  sawGoInward?: boolean,
-  sawQuerySession?: boolean,
+  sawPonder?: boolean,
+  _sawQuerySession?: boolean,
   currentObligation?: string | null,
   innerJob?: InnerJob,
   sawExternalStateQuery?: boolean,
 ): string | null {
-  // 1. Delegation adherence: delegate-inward without evidence of inward action
-  if (delegationDecision?.target === "delegate-inward" && !sawSendMessageSelf && !sawGoInward && !sawQuerySession) {
-    emitNervesEvent({
-      event: "engine.delegation_adherence_rejected",
-      component: "engine",
-      message: "delegation adherence check rejected final_answer",
-      meta: {
-        target: delegationDecision.target,
-        reasons: delegationDecision.reasons,
-      },
-    });
-    return "you're reaching for a final answer, but part of you knows this needs more thought. take it inward -- go_inward will let you think privately, or send_message(self) if you just want to leave yourself a note.";
-  }
+  // Delegation adherence removed: the delegation decision is surfaced in the
+  // system prompt as a suggestion. Hard-gating settle caused infinite
+  // rejection loops where the agent couldn't respond to the user at all.
+  // The agent is free to follow or ignore the delegation hint.
   // 2. Pending obligation not addressed
-  if (innerJob?.obligationStatus === "pending" && !sawSendMessageSelf && !sawGoInward) {
-    return "you're still holding something from an earlier conversation -- someone is waiting for your answer. finish the thought first, or go_inward to keep working on it privately.";
+  if (innerJob?.obligationStatus === "pending" && !sawSendMessageSelf && !sawPonder) {
+    return "you're still holding something from an earlier conversation -- someone is waiting for your answer. finish the thought first, or ponder to keep working on it privately.";
   }
   // 3. mustResolveBeforeHandoff + missing intent
   if (mustResolveBeforeHandoff && !intent) {
-    return "your final_answer is missing required intent. when you must keep going until done or blocked, call final_answer again with answer plus intent=complete, blocked, or direct_reply.";
+    return "your settle is missing required intent. when you must keep going until done or blocked, call settle again with answer plus intent=complete, blocked, or direct_reply.";
   }
   // 4. mustResolveBeforeHandoff + direct_reply without follow-up
   if (mustResolveBeforeHandoff && intent === "direct_reply" && !sawSteeringFollowUp) {
-    return "your final_answer used intent=direct_reply without a newer steering follow-up. continue the unresolved work, or call final_answer again with intent=complete or blocked when appropriate.";
+    return "your settle used intent=direct_reply without a newer steering follow-up. continue the unresolved work, or call settle again with intent=complete or blocked when appropriate.";
   }
   // 5. mustResolveBeforeHandoff + complete while a live return loop is still active
   if (mustResolveBeforeHandoff && intent === "complete" && currentObligation && !sawSteeringFollowUp) {
@@ -381,7 +396,7 @@ export function getFinalAnswerRetryError(
   }
   // 6. External-state grounding: obligation + complete requires fresh external verification
   if (intent === "complete" && currentObligation && !sawExternalStateQuery && !sawSteeringFollowUp) {
-    return "you're claiming this work is complete, but the external state hasn't been verified this turn. ground your claim with a fresh check (gh pr view, npm view, gh run view, etc.) before calling final_answer.";
+    return "you're claiming this work is complete, but the external state hasn't been verified this turn. ground your claim with a fresh check (gh pr view, npm view, gh run view, etc.) before calling settle.";
   }
   return null;
 }
@@ -534,13 +549,22 @@ export function classifyTransientError(err: unknown): string {
 const MAX_RETRIES = 3;
 const RETRY_BASE_MS = 2000;
 
+const TRANSIENT_RETRY_LABELS: Record<string, string> = {
+  "auth-failure": "auth error",
+  "usage-limit": "usage limit",
+  "rate-limit": "rate limited",
+  "server-error": "server error",
+  "network-error": "network error",
+  "unknown": "error",
+};
+
 export async function runAgent(
   messages: OpenAI.ChatCompletionMessageParam[],
   callbacks: ChannelCallbacks,
   channel?: Channel,
   signal?: AbortSignal,
   options?: RunAgentOptions,
-): Promise<{ usage?: UsageData; outcome: RunAgentOutcome; completion?: CompletionMetadata }> {
+): Promise<{ usage?: UsageData; outcome: RunAgentOutcome; completion?: CompletionMetadata; error?: Error; errorClassification?: ProviderErrorClassification }> {
   const providerRuntime = getProviderRuntime();
   const provider = providerRuntime.id;
   const toolChoiceRequired = options?.toolChoiceRequired ?? true;
@@ -603,16 +627,19 @@ export async function runAgent(
   let lastUsage: UsageData | undefined;
   let overflowRetried = false;
   let retryCount = 0;
-  let outcome: RunAgentOutcome = "complete";
+  let outcome: RunAgentOutcome = "settled";
   let completion: CompletionMetadata | undefined;
+  let terminalError: Error | undefined;
+  let terminalErrorClassification: ProviderErrorClassification | undefined;
   let sawSteeringFollowUp = false;
   let mustResolveBeforeHandoffActive = options?.mustResolveBeforeHandoff === true;
   let currentReasoningEffort = "medium";
   let sawSendMessageSelf = false;
-  let sawGoInward = false;
+  let sawPonder = false;
   let sawQuerySession = false;
   let sawBridgeManage = false;
   let sawExternalStateQuery = false;
+  const toolLoopState = createToolLoopState();
 
   // Prevent MaxListenersExceeded warning — each iteration adds a listener
   try { require("events").setMaxListeners(50, signal); } catch { /* unsupported */ }
@@ -626,10 +653,11 @@ export async function runAgent(
   );
   // Augment tool context with reasoning effort controls from provider
   const augmentedToolContext: ToolContext | undefined = options?.toolContext
-    ? {
+      ? {
         ...options.toolContext,
         supportedReasoningEfforts: providerRuntime.supportedReasoningEfforts,
         setReasoningEffort: (level: string) => { currentReasoningEffort = level; },
+        activeWorkFrame: options?.activeWorkFrame,
       }
     : undefined;
 
@@ -638,13 +666,26 @@ export async function runAgent(
   providerRuntime.resetTurnState(messages);
 
   while (!done) {
-    // When toolChoiceRequired is true (the default), include final_answer
-    // so the model can signal completion. With tool_choice: required, the
-    // model must call a tool every turn — final_answer is how it exits.
-    // Overridable via options.toolChoiceRequired = false (e.g. CLI).
-    const activeTools = toolChoiceRequired
-      ? [...baseTools, goInwardTool, ...(currentContext?.isGroupChat ? [noResponseTool] : []), finalAnswerTool]
+    // Channel-based tool filtering:
+    // - Inner dialog: exclude send_message (delivery via surface), observe (no one to observe)
+    // - 1:1 sessions: exclude observe (can't ignore someone talking directly to you)
+    // - Group chats: observe available
+    //
+    // ponder, settle/rest, surface, and observe are always assembled based on channel context.
+    // ponder is available in ALL channels (outer: think privately, inner: keep turning).
+    // Inner dialog gets restTool instead of settleTool (rest = end turn, gated by attention queue).
+    // toolChoiceRequired only controls whether tool_choice: "required" is set in the API call.
+    const isInnerDialog = channel === "inner";
+    const filteredBaseTools = isInnerDialog
+      ? baseTools.filter((t) => t.function.name !== "send_message")
       : baseTools;
+    const activeTools = [
+      ...filteredBaseTools,
+      ponderTool,
+      ...(isInnerDialog ? [surfaceToolDef, restTool] : []),
+      ...((currentContext?.isGroupChat || options?.isReactionSignal) && !isInnerDialog ? [observeTool] : []),
+      ...(!isInnerDialog ? [settleTool] : []),
+    ];
     const steeringFollowUps = options?.drainSteeringFollowUps?.() ?? [];
     if (steeringFollowUps.length > 0) {
       const hasSupersedingFollowUp = steeringFollowUps.some((followUp) => followUp.effect === "clear_and_supersede");
@@ -681,7 +722,7 @@ export async function runAgent(
         traceId,
         toolChoiceRequired,
         reasoningEffort: currentReasoningEffort,
-        eagerFinalAnswerStreaming: true,
+        eagerSettleStreaming: true,
       });
 
       // Track usage from the latest API call
@@ -713,31 +754,59 @@ export async function runAgent(
       }
       // Phase annotation for Codex provider
       const hasPhaseAnnotation = providerRuntime.capabilities.has("phase-annotation");
-      const isSoleFinalAnswer = result.toolCalls.length === 1 && result.toolCalls[0].name === "final_answer";
+      const isSoleSettle = result.toolCalls.length === 1 && result.toolCalls[0].name === "settle";
 
       if (hasPhaseAnnotation) {
-        (msg as AssistantMessageWithReasoning).phase = isSoleFinalAnswer ? "final_answer" : "commentary";
+        (msg as AssistantMessageWithReasoning).phase = isSoleSettle ? "settle" : "commentary";
       }
 
       if (!result.toolCalls.length) {
         // No tool calls — accept response as-is.
-        // (Kick detection disabled; tool_choice: required + final_answer
+        // (Kick detection disabled; tool_choice: required + settle
         // is the primary loop control. See src/heart/kicks.ts to re-enable.)
         messages.push(msg);
         done = true;
       } else {
-        // Check for final_answer sole call: intercept before tool execution
-        if (isSoleFinalAnswer) {
+        // Check for settle sole call: intercept before tool execution
+        if (isSoleSettle) {
+          /* v8 ignore next -- defensive: JSON.parse catch for malformed settle args @preserve */
+          const settleArgs = (() => { try { return JSON.parse(result.toolCalls[0].arguments) } catch { return {} } })();
+          callbacks.onToolStart("settle", settleArgs);
+          // Inner dialog attention queue gate: reject settle if items remain
+          const attentionQueue = (augmentedToolContext ?? options?.toolContext)?.delegatedOrigins;
+          if (isInnerDialog && attentionQueue && attentionQueue.length > 0) {
+            callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), false);
+            callbacks.onClearText?.();
+            messages.push(msg);
+            const gateMessage = "you're holding thoughts someone is waiting for — surface them before you settle.";
+            messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: gateMessage });
+            providerRuntime.appendToolOutput(result.toolCalls[0].id, gateMessage);
+            continue;
+          }
+
           // Extract answer from the tool call arguments.
           // Supports: {"answer":"text","intent":"..."} or "text" (JSON string).
-          const { answer, intent } = parseFinalAnswerPayload(result.toolCalls[0].arguments);
-          const retryError = getFinalAnswerRetryError(
+          const { answer, intent } = parseSettlePayload(result.toolCalls[0].arguments);
+
+          // Inner dialog settle: no CompletionMetadata, "(settled)" ack
+          if (isInnerDialog) {
+            callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), true);
+            messages.push(msg);
+            const settled = "(settled)";
+            messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: settled });
+            providerRuntime.appendToolOutput(result.toolCalls[0].id, settled);
+            outcome = "settled";
+            done = true;
+            continue;
+          }
+
+          const retryError = getSettleRetryError(
             mustResolveBeforeHandoffActive,
             intent,
             sawSteeringFollowUp,
             options?.delegationDecision,
             sawSendMessageSelf,
-            sawGoInward,
+            sawPonder,
             sawQuerySession,
             options?.currentObligation ?? null,
             options?.activeWorkFrame?.inner?.job,
@@ -751,13 +820,14 @@ export async function runAgent(
             && (!mustResolveBeforeHandoffActive || validDirectReply || validTerminalIntent);
 
           if (validClosure) {
+            callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), true);
             completion = {
               answer: deliveredAnswer,
               intent: validDirectReply ? "direct_reply" : intent === "blocked" ? "blocked" : "complete",
             };
-            if (result.finalAnswerStreamed) {
+            if (result.settleStreamed) {
               // The streaming layer already parsed and emitted the answer
-              // progressively via FinalAnswerParser. Skip clearing and
+              // progressively via SettleParser. Skip clearing and
               // re-emitting to avoid double-delivery.
             } else {
               // Clear any streamed noise (e.g. refusal text) before emitting.
@@ -775,154 +845,215 @@ export async function runAgent(
               const delivered = "(delivered)";
               messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: delivered });
               providerRuntime.appendToolOutput(result.toolCalls[0].id, delivered);
-              outcome = intent === "blocked" ? "blocked" : "complete";
+              outcome = intent === "blocked" ? "blocked" : "settled";
               done = true;
             }
           } else {
-            // Answer is undefined -- the model's final_answer was incomplete or
+            // Answer is undefined -- the model's settle was incomplete or
             // malformed. Clear any partial streamed text or noise, then push the
             // assistant msg + error tool result and let the model try again.
+            callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), false);
             callbacks.onClearText?.();
             messages.push(msg);
             const toolRetryMessage = retryError
-              ?? "your final_answer was incomplete or malformed. call final_answer again with your complete response."
+              ?? "your settle was incomplete or malformed. call settle again with your complete response."
             messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: toolRetryMessage });
             providerRuntime.appendToolOutput(result.toolCalls[0].id, toolRetryMessage);
           }
           continue;
         }
 
-        // Check for no_response sole call: intercept before tool execution
-        const isSoleNoResponse = result.toolCalls.length === 1 && result.toolCalls[0].name === "no_response";
-        if (isSoleNoResponse) {
+        // Check for observe sole call: intercept before tool execution
+        const isSoleObserve = result.toolCalls.length === 1 && result.toolCalls[0].name === "observe";
+        if (isSoleObserve) {
+          /* v8 ignore next -- defensive: JSON.parse catch for malformed observe args @preserve */
+          const observeArgs = (() => { try { return JSON.parse(result.toolCalls[0].arguments) } catch { return {} } })();
           let reason: string | undefined;
-          try {
-            const parsed = JSON.parse(result.toolCalls[0].arguments);
-            if (typeof parsed?.reason === "string") reason = parsed.reason;
-          } catch { /* ignore */ }
+          if (typeof observeArgs?.reason === "string") reason = observeArgs.reason;
+          callbacks.onToolStart("observe", observeArgs);
           emitNervesEvent({
             component: "engine",
-            event: "engine.no_response",
-            message: "agent declined to respond in group chat",
+            event: "engine.observe",
+            message: "agent observed without responding",
             meta: { ...(reason ? { reason } : {}) },
           });
+          callbacks.onToolEnd("observe", summarizeArgs("observe", observeArgs), true);
           messages.push(msg);
           const silenced = "(silenced)";
           messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: silenced });
           providerRuntime.appendToolOutput(result.toolCalls[0].id, silenced);
-          outcome = "no_response";
+          outcome = "observed";
           done = true;
           continue;
         }
 
-        // Check for go_inward sole call: intercept before tool execution
-        const isSoleGoInward = result.toolCalls.length === 1 && result.toolCalls[0].name === "go_inward";
-        if (isSoleGoInward) {
-          let parsedArgs: { content?: string; answer?: string; mode?: string } = {};
+        // Check for ponder sole call: intercept before tool execution
+        const isSolePonder = result.toolCalls.length === 1 && result.toolCalls[0].name === "ponder";
+        if (isSolePonder) {
+          let parsedArgs: { thought?: string; say?: string } = {};
           try {
             parsedArgs = JSON.parse(result.toolCalls[0].arguments);
           } catch { /* ignore */ }
-          /* v8 ignore next -- defensive: content always string from model @preserve */
-          const content = typeof parsedArgs.content === "string" ? parsedArgs.content : "";
-          const answer = typeof parsedArgs.answer === "string" ? parsedArgs.answer : undefined;
-          const parsedMode = parsedArgs.mode === "reflect" || parsedArgs.mode === "plan" || parsedArgs.mode === "relay"
-            ? parsedArgs.mode
-            : undefined;
-          const mode = parsedMode || "reflect";
+          callbacks.onToolStart("ponder", parsedArgs as Record<string, string>);
 
-          // Emit outward answer if provided
-          if (answer) {
-            callbacks.onClearText?.();
-            callbacks.onTextChunk(answer);
-          }
-
-          // Build handoff packet and enqueue
-          const handoffContent = buildGoInwardHandoffPacket({
-            content,
-            mode,
-            delegationDecision: options?.delegationDecision,
-            currentSession: (options?.toolContext as ToolContext | undefined)?.currentSession ?? null,
-            currentObligation: options?.currentObligation ?? null,
-            outwardClosureRequired: options?.delegationDecision?.outwardClosureRequired ?? false,
-          });
-          const pendingDir = getInnerDialogPendingDir(getAgentName());
           const currentSession = (options?.toolContext as ToolContext | undefined)?.currentSession;
           const isInnerChannel = currentSession?.friendId === "self" && currentSession?.channel === "inner";
-          const envelope: PendingMessage = {
-            from: getAgentName(),
-            friendId: "self",
-            channel: "inner",
-            key: "dialog",
-            content: handoffContent,
-            timestamp: Date.now(),
-            mode,
-            ...(currentSession && !isInnerChannel ? {
-              delegatedFrom: {
-                friendId: currentSession.friendId,
-                channel: currentSession.channel,
-                key: currentSession.key,
-              },
-              obligationStatus: "pending" as const,
-            } : {}),
-          };
-          queuePendingMessage(pendingDir, envelope);
-          if (currentSession && !isInnerChannel) {
-            try {
-              createObligation(getAgentRoot(), {
-                origin: {
+
+          if (!isInnerChannel) {
+            // Outer session: thought and say are required
+            const thought = typeof parsedArgs.thought === "string" ? parsedArgs.thought : undefined;
+            const say = typeof parsedArgs.say === "string" ? parsedArgs.say : undefined;
+            if (!thought || !say) {
+              callbacks.onToolEnd("ponder", summarizeArgs("ponder", parsedArgs as Record<string, string>), false);
+              messages.push(msg);
+              const errorMsg = "ponder requires both thought and say when called from a conversation. thought is what needs more thinking; say is what you tell them before going quiet.";
+              messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: errorMsg });
+              providerRuntime.appendToolOutput(result.toolCalls[0].id, errorMsg);
+              continue;
+            }
+
+            // Emit outward say text
+            callbacks.onClearText?.();
+            callbacks.onTextChunk(say);
+
+            // Build handoff packet and enqueue
+            const handoffContent = buildPonderHandoffPacket({
+              topic: thought,
+              mode: "reflect",
+              delegationDecision: options?.delegationDecision,
+              currentSession: currentSession ?? null,
+              currentObligation: options?.currentObligation ?? null,
+              outwardClosureRequired: options?.delegationDecision?.outwardClosureRequired ?? false,
+            });
+            const pendingDir = getInnerDialogPendingDir(getAgentName());
+            // Create obligation FIRST so we can attach its ID to the pending message
+            let createdObligationId: string | undefined;
+            if (currentSession) {
+              try {
+                const obligation = createObligation(getAgentRoot(), {
+                  origin: {
+                    friendId: currentSession.friendId,
+                    channel: currentSession.channel,
+                    key: currentSession.key,
+                  },
+                  content: thought,
+                })
+                createdObligationId = obligation.id;
+              } catch {
+                /* v8 ignore next -- defensive: obligation store write failure should not break ponder @preserve */
+              }
+            }
+            const envelope: PendingMessage = {
+              from: getAgentName(),
+              friendId: "self",
+              channel: "inner",
+              key: "dialog",
+              content: handoffContent,
+              timestamp: Date.now(),
+              ...(currentSession ? {
+                delegatedFrom: {
                   friendId: currentSession.friendId,
                   channel: currentSession.channel,
                   key: currentSession.key,
                 },
-                content,
-              })
-            } catch {
-              /* v8 ignore next -- defensive: obligation store write failure should not break go_inward @preserve */
-            }
-          }
-          try { await requestInnerWake(getAgentName()); } catch { /* daemon may not be running */ }
+                obligationStatus: "pending" as const,
+                /* v8 ignore next -- defensive: createdObligationId is undefined only when obligation store write fails @preserve */
+                ...(createdObligationId ? { obligationId: createdObligationId } : {}),
+              } : {}),
+            };
+            queuePendingMessage(pendingDir, envelope);
+            try { await requestInnerWake(getAgentName()); } catch { /* daemon may not be running */ }
 
-          sawGoInward = true;
+            callbacks.onToolEnd("ponder", summarizeArgs("ponder", parsedArgs as Record<string, string>), true);
+            sawPonder = true;
+            messages.push(msg);
+            const ack = "(pondering)";
+            messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: ack });
+            providerRuntime.appendToolOutput(result.toolCalls[0].id, ack);
+
+            emitNervesEvent({
+              component: "engine",
+              event: "engine.pondered",
+              message: "pondering",
+              meta: { hasThought: true, hasSay: true, contentSnippet: thought.slice(0, 80) },
+            });
+          } else {
+            // Inner dialog: parameterless, enqueue synthetic pending WITHOUT delegatedFrom
+            const pendingDir = getInnerDialogPendingDir(getAgentName());
+            const envelope: PendingMessage = {
+              from: getAgentName(),
+              friendId: "self",
+              channel: "inner",
+              key: "dialog",
+              content: "continuing to think...",
+              timestamp: Date.now(),
+            };
+            queuePendingMessage(pendingDir, envelope);
+
+            callbacks.onToolEnd("ponder", summarizeArgs("ponder", parsedArgs as Record<string, string>), true);
+            sawPonder = true;
+            messages.push(msg);
+            const ack = "(pondering)";
+            messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: ack });
+            providerRuntime.appendToolOutput(result.toolCalls[0].id, ack);
+
+            emitNervesEvent({
+              component: "engine",
+              event: "engine.pondered",
+              message: "pondering from inner dialog",
+              meta: { inner: true },
+            });
+          }
+
+          outcome = "pondered";
+          done = true;
+          continue;
+        }
+
+        // Check for rest sole call: intercept before tool execution
+        const isSoleRest = result.toolCalls.length === 1 && result.toolCalls[0].name === "rest";
+        if (isSoleRest) {
+          const restArgs = (() => { try { return JSON.parse(result.toolCalls[0].arguments) } catch { return {} } })();
+          callbacks.onToolStart("rest", restArgs);
+
+          // Attention queue gate: reject rest if items remain
+          const attentionQueue = (augmentedToolContext ?? options?.toolContext)?.delegatedOrigins;
+          if (attentionQueue && attentionQueue.length > 0) {
+            callbacks.onToolEnd("rest", summarizeArgs("rest", restArgs), false);
+            messages.push(msg);
+            const gateMessage = "you're holding thoughts someone is waiting for — surface them before you rest.";
+            messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: gateMessage });
+            providerRuntime.appendToolOutput(result.toolCalls[0].id, gateMessage);
+            continue;
+          }
+
+          callbacks.onToolEnd("rest", summarizeArgs("rest", restArgs), true);
           messages.push(msg);
-          const ack = "(going inward)";
+          const ack = "(resting)";
           messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: ack });
           providerRuntime.appendToolOutput(result.toolCalls[0].id, ack);
 
           emitNervesEvent({
             component: "engine",
-            event: "engine.go_inward",
-            message: "taking thread inward",
-            meta: { mode, hasAnswer: answer !== undefined, contentSnippet: content.slice(0, 80) },
+            event: "engine.rested",
+            message: "resting until next heartbeat",
+            meta: {},
           });
 
-          outcome = "go_inward";
+          outcome = "rested";
           done = true;
           continue;
         }
 
         messages.push(msg);
-        // SHARED: execute tools (final_answer, no_response, go_inward in mixed calls are rejected inline)
+        // Execute tools (sole-call tools in mixed calls are rejected inline)
         for (const tc of result.toolCalls) {
           if (signal?.aborted) break;
-          // Intercept final_answer in mixed call: reject it
-          if (tc.name === "final_answer") {
-            const rejection = "rejected: final_answer must be the only tool call. Finish your work first, then call final_answer alone.";
-            messages.push({ role: "tool", tool_call_id: tc.id, content: rejection });
-            providerRuntime.appendToolOutput(tc.id, rejection);
-            continue;
-          }
-          // Intercept no_response in mixed call: reject it
-          if (tc.name === "no_response") {
-            const rejection = "rejected: no_response must be the only tool call. call no_response alone when you want to stay silent.";
-            messages.push({ role: "tool", tool_call_id: tc.id, content: rejection });
-            providerRuntime.appendToolOutput(tc.id, rejection);
-            continue;
-          }
-          // Intercept go_inward in mixed call: reject it
-          if (tc.name === "go_inward") {
-            const rejection = "rejected: go_inward must be the only tool call. finish your other work first, then call go_inward alone.";
-            messages.push({ role: "tool", tool_call_id: tc.id, content: rejection });
-            providerRuntime.appendToolOutput(tc.id, rejection);
+          // Reject sole-call tools when mixed with other tool calls
+          const soleCallRejection = SOLE_CALL_REJECTION[tc.name];
+          if (soleCallRejection) {
+            messages.push({ role: "tool", tool_call_id: tc.id, content: soleCallRejection });
+            providerRuntime.appendToolOutput(tc.id, soleCallRejection);
             continue;
           }
           let args: Record<string, string> = {};
@@ -941,6 +1072,15 @@ export async function runAgent(
           /* v8 ignore next -- flag tested via truth-check integration tests @preserve */
           if (isExternalStateQuery(tc.name, args)) sawExternalStateQuery = true;
           const argSummary = summarizeArgs(tc.name, args);
+          const toolLoop = detectToolLoop(toolLoopState, tc.name, args);
+          if (toolLoop.stuck) {
+            const rejection = `loop guard: ${toolLoop.message}`;
+            callbacks.onToolStart(tc.name, args);
+            callbacks.onToolEnd(tc.name, argSummary, false);
+            messages.push({ role: "tool", tool_call_id: tc.id, content: rejection });
+            providerRuntime.appendToolOutput(tc.id, rejection);
+            continue;
+          }
           // Confirmation check for mutate tools
           if (isConfirmationRequired(tc.name) && !options?.skipConfirmation) {
             let decision: "confirmed" | "denied" = "denied";
@@ -967,6 +1107,7 @@ export async function runAgent(
             toolResult = `error: ${e}`;
             success = false;
           }
+          recordToolOutcome(toolLoopState, tc.name, args, toolResult, success);
           callbacks.onToolEnd(tc.name, argSummary, success);
           messages.push({ role: "tool", tool_call_id: tc.id, content: toolResult });
           providerRuntime.appendToolOutput(tc.id, toolResult);
@@ -994,7 +1135,15 @@ export async function runAgent(
       if (isTransientError(e) && retryCount < MAX_RETRIES) {
         retryCount++;
         const delay = RETRY_BASE_MS * Math.pow(2, retryCount - 1);
-        const cause = classifyTransientError(e);
+        let classification: string
+        try {
+          classification = providerRuntime.classifyError(e instanceof Error ? e : /* v8 ignore next -- defensive: errors are always Error instances @preserve */ new Error(String(e)))
+        } catch {
+          /* v8 ignore next -- defensive: classifyError should not throw @preserve */
+          classification = classifyTransientError(e)
+        }
+        /* v8 ignore next -- defensive: all classifications have labels @preserve */
+        const cause = TRANSIENT_RETRY_LABELS[classification] ?? classification
         callbacks.onError(new Error(`${cause}, retrying in ${delay / 1000}s (${retryCount}/${MAX_RETRIES})...`), "transient");
         // Wait with abort support
         const aborted = await new Promise<boolean>((resolve) => {
@@ -1013,14 +1162,21 @@ export async function runAgent(
         providerRuntime.resetTurnState(messages);
         continue;
       }
-      callbacks.onError(e instanceof Error ? e : new Error(String(e)), "terminal");
+      terminalError = e instanceof Error ? e : new Error(String(e));
+      try {
+        terminalErrorClassification = providerRuntime.classifyError(terminalError);
+      } catch {
+        /* v8 ignore next -- defensive: classifyError should not throw @preserve */
+        terminalErrorClassification = "unknown";
+      }
+      callbacks.onError(terminalError, "terminal");
       emitNervesEvent({
         level: "error",
         event: "engine.error",
         trace_id: traceId,
         component: "engine",
-        message: e instanceof Error ? e.message : String(e),
-        meta: {},
+        message: terminalError.message,
+        meta: { errorClassification: terminalErrorClassification },
       });
       stripLastToolCalls(messages);
       outcome = "errored";
@@ -1032,7 +1188,12 @@ export async function runAgent(
     trace_id: traceId,
     component: "engine",
     message: "runAgent turn completed",
-    meta: { done, sawGoInward, sawQuerySession, sawBridgeManage },
+    meta: { done, sawPonder, sawQuerySession, sawBridgeManage },
   });
-  return { usage: lastUsage, outcome, completion };
+  return {
+    usage: lastUsage,
+    outcome,
+    completion,
+    ...(terminalError ? { error: terminalError, errorClassification: terminalErrorClassification } : {}),
+  };
 }
