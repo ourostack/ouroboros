@@ -119,6 +119,9 @@ export function parseTaskFile(content: string, filePath: string): TaskFile {
       _isCanonicalFilename: isCanonicalTaskFilename(name),
     },
     body: parsed.body,
+    hasWorkDir: false,
+    workDirFiles: [],
+    derivedChildren: [],
   }
 }
 

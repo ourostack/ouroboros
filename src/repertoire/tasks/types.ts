@@ -6,6 +6,7 @@ export type TaskStatus =
   | "paused"
   | "blocked"
   | "done"
+  | "cancelled"
 
 export type CanonicalTaskType = "one-shot" | "ongoing"
 
@@ -24,14 +25,38 @@ export interface TaskFile {
   updated: string
   frontmatter: Record<string, unknown>
   body: string
+  hasWorkDir: boolean
+  workDirFiles: string[]
+  derivedChildren: string[]
 }
 
 export interface TaskIndex {
   root: string
   tasks: TaskFile[]
-  invalidFilenames: string[]
-  parseErrors: string[]
+  issues: TaskIssue[]
   fingerprint: string
+}
+
+export interface TaskIssue {
+  target: string
+  code: string
+  description: string
+  fix: string
+  confidence: "safe" | "needs_review"
+  category: "live" | "migration"
+}
+
+export interface FixOptions {
+  mode: "dry-run" | "safe" | "single"
+  issueId?: string
+  option?: number
+}
+
+export interface FixResult {
+  applied: TaskIssue[]
+  remaining: TaskIssue[]
+  skipped: TaskIssue[]
+  health: string
 }
 
 export interface TransitionResult {
@@ -56,6 +81,7 @@ export interface BoardResult {
   compact: string
   full: string
   byStatus: Record<TaskStatus, string[]>
+  issues: TaskIssue[]
   actionRequired: string[]
   unresolvedDependencies: string[]
   activeSessions: string[]
@@ -93,6 +119,7 @@ export interface TaskModule {
   validateWrite(filePath: string, content: string): ValidationResult
   validateTransition(from: TaskStatus, to: TaskStatus): TransitionResult
   validateSpawn(taskName: string, spawnType: string): SpawnValidation
+  fix(options: FixOptions): FixResult
   detectStale(thresholdDays: number): TaskFile[]
   boardStatus(status: string): string[]
   boardAction(): string[]

@@ -50,6 +50,7 @@ describe("active work frame", () => {
           paused: [],
           blocked: [],
           done: [],
+          cancelled: [],
         },
       },
       friendActivity: [
@@ -130,6 +131,7 @@ describe("active work frame", () => {
           paused: [],
           blocked: [],
           done: [],
+          cancelled: [],
         },
       },
       pendingObligations: [
@@ -201,7 +203,7 @@ describe("active work frame", () => {
       taskBoard: {
         compact: "",
         activeBridges: [],
-        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [] },
+        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
       },
       friendActivity: [],
     })
@@ -298,7 +300,7 @@ describe("active work frame", () => {
       taskBoard: {
         compact: "",
         activeBridges: [],
-        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [] },
+        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
       },
       friendActivity: [],
     })
@@ -344,7 +346,7 @@ describe("active work frame", () => {
       taskBoard: {
         compact: "",
         activeBridges: [],
-        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [] },
+        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
       },
       friendActivity: [],
     })
@@ -380,6 +382,7 @@ describe("active work frame", () => {
           paused: [],
           blocked: [],
           done: [],
+          cancelled: [],
         },
       },
       friendActivity: [
@@ -464,6 +467,7 @@ describe("active work frame", () => {
           paused: [],
           blocked: [],
           done: [],
+          cancelled: [],
         },
       },
       friendActivity: [
@@ -548,6 +552,7 @@ describe("active work frame", () => {
           paused: [],
           blocked: [],
           done: [],
+          cancelled: [],
         },
       },
       friendActivity: [
@@ -666,6 +671,7 @@ describe("active work frame", () => {
           paused: [],
           blocked: [],
           done: [],
+          cancelled: [],
         },
       },
       pendingObligations: [
@@ -744,6 +750,7 @@ describe("active work frame", () => {
           paused: [],
           blocked: [],
           done: [],
+          cancelled: [],
         },
       },
       friendActivity: [
@@ -824,6 +831,7 @@ describe("active work frame", () => {
           paused: [],
           blocked: [],
           done: [],
+          cancelled: [],
         },
       },
       friendActivity: [
@@ -920,6 +928,7 @@ describe("active work frame", () => {
           paused: [],
           blocked: [],
           done: [],
+          cancelled: [],
         },
       },
       friendActivity: [
@@ -988,6 +997,7 @@ describe("active work frame", () => {
           paused: [],
           blocked: [],
           done: [],
+          cancelled: [],
         },
       },
       friendActivity: [],
@@ -1044,6 +1054,7 @@ describe("active work frame", () => {
           paused: [],
           blocked: [],
           done: [],
+          cancelled: [],
         },
       },
       pendingObligations: [
@@ -1205,6 +1216,7 @@ describe("active work frame", () => {
           paused: [],
           blocked: [],
           done: [],
+          cancelled: [],
         },
       },
       friendActivity: [],
@@ -1287,6 +1299,7 @@ describe("active work frame", () => {
           paused: [],
           blocked: [],
           done: [],
+          cancelled: [],
         },
       },
       targetCandidates: [
@@ -1371,6 +1384,7 @@ describe("active work frame", () => {
           paused: [],
           blocked: [],
           done: [],
+          cancelled: [],
         },
       },
       targetCandidates: [
@@ -1435,6 +1449,7 @@ describe("active work frame", () => {
           paused: [],
           blocked: [],
           done: [],
+          cancelled: [],
         },
       },
       friendActivity: [],
@@ -1480,6 +1495,7 @@ describe("active work frame", () => {
           paused: [],
           blocked: [],
           done: [],
+          cancelled: [],
         },
       },
       friendActivity: [
@@ -1535,6 +1551,7 @@ describe("active work frame", () => {
           paused: [],
           blocked: [],
           done: [],
+          cancelled: [],
         },
       },
       friendActivity: [
@@ -1598,6 +1615,7 @@ describe("delegation router", () => {
           paused: [],
           blocked: [],
           done: [],
+          cancelled: [],
         },
       },
       friendActivity: [],
@@ -1642,6 +1660,7 @@ describe("delegation router", () => {
           paused: [],
           blocked: [],
           done: [],
+          cancelled: [],
         },
       },
       friendActivity: [],
@@ -1692,6 +1711,7 @@ describe("delegation router", () => {
           paused: [],
           blocked: [],
           done: [],
+          cancelled: [],
         },
       },
       friendActivity: [],
@@ -1748,6 +1768,7 @@ describe("delegation router", () => {
           paused: [],
           blocked: [],
           done: [],
+          cancelled: [],
         },
       },
       friendActivity: [],
@@ -1783,7 +1804,7 @@ describe("delegation router", () => {
       taskBoard: {
         compact: "",
         full: "",
-        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [] },
+        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
         actionRequired: [],
         unresolvedDependencies: [],
         activeSessions: [],
@@ -1875,7 +1896,7 @@ describe("delegation router", () => {
       taskBoard: {
         compact: "",
         activeBridges: [],
-        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [] },
+        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
       },
       friendActivity: [],
     })
@@ -2897,6 +2918,7 @@ describe("ActiveWorkFrame.inner with InnerJob", () => {
           paused: [],
           blocked: [],
           done: [],
+          cancelled: [],
         },
       },
       friendActivity: [],
@@ -2949,6 +2971,7 @@ describe("ActiveWorkFrame.inner with InnerJob", () => {
           paused: [],
           blocked: [],
           done: [],
+          cancelled: [],
         },
       },
       friendActivity: [],
@@ -2984,6 +3007,7 @@ describe("ActiveWorkFrame.inner with InnerJob", () => {
           paused: [],
           blocked: [],
           done: [],
+          cancelled: [],
         },
       },
       friendActivity: [
@@ -3088,6 +3112,7 @@ describe("ActiveWorkFrame.inner with InnerJob", () => {
           paused: [],
           blocked: [],
           done: [],
+          cancelled: [],
         },
       },
       friendActivity: [],
@@ -3181,6 +3206,7 @@ describe("ActiveWorkFrame.inner with InnerJob", () => {
           paused: [],
           blocked: [],
           done: [],
+          cancelled: [],
         },
       },
       targetCandidates: [
@@ -3245,6 +3271,7 @@ describe("ActiveWorkFrame.inner with InnerJob", () => {
           paused: [],
           blocked: [],
           done: [],
+          cancelled: [],
         },
       },
       targetCandidates: [

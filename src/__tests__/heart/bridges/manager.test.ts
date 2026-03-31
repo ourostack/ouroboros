@@ -343,6 +343,7 @@ describe("bridge manager", () => {
           paused: [],
           blocked: [],
           done: [],
+          cancelled: [],
         },
       },
     })
@@ -376,6 +377,7 @@ describe("bridge manager", () => {
           paused: [],
           blocked: [],
           done: [],
+          cancelled: [],
         },
       },
     })
@@ -399,6 +401,7 @@ describe("bridge manager", () => {
           paused: [],
           blocked: [],
           done: [],
+          cancelled: [],
         },
       },
     })
@@ -421,6 +424,7 @@ describe("bridge manager", () => {
           paused: [],
           blocked: [],
           done: [],
+          cancelled: [],
         },
       },
     })
@@ -447,6 +451,7 @@ describe("bridge manager", () => {
           paused: [],
           blocked: [],
           done: [],
+          cancelled: [],
         },
       },
     })

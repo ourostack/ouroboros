@@ -14,16 +14,18 @@ export const TASK_VALID_STATUSES: readonly TaskStatus[] = [
   "paused",
   "blocked",
   "done",
+  "cancelled",
 ]
 
 export const TASK_STATUS_TRANSITIONS: Record<TaskStatus, readonly TaskStatus[]> = {
-  drafting: ["processing", "collaborating"],
-  processing: ["validating", "paused", "blocked"],
-  validating: ["done", "processing", "collaborating"],
-  collaborating: ["processing", "validating", "paused"],
-  paused: ["processing", "blocked"],
-  blocked: ["processing", "paused"],
+  drafting: ["processing", "collaborating", "cancelled"],
+  processing: ["validating", "paused", "blocked", "cancelled"],
+  validating: ["done", "processing", "collaborating", "cancelled"],
+  collaborating: ["processing", "validating", "paused", "cancelled"],
+  paused: ["processing", "blocked", "cancelled"],
+  blocked: ["processing", "paused", "cancelled"],
   done: [],
+  cancelled: [],
 }
 
 export const TASK_CANONICAL_TYPES: readonly CanonicalTaskType[] = [
@@ -47,6 +49,7 @@ export const TASK_FILENAME_PATTERN = /^\d{4}-\d{2}-\d{2}-\d{4}-[a-z0-9][a-z0-9-]
 
 export const TASK_REQUIRED_TEMPLATE_FIELDS: Record<CanonicalTaskType, readonly string[]> = {
   "one-shot": [
+    "kind",
     "type",
     "category",
     "title",
@@ -60,10 +63,10 @@ export const TASK_REQUIRED_TEMPLATE_FIELDS: Record<CanonicalTaskType, readonly s
     "updated",
     "parent_task",
     "depends_on",
-    "child_tasks",
     "artifacts",
   ],
   ongoing: [
+    "kind",
     "type",
     "category",
     "title",
@@ -75,7 +78,6 @@ export const TASK_REQUIRED_TEMPLATE_FIELDS: Record<CanonicalTaskType, readonly s
     "lastRun",
     "created",
     "updated",
-    "child_tasks",
     "artifacts",
   ],
 }

@@ -1,15 +1,24 @@
 import { emitNervesEvent } from "../../nerves/runtime"
-import type { BoardResult, TaskFile, TaskIndex, TaskStatus } from "./types"
+import type { BoardResult, TaskFile, TaskIndex, TaskIssue, TaskStatus } from "./types"
 import { TASK_VALID_STATUSES } from "./transitions"
 
-const BOARD_STATUS_ORDER: readonly TaskStatus[] = [
+const BOARD_ACTIVE_ORDER: readonly TaskStatus[] = [
   "blocked",
   "processing",
   "collaborating",
   "drafting",
   "validating",
   "paused",
+]
+
+const BOARD_TERMINAL_ORDER: readonly TaskStatus[] = [
   "done",
+  "cancelled",
+]
+
+const BOARD_STATUS_ORDER: readonly TaskStatus[] = [
+  ...BOARD_ACTIVE_ORDER,
+  ...BOARD_TERMINAL_ORDER,
 ]
 
 function compactName(task: TaskFile): string {
@@ -26,6 +35,7 @@ function groupByStatus(tasks: TaskFile[]): Record<TaskStatus, string[]> {
     paused: [],
     blocked: [],
     done: [],
+    cancelled: [],
   }
   for (const task of tasks) {
     grouped[task.status].push(compactName(task))
@@ -71,8 +81,21 @@ function activeBridgeLines(tasks: TaskFile[]): string[] {
     .sort()
 }
 
+function buildHealthLine(issues: TaskIssue[]): string {
+  if (issues.length === 0) return "health: clean"
+
+  const liveCount = issues.filter((i) => i.category === "live").length
+  const migrationCount = issues.filter((i) => i.category === "migration").length
+
+  const parts: string[] = []
+  if (liveCount > 0) parts.push(`${liveCount} live`)
+  if (migrationCount > 0) parts.push(`${migrationCount} migration`)
+
+  return `health: ${parts.join(", ")}`
+}
+
 function actionRequired(index: TaskIndex, byStatus: Record<TaskStatus, string[]>): string[] {
-  const actions = [...index.parseErrors, ...index.invalidFilenames.map((filePath) => `bad filename: ${filePath}`)]
+  const actions = index.issues.map((issue) => `${issue.code}: ${issue.description} [${issue.target}]`)
 
   if (byStatus.blocked.length > 0) {
     actions.push(`blocked tasks: ${byStatus.blocked.join(", ")}`)
@@ -94,16 +117,23 @@ export function buildTaskBoard(index: TaskIndex): BoardResult {
   })
 
   const byStatus = groupByStatus(index.tasks)
-  const counts = TASK_VALID_STATUSES.map((status) => `${status}:${byStatus[status].length}`).join(" ")
+  const activeCounts = BOARD_ACTIVE_ORDER.map((status) => `${status}:${byStatus[status].length}`).join(" ")
   const processing = byStatus.processing.length > 0 ? `\n processing: ${byStatus.processing.join(", ")}` : ""
   const blocked = byStatus.blocked.length > 0 ? `\n blocked: ${byStatus.blocked.join(", ")}` : ""
 
-  const compact = `[Tasks] ${counts}${processing}${blocked}`
+  const terminalParts = BOARD_TERMINAL_ORDER
+    .filter((status) => byStatus[status].length > 0)
+    .map((status) => `${status}:${byStatus[status].length}`)
+  const terminalLine = terminalParts.length > 0 ? `\n terminal: ${terminalParts.join(" ")}` : ""
+
+  const healthLine = `\n ${buildHealthLine(index.issues)}`
+
+  const compact = `[Tasks] ${activeCounts}${processing}${blocked}${terminalLine}${healthLine}`
 
   const fullLines: string[] = []
   for (const status of BOARD_STATUS_ORDER) {
     const names = byStatus[status]
-    if (status === "done" && names.length === 0) continue
+    if ((status === "done" || status === "cancelled") && names.length === 0) continue
     fullLines.push(`## ${status}`)
     fullLines.push(names.length > 0 ? names.map((name) => `- ${name}`).join("\n") : "- (none)")
   }
@@ -130,6 +160,7 @@ export function buildTaskBoard(index: TaskIndex): BoardResult {
     compact,
     full: fullLines.join("\n\n"),
     byStatus,
+    issues: index.issues,
     actionRequired: actionRequired(index, byStatus),
     unresolvedDependencies: unresolved,
     activeSessions: active,
