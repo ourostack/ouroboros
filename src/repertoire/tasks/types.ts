@@ -119,6 +119,7 @@ export interface TaskModule {
   validateWrite(filePath: string, content: string): ValidationResult
   validateTransition(from: TaskStatus, to: TaskStatus): TransitionResult
   validateSpawn(taskName: string, spawnType: string): SpawnValidation
+  fix(options: FixOptions): FixResult
   detectStale(thresholdDays: number): TaskFile[]
   boardStatus(status: string): string[]
   boardAction(): string[]

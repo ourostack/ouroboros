@@ -20,7 +20,7 @@ export function archiveCompletedTasks(index: TaskIndex): ArchiveResult {
   const failures: string[] = []
 
   for (const task of index.tasks) {
-    if (task.status !== "done") continue
+    if (task.status !== "done" && task.status !== "cancelled") continue
 
     const archiveDir = path.join(index.root, "archive", task.collection)
     const archiveFile = path.join(archiveDir, task.name)
@@ -48,7 +48,7 @@ export function detectStaleTasks(index: TaskIndex, thresholdDays: number, now = 
   return index.tasks.filter((task) => {
     const updated = Date.parse(task.updated)
     if (Number.isNaN(updated)) return false
-    if (task.status === "done") return false
+    if (task.status === "done" || task.status === "cancelled") return false
     return updated < staleCutoffMs
   })
 }
