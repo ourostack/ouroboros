@@ -50,12 +50,8 @@ export function tryExtractFrontmatter(content: string): Record<string, unknown> 
     return null
   }
 
-  try {
-    const rawFrontmatter = lines.slice(1, closing).join("\n")
-    return parseFrontmatter(rawFrontmatter)
-  } catch {
-    return null
-  }
+  const rawFrontmatter = lines.slice(1, closing).join("\n")
+  return parseFrontmatter(rawFrontmatter)
 }
 
 const LEGACY_TASK_TYPES = ["one-shot", "ongoing", "habit"]
@@ -72,8 +68,6 @@ function buildFingerprint(root: string): string {
 
   for (const collection of TASK_CANONICAL_COLLECTIONS) {
     const collDir = path.join(root, collection)
-    if (!fs.existsSync(collDir)) continue
-
     const entries = fs.readdirSync(collDir, { withFileTypes: true })
     for (const entry of entries) {
       if (!entry.isFile() || !entry.name.endsWith(".md")) continue
@@ -84,14 +78,12 @@ function buildFingerprint(root: string): string {
   }
 
   // Also include root-level md files for orphan detection fingerprinting
-  if (fs.existsSync(root)) {
-    const rootEntries = fs.readdirSync(root, { withFileTypes: true })
-    for (const entry of rootEntries) {
-      if (!entry.isFile() || !entry.name.endsWith(".md")) continue
-      const filePath = path.join(root, entry.name)
-      const stat = fs.statSync(filePath)
-      segments.push(`${filePath}:${stat.mtimeMs}:${stat.size}`)
-    }
+  const rootEntries = fs.readdirSync(root, { withFileTypes: true })
+  for (const entry of rootEntries) {
+    if (!entry.isFile() || !entry.name.endsWith(".md")) continue
+    const filePath = path.join(root, entry.name)
+    const stat = fs.statSync(filePath)
+    segments.push(`${filePath}:${stat.mtimeMs}:${stat.size}`)
   }
 
   segments.sort()
@@ -123,8 +115,6 @@ export function scanTasks(root = getTaskRoot()): TaskIndex {
   // Scan each collection with flat directory reads (no recursion)
   for (const collection of TASK_CANONICAL_COLLECTIONS) {
     const collDir = path.join(root, collection)
-    if (!fs.existsSync(collDir)) continue
-
     const entries = fs.readdirSync(collDir, { withFileTypes: true })
     const dirNames = new Set<string>()
 
@@ -215,43 +205,41 @@ export function scanTasks(root = getTaskRoot()): TaskIndex {
   }
 
   // Orphan detection: root-level .md files outside any canonical collection
-  if (fs.existsSync(root)) {
-    const rootEntries = fs.readdirSync(root, { withFileTypes: true })
-    const collectionSet = new Set<string>(TASK_CANONICAL_COLLECTIONS)
+  const rootEntries = fs.readdirSync(root, { withFileTypes: true })
+  const collectionSet = new Set<string>(TASK_CANONICAL_COLLECTIONS)
 
-    for (const entry of rootEntries) {
-      if (!entry.isFile() || !entry.name.endsWith(".md")) continue
+  for (const entry of rootEntries) {
+    if (!entry.isFile() || !entry.name.endsWith(".md")) continue
 
-      const filePath = path.join(root, entry.name)
-      const content = fs.readFileSync(filePath, "utf-8")
-      const frontmatter = tryExtractFrontmatter(content)
+    const filePath = path.join(root, entry.name)
+    const content = fs.readFileSync(filePath, "utf-8")
+    const frontmatter = tryExtractFrontmatter(content)
 
-      // Only flag as orphan if it has task-like frontmatter
-      if (!frontmatter) continue
+    // Only flag as orphan if it has task-like frontmatter
+    if (!frontmatter) continue
 
-      const fmType = typeof frontmatter.type === "string" ? frontmatter.type.trim().toLowerCase() : ""
-      const hasTaskLikeContent =
-        frontmatter.kind === "task" ||
-        LEGACY_TASK_TYPES.includes(fmType) ||
-        (typeof frontmatter.status === "string" && typeof frontmatter.title === "string")
+    const fmType = typeof frontmatter.type === "string" ? frontmatter.type.trim().toLowerCase() : ""
+    const hasTaskLikeContent =
+      frontmatter.kind === "task" ||
+      LEGACY_TASK_TYPES.includes(fmType) ||
+      (typeof frontmatter.status === "string" && typeof frontmatter.title === "string")
 
-      if (hasTaskLikeContent) {
-        emitNervesEvent({
-          event: "repertoire.orphan_detected",
-          component: "repertoire",
-          message: "root-level orphan document detected",
-          meta: { filePath },
-        })
+    if (hasTaskLikeContent) {
+      emitNervesEvent({
+        event: "repertoire.orphan_detected",
+        component: "repertoire",
+        message: "root-level orphan document detected",
+        meta: { filePath },
+      })
 
-        issues.push({
-          target: entry.name,
-          code: "org-root-level-doc",
-          description: `Root-level document outside any collection: ${entry.name}`,
-          fix: `Move to appropriate collection directory (${[...collectionSet].join(", ")})`,
-          confidence: "needs_review",
-          category: "migration",
-        })
-      }
+      issues.push({
+        target: entry.name,
+        code: "org-root-level-doc",
+        description: `Root-level document outside any collection: ${entry.name}`,
+        fix: `Move to appropriate collection directory (${[...collectionSet].join(", ")})`,
+        confidence: "needs_review",
+        category: "migration",
+      })
     }
   }
 

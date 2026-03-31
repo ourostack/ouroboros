@@ -651,3 +651,79 @@ describe("scanner — mixed bundle simulation", () => {
     expect(planningIssues).toHaveLength(0)
   })
 })
+
+describe("scanner — coverage edge cases", () => {
+  beforeEach(() => {
+    agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "scanner-edges-"))
+  })
+
+  afterEach(async () => {
+    const scanner = await import("../../../repertoire/tasks/scanner")
+    scanner.clearTaskScanCache()
+    removeDirSafe(agentRoot)
+    agentRoot = ""
+  })
+
+  it("tryExtractFrontmatter returns null for non-frontmatter and unterminated content", async () => {
+    const { emitNervesEvent } = await import("../../../nerves/runtime")
+    ;(emitNervesEvent as ReturnType<typeof vi.fn>).mockImplementation(() => {})
+    const scanner = await import("../../../repertoire/tasks/scanner")
+
+    // Empty frontmatter parses fine — returns empty object
+    const result = scanner.tryExtractFrontmatter("---\n---\n")
+    expect(result).toBeDefined()
+    expect(Object.keys(result!)).toHaveLength(0)
+
+    // No frontmatter at all
+    const noFm = scanner.tryExtractFrontmatter("no frontmatter here")
+    expect(noFm).toBeNull()
+
+    // Unterminated frontmatter
+    const unterminated = scanner.tryExtractFrontmatter("---\nkey: value\nno closing")
+    expect(unterminated).toBeNull()
+
+    // Valid frontmatter
+    const valid = scanner.tryExtractFrontmatter("---\nkey: value\n---\nbody")
+    expect(valid).toBeDefined()
+    expect(valid!.key).toBe("value")
+  })
+
+  it("orphan detection handles frontmatter with non-string type field", async () => {
+    const { emitNervesEvent } = await import("../../../nerves/runtime")
+    ;(emitNervesEvent as ReturnType<typeof vi.fn>).mockImplementation(() => {})
+    const scanner = await import("../../../repertoire/tasks/scanner")
+    const root = makeTaskRoot()
+    scanner.ensureTaskLayout(root)
+
+    // Orphan doc with frontmatter where type is not a string (it's an array = [])
+    writeFile(
+      path.join(root, "weird-orphan.md"),
+      "---\ntitle: Weird\ntype: []\n---\n\ncontent\n",
+    )
+
+    const index = scanner.scanTasks(root)
+    // type is not a string, and no status/title combo that triggers detection
+    // Actually it has a title but no status string, so not task-like
+    const orphanIssue = index.issues.find((i) => i.code === "org-root-level-doc")
+    expect(orphanIssue).toBeUndefined()
+  })
+
+  it("orphan detection via status+title combination (no kind or type)", async () => {
+    const { emitNervesEvent } = await import("../../../nerves/runtime")
+    ;(emitNervesEvent as ReturnType<typeof vi.fn>).mockImplementation(() => {})
+    const scanner = await import("../../../repertoire/tasks/scanner")
+    const root = makeTaskRoot()
+    scanner.ensureTaskLayout(root)
+
+    // Orphan doc with status and title but no kind or type match
+    writeFile(
+      path.join(root, "status-title-orphan.md"),
+      "---\ntitle: Some Task\nstatus: drafting\ncategory: ops\n---\n\norphan\n",
+    )
+
+    const index = scanner.scanTasks(root)
+    const orphanIssue = index.issues.find((i) => i.code === "org-root-level-doc")
+    expect(orphanIssue).toBeDefined()
+    expect(orphanIssue!.target).toContain("status-title-orphan.md")
+  })
+})
