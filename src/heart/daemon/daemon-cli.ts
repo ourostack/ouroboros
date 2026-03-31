@@ -70,6 +70,7 @@ export type OuroCliCommand =
   | { kind: "task.actionable"; agent?: string }
   | { kind: "task.deps"; agent?: string }
   | { kind: "task.sessions"; agent?: string }
+  | { kind: "task.fix"; mode: "dry-run" | "safe" | "single"; issueId?: string; option?: number; agent?: string }
   | { kind: "whoami"; agent?: string }
   | { kind: "session.list"; agent?: string }
   | { kind: "thoughts"; agent?: string; last?: number; json?: boolean; follow?: boolean }
@@ -399,6 +400,7 @@ function usage(): string {
     "  ouro task create <title> [--type <type>] [--agent <name>]",
     "  ouro task update <id> <status> [--agent <name>]",
     "  ouro task show <id> [--agent <name>]",
+    "  ouro task fix [--safe|--all] [<id> [--option <N>]] [--agent <name>]",
     "  ouro task actionable|deps|sessions [--agent <name>]",
     "  ouro reminder create <title> --body <body> [--at <iso>] [--cadence <interval>] [--category <category>] [--agent <name>]",
     "  ouro friend list [--agent <name>]",
@@ -809,6 +811,33 @@ function parseTaskCommand(args: string[]): OuroCliCommand {
   if (sub === "actionable") return { kind: "task.actionable", ...(agent ? { agent } : {}) }
   if (sub === "deps") return { kind: "task.deps", ...(agent ? { agent } : {}) }
   if (sub === "sessions") return { kind: "task.sessions", ...(agent ? { agent } : {}) }
+
+  if (sub === "fix") {
+    // fix --safe | fix --all | fix <id> [--option N] | fix (dry-run)
+    if (rest.length === 0) return { kind: "task.fix", mode: "dry-run", ...(agent ? { agent } : {}) }
+
+    const first = rest[0]
+    if (first === "--safe" || first === "--all") {
+      return { kind: "task.fix", mode: "safe", ...(agent ? { agent } : {}) }
+    }
+
+    // first arg is an issue ID (contains a colon, e.g. schema-missing-kind:one-shots/foo.md)
+    const issueId = first
+    let option: number | undefined
+    for (let i = 1; i < rest.length; i++) {
+      if (rest[i] === "--option" && rest[i + 1]) {
+        option = parseInt(rest[i + 1], 10)
+        i += 1
+      }
+    }
+    return {
+      kind: "task.fix",
+      mode: "single",
+      issueId,
+      ...(option !== undefined ? { option } : {}),
+      ...(agent ? { agent } : {}),
+    }
+  }
 
   throw new Error(`Usage\n${usage()}`)
 }
@@ -1713,6 +1742,7 @@ type TaskCliCommand = Extract<OuroCliCommand,
   | { kind: "task.actionable" }
   | { kind: "task.deps" }
   | { kind: "task.sessions" }
+  | { kind: "task.fix" }
 >
 
 type ReminderCliCommand = Extract<OuroCliCommand, { kind: "reminder.create" }>
@@ -1778,6 +1808,62 @@ function executeTaskCommand(command: TaskCliCommand, taskMod: TaskModule): strin
   if (command.kind === "task.deps") {
     const lines = taskMod.boardDeps()
     return lines.length > 0 ? lines.join("\n") : "no unresolved dependencies"
+  }
+
+  if (command.kind === "task.fix") {
+    try {
+      const fixOptions: import("../../repertoire/tasks/types").FixOptions = {
+        mode: command.mode,
+        ...(command.issueId ? { issueId: command.issueId } : {}),
+        ...(command.option !== undefined ? { option: command.option } : {}),
+      }
+      const result = taskMod.fix(fixOptions)
+
+      if (command.mode === "dry-run") {
+        if (result.remaining.length === 0) {
+          return `task health: clean`
+        }
+        const safeIssues = result.remaining.filter((i) => i.confidence === "safe")
+        const reviewIssues = result.remaining.filter((i) => i.confidence === "needs_review")
+        const lines: string[] = [`${result.remaining.length} issues found`]
+        if (safeIssues.length > 0) {
+          lines.push("", `safe fixes (${safeIssues.length}):`)
+          for (const issue of safeIssues) {
+            lines.push(`  ${issue.code}:${issue.target} -- ${issue.description}`)
+          }
+        }
+        if (reviewIssues.length > 0) {
+          lines.push("", `needs review (${reviewIssues.length}):`)
+          for (const issue of reviewIssues) {
+            lines.push(`  ${issue.code}:${issue.target} -- ${issue.description}`)
+          }
+        }
+        lines.push("", `task health: ${result.health}`)
+        return lines.join("\n")
+      }
+
+      // safe, single, or --all modes: show what was done
+      const lines: string[] = []
+      if (result.applied.length > 0) {
+        lines.push(`${result.applied.length} applied:`)
+        for (const issue of result.applied) {
+          lines.push(`  ${issue.code}:${issue.target}`)
+        }
+      }
+      if (result.remaining.length > 0) {
+        lines.push(`${result.remaining.length} remaining:`)
+        for (const issue of result.remaining) {
+          lines.push(`  ${issue.code}:${issue.target} -- ${issue.description}`)
+        }
+      }
+      if (result.applied.length === 0 && result.remaining.length === 0) {
+        lines.push("no issues")
+      }
+      lines.push(`task health: ${result.health}`)
+      return lines.join("\n")
+    } catch (error) {
+      return `error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(error)}`
+    }
   }
 
   // command.kind === "task.sessions"
@@ -2216,7 +2302,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   // ── task subcommands (local, no daemon socket needed) ──
   if (command.kind === "task.board" || command.kind === "task.create" || command.kind === "task.update" ||
       command.kind === "task.show" || command.kind === "task.actionable" || command.kind === "task.deps" ||
-      command.kind === "task.sessions") {
+      command.kind === "task.sessions" || command.kind === "task.fix") {
     /* v8 ignore start -- production default: requires full identity setup @preserve */
     const taskMod = deps.taskModule ?? getTaskModule()
     /* v8 ignore stop */
