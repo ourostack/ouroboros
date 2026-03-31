@@ -221,3 +221,4 @@ See `skills/configure-dev-tools.md` for the full tool inventory and troubleshoot
 ## A Note To Future Maintainers
 
 If you discover a doc that lies, fix it or remove it. Accuracy is a kindness. A future agent should not have to untangle a fossil record just to understand where their hands are.
+# Production SPA serving

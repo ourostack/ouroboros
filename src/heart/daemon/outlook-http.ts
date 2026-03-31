@@ -19,7 +19,8 @@ import {
   readSessionInventory,
   readSessionTranscript,
 } from "./outlook-read"
-import { renderOutlookApp } from "./outlook-render"
+// Server-rendered fallback kept for backward compatibility but SPA is primary
+// import { renderOutlookApp } from "./outlook-render"
 import type {
   OutlookAgentState,
   OutlookAgentView,
@@ -57,7 +58,6 @@ export interface StartOutlookHttpServerOptions {
   readAgentHabits?: (agentName: string) => OutlookHabitView
   readDaemonHealth?: () => OutlookDaemonHealthDeep | null
   readLogs?: () => OutlookLogView
-  renderApp?: (input: { origin: string; machine: OutlookMachineState; machineView?: OutlookMachineView }) => string
 }
 
 export interface OutlookHttpServerHandle {
@@ -147,10 +147,55 @@ function writeJson(response: http.ServerResponse, statusCode: number, payload: u
   response.end(`${JSON.stringify(payload, null, 2)}\n`)
 }
 
-function writeHtml(response: http.ServerResponse, html: string): void {
-  response.writeHead(200, { "content-type": "text/html; charset=utf-8" })
-  response.end(html)
+
+/* v8 ignore start — SPA static file serving infrastructure */
+const MIME_TYPES: Record<string, string> = {
+  ".html": "text/html",
+  ".js": "application/javascript",
+  ".css": "text/css",
+  ".json": "application/json",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".ico": "image/x-icon",
+  ".woff2": "font/woff2",
 }
+
+function resolveSpaDistDir(): string | null {
+  // Look for the built SPA relative to this file's location
+  // In production: dist/heart/daemon/outlook-http.js -> ../../packages/outlook-ui/dist/
+  // In dev: packages/outlook-ui/dist/
+  const candidates = [
+    path.resolve(__dirname, "..", "..", "..", "packages", "outlook-ui", "dist"),
+    path.resolve(__dirname, "..", "..", "packages", "outlook-ui", "dist"),
+    path.resolve(__dirname, "..", "..", "..", "..", "packages", "outlook-ui", "dist"),
+    // npm-published layout: the SPA dist is copied to dist/outlook-ui/
+    path.resolve(__dirname, "..", "..", "outlook-ui"),
+    path.resolve(__dirname, "..", "outlook-ui"),
+  ]
+  for (const candidate of candidates) {
+    if (fs.existsSync(path.join(candidate, "index.html"))) return candidate
+  }
+  return null
+}
+
+function serveStaticFile(response: http.ServerResponse, filePath: string): boolean {
+  try {
+    if (!fs.existsSync(filePath)) return false
+    const ext = path.extname(filePath)
+    const contentType = MIME_TYPES[ext] ?? "application/octet-stream"
+    const content = fs.readFileSync(filePath)
+    response.writeHead(200, {
+      "content-type": contentType,
+      "cache-control": ext === ".html" ? "no-cache" : "public, max-age=31536000, immutable",
+    })
+    response.end(content)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/* v8 ignore stop */
 
 function normalizePath(urlValue = "/"): string {
   const parsed = new URL(urlValue, "http://127.0.0.1")
@@ -173,7 +218,6 @@ export async function startOutlookHttpServer(options: StartOutlookHttpServerOpti
   })
   /* v8 ignore stop */
   const readAgentView = options.readAgentView
-  const renderApp = options.renderApp ?? renderOutlookApp
 
   /* v8 ignore start — default hook wiring, tested via integration */
   const agentRoot = (agentName: string) => {
@@ -213,10 +257,24 @@ export async function startOutlookHttpServer(options: StartOutlookHttpServerOpti
       return
     }
 
+    /* v8 ignore start — SPA static asset serving */
+    // Serve built SPA static assets: /assets/*
+    if (pathname.startsWith("/assets/")) {
+      const spaDir = resolveSpaDistDir()
+      if (spaDir) {
+        const assetPath = path.join(spaDir, pathname)
+        if (serveStaticFile(response, assetPath)) return
+      }
+      writeJson(response, 404, { ok: false, error: "asset not found" })
+      return
+    }
+
+    /* v8 ignore stop */
+
+    // Legacy /outlook route — redirect to root
     if (pathname === "/outlook") {
-      const machine = readMachineState()
-      const machineView = readMachineView?.({ origin, machine })
-      writeHtml(response, renderApp({ origin, machine, machineView }))
+      response.writeHead(301, { location: "/" })
+      response.end()
       return
     }
 
@@ -321,7 +379,13 @@ export async function startOutlookHttpServer(options: StartOutlookHttpServerOpti
       return
     }
 
-    writeJson(response, 404, { ok: false, error: `unknown outlook path: ${pathname}` })
+    /* v8 ignore start — SPA fallback for client-side routing */
+    const spaDir = resolveSpaDistDir()
+    if (spaDir) {
+      if (serveStaticFile(response, path.join(spaDir, "index.html"))) return
+    }
+    /* v8 ignore stop */
+    writeJson(response, 404, { ok: false, error: `not found: ${pathname}` })
   })
 
   await new Promise<void>((resolve, reject) => {

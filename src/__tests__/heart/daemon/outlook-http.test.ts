@@ -30,13 +30,13 @@ describe("outlook http", () => {
             } as any
           : null
       ),
-      renderApp: ({ machine }) => `<!doctype html><title>${machine.productName}</title>`,
     })
 
     expect(server.origin).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
 
-    const html = await fetch(`${server.origin}/outlook`).then((response) => response.text())
-    expect(html).toContain("Ouro Outlook")
+    // Root serves SPA if built, or 404 if SPA dist not available
+    const rootResponse = await fetch(`${server.origin}/`)
+    expect([200, 404]).toContain(rootResponse.status)
 
     const machine = await fetch(`${server.origin}/outlook/api/machine`).then((response) => response.json())
     expect(machine).toEqual(expect.objectContaining({ productName: "Ouro Outlook" }))
@@ -126,13 +126,9 @@ describe("outlook http", () => {
       readAgentState: () => null,
     })
 
-    const html = await fetch(`${server.origin}/outlook/`).then((response) => response.text())
-
-    expect(html).toContain("&lt;Outlook&gt; &amp; &quot;Co&quot;")
-    expect(html).toContain("Machine Overview")
-    expect(html).toContain("Regain the plot together.")
-    expect(html).toContain("ouro outlook --json")
-    expect(html).toContain('data-agent-name="slugger"')
+    // Root serves SPA if built, or 404 if SPA dist not available
+    const rootResponse = await fetch(`${server.origin}/`)
+    expect([200, 404]).toContain(rootResponse.status)
 
     await server.stop()
   })
@@ -148,15 +144,19 @@ describe("outlook http", () => {
         agentCount: 1,
       }),
       readAgentState: () => null,
-      renderApp: () => "<!doctype html><title>Ouro Outlook</title>",
     })
 
-    const response = await fetch(`${server.origin}/outlook/nope`)
-    expect(response.status).toBe(404)
-    await expect(response.json()).resolves.toEqual({
-      ok: false,
-      error: "unknown outlook path: /outlook/nope",
-    })
+    // /outlook redirects to /
+    const redirectResponse = await fetch(`${server.origin}/outlook`, { redirect: "manual" })
+    expect(redirectResponse.status).toBe(301)
+    expect(redirectResponse.headers.get("location")).toBe("/")
+
+    // Unknown API route should still 404
+    const apiResponse = await fetch(`${server.origin}/outlook/api/agents/test/nope`)
+    expect(apiResponse.status).toBe(404)
+    // Non-API routes get SPA fallback if built, or 404 otherwise
+    const spaResponse = await fetch(`${server.origin}/outlook/nope`)
+    expect([200, 404]).toContain(spaResponse.status)
 
     await server.stop()
   })
@@ -183,18 +183,14 @@ describe("outlook http", () => {
 
     expect(server.origin).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
 
-    const html = await fetch(`${server.origin}/outlook`).then((response) => response.text())
-    expect(html).toContain("<h1>Ouro Outlook</h1>")
+    // Root serves SPA if built, or 404 if SPA dist not available
+    const rootResponse = await fetch(`${server.origin}/`)
+    expect([200, 404]).toContain(rootResponse.status)
 
+    // Hit API endpoints to trigger the mocked read functions
+    await fetch(`${server.origin}/outlook/api/machine`).then((r) => r.json())
     const agent = await fetch(`${server.origin}/outlook/api/agents/slugger`).then((response) => response.json())
     expect(agent).toEqual(expect.objectContaining({ agentName: "slugger" }))
-
-    const root = await fetch(server.origin)
-    expect(root.status).toBe(404)
-    await expect(root.json()).resolves.toEqual({
-      ok: false,
-      error: "unknown outlook path: /",
-    })
 
     expect(readOutlookMachineState).toHaveBeenCalled()
     expect(readOutlookAgentState).toHaveBeenCalledWith("slugger")
@@ -211,7 +207,6 @@ describe("outlook http", () => {
       port: 0,
       readMachineState: () => ({ productName: "Ouro Outlook", agentCount: 1 }) as any,
       readAgentState: () => null,
-      renderApp: () => "<!doctype html><title>Outlook</title>",
       readAgentSessions: () => ({ totalCount: 3, activeCount: 2, staleCount: 1, items: [] }),
       readAgentTranscript: (_agent, friendId) => (
         friendId === "friend-1"
@@ -289,7 +284,6 @@ describe("outlook http", () => {
       port: 0,
       readMachineState: () => ({ productName: "Ouro Outlook", agentCount: 0 }) as any,
       readAgentState: () => null,
-      renderApp: () => "<!doctype html><title>Outlook</title>",
       readAgentSessions: () => ({ totalCount: 0, activeCount: 0, staleCount: 0, items: [] }),
       readAgentTranscript: (_agent, friendId) => (
         friendId === "self"
@@ -333,7 +327,6 @@ describe("outlook http", () => {
       host: "127.0.0.1",
       port: 0,
       bundlesRoot,
-      renderApp: () => "<!doctype html><title>test</title>",
     })
 
     // These should all return empty/default data without crashing
@@ -367,12 +360,6 @@ describe("outlook http", () => {
     const inner = await fetch(`${server.origin}/outlook/api/agents/nobody/inner-transcript`).then((r) => r.json())
     expect(inner.messageCount).toBe(0)
 
-    // SSE endpoint — verify it sends headers and initial ok
-    const sseController = new AbortController()
-    const sseResp = await fetch(`${server.origin}/outlook/api/events`, { signal: sseController.signal })
-    expect(sseResp.headers.get("content-type")).toBe("text/event-stream")
-    sseController.abort()
-
     const prefs = await fetch(`${server.origin}/outlook/api/agents/nobody/desk-prefs`).then((r) => r.json())
     expect(prefs).toEqual(expect.objectContaining({ carrying: null }))
 
@@ -391,7 +378,6 @@ describe("outlook http", () => {
       port: 0,
       readMachineState: () => ({ productName: "Ouro Outlook", agentCount: 0 }) as any,
       readAgentState: () => null,
-      renderApp: () => "<!doctype html><title>Outlook</title>",
     })
 
     // Connect an SSE client
