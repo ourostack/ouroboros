@@ -4176,8 +4176,8 @@ describe("ouro task CLI execution", () => {
     expect(mockTaskModule.fix).toHaveBeenCalledWith({ mode: "dry-run" })
     expect(result).toContain("schema-missing-kind")
     expect(result).toContain("org-root-level-doc")
-    expect(result).toContain("safe")
-    expect(result).toContain("needs_review")
+    expect(result).toContain("safe fixes")
+    expect(result).toContain("needs review")
     expect(result).toContain("2 migration")
   })
 

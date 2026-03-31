@@ -149,6 +149,7 @@ export const OURO_CLI_TRUST_MANIFEST: Record<string, TrustLevel> = {
   "task actionable": "friend",
   "task deps": "friend",
   "task sessions": "friend",
+  "task fix": "friend",
   "friend list": "friend",
   "friend show": "friend",
   "friend create": "friend",
