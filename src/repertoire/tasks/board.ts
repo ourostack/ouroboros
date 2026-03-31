@@ -10,6 +10,7 @@ const BOARD_STATUS_ORDER: readonly TaskStatus[] = [
   "validating",
   "paused",
   "done",
+  "cancelled",
 ]
 
 function compactName(task: TaskFile): string {
@@ -26,6 +27,7 @@ function groupByStatus(tasks: TaskFile[]): Record<TaskStatus, string[]> {
     paused: [],
     blocked: [],
     done: [],
+    cancelled: [],
   }
   for (const task of tasks) {
     grouped[task.status].push(compactName(task))
@@ -103,7 +105,7 @@ export function buildTaskBoard(index: TaskIndex): BoardResult {
   const fullLines: string[] = []
   for (const status of BOARD_STATUS_ORDER) {
     const names = byStatus[status]
-    if (status === "done" && names.length === 0) continue
+    if ((status === "done" || status === "cancelled") && names.length === 0) continue
     fullLines.push(`## ${status}`)
     fullLines.push(names.length > 0 ? names.map((name) => `- ${name}`).join("\n") : "- (none)")
   }

@@ -205,6 +205,7 @@ function emptyTaskBoard() {
       paused: [],
       blocked: [],
       done: [],
+      cancelled: [],
     },
     actionRequired: [],
     unresolvedDependencies: [],

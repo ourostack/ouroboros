@@ -6,6 +6,7 @@ export type TaskStatus =
   | "paused"
   | "blocked"
   | "done"
+  | "cancelled"
 
 export type CanonicalTaskType = "one-shot" | "ongoing" | "habit"
 

@@ -105,6 +105,7 @@ describe("execTool", () => {
         paused: [],
         blocked: [],
         done: [],
+        cancelled: [],
       },
       actionRequired: [],
       unresolvedDependencies: [],

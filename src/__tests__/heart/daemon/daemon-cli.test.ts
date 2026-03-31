@@ -3893,7 +3893,7 @@ describe("ouro task CLI execution", () => {
     mockTaskModule.getBoard.mockReturnValueOnce({
       compact: "[Tasks] processing:1",
       full: "## processing\n- sample-task",
-      byStatus: { drafting: [], processing: ["sample-task"], validating: [], collaborating: [], paused: [], blocked: [], done: [] },
+      byStatus: { drafting: [], processing: ["sample-task"], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
       actionRequired: [],
       unresolvedDependencies: [],
       activeSessions: [],
@@ -3911,7 +3911,7 @@ describe("ouro task CLI execution", () => {
     mockTaskModule.getBoard.mockReturnValueOnce({
       compact: "",
       full: "",
-      byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [] },
+      byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
       actionRequired: [],
       unresolvedDependencies: [],
       activeSessions: [],

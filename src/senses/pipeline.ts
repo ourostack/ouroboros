@@ -125,6 +125,7 @@ function emptyTaskBoard(): BoardResult {
       paused: [],
       blocked: [],
       done: [],
+      cancelled: [],
     },
     actionRequired: [],
     unresolvedDependencies: [],

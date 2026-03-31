@@ -44,7 +44,7 @@ function makeInput(overrides: Partial<BridgeSuggestionInput> = {}): BridgeSugges
     taskBoard: {
       compact: "",
       activeBridges: [],
-      byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [] },
+      byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
     },
     ...overrides,
   }
@@ -103,7 +103,7 @@ describe("suggestBridgeForActiveWork threshold relaxation", () => {
       taskBoard: {
         compact: "",
         activeBridges: [],
-        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [] },
+        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
       },
       targetCandidates: [
         makeCandidate({ friendId: "friend-2" }),
