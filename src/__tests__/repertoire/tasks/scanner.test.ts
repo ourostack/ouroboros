@@ -142,7 +142,7 @@ describe("scanner — kind: task discrimination", () => {
     const root = makeTaskRoot()
     scanner.ensureTaskLayout(root)
 
-    // A doing doc has no frontmatter
+    // A doing doc has no frontmatter — not parsed as task
     writeFile(
       path.join(root, "one-shots", "2026-03-30-0800-doing-feature.md"),
       "# Doing: Feature X\n\n## Units\n- Unit 1\n",
@@ -150,7 +150,12 @@ describe("scanner — kind: task discrimination", () => {
 
     const index = scanner.scanTasks(root)
     expect(index.tasks).toHaveLength(0)
-    expect(index.issues).toHaveLength(0)
+    // The doing doc is counted as collection root clutter (migration issue)
+    const clutterIssue = index.issues.find((i) => i.code === "org-collection-root-clutter")
+    expect(clutterIssue).toBeDefined()
+    expect(clutterIssue!.description).toContain("1 non-task file")
+    // No parse errors or schema issues
+    expect(index.issues.filter((i) => i.category === "live")).toHaveLength(0)
   })
 
   it("silently skips .md files with frontmatter but no kind/type match", async () => {
@@ -290,6 +295,83 @@ describe("scanner — work directory detection", () => {
     expect(index.tasks).toHaveLength(1)
     expect(index.tasks[0].hasWorkDir).toBe(false)
     expect(index.tasks[0].workDirFiles).toEqual([])
+  })
+})
+
+describe("scanner — collection root clutter detection", () => {
+  beforeEach(() => {
+    agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "scanner-clutter-"))
+  })
+
+  afterEach(async () => {
+    const scanner = await import("../../../repertoire/tasks/scanner")
+    scanner.clearTaskScanCache()
+    removeDirSafe(agentRoot)
+    agentRoot = ""
+  })
+
+  it("summarizes non-task support docs at collection root as one migration issue", async () => {
+    const { emitNervesEvent } = await import("../../../nerves/runtime")
+    ;(emitNervesEvent as ReturnType<typeof vi.fn>).mockImplementation(() => {})
+    const scanner = await import("../../../repertoire/tasks/scanner")
+    const root = makeTaskRoot()
+    scanner.ensureTaskLayout(root)
+
+    // A real task card
+    writeFile(
+      path.join(root, "one-shots", "2026-03-06-1338-real-task.md"),
+      "---\nkind: task\ntype: one-shot\ncategory: ops\ntitle: real task\nstatus: processing\ncreated: 2026-03-06\nupdated: 2026-03-06\n---\n\nBody\n",
+    )
+
+    // Doing docs without frontmatter (the main clutter class)
+    writeFile(path.join(root, "one-shots", "2026-03-07-doing-foo.md"), "# Doing: Foo\n\nContent\n")
+    writeFile(path.join(root, "one-shots", "2026-03-07-doing-bar.md"), "# Doing: Bar\n\nContent\n")
+    writeFile(path.join(root, "one-shots", "2026-03-07-planning-baz.md"), "# Planning: Baz\n\nContent\n")
+
+    const index = scanner.scanTasks(root)
+
+    expect(index.tasks).toHaveLength(1)
+
+    const clutterIssue = index.issues.find((i) => i.code === "org-collection-root-clutter")
+    expect(clutterIssue).toBeDefined()
+    expect(clutterIssue!.target).toBe("one-shots")
+    expect(clutterIssue!.description).toContain("3 non-task files")
+    expect(clutterIssue!.confidence).toBe("needs_review")
+    expect(clutterIssue!.category).toBe("migration")
+  })
+
+  it("does not emit clutter issue when all collection root files are task cards", async () => {
+    const { emitNervesEvent } = await import("../../../nerves/runtime")
+    ;(emitNervesEvent as ReturnType<typeof vi.fn>).mockImplementation(() => {})
+    const scanner = await import("../../../repertoire/tasks/scanner")
+    const root = makeTaskRoot()
+    scanner.ensureTaskLayout(root)
+
+    writeFile(
+      path.join(root, "one-shots", "2026-03-06-1338-clean-task.md"),
+      "---\nkind: task\ntype: one-shot\ncategory: ops\ntitle: clean\nstatus: drafting\ncreated: 2026-03-06\nupdated: 2026-03-06\n---\n\nBody\n",
+    )
+
+    const index = scanner.scanTasks(root)
+
+    const clutterIssue = index.issues.find((i) => i.code === "org-collection-root-clutter")
+    expect(clutterIssue).toBeUndefined()
+  })
+
+  it("uses singular grammar for 1 support doc", async () => {
+    const { emitNervesEvent } = await import("../../../nerves/runtime")
+    ;(emitNervesEvent as ReturnType<typeof vi.fn>).mockImplementation(() => {})
+    const scanner = await import("../../../repertoire/tasks/scanner")
+    const root = makeTaskRoot()
+    scanner.ensureTaskLayout(root)
+
+    writeFile(path.join(root, "one-shots", "2026-03-07-doing-solo.md"), "# Doing: Solo\n\nContent\n")
+
+    const index = scanner.scanTasks(root)
+
+    const clutterIssue = index.issues.find((i) => i.code === "org-collection-root-clutter")
+    expect(clutterIssue).toBeDefined()
+    expect(clutterIssue!.description).toContain("1 non-task file at")
   })
 })
 
