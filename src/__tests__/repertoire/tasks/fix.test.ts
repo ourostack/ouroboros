@@ -223,6 +223,32 @@ describe("fix — applyFixes", () => {
     expect(result.applied).toHaveLength(0)
   })
 
+  it("single mode with wrong ID when issues exist reports health summary", async () => {
+    const { emitNervesEvent } = await import("../../../nerves/runtime")
+    ;(emitNervesEvent as ReturnType<typeof vi.fn>).mockImplementation(() => {})
+    const scanner = await import("../../../repertoire/tasks/scanner")
+    const fix = await import("../../../repertoire/tasks/fix")
+    const root = makeTaskRoot()
+    scanner.ensureTaskLayout(root)
+
+    // Legacy task creates an issue
+    writeFile(
+      path.join(root, "one-shots", "2026-03-30-0800-legacy-task.md"),
+      legacyTaskCard(),
+    )
+
+    const result = fix.applyFixes(
+      { mode: "single", issueId: "wrong-code:wrong-target" },
+      root,
+    )
+
+    // Issue exists but wrong ID — not found
+    expect(result.applied).toHaveLength(0)
+    expect(result.remaining.length).toBeGreaterThan(0)
+    // Health should include the migration issue count, not "clean"
+    expect(result.health).toContain("migration")
+  })
+
   it("returns health: clean when all issues are fixed", async () => {
     const { emitNervesEvent } = await import("../../../nerves/runtime")
     ;(emitNervesEvent as ReturnType<typeof vi.fn>).mockImplementation(() => {})
@@ -239,6 +265,307 @@ describe("fix — applyFixes", () => {
 
     const result = fix.applyFixes({ mode: "safe" }, root)
     expect(result.health).toContain("clean")
+  })
+
+  it("safe mode skips issues with unhandled fix codes", async () => {
+    const { emitNervesEvent } = await import("../../../nerves/runtime")
+    ;(emitNervesEvent as ReturnType<typeof vi.fn>).mockImplementation(() => {})
+    const scanner = await import("../../../repertoire/tasks/scanner")
+    const fix = await import("../../../repertoire/tasks/fix")
+    const root = makeTaskRoot()
+    scanner.ensureTaskLayout(root)
+
+    // Non-canonical filename produces filename-not-canonical (safe confidence, but no fix handler)
+    writeFile(
+      path.join(root, "one-shots", "bad-name.md"),
+      validTaskCard({ title: "Bad Name" }),
+    )
+
+    const result = fix.applyFixes({ mode: "safe" }, root)
+
+    // filename-not-canonical has safe confidence but applySingleFix returns false (default case)
+    const filenameSkipped = result.skipped.find((i) => i.code === "filename-not-canonical")
+    expect(filenameSkipped).toBeDefined()
+  })
+
+  it("handles missing file gracefully in addKindToLegacyCard", async () => {
+    const { emitNervesEvent } = await import("../../../nerves/runtime")
+    ;(emitNervesEvent as ReturnType<typeof vi.fn>).mockImplementation(() => {})
+    const scanner = await import("../../../repertoire/tasks/scanner")
+    const fix = await import("../../../repertoire/tasks/fix")
+    const root = makeTaskRoot()
+    scanner.ensureTaskLayout(root)
+
+    // Create legacy task, scan it, then delete the file before fixing
+    writeFile(
+      path.join(root, "one-shots", "2026-03-30-0800-vanished.md"),
+      legacyTaskCard({ title: "Vanished" }),
+    )
+
+    // Scan first so issues are recorded
+    scanner.scanTasks(root)
+    scanner.clearTaskScanCache()
+
+    // Now delete the file
+    fs.unlinkSync(path.join(root, "one-shots", "2026-03-30-0800-vanished.md"))
+
+    // Fix should handle gracefully — the file no longer exists
+    const result = fix.applyFixes(
+      { mode: "single", issueId: "schema-missing-kind:one-shots/2026-03-30-0800-vanished.md" },
+      root,
+    )
+
+    // Issue won't be found in a fresh scan since file is gone
+    expect(result.applied).toHaveLength(0)
+  })
+
+  it("handles file with no frontmatter in addKindToLegacyCard", async () => {
+    const { emitNervesEvent } = await import("../../../nerves/runtime")
+    ;(emitNervesEvent as ReturnType<typeof vi.fn>).mockImplementation(() => {})
+    const scanner = await import("../../../repertoire/tasks/scanner")
+    const fix = await import("../../../repertoire/tasks/fix")
+    const root = makeTaskRoot()
+    scanner.ensureTaskLayout(root)
+
+    // Create a legacy task and scan it
+    writeFile(
+      path.join(root, "one-shots", "2026-03-30-0800-legacy-task.md"),
+      legacyTaskCard(),
+    )
+
+    const index = scanner.scanTasks(root)
+    const kindIssue = index.issues.find((i) => i.code === "schema-missing-kind")
+    expect(kindIssue).toBeDefined()
+
+    // Now replace the file content with no frontmatter
+    fs.writeFileSync(
+      path.join(root, "one-shots", "2026-03-30-0800-legacy-task.md"),
+      "# Just markdown, no frontmatter\n\nbody\n",
+      "utf-8",
+    )
+
+    scanner.clearTaskScanCache()
+
+    // Single-mode fix on this specific issue — will fail because no frontmatter now
+    const result = fix.applyFixes(
+      { mode: "single", issueId: "schema-missing-kind:one-shots/2026-03-30-0800-legacy-task.md" },
+      root,
+    )
+
+    // Issue won't be found in fresh scan since file no longer has task frontmatter
+    expect(result.applied).toHaveLength(0)
+  })
+})
+
+describe("fix — addKindToLegacyCard edge cases", () => {
+  beforeEach(() => {
+    agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "fix-edge-"))
+  })
+
+  afterEach(async () => {
+    const scanner = await import("../../../repertoire/tasks/scanner")
+    scanner.clearTaskScanCache()
+    removeDirSafe(agentRoot)
+    agentRoot = ""
+  })
+
+  it("returns false when target file does not exist", async () => {
+    const { emitNervesEvent } = await import("../../../nerves/runtime")
+    ;(emitNervesEvent as ReturnType<typeof vi.fn>).mockImplementation(() => {})
+    const fix = await import("../../../repertoire/tasks/fix")
+    const root = makeTaskRoot()
+
+    const result = fix.addKindToLegacyCard(root, {
+      target: "one-shots/nonexistent.md",
+      code: "schema-missing-kind",
+      description: "Missing kind",
+      fix: "Add kind: task",
+      confidence: "safe",
+      category: "migration",
+    })
+
+    expect(result).toBe(false)
+  })
+
+  it("returns false when file has no frontmatter", async () => {
+    const { emitNervesEvent } = await import("../../../nerves/runtime")
+    ;(emitNervesEvent as ReturnType<typeof vi.fn>).mockImplementation(() => {})
+    const scanner = await import("../../../repertoire/tasks/scanner")
+    const fix = await import("../../../repertoire/tasks/fix")
+    const root = makeTaskRoot()
+    scanner.ensureTaskLayout(root)
+
+    writeFile(
+      path.join(root, "one-shots", "2026-03-30-0800-no-fm.md"),
+      "# Just markdown\n\nbody\n",
+    )
+
+    const result = fix.addKindToLegacyCard(root, {
+      target: "one-shots/2026-03-30-0800-no-fm.md",
+      code: "schema-missing-kind",
+      description: "Missing kind",
+      fix: "Add kind: task",
+      confidence: "safe",
+      category: "migration",
+    })
+
+    expect(result).toBe(false)
+  })
+})
+
+describe("fix — dry-run with zero issues", () => {
+  beforeEach(() => {
+    agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "fix-dryrun-clean-"))
+  })
+
+  afterEach(async () => {
+    const scanner = await import("../../../repertoire/tasks/scanner")
+    scanner.clearTaskScanCache()
+    removeDirSafe(agentRoot)
+    agentRoot = ""
+  })
+
+  it("dry-run with no issues reports health: clean", async () => {
+    const { emitNervesEvent } = await import("../../../nerves/runtime")
+    ;(emitNervesEvent as ReturnType<typeof vi.fn>).mockImplementation(() => {})
+    const scanner = await import("../../../repertoire/tasks/scanner")
+    const fix = await import("../../../repertoire/tasks/fix")
+    const root = makeTaskRoot()
+    scanner.ensureTaskLayout(root)
+
+    writeFile(
+      path.join(root, "one-shots", "2026-03-30-0800-clean-task.md"),
+      validTaskCard(),
+    )
+
+    const result = fix.applyFixes({ mode: "dry-run" }, root)
+
+    expect(result.health).toBe("clean")
+    expect(result.remaining).toHaveLength(0)
+  })
+
+  it("single mode with no issues and no matching ID", async () => {
+    const { emitNervesEvent } = await import("../../../nerves/runtime")
+    ;(emitNervesEvent as ReturnType<typeof vi.fn>).mockImplementation(() => {})
+    const scanner = await import("../../../repertoire/tasks/scanner")
+    const fix = await import("../../../repertoire/tasks/fix")
+    const root = makeTaskRoot()
+    scanner.ensureTaskLayout(root)
+
+    writeFile(
+      path.join(root, "one-shots", "2026-03-30-0800-clean-task.md"),
+      validTaskCard(),
+    )
+
+    const result = fix.applyFixes(
+      { mode: "single", issueId: "fake:fake" },
+      root,
+    )
+
+    expect(result.health).toBe("clean")
+    expect(result.applied).toHaveLength(0)
+  })
+
+  it("single mode without issueId defaults to empty string", async () => {
+    const { emitNervesEvent } = await import("../../../nerves/runtime")
+    ;(emitNervesEvent as ReturnType<typeof vi.fn>).mockImplementation(() => {})
+    const scanner = await import("../../../repertoire/tasks/scanner")
+    const fix = await import("../../../repertoire/tasks/fix")
+    const root = makeTaskRoot()
+    scanner.ensureTaskLayout(root)
+
+    writeFile(
+      path.join(root, "one-shots", "2026-03-30-0800-clean-task.md"),
+      validTaskCard(),
+    )
+
+    const result = fix.applyFixes({ mode: "single" }, root)
+
+    expect(result.applied).toHaveLength(0)
+  })
+
+  it("single mode fix failure returns issue in skipped", async () => {
+    const { emitNervesEvent } = await import("../../../nerves/runtime")
+    ;(emitNervesEvent as ReturnType<typeof vi.fn>).mockImplementation(() => {})
+    const scanner = await import("../../../repertoire/tasks/scanner")
+    const fix = await import("../../../repertoire/tasks/fix")
+    const root = makeTaskRoot()
+    scanner.ensureTaskLayout(root)
+
+    // Create a non-canonical filename task — produces filename-not-canonical issue (safe)
+    // but applySingleFix returns false for filename-not-canonical (no handler in switch)
+    writeFile(
+      path.join(root, "one-shots", "bad-name.md"),
+      validTaskCard({ title: "Bad Name" }),
+    )
+
+    const index = scanner.scanTasks(root)
+    const fnIssue = index.issues.find((i) => i.code === "filename-not-canonical")
+    expect(fnIssue).toBeDefined()
+    scanner.clearTaskScanCache()
+
+    const result = fix.applyFixes(
+      { mode: "single", issueId: `filename-not-canonical:${fnIssue!.target}` },
+      root,
+    )
+
+    // Fix should fail (no handler for filename-not-canonical) — issue in skipped
+    expect(result.applied).toHaveLength(0)
+    expect(result.skipped).toHaveLength(1)
+    expect(result.skipped[0].code).toBe("filename-not-canonical")
+  })
+})
+
+describe("fix — buildHealthSummary branches", () => {
+  beforeEach(() => {
+    agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "fix-health-"))
+  })
+
+  afterEach(async () => {
+    const scanner = await import("../../../repertoire/tasks/scanner")
+    scanner.clearTaskScanCache()
+    removeDirSafe(agentRoot)
+    agentRoot = ""
+  })
+
+  it("reports only live issues when no migration issues exist", async () => {
+    const { emitNervesEvent } = await import("../../../nerves/runtime")
+    ;(emitNervesEvent as ReturnType<typeof vi.fn>).mockImplementation(() => {})
+    const scanner = await import("../../../repertoire/tasks/scanner")
+    const fix = await import("../../../repertoire/tasks/fix")
+    const root = makeTaskRoot()
+    scanner.ensureTaskLayout(root)
+
+    // Only a schema-invalid (live) issue — kind: task file with missing required fields
+    writeFile(
+      path.join(root, "one-shots", "2026-03-30-0800-bad-schema.md"),
+      "---\nkind: task\ntype: one-shot\ntitle: Bad\n---\n\nbody\n",
+    )
+
+    const result = fix.applyFixes({ mode: "dry-run" }, root)
+
+    expect(result.health).toContain("live")
+    expect(result.health).not.toContain("migration")
+  })
+
+  it("reports only migration issues when no live issues exist", async () => {
+    const { emitNervesEvent } = await import("../../../nerves/runtime")
+    ;(emitNervesEvent as ReturnType<typeof vi.fn>).mockImplementation(() => {})
+    const scanner = await import("../../../repertoire/tasks/scanner")
+    const fix = await import("../../../repertoire/tasks/fix")
+    const root = makeTaskRoot()
+    scanner.ensureTaskLayout(root)
+
+    // Only a migration issue (legacy task)
+    writeFile(
+      path.join(root, "one-shots", "2026-03-30-0800-legacy.md"),
+      legacyTaskCard(),
+    )
+
+    const result = fix.applyFixes({ mode: "dry-run" }, root)
+
+    expect(result.health).toContain("migration")
+    expect(result.health).not.toContain("live")
   })
 })
 

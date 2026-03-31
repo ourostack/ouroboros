@@ -9,7 +9,7 @@ function issueId(issue: TaskIssue): string {
   return `${issue.code}:${issue.target}`
 }
 
-function addKindToLegacyCard(root: string, issue: TaskIssue): boolean {
+export function addKindToLegacyCard(root: string, issue: TaskIssue): boolean {
   emitNervesEvent({
     event: "repertoire.fix_apply_start",
     component: "repertoire",
