@@ -425,35 +425,45 @@ export class OuroDaemon {
     await this.drainPendingSenseMessages()
     /* v8 ignore start — Outlook server startup, tested via outlook-http.test.ts */
     if (!this.outlookServer) {
-      this.outlookServer = await startOutlookHttpServer({
-        host: "127.0.0.1",
-        port: OUTLOOK_DEFAULT_PORT,
-        readMachineState: () => readOutlookMachineState({ bundlesRoot: this.bundlesRoot }),
-        readMachineView: ({ machine }) => {
-          const overview = this.buildStatusPayload().overview
-          return buildOutlookMachineView({
-            machine,
-            daemon: {
-              status: overview.daemon,
-              health: overview.health,
-              mode: overview.mode,
-              socketPath: overview.socketPath,
-              outlookUrl: overview.outlookUrl,
-              entryPath: overview.entryPath,
-              workerCount: overview.workerCount,
-              senseCount: overview.senseCount,
-            },
-          })
-        },
-        readAgentState: (agentName) => readOutlookAgentState(agentName, { bundlesRoot: this.bundlesRoot }),
-        readAgentView: (agentName) => {
-          const agent = readOutlookAgentState(agentName, { bundlesRoot: this.bundlesRoot })
-          return buildOutlookAgentView({
-            agent,
-            viewer: { kind: "human" },
-          })
-        },
-      })
+      try {
+        this.outlookServer = await startOutlookHttpServer({
+          host: "127.0.0.1",
+          port: OUTLOOK_DEFAULT_PORT,
+          readMachineState: () => readOutlookMachineState({ bundlesRoot: this.bundlesRoot }),
+          readMachineView: ({ machine }) => {
+            const overview = this.buildStatusPayload().overview
+            return buildOutlookMachineView({
+              machine,
+              daemon: {
+                status: overview.daemon,
+                health: overview.health,
+                mode: overview.mode,
+                socketPath: overview.socketPath,
+                outlookUrl: overview.outlookUrl,
+                entryPath: overview.entryPath,
+                workerCount: overview.workerCount,
+                senseCount: overview.senseCount,
+              },
+            })
+          },
+          readAgentState: (agentName) => readOutlookAgentState(agentName, { bundlesRoot: this.bundlesRoot }),
+          readAgentView: (agentName) => {
+            const agent = readOutlookAgentState(agentName, { bundlesRoot: this.bundlesRoot })
+            return buildOutlookAgentView({
+              agent,
+              viewer: { kind: "human" },
+            })
+          },
+        })
+      } catch (error) {
+        emitNervesEvent({
+          level: "warn",
+          component: "daemon",
+          event: "daemon.outlook_start_failed",
+          message: `Outlook server failed to start: ${String(error)}`,
+          meta: { port: OUTLOOK_DEFAULT_PORT },
+        })
+      }
     }
     /* v8 ignore stop */
 

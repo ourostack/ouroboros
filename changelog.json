@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.161",
+      "changes": [
+        "feat(outlook): serve React SPA at root (/), daemon serves static assets",
+        "fix(daemon): graceful EADDRINUSE handling for Outlook port"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.160",
       "changes": [
         "feat(outlook): total inspectability expansion \u2014 14 API endpoints, session x-ray, obligation chain tracing, coding deep inspection, attention/pending queue, bridge inventory, habit triage, memory/journal, friend economics, SSE live updates",
