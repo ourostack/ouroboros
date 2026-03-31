@@ -2,6 +2,20 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.158",
+      "changes": [
+        "Task scanner v2: explicit identity via kind: task field. Scanner only parses files that declare themselves as task cards — doing docs, planning docs, and artifacts silently skipped. Eliminates 184 false parse errors on real bundles.",
+        "Typed issue model: every scanner issue has a code, description, proposed fix, confidence (safe/needs_review), and category (live/migration). Replaces flat parseErrors/invalidFilenames arrays.",
+        "Board health line: compact board shows health: clean or health: 1 live, 10 migration. Live vs migration split prevents cleanup noise from looking like breakage.",
+        "Fix command: ouro task fix (dry-run), ouro task fix --safe (apply deterministic fixes), ouro task fix <id> (inspect/apply individual issues). Currently auto-fixes schema-missing-kind.",
+        "Cancelled status: new terminal state reachable from any active status. Auto-archives with work directory, hidden from active board view.",
+        "Derived child_tasks: computed at scan time from parent_task links. child_tasks removed from authored schema — no more hand-maintained stale arrays.",
+        "Work directory awareness: same-stem directories detected and listed on TaskFile (hasWorkDir, workDirFiles). Scanner never descends into them.",
+        "Collection root clutter detection: non-task support docs at collection root summarized as one aggregated migration issue per collection.",
+        "Root-only scanning: flat directory reads replace recursive walks. Faster and correct."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.157",
       "changes": [
         "Habit turns as awareness: unified buildHabitTurnMessage replaces contextual-heartbeat. Continuity-first format (checkpoint leads, not elapsed time). Same format for all habits \u2014 no heartbeat special-casing.",
