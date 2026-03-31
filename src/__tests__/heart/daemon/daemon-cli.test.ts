@@ -256,6 +256,52 @@ describe("ouro CLI parsing", () => {
 
     // ouro task sessions
     expect(parseOuroCommand(["task", "sessions"])).toEqual({ kind: "task.sessions" })
+
+    // ouro task fix (dry-run by default)
+    expect(parseOuroCommand(["task", "fix"])).toEqual({ kind: "task.fix", mode: "dry-run" })
+
+    // ouro task fix --safe (apply safe fixes)
+    expect(parseOuroCommand(["task", "fix", "--safe"])).toEqual({ kind: "task.fix", mode: "safe" })
+
+    // ouro task fix --all (alias for --safe)
+    expect(parseOuroCommand(["task", "fix", "--all"])).toEqual({ kind: "task.fix", mode: "safe" })
+
+    // ouro task fix <id> (single issue detail)
+    expect(parseOuroCommand(["task", "fix", "schema-missing-kind:one-shots/foo.md"])).toEqual({
+      kind: "task.fix",
+      mode: "single",
+      issueId: "schema-missing-kind:one-shots/foo.md",
+    })
+
+    // ouro task fix <id> --option <N> (apply specific option)
+    expect(parseOuroCommand(["task", "fix", "schema-missing-kind:one-shots/foo.md", "--option", "1"])).toEqual({
+      kind: "task.fix",
+      mode: "single",
+      issueId: "schema-missing-kind:one-shots/foo.md",
+      option: 1,
+    })
+
+    // ouro task fix with --agent flag
+    expect(parseOuroCommand(["task", "fix", "--agent", "slugger"])).toEqual({
+      kind: "task.fix",
+      mode: "dry-run",
+      agent: "slugger",
+    })
+
+    // ouro task fix --safe with --agent flag
+    expect(parseOuroCommand(["task", "fix", "--safe", "--agent", "slugger"])).toEqual({
+      kind: "task.fix",
+      mode: "safe",
+      agent: "slugger",
+    })
+
+    // ouro task fix <id> with --agent flag
+    expect(parseOuroCommand(["task", "fix", "schema-missing-kind:one-shots/foo.md", "--agent", "slugger"])).toEqual({
+      kind: "task.fix",
+      mode: "single",
+      issueId: "schema-missing-kind:one-shots/foo.md",
+      agent: "slugger",
+    })
   })
 
   it("rejects malformed task subcommands", () => {
@@ -2547,6 +2593,7 @@ describe("ouro --help completeness (H10)", () => {
     expect(result).toContain("ouro task create")
     expect(result).toContain("ouro task update")
     expect(result).toContain("ouro task show")
+    expect(result).toContain("ouro task fix")
     // actionable, deps, sessions are grouped on one line
     expect(result).toContain("actionable")
     expect(result).toContain("deps")
@@ -3872,6 +3919,7 @@ describe("ouro task CLI execution", () => {
     boardAction: vi.fn(),
     boardDeps: vi.fn(),
     boardSessions: vi.fn(),
+    fix: vi.fn(),
   }
 
   function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
@@ -4110,6 +4158,119 @@ describe("ouro task CLI execution", () => {
     const deps = makeDeps()
     const result = await runOuroCli(["task", "sessions"], deps)
     expect(result).toBe("no active sessions")
+  })
+
+  it("ouro task fix dry-run shows issue summary", async () => {
+    mockTaskModule.fix.mockReturnValueOnce({
+      applied: [],
+      remaining: [
+        { target: "one-shots/foo.md", code: "schema-missing-kind", description: "missing kind: task", fix: "add kind: task to frontmatter", confidence: "safe", category: "migration" },
+        { target: "orphan.md", code: "org-root-level-doc", description: "root-level orphan doc", fix: "move to collection or remove", confidence: "needs_review", category: "migration" },
+      ],
+      skipped: [],
+      health: "2 migration",
+    })
+
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "fix"], deps)
+    expect(mockTaskModule.fix).toHaveBeenCalledWith({ mode: "dry-run" })
+    expect(result).toContain("schema-missing-kind")
+    expect(result).toContain("org-root-level-doc")
+    expect(result).toContain("safe")
+    expect(result).toContain("needs_review")
+    expect(result).toContain("2 migration")
+  })
+
+  it("ouro task fix dry-run shows clean when no issues", async () => {
+    mockTaskModule.fix.mockReturnValueOnce({
+      applied: [],
+      remaining: [],
+      skipped: [],
+      health: "clean",
+    })
+
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "fix"], deps)
+    expect(result).toContain("clean")
+  })
+
+  it("ouro task fix --safe applies safe fixes and shows results", async () => {
+    mockTaskModule.fix.mockReturnValueOnce({
+      applied: [
+        { target: "one-shots/foo.md", code: "schema-missing-kind", description: "missing kind: task", fix: "add kind: task to frontmatter", confidence: "safe", category: "migration" },
+      ],
+      remaining: [
+        { target: "orphan.md", code: "org-root-level-doc", description: "root-level orphan doc", fix: "move to collection or remove", confidence: "needs_review", category: "migration" },
+      ],
+      skipped: [
+        { target: "orphan.md", code: "org-root-level-doc", description: "root-level orphan doc", fix: "move to collection or remove", confidence: "needs_review", category: "migration" },
+      ],
+      health: "1 migration",
+    })
+
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "fix", "--safe"], deps)
+    expect(mockTaskModule.fix).toHaveBeenCalledWith({ mode: "safe" })
+    expect(result).toContain("1 applied")
+    expect(result).toContain("1 remaining")
+    expect(result).toContain("1 migration")
+  })
+
+  it("ouro task fix --all is alias for --safe", async () => {
+    mockTaskModule.fix.mockReturnValueOnce({
+      applied: [],
+      remaining: [],
+      skipped: [],
+      health: "clean",
+    })
+
+    const deps = makeDeps()
+    await runOuroCli(["task", "fix", "--all"], deps)
+    expect(mockTaskModule.fix).toHaveBeenCalledWith({ mode: "safe" })
+  })
+
+  it("ouro task fix <id> shows issue details", async () => {
+    mockTaskModule.fix.mockReturnValueOnce({
+      applied: [],
+      remaining: [
+        { target: "one-shots/foo.md", code: "schema-missing-kind", description: "missing kind: task", fix: "add kind: task to frontmatter", confidence: "safe", category: "migration" },
+      ],
+      skipped: [],
+      health: "1 migration",
+    })
+
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "fix", "schema-missing-kind:one-shots/foo.md"], deps)
+    expect(mockTaskModule.fix).toHaveBeenCalledWith({ mode: "single", issueId: "schema-missing-kind:one-shots/foo.md" })
+    expect(result).toContain("schema-missing-kind")
+    expect(result).toContain("one-shots/foo.md")
+  })
+
+  it("ouro task fix <id> --option N applies specific option", async () => {
+    mockTaskModule.fix.mockReturnValueOnce({
+      applied: [
+        { target: "one-shots/foo.md", code: "schema-missing-kind", description: "missing kind: task", fix: "add kind: task to frontmatter", confidence: "safe", category: "migration" },
+      ],
+      remaining: [],
+      skipped: [],
+      health: "clean",
+    })
+
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "fix", "schema-missing-kind:one-shots/foo.md", "--option", "1"], deps)
+    expect(mockTaskModule.fix).toHaveBeenCalledWith({ mode: "single", issueId: "schema-missing-kind:one-shots/foo.md", option: 1 })
+    expect(result).toContain("1 applied")
+    expect(result).toContain("clean")
+  })
+
+  it("ouro task fix surfaces fix module exceptions", async () => {
+    mockTaskModule.fix.mockImplementationOnce(() => {
+      throw new Error("fix failed")
+    })
+
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "fix"], deps)
+    expect(result).toContain("error: fix failed")
   })
 })
 
@@ -5570,6 +5731,7 @@ describe("OURO_CLI_TRUST_MANIFEST", () => {
     expect(OURO_CLI_TRUST_MANIFEST.whoami).toBe("acquaintance")
     expect(OURO_CLI_TRUST_MANIFEST.changelog).toBe("acquaintance")
     expect(OURO_CLI_TRUST_MANIFEST["task board"]).toBe("friend")
+    expect(OURO_CLI_TRUST_MANIFEST["task fix"]).toBe("friend")
     expect(OURO_CLI_TRUST_MANIFEST["friend list"]).toBe("friend")
     expect(OURO_CLI_TRUST_MANIFEST["session list"]).toBe("acquaintance")
     expect(OURO_CLI_TRUST_MANIFEST["config model"]).toBe("friend")
