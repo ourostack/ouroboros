@@ -19,6 +19,7 @@ export interface SessionActivityQuery {
   friendsDir: string
   agentName: string
   activeThresholdMs?: number
+  nowMs?: number
   currentSession?: { friendId: string; channel: string; key: string } | null
 }
 
@@ -78,6 +79,7 @@ export function listSessionActivity(query: SessionActivityQuery): SessionActivit
     friendsDir,
     agentName,
     activeThresholdMs = DEFAULT_ACTIVE_THRESHOLD_MS,
+    nowMs = Date.now(),
     currentSession = null,
   } = query
 
@@ -93,7 +95,6 @@ export function listSessionActivity(query: SessionActivityQuery): SessionActivit
 
   if (!fs.existsSync(sessionsDir)) return []
 
-  const now = Date.now()
   const results: SessionActivityRecord[] = []
 
   let friendDirs: string[]
@@ -135,7 +136,7 @@ export function listSessionActivity(query: SessionActivityQuery): SessionActivit
         const sessionPath = path.join(channelPath, keyFile)
         const activity = parseFriendActivity(sessionPath)
         if (!activity) continue
-        if (now - activity.lastActivityMs > activeThresholdMs) continue
+        if (nowMs - activity.lastActivityMs > activeThresholdMs) continue
 
         results.push({
           friendId,
@@ -164,13 +165,14 @@ export function findFreshestFriendSession(
   const {
     activeOnly = false,
     activeThresholdMs = DEFAULT_ACTIVE_THRESHOLD_MS,
+    nowMs,
     ...rest
   } = query
 
   const currentSession = rest.currentSession ?? null
   const all = activeOnly
-    ? listSessionActivity({ ...rest, activeThresholdMs, currentSession })
-    : listSessionActivity({ ...rest, activeThresholdMs: Number.MAX_SAFE_INTEGER, currentSession })
+    ? listSessionActivity({ ...rest, activeThresholdMs, nowMs, currentSession })
+    : listSessionActivity({ ...rest, activeThresholdMs: Number.MAX_SAFE_INTEGER, nowMs, currentSession })
 
   return all.find((entry) => entry.friendId === query.friendId) ?? null
 }

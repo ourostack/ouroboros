@@ -31,6 +31,8 @@ describe("ouro CLI parsing", () => {
     expect(parseOuroCommand(["down"])).toEqual({ kind: "daemon.stop" })
     expect(parseOuroCommand(["status"])).toEqual({ kind: "daemon.status" })
     expect(parseOuroCommand(["logs"])).toEqual({ kind: "daemon.logs" })
+    expect(parseOuroCommand(["outlook"])).toEqual({ kind: "outlook" })
+    expect(parseOuroCommand(["outlook", "--json"])).toEqual({ kind: "outlook", json: true })
     expect(parseOuroCommand(["hatch"])).toEqual({ kind: "hatch.start" })
     expect(
       parseOuroCommand([
@@ -1283,6 +1285,50 @@ describe("ouro CLI execution", () => {
     expect(result).toContain("running")
   })
 
+  it("surfaces the Outlook URL from daemon status and can fetch JSON from the same seam", async () => {
+    const fetchImpl = vi.fn(async (target: string | URL | Request) => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ productName: "Ouro Outlook", agentCount: 1 }),
+      text: async () => JSON.stringify({ productName: "Ouro Outlook", agentCount: 1 }, null, 2),
+    }))
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({
+        ok: true,
+        data: {
+          overview: {
+            daemon: "running",
+            socketPath: "/tmp/ouro-test.sock",
+            version: PACKAGE_VERSION.version,
+            lastUpdated: "2026-03-08T23:50:00.000Z",
+            workerCount: 0,
+            senseCount: 0,
+            health: "ok",
+            entryPath: "/usr/local/lib/node_modules/@ouro.bot/cli/dist/heart/daemon/daemon-entry.js",
+            mode: "production",
+            outlookUrl: "http://127.0.0.1:4310/outlook",
+          },
+          senses: [],
+          workers: [],
+        },
+      })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    }
+
+    const urlResult = await runOuroCli(["outlook"], deps)
+    expect(urlResult).toContain("http://127.0.0.1:4310/outlook")
+
+    const jsonResult = await runOuroCli(["outlook", "--json"], deps)
+    expect(fetchImpl).toHaveBeenCalledWith("http://127.0.0.1:4310/outlook/api/machine")
+    expect(jsonResult).toContain("\"productName\": \"Ouro Outlook\"")
+  })
+
   it("renders overview defaults when daemon status omits optional overview fields", async () => {
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
@@ -1312,6 +1358,7 @@ describe("ouro CLI execution", () => {
     expect(result).toContain("| Workers      | 0")
     expect(result).toContain("| Senses       | 0")
     expect(result).toContain("| Health       | unknown |")
+    expect(result).toContain("| Outlook      | unavailable |")
     expect(result).toContain("| Entry Path   | unknown |")
     expect(result).toContain("| Mode         | unknown |")
   })
@@ -1331,6 +1378,7 @@ describe("ouro CLI execution", () => {
             workerCount: 1,
             senseCount: 3,
             health: "ok",
+            outlookUrl: "http://127.0.0.1:4310/outlook",
             entryPath: "/usr/local/lib/node_modules/@ouro.bot/cli/dist/heart/daemon/daemon-entry.js",
             mode: "production",
           },
@@ -1391,6 +1439,8 @@ describe("ouro CLI execution", () => {
     expect(result).toContain("n/a")
     expect(result).toContain("| Entry Path")
     expect(result).toContain("/usr/local/lib/node_modules/@ouro.bot/cli/dist/heart/daemon/daemon-entry.js")
+    expect(result).toContain("| Outlook")
+    expect(result).toContain("http://127.0.0.1:4310/outlook")
     expect(result).toContain("| Mode")
     expect(result).toContain("production")
   })
