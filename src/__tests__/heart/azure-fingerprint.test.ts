@@ -42,6 +42,8 @@ vi.mock("../../heart/identity", () => ({
     name: "testagent",
     configPath: "~/.agentsecrets/testagent/secrets.json",
     provider: "azure",
+    humanFacing: { provider: "azure", model: "gpt-4o" },
+    agentFacing: { provider: "azure", model: "gpt-4o" },
   })),
   DEFAULT_AGENT_CONTEXT: {
     maxTokens: 80000,

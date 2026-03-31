@@ -10,7 +10,7 @@ import {
 import { loadAgentConfig } from "./identity";
 import { execTool, summarizeArgs, settleTool, observeTool, ponderTool, restTool, getToolsForChannel, isConfirmationRequired } from "../repertoire/tools";
 import type { ToolContext } from "../repertoire/tools";
-import { getChannelCapabilities } from "../mind/friends/channel";
+import { getChannelCapabilities, channelToFacing, type Facing } from "../mind/friends/channel";
 import { surfaceToolDef } from "../senses/surface-tool";
 import type { AssistantMessageWithReasoning, ResponseItem } from "./streaming";
 import { emitNervesEvent } from "../nerves/runtime";
@@ -78,34 +78,40 @@ export interface ProviderTurnRequest {
 }
 
 interface ProviderRegistry {
-  resolve(): ProviderRuntime | null;
+  resolve(provider?: ProviderId, model?: string): ProviderRuntime | null;
 }
 
-let _providerRuntime: { fingerprint: string; runtime: ProviderRuntime } | null = null;
+const _providerRuntimes: Record<Facing, { fingerprint: string; runtime: ProviderRuntime } | null> = {
+  human: null,
+  agent: null,
+};
 
-function getProviderRuntimeFingerprint(): string {
-  const provider = loadAgentConfig().provider;
+function getProviderRuntimeFingerprint(facing: Facing): string {
+  const config = loadAgentConfig();
+  const facingConfig = facing === "human" ? config.humanFacing : config.agentFacing;
+  const provider = facingConfig.provider;
+  const model = facingConfig.model;
   /* v8 ignore next -- switch: not all provider branches exercised in CI @preserve */
   switch (provider) {
     case "azure": {
-      const { apiKey, endpoint, deployment, modelName, apiVersion, managedIdentityClientId } = getAzureConfig();
-      return JSON.stringify({ provider, apiKey, endpoint, deployment, modelName, apiVersion, managedIdentityClientId });
+      const { apiKey, endpoint, deployment, apiVersion, managedIdentityClientId } = getAzureConfig();
+      return JSON.stringify({ provider, model, apiKey, endpoint, deployment, apiVersion, managedIdentityClientId });
     }
     case "anthropic": {
-      const { model, setupToken } = getAnthropicConfig();
+      const { setupToken } = getAnthropicConfig();
       return JSON.stringify({ provider, model, setupToken });
     }
     case "minimax": {
-      const { apiKey, model } = getMinimaxConfig();
-      return JSON.stringify({ provider, apiKey, model });
+      const { apiKey } = getMinimaxConfig();
+      return JSON.stringify({ provider, model, apiKey });
     }
     case "openai-codex": {
-      const { model, oauthAccessToken } = getOpenAICodexConfig();
+      const { oauthAccessToken } = getOpenAICodexConfig();
       return JSON.stringify({ provider, model, oauthAccessToken });
     }
     /* v8 ignore start -- fingerprint: tested via provider init tests @preserve */
     case "github-copilot": {
-      const { model, githubToken, baseUrl } = getGithubCopilotConfig();
+      const { githubToken, baseUrl } = getGithubCopilotConfig();
       return JSON.stringify({ provider, model, githubToken, baseUrl });
     }
     /* v8 ignore stop */
@@ -113,7 +119,7 @@ function getProviderRuntimeFingerprint(): string {
 }
 
 export function createProviderRegistry(): ProviderRegistry {
-  const factories: Record<ProviderId, () => ProviderRuntime> = {
+  const factories: Record<ProviderId, (model: string) => ProviderRuntime> = {
     azure: createAzureProviderRuntime,
     anthropic: createAnthropicProviderRuntime,
     minimax: createMinimaxProviderRuntime,
@@ -122,19 +128,23 @@ export function createProviderRegistry(): ProviderRegistry {
   };
 
   return {
-    resolve(): ProviderRuntime | null {
-      const provider = loadAgentConfig().provider;
-      return factories[provider]();
+    resolve(provider?: ProviderId, model?: string): ProviderRuntime | null {
+      const resolvedProvider = provider ?? loadAgentConfig().humanFacing.provider;
+      const resolvedModel = model ?? loadAgentConfig().humanFacing.model;
+      return factories[resolvedProvider](resolvedModel);
     },
   };
 }
 
-function getProviderRuntime(): ProviderRuntime {
+function getProviderRuntime(facing: Facing = "human"): ProviderRuntime {
   try {
-    const fingerprint = getProviderRuntimeFingerprint();
-    if (!_providerRuntime || _providerRuntime.fingerprint !== fingerprint) {
-      const runtime = createProviderRegistry().resolve();
-      _providerRuntime = runtime ? { fingerprint, runtime } : null;
+    const fingerprint = getProviderRuntimeFingerprint(facing);
+    const cached = _providerRuntimes[facing];
+    if (!cached || cached.fingerprint !== fingerprint) {
+      const config = loadAgentConfig();
+      const facingConfig = facing === "human" ? config.humanFacing : config.agentFacing;
+      const runtime = createProviderRegistry().resolve(facingConfig.provider, facingConfig.model);
+      _providerRuntimes[facing] = runtime ? { fingerprint, runtime } : null;
     }
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -151,7 +161,7 @@ function getProviderRuntime(): ProviderRuntime {
     throw new Error("unreachable");
   }
 
-  if (!_providerRuntime) {
+  if (!_providerRuntimes[facing]) {
     emitNervesEvent({
       level: "error",
       event: "engine.provider_init_error",
@@ -162,7 +172,7 @@ function getProviderRuntime(): ProviderRuntime {
     process.exit(1);
     throw new Error("unreachable");
   }
-  return _providerRuntime.runtime;
+  return _providerRuntimes[facing]!.runtime;
 }
 
 /**
@@ -171,20 +181,21 @@ function getProviderRuntime(): ProviderRuntime {
  * provider fingerprint changes on disk.
  */
 export function resetProviderRuntime(): void {
-  _providerRuntime = null;
+  _providerRuntimes.human = null;
+  _providerRuntimes.agent = null;
 }
 
-export function getModel(): string {
-  return getProviderRuntime().model;
+export function getModel(facing: Facing = "human"): string {
+  return getProviderRuntime(facing).model;
 }
 
-export function getProvider(): ProviderId {
-  return getProviderRuntime().id;
+export function getProvider(facing: Facing = "human"): ProviderId {
+  return getProviderRuntime(facing).id;
 }
 
-export function createSummarize(): (transcript: string, instruction: string) => Promise<string> {
+export function createSummarize(facing: Facing = "human"): (transcript: string, instruction: string) => Promise<string> {
   return async (transcript: string, instruction: string): Promise<string> => {
-    const runtime = getProviderRuntime()
+    const runtime = getProviderRuntime(facing)
     const client = runtime.client as OpenAI
     const response = await client.chat.completions.create({
       model: runtime.model,
@@ -198,18 +209,21 @@ export function createSummarize(): (transcript: string, instruction: string) => 
   }
 }
 
-export function getProviderDisplayLabel(): string {
-  const provider = loadAgentConfig().provider;
+export function getProviderDisplayLabel(facing: Facing = "human"): string {
+  const config = loadAgentConfig();
+  const facingConfig = facing === "human" ? config.humanFacing : config.agentFacing;
+  const provider = facingConfig.provider;
+  const model = facingConfig.model || "unknown";
   const providerLabelBuilders: Record<ProviderId, () => string> = {
     azure: () => {
-      const config = getAzureConfig();
-      return `azure openai (${config.deployment || "default"}, model: ${config.modelName || "unknown"})`
+      const azureCfg = getAzureConfig();
+      return `azure openai (${azureCfg.deployment || "default"}, model: ${model})`
     },
-    anthropic: () => `anthropic (${getAnthropicConfig().model || "unknown"})`,
-    minimax: () => `minimax (${getMinimaxConfig().model || "unknown"})`,
-    "openai-codex": () => `openai codex (${getOpenAICodexConfig().model || "unknown"})`,
+    anthropic: () => `anthropic (${model})`,
+    minimax: () => `minimax (${model})`,
+    "openai-codex": () => `openai codex (${model})`,
     /* v8 ignore next -- branch: tested via display label unit test @preserve */
-    "github-copilot": () => `github copilot (${getGithubCopilotConfig().model || "unknown"})`,
+    "github-copilot": () => `github copilot (${model})`,
   };
   return providerLabelBuilders[provider]();
 }
@@ -565,7 +579,8 @@ export async function runAgent(
   signal?: AbortSignal,
   options?: RunAgentOptions,
 ): Promise<{ usage?: UsageData; outcome: RunAgentOutcome; completion?: CompletionMetadata; error?: Error; errorClassification?: ProviderErrorClassification }> {
-  const providerRuntime = getProviderRuntime();
+  const facing = channelToFacing(channel);
+  const providerRuntime = getProviderRuntime(facing);
   const provider = providerRuntime.id;
   const toolChoiceRequired = options?.toolChoiceRequired ?? true;
   const traceId = options?.traceId;

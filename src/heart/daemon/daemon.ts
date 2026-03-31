@@ -9,6 +9,7 @@ import { getRuntimeMetadata } from "./runtime-metadata"
 import { detectRuntimeMode } from "./runtime-mode"
 import { applyPendingUpdates, registerUpdateHook } from "./update-hooks"
 import { bundleMetaHook } from "./hooks/bundle-meta"
+import { agentConfigV2Hook } from "./hooks/agent-config-v2"
 import { getPackageVersion } from "../../mind/bundle-manifest"
 import { startUpdateChecker, stopUpdateChecker } from "./update-checker"
 import { performStagedRestart } from "./staged-restart"
@@ -325,6 +326,7 @@ export class OuroDaemon {
 
     // Register update hooks and apply pending updates before starting agents
     registerUpdateHook(bundleMetaHook)
+    registerUpdateHook(agentConfigV2Hook)
     const currentVersion = getPackageVersion()
     await applyPendingUpdates(this.bundlesRoot, currentVersion)
 

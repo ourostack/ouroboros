@@ -118,14 +118,22 @@ async function setAgentProvider(provider: "azure" | "minimax" | "anthropic" | "o
     name: "testagent",
     configPath: "~/.agentsecrets/testagent/secrets.json",
     provider,
+    humanFacing: { provider, model: "" },
+    agentFacing: { provider, model: "" },
   })
 }
 
 async function setupMinimax(apiKey = "test-key", model = "test-model") {
-  await setAgentProvider("minimax")
+  vi.mocked(identity.loadAgentConfig).mockReturnValue({
+    name: "testagent",
+    configPath: "~/.agentsecrets/testagent/secrets.json",
+    provider: "minimax",
+    humanFacing: { provider: "minimax", model },
+    agentFacing: { provider: "minimax", model },
+  })
   const config = await import("../../heart/config")
   config.resetConfigCache()
-  config.patchRuntimeConfig({ providers: { minimax: { apiKey, model } } })
+  config.patchRuntimeConfig({ providers: { minimax: { apiKey } } })
 }
 
 async function setupAzure(
@@ -134,10 +142,16 @@ async function setupAzure(
   deployment = "test-deployment",
   modelName = "gpt-5.4-chat",
 ) {
-  await setAgentProvider("azure")
+  vi.mocked(identity.loadAgentConfig).mockReturnValue({
+    name: "testagent",
+    configPath: "~/.agentsecrets/testagent/secrets.json",
+    provider: "azure",
+    humanFacing: { provider: "azure", model: modelName },
+    agentFacing: { provider: "azure", model: modelName },
+  })
   const config = await import("../../heart/config")
   config.resetConfigCache()
-  config.patchRuntimeConfig({ providers: { azure: { apiKey, endpoint, deployment, modelName } } })
+  config.patchRuntimeConfig({ providers: { azure: { apiKey, endpoint, deployment } } })
 }
 
 function makeAnthropicSetupToken(): string {
@@ -166,10 +180,31 @@ function makeOpenAICodexAccessToken(accountId = "chatgpt-account-test"): string 
 
 async function setupConfig(partial: Record<string, unknown>) {
   const providers = (partial.providers ?? {}) as Record<string, unknown>
-  if (providers.azure) await setAgentProvider("azure")
-  else if (providers.anthropic) await setAgentProvider("anthropic")
-  else if (providers["openai-codex"]) await setAgentProvider("openai-codex")
-  else await setAgentProvider("minimax")
+  let provider: "azure" | "minimax" | "anthropic" | "openai-codex" = "minimax"
+  let model = ""
+  if (providers.azure) {
+    provider = "azure"
+    model = String((partial as any).humanFacingModel ?? "")
+  }
+  else if (providers.anthropic) {
+    provider = "anthropic"
+    model = String((partial as any).humanFacingModel ?? "")
+  }
+  else if (providers["openai-codex"]) {
+    provider = "openai-codex"
+    model = String((partial as any).humanFacingModel ?? "")
+  }
+  else {
+    provider = "minimax"
+    model = String((partial as any).humanFacingModel ?? "")
+  }
+  vi.mocked(identity.loadAgentConfig).mockReturnValue({
+    name: "testagent",
+    configPath: "~/.agentsecrets/testagent/secrets.json",
+    provider,
+    humanFacing: { provider, model },
+    agentFacing: { provider, model },
+  })
   const config = await import("../../heart/config")
   config.resetConfigCache()
   config.patchRuntimeConfig(partial as any)
@@ -327,10 +362,10 @@ describe("getProviderDisplayLabel", () => {
   it("formats the azure provider label", async () => {
     await setupConfig({
       provider: "azure",
+      humanFacingModel: "gpt-4.1",
       providers: {
         azure: {
           deployment: "gpt-4.1",
-          modelName: "gpt-4.1",
           apiKey: "azure-key",
           endpoint: "https://example.openai.azure.com",
         },
@@ -357,10 +392,10 @@ describe("getProviderDisplayLabel", () => {
     try {
       await setupConfig({
         provider: "azure",
+        humanFacingModel: "gpt-4.1",
         providers: {
           azure: {
             deployment: "",
-            modelName: "gpt-4.1",
             apiKey: "azure-key",
             endpoint: "https://example.openai.azure.com",
           },
@@ -374,13 +409,13 @@ describe("getProviderDisplayLabel", () => {
     }
   })
 
-  it("falls back to unknown in the azure provider label when modelName is blank", async () => {
+  it("falls back to unknown in the azure provider label when model is blank", async () => {
     await setupConfig({
       provider: "azure",
+      humanFacingModel: "",
       providers: {
         azure: {
           deployment: "gpt-4.1",
-          modelName: "",
           apiKey: "azure-key",
           endpoint: "https://example.openai.azure.com",
         },
@@ -392,21 +427,21 @@ describe("getProviderDisplayLabel", () => {
   })
 
   it("formats the anthropic provider label", async () => {
-    await setupConfig({ providers: { anthropic: { model: "claude-sonnet", setupToken: makeAnthropicSetupToken() } } })
+    await setupConfig({ humanFacingModel: "claude-sonnet", providers: { anthropic: { setupToken: makeAnthropicSetupToken() } } })
     const { getProviderDisplayLabel, resetProviderRuntime } = await import("../../heart/core")
     resetProviderRuntime()
     expect(getProviderDisplayLabel()).toBe("anthropic (claude-sonnet)")
   })
 
   it("formats the minimax provider label", async () => {
-    await setupConfig({ provider: "minimax", providers: { minimax: { model: "mini-max", apiKey: "minimax-key" } } })
+    await setupConfig({ provider: "minimax", humanFacingModel: "mini-max", providers: { minimax: { apiKey: "minimax-key" } } })
     const { getProviderDisplayLabel, resetProviderRuntime } = await import("../../heart/core")
     resetProviderRuntime()
     expect(getProviderDisplayLabel()).toBe("minimax (mini-max)")
   })
 
   it("formats the openai-codex provider label", async () => {
-    await setupConfig({ providers: { "openai-codex": { model: "gpt-5-codex", oauthAccessToken: makeOpenAICodexAccessToken() } } })
+    await setupConfig({ humanFacingModel: "gpt-5-codex", providers: { "openai-codex": { oauthAccessToken: makeOpenAICodexAccessToken() } } })
     const { getProviderDisplayLabel, resetProviderRuntime } = await import("../../heart/core")
     resetProviderRuntime()
     expect(getProviderDisplayLabel()).toBe("openai codex (gpt-5-codex)")
@@ -417,7 +452,8 @@ describe("getProviderDisplayLabel", () => {
       "anthropic",
       {
         provider: "anthropic",
-        providers: { anthropic: { model: "", setupToken: makeAnthropicSetupToken() } },
+        humanFacingModel: "",
+        providers: { anthropic: { setupToken: makeAnthropicSetupToken() } },
       },
       "anthropic (unknown)",
     ],
@@ -425,7 +461,8 @@ describe("getProviderDisplayLabel", () => {
       "minimax",
       {
         provider: "minimax",
-        providers: { minimax: { model: "", apiKey: "minimax-key" } },
+        humanFacingModel: "",
+        providers: { minimax: { apiKey: "minimax-key" } },
       },
       "minimax (unknown)",
     ],
@@ -433,7 +470,8 @@ describe("getProviderDisplayLabel", () => {
       "openai-codex",
       {
         provider: "openai-codex",
-        providers: { "openai-codex": { model: "", oauthAccessToken: makeOpenAICodexAccessToken() } },
+        humanFacingModel: "",
+        providers: { "openai-codex": { oauthAccessToken: makeOpenAICodexAccessToken() } },
       },
       "openai codex (unknown)",
     ],
@@ -546,9 +584,9 @@ describe("runAgent", () => {
     vi.resetModules()
     vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
     await setupConfig({
+      humanFacingModel: "gpt-5.4",
       providers: {
         "openai-codex": {
-          model: "gpt-5.4",
           oauthAccessToken: makeOpenAICodexAccessToken(),
         },
       },
@@ -1483,7 +1521,7 @@ describe("runAgent", () => {
   })
 
   it("uses minimax model from config when set", async () => {
-    await setupConfig({ providers: { minimax: { apiKey: "test-key", model: "custom-model" } } })
+    await setupConfig({ humanFacingModel: "custom-model", providers: { minimax: { apiKey: "test-key" } } })
     mockCreate.mockReturnValue(makeStream([makeChunk("hi")]))
 
     const callbacks: ChannelCallbacks = {
@@ -3198,7 +3236,7 @@ describe("getClient", () => {
   it("prefers Azure when all Azure config is set", async () => {
     vi.resetModules()
     vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
-    await setupConfig({ providers: { azure: { apiKey: "azure-test-key", endpoint: "https://test.openai.azure.com", deployment: "test-deployment", modelName: "gpt-4o" }, minimax: { apiKey: "mm-key", model: "MiniMax-M2.5" } } })
+    await setupConfig({ humanFacingModel: "gpt-4o", providers: { azure: { apiKey: "azure-test-key", endpoint: "https://test.openai.azure.com", deployment: "test-deployment" }, minimax: { apiKey: "mm-key" } } })
 
     const core = await import("../../heart/core")
     expect(core.getModel()).toBe("gpt-4o")
@@ -3210,7 +3248,7 @@ describe("getClient", () => {
     vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
     const emitNervesEvent = vi.fn()
     vi.doMock("../../nerves/runtime", () => ({ emitNervesEvent }))
-    await setupConfig({ providers: { azure: { apiKey: "azure-test-key" }, minimax: { apiKey: "mm-key", model: "MiniMax-M2.5" } } })
+    await setupConfig({ humanFacingModel: "gpt-4o", providers: { azure: { apiKey: "azure-test-key" }, minimax: { apiKey: "mm-key" } } })
     const mockExit = vi.spyOn(process, "exit").mockImplementation((() => {
       throw new Error("process.exit called")
     }) as any)
@@ -3600,9 +3638,9 @@ describe("anthropic setup-token provider contract", () => {
     vi.resetModules()
     vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
     await setupConfig({
+      humanFacingModel: "claude-opus-4-6",
       providers: {
         anthropic: {
-          model: "claude-opus-4-6",
           setupToken: makeAnthropicSetupToken(),
         },
       },
@@ -3639,7 +3677,6 @@ describe("anthropic setup-token provider contract", () => {
     await setupConfig({
       providers: {
         anthropic: {
-          model: "claude-opus-4-6",
           setupToken: "sk-ant-not-setup-token",
         },
       },
@@ -3670,7 +3707,6 @@ describe("anthropic setup-token provider contract", () => {
     await setupConfig({
       providers: {
         anthropic: {
-          model: "claude-opus-4-6",
           setupToken: "sk-ant-oat01-short",
         },
       },
@@ -3701,7 +3737,6 @@ describe("anthropic setup-token provider contract", () => {
     await setupConfig({
       providers: {
         anthropic: {
-          model: "claude-opus-4-6",
           setupToken: "   ",
         },
       },
@@ -3735,10 +3770,9 @@ describe("anthropic setup-token provider contract", () => {
     const emitNervesEvent = vi.fn()
     vi.doMock("../../nerves/runtime", () => ({ emitNervesEvent }))
     await setupConfig({
+      humanFacingModel: "claude-opus-4-6",
       providers: {
-        anthropic: {
-          model: "claude-opus-4-6",
-        },
+        anthropic: {},
       },
     })
 
@@ -3753,7 +3787,7 @@ describe("anthropic setup-token provider contract", () => {
       const msg = emitNervesEvent.mock.calls.find(
         (c: any[]) => c[0]?.event === "engine.provider_init_error",
       )?.[0]?.message ?? ""
-      expect(msg).toContain("model/setupToken is incomplete")
+      expect(msg).toContain("setupToken is missing")
       expect(msg).toContain("ouro auth --agent testagent")
       expect(msg).toContain("/tmp/.agentsecrets/testagent/secrets.json")
       expect(msg).toContain("providers.anthropic.setupToken")
@@ -3772,9 +3806,9 @@ describe("anthropic setup-token provider contract", () => {
     }) as any)
     vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
     await setupConfig({
+      humanFacingModel: "claude-opus-4-6",
       providers: {
         anthropic: {
-          model: "claude-opus-4-6",
           setupToken: makeAnthropicSetupToken(),
         },
       },
@@ -3951,7 +3985,6 @@ describe("anthropic setup-token provider contract", () => {
     await setupConfig({
       providers: {
         anthropic: {
-          model: "claude-opus-4-6",
           setupToken: makeAnthropicSetupToken(),
         },
       },
@@ -4057,9 +4090,9 @@ describe("anthropic setup-token provider contract", () => {
     }) as any)
     vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
     await setupConfig({
+      humanFacingModel: "claude-unknown-preview",
       providers: {
         anthropic: {
-          model: "claude-unknown-preview",
           setupToken: makeAnthropicSetupToken(),
         },
       },
@@ -4125,7 +4158,6 @@ describe("anthropic setup-token provider contract", () => {
     await setupConfig({
       providers: {
         anthropic: {
-          model: "claude-opus-4-6",
           setupToken: makeAnthropicSetupToken(),
         },
       },
@@ -4197,7 +4229,6 @@ describe("anthropic setup-token provider contract", () => {
     await setupConfig({
       providers: {
         anthropic: {
-          model: "claude-opus-4-6",
           setupToken: makeAnthropicSetupToken(),
         },
       },
@@ -4248,7 +4279,6 @@ describe("anthropic setup-token provider contract", () => {
     await setupConfig({
       providers: {
         anthropic: {
-          model: "claude-opus-4-6",
           setupToken: makeAnthropicSetupToken(),
         },
       },
@@ -4291,7 +4321,6 @@ describe("anthropic setup-token provider contract", () => {
     await setupConfig({
       providers: {
         anthropic: {
-          model: "claude-opus-4-6",
           setupToken: makeAnthropicSetupToken(),
         },
       },
@@ -4338,7 +4367,6 @@ describe("anthropic setup-token provider contract", () => {
     await setupConfig({
       providers: {
         anthropic: {
-          model: "claude-opus-4-6",
           setupToken: makeAnthropicSetupToken(),
         },
       },
@@ -4373,9 +4401,9 @@ describe("anthropic setup-token provider contract", () => {
     const emitNervesEvent = vi.fn()
     vi.doMock("../../nerves/runtime", () => ({ emitNervesEvent }))
     await setupConfig({
+      humanFacingModel: "claude-opus-4-6",
       providers: {
         anthropic: {
-          model: "claude-opus-4-6",
           setupToken: "\n \t",
         },
       },
@@ -4410,7 +4438,6 @@ describe("anthropic setup-token provider contract", () => {
     await setupConfig({
       providers: {
         anthropic: {
-          model: "claude-opus-4-6",
           setupToken: makeAnthropicSetupToken(),
         },
       },
@@ -4486,7 +4513,6 @@ describe("anthropic setup-token provider contract", () => {
     await setupConfig({
       providers: {
         anthropic: {
-          model: "claude-opus-4-6",
           setupToken: makeAnthropicSetupToken(),
         },
       },
@@ -4580,9 +4606,9 @@ describe("openai-codex oauth provider contract", () => {
     vi.resetModules()
     vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
     await setupConfig({
+      humanFacingModel: "gpt-5.4",
       providers: {
         "openai-codex": {
-          model: "gpt-5.4",
           oauthAccessToken: makeOpenAICodexAccessToken(),
         },
       },
@@ -4610,7 +4636,6 @@ describe("openai-codex oauth provider contract", () => {
     await setupConfig({
       providers: {
         "openai-codex": {
-          model: "gpt-5.4",
           oauthAccessToken: "",
         },
       },
@@ -4644,7 +4669,6 @@ describe("openai-codex oauth provider contract", () => {
     await setupConfig({
       providers: {
         "openai-codex": {
-          model: "gpt-5.4",
           oauthAccessToken: makeOpenAICodexAccessToken(),
         },
       },
@@ -4681,7 +4705,6 @@ describe("openai-codex oauth provider contract", () => {
     await setupConfig({
       providers: {
         "openai-codex": {
-          model: "gpt-5.4",
           oauthAccessToken: makeOpenAICodexAccessToken(),
         },
       },
@@ -4718,7 +4741,6 @@ describe("openai-codex oauth provider contract", () => {
     await setupConfig({
       providers: {
         "openai-codex": {
-          model: "gpt-5.4",
           oauthAccessToken: " \n\t ",
         },
       },
@@ -4750,7 +4772,6 @@ describe("openai-codex oauth provider contract", () => {
     await setupConfig({
       providers: {
         "openai-codex": {
-          model: "gpt-5.4",
           oauthAccessToken: tokenWithoutAccountId,
         },
       },
@@ -4783,7 +4804,6 @@ describe("openai-codex oauth provider contract", () => {
     await setupConfig({
       providers: {
         "openai-codex": {
-          model: "gpt-5.4",
           oauthAccessToken: malformedToken,
         },
       },
@@ -4814,7 +4834,6 @@ describe("openai-codex oauth provider contract", () => {
     await setupConfig({
       providers: {
         "openai-codex": {
-          model: "gpt-5.4",
           oauthAccessToken: "not-a-jwt",
         },
       },
@@ -4846,7 +4865,6 @@ describe("openai-codex oauth provider contract", () => {
     await setupConfig({
       providers: {
         "openai-codex": {
-          model: "gpt-5.4",
           oauthAccessToken: arrayPayloadToken,
         },
       },
@@ -4878,7 +4896,6 @@ describe("openai-codex oauth provider contract", () => {
     await setupConfig({
       providers: {
         "openai-codex": {
-          model: "gpt-5.4",
           oauthAccessToken: nonStringAccountIdToken,
         },
       },
@@ -4907,9 +4924,9 @@ describe("openai-codex oauth provider contract", () => {
     const accountId = "chatgpt-account-123"
     const oauthAccessToken = makeOpenAICodexAccessToken(accountId)
     await setupConfig({
+      humanFacingModel: "gpt-5.4",
       providers: {
         "openai-codex": {
-          model: "gpt-5.4",
           oauthAccessToken,
         },
       },
@@ -5007,7 +5024,6 @@ describe("openai-codex oauth provider contract", () => {
     await setupConfig({
       providers: {
         "openai-codex": {
-          model: "gpt-5.4",
           oauthAccessToken: makeOpenAICodexAccessToken(),
         },
       },
@@ -5042,7 +5058,6 @@ describe("openai-codex oauth provider contract", () => {
     await setupConfig({
       providers: {
         "openai-codex": {
-          model: "gpt-5.4",
           oauthAccessToken: makeOpenAICodexAccessToken(),
         },
       },
@@ -8547,5 +8562,348 @@ describe("sawSendMessageSelf turn loop tracking", () => {
     expect(mockCreate).toHaveBeenCalledTimes(2)
     expect(customExecTool).toHaveBeenCalledWith("send_message", expect.objectContaining({ friendId: "self" }), undefined)
     expect(result).toBeDefined()
+  })
+})
+
+// ── Unit 5a: Facing-aware provider runtime tests ──────────────────
+
+describe("facing-aware provider runtime", () => {
+  beforeEach(async () => {
+    vi.resetModules()
+    vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
+  })
+
+  async function setupDualFacing(opts: {
+    humanProvider: "azure" | "minimax" | "anthropic" | "openai-codex" | "github-copilot"
+    humanModel: string
+    agentProvider: "azure" | "minimax" | "anthropic" | "openai-codex" | "github-copilot"
+    agentModel: string
+    providers: Record<string, unknown>
+  }) {
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      name: "testagent",
+      configPath: "~/.agentsecrets/testagent/secrets.json",
+      humanFacing: { provider: opts.humanProvider, model: opts.humanModel },
+      agentFacing: { provider: opts.agentProvider, model: opts.agentModel },
+    })
+    const config = await import("../../heart/config")
+    config.resetConfigCache()
+    config.patchRuntimeConfig({ providers: opts.providers })
+  }
+
+  it("getModel(facing) returns correct model per facing", async () => {
+    await setupDualFacing({
+      humanProvider: "minimax",
+      humanModel: "human-model-1",
+      agentProvider: "minimax",
+      agentModel: "agent-model-1",
+      providers: { minimax: { apiKey: "mm-key" } },
+    })
+    const core = await import("../../heart/core")
+    core.resetProviderRuntime()
+
+    expect(core.getModel("human")).toBe("human-model-1")
+    expect(core.getModel("agent")).toBe("agent-model-1")
+  })
+
+  it("getProvider(facing) returns correct provider per facing", async () => {
+    await setupDualFacing({
+      humanProvider: "minimax",
+      humanModel: "mm-model",
+      agentProvider: "anthropic",
+      agentModel: "claude-agent",
+      providers: {
+        minimax: { apiKey: "mm-key" },
+        anthropic: { setupToken: `sk-ant-oat01-${"a".repeat(80)}` },
+      },
+    })
+    const core = await import("../../heart/core")
+    core.resetProviderRuntime()
+
+    expect(core.getProvider("human")).toBe("minimax")
+    expect(core.getProvider("agent")).toBe("anthropic")
+  })
+
+  it("caches two runtimes independently with separate fingerprints", async () => {
+    await setupDualFacing({
+      humanProvider: "minimax",
+      humanModel: "human-mm",
+      agentProvider: "minimax",
+      agentModel: "agent-mm",
+      providers: { minimax: { apiKey: "mm-key" } },
+    })
+    const core = await import("../../heart/core")
+    core.resetProviderRuntime()
+
+    // Access both facings
+    const humanModel1 = core.getModel("human")
+    const agentModel1 = core.getModel("agent")
+
+    expect(humanModel1).toBe("human-mm")
+    expect(agentModel1).toBe("agent-mm")
+
+    // Access again -- should use cached values (no extra OpenAI ctor calls)
+    const callsBefore = mockOpenAICtor.mock.calls.length
+    core.getModel("human")
+    core.getModel("agent")
+    // No new constructor calls -- runtime was cached
+    expect(mockOpenAICtor.mock.calls.length).toBe(callsBefore)
+  })
+
+  it("resetProviderRuntime clears both cached slots", async () => {
+    await setupDualFacing({
+      humanProvider: "minimax",
+      humanModel: "human-mm",
+      agentProvider: "minimax",
+      agentModel: "agent-mm",
+      providers: { minimax: { apiKey: "mm-key" } },
+    })
+    const core = await import("../../heart/core")
+    core.resetProviderRuntime()
+
+    // Warm caches
+    core.getModel("human")
+    core.getModel("agent")
+
+    const callsBefore = mockOpenAICtor.mock.calls.length
+    core.resetProviderRuntime()
+
+    // After reset, accessing should re-create runtimes
+    core.getModel("human")
+    core.getModel("agent")
+    expect(mockOpenAICtor.mock.calls.length).toBeGreaterThan(callsBefore)
+  })
+
+  it("different providers for human vs agent facing each get their own runtime", async () => {
+    await setupDualFacing({
+      humanProvider: "minimax",
+      humanModel: "mm-human",
+      agentProvider: "anthropic",
+      agentModel: "claude-agent",
+      providers: {
+        minimax: { apiKey: "mm-key" },
+        anthropic: { setupToken: `sk-ant-oat01-${"a".repeat(80)}` },
+      },
+    })
+    const core = await import("../../heart/core")
+    core.resetProviderRuntime()
+
+    expect(core.getProvider("human")).toBe("minimax")
+    expect(core.getModel("human")).toBe("mm-human")
+    expect(core.getProvider("agent")).toBe("anthropic")
+    expect(core.getModel("agent")).toBe("claude-agent")
+  })
+
+  it("getProviderDisplayLabel(facing) shows correct provider+model from agent config", async () => {
+    await setupDualFacing({
+      humanProvider: "minimax",
+      humanModel: "mm-display",
+      agentProvider: "anthropic",
+      agentModel: "claude-display",
+      providers: {
+        minimax: { apiKey: "mm-key" },
+        anthropic: { setupToken: `sk-ant-oat01-${"a".repeat(80)}` },
+      },
+    })
+    const core = await import("../../heart/core")
+    core.resetProviderRuntime()
+
+    expect(core.getProviderDisplayLabel("human")).toBe("minimax (mm-display)")
+    expect(core.getProviderDisplayLabel("agent")).toBe("anthropic (claude-display)")
+  })
+
+  it("createSummarize(facing) uses correct provider runtime", async () => {
+    await setupDualFacing({
+      humanProvider: "minimax",
+      humanModel: "mm-summarize",
+      agentProvider: "minimax",
+      agentModel: "agent-summarize",
+      providers: { minimax: { apiKey: "mm-key" } },
+    })
+    const core = await import("../../heart/core")
+    core.resetProviderRuntime()
+
+    mockCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: "human summary" } }],
+    })
+
+    const humanSummarize = core.createSummarize("human")
+    const result = await humanSummarize("transcript", "instruct")
+    expect(result).toBe("human summary")
+
+    // Verify the model used matches human facing
+    const callArgs = mockCreate.mock.calls[mockCreate.mock.calls.length - 1][0]
+    expect(callArgs.model).toBe("mm-summarize")
+  })
+
+  it("createSummarize(agent) uses agent-facing provider runtime", async () => {
+    await setupDualFacing({
+      humanProvider: "minimax",
+      humanModel: "mm-human",
+      agentProvider: "minimax",
+      agentModel: "mm-agent-sum",
+      providers: { minimax: { apiKey: "mm-key" } },
+    })
+    const core = await import("../../heart/core")
+    core.resetProviderRuntime()
+
+    mockCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: "agent summary" } }],
+    })
+
+    const agentSummarize = core.createSummarize("agent")
+    const result = await agentSummarize("transcript", "instruct")
+    expect(result).toBe("agent summary")
+
+    const callArgs = mockCreate.mock.calls[mockCreate.mock.calls.length - 1][0]
+    expect(callArgs.model).toBe("mm-agent-sum")
+  })
+
+  it("fingerprint includes model from agent config + credentials from secrets", async () => {
+    await setupDualFacing({
+      humanProvider: "minimax",
+      humanModel: "mm-fp",
+      agentProvider: "minimax",
+      agentModel: "mm-fp-agent",
+      providers: { minimax: { apiKey: "mm-key-1" } },
+    })
+    const core = await import("../../heart/core")
+    core.resetProviderRuntime()
+
+    // Warm the cache
+    core.getModel("human")
+    const callsBefore = mockOpenAICtor.mock.calls.length
+
+    // Change the secrets key -- fingerprint should change, forcing re-creation
+    const config = await import("../../heart/config")
+    config.patchRuntimeConfig({ providers: { minimax: { apiKey: "mm-key-2" } } })
+
+    core.getModel("human")
+    expect(mockOpenAICtor.mock.calls.length).toBeGreaterThan(callsBefore)
+  })
+})
+
+// ── Unit 6a: Call site facing derivation tests ──────────────────
+
+describe("runAgent facing derivation from channel", () => {
+  beforeEach(async () => {
+    vi.resetModules()
+    mockCreate.mockReset()
+    mockResponsesCreate.mockReset()
+    mockOpenAICtor.mockReset()
+    mockInjectAssociativeRecall.mockReset().mockResolvedValue(undefined)
+    vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
+  })
+
+  it("runAgent with channel inner uses agent-facing provider runtime", async () => {
+    // Set up different models for human and agent facing
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      name: "testagent",
+      configPath: "~/.agentsecrets/testagent/secrets.json",
+      humanFacing: { provider: "minimax", model: "human-only-model" },
+      agentFacing: { provider: "minimax", model: "agent-only-model" },
+    })
+    const config = await import("../../heart/config")
+    config.resetConfigCache()
+    config.patchRuntimeConfig({ providers: { minimax: { apiKey: "mm-key" } } })
+
+    // Mock the streaming response
+    mockCreate.mockReturnValue({
+      [Symbol.asyncIterator]: async function* () {
+        yield { choices: [{ delta: { content: "inner response" } }] }
+      },
+    })
+
+    const core = await import("../../heart/core")
+    core.resetProviderRuntime()
+
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+    }
+
+    // Call runAgent with channel "inner"
+    await core.runAgent([{ role: "system", content: "test" }], callbacks, "inner")
+
+    // The model used should be the agent-facing model
+    const callArgs = mockCreate.mock.calls[0][0]
+    expect(callArgs.model).toBe("agent-only-model")
+  })
+
+  it("runAgent with channel cli uses human-facing provider runtime", async () => {
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      name: "testagent",
+      configPath: "~/.agentsecrets/testagent/secrets.json",
+      humanFacing: { provider: "minimax", model: "human-only-model" },
+      agentFacing: { provider: "minimax", model: "agent-only-model" },
+    })
+    const config = await import("../../heart/config")
+    config.resetConfigCache()
+    config.patchRuntimeConfig({ providers: { minimax: { apiKey: "mm-key" } } })
+
+    mockCreate.mockReturnValue({
+      [Symbol.asyncIterator]: async function* () {
+        yield { choices: [{ delta: { content: "cli response" } }] }
+      },
+    })
+
+    const core = await import("../../heart/core")
+    core.resetProviderRuntime()
+
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+    }
+
+    await core.runAgent([{ role: "system", content: "test" }], callbacks, "cli")
+
+    const callArgs = mockCreate.mock.calls[0][0]
+    expect(callArgs.model).toBe("human-only-model")
+  })
+
+  it("runAgent with no channel defaults to human-facing provider", async () => {
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      name: "testagent",
+      configPath: "~/.agentsecrets/testagent/secrets.json",
+      humanFacing: { provider: "minimax", model: "human-default" },
+      agentFacing: { provider: "minimax", model: "agent-default" },
+    })
+    const config = await import("../../heart/config")
+    config.resetConfigCache()
+    config.patchRuntimeConfig({ providers: { minimax: { apiKey: "mm-key" } } })
+
+    mockCreate.mockReturnValue({
+      [Symbol.asyncIterator]: async function* () {
+        yield { choices: [{ delta: { content: "default response" } }] }
+      },
+    })
+
+    const core = await import("../../heart/core")
+    core.resetProviderRuntime()
+
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+    }
+
+    await core.runAgent([{ role: "system", content: "test" }], callbacks)
+
+    const callArgs = mockCreate.mock.calls[0][0]
+    expect(callArgs.model).toBe("human-default")
   })
 })

@@ -542,7 +542,7 @@ export function createBlueBubblesClient(
             config,
             channelConfig,
             {
-              preferAudioInput: providerSupportsAudioInput(loadAgentConfig().provider),
+              preferAudioInput: providerSupportsAudioInput(loadAgentConfig().humanFacing.provider),
             },
           )
           const transcriptSuffix = media.transcriptAdditions.map((entry) => `[${entry}]`).join("\n")

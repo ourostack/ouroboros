@@ -1432,7 +1432,8 @@ describe("handleInboundTurn", () => {
       vi.spyOn(identity, "loadAgentConfig").mockReturnValue({
         version: 1,
         enabled: true,
-        provider: "openai-codex",
+        humanFacing: { provider: "openai-codex", model: "codex-mini-latest" },
+        agentFacing: { provider: "openai-codex", model: "codex-mini-latest" },
         phrases: { thinking: [], tool: [], followup: [] },
       } as any)
       mockRunHealthInventory.mockResolvedValue({
@@ -1479,7 +1480,8 @@ describe("handleInboundTurn", () => {
       const result = await handleInboundTurn(input)
 
       expect(result.switchedProvider).toBe("anthropic")
-      expect(mockWriteAgentProviderSelection).toHaveBeenCalledWith("slugger", "anthropic")
+      expect(mockWriteAgentProviderSelection).toHaveBeenCalledWith("slugger", "human", "anthropic")
+      expect(mockWriteAgentProviderSelection).toHaveBeenCalledWith("slugger", "agent", "anthropic")
       expect(failoverState.pending).toBeNull()
       // The pipeline should have auto-retried: runAgent was called on the new provider
       expect(mockRunAgent).toHaveBeenCalledTimes(1)
@@ -1526,7 +1528,8 @@ describe("handleInboundTurn", () => {
       vi.spyOn(identity, "loadAgentConfig").mockReturnValue({
         version: 1,
         enabled: true,
-        provider: "openai-codex",
+        humanFacing: { provider: "openai-codex", model: "codex-mini-latest" },
+        agentFacing: { provider: "openai-codex", model: "codex-mini-latest" },
         phrases: { thinking: [], tool: [], followup: [] },
       } as any)
       mockRunHealthInventory.mockRejectedValue(new Error("inventory failed"))

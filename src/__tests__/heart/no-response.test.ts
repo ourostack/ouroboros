@@ -88,10 +88,12 @@ async function setupMinimax() {
     name: "testagent",
     configPath: "~/.agentsecrets/testagent/secrets.json",
     provider: "minimax",
+    humanFacing: { provider: "minimax", model: "minimax-text-01" },
+    agentFacing: { provider: "minimax", model: "minimax-text-01" },
   })
   const config = await import("../../heart/config")
   config.resetConfigCache()
-  config.patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+  config.patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
 }
 
 function makeStream(chunks: any[]) {

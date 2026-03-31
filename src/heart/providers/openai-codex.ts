@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import { getOpenAICodexConfig, type OpenAICodexProviderConfig } from "../config";
+import { getOpenAICodexConfig } from "../config";
 import { getAgentName, getAgentSecretsPath } from "../identity";
 import { emitNervesEvent } from "../../nerves/runtime";
 import type { ProviderCapability, ProviderErrorClassification, ProviderRuntime, ProviderTurnRequest } from "../core";
@@ -107,18 +107,18 @@ function getChatGPTAccountIdFromToken(token: string): string {
   return accountId.trim();
 }
 
-export function createOpenAICodexProviderRuntime(config?: OpenAICodexProviderConfig): ProviderRuntime {
+export function createOpenAICodexProviderRuntime(model: string): ProviderRuntime {
   emitNervesEvent({
     component: "engine",
     event: "engine.provider_init",
     message: "openai-codex provider init",
     meta: { provider: "openai-codex" },
   });
-  const codexConfig = config ?? getOpenAICodexConfig();
-  if (!(codexConfig.model && codexConfig.oauthAccessToken)) {
+  const codexConfig = getOpenAICodexConfig();
+  if (!codexConfig.oauthAccessToken) {
     throw new Error(
       getOpenAICodexReauthGuidance(
-        "provider 'openai-codex' is selected in agent.json but providers.openai-codex.model/oauthAccessToken is incomplete in secrets.json.",
+        "provider 'openai-codex' is selected in agent.json but providers.openai-codex.oauthAccessToken is missing in secrets.json.",
       ),
     );
   }
@@ -138,7 +138,7 @@ export function createOpenAICodexProviderRuntime(config?: OpenAICodexProviderCon
       ),
     );
   }
-  const modelCaps = getModelCapabilities(codexConfig.model);
+  const modelCaps = getModelCapabilities(model);
   const capabilities = new Set<ProviderCapability>();
   if (modelCaps.reasoningEffort) capabilities.add("reasoning-effort");
   if (modelCaps.phase) capabilities.add("phase-annotation");
@@ -158,7 +158,7 @@ export function createOpenAICodexProviderRuntime(config?: OpenAICodexProviderCon
   let nativeInstructions = "";
   return {
     id: "openai-codex",
-    model: codexConfig.model,
+    model,
     client,
     capabilities,
     supportedReasoningEfforts: modelCaps.reasoningEffort,

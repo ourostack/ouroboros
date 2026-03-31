@@ -9,7 +9,6 @@ import {
 import { emitNervesEvent } from "../nerves/runtime"
 
 export interface AzureProviderConfig {
-  modelName: string
   apiKey?: string
   endpoint: string
   deployment: string
@@ -18,22 +17,18 @@ export interface AzureProviderConfig {
 }
 
 export interface MinimaxProviderConfig {
-  model: string
   apiKey: string
 }
 
 export interface AnthropicProviderConfig {
-  model: string
   setupToken: string
 }
 
 export interface OpenAICodexProviderConfig {
-  model: string
   oauthAccessToken: string
 }
 
 export interface GithubCopilotProviderConfig {
-  model: string
   githubToken: string
   baseUrl: string
 }
@@ -100,10 +95,7 @@ export interface OuroborosConfig {
 
 const DEFAULT_SECRETS_TEMPLATE: Omit<OuroborosConfig, "context"> = {
   providers: {
-    // Keep provider field ordering consistent: model first, then auth credentials,
-    // then provider-specific transport fields.
     azure: {
-      modelName: "",
       apiKey: "",
       endpoint: "",
       deployment: "",
@@ -111,19 +103,15 @@ const DEFAULT_SECRETS_TEMPLATE: Omit<OuroborosConfig, "context"> = {
       managedIdentityClientId: "",
     },
     minimax: {
-      model: "",
       apiKey: "",
     },
     anthropic: {
-      model: "claude-opus-4-6",
       setupToken: "",
     },
     "openai-codex": {
-      model: "gpt-5.4",
       oauthAccessToken: "",
     },
     "github-copilot": {
-      model: "claude-sonnet-4.6",
       githubToken: "",
       baseUrl: "",
     },

@@ -1,7 +1,8 @@
 {
-  "version": 1,
+  "version": 2,
   "enabled": false,
-  "provider": "anthropic",
+  "humanFacing": { "provider": "anthropic", "model": "claude-opus-4-6" },
+  "agentFacing": { "provider": "anthropic", "model": "claude-opus-4-6" },
   "context": {
     "maxTokens": 80000,
     "contextMargin": 20

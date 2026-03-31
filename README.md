@@ -90,7 +90,7 @@ Task docs do not live in this repo anymore. Planning and doing docs live in the 
 
 ## Runtime Truths
 
-- `agent.json` is the source of truth for provider selection, phrase pools, context settings, and enabled senses.
+- `agent.json` is the source of truth for provider+model selection per facing (`humanFacing` and `agentFacing`), phrase pools, context settings, and enabled senses.
 - `configPath` must point to `~/.agentsecrets/<agent>/secrets.json`.
 - The daemon discovers bundles dynamically from `~/AgentBundles`.
 - `ouro status` reports version, last-updated time, discovered agents, senses, and workers.
@@ -109,11 +109,12 @@ When a model provider needs first-time setup, reauth, or an explicit switch, use
 ```bash
 ouro auth --agent <name>
 ouro auth --agent <name> --provider <provider>
+ouro auth --agent <name> --facing agent --provider <provider>
 ```
 
-The default form reauths the provider already selected in `agent.json`. The explicit
-`--provider` form is for adding or switching providers, and it updates `agent.json`
-to use the newly authenticated provider.
+The default form reauths the human-facing provider already selected in `agent.json`. The
+`--provider` form is for adding or switching providers. The `--facing` flag (values: `human`
+or `agent`) controls which facing gets updated; it defaults to `human` when omitted.
 
 ## Quickstart
 

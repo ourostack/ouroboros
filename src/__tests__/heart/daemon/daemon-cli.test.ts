@@ -703,9 +703,11 @@ describe("ouro CLI execution", () => {
     fs.writeFileSync(
       path.join(agentRoot, "agent.json"),
       JSON.stringify({
-        version: 1,
+        version: 2,
         enabled: true,
         provider: "anthropic",
+        humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         phrases: {
           thinking: ["working"],
           tool: ["running tool"],
@@ -752,9 +754,11 @@ describe("ouro CLI execution", () => {
     fs.writeFileSync(
       agentConfigPath,
       JSON.stringify({
-        version: 1,
+        version: 2,
         enabled: true,
         provider: "anthropic",
+        humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         phrases: {
           thinking: ["working"],
           tool: ["running tool"],
@@ -803,7 +807,11 @@ describe("ouro CLI execution", () => {
       message: "authenticated slugger with minimax",
     }))
     const readAgentConfigForAgent = vi.fn(() => ({
-      config: { provider: "minimax" },
+      config: {
+        provider: "minimax",
+        humanFacing: { provider: "minimax", model: "minimax-text-01" },
+        agentFacing: { provider: "minimax", model: "minimax-text-01" },
+      },
     }))
     const writeAgentProviderSelection = vi.fn()
 
@@ -855,7 +863,9 @@ describe("ouro CLI execution", () => {
     fs.writeFileSync(
       agentConfigPath,
       JSON.stringify({
-        version: 1, enabled: true, provider: "anthropic",
+        version: 2, enabled: true, provider: "anthropic",
+        humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
       }, null, 2) + "\n",
       "utf-8",
@@ -887,7 +897,9 @@ describe("ouro CLI execution", () => {
     fs.writeFileSync(
       path.join(agentRoot, "agent.json"),
       JSON.stringify({
-        version: 1, enabled: true, provider: "anthropic",
+        version: 2, enabled: true, provider: "anthropic",
+        humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
       }, null, 2) + "\n",
       "utf-8",
@@ -927,7 +939,9 @@ describe("ouro CLI execution", () => {
     fs.writeFileSync(
       agentConfigPath,
       JSON.stringify({
-        version: 1, enabled: true, provider: "anthropic",
+        version: 2, enabled: true, provider: "anthropic",
+        humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
       }, null, 2) + "\n",
       "utf-8",
@@ -945,8 +959,9 @@ describe("ouro CLI execution", () => {
       const result = await runOuroCli(["auth", "switch", "--agent", agentName, "--provider", "github-copilot"], deps)
       expect(result).toContain("switched")
       expect(result).toContain("github-copilot")
-      const updated = JSON.parse(fs.readFileSync(agentConfigPath, "utf-8")) as { provider: string }
-      expect(updated.provider).toBe("github-copilot")
+      const updated = JSON.parse(fs.readFileSync(agentConfigPath, "utf-8")) as any
+      expect(updated.humanFacing.provider).toBe("github-copilot")
+      expect(updated.agentFacing.provider).toBe("github-copilot")
     } finally {
       fs.rmSync(agentRoot, { recursive: true, force: true })
       fs.rmSync(secretsDir, { recursive: true, force: true })
@@ -970,7 +985,9 @@ describe("ouro CLI execution", () => {
     fs.writeFileSync(
       agentConfigPath,
       JSON.stringify({
-        version: 1, enabled: true, provider: "openai-codex",
+        version: 2, enabled: true, provider: "openai-codex",
+        humanFacing: { provider: "openai-codex", model: "gpt-5.4" },
+        agentFacing: { provider: "openai-codex", model: "gpt-5.4" },
         phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
       }, null, 2) + "\n",
       "utf-8",
@@ -988,8 +1005,9 @@ describe("ouro CLI execution", () => {
       const result = await runOuroCli(["auth", "--switch", "--agent", agentName, "--provider", "github-copilot"], deps)
       expect(result).toContain("switched")
       expect(result).toContain("github-copilot")
-      const updated = JSON.parse(fs.readFileSync(agentConfigPath, "utf-8")) as { provider: string }
-      expect(updated.provider).toBe("github-copilot")
+      const updated = JSON.parse(fs.readFileSync(agentConfigPath, "utf-8")) as any
+      expect(updated.humanFacing.provider).toBe("github-copilot")
+      expect(updated.agentFacing.provider).toBe("github-copilot")
     } finally {
       fs.rmSync(agentRoot, { recursive: true, force: true })
       fs.rmSync(secretsDir, { recursive: true, force: true })
@@ -1005,7 +1023,9 @@ describe("ouro CLI execution", () => {
     fs.writeFileSync(
       path.join(agentRoot, "agent.json"),
       JSON.stringify({
-        version: 1, enabled: true, provider: "github-copilot",
+        version: 2, enabled: true, provider: "github-copilot",
+        humanFacing: { provider: "github-copilot", model: "claude-sonnet-4.6" },
+        agentFacing: { provider: "github-copilot", model: "claude-sonnet-4.6" },
         phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
       }, null, 2) + "\n",
       "utf-8",
@@ -1047,7 +1067,9 @@ describe("ouro CLI execution", () => {
     fs.writeFileSync(
       path.join(agentRoot, "agent.json"),
       JSON.stringify({
-        version: 1, enabled: true, provider: "github-copilot",
+        version: 2, enabled: true, provider: "github-copilot",
+        humanFacing: { provider: "github-copilot", model: "claude-sonnet-4.6" },
+        agentFacing: { provider: "github-copilot", model: "claude-sonnet-4.6" },
         phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
       }, null, 2) + "\n",
       "utf-8",
@@ -1086,7 +1108,9 @@ describe("ouro CLI execution", () => {
     fs.writeFileSync(
       path.join(agentRoot, "agent.json"),
       JSON.stringify({
-        version: 1, enabled: true, provider: "anthropic",
+        version: 2, enabled: true, provider: "anthropic",
+        humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
       }, null, 2) + "\n",
       "utf-8",
@@ -5806,6 +5830,182 @@ describe("ouro config model", () => {
 
   it("rejects config models without --agent", () => {
     expect(() => parseOuroCommand(["config", "models"])).toThrow("--agent")
+  })
+
+  it("parses config model with --facing human", () => {
+    expect(parseOuroCommand(["config", "model", "--agent", "slugger", "--facing", "human", "gpt-5"])).toEqual({
+      kind: "config.model",
+      agent: "slugger",
+      modelName: "gpt-5",
+      facing: "human",
+    })
+  })
+
+  it("parses config model with --facing agent", () => {
+    expect(parseOuroCommand(["config", "model", "--agent", "slugger", "--facing", "agent", "claude-opus-4-6"])).toEqual({
+      kind: "config.model",
+      agent: "slugger",
+      modelName: "claude-opus-4-6",
+      facing: "agent",
+    })
+  })
+
+  it("defaults config model facing to 'human' when --facing not specified", () => {
+    const result = parseOuroCommand(["config", "model", "--agent", "slugger", "gpt-5"])
+    expect(result).toEqual({
+      kind: "config.model",
+      agent: "slugger",
+      modelName: "gpt-5",
+    })
+  })
+
+  it("rejects config model with invalid --facing value", () => {
+    expect(() => parseOuroCommand(["config", "model", "--agent", "slugger", "--facing", "both", "gpt-5"])).toThrow("--facing must be 'human' or 'agent'")
+  })
+
+  it("config.model writes model to specified facing in agent.json", async () => {
+    const agentName = `config-model-facing-${Date.now()}`
+    const agentRoot = path.join(os.homedir(), "AgentBundles", `${agentName}.ouro`)
+    const agentConfigPath = path.join(agentRoot, "agent.json")
+    fs.mkdirSync(agentRoot, { recursive: true })
+    fs.writeFileSync(
+      agentConfigPath,
+      JSON.stringify({
+        version: 2, enabled: true, provider: "anthropic",
+        humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
+      }, null, 2) + "\n",
+      "utf-8",
+    )
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({ ok: true, message: "ok" })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    }
+    try {
+      const result = await runOuroCli(["config", "model", "--agent", agentName, "--facing", "human", "claude-sonnet-4.6"], deps)
+      expect(result).toContain("claude-sonnet-4.6")
+      const updated = JSON.parse(fs.readFileSync(agentConfigPath, "utf-8")) as any
+      expect(updated.humanFacing.model).toBe("claude-sonnet-4.6")
+      // agentFacing should be unchanged
+      expect(updated.agentFacing.model).toBe("claude-opus-4-6")
+    } finally {
+      fs.rmSync(agentRoot, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("auth.switch with facing", () => {
+  it("auth switch updates specified facing only", async () => {
+    const agentName = `auth-switch-facing-${Date.now()}`
+    const agentRoot = path.join(os.homedir(), "AgentBundles", `${agentName}.ouro`)
+    const agentConfigPath = path.join(agentRoot, "agent.json")
+    fs.mkdirSync(agentRoot, { recursive: true })
+    const secretsDir = path.join(os.homedir(), ".agentsecrets", agentName)
+    fs.mkdirSync(secretsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(secretsDir, "secrets.json"),
+      JSON.stringify({
+        providers: { "github-copilot": { githubToken: "ghp_test", baseUrl: "https://api.test.com" } },
+      }, null, 2) + "\n",
+      "utf-8",
+    )
+    fs.writeFileSync(
+      agentConfigPath,
+      JSON.stringify({
+        version: 2, enabled: true, provider: "anthropic",
+        humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
+      }, null, 2) + "\n",
+      "utf-8",
+    )
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({ ok: true, message: "ok" })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    }
+    try {
+      const result = await runOuroCli(["auth", "switch", "--agent", agentName, "--provider", "github-copilot", "--facing", "human"], deps)
+      expect(result).toContain("switched")
+      expect(result).toContain("github-copilot")
+      const updated = JSON.parse(fs.readFileSync(agentConfigPath, "utf-8")) as any
+      expect(updated.humanFacing.provider).toBe("github-copilot")
+      // agentFacing should be unchanged
+      expect(updated.agentFacing.provider).toBe("anthropic")
+    } finally {
+      fs.rmSync(agentRoot, { recursive: true, force: true })
+      fs.rmSync(secretsDir, { recursive: true, force: true })
+    }
+  })
+
+  it("auth switch updates both facings when --facing not specified", async () => {
+    const agentName = `auth-switch-both-${Date.now()}`
+    const agentRoot = path.join(os.homedir(), "AgentBundles", `${agentName}.ouro`)
+    const agentConfigPath = path.join(agentRoot, "agent.json")
+    fs.mkdirSync(agentRoot, { recursive: true })
+    const secretsDir = path.join(os.homedir(), ".agentsecrets", agentName)
+    fs.mkdirSync(secretsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(secretsDir, "secrets.json"),
+      JSON.stringify({
+        providers: { "minimax": { apiKey: "mm-key" } },
+      }, null, 2) + "\n",
+      "utf-8",
+    )
+    fs.writeFileSync(
+      agentConfigPath,
+      JSON.stringify({
+        version: 2, enabled: true, provider: "anthropic",
+        humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
+      }, null, 2) + "\n",
+      "utf-8",
+    )
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({ ok: true, message: "ok" })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    }
+    try {
+      const result = await runOuroCli(["auth", "switch", "--agent", agentName, "--provider", "minimax"], deps)
+      expect(result).toContain("switched")
+      const updated = JSON.parse(fs.readFileSync(agentConfigPath, "utf-8")) as any
+      expect(updated.humanFacing.provider).toBe("minimax")
+      expect(updated.agentFacing.provider).toBe("minimax")
+    } finally {
+      fs.rmSync(agentRoot, { recursive: true, force: true })
+      fs.rmSync(secretsDir, { recursive: true, force: true })
+    }
+  })
+
+  it("parses auth switch with --facing flag", () => {
+    expect(parseOuroCommand(["auth", "switch", "--agent", "foo", "--provider", "github-copilot", "--facing", "human"])).toEqual({
+      kind: "auth.switch",
+      agent: "foo",
+      provider: "github-copilot",
+      facing: "human",
+    })
+    expect(parseOuroCommand(["auth", "switch", "--agent", "foo", "--provider", "azure", "--facing", "agent"])).toEqual({
+      kind: "auth.switch",
+      agent: "foo",
+      provider: "azure",
+      facing: "agent",
+    })
   })
 })
 

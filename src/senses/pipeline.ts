@@ -245,7 +245,8 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     if (failoverAction.action === "switch") {
       let switchSucceeded = false
       try {
-        writeAgentProviderSelection(failoverAgentName, failoverAction.provider)
+        writeAgentProviderSelection(failoverAgentName, "human", failoverAction.provider)
+        writeAgentProviderSelection(failoverAgentName, "agent", failoverAction.provider)
         switchSucceeded = true
       /* v8 ignore start -- defensive: write failure during provider switch @preserve */
       } catch (switchError) {
@@ -556,7 +557,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     try {
       const agentName = getAgentName()
       const agentConfig = loadAgentConfig()
-      const currentProvider = agentConfig.provider
+      const currentProvider = agentConfig.humanFacing.provider
       /* v8 ignore next -- defensive: errorClassification always set when errored @preserve */
       const classification = result.errorClassification ?? "unknown"
       const inventory = await runHealthInventory(agentName, currentProvider)

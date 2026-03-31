@@ -2,6 +2,16 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.159",
+      "changes": [
+        "Human-facing and agent-facing provider configs: agent.json now has humanFacing and agentFacing blocks, each with provider and model. CLI/Teams/BlueBubbles use humanFacing, inner dialog uses agentFacing.",
+        "Model moved from secrets.json to agent.json. Secrets now store credentials only (API keys, tokens, endpoints).",
+        "Automatic v1 to v2 migration: existing bundles upgraded via UpdateHook at daemon startup and inline in loadAgentConfig/readAgentConfigForAgent.",
+        "CLI commands support --facing human|agent flag for config model and auth switch.",
+        "Provider factories accept model as parameter instead of reading from secrets config."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.158",
       "changes": [
         "Task scanner v2: explicit identity via kind: task field. Scanner only parses files that declare themselves as task cards — doing docs, planning docs, and artifacts silently skipped. Eliminates 184 false parse errors on real bundles.",

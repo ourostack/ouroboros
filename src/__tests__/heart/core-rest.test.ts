@@ -33,7 +33,8 @@ vi.mock("../../heart/identity", () => ({
   loadAgentConfig: vi.fn(() => ({
     name: "testagent",
     configPath: "~/.agentsecrets/testagent/secrets.json",
-    provider: "minimax",
+    humanFacing: { provider: "minimax", model: "minimax-text-01" },
+    agentFacing: { provider: "minimax", model: "minimax-text-01" },
   })),
   DEFAULT_AGENT_CONTEXT: {
     maxTokens: 80000,
@@ -118,7 +119,8 @@ async function setupMinimax() {
   vi.mocked(identity.loadAgentConfig).mockReturnValue({
     name: "testagent",
     configPath: "~/.agentsecrets/testagent/secrets.json",
-    provider: "minimax",
+    humanFacing: { provider: "minimax", model: "minimax-text-01" },
+    agentFacing: { provider: "minimax", model: "minimax-text-01" },
   })
   const config = await import("../../heart/config")
   config.resetConfigCache()

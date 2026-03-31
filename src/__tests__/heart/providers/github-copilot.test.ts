@@ -70,13 +70,23 @@ async function setAgentProvider(provider: string) {
   vi.mocked(loadAgentConfig).mockReturnValue({
     name: "testagent",
     provider,
+    humanFacing: { provider, model: "" },
+    agentFacing: { provider, model: "" },
   } as any)
 }
 
-async function setupConfig(partial: Record<string, unknown>) {
-  await setAgentProvider(
-    partial.provider ? String(partial.provider) : "github-copilot",
-  )
+async function setupConfig(partial: Record<string, unknown> & { humanFacingModel?: string }) {
+  const provider = partial.provider ? String(partial.provider) : "github-copilot"
+  const model = partial.humanFacingModel ?? ""
+  await setAgentProvider(provider)
+  // Update the mock to include model from humanFacingModel
+  const { loadAgentConfig } = await import("../../../heart/identity")
+  vi.mocked(loadAgentConfig).mockReturnValue({
+    name: "testagent",
+    provider,
+    humanFacing: { provider, model } as any,
+    agentFacing: { provider, model } as any,
+  } as any)
   const config = await import("../../../heart/config")
   config.resetConfigCache()
   config.patchRuntimeConfig(partial as any)
@@ -96,11 +106,10 @@ beforeEach(async () => {
 // --- Unit 1a: Types & Config tests ---
 
 describe("github-copilot config", () => {
-  it("getGithubCopilotConfig returns config from loadConfig().providers['github-copilot']", async () => {
+  it("getGithubCopilotConfig returns config from loadConfig().providers['github-copilot'] (credentials only, no model)", async () => {
     await setupConfig({
       providers: {
         "github-copilot": {
-          model: "claude-sonnet-4.6",
           githubToken: "ghp_test123",
           baseUrl: "https://api.copilot.example.com",
         },
@@ -108,7 +117,7 @@ describe("github-copilot config", () => {
     })
     const { getGithubCopilotConfig } = await import("../../../heart/config")
     const cfg = getGithubCopilotConfig()
-    expect(cfg.model).toBe("claude-sonnet-4.6")
+    expect(cfg).not.toHaveProperty("model")
     expect(cfg.githubToken).toBe("ghp_test123")
     expect(cfg.baseUrl).toBe("https://api.copilot.example.com")
   })
@@ -120,12 +129,11 @@ describe("github-copilot config", () => {
     expect(config.provider).toBe("github-copilot")
   })
 
-  it("default secrets template includes providers['github-copilot']", async () => {
+  it("default secrets template includes providers['github-copilot'] (credentials only, no model)", async () => {
     await setupConfig({})
     const { loadConfig } = await import("../../../heart/config")
     const config = loadConfig()
     expect(config.providers["github-copilot"]).toEqual({
-      model: "claude-sonnet-4.6",
       githubToken: "",
       baseUrl: "",
     })
@@ -134,9 +142,9 @@ describe("github-copilot config", () => {
   it("getProviderDisplayLabel returns 'github copilot (<model>)' for github-copilot", async () => {
     await setupConfig({
       provider: "github-copilot",
+      humanFacingModel: "claude-sonnet-4.6",
       providers: {
         "github-copilot": {
-          model: "claude-sonnet-4.6",
           githubToken: "ghp_test123",
           baseUrl: "https://api.copilot.example.com",
         },
@@ -165,31 +173,31 @@ describe("createGithubCopilotProviderRuntime", () => {
   it("throws if githubToken is missing", async () => {
     await setupConfig({
       providers: {
-        "github-copilot": { model: "claude-sonnet-4.6", githubToken: "", baseUrl: "https://api.example.com" },
+        "github-copilot": { githubToken: "", baseUrl: "https://api.example.com" },
       },
     })
     const { createGithubCopilotProviderRuntime } = await import("../../../heart/providers/github-copilot")
-    expect(() => createGithubCopilotProviderRuntime()).toThrow(/githubToken/)
+    expect(() => createGithubCopilotProviderRuntime("claude-sonnet-4.6")).toThrow(/githubToken/)
   })
 
   it("throws if baseUrl is missing", async () => {
     await setupConfig({
       providers: {
-        "github-copilot": { model: "claude-sonnet-4.6", githubToken: "ghp_test123", baseUrl: "" },
+        "github-copilot": { githubToken: "ghp_test123", baseUrl: "" },
       },
     })
     const { createGithubCopilotProviderRuntime } = await import("../../../heart/providers/github-copilot")
-    expect(() => createGithubCopilotProviderRuntime()).toThrow(/baseUrl/)
+    expect(() => createGithubCopilotProviderRuntime("claude-sonnet-4.6")).toThrow(/baseUrl/)
   })
 
   it("creates OpenAI client with baseURL and token-style auth header", async () => {
     await setupConfig({
       providers: {
-        "github-copilot": { model: "claude-sonnet-4.6", githubToken: "ghp_test123", baseUrl: "https://api.copilot.example.com" },
+        "github-copilot": { githubToken: "ghp_test123", baseUrl: "https://api.copilot.example.com" },
       },
     })
     const { createGithubCopilotProviderRuntime } = await import("../../../heart/providers/github-copilot")
-    createGithubCopilotProviderRuntime()
+    createGithubCopilotProviderRuntime("claude-sonnet-4.6")
     expect(mockOpenAICtor).toHaveBeenCalledWith(
       expect.objectContaining({
         apiKey: "ghp_test123",
@@ -198,14 +206,14 @@ describe("createGithubCopilotProviderRuntime", () => {
     )
   })
 
-  it("has id 'github-copilot' and model from config", async () => {
+  it("has id 'github-copilot' and uses model passed as parameter", async () => {
     await setupConfig({
       providers: {
-        "github-copilot": { model: "claude-sonnet-4.6", githubToken: "ghp_test123", baseUrl: "https://api.copilot.example.com" },
+        "github-copilot": { githubToken: "ghp_test123", baseUrl: "https://api.copilot.example.com" },
       },
     })
     const { createGithubCopilotProviderRuntime } = await import("../../../heart/providers/github-copilot")
-    const runtime = createGithubCopilotProviderRuntime()
+    const runtime = createGithubCopilotProviderRuntime("claude-sonnet-4.6")
     expect(runtime.id).toBe("github-copilot")
     expect(runtime.model).toBe("claude-sonnet-4.6")
   })
@@ -213,24 +221,24 @@ describe("createGithubCopilotProviderRuntime", () => {
   it("includes reasoning-effort capability when model supports it", async () => {
     await setupConfig({
       providers: {
-        "github-copilot": { model: "claude-sonnet-4.6", githubToken: "ghp_test123", baseUrl: "https://api.copilot.example.com" },
+        "github-copilot": { githubToken: "ghp_test123", baseUrl: "https://api.copilot.example.com" },
       },
     })
     const { createGithubCopilotProviderRuntime } = await import("../../../heart/providers/github-copilot")
-    const runtime = createGithubCopilotProviderRuntime()
+    const runtime = createGithubCopilotProviderRuntime("claude-sonnet-4.6")
     expect(runtime.capabilities.has("reasoning-effort")).toBe(true)
   })
 
   it("Claude model: streamTurn calls streamChatCompletion", async () => {
     await setupConfig({
       providers: {
-        "github-copilot": { model: "claude-sonnet-4.6", githubToken: "ghp_test123", baseUrl: "https://api.copilot.example.com" },
+        "github-copilot": { githubToken: "ghp_test123", baseUrl: "https://api.copilot.example.com" },
       },
     })
     const turnResult = { content: "hello", toolCalls: [], outputItems: [] }
     mockStreamChatCompletion.mockResolvedValue(turnResult)
     const { createGithubCopilotProviderRuntime } = await import("../../../heart/providers/github-copilot")
-    const runtime = createGithubCopilotProviderRuntime()
+    const runtime = createGithubCopilotProviderRuntime("claude-sonnet-4.6")
     const callbacks = { onModelStart: vi.fn(), onModelStreamStart: vi.fn(), onTextChunk: vi.fn(), onReasoningChunk: vi.fn(), onToolStart: vi.fn(), onToolEnd: vi.fn(), onError: vi.fn() }
     const result = await runtime.streamTurn({
       messages: [{ role: "user", content: "hi" }],
@@ -245,13 +253,13 @@ describe("createGithubCopilotProviderRuntime", () => {
   it("GPT model: streamTurn calls streamResponsesApi", async () => {
     await setupConfig({
       providers: {
-        "github-copilot": { model: "gpt-5.4", githubToken: "ghp_test123", baseUrl: "https://api.copilot.example.com" },
+        "github-copilot": { githubToken: "ghp_test123", baseUrl: "https://api.copilot.example.com" },
       },
     })
     const turnResult = { content: "hello", toolCalls: [], outputItems: [{ type: "message", id: "1" }] }
     mockStreamResponsesApi.mockResolvedValue(turnResult)
     const { createGithubCopilotProviderRuntime } = await import("../../../heart/providers/github-copilot")
-    const runtime = createGithubCopilotProviderRuntime()
+    const runtime = createGithubCopilotProviderRuntime("gpt-5.4")
     const callbacks = { onModelStart: vi.fn(), onModelStreamStart: vi.fn(), onTextChunk: vi.fn(), onReasoningChunk: vi.fn(), onToolStart: vi.fn(), onToolEnd: vi.fn(), onError: vi.fn() }
     const result = await runtime.streamTurn({
       messages: [{ role: "user", content: "hi" }],
@@ -266,11 +274,11 @@ describe("createGithubCopilotProviderRuntime", () => {
   it("Claude model: resetTurnState and appendToolOutput are no-ops", async () => {
     await setupConfig({
       providers: {
-        "github-copilot": { model: "claude-sonnet-4.6", githubToken: "ghp_test123", baseUrl: "https://api.copilot.example.com" },
+        "github-copilot": { githubToken: "ghp_test123", baseUrl: "https://api.copilot.example.com" },
       },
     })
     const { createGithubCopilotProviderRuntime } = await import("../../../heart/providers/github-copilot")
-    const runtime = createGithubCopilotProviderRuntime()
+    const runtime = createGithubCopilotProviderRuntime("claude-sonnet-4.6")
     // Should not throw
     runtime.resetTurnState([{ role: "user", content: "hi" }])
     runtime.appendToolOutput("call-1", "output")
@@ -279,13 +287,13 @@ describe("createGithubCopilotProviderRuntime", () => {
   it("GPT model: resetTurnState calls toResponsesInput, appendToolOutput pushes to nativeInput", async () => {
     await setupConfig({
       providers: {
-        "github-copilot": { model: "gpt-5.4", githubToken: "ghp_test123", baseUrl: "https://api.copilot.example.com" },
+        "github-copilot": { githubToken: "ghp_test123", baseUrl: "https://api.copilot.example.com" },
       },
     })
     const nativeInput: any[] = []
     mockToResponsesInput.mockReturnValue({ instructions: "sys", input: nativeInput })
     const { createGithubCopilotProviderRuntime } = await import("../../../heart/providers/github-copilot")
-    const runtime = createGithubCopilotProviderRuntime()
+    const runtime = createGithubCopilotProviderRuntime("gpt-5.4")
     runtime.resetTurnState([{ role: "user", content: "hi" }])
     expect(mockToResponsesInput).toHaveBeenCalled()
     runtime.appendToolOutput("call-1", "result")
@@ -295,14 +303,14 @@ describe("createGithubCopilotProviderRuntime", () => {
   it("auth failure produces re-auth guidance message", async () => {
     await setupConfig({
       providers: {
-        "github-copilot": { model: "claude-sonnet-4.6", githubToken: "ghp_test123", baseUrl: "https://api.copilot.example.com" },
+        "github-copilot": { githubToken: "ghp_test123", baseUrl: "https://api.copilot.example.com" },
       },
     })
     const authError: any = new Error("auth failed")
     authError.status = 401
     mockStreamChatCompletion.mockRejectedValue(authError)
     const { createGithubCopilotProviderRuntime } = await import("../../../heart/providers/github-copilot")
-    const runtime = createGithubCopilotProviderRuntime()
+    const runtime = createGithubCopilotProviderRuntime("claude-sonnet-4.6")
     const callbacks = { onModelStart: vi.fn(), onModelStreamStart: vi.fn(), onTextChunk: vi.fn(), onReasoningChunk: vi.fn(), onToolStart: vi.fn(), onToolEnd: vi.fn(), onError: vi.fn() }
     await expect(
       runtime.streamTurn({ messages: [{ role: "user", content: "hi" }], activeTools: [], callbacks }),

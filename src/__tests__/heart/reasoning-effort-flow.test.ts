@@ -42,6 +42,8 @@ vi.mock("../../heart/identity", () => ({
     name: "testagent",
     configPath: "~/.agentsecrets/testagent/secrets.json",
     provider: "minimax",
+    humanFacing: { provider: "minimax", model: "minimax-text-01" },
+    agentFacing: { provider: "minimax", model: "minimax-text-01" },
   })),
   DEFAULT_AGENT_CONTEXT: { maxTokens: 80000, contextMargin: 20 },
   getAgentName: vi.fn(() => "testagent"),
@@ -113,10 +115,12 @@ describe("reasoning effort flow in runAgent", () => {
       name: "testagent",
       configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "minimax",
+      humanFacing: { provider: "minimax", model: "minimax-text-01" },
+      agentFacing: { provider: "minimax", model: "minimax-text-01" },
     })
     const config = await import("../../heart/config")
     config.resetConfigCache()
-    config.patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    config.patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
   })
 
   it("provides supportedReasoningEfforts on ToolContext from provider runtime", async () => {
@@ -277,6 +281,8 @@ describe("reasoning effort flow in runAgent", () => {
       name: "testagent",
       configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "anthropic",
+      humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+      agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
     })
     const config = await import("../../heart/config")
     config.resetConfigCache()
@@ -326,6 +332,8 @@ describe("reasoning effort flow in runAgent", () => {
       name: "testagent",
       configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "openai-codex",
+      humanFacing: { provider: "openai-codex", model: "gpt-5.4" },
+      agentFacing: { provider: "openai-codex", model: "gpt-5.4" },
     })
 
     const config = await import("../../heart/config")
@@ -384,6 +392,8 @@ describe("reasoning effort flow in runAgent", () => {
       name: "testagent",
       configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "openai-codex",
+      humanFacing: { provider: "openai-codex", model: "gpt-5.4" },
+      agentFacing: { provider: "openai-codex", model: "gpt-5.4" },
     })
 
     const config = await import("../../heart/config")

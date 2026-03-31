@@ -27,6 +27,7 @@ import { getChannelCapabilities } from "../mind/friends/channel"
 import { acquireSessionLock, SessionLockError } from "./session-lock"
 import { applyPendingUpdates, registerUpdateHook } from "../heart/daemon/update-hooks"
 import { bundleMetaHook } from "../heart/daemon/hooks/bundle-meta"
+import { agentConfigV2Hook } from "../heart/daemon/hooks/agent-config-v2"
 import { getPackageVersion } from "../mind/bundle-manifest"
 import { formatEchoedInputSummary, StreamingWordWrapper } from "./cli-layout"
 
@@ -821,10 +822,11 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
 
   // Fallback: apply pending updates for daemon-less direct CLI usage
   registerUpdateHook(bundleMetaHook)
+  registerUpdateHook(agentConfigV2Hook)
   await applyPendingUpdates(getAgentBundlesRoot(), getPackageVersion())
 
   // Fail fast if provider is misconfigured (triggers human-readable error + exit)
-  getProvider()
+  getProvider("human")
 
   // Resolve context kernel (identity + channel) for CLI
   const friendsPath = path.join(getAgentRoot(), "friends")
@@ -873,7 +875,7 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
   const cliCapabilities = getChannelCapabilities("cli")
   const currentAgentName = getAgentName()
   const pendingDir = getPendingDir(currentAgentName, friendId, "cli", "session")
-  const summarize = createSummarize()
+  const summarize = createSummarize("human")
   const cliFailoverState: import("./pipeline").FailoverState = { pending: null }
 
   try {
