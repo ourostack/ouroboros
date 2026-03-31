@@ -8,9 +8,9 @@ export type TaskStatus =
   | "done"
   | "cancelled"
 
-export type CanonicalTaskType = "one-shot" | "ongoing" | "habit"
+export type CanonicalTaskType = "one-shot" | "ongoing"
 
-export type CanonicalTaskCollection = "one-shots" | "ongoing" | "habits"
+export type CanonicalTaskCollection = "one-shots" | "ongoing"
 
 export interface TaskFile {
   path: string

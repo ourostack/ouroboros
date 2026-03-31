@@ -298,6 +298,55 @@ describe("formatActiveWorkFrame (selfhood framing)", () => {
     expect(result).toContain("Ari/bluebubbles/chat:any;-;ari@mendelow.me")
   })
 
+  it("keeps the compact checkpoint aligned with the full active-work render for live coding state", () => {
+    const frame = makeFrame({
+      centerOfGravity: "inward-work",
+      currentSession: {
+        friendId: "friend-1",
+        channel: "teams" as any,
+        key: "thread-9",
+        sessionPath: "/tmp/teams-thread-9.json",
+      },
+      currentObligation: "bring the patch back here",
+      mustResolveBeforeHandoff: true,
+      codingSessions: [
+        {
+          id: "coding-101",
+          runner: "codex",
+          workdir: "/tmp/workspaces/ouroboros",
+          taskRef: "task-101",
+          checkpoint: "tightening the active-work trust pass",
+          artifactPath: "/tmp/artifacts/coding-101.md",
+          status: "running",
+          stdoutTail: "working",
+          stderrTail: "",
+          pid: 101,
+          startedAt: "2026-03-21T10:00:00.000Z",
+          lastActivityAt: "2026-03-21T10:05:00.000Z",
+          endedAt: null,
+          restartCount: 0,
+          lastExitCode: null,
+          lastSignal: null,
+          failure: null,
+          originSession: { friendId: "friend-1", channel: "teams", key: "thread-9" },
+        },
+      ],
+    } as ActiveWorkFrame)
+
+    const full = formatActiveWorkFrame(frame)
+    const checkpoint = formatLiveWorldStateCheckpoint(frame)
+
+    expect(full).toContain("- live conversation: teams/thread-9")
+    expect(full).toContain("- active lane: codex coding-101 for this thread")
+    expect(full).toContain("- current artifact: /tmp/artifacts/coding-101.md")
+    expect(full).toContain("- next action: finish the coding pass and bring the result back here")
+
+    expect(checkpoint).toContain("- live conversation: teams/thread-9")
+    expect(checkpoint).toContain("- active lane: codex coding-101 for this thread")
+    expect(checkpoint).toContain("- current artifact: /tmp/artifacts/coding-101.md")
+    expect(checkpoint).toContain("- next action: finish the coding pass and bring the result back here")
+  })
+
   it("emits nerves event reference", () => {
     expect(emitNervesEvent).toBeDefined()
   })

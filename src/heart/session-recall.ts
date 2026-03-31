@@ -23,6 +23,30 @@ export type SessionRecallResult =
     tailMessages: Array<{ role: string; content: string }>
   }
 
+export interface SessionSearchOptions {
+  sessionPath: string
+  friendId: string
+  channel: string
+  key: string
+  query: string
+  maxMatches?: number
+}
+
+export type SessionSearchResult =
+  | { kind: "missing" }
+  | { kind: "empty" }
+  | {
+    kind: "no_match"
+    query: string
+    snapshot: string
+  }
+  | {
+    kind: "ok"
+    query: string
+    snapshot: string
+    matches: string[]
+  }
+
 function normalizeContent(content: unknown): string {
   if (typeof content === "string") return content
   if (!Array.isArray(content)) return ""
@@ -35,6 +59,20 @@ function normalizeContent(content: unknown): string {
     ))
     .filter((text) => text.length > 0)
     .join("")
+}
+
+function normalizeSessionMessages(messages: unknown): Array<{ role: string; content: string }> {
+  if (!Array.isArray(messages)) return []
+
+  return messages
+    .map((message) => {
+      const record = message && typeof message === "object" ? message as { role?: unknown; content?: unknown } : {}
+      return {
+        role: typeof record.role === "string" ? record.role : "",
+        content: normalizeContent(record.content),
+      }
+    })
+    .filter((message) => message.role !== "system" && message.content.length > 0)
 }
 
 function buildSummaryInstruction(friendId: string, channel: string, trustLevel: TrustLevel): string {
@@ -65,6 +103,69 @@ function buildSnapshot(summary: string, tailMessages: Array<{ role: string; cont
   return lines.join("\n")
 }
 
+function buildSearchSnapshot(
+  query: string,
+  messages: Array<{ role: string; content: string }>,
+  includeLatestTurn = true,
+): string {
+  const lines = [`history query: "${clip(query, 120)}"`]
+  if (!includeLatestTurn) {
+    return lines.join("\n")
+  }
+  const latestUser = [...messages].reverse().find((message) => message.role === "user")?.content
+  const latestAssistant = [...messages].reverse().find((message) => message.role === "assistant")?.content
+
+  if (latestUser) {
+    lines.push(`latest user: ${clip(latestUser)}`)
+  }
+  if (latestAssistant) {
+    lines.push(`latest assistant: ${clip(latestAssistant)}`)
+  }
+
+  return lines.join("\n")
+}
+function buildSearchExcerpts(
+  messages: Array<{ role: string; content: string }>,
+  query: string,
+  maxMatches: number,
+): string[] {
+  const normalizedQuery = query.trim().toLowerCase()
+  if (!normalizedQuery) return []
+
+  const candidates: Array<{ excerpt: string; score: number; index: number }> = []
+  let lastMatchIndex = -2
+
+  for (let i = 0; i < messages.length; i++) {
+    if (!messages[i].content.toLowerCase().includes(normalizedQuery)) continue
+    if (i <= lastMatchIndex + 1) continue
+    lastMatchIndex = i
+
+    const start = Math.max(0, i - 1)
+    const end = Math.min(messages.length, i + 2)
+    const excerpt = messages
+      .slice(start, end)
+      .map((message) => `[${message.role}] ${clip(message.content, 200)}`)
+      .join("\n")
+    const score = messages
+      .slice(start, end)
+      .filter((message) => message.content.toLowerCase().includes(normalizedQuery))
+      .length
+
+    candidates.push({ excerpt, score, index: i })
+  }
+
+  const seen = new Set<string>()
+  return candidates
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .filter((candidate) => {
+      if (seen.has(candidate.excerpt)) return false
+      seen.add(candidate.excerpt)
+      return true
+    })
+    .slice(0, maxMatches)
+    .map((candidate) => candidate.excerpt)
+}
+
 export async function recallSession(options: SessionRecallOptions): Promise<SessionRecallResult> {
   emitNervesEvent({
     component: "daemon",
@@ -86,13 +187,7 @@ export async function recallSession(options: SessionRecallOptions): Promise<Sess
   }
 
   const parsed = JSON.parse(raw) as { messages?: Array<{ role?: unknown; content?: unknown }> }
-  const tailMessages = (parsed.messages ?? [])
-    .map((message) => ({
-      role: typeof message.role === "string" ? message.role : "",
-      content: normalizeContent(message.content),
-    }))
-    .filter((message) => message.role !== "system" && message.content.length > 0)
-    .slice(-options.messageCount)
+  const tailMessages = normalizeSessionMessages(parsed.messages).slice(-options.messageCount)
 
   if (tailMessages.length === 0) {
     return { kind: "empty" }
@@ -115,5 +210,52 @@ export async function recallSession(options: SessionRecallOptions): Promise<Sess
     summary,
     snapshot: buildSnapshot(summary, tailMessages),
     tailMessages,
+  }
+}
+
+export async function searchSessionTranscript(options: SessionSearchOptions): Promise<SessionSearchResult> {
+  emitNervesEvent({
+    component: "daemon",
+    event: "daemon.session_search",
+    message: "searching session transcript",
+    meta: {
+      friendId: options.friendId,
+      channel: options.channel,
+      key: options.key,
+      query: options.query,
+      maxMatches: options.maxMatches ?? 5,
+    },
+  })
+
+  let raw: string
+  try {
+    raw = fs.readFileSync(options.sessionPath, "utf-8")
+  } catch {
+    return { kind: "missing" }
+  }
+
+  const parsed = JSON.parse(raw) as { messages?: Array<{ role?: unknown; content?: unknown }> }
+  const messages = normalizeSessionMessages(parsed.messages)
+
+  if (messages.length === 0) {
+    return { kind: "empty" }
+  }
+
+  const query = options.query.trim()
+  const matches = buildSearchExcerpts(messages, query, options.maxMatches ?? 5)
+
+  if (matches.length === 0) {
+    return {
+      kind: "no_match",
+      query,
+      snapshot: buildSearchSnapshot(query, messages),
+    }
+  }
+
+  return {
+    kind: "ok",
+    query,
+    snapshot: buildSearchSnapshot(query, messages, false),
+    matches,
   }
 }

@@ -87,6 +87,7 @@ export function resumeActiveSpinner(): void { _activeSpinner?.resume() }
 /* v8 ignore stop */
 export function setActiveSpinner(s: Spinner | null): void { _activeSpinner = s }
 
+
 // spinner that only touches stderr, cleans up after itself
 // exported for direct testability (stop-without-start branch)
 export class Spinner {
@@ -361,14 +362,14 @@ export function createCliCallbacks(): ChannelCallbacks & { flushMarkdown(): void
     onModelStreamStart: () => {
       // No-op: content callbacks (onTextChunk, onReasoningChunk) handle
       // stopping the spinner. onModelStreamStart fires too early and
-      // doesn't fire at all for final_answer tool streaming.
+      // doesn't fire at all for settle tool streaming.
     },
     onClearText: () => {
       streamer.reset()
       wrapper.reset()
     },
     onTextChunk: (text: string) => {
-      // Stop spinner if still running — final_answer streaming and Anthropic
+      // Stop spinner if still running — settle streaming and Anthropic
       // tool-only responses bypass onModelStreamStart, so the spinner would
       // otherwise keep running (and its \r writes overwrite response text).
       if (currentSpinner) {
@@ -523,11 +524,11 @@ export interface RunCliSessionOptions {
     callbacks: ChannelCallbacks & { flushMarkdown(): void },
     signal?: AbortSignal,
     toolContext?: ToolContext,
-  ) => Promise<{ usage?: UsageData }>;
+  ) => Promise<{ usage?: UsageData; turnOutcome?: string; commandAction?: string }>;
 }
 
 export interface RunCliSessionResult {
-  exitReason: "final_answer" | "tool_exit" | "user_quit";
+  exitReason: "settle" | "tool_exit" | "user_quit";
   toolResult?: unknown;
 }
 
@@ -587,7 +588,7 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
           exitToolResult = result
           exitToolFired = true
           // Abort immediately so the model doesn't generate more output
-          // (e.g. reasoning about calling final_answer after complete_adoption)
+          // (e.g. reasoning about calling settle after complete_adoption)
           currentAbort?.abort()
         }
         return result
@@ -692,26 +693,28 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
         }
       }
 
-      // Check for slash commands
-      const parsed = parseSlashCommand(input)
-      if (parsed) {
-        const dispatchResult = registry.dispatch(parsed.command, { channel: "cli" })
-        if (dispatchResult.handled && dispatchResult.result) {
-          if (dispatchResult.result.action === "exit") {
-            break
-          } else if (dispatchResult.result.action === "new") {
-            messages.length = 0
-            messages.push({ role: "system", content: await buildSystem("cli") })
-            await options.onNewSession?.()
-            // eslint-disable-next-line no-console -- terminal UX: session cleared
-            console.log("session cleared")
-            process.stdout.write(CLI_PROMPT)
-            continue
-          } else if (dispatchResult.result.action === "response") {
-            // eslint-disable-next-line no-console -- terminal UX: command dispatch result
-            console.log(dispatchResult.result.message || "")
-            process.stdout.write(CLI_PROMPT)
-            continue
+      // Check for slash commands (legacy path only — pipeline handles commands for runTurn path)
+      if (!options.runTurn) {
+        const parsed = parseSlashCommand(input)
+        if (parsed) {
+          const dispatchResult = registry.dispatch(parsed.command, { channel: "cli" })
+          if (dispatchResult.handled && dispatchResult.result) {
+            if (dispatchResult.result.action === "exit") {
+              break
+            } else if (dispatchResult.result.action === "new") {
+              messages.length = 0
+              messages.push({ role: "system", content: await buildSystem("cli") })
+              await options.onNewSession?.()
+              // eslint-disable-next-line no-console -- terminal UX: session cleared
+              console.log("session cleared")
+              process.stdout.write(CLI_PROMPT)
+              continue
+            } else if (dispatchResult.result.action === "response") {
+              // eslint-disable-next-line no-console -- terminal UX: command dispatch result
+              console.log(dispatchResult.result.message || "")
+              process.stdout.write(CLI_PROMPT)
+              continue
+            }
           }
         }
       }
@@ -724,12 +727,32 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
 
       currentAbort = new AbortController()
       ctrl.suppress(() => currentAbort!.abort())
-      let result: { usage?: UsageData } | undefined
+      let result: { usage?: UsageData; turnOutcome?: string; commandAction?: string } | undefined
       try {
         if (options.runTurn) {
           // Pipeline-based turn: the runTurn callback handles user message assembly,
           // pending drain, trust gate, runAgent, postTurn, and token accumulation.
+          // Commands (e.g. /debug, /exit, /new) are intercepted in the pipeline.
           result = await options.runTurn(messages, input, cliCallbacks, currentAbort.signal, effectiveToolContext)
+
+          // Handle pipeline-intercepted commands with loop-control side effects
+          if (result?.turnOutcome === "command") {
+            if (result.commandAction === "exit") {
+              break
+            } else if (result.commandAction === "new") {
+              messages.length = 0
+              messages.push({ role: "system", content: await buildSystem("cli") })
+              await options.onNewSession?.()
+              // eslint-disable-next-line no-console -- terminal UX: session cleared
+              console.log("session cleared")
+              process.stdout.write(CLI_PROMPT)
+              continue
+            }
+            // For "response" commands: the pipeline already emitted the response via onTextChunk
+            cliCallbacks.flushMarkdown()
+            process.stdout.write(CLI_PROMPT)
+            continue
+          }
         } else {
           // Legacy path: inline runAgent (used by adoption specialist and tests)
           const prefix = options.getContentPrefix?.()
@@ -851,6 +874,7 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
   const currentAgentName = getAgentName()
   const pendingDir = getPendingDir(currentAgentName, friendId, "cli", "session")
   const summarize = createSummarize()
+  const cliFailoverState: import("./pipeline").FailoverState = { pending: null }
 
   try {
     await runCliSession({
@@ -863,15 +887,40 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
       runTurn: async (messages, userInput, callbacks, signal, toolContext) => {
         // Run the full per-turn pipeline: resolve -> gate -> session -> drain -> runAgent -> postTurn -> tokens
         // User message passed via input.messages so the pipeline can prepend pending messages to it.
+        const failoverState = cliFailoverState
+
+        // Capture terminal errors instead of displaying immediately — the failover
+        // message replaces the raw error if failover triggers successfully.
+        let capturedTerminalError: Error | null = null
+        /* v8 ignore start -- failover-aware callback wrapper: tested via pipeline integration @preserve */
+        const failoverAwareCallbacks: typeof callbacks = {
+          ...callbacks,
+          onError: (error: Error, severity: "transient" | "terminal") => {
+            if (severity === "terminal" && failoverState) {
+              capturedTerminalError = error
+              callbacks.onError(new Error(""), "transient")
+              return
+            }
+            callbacks.onError(error, severity)
+          },
+        }
+        /* v8 ignore stop */
+
         const result = await handleInboundTurn({
           channel: "cli",
           sessionKey: "session",
           capabilities: cliCapabilities,
           messages: [{ role: "user", content: userInput }],
           continuityIngressTexts: getCliContinuityIngressTexts(userInput),
-          callbacks,
+          callbacks: failoverAwareCallbacks,
           friendResolver: { resolve: () => Promise.resolve(resolvedContext) },
-          sessionLoader: { loadOrCreate: () => Promise.resolve({ messages, sessionPath: sessPath, state: sessionState }) },
+          sessionLoader: {
+            loadOrCreate: () => Promise.resolve({
+              messages,
+              sessionPath: sessPath,
+              state: sessionState,
+            }),
+          },
           pendingDir,
           friendStore,
           provider: "local",
@@ -900,7 +949,18 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
             mcpManager,
             toolContext,
           },
+          failoverState,
         })
+
+        /* v8 ignore start -- failover display: tested via pipeline integration tests @preserve */
+        if (result.failoverMessage) {
+          // Failover handled it — show the actionable message instead of the raw error
+          process.stdout.write(`\x1b[33m${result.failoverMessage}\x1b[0m\n`)
+        } else if (capturedTerminalError) {
+          // Failover didn't trigger (no failoverState, or sequence failed) — show the raw error
+          process.stderr.write(`\x1b[31m${formatError(capturedTerminalError)}\x1b[0m\n`)
+        }
+        /* v8 ignore stop */
 
         // Handle gate rejection: display auto-reply if present
         if (!result.gateResult.allowed) {
@@ -909,7 +969,7 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
           }
         }
 
-        return { usage: result.usage }
+        return { usage: result.usage, turnOutcome: result.turnOutcome, commandAction: result.commandAction }
       },
       onNewSession: () => {
         deleteSession(sessPath)

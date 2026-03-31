@@ -44,7 +44,18 @@ describe("coding spawner defaults", () => {
 
     expect(spawnMock).toHaveBeenCalledWith(
       "codex",
-      ["exec", "--skip-git-repo-check", "--cd", "/Users/test/AgentWorkspaces/ouroboros"],
+      [
+        "exec",
+        "--skip-git-repo-check",
+        "--cd",
+        "/Users/test/AgentWorkspaces/ouroboros",
+        "--ephemeral",
+        "--json",
+        "-c",
+        "mcp_servers.ouro.command=node",
+        "-c",
+        expect.stringContaining("mcp_servers.ouro.args="),
+      ],
       expect.objectContaining({
         cwd: "/Users/test/AgentWorkspaces/ouroboros",
         env: expect.objectContaining({ PATH: expect.any(String) }),

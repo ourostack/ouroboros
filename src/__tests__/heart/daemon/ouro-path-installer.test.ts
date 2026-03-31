@@ -10,6 +10,7 @@ describe("installOuroCommand", () => {
   let appended: Record<string, string>
   let chmoded: Record<string, number>
   let mkdirCalls: string[]
+  const correctContent = '#!/bin/sh\nexec npx --prefer-online --yes @ouro.bot/cli@alpha "$@"\n'
 
   function makeDeps(overrides: Partial<OuroPathInstallerDeps> = {}): OuroPathInstallerDeps {
     written = {}
@@ -30,6 +31,26 @@ describe("installOuroCommand", () => {
       ...overrides,
     }
   }
+
+  const CORRECT_CONTENT = `#!/bin/sh
+# Check for dev mode — if dev-config.json exists, dispatch to the dev repo
+# Skip dev dispatch for "up" command (explicitly returns to production)
+DEV_CONFIG="$HOME/.ouro-cli/dev-config.json"
+if [ -f "$DEV_CONFIG" ] && [ "$1" != "up" ]; then
+  DEV_REPO=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$DEV_CONFIG','utf-8')).repoPath)}catch{}" 2>/dev/null)
+  DEV_ENTRY="$DEV_REPO/dist/heart/daemon/ouro-entry.js"
+  if [ -n "$DEV_REPO" ] && [ -e "$DEV_ENTRY" ]; then
+    exec node "$DEV_ENTRY" "$@"
+  fi
+fi
+# Fall back to installed version
+ENTRY="$HOME/.ouro-cli/CurrentVersion/node_modules/@ouro.bot/cli/dist/heart/daemon/ouro-entry.js"
+if [ ! -e "$ENTRY" ]; then
+  echo "ouro not installed. Run: npx ouro.bot" >&2
+  exit 1
+fi
+exec node "$ENTRY" "$@"
+`
 
   beforeEach(() => {
     vi.clearAllMocks()
@@ -55,18 +76,10 @@ describe("installOuroCommand", () => {
   })
 
   it("skips if ouro script already exists with correct content", () => {
-    const correctContent = `#!/bin/sh
-ENTRY="$HOME/.ouro-cli/CurrentVersion/node_modules/@ouro.bot/cli/dist/heart/daemon/ouro-entry.js"
-if [ ! -e "$ENTRY" ]; then
-  echo "ouro not installed. Run: npx ouro.bot" >&2
-  exit 1
-fi
-exec node "$ENTRY" "$@"
-`
     const deps = makeDeps({
       existsSync: (p) => p === "/home/test/.ouro-cli/bin/ouro",
       readFileSync: (p) => {
-        if (p === "/home/test/.ouro-cli/bin/ouro") return correctContent
+        if (p === "/home/test/.ouro-cli/bin/ouro") return CORRECT_CONTENT
         throw new Error("ENOENT")
       },
     })
@@ -199,11 +212,10 @@ exec node "$ENTRY" "$@"
   })
 
   it("reports pathReady correctly when already-installed and in PATH", () => {
-    const correctContent = `#!/bin/sh\nENTRY="$HOME/.ouro-cli/CurrentVersion/node_modules/@ouro.bot/cli/dist/heart/daemon/ouro-entry.js"\nif [ ! -e "$ENTRY" ]; then\n  echo "ouro not installed. Run: npx ouro.bot" >&2\n  exit 1\nfi\nexec node "$ENTRY" "$@"\n`
     const deps = makeDeps({
       existsSync: (p) => p === "/home/test/.ouro-cli/bin/ouro",
       readFileSync: (p) => {
-        if (p === "/home/test/.ouro-cli/bin/ouro") return correctContent
+        if (p === "/home/test/.ouro-cli/bin/ouro") return CORRECT_CONTENT
         throw new Error("ENOENT")
       },
       envPath: "/usr/bin:/home/test/.ouro-cli/bin",
@@ -216,11 +228,10 @@ exec node "$ENTRY" "$@"
   })
 
   it("reports pathReady false when already-installed but not in PATH", () => {
-    const correctContent = `#!/bin/sh\nENTRY="$HOME/.ouro-cli/CurrentVersion/node_modules/@ouro.bot/cli/dist/heart/daemon/ouro-entry.js"\nif [ ! -e "$ENTRY" ]; then\n  echo "ouro not installed. Run: npx ouro.bot" >&2\n  exit 1\nfi\nexec node "$ENTRY" "$@"\n`
     const deps = makeDeps({
       existsSync: (p) => p === "/home/test/.ouro-cli/bin/ouro",
       readFileSync: (p) => {
-        if (p === "/home/test/.ouro-cli/bin/ouro") return correctContent
+        if (p === "/home/test/.ouro-cli/bin/ouro") return CORRECT_CONTENT
         throw new Error("ENOENT")
       },
       envPath: "/usr/bin",
@@ -245,17 +256,33 @@ describe("installOuroCommand — versioned CLI layout", () => {
   let appended: Record<string, string>
   let chmoded: Record<string, number>
   let mkdirCalls: string[]
-  let unlinkCalls: string[]
-  let rmdirCalls: string[]
   let ensureCliLayoutCalls: number
+
+  const CORRECT_CONTENT = `#!/bin/sh
+# Check for dev mode — if dev-config.json exists, dispatch to the dev repo
+# Skip dev dispatch for "up" command (explicitly returns to production)
+DEV_CONFIG="$HOME/.ouro-cli/dev-config.json"
+if [ -f "$DEV_CONFIG" ] && [ "$1" != "up" ]; then
+  DEV_REPO=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$DEV_CONFIG','utf-8')).repoPath)}catch{}" 2>/dev/null)
+  DEV_ENTRY="$DEV_REPO/dist/heart/daemon/ouro-entry.js"
+  if [ -n "$DEV_REPO" ] && [ -e "$DEV_ENTRY" ]; then
+    exec node "$DEV_ENTRY" "$@"
+  fi
+fi
+# Fall back to installed version
+ENTRY="$HOME/.ouro-cli/CurrentVersion/node_modules/@ouro.bot/cli/dist/heart/daemon/ouro-entry.js"
+if [ ! -e "$ENTRY" ]; then
+  echo "ouro not installed. Run: npx ouro.bot" >&2
+  exit 1
+fi
+exec node "$ENTRY" "$@"
+`
 
   function makeDeps(overrides: Partial<OuroPathInstallerDeps> = {}): OuroPathInstallerDeps {
     written = {}
     appended = {}
     chmoded = {}
     mkdirCalls = []
-    unlinkCalls = []
-    rmdirCalls = []
     ensureCliLayoutCalls = 0
     return {
       homeDir: "/home/test",
@@ -266,14 +293,16 @@ describe("installOuroCommand — versioned CLI layout", () => {
       readFileSync: () => { throw new Error("ENOENT") },
       appendFileSync: (p, data) => { appended[p] = (appended[p] ?? "") + data },
       chmodSync: (p, mode) => { chmoded[p] = typeof mode === "number" ? mode : 0 },
-      unlinkSync: (p) => { unlinkCalls.push(p) },
-      rmdirSync: (p) => { rmdirCalls.push(p) },
       ensureCliLayout: () => { ensureCliLayoutCalls++ },
       envPath: "/usr/bin:/usr/local/bin",
       shell: "/bin/zsh",
       ...overrides,
     }
   }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
 
   it("installs wrapper script to ~/.ouro-cli/bin/ouro with exec-from-CurrentVersion content", () => {
     const deps = makeDeps()
@@ -297,61 +326,68 @@ describe("installOuroCommand — versioned CLI layout", () => {
     expect(appended["/home/test/.zshrc"]).toContain("# Added by ouro")
   })
 
-  it("removes old ~/.local/bin/ouro when it exists (migration)", () => {
+  it("repairs stale ~/.local/bin/ouro when it exists with old content", () => {
+    const staleOldContent = '#!/bin/sh\nexec npx --yes @ouro.bot/cli "$@"\n'
     const deps = makeDeps({
       existsSync: (p) => p === "/home/test/.local/bin/ouro",
+      readFileSync: (p) => {
+        if (p === "/home/test/.local/bin/ouro") return staleOldContent
+        throw new Error("ENOENT")
+      },
     })
     const result = installOuroCommand(deps)
 
     expect(result.installed).toBe(true)
-    expect(result.migratedFromOldPath).toBe(true)
-    expect(unlinkCalls).toContain("/home/test/.local/bin/ouro")
+    expect(result.repairedOldLauncher).toBe(true)
+    // Both modern and old paths get the correct wrapper
+    expect(written["/home/test/.ouro-cli/bin/ouro"]).toContain("CurrentVersion")
+    expect(written["/home/test/.local/bin/ouro"]).toContain("CurrentVersion")
   })
 
-  it("removes empty ~/.local/bin/ directory after migration", () => {
-    const deps = makeDeps({
-      existsSync: (p) => p === "/home/test/.local/bin/ouro" || p === "/home/test/.local/bin",
-      rmdirSync: (p) => { rmdirCalls.push(p) },
-      readdirSync: (p) => {
-        if (p === "/home/test/.local/bin") return []
-        throw new Error("ENOENT")
-      },
-    })
-    const result = installOuroCommand(deps)
-
-    expect(result.migratedFromOldPath).toBe(true)
-    expect(rmdirCalls).toContain("/home/test/.local/bin")
-  })
-
-  it("does not remove ~/.local/bin/ when it still has files after migration", () => {
-    const deps = makeDeps({
-      existsSync: (p) => p === "/home/test/.local/bin/ouro" || p === "/home/test/.local/bin",
-      readdirSync: (p) => {
-        if (p === "/home/test/.local/bin") return ["other-script"]
-        throw new Error("ENOENT")
-      },
-    })
-    const result = installOuroCommand(deps)
-
-    expect(result.migratedFromOldPath).toBe(true)
-    expect(rmdirCalls).not.toContain("/home/test/.local/bin")
-  })
-
-  it("removes old PATH entry ~/.local/bin from shell profile content during migration", () => {
-    const existingProfile = '# some config\n\n# Added by ouro\nexport PATH="/home/test/.local/bin:$PATH"\n\n# other stuff'
+  it("does not repair old launcher when it already has correct content", () => {
     const deps = makeDeps({
       existsSync: (p) => p === "/home/test/.local/bin/ouro",
       readFileSync: (p) => {
-        if (p === "/home/test/.zshrc") return existingProfile
+        if (p === "/home/test/.local/bin/ouro") return CORRECT_CONTENT
         throw new Error("ENOENT")
       },
     })
     const result = installOuroCommand(deps)
 
-    expect(result.migratedFromOldPath).toBe(true)
-    // The profile should be rewritten without the old PATH entry
-    expect(written["/home/test/.zshrc"]).toBeDefined()
-    expect(written["/home/test/.zshrc"]).not.toContain(".local/bin")
+    expect(result.repairedOldLauncher).toBe(false)
+    // Old path should NOT be written to since it's already current
+    expect(written["/home/test/.local/bin/ouro"]).toBeUndefined()
+  })
+
+  it("continues modern install even if old launcher repair fails", () => {
+    let writeCount = 0
+    const deps = makeDeps({
+      existsSync: (p) => p === "/home/test/.local/bin/ouro",
+      readFileSync: (p) => {
+        if (p === "/home/test/.local/bin/ouro") return "stale"
+        throw new Error("ENOENT")
+      },
+      writeFileSync: (p, data) => {
+        // Fail on the old path write, succeed on the modern path write
+        if (p === "/home/test/.local/bin/ouro") {
+          throw new Error("EACCES")
+        }
+        writeCount++
+        written[p] = typeof data === "string" ? data : ""
+      },
+    })
+    const result = installOuroCommand(deps)
+
+    expect(result.installed).toBe(true)
+    expect(result.repairedOldLauncher).toBe(false)
+    expect(written["/home/test/.ouro-cli/bin/ouro"]).toContain("CurrentVersion")
+  })
+
+  it("sets repairedOldLauncher to false when no old launcher exists", () => {
+    const deps = makeDeps()
+    const result = installOuroCommand(deps)
+
+    expect(result.repairedOldLauncher).toBe(false)
   })
 
   it("repairs stale npx wrapper with new exec-from-CurrentVersion content", () => {
@@ -377,10 +413,27 @@ describe("installOuroCommand — versioned CLI layout", () => {
     expect(ensureCliLayoutCalls).toBe(1)
   })
 
-  it("sets migratedFromOldPath to false when no old ouro exists", () => {
-    const deps = makeDeps()
+  it("repairs old launcher AND skips modern install when modern is already current", () => {
+    const staleOldContent = '#!/bin/sh\nexec npx ouro.bot "$@"\n'
+    const deps = makeDeps({
+      existsSync: (p) =>
+        p === "/home/test/.ouro-cli/bin/ouro"
+        || p === "/home/test/.local/bin/ouro",
+      readFileSync: (p) => {
+        if (p === "/home/test/.ouro-cli/bin/ouro") return CORRECT_CONTENT
+        if (p === "/home/test/.local/bin/ouro") return staleOldContent
+        throw new Error("ENOENT")
+      },
+    })
     const result = installOuroCommand(deps)
 
-    expect(result.migratedFromOldPath).toBe(false)
+    // Modern was already current → not "installed"
+    expect(result.installed).toBe(false)
+    expect(result.skippedReason).toBe("already-installed")
+    // But old launcher was still repaired
+    expect(result.repairedOldLauncher).toBe(true)
+    expect(written["/home/test/.local/bin/ouro"]).toContain("CurrentVersion")
+    // Modern path was NOT rewritten
+    expect(written["/home/test/.ouro-cli/bin/ouro"]).toBeUndefined()
   })
 })

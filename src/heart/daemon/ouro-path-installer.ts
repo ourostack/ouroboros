@@ -9,7 +9,7 @@ export interface OuroPathInstallResult {
   pathReady: boolean
   shellProfileUpdated: string | null
   skippedReason?: string
-  migratedFromOldPath: boolean
+  repairedOldLauncher: boolean
 }
 
 export interface OuroPathInstallerDeps {
@@ -21,15 +21,23 @@ export interface OuroPathInstallerDeps {
   readFileSync?: (p: string, encoding: BufferEncoding) => string
   appendFileSync?: (p: string, data: string) => void
   chmodSync?: (p: string, mode: fs.Mode) => void
-  unlinkSync?: (p: string) => void
-  rmdirSync?: (p: string) => void
-  readdirSync?: (p: string) => string[]
   ensureCliLayout?: () => void
   envPath?: string
   shell?: string
 }
 
 const WRAPPER_SCRIPT = `#!/bin/sh
+# Check for dev mode — if dev-config.json exists, dispatch to the dev repo
+# Skip dev dispatch for "up" command (explicitly returns to production)
+DEV_CONFIG="$HOME/.ouro-cli/dev-config.json"
+if [ -f "$DEV_CONFIG" ] && [ "$1" != "up" ]; then
+  DEV_REPO=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$DEV_CONFIG','utf-8')).repoPath)}catch{}" 2>/dev/null)
+  DEV_ENTRY="$DEV_REPO/dist/heart/daemon/ouro-entry.js"
+  if [ -n "$DEV_REPO" ] && [ -e "$DEV_ENTRY" ]; then
+    exec node "$DEV_ENTRY" "$@"
+  fi
+fi
+# Fall back to installed version
 ENTRY="$HOME/.ouro-cli/CurrentVersion/node_modules/@ouro.bot/cli/dist/heart/daemon/ouro-entry.js"
 if [ ! -e "$ENTRY" ]; then
   echo "ouro not installed. Run: npx ouro.bot" >&2
@@ -37,6 +45,17 @@ if [ ! -e "$ENTRY" ]; then
 fi
 exec node "$ENTRY" "$@"
 `
+
+function writeWrapperScript(
+  scriptPath: string,
+  mkdirSync: NonNullable<OuroPathInstallerDeps["mkdirSync"]>,
+  writeFileSync: NonNullable<OuroPathInstallerDeps["writeFileSync"]>,
+  chmodSync: NonNullable<OuroPathInstallerDeps["chmodSync"]>,
+): void {
+  mkdirSync(path.dirname(scriptPath), { recursive: true })
+  writeFileSync(scriptPath, WRAPPER_SCRIPT, { mode: 0o755 })
+  chmodSync(scriptPath, 0o755)
+}
 
 function detectShellProfile(homeDir: string, shell: string | undefined): string | null {
   if (!shell) return null
@@ -63,28 +82,17 @@ function buildPathExportLine(binDir: string, shell: string | undefined): string 
   return `\n# Added by ouro\nexport PATH="${binDir}:$PATH"\n`
 }
 
-/**
- * Remove lines matching the old ouro PATH block from shell profile content.
- * Returns the cleaned content.
- */
-function removeOldPathBlock(content: string, oldBinDir: string): string {
-  const lines = content.split("\n")
-  const result: string[] = []
-  let i = 0
-  while (i < lines.length) {
-    // Detect "# Added by ouro" followed by a PATH export containing the old binDir
-    if (lines[i].trim() === "# Added by ouro" && i + 1 < lines.length && lines[i + 1].includes(oldBinDir)) {
-      // Skip both lines (comment + export)
-      i += 2
-      // Also skip trailing blank line if present
-      /* v8 ignore next -- edge: trailing blank line presence varies @preserve */
-      if (i < lines.length && lines[i].trim() === "") i++
-      continue
-    }
-    result.push(lines[i])
-    i++
+function isWrapperCurrent(
+  scriptPath: string,
+  existsSync: (p: string) => boolean,
+  readFileSync: (p: string, encoding: BufferEncoding) => string,
+): boolean {
+  if (!existsSync(scriptPath)) return false
+  try {
+    return readFileSync(scriptPath, "utf-8") === WRAPPER_SCRIPT
+  } catch {
+    return false
   }
-  return result.join("\n")
 }
 
 export function installOuroCommand(deps: OuroPathInstallerDeps = {}): OuroPathInstallResult {
@@ -97,9 +105,6 @@ export function installOuroCommand(deps: OuroPathInstallerDeps = {}): OuroPathIn
   const readFileSync = deps.readFileSync ?? ((p: string, enc: BufferEncoding) => fs.readFileSync(p, enc))
   const appendFileSync = deps.appendFileSync ?? fs.appendFileSync
   const chmodSync = deps.chmodSync ?? fs.chmodSync
-  const unlinkSync = deps.unlinkSync ?? fs.unlinkSync
-  const rmdirSync = deps.rmdirSync ?? fs.rmdirSync
-  const readdirSync = deps.readdirSync ?? ((p: string) => fs.readdirSync(p).map(String))
   const envPath = deps.envPath ?? process.env.PATH ?? ""
   const shell = deps.shell ?? process.env.SHELL
   /* v8 ignore stop */
@@ -111,7 +116,7 @@ export function installOuroCommand(deps: OuroPathInstallerDeps = {}): OuroPathIn
       message: "skipped ouro PATH install on Windows",
       meta: { platform },
     })
-    return { installed: false, scriptPath: null, pathReady: false, shellProfileUpdated: null, skippedReason: "windows", migratedFromOldPath: false }
+    return { installed: false, scriptPath: null, pathReady: false, shellProfileUpdated: null, skippedReason: "windows", repairedOldLauncher: false }
   }
 
   // Ensure ~/.ouro-cli/ directory layout exists
@@ -121,95 +126,56 @@ export function installOuroCommand(deps: OuroPathInstallerDeps = {}): OuroPathIn
 
   const binDir = path.join(homeDir, ".ouro-cli", "bin")
   const scriptPath = path.join(binDir, "ouro")
+  const oldScriptPath = path.join(homeDir, ".local", "bin", "ouro")
 
-  // ── Migration from old ~/.local/bin/ouro ──
-  const oldBinDir = path.join(homeDir, ".local", "bin")
-  const oldScriptPath = path.join(oldBinDir, "ouro")
-  let migratedFromOldPath = false
+  const modernCurrent = isWrapperCurrent(scriptPath, existsSync, readFileSync)
+  const oldExists = existsSync(oldScriptPath)
+  const oldCurrent = oldExists && isWrapperCurrent(oldScriptPath, existsSync, readFileSync)
 
-  if (existsSync(oldScriptPath)) {
+  // ── Repair old ~/.local/bin/ouro launcher ──
+  // If the old launcher exists with stale content it can shadow the modern
+  // path and cause the wrong CLI version to run.  Overwrite it with the
+  // current wrapper so both paths resolve to ~/.ouro-cli/CurrentVersion.
+  let repairedOldLauncher = false
+  if (oldExists && !oldCurrent) {
     emitNervesEvent({
       component: "daemon",
-      event: "daemon.ouro_path_migrate_start",
-      message: "migrating ouro from old PATH location",
+      event: "daemon.ouro_path_repair_old",
+      message: "repairing stale old launcher at ~/.local/bin/ouro",
       meta: { oldScriptPath },
     })
-
     try {
-      unlinkSync(oldScriptPath)
-      migratedFromOldPath = true
-
-      // Remove empty ~/.local/bin/ directory
-      if (existsSync(oldBinDir)) {
-        try {
-          const remaining = readdirSync(oldBinDir)
-          if (remaining.length === 0) {
-            rmdirSync(oldBinDir)
-          }
-        } catch {
-          // Best effort cleanup
-        }
-      }
+      writeFileSync(oldScriptPath, WRAPPER_SCRIPT, { mode: 0o755 })
+      chmodSync(oldScriptPath, 0o755)
+      repairedOldLauncher = true
     } catch {
-      // Best effort migration — continue with new install
+      // Best effort — old launcher repair failure must not block modern install
     }
+  }
 
-    // Remove old PATH entry from shell profile
-    const profilePath = detectShellProfile(homeDir, shell)
-    /* v8 ignore start -- profile cleanup: only fires during migration from old layout @preserve */
-    if (profilePath) {
-      try {
-        const profileContent = readFileSync(profilePath, "utf-8")
-        if (profileContent.includes(oldBinDir)) {
-          const cleaned = removeOldPathBlock(profileContent, oldBinDir)
-          writeFileSync(profilePath, cleaned)
-        }
-      } catch {
-        // Best effort profile cleanup
-      }
-    }
-    /* v8 ignore stop */
+  // ── Fast-path: modern wrapper already current ──
+  if (modernCurrent) {
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.ouro_path_install_skip",
+      message: "ouro command already installed",
+      meta: { scriptPath },
+    })
+    return { installed: false, scriptPath, pathReady: isBinDirInPath(binDir, envPath), shellProfileUpdated: null, skippedReason: "already-installed", repairedOldLauncher }
   }
 
   emitNervesEvent({
     component: "daemon",
     event: "daemon.ouro_path_install_start",
-    message: "installing ouro command to PATH",
+    message: existsSync(scriptPath) ? "repairing stale ouro wrapper script" : "installing ouro command to PATH",
     meta: { scriptPath, binDir },
   })
 
-  // If ouro already exists, check content and repair if stale
-  if (existsSync(scriptPath)) {
-    let existingContent = ""
-    try {
-      existingContent = readFileSync(scriptPath, "utf-8")
-    } catch {
-      // Can't read — treat as stale, will overwrite below
-    }
-
-    if (existingContent === WRAPPER_SCRIPT) {
-      emitNervesEvent({
-        component: "daemon",
-        event: "daemon.ouro_path_install_skip",
-        message: "ouro command already installed",
-        meta: { scriptPath },
-      })
-      return { installed: false, scriptPath, pathReady: isBinDirInPath(binDir, envPath), shellProfileUpdated: null, skippedReason: "already-installed", migratedFromOldPath }
-    }
-
-    // Content is stale — repair by overwriting
-    emitNervesEvent({
-      component: "daemon",
-      event: "daemon.ouro_path_install_repair",
-      message: "repairing stale ouro wrapper script",
-      meta: { scriptPath },
-    })
-  }
 
   try {
-    mkdirSync(binDir, { recursive: true })
-    writeFileSync(scriptPath, WRAPPER_SCRIPT, { mode: 0o755 })
-    chmodSync(scriptPath, 0o755)
+    if (!modernCurrent) {
+      writeWrapperScript(scriptPath, mkdirSync, writeFileSync, chmodSync)
+    }
   } catch (error) {
     emitNervesEvent({
       level: "warn",
@@ -218,12 +184,12 @@ export function installOuroCommand(deps: OuroPathInstallerDeps = {}): OuroPathIn
       message: "failed to install ouro command",
       meta: { error: error instanceof Error ? error.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(error) },
     })
-    return { installed: false, scriptPath: null, pathReady: false, shellProfileUpdated: null, skippedReason: error instanceof Error ? error.message : /* v8 ignore next -- defensive @preserve */ String(error), migratedFromOldPath }
+    return { installed: false, scriptPath: null, pathReady: false, shellProfileUpdated: null, skippedReason: error instanceof Error ? error.message : /* v8 ignore next -- defensive @preserve */ String(error), repairedOldLauncher }
   }
 
   // Check if ~/.ouro-cli/bin is already in PATH
-  let shellProfileUpdated: string | null = null
   const pathReady = isBinDirInPath(binDir, envPath)
+  let shellProfileUpdated: string | null = null
 
   if (!pathReady) {
     const profilePath = detectShellProfile(homeDir, shell)
@@ -255,8 +221,8 @@ export function installOuroCommand(deps: OuroPathInstallerDeps = {}): OuroPathIn
     component: "daemon",
     event: "daemon.ouro_path_install_end",
     message: "ouro command installed",
-    meta: { scriptPath, pathReady, shellProfileUpdated },
+    meta: { scriptPath, pathReady, shellProfileUpdated, oldScriptPath: oldExists ? oldScriptPath : null },
   })
 
-  return { installed: true, scriptPath, pathReady, shellProfileUpdated, migratedFromOldPath }
+  return { installed: true, scriptPath, pathReady, shellProfileUpdated, repairedOldLauncher }
 }

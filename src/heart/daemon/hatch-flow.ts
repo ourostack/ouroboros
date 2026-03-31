@@ -5,6 +5,7 @@ import { buildDefaultAgentTemplate, type AgentProvider } from "../identity"
 import { slugify } from "../config"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { writeProviderCredentials } from "./auth-flow"
+import { renderHabitFile } from "./habit-parser"
 import {
   getRepoSpecialistIdentitiesDir,
   getSpecialistIdentitySourceDir,
@@ -14,6 +15,8 @@ import {
 
 export interface HatchCredentialsInput {
   setupToken?: string
+  refreshToken?: string
+  expiresAt?: number
   oauthAccessToken?: string
   apiKey?: string
   endpoint?: string
@@ -89,38 +92,20 @@ function writeReadme(dir: string, purpose: string): void {
   }
 }
 
-function pad(value: number): string {
-  return String(value).padStart(2, "0")
-}
-
-function formatTaskStem(now: Date): string {
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`
-}
-
-function writeHeartbeatTask(bundleRoot: string, now: Date): void {
-  const habitsDir = path.join(bundleRoot, "tasks", "habits")
+function writeHeartbeatHabit(bundleRoot: string, now: Date): void {
+  const habitsDir = path.join(bundleRoot, "habits")
   fs.mkdirSync(habitsDir, { recursive: true })
-  const stem = formatTaskStem(now)
-  const filePath = path.join(habitsDir, `${stem}-heartbeat.md`)
-  const iso = now.toISOString()
-  const content = [
-    "---",
-    "type: habit",
-    "category: runtime",
-    "title: Heartbeat check-in",
-    "status: processing",
-    `created: ${iso}`,
-    `updated: ${iso}`,
-    "requester: system",
-    "validator: null",
-    "cadence: \"30m\"",
-    "scheduledAt: null",
-    "lastRun: null",
-    "---",
-    "",
-    "Run a lightweight heartbeat cycle. Review task board and inbox.",
-    "",
-  ].join("\n")
+  const filePath = path.join(habitsDir, "heartbeat.md")
+  const content = renderHabitFile(
+    {
+      title: "Heartbeat check-in",
+      cadence: "30m",
+      status: "active",
+      lastRun: "null",
+      created: now.toISOString(),
+    },
+    "Run a lightweight heartbeat cycle. Review task board and inbox.\nCheck on pending obligations. Journal anything important.",
+  )
   fs.writeFileSync(filePath, content, "utf-8")
 }
 
@@ -154,12 +139,12 @@ function writeFriendImprint(bundleRoot: string, humanName: string, now: Date): v
   fs.writeFileSync(path.join(friendsDir, `${id}.json`), `${JSON.stringify(record, null, 2)}\n`, "utf-8")
 }
 
-function writeMemoryScaffold(bundleRoot: string): void {
-  const memoryRoot = path.join(bundleRoot, "psyche", "memory")
-  fs.mkdirSync(path.join(memoryRoot, "daily"), { recursive: true })
-  fs.mkdirSync(path.join(memoryRoot, "archive"), { recursive: true })
-  fs.writeFileSync(path.join(memoryRoot, "facts.jsonl"), "", "utf-8")
-  fs.writeFileSync(path.join(memoryRoot, "entities.json"), "{}\n", "utf-8")
+function writeDiaryScaffold(bundleRoot: string): void {
+  const diaryRoot = path.join(bundleRoot, "diary")
+  fs.mkdirSync(path.join(diaryRoot, "daily"), { recursive: true })
+  fs.mkdirSync(path.join(diaryRoot, "archive"), { recursive: true })
+  fs.writeFileSync(path.join(diaryRoot, "facts.jsonl"), "", "utf-8")
+  fs.writeFileSync(path.join(diaryRoot, "entities.json"), "{}\n", "utf-8")
 }
 
 function writeHatchlingAgentConfig(bundleRoot: string, input: HatchFlowInput): void {
@@ -203,20 +188,20 @@ export async function runHatchFlow(input: HatchFlowInput, deps: HatchFlowDeps = 
 
   writeReadme(bundleRoot, "Root of this agent bundle.")
   writeReadme(path.join(bundleRoot, "psyche"), "Identity and behavior files.")
-  writeReadme(path.join(bundleRoot, "psyche", "memory"), "Persistent memory store.")
+  writeReadme(path.join(bundleRoot, "diary"), "Persistent diary — things I've learned and remember.")
   writeReadme(path.join(bundleRoot, "friends"), "Known friend records.")
   writeReadme(path.join(bundleRoot, "tasks"), "Task files.")
-  writeReadme(path.join(bundleRoot, "tasks", "habits"), "Recurring tasks.")
   writeReadme(path.join(bundleRoot, "tasks", "one-shots"), "One-shot tasks.")
   writeReadme(path.join(bundleRoot, "tasks", "ongoing"), "Ongoing tasks.")
+  writeReadme(path.join(bundleRoot, "habits"), "Recurring habits and autonomous rhythms.")
   writeReadme(path.join(bundleRoot, "skills"), "Local skill files.")
   writeReadme(path.join(bundleRoot, "senses"), "Sense-specific config.")
   writeReadme(path.join(bundleRoot, "senses", "teams"), "Teams sense config.")
 
   writeHatchlingAgentConfig(bundleRoot, input)
-  writeMemoryScaffold(bundleRoot)
+  writeDiaryScaffold(bundleRoot)
   writeFriendImprint(bundleRoot, input.humanName, now)
-  writeHeartbeatTask(bundleRoot, now)
+  writeHeartbeatHabit(bundleRoot, now)
 
   emitNervesEvent({
     component: "daemon",

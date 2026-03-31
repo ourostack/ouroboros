@@ -1,16 +1,21 @@
 import type OpenAI from "openai";
 import { baseToolDefinitions, editFileReadTracker } from "./tools-base";
 import type { ToolContext, ToolDefinition } from "./tools-base";
-import { teamsToolDefinitions, summarizeTeamsArgs } from "./tools-teams";
+import { teamsToolDefinitions } from "./tools-teams";
 import { bluebubblesToolDefinitions } from "./tools-bluebubbles";
 import { adoSemanticToolDefinitions } from "./ado-semantic";
-import { githubToolDefinitions, summarizeGithubArgs } from "./tools-github";
+import { githubToolDefinitions } from "./tools-github";
 import type { ChannelCapabilities, ResolvedContext } from "../mind/friends/types";
 import { emitNervesEvent } from "../nerves/runtime";
 import type { ProviderCapability } from "../heart/core";
 import { guardInvocation } from "./guardrails";
-import { getAgentRoot } from "../heart/identity";
-import { resolveSafeRepoPath } from "../heart/safe-workspace";
+import { getAgentRoot, getAgentName } from "../heart/identity";
+import { surfaceToolDef, handleSurface, type SurfaceRouteResult } from "../senses/surface-tool";
+import { advanceObligation as advanceInnerObligation } from "../mind/obligations";
+import { findPendingObligationForOrigin, fulfillObligation } from "../heart/obligations";
+import { findFreshestFriendSession, listSessionActivity } from "../heart/session-activity";
+import * as path from "path";
+import type { AttentionItem } from "../senses/attention-queue";
 
 function safeGetAgentRoot(): string | undefined {
   try {
@@ -21,11 +26,169 @@ function safeGetAgentRoot(): string | undefined {
 }
 
 // Re-export types and constants used by the rest of the codebase
-export { tools, finalAnswerTool, noResponseTool, goInwardTool } from "./tools-base";
+export { tools, settleTool, observeTool, ponderTool, restTool } from "./tools-base";
 export type { ToolContext, ToolHandler, ToolDefinition } from "./tools-base";
 
+// Surface tool handler: routes content to friend's freshest session
+/* v8 ignore start -- surface handler wiring: core logic tested via surface-tool.test.ts; this wires identity/routing deps @preserve */
+const surfaceToolDefinition: ToolDefinition = {
+  tool: surfaceToolDef,
+  handler: async (args, ctx) => {
+    const queue = ctx?.delegatedOrigins ?? []
+    const agentName = (() => { try { return getAgentName() } catch { return "unknown" } })()
+
+    const routeToFriend = async (friendId: string, content: string, queueItem?: AttentionItem): Promise<SurfaceRouteResult> => {
+      /* v8 ignore start -- routing: integration path tested via inner-dialog routing tests @preserve */
+      try {
+        const agentRoot = getAgentRoot()
+        const sessionsDir = path.join(agentRoot, "state", "sessions")
+        const friendsDir = path.join(agentRoot, "friends")
+
+        // Priority 1: Bridge-preferred session (if queue item has a bridgeId)
+        if (queueItem?.bridgeId) {
+          const { createBridgeManager } = await import("../heart/bridges/manager")
+          const bridge = createBridgeManager().getBridge(queueItem.bridgeId)
+          if (bridge && bridge.lifecycle !== "completed" && bridge.lifecycle !== "cancelled") {
+            const allSessions = listSessionActivity({ sessionsDir, friendsDir, agentName })
+            const bridgeTarget = allSessions.find((activity) =>
+              activity.friendId === friendId
+              && activity.channel !== "inner"
+              && bridge.attachedSessions.some((s) =>
+                s.friendId === activity.friendId && s.channel === activity.channel && s.key === activity.key
+              ),
+            )
+            if (bridgeTarget) {
+              // Attempt proactive BB delivery for bridge target
+              if (bridgeTarget.channel === "bluebubbles") {
+                const { sendProactiveBlueBubblesMessageToSession } = await import("../senses/bluebubbles")
+                const proactiveResult = await sendProactiveBlueBubblesMessageToSession({
+                  friendId: bridgeTarget.friendId,
+                  sessionKey: bridgeTarget.key,
+                  text: content,
+                })
+                if (proactiveResult.delivered) {
+                  // Inject surfaced content into the target session so it knows what was delivered
+                  const { appendSyntheticAssistantMessage } = await import("../mind/context")
+                  const sessionFilePath = path.join(sessionsDir, bridgeTarget.friendId, bridgeTarget.channel, `${bridgeTarget.key}.json`)
+                  appendSyntheticAssistantMessage(sessionFilePath, `[surfaced from inner dialog] ${content}`)
+                  return { status: "delivered", detail: "via iMessage" }
+                }
+              }
+              // Fall back to pending queue for bridge target
+              const { queuePendingMessage, getPendingDir } = await import("../mind/pending")
+              const pendingDir = getPendingDir(agentName, bridgeTarget.friendId, bridgeTarget.channel, bridgeTarget.key)
+              queuePendingMessage(pendingDir, {
+                from: agentName,
+                friendId: bridgeTarget.friendId,
+                channel: bridgeTarget.channel,
+                key: bridgeTarget.key,
+                content,
+                timestamp: Date.now(),
+              })
+              return { status: "queued", detail: `for next interaction via ${bridgeTarget.channel}` }
+            }
+          }
+        }
+
+        // Priority 2: Freshest active friend session
+        const freshest = findFreshestFriendSession({
+          sessionsDir,
+          friendsDir,
+          agentName,
+          friendId,
+          activeOnly: true,
+        })
+        if (freshest && freshest.channel !== "inner") {
+          // Attempt proactive BB delivery
+          if (freshest.channel === "bluebubbles") {
+            const { sendProactiveBlueBubblesMessageToSession } = await import("../senses/bluebubbles")
+            const proactiveResult = await sendProactiveBlueBubblesMessageToSession({
+              friendId: freshest.friendId,
+              sessionKey: freshest.key,
+              text: content,
+            })
+            if (proactiveResult.delivered) {
+              // Inject surfaced content into the target session so it knows what was delivered
+              const { appendSyntheticAssistantMessage } = await import("../mind/context")
+              const sessionFilePath = path.join(sessionsDir, freshest.friendId, freshest.channel, `${freshest.key}.json`)
+              appendSyntheticAssistantMessage(sessionFilePath, `[surfaced from inner dialog] ${content}`)
+              return { status: "delivered", detail: "via iMessage" }
+            }
+          }
+          // Queue as pending for next interaction
+          const { queuePendingMessage, getPendingDir } = await import("../mind/pending")
+          const pendingDir = getPendingDir(agentName, freshest.friendId, freshest.channel, freshest.key)
+          queuePendingMessage(pendingDir, {
+            from: agentName,
+            friendId: freshest.friendId,
+            channel: freshest.channel,
+            key: freshest.key,
+            content,
+            timestamp: Date.now(),
+          })
+          return { status: "queued", detail: `for next interaction via ${freshest.channel}` }
+        }
+
+        // Priority 3: Deferred — no active session found
+        const { getDeferredReturnDir } = await import("../mind/pending")
+        const { queuePendingMessage: queueDeferred } = await import("../mind/pending")
+        const deferredDir = getDeferredReturnDir(agentName, friendId)
+        queueDeferred(deferredDir, {
+          from: agentName,
+          friendId,
+          channel: "deferred",
+          key: "return",
+          content,
+          timestamp: Date.now(),
+        })
+        return { status: "deferred", detail: "they'll see it next time" }
+      } catch {
+        return { status: "failed" }
+      }
+      /* v8 ignore stop */
+    }
+
+    return handleSurface({
+      content: args.content ?? "",
+      delegationId: args.delegationId,
+      friendId: args.friendId,
+      queue,
+      routeToFriend,
+      advanceObligation: (obligationId, update) => {
+        /* v8 ignore start -- obligation advance: tested via attention-queue tests @preserve */
+        try {
+          const name = (() => { try { return getAgentName() } catch { return "unknown" } })()
+          advanceInnerObligation(name, obligationId, {
+            status: update.status as any,
+            ...(update.returnedAt !== undefined ? { returnedAt: update.returnedAt } : {}),
+            ...(update.returnTarget !== undefined ? { returnTarget: update.returnTarget as any } : {}),
+          })
+        } catch {
+          // swallowed — obligation advance must never break surface delivery
+        }
+        /* v8 ignore stop */
+      },
+      fulfillHeartObligation: (origin) => {
+        /* v8 ignore start -- heart obligation fulfillment: tested via surface-tool.test.ts @preserve */
+        try {
+          const agentRoot = getAgentRoot()
+          const heartObligation = findPendingObligationForOrigin(agentRoot, origin)
+          if (heartObligation) {
+            fulfillObligation(agentRoot, heartObligation.id)
+          }
+        } catch {
+          // swallowed — heart obligation fulfillment must never break surface delivery
+        }
+        /* v8 ignore stop */
+      },
+    })
+  },
+  summaryKeys: ["content", "delegationId"],
+}
+/* v8 ignore stop */
+
 // All tool definitions in a single registry
-const allDefinitions: ToolDefinition[] = [...baseToolDefinitions, ...bluebubblesToolDefinitions, ...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions];
+const allDefinitions: ToolDefinition[] = [...baseToolDefinitions, ...bluebubblesToolDefinitions, ...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions, surfaceToolDefinition];
 
 function baseToolsForCapabilities(): OpenAI.ChatCompletionFunctionTool[] {
   // Use baseToolDefinitions at call time so dynamically-added tools are included
@@ -115,13 +278,7 @@ export function isConfirmationRequired(toolName: string): boolean {
   return def?.confirmationRequired === true;
 }
 
-function normalizeGuardArgs(name: string, args: Record<string, string>): Record<string, string> {
-  if ((name === "read_file" || name === "write_file" || name === "edit_file") && args.path) {
-    return {
-      ...args,
-      path: resolveSafeRepoPath({ requestedPath: args.path }).resolvedPath,
-    }
-  }
+function normalizeGuardArgs(_name: string, args: Record<string, string>): Record<string, string> {
   return args
 }
 
@@ -206,41 +363,9 @@ function summarizeUnknownArgs(args: Record<string, string>): string {
 }
 
 export function summarizeArgs(name: string, args: Record<string, string>): string {
-  // Check teams tools first
-  const teamsSummary = summarizeTeamsArgs(name, args);
-  if (teamsSummary !== undefined) return teamsSummary;
-
-  // Check github tools
-  const githubSummary = summarizeGithubArgs(name, args);
-  if (githubSummary !== undefined) return githubSummary;
-
-  // Base tools
-  if (name === "read_file" || name === "write_file") return summarizeKeyValues(args, ["path"]);
-  if (name === "edit_file") return summarizeKeyValues(args, ["path"]);
-  if (name === "glob") return summarizeKeyValues(args, ["pattern", "cwd"]);
-  if (name === "grep") return summarizeKeyValues(args, ["pattern", "path", "include"]);
-  if (name === "shell") return summarizeKeyValues(args, ["command"]);
-  if (name === "load_skill") return summarizeKeyValues(args, ["name"]);
-  if (name === "coding_spawn") return summarizeKeyValues(args, ["runner", "workdir", "taskRef"]);
-  if (name === "coding_status") return summarizeKeyValues(args, ["sessionId"]);
-  if (name === "coding_tail") return summarizeKeyValues(args, ["sessionId"]);
-  if (name === "coding_send_input") return summarizeKeyValues(args, ["sessionId", "input"]);
-  if (name === "coding_kill") return summarizeKeyValues(args, ["sessionId"]);
-  if (name === "bluebubbles_set_reply_target") return summarizeKeyValues(args, ["target", "threadOriginatorGuid"]);
-  if (name === "set_reasoning_effort") return summarizeKeyValues(args, ["level"]);
-  if (name === "claude") return summarizeKeyValues(args, ["prompt"]);
-  if (name === "web_search") return summarizeKeyValues(args, ["query"]);
-  if (name === "memory_search") return summarizeKeyValues(args, ["query"]);
-  if (name === "memory_save") return summarizeKeyValues(args, ["text", "about"]);
-  if (name === "get_friend_note") return summarizeKeyValues(args, ["friendId"]);
-  if (name === "save_friend_note") {
-    return summarizeKeyValues(args, ["type", "key", "content"]);
+  const def = allDefinitions.find((d) => d.tool.function.name === name);
+  if (def && def.summaryKeys !== undefined) {
+    return summarizeKeyValues(args, def.summaryKeys);
   }
-  if (name === "bridge_manage") return summarizeKeyValues(args, ["action", "bridgeId", "objective", "friendId", "channel", "key"]);
-  if (name === "ado_backlog_list") return summarizeKeyValues(args, ["organization", "project"]);
-  if (name === "ado_batch_update") return summarizeKeyValues(args, ["organization", "project"]);
-  if (name === "ado_create_epic" || name === "ado_create_issue") return summarizeKeyValues(args, ["organization", "project", "title"]);
-  if (name === "ado_move_items") return summarizeKeyValues(args, ["organization", "project", "workItemIds"]);
-  if (name === "ado_restructure_backlog") return summarizeKeyValues(args, ["organization", "project"]);
   return summarizeUnknownArgs(args);
 }

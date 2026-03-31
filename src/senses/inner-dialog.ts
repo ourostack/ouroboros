@@ -17,6 +17,8 @@ import {
   type PendingMessage,
   type DelegatedFrom,
 } from "../mind/pending"
+import { advanceObligation, listActiveObligations } from "../mind/obligations"
+import { buildAttentionQueue, buildAttentionQueueSummary, type AttentionItem } from "./attention-queue"
 import { getChannelCapabilities } from "../mind/friends/channel"
 import { enforceTrustGate } from "./trust-gate"
 import { accumulateFriendTokens } from "../mind/friends/tokens"
@@ -29,6 +31,11 @@ import { createBridgeManager } from "../heart/bridges/manager"
 import { findFreshestFriendSession, listSessionActivity, type SessionActivityRecord } from "../heart/session-activity"
 import { sendProactiveBlueBubblesMessageToSession } from "./bluebubbles"
 import { findPendingObligationForOrigin, fulfillObligation } from "../heart/obligations"
+import { buildHabitTurnMessage } from "./habit-turn-message"
+import { indexJournalFiles } from "../mind/journal-index"
+import { parseHabitFile } from "../heart/daemon/habit-parser"
+import { parseCadenceToMs } from "../heart/daemon/cadence"
+import { readHealth, getDefaultHealthPath } from "../heart/daemon/daemon-health"
 
 export interface InnerDialogInstinct {
   id: string
@@ -43,9 +50,16 @@ export interface InnerDialogState {
   checkpoint?: string
 }
 
+export interface HabitParseErrorInfo {
+  file: string
+  error: string
+}
+
 export interface RunInnerDialogTurnOptions {
-  reason?: "boot" | "heartbeat" | "instinct"
+  reason?: "boot" | "heartbeat" | "habit" | "instinct"
   taskId?: string
+  habitName?: string
+  parseErrors?: HabitParseErrorInfo[]
   instincts?: InnerDialogInstinct[]
   now?: () => Date
   signal?: AbortSignal
@@ -60,7 +74,7 @@ export interface InnerDialogTurnResult {
 
 interface InnerDialogRuntimeState {
   status: "idle" | "running"
-  reason?: "boot" | "heartbeat" | "instinct"
+  reason?: "boot" | "heartbeat" | "habit" | "instinct"
   startedAt?: string
   lastCompletedAt?: string
 }
@@ -105,7 +119,7 @@ export function buildNonCanonicalCleanupNudge(nonCanonicalPaths: string[]): stri
   }
   return [
     "## canonical cleanup nudge",
-    "I found non-canonical files in my bundle. I should distill anything valuable into your memory system and remove these files.",
+    "I found non-canonical files in my bundle. I should distill anything valuable into my diary and remove these files.",
     ...listed,
   ].join("\n")
 }
@@ -120,7 +134,7 @@ function displayCheckpoint(checkpoint?: string): string | undefined {
 
 export function buildInstinctUserMessage(
   instincts: InnerDialogInstinct[],
-  _reason: "boot" | "heartbeat" | "instinct",
+  _reason: "boot" | "heartbeat" | "habit" | "instinct",
   state: InnerDialogState,
 ): string {
   const active = instincts.find((instinct) => instinct.enabled !== false) ?? DEFAULT_INNER_DIALOG_INSTINCTS[0]
@@ -133,9 +147,10 @@ export function buildInstinctUserMessage(
 }
 
 export function readTaskFile(agentRoot: string, taskId: string): string {
-  // Task files live in collection subdirectories (one-shots, ongoing, habits).
+  // Task files live in collection subdirectories (one-shots, ongoing).
   // Try each collection, then fall back to root tasks/ for legacy layout.
-  const collections = ["one-shots", "ongoing", "habits", ""]
+  // Habits are no longer in tasks/ — they live at bundle root habits/.
+  const collections = ["one-shots", "ongoing", ""]
   for (const collection of collections) {
     try {
       return fs.readFileSync(path.join(agentRoot, "tasks", collection, `${taskId}.md`), "utf8").trim()
@@ -266,6 +281,7 @@ function writeInnerDialogRuntimeState(sessionFilePath: string, state: InnerDialo
   }
 }
 
+/* v8 ignore start -- routing helpers: called from routing functions which are integration paths @preserve */
 function writePendingEnvelope(pendingDir: string, message: PendingMessage): void {
   fs.mkdirSync(pendingDir, { recursive: true })
   const fileName = `${message.timestamp}-${Math.random().toString(36).slice(2, 10)}.json`
@@ -281,7 +297,9 @@ function sessionMatchesActivity(
     && activity.channel === session.channel
     && activity.key === session.key
 }
+/* v8 ignore stop */
 
+/* v8 ignore start -- routing: delivery now inline via surface tool; routing functions preserved for reuse @preserve */
 function resolveBridgePreferredSession(
   delegatedFrom: NonNullable<PendingMessage["delegatedFrom"]>,
   sessionActivity: SessionActivityRecord[],
@@ -331,7 +349,22 @@ export function enrichDelegatedFromWithBridge(delegatedFrom: DelegatedFrom): Del
   return delegatedFrom
 }
 
-async function routeDelegatedCompletion(
+function advanceObligationQuietly(
+  agentName: string,
+  obligationId: string | undefined,
+  update: Parameters<typeof advanceObligation>[2],
+): void {
+  if (!obligationId) return
+  try {
+    advanceObligation(agentName, obligationId, update)
+  /* v8 ignore start -- best-effort: obligation fs errors must never block return routing @preserve */
+  } catch {
+    // swallowed
+  }
+  /* v8 ignore stop */
+}
+
+export async function routeDelegatedCompletion(
   agentRoot: string,
   agentName: string,
   completion: CompletionMetadata | undefined,
@@ -344,6 +377,19 @@ async function routeDelegatedCompletion(
   }
 
   const delegatedFrom = enrichDelegatedFromWithBridge(delegated.delegatedFrom)
+  const obligationId = delegated.obligationId
+
+  // Advance any inner return obligations from queued -> running (they were drained this turn).
+  // drainedPending is guaranteed non-null here (we found delegated above).
+  for (const msg of drainedPending!) {
+    if (msg.obligationId) {
+      advanceObligationQuietly(agentName, msg.obligationId, {
+        status: "running",
+        startedAt: timestamp,
+      })
+    }
+  }
+
   if (delegated.obligationStatus === "pending") {
     // Fulfill the persistent obligation in the store
     try {
@@ -378,6 +424,7 @@ async function routeDelegatedCompletion(
     content: completion.answer.trim(),
     timestamp,
     delegatedFrom,
+    ...(obligationId ? { obligationId } : {}),
   }
 
   const sessionActivity = listSessionActivity({
@@ -386,15 +433,37 @@ async function routeDelegatedCompletion(
     agentName,
   })
 
+  // Priority 1: Bridge-preferred session (if delegation was within a bridge).
   const bridgeTarget = resolveBridgePreferredSession(delegatedFrom, sessionActivity)
   if (bridgeTarget) {
     if (await tryDeliverDelegatedCompletion(bridgeTarget, outboundEnvelope)) {
+      advanceObligationQuietly(agentName, obligationId, { status: "returned", returnedAt: timestamp, returnTarget: "bridge-session" })
       return
     }
     writePendingEnvelope(getPendingDir(agentName, bridgeTarget.friendId, bridgeTarget.channel, bridgeTarget.key), outboundEnvelope)
+    advanceObligationQuietly(agentName, obligationId, { status: "returned", returnedAt: timestamp, returnTarget: "bridge-session" })
     return
   }
 
+  // Priority 1.5: Direct return to originating session (ponder without bridge).
+  // When delegatedFrom has specific channel+key, route directly there instead of searching for freshest.
+  if (delegatedFrom.channel && delegatedFrom.key && delegatedFrom.channel !== "inner") {
+    const directTarget = sessionActivity.find((a) =>
+      a.friendId === delegatedFrom.friendId && a.channel === delegatedFrom.channel && a.key === delegatedFrom.key,
+    )
+    if (directTarget) {
+      if (await tryDeliverDelegatedCompletion(directTarget, outboundEnvelope)) {
+        advanceObligationQuietly(agentName, obligationId, { status: "returned", returnedAt: timestamp, returnTarget: "direct-originator" })
+        return
+      }
+    }
+    // Even if session isn't in activity list (might have ended), queue to its pending dir
+    writePendingEnvelope(getPendingDir(agentName, delegatedFrom.friendId, delegatedFrom.channel, delegatedFrom.key), outboundEnvelope)
+    advanceObligationQuietly(agentName, obligationId, { status: "returned", returnedAt: timestamp, returnTarget: "direct-originator" })
+    return
+  }
+
+  // Priority 2: Freshest active friend session.
   const freshest = findFreshestFriendSession({
     sessionsDir: path.join(agentRoot, "state", "sessions"),
     friendsDir: path.join(agentRoot, "friends"),
@@ -404,14 +473,19 @@ async function routeDelegatedCompletion(
   })
   if (freshest && freshest.channel !== "inner") {
     if (await tryDeliverDelegatedCompletion(freshest, outboundEnvelope)) {
+      advanceObligationQuietly(agentName, obligationId, { status: "returned", returnedAt: timestamp, returnTarget: "freshest-session" })
       return
     }
     writePendingEnvelope(getPendingDir(agentName, freshest.friendId, freshest.channel, freshest.key), outboundEnvelope)
+    advanceObligationQuietly(agentName, obligationId, { status: "returned", returnedAt: timestamp, returnTarget: "freshest-session" })
     return
   }
 
+  // Priority 3: Deferred return queue.
   writePendingEnvelope(getDeferredReturnDir(agentName, delegatedFrom.friendId), outboundEnvelope)
+  advanceObligationQuietly(agentName, obligationId, { status: "deferred", returnedAt: timestamp, returnTarget: "deferred" })
 }
+/* v8 ignore stop */
 
 // Self-referencing friend record for inner dialog (agent talking to itself).
 // No real friend to resolve -- this satisfies the pipeline's friend resolver contract.
@@ -441,12 +515,62 @@ function createNoOpFriendStore(): FriendStore {
   }
 }
 
+export function buildParseErrorNudge(parseErrors: HabitParseErrorInfo[]): string {
+  if (parseErrors.length === 0) return ""
+  const lines = parseErrors.map(
+    (e) => `I noticed my habit file \`${e.file}\` has invalid frontmatter — I should fix it. (${e.error})`,
+  )
+  return lines.join("\n")
+}
+
+function buildAlsoDueLine(agentRoot: string, currentHabitName: string, now: () => Date): string {
+  const habitsDir = path.join(agentRoot, "habits")
+  let files: string[]
+  try {
+    files = fs.readdirSync(habitsDir)
+  } catch {
+    return ""
+  }
+
+  const nowMs = now().getTime()
+  const alsoDue: string[] = []
+
+  for (const file of files) {
+    if (!file.endsWith(".md")) continue
+    const stem = file.replace(/\.md$/, "")
+    if (stem === currentHabitName) continue
+
+    try {
+      const content = fs.readFileSync(path.join(habitsDir, file), "utf-8")
+      const habit = parseHabitFile(content, path.join(habitsDir, file))
+      if (habit.status !== "active" || !habit.cadence) continue
+
+      const cadenceMs = parseCadenceToMs(habit.cadence)
+      if (cadenceMs === null) continue
+
+      if (habit.lastRun === null) {
+        alsoDue.push(stem)
+        continue
+      }
+
+      const lastRunMs = new Date(habit.lastRun).getTime()
+      if (nowMs - lastRunMs >= cadenceMs) {
+        alsoDue.push(stem)
+      }
+    } catch {
+      // skip unreadable habits
+    }
+  }
+
+  if (alsoDue.length === 0) return ""
+  return `also due: ${alsoDue.join(", ")}`
+}
+
 export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): Promise<InnerDialogTurnResult> {
   const now = options?.now ?? (() => new Date())
-  const reason = options?.reason ?? "heartbeat"
+  const reason = options?.reason ?? "instinct"
   const sessionFilePath = innerDialogSessionPath()
   const agentName = getAgentName()
-  const agentRoot = getAgentRoot()
   writeInnerDialogRuntimeState(sessionFilePath, {
     status: "running",
     reason,
@@ -484,6 +608,74 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
     if (options?.taskId) {
       const taskContent = readTaskFile(getAgentRoot(), options.taskId)
       userContent = buildTaskTriggeredMessage(options.taskId, taskContent, state.checkpoint)
+    } else if (reason === "habit" && options?.habitName) {
+      const agentRoot = getAgentRoot()
+      const habitName = options.habitName
+      const habitFilePath = path.join(agentRoot, "habits", `${habitName}.md`)
+
+      // Read and parse the habit file
+      let habitBody: string | undefined
+      let habitTitle: string = habitName
+      let habitLastRun: string | null = null
+      try {
+        const habitContent = fs.readFileSync(habitFilePath, "utf-8")
+        const parsed = parseHabitFile(habitContent, habitFilePath)
+        habitBody = parsed.body || undefined
+        habitTitle = parsed.title || habitName
+        habitLastRun = parsed.lastRun
+      } catch {
+        // Habit file missing or unreadable
+      }
+
+      // If the habit file couldn't be read at all (no body, no title parsed), error message
+      if (habitBody === undefined && habitTitle === habitName) {
+        userContent = `habit "${habitName}" could not be read (file not found or unreadable). check habits/${habitName}.md exists.`
+      } else {
+        // Unified path: gather context for ALL habits (heartbeat included)
+        const obligations = listActiveObligations(agentName)
+        const nowMs = now().getTime()
+        const staleObligations = obligations.map((o) => ({
+          friendName: o.origin.friendId,
+          content: o.delegatedContent,
+          stalenessMs: nowMs - o.createdAt,
+        }))
+
+        const alsoDue = buildAlsoDueLine(agentRoot, habitName, now)
+
+        // Degraded state (best-effort: never crash)
+        let degradedComponents: { component: string; reason: string }[] = []
+        try {
+          const health = readHealth(getDefaultHealthPath())
+          if (health && health.degraded.length > 0) {
+            degradedComponents = health.degraded.map((d) => ({ component: d.component, reason: d.reason }))
+          }
+        } catch {
+          // Best-effort: missing file or parse error -> empty array, no crash
+        }
+
+        userContent = buildHabitTurnMessage({
+          habitName,
+          habitTitle,
+          habitBody,
+          lastRun: habitLastRun,
+          checkpoint: displayCheckpoint(state.checkpoint),
+          alsoDue: alsoDue || undefined,
+          staleObligations,
+          parseErrors: options?.parseErrors ?? [],
+          degradedComponents,
+          now,
+        })
+
+        // Piggyback journal embedding indexing (best-effort, fire-and-forget)
+        const journalDir = path.join(agentRoot, "journal")
+        /* v8 ignore start -- journal indexing piggyback: embedding provider may not be available; tested via journal-index unit tests @preserve */
+        void indexJournalFiles(journalDir, path.join(journalDir, ".index.json"), {
+          embed: async () => [],
+        }).catch(() => {
+          // swallowed: indexing failure must never block habit turn
+        })
+        /* v8 ignore stop */
+      }
     } else {
       userContent = buildInstinctUserMessage(instincts, reason, state)
     }
@@ -501,7 +693,10 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
   const sessionLoader = {
     loadOrCreate: async () => {
       if (existingMessages.length > 0) {
-        return { messages: existingMessages, sessionPath: sessionFilePath }
+        return {
+          messages: existingMessages,
+          sessionPath: sessionFilePath,
+        }
       }
       // Fresh session: build system prompt
       const systemPrompt = await buildSystem("inner", { toolChoiceRequired: true, mcpManager })
@@ -515,6 +710,9 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
   // ── Call shared pipeline ──────────────────────────────────────────
   const callbacks = createInnerDialogCallbacks()
   const traceId = createTraceId()
+
+  // Attention queue: built when pending messages are drained, shared with tool context
+  let attentionQueue: AttentionItem[] = []
 
   const result = await handleInboundTurn({
     channel: "inner",
@@ -533,14 +731,40 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
     postTurn,
     accumulateFriendTokens,
     signal: options?.signal,
+    /* v8 ignore start -- attention queue: callback invoked by pipeline during pending drain; tested via attention-queue unit tests @preserve */
+    onPendingDrained: (drained) => {
+      const outstandingObligations = listActiveObligations(agentName)
+      attentionQueue = buildAttentionQueue({
+        drainedPending: drained,
+        outstandingObligations,
+        friendNameResolver: (friendId) => {
+          try {
+            const raw = fs.readFileSync(path.join(getAgentRoot(agentName), "friends", friendId + ".json"), "utf-8")
+            const parsed = JSON.parse(raw)
+            return typeof parsed.name === "string" ? parsed.name : null
+          } catch {
+            return null
+          }
+        },
+      })
+      const summary = buildAttentionQueueSummary(attentionQueue)
+      return summary ? [summary] : []
+    },
+    /* v8 ignore stop */
     runAgentOptions: {
       traceId,
       toolChoiceRequired: true,
       skipConfirmation: true,
       mcpManager,
+      toolContext: {
+        signin: async () => undefined,
+        delegatedOrigins: attentionQueue,
+      },
     },
   })
-  await routeDelegatedCompletion(agentRoot, agentName, result.completion, result.drainedPending, now().getTime())
+  // Post-turn routeDelegatedCompletion removed: delivery is now inline via surface tool.
+  // settle in inner dialog produces no CompletionMetadata, so routeDelegatedCompletion
+  // would be a no-op. The routing infrastructure is reused by the surface handler.
 
   const resultMessages = result.messages ?? []
   const assistantPreview = extractAssistantPreview(resultMessages)

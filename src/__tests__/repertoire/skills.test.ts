@@ -9,9 +9,10 @@ vi.mock("fs", () => ({
   writeFileSync: vi.fn(),
 }))
 
-// Mock identity -- skills will use getAgentRoot() for skills directory
+// Mock identity -- skills will use getAgentRoot() and getRepoRoot() for skills directory
 vi.mock("../../heart/identity", () => ({
   getAgentRoot: vi.fn(() => "/mock/repo/testagent"),
+  getRepoRoot: vi.fn(() => "/mock/harness"),
 }))
 
 import * as fs from "fs"
@@ -173,12 +174,13 @@ describe("skills - loadSkill", () => {
     expect(loadSkill("work-planner")).toBe("mirror planner protocol")
   })
 
-  it("throws listing only 2 checked paths when skill is not found", async () => {
+  it("throws listing all 3 checked paths when skill is not found", async () => {
     vi.mocked(fs.existsSync).mockReturnValue(false)
 
     const { loadSkill } = await import("../../repertoire/skills")
     expect(() => loadSkill("work-merger")).toThrow("/mock/repo/testagent/skills/work-merger.md")
     expect(() => loadSkill("work-merger")).toThrow("/mock/repo/testagent/skills/protocols/work-merger.md")
+    expect(() => loadSkill("work-merger")).toThrow("/mock/harness/skills/work-merger.md")
     // Must NOT reference canonical subagents path
     expect(() => {
       try { loadSkill("work-merger") } catch (e: any) {
@@ -234,6 +236,147 @@ describe("skills - clearLoadedSkills", () => {
     const { clearLoadedSkills, getLoadedSkills } = await import("../../repertoire/skills")
     clearLoadedSkills()
     expect(getLoadedSkills()).toEqual([])
+  })
+})
+
+describe("skills - getHarnessSkillsDir", () => {
+  beforeEach(() => {
+    vi.resetModules()
+  })
+
+  it("returns skills directory under harness repo root", async () => {
+    const { getHarnessSkillsDir } = await import("../../repertoire/skills")
+    expect(getHarnessSkillsDir()).toBe(path.join("/mock/harness", "skills"))
+  })
+})
+
+describe("skills - harness-level fallback in loadSkill", () => {
+  beforeEach(() => {
+    vi.resetModules()
+    vi.mocked(fs.existsSync).mockReset()
+    vi.mocked(fs.readdirSync).mockReset()
+    vi.mocked(fs.readFileSync).mockReset()
+  })
+
+  it("falls back to harness skills dir when agent + protocol paths miss", async () => {
+    const harnessSkillPath = "/mock/harness/skills/configure-dev-tools.md"
+    vi.mocked(fs.existsSync).mockImplementation((p) =>
+      p === harnessSkillPath,
+    )
+    vi.mocked(fs.readFileSync).mockImplementation((p) => {
+      if (p === harnessSkillPath) return "harness skill content" as any
+      return "" as any
+    })
+
+    const { loadSkill } = await import("../../repertoire/skills")
+    expect(loadSkill("configure-dev-tools")).toBe("harness skill content")
+  })
+
+  it("agent skill takes precedence over harness skill with same name", async () => {
+    const agentSkillPath = "/mock/repo/testagent/skills/configure-dev-tools.md"
+    const harnessSkillPath = "/mock/harness/skills/configure-dev-tools.md"
+    vi.mocked(fs.existsSync).mockImplementation((p) =>
+      p === agentSkillPath || p === harnessSkillPath,
+    )
+    vi.mocked(fs.readFileSync).mockImplementation((p) => {
+      if (p === agentSkillPath) return "agent override content" as any
+      if (p === harnessSkillPath) return "harness skill content" as any
+      return "" as any
+    })
+
+    const { loadSkill } = await import("../../repertoire/skills")
+    expect(loadSkill("configure-dev-tools")).toBe("agent override content")
+  })
+
+  it("error message lists all 3 checked paths when skill is not found", async () => {
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+
+    const { loadSkill } = await import("../../repertoire/skills")
+    expect(() => loadSkill("nonexistent-skill")).toThrow(
+      "/mock/repo/testagent/skills/nonexistent-skill.md"
+    )
+    expect(() => loadSkill("nonexistent-skill")).toThrow(
+      "/mock/repo/testagent/skills/protocols/nonexistent-skill.md"
+    )
+    expect(() => loadSkill("nonexistent-skill")).toThrow(
+      "/mock/harness/skills/nonexistent-skill.md"
+    )
+  })
+})
+
+describe("skills - harness-level fallback in listSkills", () => {
+  beforeEach(() => {
+    vi.resetModules()
+    vi.mocked(fs.existsSync).mockReset()
+    vi.mocked(fs.readdirSync).mockReset()
+    vi.mocked(fs.readFileSync).mockReset()
+  })
+
+  it("merges harness skills into listing", async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p) =>
+      p === "/mock/repo/testagent/skills" || p === "/mock/harness/skills",
+    )
+    vi.mocked(fs.readdirSync).mockImplementation((p) => {
+      if (p === "/mock/repo/testagent/skills") return ["agent-only.md"] as any
+      if (p === "/mock/harness/skills") return ["harness-only.md", "configure-dev-tools.md"] as any
+      return [] as any
+    })
+
+    const { listSkills } = await import("../../repertoire/skills")
+    expect(listSkills()).toEqual(["agent-only", "configure-dev-tools", "harness-only"])
+  })
+
+  it("agent skills override harness skills by name (deduplication)", async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p) =>
+      p === "/mock/repo/testagent/skills" || p === "/mock/harness/skills",
+    )
+    vi.mocked(fs.readdirSync).mockImplementation((p) => {
+      if (p === "/mock/repo/testagent/skills") return ["shared.md", "agent-only.md"] as any
+      if (p === "/mock/harness/skills") return ["shared.md", "harness-only.md"] as any
+      return [] as any
+    })
+
+    const { listSkills } = await import("../../repertoire/skills")
+    const skills = listSkills()
+    // shared appears once (deduplicated), all unique skills present
+    expect(skills).toEqual(["agent-only", "harness-only", "shared"])
+  })
+
+  it("lists harness skills even when agent skills dir does not exist", async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p) =>
+      p === "/mock/harness/skills",
+    )
+    vi.mocked(fs.readdirSync).mockImplementation((p) => {
+      if (p === "/mock/harness/skills") return ["harness-skill.md"] as any
+      return [] as any
+    })
+
+    const { listSkills } = await import("../../repertoire/skills")
+    expect(listSkills()).toEqual(["harness-skill"])
+  })
+})
+
+describe("skills - configure-dev-tools harness skill", () => {
+  beforeEach(() => {
+    vi.resetModules()
+    vi.mocked(fs.existsSync).mockReset()
+    vi.mocked(fs.readdirSync).mockReset()
+    vi.mocked(fs.readFileSync).mockReset()
+  })
+
+  it("loads configure-dev-tools from harness skills dir as fallback", async () => {
+    const harnessSkillPath = "/mock/harness/skills/configure-dev-tools.md"
+    vi.mocked(fs.existsSync).mockImplementation((p) =>
+      p === harnessSkillPath,
+    )
+    vi.mocked(fs.readFileSync).mockImplementation((p) => {
+      if (p === harnessSkillPath) return "# Configure Dev Tools\nSetup content" as any
+      return "" as any
+    })
+
+    const { loadSkill } = await import("../../repertoire/skills")
+    const content = loadSkill("configure-dev-tools")
+    expect(content).toContain("Configure Dev Tools")
   })
 })
 

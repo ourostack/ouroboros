@@ -147,15 +147,6 @@ describe("transitions — required template fields", () => {
     expect(TASK_REQUIRED_TEMPLATE_FIELDS["ongoing"]).toContain("kind")
   })
 
-  it("includes kind in habit required fields", () => {
-    emitNervesEvent({
-      event: "repertoire.task_scan_start",
-      component: "repertoire",
-      message: "testing kind in habit fields",
-    })
-    expect(TASK_REQUIRED_TEMPLATE_FIELDS["habit"]).toContain("kind")
-  })
-
   it("does not include child_tasks in one-shot required fields", () => {
     emitNervesEvent({
       event: "repertoire.task_scan_start",
@@ -174,12 +165,4 @@ describe("transitions — required template fields", () => {
     expect(TASK_REQUIRED_TEMPLATE_FIELDS["ongoing"]).not.toContain("child_tasks")
   })
 
-  it("does not include child_tasks in habit required fields", () => {
-    emitNervesEvent({
-      event: "repertoire.task_scan_start",
-      component: "repertoire",
-      message: "testing child_tasks removed from habit",
-    })
-    expect(TASK_REQUIRED_TEMPLATE_FIELDS["habit"]).not.toContain("child_tasks")
-  })
 })

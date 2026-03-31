@@ -1,6 +1,7 @@
 import * as fs from "fs"
 import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
+import { sanitizeKey } from "./config"
 
 export interface SessionActivityRecord {
   friendId: string
@@ -124,7 +125,10 @@ export function listSessionActivity(query: SessionActivityQuery): SessionActivit
         if (!keyFile.endsWith(".json")) continue
         const key = keyFile.replace(/\.json$/, "")
 
-        if (currentSession && friendId === currentSession.friendId && channel === currentSession.channel && key === currentSession.key) {
+        // Compare with sanitizeKey on both sides — session keys from the filesystem
+        // are already sanitized (colons → underscores), but the canonical key from
+        // the pipeline may still have colons (e.g. "chat:any" vs "chat_any").
+        if (currentSession && friendId === currentSession.friendId && channel === currentSession.channel && sanitizeKey(key) === sanitizeKey(currentSession.key)) {
           continue
         }
 

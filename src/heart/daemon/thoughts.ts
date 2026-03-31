@@ -94,7 +94,7 @@ function extractToolNames(messages: Array<{ role: string; tool_calls?: unknown[]
     if (msg.role === "assistant" && Array.isArray(msg.tool_calls)) {
       for (const tc of msg.tool_calls) {
         const toolFunction = extractToolFunction(tc)
-        if (toolFunction?.name && toolFunction.name !== "final_answer") names.push(toolFunction.name)
+        if (toolFunction?.name && toolFunction.name !== "settle") names.push(toolFunction.name)
       }
     }
   }
@@ -349,14 +349,14 @@ export function formatInnerDialogStatus(status: InnerDialogStatus): string {
   return lines.join("\n")
 }
 
-/** Extract text from a final_answer tool call's arguments. */
-function extractFinalAnswer(messages: Array<{ role: string; tool_calls?: unknown[] }>): string {
+/** Extract text from a settle tool call's arguments. */
+function extractSettleAnswer(messages: Array<{ role: string; tool_calls?: unknown[] }>): string {
   for (let k = messages.length - 1; k >= 0; k--) {
     const msg = messages[k]
     if (msg.role !== "assistant" || !Array.isArray(msg.tool_calls)) continue
     for (const tc of msg.tool_calls) {
       const toolFunction = extractToolFunction(tc)
-      if (toolFunction?.name !== "final_answer") continue
+      if (toolFunction?.name !== "settle") continue
       try {
         const parsed = JSON.parse(toolFunction.arguments ?? "{}")
         if (typeof parsed.answer === "string" && parsed.answer.trim()) return parsed.answer.trim()
@@ -375,7 +375,7 @@ export function extractThoughtResponseFromMessages(
   const lastAssistant = assistantMsgs.reverse().find((message) => contentToText(message.content).trim().length > 0)
   return lastAssistant
     ? contentToText(lastAssistant.content).trim()
-    : extractFinalAnswer(messages)
+    : extractSettleAnswer(messages)
 }
 
 export function parseInnerDialogSession(sessionPath: string): ThoughtTurn[] {
@@ -430,7 +430,7 @@ export function parseInnerDialogSession(sessionPath: string): ThoughtTurn[] {
     }
 
     // Find the last assistant text response in this turn.
-    // With tool_choice="required", the response may be inside a final_answer tool call.
+    // With tool_choice="required", the response may be inside a settle tool call.
     const response = extractThoughtResponseFromMessages(turnMessages)
     const tools = extractToolNames(turnMessages)
 

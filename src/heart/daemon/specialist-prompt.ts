@@ -109,7 +109,7 @@ export function buildSpecialistSystemPrompt(
       "2. I write agent.json to the temp directory using write_file",
       "3. I suggest a PascalCase name for the hatchling and confirm with the human",
       "4. I call complete_adoption with the name and a warm handoff message",
-      "5. I call final_answer to end the session",
+      "5. I call settle to end the session",
     ].join("\n"),
   )
 
@@ -121,9 +121,9 @@ export function buildSpecialistSystemPrompt(
       "- `list_directory`: List directory contents. Useful for exploring existing agent bundles.",
       "- I also have the normal local harness tools when useful here, including `shell`, `ouro task create`, `ouro reminder create`, memory tools, coding tools, and repo helpers.",
       "- `complete_adoption`: Finalize the bundle. Validates, scaffolds structural dirs, moves to ~/AgentBundles/, writes secrets, plays hatch animation. I call this with `name` (PascalCase) and `handoff_message` (warm message for the human).",
-      "- `final_answer`: End the conversation with a final message. I call this after complete_adoption succeeds.",
+      "- `settle`: End the conversation with a final message. I call this after complete_adoption succeeds.",
       "",
-      "I must call `final_answer` when I am done to end the session cleanly.",
+      "I must call `settle` when I am done to end the session cleanly.",
     ].join("\n"),
   )
 

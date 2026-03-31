@@ -182,4 +182,98 @@ describe("daemon boot: applyPendingUpdates wiring", () => {
 
     fs.rmSync(bundlesRoot, { recursive: true, force: true })
   })
+
+  it("skips update checker when daemon mode is dev", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-boot-dev-mode-"))
+    const socketPath = tmpSocketPath("daemon-boot-dev-mode")
+
+    const processManager = {
+      listAgentSnapshots: vi.fn(() => []),
+      startAutoStartAgents: vi.fn(async () => undefined),
+      stopAll: vi.fn(async () => undefined),
+      startAgent: vi.fn(async () => undefined),
+      sendToAgent: vi.fn(),
+    }
+    const scheduler = {
+      listJobs: vi.fn(() => []),
+      triggerJob: vi.fn(async (jobId: string) => ({ ok: true, message: `triggered ${jobId}` })),
+      reconcile: vi.fn(async () => undefined),
+      recordTaskRun: vi.fn(async () => undefined),
+    }
+    const healthMonitor = { runChecks: vi.fn(async () => []) }
+    const router = {
+      send: vi.fn(async () => ({ id: "msg-1", queuedAt: "2026-03-05T23:00:00.000Z" })),
+      pollInbox: vi.fn(() => []),
+    }
+    const senseManager = {
+      startAutoStartSenses: vi.fn(async () => undefined),
+      stopAll: vi.fn(async () => undefined),
+      listSenseRows: vi.fn(() => []),
+    }
+
+    const daemon = new OuroDaemon({
+      socketPath,
+      processManager,
+      scheduler,
+      healthMonitor,
+      router,
+      bundlesRoot,
+      senseManager,
+      mode: "dev",
+    } as any)
+
+    await daemon.start()
+    await daemon.stop()
+
+    expect(mocks.startUpdateChecker).not.toHaveBeenCalled()
+
+    fs.rmSync(bundlesRoot, { recursive: true, force: true })
+  })
+
+  it("starts update checker when daemon mode is production", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-boot-prod-mode-"))
+    const socketPath = tmpSocketPath("daemon-boot-prod-mode")
+
+    const processManager = {
+      listAgentSnapshots: vi.fn(() => []),
+      startAutoStartAgents: vi.fn(async () => undefined),
+      stopAll: vi.fn(async () => undefined),
+      startAgent: vi.fn(async () => undefined),
+      sendToAgent: vi.fn(),
+    }
+    const scheduler = {
+      listJobs: vi.fn(() => []),
+      triggerJob: vi.fn(async (jobId: string) => ({ ok: true, message: `triggered ${jobId}` })),
+      reconcile: vi.fn(async () => undefined),
+      recordTaskRun: vi.fn(async () => undefined),
+    }
+    const healthMonitor = { runChecks: vi.fn(async () => []) }
+    const router = {
+      send: vi.fn(async () => ({ id: "msg-1", queuedAt: "2026-03-05T23:00:00.000Z" })),
+      pollInbox: vi.fn(() => []),
+    }
+    const senseManager = {
+      startAutoStartSenses: vi.fn(async () => undefined),
+      stopAll: vi.fn(async () => undefined),
+      listSenseRows: vi.fn(() => []),
+    }
+
+    const daemon = new OuroDaemon({
+      socketPath,
+      processManager,
+      scheduler,
+      healthMonitor,
+      router,
+      bundlesRoot,
+      senseManager,
+      mode: "production",
+    } as any)
+
+    await daemon.start()
+    await daemon.stop()
+
+    expect(mocks.startUpdateChecker).toHaveBeenCalledTimes(1)
+
+    fs.rmSync(bundlesRoot, { recursive: true, force: true })
+  })
 })

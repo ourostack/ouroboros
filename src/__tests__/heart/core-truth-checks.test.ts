@@ -51,32 +51,32 @@ describe("isExternalStateQuery", () => {
   })
 })
 
-describe("getFinalAnswerRetryError with obligation and truth checks", () => {
-  let getFinalAnswerRetryError: typeof import("../../heart/core").getFinalAnswerRetryError
+describe("getSettleRetryError with obligation and truth checks", () => {
+  let getSettleRetryError: typeof import("../../heart/core").getSettleRetryError
 
   beforeAll(async () => {
     const core = await import("../../heart/core")
-    getFinalAnswerRetryError = core.getFinalAnswerRetryError
+    getSettleRetryError = core.getSettleRetryError
   })
 
-  const SELFHOOD_INWARD_MSG = "you're reaching for a final answer, but part of you knows this needs more thought. take it inward -- go_inward will let you think privately, or send_message(self) if you just want to leave yourself a note."
-  const OBLIGATION_MSG = "you're still holding something from an earlier conversation -- someone is waiting for your answer. finish the thought first, or go_inward to keep working on it privately."
+  const SELFHOOD_INWARD_MSG = "you're reaching for a final answer, but part of you knows this needs more thought. take it inward -- ponder will let you think privately, or send_message(self) if you just want to leave yourself a note."
+  const OBLIGATION_MSG = "you're still holding something from an earlier conversation -- someone is waiting for your answer. finish the thought first, or ponder to keep working on it privately."
 
-  it("rejects delegate-inward with no evidence using selfhood message", () => {
-    const result = getFinalAnswerRetryError(
+  it("no longer rejects delegate-inward (delegation is a suggestion, not a gate)", () => {
+    const result = getSettleRetryError(
       false,
       undefined,
       false,
       { target: "delegate-inward", reasons: ["explicit_reflection"], outwardClosureRequired: false },
       false, // sawSendMessageSelf
-      false, // sawGoInward
+      false, // sawPonder
       false, // sawQuerySession
     )
-    expect(result).toBe(SELFHOOD_INWARD_MSG)
+    expect(result).toBeNull()
   })
 
   it("allows delegate-inward when sawSendMessageSelf (backward compat)", () => {
-    const result = getFinalAnswerRetryError(
+    const result = getSettleRetryError(
       false,
       undefined,
       false,
@@ -88,21 +88,21 @@ describe("getFinalAnswerRetryError with obligation and truth checks", () => {
     expect(result).toBeNull()
   })
 
-  it("allows delegate-inward when sawGoInward", () => {
-    const result = getFinalAnswerRetryError(
+  it("allows delegate-inward when sawPonder", () => {
+    const result = getSettleRetryError(
       false,
       undefined,
       false,
       { target: "delegate-inward", reasons: ["explicit_reflection"], outwardClosureRequired: false },
       false,
-      true, // sawGoInward
+      true, // sawPonder
       false,
     )
     expect(result).toBeNull()
   })
 
   it("allows delegate-inward when sawQuerySession", () => {
-    const result = getFinalAnswerRetryError(
+    const result = getSettleRetryError(
       false,
       undefined,
       false,
@@ -126,7 +126,7 @@ describe("getFinalAnswerRetryError with obligation and truth checks", () => {
       startedAt: null,
       surfacedAt: null,
     }
-    const result = getFinalAnswerRetryError(
+    const result = getSettleRetryError(
       false,
       undefined,
       false,
@@ -140,7 +140,7 @@ describe("getFinalAnswerRetryError with obligation and truth checks", () => {
     expect(result).toBe(OBLIGATION_MSG)
   })
 
-  it("allows pending obligation when sawGoInward", () => {
+  it("allows pending obligation when sawPonder", () => {
     const innerJob = {
       status: "queued" as const,
       content: null,
@@ -152,13 +152,13 @@ describe("getFinalAnswerRetryError with obligation and truth checks", () => {
       startedAt: null,
       surfacedAt: null,
     }
-    const result = getFinalAnswerRetryError(
+    const result = getSettleRetryError(
       false,
       undefined,
       false,
       undefined,
       false,
-      true, // sawGoInward
+      true, // sawPonder
       false,
       undefined,
       innerJob,
@@ -178,7 +178,7 @@ describe("getFinalAnswerRetryError with obligation and truth checks", () => {
       startedAt: null,
       surfacedAt: null,
     }
-    const result = getFinalAnswerRetryError(
+    const result = getSettleRetryError(
       false,
       undefined,
       false,
@@ -204,7 +204,7 @@ describe("getFinalAnswerRetryError with obligation and truth checks", () => {
       startedAt: null,
       surfacedAt: null,
     }
-    const result = getFinalAnswerRetryError(
+    const result = getSettleRetryError(
       false,
       undefined,
       false,
@@ -219,7 +219,7 @@ describe("getFinalAnswerRetryError with obligation and truth checks", () => {
   })
 
   it("does not reject when innerJob is undefined", () => {
-    const result = getFinalAnswerRetryError(
+    const result = getSettleRetryError(
       false,
       undefined,
       false,
@@ -234,7 +234,7 @@ describe("getFinalAnswerRetryError with obligation and truth checks", () => {
   })
 
   it("rejects complete intent when a live return obligation is still active without newer follow-up", () => {
-    const result = getFinalAnswerRetryError(
+    const result = getSettleRetryError(
       true,
       "complete",
       false,
@@ -249,7 +249,7 @@ describe("getFinalAnswerRetryError with obligation and truth checks", () => {
   })
 
   it("allows complete intent after newer steering follow-up on the same obligation", () => {
-    const result = getFinalAnswerRetryError(
+    const result = getSettleRetryError(
       true,
       "complete",
       true,
@@ -264,7 +264,7 @@ describe("getFinalAnswerRetryError with obligation and truth checks", () => {
   })
 
   it("existing check: mustResolveBeforeHandoff + missing intent still works", () => {
-    const result = getFinalAnswerRetryError(
+    const result = getSettleRetryError(
       true,
       undefined,
       false,
@@ -273,7 +273,7 @@ describe("getFinalAnswerRetryError with obligation and truth checks", () => {
   })
 
   it("existing check: direct_reply without follow-up still works", () => {
-    const result = getFinalAnswerRetryError(
+    const result = getSettleRetryError(
       true,
       "direct_reply",
       false,
@@ -281,8 +281,8 @@ describe("getFinalAnswerRetryError with obligation and truth checks", () => {
     expect(result).toContain("direct_reply without a newer steering follow-up")
   })
 
-  it("emits nerves event on delegation adherence rejection", () => {
-    getFinalAnswerRetryError(
+  it("does not emit nerves event since delegation adherence is removed", () => {
+    getSettleRetryError(
       false,
       undefined,
       false,
@@ -291,28 +291,28 @@ describe("getFinalAnswerRetryError with obligation and truth checks", () => {
       false,
       false,
     )
-    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+    expect(emitNervesEvent).not.toHaveBeenCalledWith(expect.objectContaining({
       event: "engine.delegation_adherence_rejected",
     }))
   })
 })
 
 describe("external state grounding check", () => {
-  let getFinalAnswerRetryError: typeof import("../../heart/core").getFinalAnswerRetryError
+  let getSettleRetryError: typeof import("../../heart/core").getSettleRetryError
 
   beforeAll(async () => {
     const core = await import("../../heart/core")
-    getFinalAnswerRetryError = core.getFinalAnswerRetryError
+    getSettleRetryError = core.getSettleRetryError
   })
 
   it("rejects complete when currentObligation exists but no external state verification", () => {
-    const result = getFinalAnswerRetryError(
+    const result = getSettleRetryError(
       false,        // mustResolveBeforeHandoff — false so check #5 doesn't fire
       "complete",   // intent
       false,        // sawSteeringFollowUp
       undefined,    // delegationDecision
       false,        // sawSendMessageSelf
-      false,        // sawGoInward
+      false,        // sawDescend
       false,        // sawQuerySession
       "merge the PR and publish", // currentObligation
       undefined,    // innerJob
@@ -323,7 +323,7 @@ describe("external state grounding check", () => {
   })
 
   it("allows complete when currentObligation exists and external state was verified", () => {
-    const result = getFinalAnswerRetryError(
+    const result = getSettleRetryError(
       false,
       "complete",
       false,
@@ -339,7 +339,7 @@ describe("external state grounding check", () => {
   })
 
   it("allows complete when steering follow-up provides external grounding", () => {
-    const result = getFinalAnswerRetryError(
+    const result = getSettleRetryError(
       false,
       "complete",
       true,         // sawSteeringFollowUp — counts as external grounding
@@ -355,7 +355,7 @@ describe("external state grounding check", () => {
   })
 
   it("does not require external verification when there is no currentObligation", () => {
-    const result = getFinalAnswerRetryError(
+    const result = getSettleRetryError(
       false,
       "complete",
       false,
@@ -371,7 +371,7 @@ describe("external state grounding check", () => {
   })
 
   it("does not require external verification for non-complete intents", () => {
-    const result = getFinalAnswerRetryError(
+    const result = getSettleRetryError(
       false,
       "blocked",
       false,
@@ -387,7 +387,7 @@ describe("external state grounding check", () => {
   })
 
   it("return-loop check fires before grounding check when mustResolve and no steering follow-up", () => {
-    const result = getFinalAnswerRetryError(
+    const result = getSettleRetryError(
       true,
       "complete",
       false,        // no steering follow-up

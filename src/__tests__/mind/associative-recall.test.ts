@@ -48,9 +48,9 @@ describe("associative recall", () => {
     }
   }
 
-  function writeFacts(memoryRoot: string, facts: Array<ReturnType<typeof makeFact>>) {
-    fs.mkdirSync(memoryRoot, { recursive: true })
-    fs.writeFileSync(path.join(memoryRoot, "facts.jsonl"), facts.map((fact) => JSON.stringify(fact)).join("\n"), "utf8")
+  function writeFacts(diaryRoot: string, facts: Array<ReturnType<typeof makeFact>>) {
+    fs.mkdirSync(diaryRoot, { recursive: true })
+    fs.writeFileSync(path.join(diaryRoot, "facts.jsonl"), facts.map((fact) => JSON.stringify(fact)).join("\n"), "utf8")
   }
 
   it("computes cosine similarity and handles edge cases", () => {
@@ -88,8 +88,8 @@ describe("associative recall", () => {
   })
 
   it("injects recalled context into the system prompt before model call", async () => {
-    const memoryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
-    writeFacts(memoryRoot, [makeFact("f1", "Ari likes mushroom pizza", [0.99, 0.01])])
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
+    writeFacts(diaryRoot, [makeFact("f1", "Ari likes mushroom pizza", [0.99, 0.01])])
 
     const provider: EmbeddingProvider = {
       async embed(texts: string[]): Promise<number[][]> {
@@ -105,7 +105,7 @@ describe("associative recall", () => {
 
     await injectAssociativeRecall(messages, {
       provider,
-      memoryRoot,
+      diaryRoot,
       minScore: 0.5,
       topK: 1,
     })
@@ -123,13 +123,13 @@ describe("associative recall", () => {
 
   it("does nothing when message[0] is not a system string message", async () => {
     const messages: OpenAI.ChatCompletionMessageParam[] = [{ role: "user", content: "hello" }]
-    await injectAssociativeRecall(messages, { memoryRoot: "/tmp/unused" })
+    await injectAssociativeRecall(messages, { diaryRoot: "/tmp/unused" })
     expect(mockEmitNervesEvent).not.toHaveBeenCalled()
   })
 
   it("does nothing when there is no plain-text user query", async () => {
-    const memoryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
-    writeFacts(memoryRoot, [makeFact("f1", "Ari likes mushroom pizza", [0.99, 0.01])])
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
+    writeFacts(diaryRoot, [makeFact("f1", "Ari likes mushroom pizza", [0.99, 0.01])])
     const provider = { embed: vi.fn() }
 
     const messages = [
@@ -137,14 +137,14 @@ describe("associative recall", () => {
       { role: "user", content: [{ type: "text", text: "pizza?" }] },
     ] as unknown as OpenAI.ChatCompletionMessageParam[]
 
-    await injectAssociativeRecall(messages, { memoryRoot, provider })
+    await injectAssociativeRecall(messages, { diaryRoot, provider })
     expect(provider.embed).not.toHaveBeenCalled()
     expect(messages[0].content).toBe("base system prompt")
   })
 
   it("does nothing when latest user text is only whitespace", async () => {
-    const memoryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
-    writeFacts(memoryRoot, [makeFact("f1", "Ari likes mushroom pizza", [0.99, 0.01])])
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
+    writeFacts(diaryRoot, [makeFact("f1", "Ari likes mushroom pizza", [0.99, 0.01])])
     const provider = { embed: vi.fn() }
 
     const messages: OpenAI.ChatCompletionMessageParam[] = [
@@ -152,39 +152,39 @@ describe("associative recall", () => {
       { role: "user", content: "   " },
     ]
 
-    await injectAssociativeRecall(messages, { memoryRoot, provider })
+    await injectAssociativeRecall(messages, { diaryRoot, provider })
     expect(provider.embed).not.toHaveBeenCalled()
     expect(messages[0].content).toBe("base system prompt")
   })
 
   it("does nothing when facts file is missing", async () => {
-    const memoryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
     const provider = { embed: vi.fn() }
     const messages: OpenAI.ChatCompletionMessageParam[] = [
       { role: "system", content: "base system prompt" },
       { role: "user", content: "pizza?" },
     ]
 
-    await injectAssociativeRecall(messages, { memoryRoot, provider })
+    await injectAssociativeRecall(messages, { diaryRoot, provider })
     expect(provider.embed).not.toHaveBeenCalled()
   })
 
   it("does nothing when facts file is blank", async () => {
-    const memoryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
-    fs.writeFileSync(path.join(memoryRoot, "facts.jsonl"), "\n", "utf8")
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
+    fs.writeFileSync(path.join(diaryRoot, "facts.jsonl"), "\n", "utf8")
     const provider = { embed: vi.fn() }
     const messages: OpenAI.ChatCompletionMessageParam[] = [
       { role: "system", content: "base system prompt" },
       { role: "user", content: "pizza?" },
     ]
 
-    await injectAssociativeRecall(messages, { memoryRoot, provider })
+    await injectAssociativeRecall(messages, { diaryRoot, provider })
     expect(provider.embed).not.toHaveBeenCalled()
   })
 
   it("does nothing when recall returns no matches above threshold", async () => {
-    const memoryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
-    writeFacts(memoryRoot, [makeFact("f1", "Ari likes mushroom pizza", [0, 1])])
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
+    writeFacts(diaryRoot, [makeFact("f1", "Ari likes mushroom pizza", [0, 1])])
     const provider: EmbeddingProvider = {
       embed: async () => [[1, 0]],
     }
@@ -193,13 +193,13 @@ describe("associative recall", () => {
       { role: "user", content: "pizza?" },
     ]
 
-    await injectAssociativeRecall(messages, { memoryRoot, provider, minScore: 0.95 })
+    await injectAssociativeRecall(messages, { diaryRoot, provider, minScore: 0.95 })
     expect(messages[0].content).toBe("base system prompt")
   })
 
   it("uses default OpenAI embedding provider when no provider is passed", async () => {
-    const memoryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
-    writeFacts(memoryRoot, [makeFact("f1", "Ari likes mushroom pizza", [0.99, 0.01])])
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
+    writeFacts(diaryRoot, [makeFact("f1", "Ari likes mushroom pizza", [0.99, 0.01])])
     mockFetch.mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -211,7 +211,7 @@ describe("associative recall", () => {
       { role: "user", content: "pizza?" },
     ]
 
-    await injectAssociativeRecall(messages, { memoryRoot, minScore: 0.5 })
+    await injectAssociativeRecall(messages, { diaryRoot, minScore: 0.5 })
     expect(mockFetch).toHaveBeenCalledWith(
       "https://api.openai.com/v1/embeddings",
       expect.objectContaining({
@@ -225,10 +225,10 @@ describe("associative recall", () => {
     expect(messages[0].content).toContain("Ari likes mushroom pizza")
   })
 
-  it("uses default agent-root memory path when options.memoryRoot is omitted", async () => {
+  it("uses default agent-root memory path when options.diaryRoot is omitted", async () => {
     const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "agent-root-"))
-    const memoryRoot = path.join(agentRoot, "psyche", "memory")
-    writeFacts(memoryRoot, [makeFact("f1", "Ari likes mushroom pizza", [0.99, 0.01])])
+    const diaryRoot = path.join(agentRoot, "psyche", "memory")
+    writeFacts(diaryRoot, [makeFact("f1", "Ari likes mushroom pizza", [0.99, 0.01])])
     mockGetAgentRoot.mockReturnValue(agentRoot)
 
     const provider: EmbeddingProvider = {
@@ -245,15 +245,15 @@ describe("associative recall", () => {
   })
 
   it("falls back to substring matching when embeddings API key is missing", async () => {
-    const memoryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
-    writeFacts(memoryRoot, [makeFact("f1", "Ari likes mushroom pizza", [0.99, 0.01])])
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
+    writeFacts(diaryRoot, [makeFact("f1", "Ari likes mushroom pizza", [0.99, 0.01])])
     mockGetOpenAIEmbeddingsApiKey.mockReturnValue("")
     const messages: OpenAI.ChatCompletionMessageParam[] = [
       { role: "system", content: "base system prompt" },
       { role: "user", content: "pizza" },
     ]
 
-    await injectAssociativeRecall(messages, { memoryRoot })
+    await injectAssociativeRecall(messages, { diaryRoot })
     expect(messages[0].content).toContain("Ari likes mushroom pizza")
     expect(mockEmitNervesEvent).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -264,15 +264,15 @@ describe("associative recall", () => {
   })
 
   it("silently degrades when embeddings fail and no substring match exists", async () => {
-    const memoryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
-    writeFacts(memoryRoot, [makeFact("f1", "Ari likes mushroom pizza", [0.99, 0.01])])
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
+    writeFacts(diaryRoot, [makeFact("f1", "Ari likes mushroom pizza", [0.99, 0.01])])
     mockGetOpenAIEmbeddingsApiKey.mockReturnValue("")
     const messages: OpenAI.ChatCompletionMessageParam[] = [
       { role: "system", content: "base system prompt" },
       { role: "user", content: "basketball" },
     ]
 
-    await injectAssociativeRecall(messages, { memoryRoot })
+    await injectAssociativeRecall(messages, { diaryRoot })
     expect(messages[0].content).toBe("base system prompt")
     expect(mockEmitNervesEvent).not.toHaveBeenCalledWith(
       expect.objectContaining({ event: "mind.associative_recall_fallback" }),
@@ -280,8 +280,8 @@ describe("associative recall", () => {
   })
 
   it("falls back to substring matching when embedding request fails", async () => {
-    const memoryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
-    writeFacts(memoryRoot, [makeFact("f1", "Ari likes mushroom pizza", [0.99, 0.01])])
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
+    writeFacts(diaryRoot, [makeFact("f1", "Ari likes mushroom pizza", [0.99, 0.01])])
     mockFetch.mockResolvedValue({
       ok: false,
       status: 500,
@@ -292,7 +292,7 @@ describe("associative recall", () => {
       { role: "user", content: "mushroom" },
     ]
 
-    await injectAssociativeRecall(messages, { memoryRoot })
+    await injectAssociativeRecall(messages, { diaryRoot })
     expect(messages[0].content).toContain("Ari likes mushroom pizza")
     expect(mockEmitNervesEvent).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -302,8 +302,8 @@ describe("associative recall", () => {
   })
 
   it("falls back to substring matching when embedding response vectors are missing", async () => {
-    const memoryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
-    writeFacts(memoryRoot, [makeFact("f1", "Ari likes mushroom pizza", [0.99, 0.01])])
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
+    writeFacts(diaryRoot, [makeFact("f1", "Ari likes mushroom pizza", [0.99, 0.01])])
     mockFetch.mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -315,7 +315,7 @@ describe("associative recall", () => {
       { role: "user", content: "pizza" },
     ]
 
-    await injectAssociativeRecall(messages, { memoryRoot })
+    await injectAssociativeRecall(messages, { diaryRoot })
     expect(messages[0].content).toContain("Ari likes mushroom pizza")
     expect(mockEmitNervesEvent).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -325,8 +325,8 @@ describe("associative recall", () => {
   })
 
   it("converts non-Error thrown values gracefully in substring fallback", async () => {
-    const memoryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
-    writeFacts(memoryRoot, [makeFact("f1", "Ari likes mushroom pizza", [0.99, 0.01])])
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
+    writeFacts(diaryRoot, [makeFact("f1", "Ari likes mushroom pizza", [0.99, 0.01])])
     const provider: EmbeddingProvider = {
       embed: async () => {
         throw "boom-value"
@@ -337,7 +337,7 @@ describe("associative recall", () => {
       { role: "user", content: "pizza" },
     ]
 
-    await injectAssociativeRecall(messages, { memoryRoot, provider })
+    await injectAssociativeRecall(messages, { diaryRoot, provider })
     // Falls back to substring, finds match, injects recall
     expect(messages[0].content).toContain("Ari likes mushroom pizza")
     expect(mockEmitNervesEvent).toHaveBeenCalledWith(
@@ -364,9 +364,9 @@ describe("associative recall", () => {
   })
 
   it("skips corrupt lines in facts file and recalls valid ones", async () => {
-    const memoryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
     const validFact = JSON.stringify(makeFact("f1", "Ari likes mushroom pizza", [0.99, 0.01]))
-    fs.writeFileSync(path.join(memoryRoot, "facts.jsonl"), `not valid json\n\n${validFact}\n`, "utf8")
+    fs.writeFileSync(path.join(diaryRoot, "facts.jsonl"), `not valid json\n\n${validFact}\n`, "utf8")
 
     const provider: EmbeddingProvider = {
       embed: async () => [[1, 0]],
@@ -376,20 +376,20 @@ describe("associative recall", () => {
       { role: "user", content: "pizza?" },
     ]
 
-    await injectAssociativeRecall(messages, { memoryRoot, provider, minScore: 0.5 })
+    await injectAssociativeRecall(messages, { diaryRoot, provider, minScore: 0.5 })
     expect(messages[0].content).toContain("Ari likes mushroom pizza")
   })
 
   it("does nothing when facts file contains only invalid JSON", async () => {
-    const memoryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
-    fs.writeFileSync(path.join(memoryRoot, "facts.jsonl"), "not valid json\n", "utf8")
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
+    fs.writeFileSync(path.join(diaryRoot, "facts.jsonl"), "not valid json\n", "utf8")
     const provider = { embed: vi.fn() }
     const messages: OpenAI.ChatCompletionMessageParam[] = [
       { role: "system", content: "base system prompt" },
       { role: "user", content: "anything" },
     ]
 
-    await injectAssociativeRecall(messages, { memoryRoot, provider })
+    await injectAssociativeRecall(messages, { diaryRoot, provider })
     expect(provider.embed).not.toHaveBeenCalled()
     expect(messages[0].content).toBe("base system prompt")
   })

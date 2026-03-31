@@ -185,6 +185,7 @@ describe("active work frame", () => {
           runner: "claude",
           workdir: "/tmp/workspaces/ouroboros",
           taskRef: "harness-maintenance",
+          checkpoint: "needs review on the context-pack checkpoint rendering path because the branch is still failing in one focused place",
           status: "waiting_input" as const,
           stdoutTail: "needs review",
           stderrTail: "",
@@ -213,6 +214,53 @@ describe("active work frame", () => {
     expect(rendered).toContain("## live coding work")
     expect(rendered).toContain("[waiting_input] claude coding-013")
     expect(rendered).toContain("for this thread")
+    expect(rendered).toContain("needs review on the context-pack checkpoint rendering path because the branch...")
+  })
+
+  it("renders short coding checkpoints without clipping", async () => {
+    const { buildActiveWorkFrame, formatActiveWorkFrame } = await import("../../heart/active-work")
+
+    const frame = buildActiveWorkFrame({
+      currentSession: {
+        friendId: "friend-1",
+        channel: "bluebubbles",
+        key: "chat",
+        sessionPath: "/tmp/state/sessions/friend-1/bluebubbles/chat.json",
+      },
+      mustResolveBeforeHandoff: false,
+      inner: { status: "idle", hasPending: false },
+      bridges: [],
+      pendingObligations: [],
+      codingSessions: [
+        {
+          id: "coding-014",
+          runner: "codex",
+          workdir: "/tmp/workspaces/ouroboros",
+          taskRef: "harness-maintenance",
+          checkpoint: "ready to merge",
+          status: "running" as const,
+          stdoutTail: "ready to merge",
+          stderrTail: "",
+          pid: 14,
+          startedAt: "2026-03-05T23:53:00.000Z",
+          lastActivityAt: "2026-03-05T23:59:00.000Z",
+          endedAt: null,
+          restartCount: 0,
+          lastExitCode: null,
+          lastSignal: null,
+          failure: null,
+          originSession: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
+        },
+      ],
+      taskBoard: {
+        compact: "",
+        activeBridges: [],
+        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [] },
+      },
+      friendActivity: [],
+    })
+
+    expect(formatActiveWorkFrame(frame)).toContain("ready to merge")
   })
 
   it("renders live coding work from another thread with explicit scope", async () => {
@@ -1578,7 +1626,7 @@ describe("delegation router", () => {
       ingressTexts: ["sounds good"],
       activeWork,
       mustResolveBeforeHandoff: false,
-      requestedToolNames: ["final_answer"],
+      requestedToolNames: ["settle"],
     })).toEqual({
       target: "fast-path",
       reasons: [],
@@ -1674,7 +1722,7 @@ describe("delegation router", () => {
       ingressTexts: ["carry this across chats for me"],
       activeWork,
       mustResolveBeforeHandoff: false,
-      requestedToolNames: ["final_answer"],
+      requestedToolNames: ["settle"],
     })).toEqual({
       target: "delegate-inward",
       reasons: ["cross_session"],
@@ -1731,7 +1779,7 @@ describe("delegation router", () => {
       ingressTexts: ["sounds good"],
       activeWork,
       mustResolveBeforeHandoff: false,
-      requestedToolNames: ["final_answer"],
+      requestedToolNames: ["settle"],
     })).toEqual({
       target: "fast-path",
       reasons: [],
@@ -3263,5 +3311,80 @@ describe("ActiveWorkFrame.inner with InnerJob", () => {
       objectiveHint: "keep this shared work aligned",
       reason: "shared-work-candidate",
     })
+  })
+
+  it("surfaces inner return obligations in the formatted active work frame", async () => {
+    const { buildActiveWorkFrame, formatActiveWorkFrame } = await import("../../heart/active-work")
+
+    const frame = buildActiveWorkFrame({
+      currentSession: {
+        friendId: "friend-1",
+        channel: "cli",
+        key: "session",
+        sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+      },
+      mustResolveBeforeHandoff: false,
+      inner: { status: "running", hasPending: true },
+      bridges: [],
+      taskBoard: {
+        compact: "",
+        activeBridges: [],
+        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [] },
+      },
+      friendActivity: [],
+      innerReturnObligations: [
+        {
+          id: "1709900001000-abc",
+          origin: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
+          status: "queued" as const,
+          delegatedContent: "think about penguins",
+          createdAt: 1709900001000,
+        },
+        {
+          id: "1709900002000-def",
+          origin: { friendId: "friend-2", channel: "cli", key: "session" },
+          status: "running" as const,
+          delegatedContent: "analyze the data",
+          createdAt: 1709900002000,
+          startedAt: 1709900002500,
+        },
+        {
+          id: "1709900003000-ghi",
+          origin: { friendId: "friend-3", channel: "teams", key: "conv" },
+          status: "queued" as const,
+          delegatedContent: "this is a very long delegated content string that exceeds the sixty character preview limit and should be truncated",
+          createdAt: 1709900003000,
+        },
+      ],
+    })
+
+    const formatted = formatActiveWorkFrame(frame)
+    expect(formatted).toContain("## inner return obligations")
+    expect(formatted).toContain("[queued] friend-1/bluebubbles/chat: think about penguins")
+    expect(formatted).toContain("[running] friend-2/cli/session: analyze the data")
+    // Long content should be truncated to 60 chars
+    expect(formatted).toContain("[queued] friend-3/teams/conv: this is a very long delegated content string that exceeds...")
+    expect(formatted).not.toContain("should be truncated")
+  })
+
+  it("omits inner return obligations section when no obligations exist", async () => {
+    const { buildActiveWorkFrame, formatActiveWorkFrame } = await import("../../heart/active-work")
+
+    const frame = buildActiveWorkFrame({
+      currentSession: null,
+      mustResolveBeforeHandoff: false,
+      inner: { status: "idle", hasPending: false },
+      bridges: [],
+      taskBoard: {
+        compact: "",
+        activeBridges: [],
+        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [] },
+      },
+      friendActivity: [],
+      innerReturnObligations: [],
+    })
+
+    const formatted = formatActiveWorkFrame(frame)
+    expect(formatted).not.toContain("inner return obligations")
   })
 })

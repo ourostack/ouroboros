@@ -279,6 +279,45 @@ describe("listTargetSessionCandidates", () => {
     }))
   })
 
+  it("MCP sessions get queue_only delivery mode", async () => {
+    const { listTargetSessionCandidates } = await loadTargetResolutionModule()
+    const root = makeTempDir()
+    const sessionsDir = path.join(root, "state", "sessions")
+    const friendsDir = path.join(root, "friends")
+
+    writeJson(path.join(friendsDir, "friend-mcp.json"), { name: "Dev Tool User" })
+    writeJson(path.join(sessionsDir, "friend-mcp", "mcp", "session-1.json"), {
+      state: { lastFriendActivityAt: recentIso(2) },
+      messages: [{ role: "user", content: "mcp session target" }],
+    })
+
+    const store = new InMemoryFriendStore([
+      makeFriend({
+        id: "friend-mcp",
+        name: "Dev Tool User",
+        trustLevel: "friend",
+      }),
+    ])
+
+    const candidates = await listTargetSessionCandidates({
+      sessionsDir,
+      friendsDir,
+      agentName: "slugger",
+      friendStore: store,
+      summarize: async () => "mcp snapshot",
+    })
+
+    expect(candidates).toHaveLength(1)
+    expect(candidates[0]).toEqual(expect.objectContaining({
+      friendId: "friend-mcp",
+      channel: "mcp",
+      delivery: expect.objectContaining({
+        mode: "queue_only",
+        reason: expect.stringContaining("MCP session"),
+      }),
+    }))
+  })
+
   it("surfaces empty and unavailable recall states explicitly and formats no candidates as empty output", async () => {
     vi.resetModules()
     vi.doMock("../../heart/session-recall", async () => {

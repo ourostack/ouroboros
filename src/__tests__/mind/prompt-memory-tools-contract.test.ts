@@ -79,7 +79,7 @@ describe("prompt memory/friend contracts", () => {
     })
   })
 
-  it("includes first-person prescriptive guidance for all four memory/friend tools", async () => {
+  it("includes first-person prescriptive guidance for all four diary/friend tools", async () => {
     const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const system = await buildSystem("cli")
@@ -87,13 +87,13 @@ describe("prompt memory/friend contracts", () => {
     expect(system).toContain("save_friend_note")
     expect(system).toContain("When I learn something about a person")
 
-    expect(system).toContain("memory_save")
+    expect(system).toContain("diary_write")
     expect(system).toContain("When I learn something general")
 
     expect(system).toContain("get_friend_note")
     expect(system).toContain("isn't in this conversation")
 
-    expect(system).toContain("memory_search")
+    expect(system).toContain("recall")
     expect(system).toContain("recall something I learned before")
   })
 

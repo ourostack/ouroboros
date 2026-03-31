@@ -2,7 +2,7 @@ import type OpenAI from "openai"
 import * as crypto from "crypto"
 import * as fs from "fs"
 import * as path from "path"
-import { baseToolDefinitions, finalAnswerTool } from "../../repertoire/tools-base"
+import { baseToolDefinitions, settleTool } from "../../repertoire/tools-base"
 import { writeSecretsFile, type HatchCredentialsInput } from "./hatch-flow"
 import { playHatchAnimation } from "./hatch-animation"
 import { createBundleMeta } from "../../mind/bundle-manifest"
@@ -60,7 +60,7 @@ const listDirToolSchema: OpenAI.ChatCompletionFunctionTool = {
  * Returns the specialist's tool schema array.
  */
 export function getSpecialistTools(): OpenAI.ChatCompletionFunctionTool[] {
-  return [completeAdoptionTool, finalAnswerTool, readFileTool.tool, writeFileTool.tool, listDirToolSchema]
+  return [completeAdoptionTool, settleTool, readFileTool.tool, writeFileTool.tool, listDirToolSchema]
 }
 
 export interface SpecialistExecToolDeps {
@@ -94,8 +94,8 @@ function scaffoldBundle(bundleRoot: string): void {
   writeReadme(path.join(bundleRoot, "memory", "archive"), "Archived memory.")
   writeReadme(path.join(bundleRoot, "friends"), "Known friend records.")
   writeReadme(path.join(bundleRoot, "tasks"), "Task files.")
-  writeReadme(path.join(bundleRoot, "tasks", "habits"), "Recurring tasks.")
   writeReadme(path.join(bundleRoot, "tasks", "one-shots"), "One-shot tasks.")
+  writeReadme(path.join(bundleRoot, "habits"), "Recurring habits and autonomous rhythms.")
   writeReadme(path.join(bundleRoot, "tasks", "ongoing"), "Ongoing tasks.")
   writeReadme(path.join(bundleRoot, "skills"), "Local skill files.")
   writeReadme(path.join(bundleRoot, "senses"), "Sense-specific config.")

@@ -62,6 +62,17 @@ export function resetToolChoiceRequired(): void {
   _toolChoiceRequired = false
 }
 
+// Module-level toggle for debug mode
+let _debugMode = false
+
+export function getDebugMode(): boolean {
+  return _debugMode
+}
+
+export function resetDebugMode(): void {
+  _debugMode = false
+}
+
 export function registerDefaultCommands(registry: CommandRegistry): void {
   emitNervesEvent({
     event: "repertoire.load_start",
@@ -90,7 +101,7 @@ export function registerDefaultCommands(registry: CommandRegistry): void {
     channels: ["cli", "teams"],
     handler: (ctx) => {
       const cmds = registry.list(ctx.channel)
-      const lines = cmds.map((c) => `/${c.name} - ${c.description}`)
+      const lines = cmds.map((c) => `/${c.name} \u2014 ${c.description}`)
       return { action: "response", message: lines.join("\n") }
     },
   })
@@ -105,12 +116,41 @@ export function registerDefaultCommands(registry: CommandRegistry): void {
     },
   })
 
+  registry.register({
+    name: "debug",
+    description: "toggle debug mode — see more detail about what I'm doing",
+    channels: ["cli", "teams", "bluebubbles", "mcp"],
+    handler: () => {
+      _debugMode = !_debugMode
+      return {
+        action: "response",
+        message: _debugMode
+          ? "debug mode on — you'll see more detail about what I'm doing"
+          : "debug mode off — back to clean output",
+      }
+    },
+  })
+
   emitNervesEvent({
     event: "repertoire.load_end",
     component: "repertoire",
     message: "registered default commands",
     meta: {},
   })
+}
+
+let _sharedRegistry: CommandRegistry | null = null
+
+export function getSharedCommandRegistry(): CommandRegistry {
+  if (!_sharedRegistry) {
+    _sharedRegistry = createCommandRegistry()
+    registerDefaultCommands(_sharedRegistry)
+  }
+  return _sharedRegistry
+}
+
+export function resetSharedCommandRegistry(): void {
+  _sharedRegistry = null
 }
 
 export function parseSlashCommand(input: string): { command: string; args: string } | null {

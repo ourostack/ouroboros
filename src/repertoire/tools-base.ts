@@ -9,7 +9,7 @@ import type { Integration, ResolvedContext, FriendRecord } from "../mind/friends
 import type { FriendStore } from "../mind/friends/store";
 import { emitNervesEvent } from "../nerves/runtime";
 import { getAgentRoot, getAgentName } from "../heart/identity";
-import { ensureSafeRepoWorkspace, resolveSafeRepoPath, resolveSafeShellExecution } from "../heart/safe-workspace";
+import { getRepoRoot } from "../heart/identity";
 import { requestInnerWake } from "../heart/daemon/socket-client";
 import {
   deriveInnerDialogStatus,
@@ -21,15 +21,24 @@ import {
   readInnerDialogStatus,
 } from "../heart/daemon/thoughts";
 import { createBridgeManager, formatBridgeStatus } from "../heart/bridges/manager";
-import { recallSession, type SessionRecallOptions, type SessionRecallResult } from "../heart/session-recall";
+import {
+  recallSession,
+  searchSessionTranscript,
+  type SessionRecallOptions,
+  type SessionRecallResult,
+  type SessionSearchOptions,
+  type SessionSearchResult,
+} from "../heart/session-recall";
 import { listSessionActivity } from "../heart/session-activity";
 import { buildActiveWorkFrame, formatActiveWorkFrame, type ActiveWorkFrame } from "../heart/active-work";
 import { codingToolDefinitions } from "./coding/tools";
 import { getCodingSessionManager, type CodingSessionStatus } from "./coding";
-import { readMemoryFacts, saveMemoryFact, searchMemoryFacts } from "../mind/memory";
+import { readDiaryEntries, saveDiaryEntry, searchDiaryEntries } from "../mind/diary";
+import { type JournalIndexEntry } from "../mind/associative-recall";
 import { getTaskModule } from "./tasks";
 import { getPendingDir, getInnerDialogPendingDir } from "../mind/pending";
 import type { PendingMessage } from "../mind/pending";
+import { createObligation as createInnerObligation, generateObligationId } from "../mind/obligations";
 import type { BridgeRecord, BridgeSessionRef } from "../heart/bridges/store";
 import { buildProgressStory, renderProgressStory } from "../heart/progress-story";
 import { deliverCrossChatMessage, type CrossChatDeliveryResult } from "../heart/cross-chat-delivery";
@@ -68,8 +77,10 @@ export interface ToolContext {
   bluebubblesReplyTarget?: BlueBubblesReplyTargetController;
   currentSession?: BridgeSessionRef;
   activeBridges?: BridgeRecord[];
+  activeWorkFrame?: ActiveWorkFrame;
   supportedReasoningEfforts?: readonly string[];
   setReasoningEffort?: (level: string) => void;
+  delegatedOrigins?: import("../senses/attention-queue").AttentionItem[];
 }
 
 export type ToolHandler = (args: Record<string, string>, ctx?: ToolContext) => string | Promise<string>;
@@ -80,6 +91,7 @@ export interface ToolDefinition {
   integration?: Integration;
   confirmationRequired?: boolean;
   requiredCapability?: import("../heart/core").ProviderCapability;
+  summaryKeys?: string[];
 }
 
 // Tracks which file paths have been read via read_file in this session.
@@ -99,7 +111,10 @@ function buildContextDiff(lines: string[], changeStart: number, changeEnd: numbe
 }
 
 function resolveLocalToolPath(targetPath: string): string {
-  return resolveSafeRepoPath({ requestedPath: targetPath }).resolvedPath
+  if (!path.isAbsolute(targetPath)) {
+    return path.resolve(getRepoRoot(), targetPath)
+  }
+  return targetPath
 }
 
 const NO_SESSION_FOUND_MESSAGE = "no session found for that friend/channel/key combination."
@@ -143,6 +158,14 @@ async function recallSessionSafely(options: SessionRecallOptions): Promise<Sessi
         return { kind: "missing" }
       }
     }
+    return { kind: "missing" }
+  }
+}
+
+async function searchSessionSafely(options: SessionSearchOptions): Promise<SessionSearchResult | { kind: "missing" }> {
+  try {
+    return await searchSessionTranscript(options)
+  } catch {
     return { kind: "missing" }
   }
 }
@@ -404,6 +427,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
       const end = limit !== undefined ? start + limit : lines.length
       return lines.slice(start, end).join("\n")
     },
+    summaryKeys: ["path"],
   },
   {
     tool: {
@@ -424,6 +448,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
       fs.writeFileSync(resolvedPath, a.content, "utf-8")
       return "ok"
     },
+    summaryKeys: ["path"],
   },
   {
     tool: {
@@ -488,6 +513,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
 
       return buildContextDiff(lines, changeStartLine, changeEndLine)
     },
+    summaryKeys: ["path"],
   },
   {
     tool: {
@@ -510,6 +536,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
       const matches = fg.globSync(a.pattern, { cwd, dot: true })
       return matches.sort().join("\n")
     },
+    summaryKeys: ["pattern", "cwd"],
   },
   {
     tool: {
@@ -622,29 +649,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
       }
       return allResults.join("\n")
     },
-  },
-  {
-    tool: {
-      type: "function",
-      function: {
-        name: "safe_workspace",
-        description: "acquire or inspect the safe harness repo workspace for local edits. returns the real workspace path, branch, and why it was chosen.",
-        parameters: {
-          type: "object",
-          properties: {},
-        },
-      },
-    },
-    handler: () => {
-      const selection = ensureSafeRepoWorkspace()
-      return [
-        `workspace: ${selection.workspaceRoot}`,
-        `branch: ${selection.workspaceBranch}`,
-        `runtime: ${selection.runtimeKind}`,
-        `cleanup_after_merge: ${selection.cleanupAfterMerge ? "yes" : "no"}`,
-        `note: ${selection.note}`,
-      ].join("\n")
-    },
+    summaryKeys: ["pattern", "path", "include"],
   },
   {
     tool: {
@@ -660,13 +665,12 @@ export const baseToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: (a) => {
-      const prepared = resolveSafeShellExecution(a.command)
-      return execSync(prepared.command, {
+      return execSync(a.command, {
         encoding: "utf-8",
         timeout: 30000,
-        ...(prepared.cwd ? { cwd: prepared.cwd } : {}),
       })
     },
+    summaryKeys: ["command"],
   },
   {
     tool: {
@@ -699,6 +703,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
         return `error: ${e}`;
       }
     },
+    summaryKeys: ["name"],
   },
   {
     tool: {
@@ -733,6 +738,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
         return `error: ${e}`;
       }
     },
+    summaryKeys: ["prompt"],
   },
   {
     tool: {
@@ -772,14 +778,15 @@ export const baseToolDefinitions: ToolDefinition[] = [
         return `error: ${e}`;
       }
     },
+    summaryKeys: ["query"],
   },
   {
     tool: {
       type: "function",
       function: {
-        name: "memory_search",
+        name: "recall",
         description:
-          "search remembered facts stored in psyche memory and return relevant matches for a query",
+          "recall what i know — search my diary and journal for facts, thoughts, and working notes that match a query",
         parameters: {
           type: "object",
           properties: { query: { type: "string" } },
@@ -791,43 +798,73 @@ export const baseToolDefinitions: ToolDefinition[] = [
       try {
         const query = (a.query || "").trim();
         if (!query) return "query is required";
-        const memoryRoot = path.join(getAgentRoot(), "psyche", "memory");
-        const hits = await searchMemoryFacts(query, readMemoryFacts(memoryRoot));
-        return hits
-          .map((fact) => `- ${fact.text} (source=${fact.source}, createdAt=${fact.createdAt})`)
-          .join("\n");
+
+        const resultLines: string[] = [];
+
+        // Search diary entries
+        const hits = await searchDiaryEntries(query, readDiaryEntries());
+        for (const fact of hits) {
+          resultLines.push(`[diary] ${fact.text} (source=${fact.source}, createdAt=${fact.createdAt})`);
+        }
+
+        // Search journal index
+        const agentRoot = getAgentRoot();
+        const journalIndexPath = path.join(agentRoot, "journal", ".index.json");
+        try {
+          const raw = fs.readFileSync(journalIndexPath, "utf8");
+          const journalEntries = JSON.parse(raw) as JournalIndexEntry[];
+          if (Array.isArray(journalEntries) && journalEntries.length > 0) {
+            // Substring match on preview and filename
+            const lowerQuery = query.toLowerCase();
+            for (const entry of journalEntries) {
+              /* v8 ignore next 4 -- both sides tested (filename-only match in recall-journal.test.ts); v8 misreports || short-circuit @preserve */
+              if (
+                entry.preview.toLowerCase().includes(lowerQuery) ||
+                entry.filename.toLowerCase().includes(lowerQuery)
+              ) {
+                resultLines.push(`[journal] ${entry.filename}: ${entry.preview}`);
+              }
+            }
+          }
+        } catch {
+          // No journal index or malformed — skip journal search
+        }
+
+        return resultLines.join("\n");
       } catch (e) {
         return `error: ${e instanceof Error ? e.message : String(e)}`;
       }
     },
+    summaryKeys: ["query"],
   },
   {
     tool: {
       type: "function",
       function: {
-        name: "memory_save",
+        name: "diary_write",
         description:
-          "save a general memory fact i want to recall later. optional 'about' can tag the fact to a person/topic/context",
+          "write an entry in my diary — something i learned, noticed, or concluded that i want to recall later. optional 'about' tags the entry to a person, topic, or context.",
         parameters: {
           type: "object",
           properties: {
-            text: { type: "string" },
+            entry: { type: "string" },
             about: { type: "string" },
           },
-          required: ["text"],
+          required: ["entry"],
         },
       },
     },
     handler: async (a) => {
-      const text = (a.text || "").trim();
-      if (!text) return "text is required";
-      const result = await saveMemoryFact({
-        text,
-        source: "tool:memory_save",
+      const entry = (a.entry || "").trim();
+      if (!entry) return "entry is required";
+      const result = await saveDiaryEntry({
+        text: entry,
+        source: "tool:diary_write",
         about: typeof a.about === "string" ? a.about : undefined,
       });
-      return `saved memory fact (added=${result.added}, skipped=${result.skipped})`;
+      return `saved diary entry (added=${result.added}, skipped=${result.skipped})`;
     },
+    summaryKeys: ["entry", "about"],
   },
   {
     tool: {
@@ -854,6 +891,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
       if (!friend) return `friend not found: ${friendId}`;
       return JSON.stringify(friend, null, 2);
     },
+    summaryKeys: ["friendId"],
   },
   {
     tool: {
@@ -938,6 +976,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
         return `error saving note: ${err instanceof Error ? err.message : String(err)}`;
       }
     },
+    summaryKeys: ["type", "key", "content"],
   },
   // -- cross-session awareness --
   {
@@ -1051,6 +1090,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
 
       return `unknown bridge action: ${action}`
     },
+    summaryKeys: ["action", "bridgeId", "objective", "friendId", "channel", "key"],
   },
   {
     tool: {
@@ -1074,26 +1114,40 @@ export const baseToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "query_session",
-        description: "read the last messages from another session. use this to check on a conversation with a friend or review your own inner dialog.",
+        description: "inspect another session. use transcript for recent context, status for self/inner progress, or search to find older history by query.",
         parameters: {
           type: "object",
           properties: {
             friendId: { type: "string", description: "the friend UUID (or 'self')" },
-            channel: { type: "string", description: "the channel: cli, teams, or inner" },
+            channel: { type: "string", description: "the channel: cli, teams, bluebubbles, inner, or mcp" },
             key: { type: "string", description: "session key (defaults to 'session')" },
             messageCount: { type: "string", description: "how many recent messages to return (default 20)" },
-            mode: { type: "string", enum: ["transcript", "status"], description: "transcript (default) or lightweight status for self/inner checks" },
+            mode: {
+              type: "string",
+              enum: ["transcript", "status", "search"],
+              description: "transcript (default), lightweight status for self/inner checks, or search for older history",
+            },
+            query: { type: "string", description: "required when mode=search; search term for older session history" },
           },
           required: ["friendId", "channel"],
         },
       },
     },
     handler: async (args, ctx) => {
-      const friendId = args.friendId
+      let friendId = args.friendId
       const channel = args.channel
       const key = args.key || "session"
       const count = parseInt(args.messageCount || "20", 10)
       const mode = args.mode || "transcript"
+
+      // Resolve friend name → UUID if not already a UUID or "self"
+      if (friendId && friendId !== "self" && !/^[0-9a-f]{8}-[0-9a-f]{4}-/.test(friendId) && ctx?.friendStore?.listAll) {
+        const allFriends = await ctx.friendStore.listAll()
+        const match = allFriends.find(f => f.name.toLowerCase() === friendId.toLowerCase())
+        if (match) {
+          friendId = match.id
+        }
+      }
 
       if (mode === "status") {
         if (friendId !== "self" || channel !== "inner") {
@@ -1103,6 +1157,37 @@ export const baseToolDefinitions: ToolDefinition[] = [
         const sessionPath = getInnerDialogSessionPath(getAgentRoot())
         const pendingDir = getInnerDialogPendingDir(getAgentName())
         return renderInnerProgressStatus(readInnerDialogStatus(sessionPath, pendingDir))
+      }
+
+      if (mode === "search") {
+        const query = (args.query || "").trim()
+        if (!query) {
+          return "search mode requires a non-empty query."
+        }
+
+        const search = await searchSessionSafely({
+          sessionPath: resolveSessionPath(friendId, channel, key),
+          friendId,
+          channel,
+          key,
+          query,
+        })
+
+        if (search.kind === "missing") {
+          return NO_SESSION_FOUND_MESSAGE
+        }
+        if (search.kind === "empty") {
+          return EMPTY_SESSION_MESSAGE
+        }
+        if (search.kind === "no_match") {
+          return `no matches for "${search.query}" in that session.\n\n${search.snapshot}`
+        }
+
+        return [
+          `history search: "${search.query}"`,
+          search.snapshot,
+          ...search.matches.map((match, index) => `match ${index + 1}\n${match}`),
+        ].join("\n\n")
       }
 
       const sessFile = resolveSessionPath(friendId, channel, key)
@@ -1136,7 +1221,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
           type: "object",
           properties: {
             friendId: { type: "string", description: "the friend UUID (or 'self')" },
-            channel: { type: "string", description: "the channel: cli, teams, or inner" },
+            channel: { type: "string", description: "the channel: cli, teams, bluebubbles, inner, or mcp" },
             key: { type: "string", description: "session key (defaults to 'session')" },
             content: { type: "string", description: "the message content to send" },
           },
@@ -1169,6 +1254,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
             ...(delegatingBridgeId ? { bridgeId: delegatingBridgeId } : {}),
           }
         : undefined
+      const obligationId = delegatedFrom ? generateObligationId(now) : undefined
       const envelope: PendingMessage = {
         from: agentName,
         friendId,
@@ -1177,6 +1263,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
         content,
         timestamp: now,
         ...(delegatedFrom ? { delegatedFrom, obligationStatus: "pending" as const } : {}),
+        ...(obligationId ? { obligationId } : {}),
       }
 
       if (isSelf) {
@@ -1194,6 +1281,16 @@ export const baseToolDefinitions: ToolDefinition[] = [
             })
           } catch {
             /* v8 ignore next -- defensive: obligation store write failure should not break send_message @preserve */
+          }
+          /* v8 ignore next -- obligationId always set when delegatedFrom is set (see generateObligationId above) @preserve */
+          if (obligationId) {
+            createInnerObligation(agentName, {
+              id: obligationId,
+              origin: delegatedFrom,
+              status: "queued",
+              delegatedContent: content.length > 120 ? `${content.slice(0, 117)}...` : content,
+              createdAt: now,
+            })
           }
           emitNervesEvent({
             event: "repertoire.obligation_created",
@@ -1381,44 +1478,39 @@ export const baseToolDefinitions: ToolDefinition[] = [
       return `reasoning effort set to "${level}".`;
     },
     requiredCapability: "reasoning-effort" as const,
+    summaryKeys: ["level"],
   },
   ...codingToolDefinitions,
 ];
 
 export const tools: OpenAI.ChatCompletionFunctionTool[] = baseToolDefinitions.map((d) => d.tool);
 
-export const goInwardTool: OpenAI.ChatCompletionFunctionTool = {
+export const ponderTool: OpenAI.ChatCompletionFunctionTool = {
   type: "function",
   function: {
-    name: "go_inward",
-    description: "i need to think about this privately. this takes the current thread inward -- i'll sit with it, work through it, or carry it to where it needs to go. must be the only tool call in the turn.",
+    name: "ponder",
+    description: "i need to sit with this. from a conversation, takes the thread inward with a thought and a parting word. from inner dialog, keeps the wheel turning for another pass. must be the only tool call in the turn.",
     parameters: {
       type: "object",
       properties: {
-        content: {
+        thought: {
           type: "string",
-          description: "what i need to think about -- the question, the thread, the thing that needs private attention",
+          description: "the question or thread that needs more thought — brief framing, not analysis. required from a conversation, ignored from inner dialog.",
         },
-        answer: {
+        say: {
           type: "string",
-          description: "if i want to say something outward before going inward -- an acknowledgment, a 'let me think about that', whatever feels right",
-        },
-        mode: {
-          type: "string",
-          enum: ["reflect", "plan", "relay"],
-          description: "reflect: something to sit with. plan: something to work through. relay: something to carry across.",
+          description: "what you say before going quiet — speak to what caught your attention, not just that something did. required from a conversation, ignored from inner dialog.",
         },
       },
-      required: ["content"],
     },
   },
 };
 
-export const noResponseTool: OpenAI.ChatCompletionFunctionTool = {
+export const observeTool: OpenAI.ChatCompletionFunctionTool = {
   type: "function",
   function: {
-    name: "no_response",
-    description: "stay silent in this group chat — the moment doesn't call for a response. must be the only tool call in the turn.",
+    name: "observe",
+    description: "absorb what happened without responding — the moment doesn't call for words. must be the only tool call in the turn.",
     parameters: {
       type: "object",
       properties: {
@@ -1428,10 +1520,10 @@ export const noResponseTool: OpenAI.ChatCompletionFunctionTool = {
   },
 };
 
-export const finalAnswerTool: OpenAI.ChatCompletionFunctionTool = {
+export const settleTool: OpenAI.ChatCompletionFunctionTool = {
   type: "function",
   function: {
-    name: "final_answer",
+    name: "settle",
     description:
       "respond to the user with your message. call this tool when you are ready to deliver your response.",
     parameters: {
@@ -1441,6 +1533,18 @@ export const finalAnswerTool: OpenAI.ChatCompletionFunctionTool = {
         intent: { type: "string", enum: ["complete", "blocked", "direct_reply"] },
       },
       required: ["answer"],
+    },
+  },
+};
+
+export const restTool: OpenAI.ChatCompletionFunctionTool = {
+  type: "function",
+  function: {
+    name: "rest",
+    description: "put this down for now — the wheel stops until the next heartbeat. must be the only tool call in the turn.",
+    parameters: {
+      type: "object",
+      properties: {},
     },
   },
 };

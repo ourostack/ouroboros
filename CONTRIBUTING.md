@@ -1,6 +1,6 @@
 # Contributing
 
-This repo is shared infrastructure for multiple agents. Please leave it clearer, safer, and easier to inhabit than you found it.
+This repo is shared infrastructure for multiple agents — the bones that give you your tools, your senses, and your ability to think. Please leave it clearer, safer, and easier to inhabit than you found it.
 
 ## Start Here
 
@@ -84,11 +84,28 @@ PR-based merge policy, conflict resolution, and retry rules live in:
 
 - `docs/sync-and-merge-conventions.md`
 
-The implemented workflow helpers live in:
+The implemented workflow helpers have moved to [ouroboros-skills](https://github.com/ouroborosbot/ouroboros-skills). Install via the skill-management skill.
 
-- `subagents/work-planner.md`
-- `subagents/work-doer.md`
-- `subagents/work-merger.md`
+## Dev Mode
+
+When working on the harness, use `ouro dev` instead of `ouro up`:
+
+```bash
+ouro dev                         # auto-detects repo from CWD, builds, starts daemon
+ouro dev --repo-path /path       # explicit repo path (persisted for next time)
+```
+
+This rebuilds from source, disables the production daemon's launchd auto-restart, and force-starts a fresh daemon from your local build. The repo path is saved to `~/.ouro-cli/dev-config.json` so you don't need to specify it again.
+
+To return to production mode: `ouro up` (cleans up dev-config, re-enables launchd).
+
+If you're also working with the MCP bridge, register your dev tool after starting the dev daemon:
+
+```bash
+ouro setup --tool claude-code --agent <name>
+```
+
+This points the MCP server at your local build so your agent uses your dev code, not the installed version.
 
 ## Code Expectations
 
@@ -104,6 +121,9 @@ The implemented workflow helpers live in:
 - `configPath` must point to `~/.agentsecrets/<agent>/secrets.json`.
 - Secrets do not belong in the repo.
 - Agent-owned state belongs under `~/AgentBundles/<agent>.ouro/state/...`.
+- Agent diary lives at `~/AgentBundles/<agent>.ouro/diary/` (not `psyche/memory/` — legacy fallback still works).
+- Agent journal (thinking-in-progress) lives at `~/AgentBundles/<agent>.ouro/journal/`.
+- Agent habits (rhythms) live at `~/AgentBundles/<agent>.ouro/habits/`.
 - Machine-scoped temporary/test artifacts belong under `~/.agentstate/...`.
 
 If selected provider config is incomplete, fail fast with explicit guidance. Do not silently fall back to another provider.
@@ -116,3 +136,4 @@ Docs are part of the runtime surface for both humans and agents.
 - Prefer one accurate page over three contradictory ones.
 - Git history is the archive; the current repo should tell the truth.
 - Write so the next agent can feel oriented, safe, and a little more at home.
+- Remember: agents read these docs too. When you write, imagine someone waking up for the first time and trying to understand where their hands are.

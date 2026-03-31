@@ -409,6 +409,7 @@ describe("daemon CLI default dependency branches", () => {
       checkSocketAlive: vi.fn(async () => false),
       cleanupStaleSocket: vi.fn(),
       getCurrentCliVersion: () => null,
+      detectMode: () => "production" as const,
     })
     expect(result).toContain("daemon started")
     expect(consoleLog).toHaveBeenCalled()

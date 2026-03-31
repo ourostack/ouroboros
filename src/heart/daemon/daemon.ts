@@ -1,5 +1,6 @@
 import * as fs from "fs"
 import * as net from "net"
+import * as os from "os"
 import * as path from "path"
 import { getAgentBundlesRoot, getRepoRoot } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
@@ -13,8 +14,86 @@ import { startUpdateChecker, stopUpdateChecker } from "./update-checker"
 import { performStagedRestart } from "./staged-restart"
 import { execSync, spawnSync } from "child_process"
 import { drainPending } from "../../mind/pending"
+import {
+  handleAgentAsk, handleAgentCatchup, handleAgentCheckGuidance,
+  handleAgentCheckScope, handleAgentDelegate, handleAgentGetContext,
+  handleAgentGetTask, handleAgentReportBlocker, handleAgentReportComplete,
+  handleAgentReportProgress, handleAgentRequestDecision, handleAgentSearchMemory,
+  handleAgentStatus,
+} from "./agent-service"
 import { getAlwaysOnSenseNames } from "../../mind/friends/channel"
 import { getSharedMcpManager, shutdownSharedMcpManager } from "../../repertoire/mcp-manager"
+
+const PIDFILE_PATH = path.join(os.homedir(), ".ouro-cli", "daemon.pids")
+
+/**
+ * Kill all ouro processes from the previous daemon instance using the pidfile.
+ * On startup, reads PIDs from ~/.ouro-cli/daemon.pids, kills them all, then
+ * deletes the file. The new daemon writes its own PIDs after spawning.
+ *
+ * Falls back to ps-based scanning if the pidfile doesn't exist (first run
+ * or manual cleanup).
+ */
+/* v8 ignore start -- process lifecycle: uses kill/ps, tested via deployment @preserve */
+export function killOrphanProcesses(): void {
+  try {
+    let pidsToKill: number[] = []
+
+    // Primary: read pidfile from previous daemon
+    try {
+      const raw = fs.readFileSync(PIDFILE_PATH, "utf-8")
+      pidsToKill = raw.split("\n").map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n) && n !== process.pid)
+      fs.unlinkSync(PIDFILE_PATH)
+    } catch {
+      // No pidfile — fall back to ps scan
+    }
+
+    // Fallback: scan ps for any ouro entry processes we missed
+    if (pidsToKill.length === 0) {
+      try {
+        const result = execSync("ps -eo pid,command", { encoding: "utf-8", timeout: 5000 })
+        for (const line of result.split("\n")) {
+          if (!line.includes("agent-entry.js") && !line.includes("daemon-entry.js") && !line.includes("-entry.js --agent")) continue
+          const pid = parseInt(line.trim(), 10)
+          if (!isNaN(pid) && pid !== process.pid) pidsToKill.push(pid)
+        }
+      } catch { /* ps failed — best effort */ }
+    }
+
+    if (pidsToKill.length > 0) {
+      for (const pid of pidsToKill) {
+        try { process.kill(pid, "SIGTERM") } catch { /* already exited */ }
+      }
+      emitNervesEvent({
+        component: "daemon",
+        event: "daemon.orphan_cleanup",
+        message: `killed ${pidsToKill.length} orphaned ouro processes`,
+        meta: { pids: pidsToKill },
+      })
+    }
+  } catch (error) {
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.orphan_cleanup_error",
+      message: "failed to clean up orphaned ouro processes",
+      meta: { error: error instanceof Error ? error.message : String(error) },
+    })
+  }
+}
+
+/**
+ * Write all managed PIDs (daemon + children) to the pidfile.
+ * Called after all agents and senses are spawned.
+ */
+export function writePidfile(extraPids: number[] = []): void {
+  try {
+    const pids = [process.pid, ...extraPids].filter(Boolean)
+    fs.mkdirSync(path.dirname(PIDFILE_PATH), { recursive: true })
+    fs.writeFileSync(PIDFILE_PATH, pids.join("\n") + "\n", "utf-8")
+  } catch { /* best effort */ }
+}
+/* v8 ignore stop */
 
 export interface DaemonCronJobSummary {
   id: string
@@ -49,6 +128,8 @@ export interface DaemonProcessManagerLike {
     startedAt: string | null
     lastCrashAt: string | null
     backoffMs: number
+    lastExitCode?: number | null
+    lastSignal?: string | null
   }>
 }
 
@@ -86,11 +167,25 @@ export type DaemonCommand =
   | { kind: "agent.start"; agent: string }
   | { kind: "agent.stop"; agent: string }
   | { kind: "agent.restart"; agent: string }
+  | { kind: "agent.ask"; agent: string; friendId: string; question?: string; [key: string]: unknown }
+  | { kind: "agent.status"; agent: string; friendId: string; [key: string]: unknown }
+  | { kind: "agent.catchup"; agent: string; friendId: string; [key: string]: unknown }
+  | { kind: "agent.delegate"; agent: string; friendId: string; task?: string; context?: string; [key: string]: unknown }
+  | { kind: "agent.getContext"; agent: string; friendId: string; [key: string]: unknown }
+  | { kind: "agent.searchMemory"; agent: string; friendId: string; query?: string; [key: string]: unknown }
+  | { kind: "agent.getTask"; agent: string; friendId: string; [key: string]: unknown }
+  | { kind: "agent.checkScope"; agent: string; friendId: string; item?: string; [key: string]: unknown }
+  | { kind: "agent.requestDecision"; agent: string; friendId: string; topic?: string; options?: string[]; [key: string]: unknown }
+  | { kind: "agent.checkGuidance"; agent: string; friendId: string; topic?: string; [key: string]: unknown }
+  | { kind: "agent.reportProgress"; agent: string; friendId: string; summary?: string; [key: string]: unknown }
+  | { kind: "agent.reportBlocker"; agent: string; friendId: string; blocker?: string; [key: string]: unknown }
+  | { kind: "agent.reportComplete"; agent: string; friendId: string; summary?: string; [key: string]: unknown }
   | { kind: "cron.list" }
   | { kind: "cron.trigger"; jobId: string }
   | { kind: "inner.wake"; agent: string }
   | { kind: "chat.connect"; agent: string }
   | { kind: "task.poke"; agent: string; taskId: string }
+  | { kind: "habit.poke"; agent: string; habitName: string }
   | { kind: "message.send"; from: string; to: string; content: string; priority?: string; sessionId?: string; taskRef?: string }
   | { kind: "message.poll"; agent: string }
   | { kind: "mcp.list" }
@@ -113,6 +208,7 @@ export interface OuroDaemonOptions {
   router: DaemonRouterLike
   senseManager?: DaemonSenseManagerLike
   bundlesRoot?: string
+  mode?: "dev" | "production"
 }
 
 interface DaemonWorkerRow {
@@ -122,6 +218,8 @@ interface DaemonWorkerRow {
   pid: number | null
   restartCount: number
   startedAt: string | null
+  lastExitCode: number | null
+  lastSignal: string | null
 }
 
 interface DaemonStatusOverview {
@@ -154,6 +252,8 @@ function buildWorkerRows(
     pid: snapshot.pid,
     restartCount: snapshot.restartCount,
     startedAt: snapshot.startedAt,
+    lastExitCode: snapshot.lastExitCode ?? null,
+    lastSignal: snapshot.lastSignal ?? null,
   }))
 }
 
@@ -199,6 +299,7 @@ export class OuroDaemon {
   private readonly router: DaemonRouterLike
   private readonly senseManager: DaemonSenseManagerLike | null
   private readonly bundlesRoot: string
+  private readonly mode: "dev" | "production"
   private server: net.Server | null = null
 
   constructor(options: OuroDaemonOptions) {
@@ -209,6 +310,7 @@ export class OuroDaemon {
     this.router = options.router
     this.senseManager = options.senseManager ?? null
     this.bundlesRoot = options.bundlesRoot ?? getAgentBundlesRoot()
+    this.mode = options.mode ?? "production"
   }
 
   async start(): Promise<void> {
@@ -227,44 +329,65 @@ export class OuroDaemon {
     await applyPendingUpdates(this.bundlesRoot, currentVersion)
 
     // Start periodic update checker (polls npm registry every 30 minutes)
+    // Skip in dev mode — dev builds should not auto-update from npm
     const bundlesRoot = this.bundlesRoot
-    const daemon = this
-    startUpdateChecker({
-      currentVersion,
-      deps: {
-        distTag: "alpha",
-        fetchRegistryJson: /* v8 ignore next -- integration: real HTTP fetch @preserve */ async () => {
-          const res = await fetch("https://registry.npmjs.org/@ouro.bot/cli")
-          return res.json()
-        },
-      },
-      onUpdate: /* v8 ignore start -- integration: real npm install + process spawn @preserve */ async (result) => {
-        if (!result.latestVersion) return
-        await performStagedRestart(result.latestVersion, {
-          execSync: (cmd) => execSync(cmd, { stdio: "inherit" }),
-          spawnSync,
-          resolveNewCodePath: (_version) => {
-            try {
-              const resolved = execSync(`node -e "console.log(require.resolve('@ouro.bot/cli/package.json'))"`, { encoding: "utf-8" }).trim()
-              return resolved ? path.dirname(resolved) : null
-            } catch {
-              return null
-            }
+    if (this.mode === "dev") {
+      emitNervesEvent({
+        component: "daemon",
+        event: "daemon.update_checker_skip",
+        message: "skipping update checker in dev mode",
+        meta: { reason: "dev mode" },
+      })
+    } else {
+      const daemon = this
+      startUpdateChecker({
+        currentVersion,
+        deps: {
+          distTag: "alpha",
+          fetchRegistryJson: /* v8 ignore next -- integration: real HTTP fetch @preserve */ async () => {
+            const res = await fetch("https://registry.npmjs.org/@ouro.bot/cli")
+            return res.json()
           },
-          gracefulShutdown: () => daemon.stop(),
-          nodePath: process.execPath,
-          bundlesRoot,
-        })
-      },
-      /* v8 ignore stop */
-    })
+        },
+        onUpdate: /* v8 ignore start -- integration: real npm install + process spawn @preserve */ async (result) => {
+          if (!result.latestVersion) return
+          await performStagedRestart(result.latestVersion, {
+            execSync: (cmd) => execSync(cmd, { stdio: "inherit" }),
+            spawnSync,
+            resolveNewCodePath: (_version) => {
+              try {
+                const resolved = execSync(`node -e "console.log(require.resolve('@ouro.bot/cli/package.json'))"`, { encoding: "utf-8" }).trim()
+                return resolved ? path.dirname(resolved) : null
+              } catch {
+                return null
+              }
+            },
+            gracefulShutdown: () => daemon.stop(),
+            nodePath: process.execPath,
+            bundlesRoot,
+          })
+        },
+        /* v8 ignore stop */
+      })
+    }
 
     // Pre-initialize MCP connections so they're ready for the first command (non-blocking)
     /* v8 ignore next -- catch callback: getSharedMcpManager logs errors internally @preserve */
     getSharedMcpManager().catch(() => {})
 
+    /* v8 ignore start -- orphan cleanup + pidfile: calls process management functions @preserve */
+    killOrphanProcesses()
+    /* v8 ignore stop */
     await this.processManager.startAutoStartAgents()
     await this.senseManager?.startAutoStartSenses()
+
+    // Write all managed PIDs to disk so the next daemon can clean up
+    /* v8 ignore start -- pidfile write: collects PIDs from process managers @preserve */
+    const agentPids = this.processManager.listAgentSnapshots().map((s) => s.pid).filter((p): p is number => p !== null)
+    const sensePids = this.senseManager?.listManagedPids?.() ?? []
+    writePidfile([...agentPids, ...sensePids])
+    /* v8 ignore stop */
+
     this.scheduler.start?.()
     await this.scheduler.reconcile?.()
     await this.drainPendingBundleMessages()
@@ -278,11 +401,35 @@ export class OuroDaemon {
       let raw = ""
       let responded = false
 
+      /* v8 ignore start — connection error handler requires real socket error @preserve */
+      connection.on("error", (err) => {
+        emitNervesEvent({
+          level: "warn",
+          component: "daemon",
+          event: "daemon.connection_error",
+          message: "socket connection error",
+          meta: { error: err.message, code: (err as NodeJS.ErrnoException).code ?? null },
+        })
+      })
+      /* v8 ignore stop */
+
       const flushResponse = async () => {
         if (responded) return
         responded = true
         const response = await this.handleRawPayload(raw)
-        connection.end(response)
+        try {
+          connection.end(response)
+        /* v8 ignore start — EPIPE catch requires real socket disconnect @preserve */
+        } catch (err) {
+          emitNervesEvent({
+            level: "warn",
+            component: "daemon",
+            event: "daemon.connection_end_error",
+            message: "failed to send response to client (EPIPE)",
+            meta: { error: err instanceof Error ? err.message : String(err) },
+          })
+        }
+        /* v8 ignore stop */
       }
 
       connection.on("data", (chunk) => {
@@ -297,7 +444,22 @@ export class OuroDaemon {
     const server = this.server
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject)
-      server.listen(this.socketPath, () => resolve())
+      server.listen(this.socketPath, () => {
+        // Replace the one-time error listener with a persistent one after successful listen
+        server.removeAllListeners("error")
+        /* v8 ignore start — server error after listen requires real socket race condition @preserve */
+        server.on("error", (err) => {
+          emitNervesEvent({
+            level: "error",
+            component: "daemon",
+            event: "daemon.server_error",
+            message: "daemon server error after listen",
+            meta: { error: err.message, code: (err as NodeJS.ErrnoException).code ?? null },
+          })
+        })
+        /* v8 ignore stop */
+        resolve()
+      })
     })
   }
 
@@ -495,6 +657,27 @@ export class OuroDaemon {
       meta: { kind: command.kind },
     })
 
+    try {
+      return await this.handleCommandInner(command)
+    /* v8 ignore start — command error catch tested in daemon-command-error.test; instanceof branches defensive @preserve */
+    } catch (error) {
+      emitNervesEvent({
+        level: "error",
+        component: "daemon",
+        event: "daemon.command_error",
+        message: "unexpected error handling daemon command",
+        meta: {
+          kind: command.kind,
+          error: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack ?? null : null,
+        },
+      })
+      throw error
+    }
+    /* v8 ignore stop */
+  }
+
+  private async handleCommandInner(command: DaemonCommand): Promise<DaemonResponse> {
     switch (command.kind) {
       case "daemon.start":
         await this.start()
@@ -548,6 +731,32 @@ export class OuroDaemon {
       case "agent.restart":
         await this.processManager.restartAgent?.(command.agent)
         return { ok: true, message: `restarted ${command.agent}` }
+      case "agent.ask":
+        return handleAgentAsk(command)
+      case "agent.status":
+        return handleAgentStatus(command)
+      case "agent.catchup":
+        return handleAgentCatchup(command)
+      case "agent.delegate":
+        return handleAgentDelegate(command)
+      case "agent.getContext":
+        return handleAgentGetContext(command)
+      case "agent.searchMemory":
+        return handleAgentSearchMemory(command)
+      case "agent.getTask":
+        return handleAgentGetTask(command)
+      case "agent.checkScope":
+        return handleAgentCheckScope(command)
+      case "agent.requestDecision":
+        return handleAgentRequestDecision(command)
+      case "agent.checkGuidance":
+        return handleAgentCheckGuidance(command)
+      case "agent.reportProgress":
+        return handleAgentReportProgress(command)
+      case "agent.reportBlocker":
+        return handleAgentReportBlocker(command)
+      case "agent.reportComplete":
+        return handleAgentReportComplete(command)
       case "cron.list": {
         const jobs = this.scheduler.listJobs()
         const summary = jobs.length === 0
@@ -606,6 +815,13 @@ export class OuroDaemon {
           ok: true,
           message: `queued poke ${receipt.id}`,
           data: receipt,
+        }
+      }
+      case "habit.poke": {
+        this.processManager.sendToAgent?.(command.agent, { type: "habit", habitName: command.habitName })
+        return {
+          ok: true,
+          message: `poked habit ${command.habitName} for ${command.agent}`,
         }
       }
       case "mcp.list": {

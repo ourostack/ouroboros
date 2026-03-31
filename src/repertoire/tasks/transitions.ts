@@ -31,19 +31,16 @@ export const TASK_STATUS_TRANSITIONS: Record<TaskStatus, readonly TaskStatus[]> 
 export const TASK_CANONICAL_TYPES: readonly CanonicalTaskType[] = [
   "one-shot",
   "ongoing",
-  "habit",
 ]
 
 export const TASK_CANONICAL_COLLECTIONS: readonly CanonicalTaskCollection[] = [
   "one-shots",
   "ongoing",
-  "habits",
 ]
 
 export const TASK_TYPE_TO_COLLECTION: Record<CanonicalTaskType, CanonicalTaskCollection> = {
   "one-shot": "one-shots",
   ongoing: "ongoing",
-  habit: "habits",
 }
 
 export const TASK_RESERVED_DIRECTORIES = ["templates", ".trash", "archive"] as const
@@ -69,21 +66,6 @@ export const TASK_REQUIRED_TEMPLATE_FIELDS: Record<CanonicalTaskType, readonly s
     "artifacts",
   ],
   ongoing: [
-    "kind",
-    "type",
-    "category",
-    "title",
-    "status",
-    "validator",
-    "requester",
-    "cadence",
-    "scheduledAt",
-    "lastRun",
-    "created",
-    "updated",
-    "artifacts",
-  ],
-  habit: [
     "kind",
     "type",
     "category",

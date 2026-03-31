@@ -54,6 +54,11 @@ function activityPriority(source: TargetSessionCandidate["activitySource"]): num
 }
 
 function describeDelivery(candidate: { channel: string; trust: TrustExplanation }): TargetSessionCandidate["delivery"] {
+  if (candidate.channel === "mcp") {
+    // MCP can't push (no proactive API), but can queue — dev tool picks up via check_response
+    return { mode: "queue_only", reason: "MCP session — message queued for dev tool to pick up via check_response" }
+  }
+
   if (candidate.channel !== "bluebubbles" && candidate.channel !== "teams") {
     return { mode: "blocked", reason: "this channel does not support proactive outward delivery yet" }
   }

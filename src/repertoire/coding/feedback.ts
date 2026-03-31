@@ -157,11 +157,41 @@ function isSafeProgressSnippet(snippet: string): boolean {
 }
 
 function pickUpdateSnippet(update: CodingSessionUpdate): string | null {
+  const checkpoint = update.session.checkpoint?.trim() || null
   return (
-    lastMeaningfulLine(update.text)
+    checkpoint
+    ?? lastMeaningfulLine(update.text)
     ?? lastMeaningfulLine(update.session.stderrTail)
     ?? lastMeaningfulLine(update.session.stdoutTail)
   )
+}
+
+function renderValue(text: string | undefined): string {
+  const trimmed = text?.trim()
+  return trimmed && trimmed.length > 0 ? trimmed : "(empty)"
+}
+
+function renderPath(text: string | undefined): string {
+  return text && text.trim().length > 0 ? text : "(none)"
+}
+
+export function formatCodingTail(session: CodingSession): string {
+  const stdout = renderValue(session.stdoutTail)
+  const stderr = renderValue(session.stderrTail)
+  return [
+    `sessionId: ${session.id}`,
+    `runner: ${session.runner}`,
+    `status: ${session.status}`,
+    `checkpoint: ${renderValue(session.checkpoint ?? undefined)}`,
+    `artifactPath: ${renderPath(session.artifactPath)}`,
+    `workdir: ${session.workdir}`,
+    "",
+    "[stdout]",
+    stdout,
+    "",
+    "[stderr]",
+    stderr,
+  ].join("\n")
 }
 
 function formatUpdateMessage(update: CodingSessionUpdate): string | null {
@@ -264,23 +294,6 @@ async function wakeInnerDialogForObligation(update: CodingSessionUpdate): Promis
       },
     })
   }
-}
-
-export function formatCodingTail(session: CodingSession): string {
-  const stdout = session.stdoutTail.trim() || "(empty)"
-  const stderr = session.stderrTail.trim() || "(empty)"
-  return [
-    `sessionId: ${session.id}`,
-    `runner: ${session.runner}`,
-    `status: ${session.status}`,
-    `workdir: ${session.workdir}`,
-    "",
-    "[stdout]",
-    stdout,
-    "",
-    "[stderr]",
-    stderr,
-  ].join("\n")
 }
 
 export function attachCodingSessionFeedback(

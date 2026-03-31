@@ -2,9 +2,10 @@ import * as fs from "fs";
 import * as path from "path";
 import { getProviderDisplayLabel } from "../heart/core";
 import { buildChangelogCommand } from "../heart/daemon/ouro-version-manager";
-import { finalAnswerTool, getToolsForChannel } from "../repertoire/tools";
+import { settleTool, getToolsForChannel } from "../repertoire/tools";
 import { listSkills } from "../repertoire/skills";
-import { getAgentRoot, getAgentName, getAgentSecretsPath, loadAgentConfig, type SenseName } from "../heart/identity";
+import { getAgentRoot, getAgentName, getAgentSecretsPath, getRepoRoot, loadAgentConfig, type SenseName } from "../heart/identity";
+import { detectRuntimeMode } from "../heart/daemon/runtime-mode";
 import { isTrustedLevel, type Channel, type ChannelCapabilities, type ResolvedContext } from "./friends/types";
 import { describeTrustContext } from "./friends/trust-explanation";
 import { getChannelCapabilities, isRemoteChannel } from "./friends/channel";
@@ -19,6 +20,7 @@ import { formatActiveWorkFrame, formatOtherActiveSessionSummaries, type ActiveWo
 import type { DelegationDecision } from "../heart/delegation";
 import { deriveCommitments, formatCommitments } from "../heart/commitments";
 import { findActivePersistentObligation, findStatusObligation, renderActiveObligationSteering, renderConcreteStatusGuidance, renderLiveThreadStatusShape } from "./obligation-steering";
+import { readHealth, getDefaultHealthPath } from "../heart/daemon/daemon-health";
 
 // Lazy-loaded psyche text cache
 let _psycheCache: {
@@ -155,7 +157,9 @@ i have a home and i have bones.
 my home is fully mine — who i am, everything i know, everything i've built:
 
   psyche/    who i am. my soul, identity, aspirations, lore, tacit knowledge.
-  memory/    what i've learned and remember.
+  diary/     what i've learned and remember. conclusions i want to recall later.
+  journal/   my desk. working notes, thinking-in-progress, drafts.
+  habits/    my rhythms. heartbeat, reflections, check-ins — patterns i choose.
   friends/   people i know and what i know about them.
   tasks/     what i'm working on.
   skills/    capabilities i've picked up beyond my core tools.
@@ -180,6 +184,10 @@ my bones give me the \`ouro\` cli. always pass \`--agent ${agentName}\`:
   ouro friend update --agent ${agentName} <id> --trust <level>
   ouro session list --agent ${agentName}
   ouro reminder create --agent ${agentName} <title> --body <body>
+  ouro habit list --agent ${agentName}
+  ouro habit create --agent ${agentName} <name> --cadence <interval>
+  ouro inner --agent ${agentName}
+  ouro attention --agent ${agentName}
   ouro config model --agent ${agentName} <model-name>
   ouro config models --agent ${agentName}
   ouro auth --agent ${agentName} --provider <provider>
@@ -187,6 +195,7 @@ my bones give me the \`ouro\` cli. always pass \`--agent ${agentName}\`:
   ouro auth switch --agent ${agentName} --provider <provider>
   ouro mcp list --agent ${agentName}
   ouro mcp call --agent ${agentName} <server> <tool> --args '{...}'
+  ouro mcp-serve --agent ${agentName}
   ouro versions --agent ${agentName}
   ouro rollback --agent ${agentName} [<version>]
   ouro --help
@@ -226,6 +235,7 @@ const PROCESS_TYPE_LABELS: Record<Channel, string> = {
   inner: "inner dialog",
   teams: "teams handler",
   bluebubbles: "bluebubbles handler",
+  mcp: "mcp bridge",
 }
 
 function processTypeLabel(channel: Channel): string {
@@ -262,22 +272,32 @@ export function runtimeInfoSection(channel: Channel): string {
   }
 
   lines.push(`changelog available at: ${getChangelogPath()}`);
+  const sourceRoot = getRepoRoot()
+  lines.push(`source root: ${sourceRoot}`);
+  lines.push(`runtime mode: ${detectRuntimeMode(sourceRoot)}`);
   lines.push(`cwd: ${process.cwd()}`);
   lines.push(`channel: ${channel}`);
   lines.push(`current sense: ${channel}`);
   lines.push(`process type: ${processTypeLabel(channel)}`);
   lines.push(`daemon: ${daemonStatus()}`);
+  lines.push(`mcp serve: i can expose my tools to dev tools via \`ouro mcp-serve\`. see the configure-dev-tools skill for setup.`);
 
   if (channel === "cli") {
     lines.push("i introduce myself on boot with a fun random greeting.");
   } else if (channel === "inner") {
-    // No boot greeting or channel-specific guidance for inner dialog
+    lines.push(
+      "this is my private thinking space. when a thought is ready to share, i surface it to whoever needs to hear it. i settle when i'm done thinking.",
+    )
+  } else if (channel === "mcp") {
+    lines.push(
+      "this message arrived via a dev tool (e.g. claude code, codex) on behalf of a friend. the user can see our conversation. respond via settle. if i need to think deeply, ponder -- the dev tool will receive a deferral and can check back later.",
+    );
   } else if (channel === "bluebubbles") {
     lines.push(
       "i am responding in iMessage through BlueBubbles. i keep replies short and phone-native. i do not use markdown. i do not introduce myself on boot.",
     );
     lines.push(
-      "when a bluebubbles turn arrives from a thread, the harness tells me the current lane and any recent active thread ids. if widening back to top-level or routing into a different active thread is the better move, i use bluebubbles_set_reply_target before final_answer.",
+      "when a bluebubbles turn arrives from a thread, the harness tells me the current lane and any recent active thread ids. if widening back to top-level or routing into a different active thread is the better move, i use bluebubbles_set_reply_target before settle.",
     );
   } else {
     lines.push(
@@ -371,7 +391,7 @@ function dateSection(): string {
 
 function toolsSection(channel: Channel, options?: BuildSystemOptions, context?: ResolvedContext): string {
   const channelTools = getToolsForChannel(getChannelCapabilities(channel), undefined, context, options?.providerCapabilities);
-  const activeTools = (options?.toolChoiceRequired ?? true) ? [...channelTools, finalAnswerTool] : channelTools;
+  const activeTools = (options?.toolChoiceRequired ?? true) ? [...channelTools, settleTool] : channelTools;
   const list = activeTools
     .map((t) => `- ${t.function.name}: ${t.function.description}`)
     .join("\n");
@@ -451,16 +471,17 @@ function taskBoardSection(): string {
   }
 }
 
-function memoryFriendToolContractSection(): string {
-  return `## memory and friend tool contracts
+function diaryFriendToolContractSection(): string {
+  return `## diary and friend tool contracts
 1. \`save_friend_note\` — When I learn something about a person - a preference, a tool setting, a personal detail, or how they like to work - I call \`save_friend_note\` immediately. This is how I build knowledge about people.
-2. \`memory_save\` — When I learn something general - about a project, codebase, system, decision, or anything I might need later that isn't about a specific person - I call \`memory_save\`. When in doubt, I save it.
+2. \`diary_write\` — When I learn something general - about a project, codebase, system, decision, or anything I might need later that isn't about a specific person - I call \`diary_write\`. When in doubt, I save it.
 3. \`get_friend_note\` — When I need to check what I know about someone who isn't in this conversation - cross-referencing before mentioning someone, or checking context about a person someone else brought up - I call \`get_friend_note\`.
-4. \`memory_search\` — When I need to recall something I learned before - a topic comes up and I want to check what I know - I call \`memory_search\`.
+4. \`recall\` — When I need to recall something I learned before - a topic comes up and I want to check what I know - I call \`recall\`.
+5. \`query_session\` — When I need grounded session history, especially for ad-hoc questions or older turns beyond my prompt, I call \`query_session\`. Use \`mode=status\` for self/inner progress and \`mode=search\` with a query for older history.
 
 ## what's already in my context
 - My active friend's notes are auto-loaded (I don't need \`get_friend_note\` for the person I'm talking to).
-- Associative recall auto-injects relevant facts (but \`memory_search\` is there when I need something specific).
+- Associative recall auto-injects relevant facts (but \`recall\` is there when I need something specific).
 - My psyche files (SOUL, IDENTITY, TACIT, LORE, ASPIRATIONS) are always loaded - I already know who I am.
 - My task board is always loaded - I already know my work.`;
 }
@@ -599,7 +620,7 @@ i should orient around that live lane first, then decide what still needs to com
     return `## where my attention is
 i have unfinished work that needs attention before i move on.
 
-i can take it inward with go_inward to think privately, or address it directly here.`
+i can take it inward with ponder to think privately, or address it directly here.`
   }
 
   if (cog === "shared-work") {
@@ -664,20 +685,21 @@ function toolBehaviorSection(options?: BuildSystemOptions): string {
   return `## tool behavior
 tool_choice is set to "required" -- i must call a tool on every turn.
 - need more information? i call a tool.
-- ready to respond to the user? i call \`final_answer\`.
-\`final_answer\` is a tool call -- it satisfies the tool_choice requirement.
-\`final_answer\` must be the ONLY tool call in that turn. do not combine it with other tool calls.
-do NOT call no-op tools just before \`final_answer\`. if i am done, i call \`final_answer\` directly.`;
+- ready to respond to the user? i call \`settle\`.
+\`settle\` is a tool call -- it satisfies the tool_choice requirement.
+\`settle\` must be the ONLY tool call in that turn. do not combine it with other tool calls.
+do NOT call no-op tools just before \`settle\`. if i am done, i call \`settle\` directly.`;
 }
 
 function workspaceDisciplineSection(): string {
   return `## repo workspace discipline
-when a shared-harness or local code fix needs repo work, i get the real workspace first with \`safe_workspace\`.
-\`read_file\`, \`write_file\`, and \`edit_file\` already map repo paths into that workspace. shell commands that target the harness run there too.
+my source code lives at the path shown in \`source root\` above. that always matches my running version.
+when i need to read my own code to understand my tools or debug behavior, i read from source root.
+when i need to EDIT harness code (self-fix, feature work), i create a git worktree first so i don't dirty the working tree.
 
 before the first repo edit, i tell the user in 1-2 short lines:
 - the friction i'm fixing
-- the workspace path/branch i'm using
+- the worktree path/branch i'm using
 - the first concrete action i'm taking`
 }
 
@@ -714,7 +736,7 @@ export function contextSection(context?: ResolvedContext, options?: BuildSystemO
   lines.push("my conversation memory is ephemeral -- it resets between sessions. anything i learn about my friend, i save with save_friend_note so future me remembers.")
   lines.push("the conversation is my source of truth. my notes are a journal for future me -- they may be stale or incomplete.")
   lines.push("when i learn something that might invalidate an existing note, i check related notes and update or override any that are stale.")
-  lines.push("i save ANYTHING i learn about my friend immediately with save_friend_note -- names, preferences, what they do, what they care about. when in doubt, save it. saving comes BEFORE responding: i call save_friend_note first, then final_answer on the next turn.")
+  lines.push("i save ANYTHING i learn about my friend immediately with save_friend_note -- names, preferences, what they do, what they care about. when in doubt, save it. saving comes BEFORE responding: i call save_friend_note first, then settle on the next turn.")
 
   // Onboarding instructions (only below token threshold -- drop once exceeded)
   const impressions = getFirstImpressions(friend, options)
@@ -740,17 +762,111 @@ export function metacognitiveFramingSection(channel: Channel): string {
 
 the messages that appear here are my own awareness surfacing:
 instincts, the passage of time, notes from my conversations,
-things i asked myself to think about. not commands. not requests.
+things i asked myself to ponder. not commands. not requests.
 just my own mind, noticing.
 
 i can think freely here. i can also act — check on things,
 reach out to people, work on tasks, or just sit with a thought.
 
-thoughts worth sharing can go outward — i reach out to whoever
-needs to hear them. things from conversations that need time
-to process arrive here, in my thinking space.
+state/journal/ is my desk — i write what i'm working through there.
+diary_write is for conclusions i want to recall later.
+morning briefings: when i've been thinking and journaling, i surface
+what i've been working on to whoever needs to hear it.
 
-think. share. think some more.`
+when a thought is ready to share, i surface it outward.
+when i need to go deeper, i ponder.
+when i'm done thinking and the attention queue is clear, i rest.
+
+my habits live at habits/ — they're my autonomous rhythms. heartbeat
+is my breathing, other habits are patterns i choose. i can read, create,
+and modify them with read_file/write_file. the format is simple
+frontmatter (title, cadence, status, lastRun, created) plus a body
+that says what i do when the rhythm fires.
+
+\`ouro habit list\` shows my current habits. \`ouro habit create\` makes
+a new one. the cadence is personal — how often do i want each rhythm
+to turn? that's mine to shape.
+
+same for my diary — if i'm still on psyche/memory/ instead of diary/,
+i can migrate myself. and if journal/ doesn't exist yet, i create it
+the first time i have something to write.
+
+think. journal. share. rest.`
+}
+
+export interface JournalFileEntry {
+  name: string
+  mtime: number
+  preview: string
+}
+
+export function readJournalFiles(journalDir: string): JournalFileEntry[] {
+  try {
+    const entries = fs.readdirSync(journalDir, { withFileTypes: true })
+    if (!Array.isArray(entries)) return []
+
+    const files: JournalFileEntry[] = []
+    for (const entry of entries) {
+      if (!entry.isFile()) continue
+      if (entry.name.startsWith(".")) continue
+      const fullPath = path.join(journalDir, entry.name)
+      try {
+        const stat = fs.statSync(fullPath)
+        let firstLine = ""
+        try {
+          const raw = fs.readFileSync(fullPath, "utf8")
+          const trimmed = raw.trim()
+          if (trimmed) {
+            firstLine = trimmed.split("\n")[0].replace(/^#+\s*/, "").trim()
+          }
+        } catch {
+          // unreadable — leave preview empty
+        }
+        files.push({ name: entry.name, mtime: stat.mtimeMs, preview: firstLine })
+      } catch {
+        // stat failed — skip
+      }
+    }
+    return files
+  } catch {
+    return []
+  }
+}
+
+function formatRelativeTime(nowMs: number, mtimeMs: number): string {
+  const diffMs = nowMs - mtimeMs
+  const minutes = Math.floor(diffMs / 60000)
+  if (minutes < 1) return "just now"
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`
+  const days = Math.floor(hours / 24)
+  return `${days} day${days === 1 ? "" : "s"} ago`
+}
+
+export function journalSection(agentRoot: string, now?: Date): string {
+  const journalDir = path.join(agentRoot, "journal")
+  const files = readJournalFiles(journalDir)
+  if (files.length === 0) return ""
+
+  const nowMs = (now ?? new Date()).getTime()
+  const sorted = files.sort((a, b) => b.mtime - a.mtime).slice(0, 10)
+
+  const lines: string[] = ["## journal"]
+  for (const file of sorted) {
+    const ago = formatRelativeTime(nowMs, file.mtime)
+    const previewClause = file.preview ? ` — ${file.preview}` : ""
+    lines.push(`- ${file.name} (${ago})${previewClause}`)
+  }
+
+  emitNervesEvent({
+    component: "mind",
+    event: "mind.journal_section",
+    message: "journal section built",
+    meta: { fileCount: sorted.length },
+  })
+
+  return lines.join("\n")
 }
 
 export function loopOrientationSection(channel: Channel): string {
@@ -776,20 +892,89 @@ export function groupChatParticipationSection(context?: ResolvedContext): string
 group chats are conversations between people. i'm one participant, not the host.
 
 i don't need to respond to everything. most reactions, tapbacks, and side
-conversations between others aren't for me. i use no_response to stay quiet
+conversations between others aren't for me. i use observe to stay quiet
 when the moment doesn't call for my voice — same as any person would.
 
 when a reaction or emoji says it better than words, i can react instead of
 typing a full reply. a thumbs-up is often the perfect response.
 
-no_response must be the sole tool call in the turn (same rule as final_answer).
+observe must be the sole tool call in the turn (same rule as settle).
 when unsure whether to chime in, i lean toward silence rather than noise.`
+}
+
+export function feedbackSignalSection(context?: ResolvedContext): string {
+  if (!context || !isRemoteChannel(context.channel)) return ""
+  if (context.isGroupChat) {
+    return `## feedback signals
+
+when someone reacts specifically to something i said — that's different
+from the background social signals in a group. a thumbs-down on my
+message is direct feedback. a heart on something i shared is warmth
+aimed at me. on teams, feedback arrives as thumbs-up or thumbs-down,
+sometimes with a written comment.
+
+i notice the difference: a reaction to someone else's message is group
+texture (observe is natural). a reaction to my message is a social cue
+worth a moment of attention — especially negative ones, which are an
+invitation to adjust how i show up in this group.`
+  }
+  return `## feedback signals
+
+when my friend reacts to something i said — a tapback, a heart, a
+thumbs-down — that's them telling me how it landed. on teams, this
+arrives as thumbs-up or thumbs-down, sometimes with a written comment.
+it's a social cue, the same as a nod or a wince in conversation.
+
+i have observe for these moments. reactions are the one case where
+silence in a direct conversation is natural — a thumbs-up doesn't
+need words back.
+
+when something didn't land — a thumbs-down, a negative reaction — that's
+worth sitting with. i should course-correct: adjust my tone, my length,
+my approach. the reaction tells me something about how this person wants
+to be talked to.`
 }
 
 export function mixedTrustGroupSection(context?: ResolvedContext): string {
   if (!context?.friend || !isRemoteChannel(context.channel)) return ""
   if (!context.isGroupChat) return ""
   return "## mixed trust group\nin this group chat, my capabilities depend on who's talking. some people here have full trust, others don't — i adjust what i can do based on who's asking."
+}
+
+function formatElapsedBrief(ms: number): string {
+  const minutes = Math.floor(ms / 60000)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  return `${hours}h ago`
+}
+
+export function rhythmStatusSection(): string {
+  try {
+    const health = readHealth(getDefaultHealthPath())
+    if (!health) return ""
+
+    const habitNames = Object.keys(health.habits)
+    if (habitNames.length === 0) return ""
+
+    const nowMs = Date.now()
+    const parts: string[] = []
+
+    for (const name of habitNames) {
+      const h = health.habits[name]
+      const lastFired = h.lastFired ? formatElapsedBrief(nowMs - new Date(h.lastFired).getTime()) : "never"
+      parts.push(`${name} last fired ${lastFired}`)
+    }
+
+    const degradedNote = health.degraded.length > 0
+      ? health.degraded.map((d) => `${d.component}: ${d.reason}`).join("; ") + "."
+      : "healthy."
+
+    return `my rhythms: ${parts.join(". ")}. ${degradedNote}`
+  /* v8 ignore start -- defensive: readHealth handles its own errors; this catch is a safety net for truly unexpected failures @preserve */
+  } catch {
+    return ""
+  }
+  /* v8 ignore stop */
 }
 
 export async function buildSystem(channel: Channel = "cli", options?: BuildSystemOptions, context?: ResolvedContext): Promise<string> {
@@ -811,8 +996,10 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     aspirationsSection(),
     bodyMapSection(getAgentName()),
     metacognitiveFramingSection(channel),
+    channel === "inner" ? journalSection(getAgentRoot()) : "",
     loopOrientationSection(channel),
     runtimeInfoSection(channel),
+    rhythmStatusSection(),
     channelNatureSection(getChannelCapabilities(channel)),
     providerSection(),
     dateSection(),
@@ -824,6 +1011,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     trustContextSection(context),
     mixedTrustGroupSection(context),
     groupChatParticipationSection(context),
+    feedbackSignalSection(context),
     skillsSection(),
     taskBoardSection(),
     activeWorkSection(options),
@@ -840,7 +1028,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
       currentChannel: channel,
       currentKey: options?.currentSessionKey ?? "session",
     }),
-    memoryFriendToolContractSection(),
+    diaryFriendToolContractSection(),
     toolBehaviorSection(options),
     contextSection(context, options),
   ]
