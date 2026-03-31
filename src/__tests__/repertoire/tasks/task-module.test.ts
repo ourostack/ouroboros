@@ -381,7 +381,7 @@ describe("task module", () => {
     expect(module.boardStatus("processing")).toHaveLength(1)
     expect(module.boardDeps()[0]).toContain("missing")
     expect(module.boardSessions()).toEqual(["2026-03-01-0900-blocked-task"])
-    expect(module.boardAction().some((line) => line.includes("bad filename"))).toBe(true)
+    expect(module.boardAction().some((line) => line.includes("filename-not-canonical"))).toBe(true)
     expect(module.boardAction().some((line) => line.includes("missing category"))).toBe(true)
     expect(board.full).toContain("2026-03-01-0916-")
   })
@@ -624,9 +624,11 @@ describe("task module", () => {
 
     const root = path.join(agentRoot, "tasks")
     const index = scanner.scanTasks(root)
-    expect(index.tasks.some((task) => task.path === nestedFile)).toBe(true)
+    // Flat scanner does not recurse into subdirectories
+    expect(index.tasks.some((task) => task.path === nestedFile)).toBe(false)
     expect(index.tasks.some((task) => task.path === reservedFile)).toBe(false)
-    expect(index.parseErrors.some((line) => line.includes("unterminated frontmatter"))).toBe(true)
+    // Unterminated frontmatter means tryExtractFrontmatter returns null — silently skipped
+    expect(index.issues.some((issue) => issue.code === "schema-invalid")).toBe(false)
 
     const fallbackPath = path.join(agentRoot, "tasks", "custom", "2026-03-02-1100-custom-ongoing.md")
     const parsedFallback = parser.parseTaskFile(
@@ -838,7 +840,9 @@ describe("task module", () => {
 
   it("stringifies non-Error parser failures from middleware and scanner", async () => {
     vi.resetModules()
+    const realParser = await import("../../../repertoire/tasks/parser")
     vi.doMock("../../../repertoire/tasks/parser", () => ({
+      parseFrontmatter: realParser.parseFrontmatter,
       parseTaskFile: () => {
         throw "parser-exploded"
       },
@@ -857,7 +861,7 @@ describe("task module", () => {
       scanner.ensureTaskLayout(root)
       fs.writeFileSync(canonicalPath, "---\ntype: one-shot\nstatus: drafting\n---\nbody", "utf-8")
       const index = scanner.scanTasks(root)
-      expect(index.parseErrors.some((line) => line.includes("parser-exploded"))).toBe(true)
+      expect(index.issues.some((issue) => issue.description.includes("parser-exploded"))).toBe(true)
     } finally {
       vi.doUnmock("../../../repertoire/tasks/parser")
       vi.resetModules()
@@ -920,8 +924,7 @@ describe("task module", () => {
     const result = lifecycle.archiveCompletedTasks({
       root: path.join(agentRoot, "tasks"),
       tasks: [task],
-      invalidFilenames: [],
-      parseErrors: [],
+      issues: [],
       fingerprint: "manual",
     })
     expect(result.archived).toHaveLength(0)
@@ -956,10 +959,12 @@ describe("task module", () => {
             updated: "2026-03-02",
             frontmatter: {},
             body: "body",
+            hasWorkDir: false,
+            workDirFiles: [],
+            derivedChildren: [],
           },
         ],
-        invalidFilenames: [],
-        parseErrors: [],
+        issues: [],
         fingerprint: "manual",
       })
       expect(result.archived).toHaveLength(0)

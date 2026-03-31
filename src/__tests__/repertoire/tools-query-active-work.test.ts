@@ -12,6 +12,7 @@ function makeEmptyBoard() {
       paused: [],
       blocked: [],
       done: [],
+      cancelled: [],
     },
     actionRequired: [],
     unresolvedDependencies: [],

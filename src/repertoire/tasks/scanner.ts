@@ -2,13 +2,12 @@ import * as fs from "fs"
 import * as path from "path"
 import { getAgentRoot } from "../../heart/identity"
 import { emitNervesEvent } from "../../nerves/runtime"
-import type { TaskIndex } from "./types"
+import type { TaskFile, TaskIndex, TaskIssue } from "./types"
 import {
   TASK_CANONICAL_COLLECTIONS,
-  TASK_RESERVED_DIRECTORIES,
   isCanonicalTaskFilename,
 } from "./transitions"
-import { parseTaskFile } from "./parser"
+import { parseFrontmatter, parseTaskFile } from "./parser"
 
 let scanCache: { fingerprint: string; index: TaskIndex } | null = null
 
@@ -30,32 +29,64 @@ export function ensureTaskLayout(root = getTaskRoot()): void {
   }
 }
 
-function walkMarkdownFiles(dir: string, acc: string[]): void {
-  if (!fs.existsSync(dir)) return
+/**
+ * Attempt to extract frontmatter from markdown content.
+ * Returns parsed frontmatter dict or null. Never throws.
+ */
+export function tryExtractFrontmatter(content: string): Record<string, unknown> | null {
+  emitNervesEvent({
+    event: "repertoire.frontmatter_extract_start",
+    component: "repertoire",
+    message: "attempting frontmatter extraction",
+  })
 
-  const entries = fs.readdirSync(dir, { withFileTypes: true })
-  for (const entry of entries) {
-    if (entry.isDirectory()) {
-      if (TASK_RESERVED_DIRECTORIES.includes(entry.name as (typeof TASK_RESERVED_DIRECTORIES)[number])) {
-        continue
-      }
-      walkMarkdownFiles(path.join(dir, entry.name), acc)
-      continue
-    }
-
-    if (entry.name.endsWith(".md")) {
-      acc.push(path.join(dir, entry.name))
-    }
+  const lines = content.split(/\r?\n/)
+  if (lines[0]?.trim() !== "---") {
+    return null
   }
+
+  const closing = lines.findIndex((line, index) => index > 0 && line.trim() === "---")
+  if (closing === -1) {
+    return null
+  }
+
+  const rawFrontmatter = lines.slice(1, closing).join("\n")
+  return parseFrontmatter(rawFrontmatter)
 }
 
-function buildFingerprint(paths: string[]): string {
-  const segments = paths
-    .map((filePath) => {
+const LEGACY_TASK_TYPES = ["one-shot", "ongoing", "habit"]
+
+function buildFingerprint(root: string): string {
+  emitNervesEvent({
+    event: "repertoire.fingerprint_build_start",
+    component: "repertoire",
+    message: "building scan fingerprint",
+    meta: { root },
+  })
+
+  const segments: string[] = []
+
+  for (const collection of TASK_CANONICAL_COLLECTIONS) {
+    const collDir = path.join(root, collection)
+    const entries = fs.readdirSync(collDir, { withFileTypes: true })
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".md")) continue
+      const filePath = path.join(collDir, entry.name)
       const stat = fs.statSync(filePath)
-      return `${filePath}:${stat.mtimeMs}:${stat.size}`
-    })
-    .sort()
+      segments.push(`${filePath}:${stat.mtimeMs}:${stat.size}`)
+    }
+  }
+
+  // Also include root-level md files for orphan detection fingerprinting
+  const rootEntries = fs.readdirSync(root, { withFileTypes: true })
+  for (const entry of rootEntries) {
+    if (!entry.isFile() || !entry.name.endsWith(".md")) continue
+    const filePath = path.join(root, entry.name)
+    const stat = fs.statSync(filePath)
+    segments.push(`${filePath}:${stat.mtimeMs}:${stat.size}`)
+  }
+
+  segments.sort()
   return segments.join("|")
 }
 
@@ -73,39 +104,188 @@ export function scanTasks(root = getTaskRoot()): TaskIndex {
 
   ensureTaskLayout(root)
 
-  const files: string[] = []
-  for (const collection of TASK_CANONICAL_COLLECTIONS) {
-    walkMarkdownFiles(path.join(root, collection), files)
-  }
-
-  const fingerprint = buildFingerprint(files)
+  const fingerprint = buildFingerprint(root)
   if (scanCache && scanCache.fingerprint === fingerprint) {
     return scanCache.index
   }
 
-  const tasks = []
-  const parseErrors: string[] = []
-  const invalidFilenames: string[] = []
+  const tasks: TaskFile[] = []
+  const issues: TaskIssue[] = []
 
-  for (const filePath of files) {
-    const base = path.basename(filePath)
-    if (!isCanonicalTaskFilename(base)) {
-      invalidFilenames.push(filePath)
+  // Scan each collection with flat directory reads (no recursion)
+  for (const collection of TASK_CANONICAL_COLLECTIONS) {
+    const collDir = path.join(root, collection)
+    const entries = fs.readdirSync(collDir, { withFileTypes: true })
+    const dirNames = new Set<string>()
+
+    // Collect directory names for work dir detection
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        dirNames.add(entry.name)
+      }
     }
 
-    try {
+    // Process only .md files at collection root (flat, no recursion)
+    let supportDocCount = 0
+
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".md")) continue
+
+      const filePath = path.join(collDir, entry.name)
       const content = fs.readFileSync(filePath, "utf-8")
-      tasks.push(parseTaskFile(content, filePath))
-    } catch (error) {
-      parseErrors.push(`${filePath}: ${error instanceof Error ? error.message : String(error)}`)
+
+      // Step 1: Try to extract frontmatter
+      const frontmatter = tryExtractFrontmatter(content)
+      if (!frontmatter) {
+        // No frontmatter — not a task, count as support doc clutter
+        supportDocCount += 1
+        continue
+      }
+
+      // Step 2: Check kind: task
+      const isKindTask = frontmatter.kind === "task"
+      const fmType = typeof frontmatter.type === "string" ? frontmatter.type.trim().toLowerCase() : ""
+      const isLegacyTask = !isKindTask && LEGACY_TASK_TYPES.includes(fmType)
+
+      if (!isKindTask && !isLegacyTask) {
+        // Has frontmatter but not a task — skip silently
+        continue
+      }
+
+      // Step 3: Emit migration issue for legacy task
+      if (isLegacyTask) {
+        const relPath = path.relative(root, filePath)
+        issues.push({
+          target: relPath,
+          code: "schema-missing-kind",
+          description: "Task card missing kind: task field",
+          fix: "Add kind: task to frontmatter",
+          confidence: "safe",
+          category: "migration",
+        })
+      }
+
+      // Step 4: Parse the task file
+      try {
+        const task = parseTaskFile(content, filePath)
+
+        // Check filename canonicality
+        const base = path.basename(filePath)
+        if (!isCanonicalTaskFilename(base)) {
+          const relPath = path.relative(root, filePath)
+          issues.push({
+            target: relPath,
+            code: "filename-not-canonical",
+            description: `Non-canonical filename: ${base}`,
+            fix: `Rename to canonical format (YYYY-MM-DD-HHMM-slug.md)`,
+            confidence: "safe",
+            category: "migration",
+          })
+        }
+
+        // Work dir detection
+        const stem = base.replace(/\.md$/i, "")
+        if (dirNames.has(stem)) {
+          task.hasWorkDir = true
+          const workDirPath = path.join(collDir, stem)
+          task.workDirFiles = fs.readdirSync(workDirPath).sort()
+        }
+
+        tasks.push(task)
+      } catch (error) {
+        // Parse error on a file we identified as a task — real issue
+        const relPath = path.relative(root, filePath)
+        issues.push({
+          target: relPath,
+          code: "schema-invalid",
+          description: `Parse error: ${error instanceof Error ? error.message : String(error)}`,
+          fix: "Fix the task card schema (ensure required fields: type, status, etc.)",
+          confidence: "needs_review",
+          category: "live",
+        })
+      }
+    }
+
+    // Summarize non-task support docs at collection root as one migration issue
+    if (supportDocCount > 0) {
+      emitNervesEvent({
+        event: "repertoire.support_docs_detected",
+        component: "repertoire",
+        message: "non-task support documents at collection root",
+        meta: { collection, count: supportDocCount },
+      })
+
+      issues.push({
+        target: collection,
+        code: "org-collection-root-clutter",
+        description: `${supportDocCount} non-task file${supportDocCount === 1 ? "" : "s"} at ${collection}/ root (doing docs, planning docs, etc.)`,
+        fix: "Move support docs into same-stem work directories for their parent tasks",
+        confidence: "needs_review",
+        category: "migration",
+      })
+    }
+  }
+
+  // Orphan detection: root-level .md files outside any canonical collection
+  const rootEntries = fs.readdirSync(root, { withFileTypes: true })
+  const collectionSet = new Set<string>(TASK_CANONICAL_COLLECTIONS)
+
+  for (const entry of rootEntries) {
+    if (!entry.isFile() || !entry.name.endsWith(".md")) continue
+
+    const filePath = path.join(root, entry.name)
+    const content = fs.readFileSync(filePath, "utf-8")
+    const frontmatter = tryExtractFrontmatter(content)
+
+    // Only flag as orphan if it has task-like frontmatter
+    if (!frontmatter) continue
+
+    const fmType = typeof frontmatter.type === "string" ? frontmatter.type.trim().toLowerCase() : ""
+    const hasTaskLikeContent =
+      frontmatter.kind === "task" ||
+      LEGACY_TASK_TYPES.includes(fmType) ||
+      (typeof frontmatter.status === "string" && typeof frontmatter.title === "string")
+
+    if (hasTaskLikeContent) {
+      emitNervesEvent({
+        event: "repertoire.orphan_detected",
+        component: "repertoire",
+        message: "root-level orphan document detected",
+        meta: { filePath },
+      })
+
+      issues.push({
+        target: entry.name,
+        code: "org-root-level-doc",
+        description: `Root-level document outside any collection: ${entry.name}`,
+        fix: `Move to appropriate collection directory (${[...collectionSet].join(", ")})`,
+        confidence: "needs_review",
+        category: "migration",
+      })
+    }
+  }
+
+  // Populate derivedChildren from parent_task links
+  const stemToTask = new Map<string, TaskFile>()
+  for (const task of tasks) {
+    stemToTask.set(task.stem, task)
+  }
+
+  for (const task of tasks) {
+    const parentStem = typeof task.frontmatter.parent_task === "string"
+      ? task.frontmatter.parent_task.trim()
+      : ""
+
+    if (parentStem && stemToTask.has(parentStem)) {
+      const parent = stemToTask.get(parentStem)!
+      parent.derivedChildren.push(task.stem)
     }
   }
 
   const index: TaskIndex = {
     root,
     tasks,
-    invalidFilenames,
-    parseErrors,
+    issues,
     fingerprint,
   }
 
