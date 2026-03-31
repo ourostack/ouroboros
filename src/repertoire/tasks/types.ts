@@ -81,6 +81,7 @@ export interface BoardResult {
   compact: string
   full: string
   byStatus: Record<TaskStatus, string[]>
+  issues: TaskIssue[]
   actionRequired: string[]
   unresolvedDependencies: string[]
   activeSessions: string[]
