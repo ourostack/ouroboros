@@ -4025,6 +4025,9 @@ describe("ouro task CLI execution", () => {
       updated: "2026-03-09",
       frontmatter: { type: "one-shot", title: "My Task", status: "processing" },
       body: "## scope\ndo the thing",
+      hasWorkDir: false,
+      workDirFiles: [],
+      derivedChildren: [],
     })
     const deps = makeDeps()
     const result = await runOuroCli(["task", "show", "my-task"], deps)
@@ -4048,6 +4051,9 @@ describe("ouro task CLI execution", () => {
       updated: "2026-03-09",
       frontmatter: {},
       body: "",
+      hasWorkDir: false,
+      workDirFiles: [],
+      derivedChildren: [],
     })
     const deps = makeDeps()
     const result = await runOuroCli(["task", "show", "my-task"], deps)

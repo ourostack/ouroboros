@@ -25,13 +25,15 @@ export interface TaskFile {
   updated: string
   frontmatter: Record<string, unknown>
   body: string
+  hasWorkDir: boolean
+  workDirFiles: string[]
+  derivedChildren: string[]
 }
 
 export interface TaskIndex {
   root: string
   tasks: TaskFile[]
-  invalidFilenames: string[]
-  parseErrors: string[]
+  issues: TaskIssue[]
   fingerprint: string
 }
 

@@ -191,7 +191,7 @@ describe("scanner — kind: task discrimination", () => {
       (issue) => issue.code === "schema-invalid",
     )
     expect(schemaIssue).toBeDefined()
-    expect(schemaIssue!.confidence).toBe("live")
+    expect(schemaIssue!.confidence).toBe("needs_review")
     expect(schemaIssue!.category).toBe("live")
     expect(schemaIssue!.target).toContain("bad-schema")
   })

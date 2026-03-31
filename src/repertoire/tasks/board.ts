@@ -74,7 +74,7 @@ function activeBridgeLines(tasks: TaskFile[]): string[] {
 }
 
 function actionRequired(index: TaskIndex, byStatus: Record<TaskStatus, string[]>): string[] {
-  const actions = [...index.parseErrors, ...index.invalidFilenames.map((filePath) => `bad filename: ${filePath}`)]
+  const actions = index.issues.map((issue) => `${issue.code}: ${issue.description} [${issue.target}]`)
 
   if (byStatus.blocked.length > 0) {
     actions.push(`blocked tasks: ${byStatus.blocked.join(", ")}`)
