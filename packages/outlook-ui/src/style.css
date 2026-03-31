@@ -1,0 +1,45 @@
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400;1,600&family=Outfit:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-ouro-void: #07110d;
+  --color-ouro-deep: #0c1a12;
+  --color-ouro-moss: #183325;
+  --color-ouro-scale: #2f8f4e;
+  --color-ouro-glow: #74e08f;
+  --color-ouro-bone: #eef2ea;
+  --color-ouro-mist: #a5b8a8;
+  --color-ouro-shadow: #708373;
+  --color-ouro-fang: #d35f47;
+  --color-ouro-gold: #d6b56f;
+
+  --font-display: "Cormorant Garamond", "Iowan Old Style", "Palatino Linotype", serif;
+  --font-body: "Outfit", "Avenir Next", "Segoe UI Variable Text", sans-serif;
+  --font-mono: "JetBrains Mono", "SFMono-Regular", monospace;
+}
+
+body {
+  font-family: var(--font-body);
+  @apply bg-ouro-void text-ouro-bone antialiased;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --color-ouro-void: #f4f7f2;
+    --color-ouro-deep: #ffffff;
+    --color-ouro-moss: #c8d9cc;
+    --color-ouro-scale: #2f8f4e;
+    --color-ouro-glow: #1a7a3a;
+    --color-ouro-bone: #102116;
+    --color-ouro-mist: #3d5a47;
+    --color-ouro-shadow: #708373;
+    --color-ouro-fang: #c44a33;
+    --color-ouro-gold: #9a7a2e;
+  }
+}
+
+/* Scrollbar styling for the dark theme */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: theme(--color-ouro-moss); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: theme(--color-ouro-scale); }

@@ -103,6 +103,7 @@ describe("daemon command plane branches", () => {
         daemon: "running",
         workerCount: 0,
         senseCount: 0,
+        outlookUrl: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/outlook$/),
         entryPath: expect.any(String),
         mode: expect.stringMatching(/^(dev|production)$/),
       }),
@@ -171,6 +172,7 @@ describe("daemon command plane branches", () => {
         daemon: "running",
         workerCount: 1,
         senseCount: 3,
+        outlookUrl: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/outlook$/),
       }),
       workers: [
         expect.objectContaining({

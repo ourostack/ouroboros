@@ -2,6 +2,17 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.160",
+      "changes": [
+        "feat(outlook): total inspectability expansion \u2014 14 API endpoints, session x-ray, obligation chain tracing, coding deep inspection, attention/pending queue, bridge inventory, habit triage, memory/journal, friend economics, SSE live updates",
+        "feat(outlook): React SPA with Catalyst UI \u2014 sidebar layout, 7-tab agent inspector, chat bubble transcripts with mechanism-tool awareness, hash URL routing",
+        "feat(outlook): agent desk customization \u2014 carrying block, pinned constellations, tab ordering, starred friends, status line, closure memory, needs-me urgency queue",
+        "feat(outlook): nerves observation layer \u2014 shared typed readers, eliminates bespoke type mirrors",
+        "fix(auth): ouro auth for openai-codex always refreshes token, provider verification uses correct endpoint",
+        "fix(daemon): use OUTLOOK_DEFAULT_PORT (6876) for Outlook server"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.159",
       "changes": [
         "Human-facing and agent-facing provider configs: agent.json now has humanFacing and agentFacing blocks, each with provider and model. CLI/Teams/BlueBubbles use humanFacing, inner dialog uses agentFacing.",
@@ -14,12 +25,12 @@
     {
       "version": "0.1.0-alpha.158",
       "changes": [
-        "Task scanner v2: explicit identity via kind: task field. Scanner only parses files that declare themselves as task cards — doing docs, planning docs, and artifacts silently skipped. Eliminates 184 false parse errors on real bundles.",
+        "Task scanner v2: explicit identity via kind: task field. Scanner only parses files that declare themselves as task cards \u2014 doing docs, planning docs, and artifacts silently skipped. Eliminates 184 false parse errors on real bundles.",
         "Typed issue model: every scanner issue has a code, description, proposed fix, confidence (safe/needs_review), and category (live/migration). Replaces flat parseErrors/invalidFilenames arrays.",
         "Board health line: compact board shows health: clean or health: 1 live, 10 migration. Live vs migration split prevents cleanup noise from looking like breakage.",
         "Fix command: ouro task fix (dry-run), ouro task fix --safe (apply deterministic fixes), ouro task fix <id> (inspect/apply individual issues). Currently auto-fixes schema-missing-kind.",
         "Cancelled status: new terminal state reachable from any active status. Auto-archives with work directory, hidden from active board view.",
-        "Derived child_tasks: computed at scan time from parent_task links. child_tasks removed from authored schema — no more hand-maintained stale arrays.",
+        "Derived child_tasks: computed at scan time from parent_task links. child_tasks removed from authored schema \u2014 no more hand-maintained stale arrays.",
         "Work directory awareness: same-stem directories detected and listed on TaskFile (hasWorkDir, workDirFiles). Scanner never descends into them.",
         "Collection root clutter detection: non-task support docs at collection root summarized as one aggregated migration issue per collection.",
         "Root-only scanning: flat directory reads replace recursive walks. Faster and correct."
