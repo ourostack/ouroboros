@@ -80,6 +80,7 @@ describe("memory/friend tools", () => {
         paused: [],
         blocked: [],
         done: [],
+        cancelled: [],
       },
       actionRequired: [],
       unresolvedDependencies: [],

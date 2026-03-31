@@ -91,6 +91,7 @@ class FileTaskModule implements TaskModule {
     const today = formatDate()
 
     const frontmatter: Record<string, unknown> = {
+      kind: "task",
       type,
       category: input.category || "infrastructure",
       title: input.title,
@@ -102,7 +103,6 @@ class FileTaskModule implements TaskModule {
       lastRun: input.lastRun ?? null,
       created: today,
       updated: today,
-      child_tasks: [],
       artifacts: [],
     }
 

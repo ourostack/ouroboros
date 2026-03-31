@@ -71,6 +71,7 @@ describe("prompt memory/friend contracts", () => {
         paused: [],
         blocked: [],
         done: [],
+        cancelled: [],
       },
       actionRequired: [],
       unresolvedDependencies: [],
