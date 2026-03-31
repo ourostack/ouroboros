@@ -86,13 +86,15 @@ installed runtime path instead of repo-local scripts:
 ```bash
 ouro auth --agent Hatchling
 ouro auth --agent Hatchling --provider openai-codex
+ouro auth --agent Hatchling --facing agent --provider openai-codex
 ```
 
 Expected:
 
-- `ouro auth --agent Hatchling` reauths the provider already selected in `~/AgentBundles/Hatchling.ouro/agent.json`
+- `ouro auth --agent Hatchling` reauths the human-facing provider already selected in `~/AgentBundles/Hatchling.ouro/agent.json`
 - `--provider <provider>` is optional and meant for an explicit provider add/switch
-- an explicit provider override updates `agent.json` so the newly authenticated provider becomes live runtime truth
+- `--facing human|agent` controls which facing gets updated (defaults to `human`)
+- an explicit provider override updates the corresponding facing in `agent.json` so the newly authenticated provider becomes live runtime truth
 - if a session already failed, the follow-up move is to retry the failed `ouro` command or reconnect the session
 
 ## 5. Daemon Messaging Smoke
@@ -189,8 +191,8 @@ Run:
 ouro auth --agent <agent>
 ```
 
-Use this only when you need to authenticate or reauthenticate the provider already
-selected in `agent.json`.
+Use this only when you need to authenticate or reauthenticate the human-facing provider
+already selected in `agent.json`.
 
 If you are deliberately adding or switching providers, run:
 
@@ -205,10 +207,10 @@ already errored.
 
 Check:
 
-- `~/AgentBundles/<agent>.ouro/agent.json`
+- `~/AgentBundles/<agent>.ouro/agent.json` (check `humanFacing` and `agentFacing` for provider+model)
 - `~/.agentsecrets/<agent>/secrets.json`
 
-Sense enablement lives in `agent.json`; secret material lives in `secrets.json`.
+Sense enablement lives in `agent.json`; provider+model selection per facing lives in `agent.json` under `humanFacing` and `agentFacing`; secret material (credentials only) lives in `secrets.json`.
 
 ### BlueBubbles or Teams behavior feels wrong
 
@@ -219,4 +221,4 @@ ouro status
 ouro logs
 ```
 
-Then verify the sense-specific config block is complete in `secrets.json` and that the sense is actually enabled in `agent.json`.
+Then verify the sense-specific config block is complete in `secrets.json` and that the sense is actually enabled in `agent.json`. Check that both `humanFacing` and `agentFacing` are configured correctly.

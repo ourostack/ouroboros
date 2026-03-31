@@ -1,5 +1,6 @@
 import { emitNervesEvent } from "../../nerves/runtime"
 import { bundleMetaHook } from "./hooks/bundle-meta"
+import { agentConfigV2Hook } from "./hooks/agent-config-v2"
 import type { UpdateHook } from "./update-hooks"
 
 export interface RunHooksDeps {
@@ -19,6 +20,7 @@ export async function runHooks(deps: RunHooksDeps): Promise<number> {
 
   try {
     deps.registerUpdateHook(bundleMetaHook)
+    deps.registerUpdateHook(agentConfigV2Hook)
     const currentVersion = deps.getPackageVersion()
     await deps.applyPendingUpdates(deps.bundlesRoot, currentVersion)
 

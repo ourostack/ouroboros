@@ -59,7 +59,9 @@ describe("hatch flow", () => {
     ) as Record<string, unknown>
     expect(agentConfig.enabled).toBe(true)
     expect(agentConfig.provider).toBe("anthropic")
-    expect(agentConfig.version).toBe(1)
+    expect(agentConfig.version).toBe(2)
+    expect(agentConfig.humanFacing).toEqual({ provider: "anthropic", model: "claude-opus-4-6" })
+    expect(agentConfig.agentFacing).toEqual({ provider: "anthropic", model: "claude-opus-4-6" })
 
     const friendDir = path.join(result.bundleRoot, "friends")
     const friendFiles = fs.readdirSync(friendDir).filter((name) => name.endsWith(".json"))

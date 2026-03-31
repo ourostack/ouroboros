@@ -88,15 +88,17 @@ describe("Anthropic thinking request params", () => {
       name: "testagent",
       configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "anthropic",
+      humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+      agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
     })
     const config = await import("../../heart/config")
     config.resetConfigCache()
     config.patchRuntimeConfig({
-      providers: { anthropic: { model: "claude-opus-4-6", setupToken: makeAnthropicSetupToken() } },
+      providers: { anthropic: { setupToken: makeAnthropicSetupToken() } },
     })
 
     const { createAnthropicProviderRuntime } = await import("../../heart/providers/anthropic")
-    const runtime = createAnthropicProviderRuntime()
+    const runtime = createAnthropicProviderRuntime("claude-opus-4-6")
     await runtime.streamTurn({
       messages: [{ role: "user", content: "hi" }],
       activeTools: [],
@@ -123,15 +125,17 @@ describe("Anthropic thinking request params", () => {
       name: "testagent",
       configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "anthropic",
+      humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+      agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
     })
     const config = await import("../../heart/config")
     config.resetConfigCache()
     config.patchRuntimeConfig({
-      providers: { anthropic: { model: "claude-opus-4-6", setupToken: makeAnthropicSetupToken() } },
+      providers: { anthropic: { setupToken: makeAnthropicSetupToken() } },
     })
 
     const { createAnthropicProviderRuntime } = await import("../../heart/providers/anthropic")
-    const runtime = createAnthropicProviderRuntime()
+    const runtime = createAnthropicProviderRuntime("claude-opus-4-6")
     await runtime.streamTurn({
       messages: [{ role: "user", content: "hi" }],
       activeTools: [],
@@ -156,15 +160,17 @@ describe("Anthropic thinking request params", () => {
       name: "testagent",
       configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "anthropic",
+      humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+      agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
     })
     const config = await import("../../heart/config")
     config.resetConfigCache()
     config.patchRuntimeConfig({
-      providers: { anthropic: { model: "claude-opus-4-6", setupToken: makeAnthropicSetupToken() } },
+      providers: { anthropic: { setupToken: makeAnthropicSetupToken() } },
     })
 
     const { createAnthropicProviderRuntime } = await import("../../heart/providers/anthropic")
-    const runtime = createAnthropicProviderRuntime()
+    const runtime = createAnthropicProviderRuntime("claude-opus-4-6")
     await runtime.streamTurn({
       messages: [{ role: "user", content: "hi" }],
       activeTools: [],
@@ -188,15 +194,17 @@ describe("Anthropic thinking request params", () => {
       name: "testagent",
       configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "anthropic",
+      humanFacing: { provider: "anthropic", model: "claude-sonnet-4-6" },
+      agentFacing: { provider: "anthropic", model: "claude-sonnet-4-6" },
     })
     const config = await import("../../heart/config")
     config.resetConfigCache()
     config.patchRuntimeConfig({
-      providers: { anthropic: { model: "claude-sonnet-4-6", setupToken: makeAnthropicSetupToken() } },
+      providers: { anthropic: { setupToken: makeAnthropicSetupToken() } },
     })
 
     const { createAnthropicProviderRuntime } = await import("../../heart/providers/anthropic")
-    const runtime = createAnthropicProviderRuntime()
+    const runtime = createAnthropicProviderRuntime("claude-sonnet-4-6")
     await runtime.streamTurn({
       messages: [{ role: "user", content: "hi" }],
       activeTools: [],
@@ -220,15 +228,17 @@ describe("Anthropic thinking request params", () => {
       name: "testagent",
       configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "anthropic",
+      humanFacing: { provider: "anthropic", model: "unknown-model" },
+      agentFacing: { provider: "anthropic", model: "unknown-model" },
     })
     const config = await import("../../heart/config")
     config.resetConfigCache()
     config.patchRuntimeConfig({
-      providers: { anthropic: { model: "unknown-model", setupToken: makeAnthropicSetupToken() } },
+      providers: { anthropic: { setupToken: makeAnthropicSetupToken() } },
     })
 
     const { createAnthropicProviderRuntime } = await import("../../heart/providers/anthropic")
-    const runtime = createAnthropicProviderRuntime()
+    const runtime = createAnthropicProviderRuntime("unknown-model")
     await runtime.streamTurn({
       messages: [{ role: "user", content: "hi" }],
       activeTools: [],

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest"
-import { getChannelCapabilities } from "../../../mind/friends/channel"
+import { getChannelCapabilities, channelToFacing } from "../../../mind/friends/channel"
 import { isIntegration } from "../../../mind/friends/types"
+import type { Facing } from "../../../mind/friends/channel"
 
 describe("getChannelCapabilities", () => {
   it("returns CLI capabilities with empty integrations", () => {
@@ -118,5 +119,36 @@ describe("getChannelCapabilities", () => {
         expect(["open", "closed", "local", "internal"]).toContain(caps.senseType)
       }
     })
+  })
+})
+
+describe("channelToFacing", () => {
+  it("maps cli to human", () => {
+    expect(channelToFacing("cli")).toBe("human")
+  })
+
+  it("maps teams to human", () => {
+    expect(channelToFacing("teams")).toBe("human")
+  })
+
+  it("maps bluebubbles to human", () => {
+    expect(channelToFacing("bluebubbles")).toBe("human")
+  })
+
+  it("maps inner to agent", () => {
+    expect(channelToFacing("inner")).toBe("agent")
+  })
+
+  it("maps mcp to agent", () => {
+    expect(channelToFacing("mcp" as any)).toBe("agent")
+  })
+
+  it("defaults undefined to human", () => {
+    expect(channelToFacing(undefined)).toBe("human")
+  })
+
+  it("returns type-safe Facing value", () => {
+    const result: Facing = channelToFacing("cli")
+    expect(result === "human" || result === "agent").toBe(true)
   })
 })

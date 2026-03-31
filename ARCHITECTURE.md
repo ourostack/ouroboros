@@ -83,7 +83,7 @@ This is for machine-level artifacts, not bundle-owned identity.
 
 `agent.json` is the runtime-facing contract for:
 
-- provider selection
+- provider+model selection per facing (`humanFacing` and `agentFacing`)
 - phrases
 - context settings
 - sense enablement
@@ -275,8 +275,8 @@ The specialist:
 
 - interviews the human
 - helps define the new agent
-- scaffolds a canonical bundle
-- writes secrets to `~/.agentsecrets/<agent>/secrets.json`
+- scaffolds a canonical bundle with `humanFacing` and `agentFacing` provider configs
+- writes credentials to `~/.agentsecrets/<agent>/secrets.json`
 - hands the new agent off into the normal bundle/runtime model
 
 ## Repository Layout

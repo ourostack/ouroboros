@@ -6,6 +6,7 @@ describe("buildSpecialistSystemPrompt", () => {
     const prompt = buildSpecialistSystemPrompt("I am the soul.", "I am the identity.", [], {
       tempDir: "/tmp/ouro-hatch-test",
       provider: "anthropic",
+      model: "claude-opus-4-6",
     })
     expect(prompt).toContain("I am the soul.")
   })
@@ -15,6 +16,7 @@ describe("buildSpecialistSystemPrompt", () => {
     const prompt = buildSpecialistSystemPrompt("soul text", "I am Medusa, a serpentine specialist.", ["Agent1"], {
       tempDir: "/tmp/ouro-hatch-test",
       provider: "anthropic",
+      model: "claude-opus-4-6",
     })
     expect(prompt).toContain("I am Medusa, a serpentine specialist.")
   })
@@ -24,6 +26,7 @@ describe("buildSpecialistSystemPrompt", () => {
     const prompt = buildSpecialistSystemPrompt("soul", "identity", ["Slugger", "Ouroboros"], {
       tempDir: "/tmp/ouro-hatch-test",
       provider: "anthropic",
+      model: "claude-opus-4-6",
     })
     expect(prompt).toContain("Slugger")
     expect(prompt).toContain("Ouroboros")
@@ -34,6 +37,7 @@ describe("buildSpecialistSystemPrompt", () => {
     const prompt = buildSpecialistSystemPrompt("soul", "identity", [], {
       tempDir: "/tmp/ouro-hatch-test",
       provider: "anthropic",
+      model: "claude-opus-4-6",
     })
     expect(prompt).toBeDefined()
     expect(prompt.length).toBeGreaterThan(0)
@@ -45,6 +49,7 @@ describe("buildSpecialistSystemPrompt", () => {
     const prompt = buildSpecialistSystemPrompt("", "", [], {
       tempDir: "/tmp/ouro-hatch-test",
       provider: "anthropic",
+      model: "claude-opus-4-6",
     })
     expect(prompt).toBeDefined()
     expect(prompt.length).toBeGreaterThan(0)
@@ -55,6 +60,7 @@ describe("buildSpecialistSystemPrompt", () => {
     const prompt = buildSpecialistSystemPrompt("soul", "identity", [], {
       tempDir: "/tmp/ouro-hatch-test",
       provider: "anthropic",
+      model: "claude-opus-4-6",
     })
     expect(prompt).toContain("complete_adoption")
     expect(prompt).toContain("settle")
@@ -70,6 +76,7 @@ describe("buildSpecialistSystemPrompt", () => {
     const prompt = buildSpecialistSystemPrompt("soul", "identity", [], {
       tempDir: "/tmp/ouro-hatch-abc123",
       provider: "anthropic",
+      model: "claude-opus-4-6",
     })
     expect(prompt).toContain("/tmp/ouro-hatch-abc123")
   })
@@ -79,6 +86,7 @@ describe("buildSpecialistSystemPrompt", () => {
     const prompt = buildSpecialistSystemPrompt("soul", "identity", [], {
       tempDir: "/tmp/ouro-hatch-test",
       provider: "minimax",
+      model: "MiniMax-Text-01",
     })
     expect(prompt).toContain("minimax")
   })
@@ -88,6 +96,7 @@ describe("buildSpecialistSystemPrompt", () => {
     const prompt = buildSpecialistSystemPrompt("soul", "identity", [], {
       tempDir: "/tmp/ouro-hatch-test",
       provider: "anthropic",
+      model: "claude-opus-4-6",
     })
     expect(prompt).toContain("SOUL.md")
     expect(prompt).toContain("IDENTITY.md")
@@ -102,6 +111,7 @@ describe("buildSpecialistSystemPrompt", () => {
     const prompt = buildSpecialistSystemPrompt("soul", "identity", [], {
       tempDir: "/tmp/ouro-hatch-test",
       provider: "anthropic",
+      model: "claude-opus-4-6",
     })
     expect(prompt).toContain("Voice rules")
     expect(prompt).toContain("1-3 short sentences")
@@ -112,6 +122,7 @@ describe("buildSpecialistSystemPrompt", () => {
     const prompt = buildSpecialistSystemPrompt("soul", "identity", [], {
       tempDir: "/tmp/ouro-hatch-test",
       provider: "anthropic",
+      model: "claude-opus-4-6",
     })
     expect(prompt).toMatch(/phone/i)
     expect(prompt).toMatch(/teams/i)

@@ -7,7 +7,12 @@ vi.mock("fs", () => ({
   writeFileSync: vi.fn(),
 }))
 
+vi.mock("../../heart/migrate-config", () => ({
+  migrateAgentConfigV1ToV2: vi.fn(),
+}))
+
 import * as fs from "fs"
+import { migrateAgentConfigV1ToV2 } from "../../heart/migrate-config"
 
 let savedArgv: string[]
 let savedWebsiteSiteName: string | undefined
@@ -173,9 +178,10 @@ describe("buildDefaultAgentTemplate", () => {
     const template = buildDefaultAgentTemplate("ouroboros")
 
     expect(template).toEqual({
-      version: 1,
+      version: 2,
       enabled: true,
-      provider: "anthropic",
+      humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+      agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
       context: {
         maxTokens: 80000,
         contextMargin: 20,
@@ -208,6 +214,8 @@ describe("loadAgentConfig", () => {
         version: 2,
         enabled: false,
         provider: "minimax",
+        humanFacing: { provider: "minimax", model: "minimax-text-01" },
+        agentFacing: { provider: "minimax", model: "minimax-text-01" },
         phrases: {
           thinking: ["think"],
           tool: ["tool"],
@@ -223,6 +231,7 @@ describe("loadAgentConfig", () => {
     expect(config.version).toBe(2)
     expect(config.enabled).toBe(false)
     expect(config.provider).toBe("minimax")
+    expect(config.humanFacing).toEqual({ provider: "minimax", model: "minimax-text-01" })
     expect(config.phrases.thinking).toEqual(["think"])
     expect((config as any).name).toBeUndefined()
     expect((config as any).configPath).toBeUndefined()
@@ -231,9 +240,10 @@ describe("loadAgentConfig", () => {
   it("parses logging config when present", async () => {
     vi.mocked(fs.readFileSync).mockReturnValue(
       JSON.stringify({
-        version: 1,
+        version: 2,
         enabled: true,
-        provider: "anthropic",
+        humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         logging: { level: "debug", sinks: ["terminal"] },
         phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
       }),
@@ -249,9 +259,10 @@ describe("loadAgentConfig", () => {
   it("parses senses config when present", async () => {
     vi.mocked(fs.readFileSync).mockReturnValue(
       JSON.stringify({
-        version: 1,
+        version: 2,
         enabled: true,
-        provider: "anthropic",
+        humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         senses: {
           cli: { enabled: true },
           teams: { enabled: true },
@@ -275,9 +286,10 @@ describe("loadAgentConfig", () => {
   it("defaults missing senses config to cli enabled and other senses disabled", async () => {
     vi.mocked(fs.readFileSync).mockReturnValue(
       JSON.stringify({
-        version: 1,
+        version: 2,
         enabled: true,
-        provider: "anthropic",
+        humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
       }),
     )
@@ -296,9 +308,10 @@ describe("loadAgentConfig", () => {
   it("fills missing individual senses from defaults when only some senses are configured", async () => {
     vi.mocked(fs.readFileSync).mockReturnValue(
       JSON.stringify({
-        version: 1,
+        version: 2,
         enabled: true,
-        provider: "anthropic",
+        humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         senses: {
           teams: { enabled: true },
         },
@@ -320,9 +333,10 @@ describe("loadAgentConfig", () => {
   it("rejects non-object senses blocks", async () => {
     vi.mocked(fs.readFileSync).mockReturnValue(
       JSON.stringify({
-        version: 1,
+        version: 2,
         enabled: true,
-        provider: "anthropic",
+        humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         senses: [],
         phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
       }),
@@ -336,9 +350,10 @@ describe("loadAgentConfig", () => {
   it("rejects invalid nested sense config objects", async () => {
     vi.mocked(fs.readFileSync).mockReturnValue(
       JSON.stringify({
-        version: 1,
+        version: 2,
         enabled: true,
-        provider: "anthropic",
+        humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         senses: {
           teams: [],
         },
@@ -354,9 +369,10 @@ describe("loadAgentConfig", () => {
   it("rejects non-boolean sense enablement flags", async () => {
     vi.mocked(fs.readFileSync).mockReturnValue(
       JSON.stringify({
-        version: 1,
+        version: 2,
         enabled: true,
-        provider: "anthropic",
+        humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         senses: {
           cli: { enabled: "yes" },
         },
@@ -372,9 +388,10 @@ describe("loadAgentConfig", () => {
   it("rejects missing sense enabled flags", async () => {
     vi.mocked(fs.readFileSync).mockReturnValue(
       JSON.stringify({
-        version: 1,
+        version: 2,
         enabled: true,
-        provider: "anthropic",
+        humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         senses: {
           cli: {},
         },
@@ -390,9 +407,10 @@ describe("loadAgentConfig", () => {
   it("leaves logging undefined when omitted from agent.json", async () => {
     vi.mocked(fs.readFileSync).mockReturnValue(
       JSON.stringify({
-        version: 1,
+        version: 2,
         enabled: true,
-        provider: "anthropic",
+        humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
       }),
     )
@@ -404,10 +422,12 @@ describe("loadAgentConfig", () => {
     expect(config.logging).toBeUndefined()
   })
 
-  it("defaults version/enabled when omitted", async () => {
+  it("defaults enabled when omitted", async () => {
     vi.mocked(fs.readFileSync).mockReturnValue(
       JSON.stringify({
-        provider: "openai-codex",
+        version: 2,
+        humanFacing: { provider: "openai-codex", model: "gpt-5.4" },
+        agentFacing: { provider: "openai-codex", model: "gpt-5.4" },
         phrases: {
           thinking: ["thinking"],
           tool: ["tool"],
@@ -420,17 +440,18 @@ describe("loadAgentConfig", () => {
     resetIdentity()
     const config = loadAgentConfig()
 
-    expect(config.version).toBe(1)
+    expect(config.version).toBe(2)
     expect(config.enabled).toBe(true)
-    expect(config.provider).toBe("openai-codex")
+    expect(config.humanFacing.provider).toBe("openai-codex")
   })
 
   it("fills phrases when missing", async () => {
     vi.mocked(fs.readFileSync).mockReturnValue(
       JSON.stringify({
-        version: 1,
+        version: 2,
         enabled: true,
-        provider: "anthropic",
+        humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
       }),
     )
 
@@ -446,27 +467,44 @@ describe("loadAgentConfig", () => {
     expect(fs.writeFileSync).toHaveBeenCalledTimes(1)
   })
 
-  it("throws for missing provider", async () => {
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ version: 1, enabled: true }))
-
-    const { loadAgentConfig, resetIdentity } = await import("../../heart/identity")
-    resetIdentity()
-    expect(() => loadAgentConfig()).toThrow("must include provider")
-  })
-
-  it("throws for invalid provider", async () => {
+  it("throws for missing humanFacing", async () => {
     vi.mocked(fs.readFileSync).mockReturnValue(
-      JSON.stringify({ version: 1, enabled: true, provider: "unknown" }),
+      JSON.stringify({
+        version: 2,
+        enabled: true,
+        agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+      }),
     )
 
     const { loadAgentConfig, resetIdentity } = await import("../../heart/identity")
     resetIdentity()
-    expect(() => loadAgentConfig()).toThrow("must include provider")
+    expect(() => loadAgentConfig()).toThrow("humanFacing")
+  })
+
+  it("throws for missing agentFacing", async () => {
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        version: 2,
+        enabled: true,
+        humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+      }),
+    )
+
+    const { loadAgentConfig, resetIdentity } = await import("../../heart/identity")
+    resetIdentity()
+    expect(() => loadAgentConfig()).toThrow("agentFacing")
   })
 
   it("throws for invalid version", async () => {
     vi.mocked(fs.readFileSync).mockReturnValue(
-      JSON.stringify({ version: 0, enabled: true, provider: "minimax" }),
+      JSON.stringify({
+        version: 0,
+        enabled: true,
+        humanFacing: { provider: "minimax", model: "minimax-text-01" },
+        agentFacing: { provider: "minimax", model: "minimax-text-01" },
+      }),
     )
 
     const { loadAgentConfig, resetIdentity } = await import("../../heart/identity")
@@ -476,7 +514,13 @@ describe("loadAgentConfig", () => {
 
   it("throws for non-boolean enabled", async () => {
     vi.mocked(fs.readFileSync).mockReturnValue(
-      JSON.stringify({ version: 1, enabled: "yes", provider: "minimax" }),
+      JSON.stringify({
+        version: 2,
+        enabled: "yes",
+        humanFacing: { provider: "minimax", model: "minimax-text-01" },
+        agentFacing: { provider: "minimax", model: "minimax-text-01" },
+        phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+      }),
     )
 
     const { loadAgentConfig, resetIdentity } = await import("../../heart/identity")
@@ -533,9 +577,10 @@ describe("loadAgentConfig", () => {
     vi.mocked(fs.readFileSync)
       .mockReturnValueOnce(
         JSON.stringify({
-          version: 1,
+          version: 2,
           enabled: true,
-          provider: "minimax",
+          humanFacing: { provider: "minimax", model: "minimax-text-01" },
+          agentFacing: { provider: "minimax", model: "minimax-text-01" },
           phrases: {
             thinking: ["first"],
             tool: ["tool"],
@@ -545,9 +590,10 @@ describe("loadAgentConfig", () => {
       )
       .mockReturnValueOnce(
         JSON.stringify({
-          version: 1,
+          version: 2,
           enabled: true,
-          provider: "anthropic",
+          humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+          agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
           phrases: {
             thinking: ["second"],
             tool: ["tool"],
@@ -562,8 +608,8 @@ describe("loadAgentConfig", () => {
     const second = loadAgentConfig()
 
     expect(first).not.toBe(second)
-    expect(first.provider).toBe("minimax")
-    expect(second.provider).toBe("anthropic")
+    expect(first.humanFacing.provider).toBe("minimax")
+    expect(second.humanFacing.provider).toBe("anthropic")
     expect(fs.readFileSync).toHaveBeenCalledTimes(2)
   })
 
@@ -572,9 +618,10 @@ describe("loadAgentConfig", () => {
     vi.mocked(fs.readFileSync)
       .mockReturnValueOnce(
         JSON.stringify({
-          version: 1,
+          version: 2,
           enabled: true,
-          provider: "minimax",
+          humanFacing: { provider: "minimax", model: "minimax-text-01" },
+          agentFacing: { provider: "minimax", model: "minimax-text-01" },
           phrases: {
             thinking: ["first"],
             tool: ["tool"],
@@ -584,9 +631,10 @@ describe("loadAgentConfig", () => {
       )
       .mockReturnValueOnce(
         JSON.stringify({
-          version: 1,
+          version: 2,
           enabled: true,
-          provider: "minimax",
+          humanFacing: { provider: "minimax", model: "minimax-text-01" },
+          agentFacing: { provider: "minimax", model: "minimax-text-01" },
           phrases: {
             thinking: ["second"],
             tool: ["tool"],
@@ -610,9 +658,10 @@ describe("loadAgentConfig", () => {
     vi.mocked(fs.readFileSync)
       .mockReturnValueOnce(
         JSON.stringify({
-          version: 1,
+          version: 2,
           enabled: true,
-          provider: "minimax",
+          humanFacing: { provider: "minimax", model: "minimax-text-01" },
+          agentFacing: { provider: "minimax", model: "minimax-text-01" },
           phrases: {
             thinking: ["first"],
             tool: ["tool"],
@@ -622,9 +671,10 @@ describe("loadAgentConfig", () => {
       )
       .mockReturnValueOnce(
         JSON.stringify({
-          version: 1,
+          version: 2,
           enabled: true,
-          provider: "minimax",
+          humanFacing: { provider: "minimax", model: "minimax-text-01" },
+          agentFacing: { provider: "minimax", model: "minimax-text-01" },
           phrases: {
             thinking: ["second"],
             tool: ["tool"],
@@ -652,9 +702,10 @@ describe("resetIdentity", () => {
     process.argv = ["node", "cli-entry.js", "--agent", "ouroboros"]
     vi.mocked(fs.readFileSync).mockReturnValue(
       JSON.stringify({
-        version: 1,
+        version: 2,
         enabled: true,
-        provider: "minimax",
+        humanFacing: { provider: "minimax", model: "minimax-text-01" },
+        agentFacing: { provider: "minimax", model: "minimax-text-01" },
         phrases: {
           thinking: ["thinking"],
           tool: ["tool"],
@@ -671,9 +722,10 @@ describe("resetIdentity", () => {
     process.argv = ["node", "cli-entry.js", "--agent", "slugger"]
     vi.mocked(fs.readFileSync).mockReturnValue(
       JSON.stringify({
-        version: 1,
+        version: 2,
         enabled: true,
-        provider: "anthropic",
+        humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         phrases: {
           thinking: ["thinking"],
           tool: ["tool"],
@@ -684,7 +736,7 @@ describe("resetIdentity", () => {
 
     resetIdentity()
     expect(getAgentName()).toBe("slugger")
-    expect(loadAgentConfig().provider).toBe("anthropic")
+    expect(loadAgentConfig().humanFacing.provider).toBe("anthropic")
   })
 })
 
@@ -697,9 +749,10 @@ describe("mcpServers config", () => {
   it("leaves mcpServers undefined when absent from agent.json (backward compat)", async () => {
     vi.mocked(fs.readFileSync).mockReturnValue(
       JSON.stringify({
-        version: 1,
+        version: 2,
         enabled: true,
-        provider: "anthropic",
+        humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
       }),
     )
@@ -714,9 +767,10 @@ describe("mcpServers config", () => {
   it("parses mcpServers with valid entries", async () => {
     vi.mocked(fs.readFileSync).mockReturnValue(
       JSON.stringify({
-        version: 1,
+        version: 2,
         enabled: true,
-        provider: "anthropic",
+        humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
         mcpServers: {
           ado: {
@@ -750,9 +804,10 @@ describe("mcpServers config", () => {
   it("parses mcpServers when empty object", async () => {
     vi.mocked(fs.readFileSync).mockReturnValue(
       JSON.stringify({
-        version: 1,
+        version: 2,
         enabled: true,
-        provider: "anthropic",
+        humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
         mcpServers: {},
       }),
@@ -777,9 +832,10 @@ describe("setAgentConfigOverride", () => {
     resetIdentity()
 
     const override = {
-      version: 1,
+      version: 2,
       enabled: true,
-      provider: "anthropic" as const,
+      humanFacing: { provider: "anthropic" as const, model: "claude-opus-4-6" },
+      agentFacing: { provider: "anthropic" as const, model: "claude-opus-4-6" },
       phrases: { thinking: ["override"], tool: ["override"], followup: ["override"] },
     }
     setAgentConfigOverride(override)
@@ -795,9 +851,10 @@ describe("setAgentConfigOverride", () => {
     process.argv = ["node", "cli-entry.js", "--agent", "ouroboros"]
     vi.mocked(fs.readFileSync).mockReturnValue(
       JSON.stringify({
-        version: 1,
+        version: 2,
         enabled: true,
-        provider: "minimax",
+        humanFacing: { provider: "minimax", model: "minimax-text-01" },
+        agentFacing: { provider: "minimax", model: "minimax-text-01" },
         phrases: { thinking: ["disk"], tool: ["disk"], followup: ["disk"] },
       }),
     )
@@ -806,25 +863,27 @@ describe("setAgentConfigOverride", () => {
     resetIdentity()
 
     const override = {
-      version: 1,
+      version: 2,
       enabled: true,
-      provider: "anthropic" as const,
+      humanFacing: { provider: "anthropic" as const, model: "claude-opus-4-6" },
+      agentFacing: { provider: "anthropic" as const, model: "claude-opus-4-6" },
       phrases: { thinking: ["override"], tool: ["override"], followup: ["override"] },
     }
     setAgentConfigOverride(override)
-    expect(loadAgentConfig().provider).toBe("anthropic")
+    expect(loadAgentConfig().humanFacing.provider).toBe("anthropic")
 
     setAgentConfigOverride(null)
-    expect(loadAgentConfig().provider).toBe("minimax")
+    expect(loadAgentConfig().humanFacing.provider).toBe("minimax")
   })
 
   it("resetIdentity clears the override", async () => {
     process.argv = ["node", "cli-entry.js", "--agent", "ouroboros"]
     vi.mocked(fs.readFileSync).mockReturnValue(
       JSON.stringify({
-        version: 1,
+        version: 2,
         enabled: true,
-        provider: "minimax",
+        humanFacing: { provider: "minimax", model: "minimax-text-01" },
+        agentFacing: { provider: "minimax", model: "minimax-text-01" },
         phrases: { thinking: ["disk"], tool: ["disk"], followup: ["disk"] },
       }),
     )
@@ -833,25 +892,27 @@ describe("setAgentConfigOverride", () => {
     resetIdentity()
 
     const override = {
-      version: 1,
+      version: 2,
       enabled: true,
-      provider: "anthropic" as const,
+      humanFacing: { provider: "anthropic" as const, model: "claude-opus-4-6" },
+      agentFacing: { provider: "anthropic" as const, model: "claude-opus-4-6" },
       phrases: { thinking: ["override"], tool: ["override"], followup: ["override"] },
     }
     setAgentConfigOverride(override)
-    expect(loadAgentConfig().provider).toBe("anthropic")
+    expect(loadAgentConfig().humanFacing.provider).toBe("anthropic")
 
     resetIdentity()
-    expect(loadAgentConfig().provider).toBe("minimax")
+    expect(loadAgentConfig().humanFacing.provider).toBe("minimax")
   })
 
   it("override takes precedence over cached disk config", async () => {
     process.argv = ["node", "cli-entry.js", "--agent", "ouroboros"]
     vi.mocked(fs.readFileSync).mockReturnValue(
       JSON.stringify({
-        version: 1,
+        version: 2,
         enabled: true,
-        provider: "minimax",
+        humanFacing: { provider: "minimax", model: "minimax-text-01" },
+        agentFacing: { provider: "minimax", model: "minimax-text-01" },
         phrases: { thinking: ["disk"], tool: ["disk"], followup: ["disk"] },
       }),
     )
@@ -860,17 +921,349 @@ describe("setAgentConfigOverride", () => {
     resetIdentity()
 
     // First load from disk to populate cache
-    expect(loadAgentConfig().provider).toBe("minimax")
+    expect(loadAgentConfig().humanFacing.provider).toBe("minimax")
 
     // Override should take precedence over cached disk value
     const override = {
       version: 2,
       enabled: false,
-      provider: "azure" as const,
+      humanFacing: { provider: "azure" as const, model: "gpt-4o" },
+      agentFacing: { provider: "azure" as const, model: "gpt-4o" },
       phrases: { thinking: ["override"], tool: ["override"], followup: ["override"] },
     }
     setAgentConfigOverride(override)
-    expect(loadAgentConfig().provider).toBe("azure")
+    expect(loadAgentConfig().humanFacing.provider).toBe("azure")
     expect(loadAgentConfig().version).toBe(2)
+  })
+})
+
+describe("AgentFacingConfig and AgentConfig v2 type", () => {
+  beforeEach(() => {
+    vi.resetModules()
+  })
+
+  it("AgentConfig requires humanFacing and agentFacing fields", async () => {
+    const mod = await import("../../heart/identity")
+
+    // Type-level test: construct v2 config and verify shape
+    const facingConfig: import("../../heart/identity").AgentFacingConfig = { provider: "anthropic", model: "claude-opus-4-6" }
+    expect(facingConfig.provider).toBe("anthropic")
+    expect(facingConfig.model).toBe("claude-opus-4-6")
+
+    const config: import("../../heart/identity").AgentConfig = {
+      version: 2,
+      enabled: true,
+      humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+      agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    }
+    expect(config.humanFacing.provider).toBe("anthropic")
+    expect(config.humanFacing.model).toBe("claude-opus-4-6")
+    expect(config.agentFacing.provider).toBe("anthropic")
+    expect(config.agentFacing.model).toBe("claude-opus-4-6")
+    // Suppress unused import warning
+    expect(mod).toBeDefined()
+  })
+
+  it("AgentConfig provider field is optional (deprecated)", async () => {
+    const mod = await import("../../heart/identity")
+
+    // v2 config without provider field should still be valid
+    const config: import("../../heart/identity").AgentConfig = {
+      version: 2,
+      enabled: true,
+      humanFacing: { provider: "azure", model: "gpt-4o" },
+      agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    }
+    expect(config.provider).toBeUndefined()
+    expect(config.humanFacing.provider).toBe("azure")
+    expect(config.agentFacing.provider).toBe("anthropic")
+    // Suppress unused import warning
+    expect(mod).toBeDefined()
+  })
+})
+
+describe("loadAgentConfig v2 inline migration", () => {
+  beforeEach(() => {
+    vi.resetModules()
+    process.argv = ["node", "cli-entry.js", "--agent", "ouroboros"]
+    vi.mocked(migrateAgentConfigV1ToV2).mockReset()
+  })
+
+  it("auto-migrates v1 config on disk and returns v2", async () => {
+    const v1Json = JSON.stringify({
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    const v2Json = JSON.stringify({
+      version: 2,
+      enabled: true,
+      humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+      agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+
+    // First read returns v1, migration transforms on disk, second read returns v2
+    vi.mocked(fs.readFileSync)
+      .mockReturnValueOnce(v1Json)
+      .mockReturnValueOnce(v2Json)
+
+    const { loadAgentConfig, resetIdentity } = await import("../../heart/identity")
+    resetIdentity()
+    const config = loadAgentConfig()
+
+    expect(migrateAgentConfigV1ToV2).toHaveBeenCalledTimes(1)
+    expect(config.version).toBe(2)
+    expect(config.humanFacing).toEqual({ provider: "anthropic", model: "claude-opus-4-6" })
+    expect(config.agentFacing).toEqual({ provider: "anthropic", model: "claude-opus-4-6" })
+  })
+
+  it("returns v2 config directly without migration", async () => {
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        version: 2,
+        enabled: true,
+        humanFacing: { provider: "azure", model: "gpt-4o" },
+        agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+      }),
+    )
+
+    const { loadAgentConfig, resetIdentity } = await import("../../heart/identity")
+    resetIdentity()
+    const config = loadAgentConfig()
+
+    expect(migrateAgentConfigV1ToV2).not.toHaveBeenCalled()
+    expect(config.version).toBe(2)
+    expect(config.humanFacing).toEqual({ provider: "azure", model: "gpt-4o" })
+    expect(config.agentFacing).toEqual({ provider: "anthropic", model: "claude-opus-4-6" })
+  })
+
+  it("treats non-numeric version as v1 and triggers migration", async () => {
+    const noVersionJson = JSON.stringify({
+      enabled: true,
+      provider: "anthropic",
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    const v2Json = JSON.stringify({
+      version: 2,
+      enabled: true,
+      humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+      agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+
+    vi.mocked(fs.readFileSync)
+      .mockReturnValueOnce(noVersionJson)
+      .mockReturnValueOnce(v2Json)
+
+    const { loadAgentConfig, resetIdentity } = await import("../../heart/identity")
+    resetIdentity()
+    const config = loadAgentConfig()
+
+    expect(migrateAgentConfigV1ToV2).toHaveBeenCalledTimes(1)
+    expect(config.version).toBe(2)
+  })
+
+  it("handles string version field and triggers migration", async () => {
+    const stringVersionJson = JSON.stringify({
+      version: "1",
+      enabled: true,
+      provider: "anthropic",
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    const v2Json = JSON.stringify({
+      version: 2,
+      enabled: true,
+      humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+      agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+
+    vi.mocked(fs.readFileSync)
+      .mockReturnValueOnce(stringVersionJson)
+      .mockReturnValueOnce(v2Json)
+
+    const { loadAgentConfig, resetIdentity } = await import("../../heart/identity")
+    resetIdentity()
+    const config = loadAgentConfig()
+
+    expect(migrateAgentConfigV1ToV2).toHaveBeenCalledTimes(1)
+    expect(config.version).toBe(2)
+  })
+
+  it("treats non-numeric version in post-migration config as v1 defensively", async () => {
+    // After migration, if version is somehow still a string, the defensive branch treats it as 1
+    const v1Json = JSON.stringify({
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    // Migration "ran" but version came back as a string
+    const postMigrationJson = JSON.stringify({
+      version: "2",
+      enabled: true,
+      humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+      agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+
+    vi.mocked(fs.readFileSync)
+      .mockReturnValueOnce(v1Json)
+      .mockReturnValueOnce(postMigrationJson)
+
+    const { loadAgentConfig, resetIdentity } = await import("../../heart/identity")
+    resetIdentity()
+    const config = loadAgentConfig()
+
+    // Version defaults to 1 when non-numeric, which still passes validation
+    expect(config.version).toBe(1)
+    expect(config.humanFacing).toEqual({ provider: "anthropic", model: "claude-opus-4-6" })
+  })
+
+  it("rejects config missing humanFacing after migration", async () => {
+    const v1Json = JSON.stringify({
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    // Migration "ran" but produced malformed output (no humanFacing)
+    const badV2Json = JSON.stringify({
+      version: 2,
+      enabled: true,
+      agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+
+    vi.mocked(fs.readFileSync)
+      .mockReturnValueOnce(v1Json)
+      .mockReturnValueOnce(badV2Json)
+
+    const { loadAgentConfig, resetIdentity } = await import("../../heart/identity")
+    resetIdentity()
+    expect(() => loadAgentConfig()).toThrow(/humanFacing/)
+  })
+
+  it("rejects config missing agentFacing", async () => {
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        version: 2,
+        enabled: true,
+        humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+      }),
+    )
+
+    const { loadAgentConfig, resetIdentity } = await import("../../heart/identity")
+    resetIdentity()
+    expect(() => loadAgentConfig()).toThrow(/agentFacing/)
+  })
+
+  it("rejects invalid provider in humanFacing", async () => {
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        version: 2,
+        enabled: true,
+        humanFacing: { provider: "not-a-provider", model: "some-model" },
+        agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+      }),
+    )
+
+    const { loadAgentConfig, resetIdentity } = await import("../../heart/identity")
+    resetIdentity()
+    expect(() => loadAgentConfig()).toThrow(/humanFacing/)
+  })
+
+  it("rejects missing provider in humanFacing (nullish provider branch)", async () => {
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        version: 2,
+        enabled: true,
+        humanFacing: { model: "some-model" },
+        agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+      }),
+    )
+
+    const { loadAgentConfig, resetIdentity } = await import("../../heart/identity")
+    resetIdentity()
+    expect(() => loadAgentConfig()).toThrow(/humanFacing/)
+  })
+
+  it("rejects invalid provider in agentFacing", async () => {
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        version: 2,
+        enabled: true,
+        humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        agentFacing: { provider: "bad-provider", model: "some-model" },
+        phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+      }),
+    )
+
+    const { loadAgentConfig, resetIdentity } = await import("../../heart/identity")
+    resetIdentity()
+    expect(() => loadAgentConfig()).toThrow(/agentFacing/)
+  })
+
+  it("rejects non-string model in humanFacing", async () => {
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        version: 2,
+        enabled: true,
+        humanFacing: { provider: "anthropic", model: 123 },
+        agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+      }),
+    )
+
+    const { loadAgentConfig, resetIdentity } = await import("../../heart/identity")
+    resetIdentity()
+    expect(() => loadAgentConfig()).toThrow(/humanFacing/)
+  })
+
+  it("rejects non-string model in agentFacing", async () => {
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        version: 2,
+        enabled: true,
+        humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        agentFacing: { provider: "anthropic", model: null },
+        phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+      }),
+    )
+
+    const { loadAgentConfig, resetIdentity } = await import("../../heart/identity")
+    resetIdentity()
+    expect(() => loadAgentConfig()).toThrow(/agentFacing/)
+  })
+})
+
+describe("buildDefaultAgentTemplate v2", () => {
+  beforeEach(() => {
+    vi.resetModules()
+  })
+
+  it("returns v2 config with both facings defaulting to anthropic claude-opus-4-6", async () => {
+    const { buildDefaultAgentTemplate } = await import("../../heart/identity")
+    const template = buildDefaultAgentTemplate("testbot")
+
+    expect(template.version).toBe(2)
+    expect(template.humanFacing).toEqual({ provider: "anthropic", model: "claude-opus-4-6" })
+    expect(template.agentFacing).toEqual({ provider: "anthropic", model: "claude-opus-4-6" })
+    // provider field should not be set on v2 templates
+    expect(template.provider).toBeUndefined()
+  })
+
+  it("has version 2", async () => {
+    const { buildDefaultAgentTemplate } = await import("../../heart/identity")
+    const template = buildDefaultAgentTemplate("testbot")
+    expect(template.version).toBe(2)
   })
 })

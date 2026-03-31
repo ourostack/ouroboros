@@ -177,15 +177,15 @@ describe("createAzureProviderRuntime", () => {
           apiKey: "test-api-key",
           endpoint: "https://test.openai.azure.com",
           deployment: "gpt-4",
-          modelName: "gpt-4",
         },
       },
     })
 
     const { createAzureProviderRuntime } = await import("../../../heart/providers/azure")
-    const runtime = createAzureProviderRuntime()
+    const runtime = createAzureProviderRuntime("gpt-4")
 
     expect(runtime.id).toBe("azure")
+    expect(runtime.model).toBe("gpt-4")
     expect(mockAzureOpenAICtor).toHaveBeenCalledWith(
       expect.objectContaining({
         apiKey: "test-api-key",
@@ -207,14 +207,13 @@ describe("createAzureProviderRuntime", () => {
           apiKey: "",
           endpoint: "https://test.openai.azure.com",
           deployment: "gpt-4",
-          modelName: "gpt-4",
           managedIdentityClientId: "c404d5a9-test",
         },
       },
     })
 
     const { createAzureProviderRuntime } = await import("../../../heart/providers/azure")
-    const runtime = createAzureProviderRuntime()
+    const runtime = createAzureProviderRuntime("gpt-4")
 
     expect(runtime.id).toBe("azure")
     const ctorArgs = mockAzureOpenAICtor.mock.calls[0][0]
@@ -241,13 +240,12 @@ describe("createAzureProviderRuntime", () => {
           apiKey: "",
           endpoint: "https://test.openai.azure.com",
           deployment: "gpt-4",
-          modelName: "gpt-4",
         },
       },
     })
 
     const { createAzureProviderRuntime } = await import("../../../heart/providers/azure")
-    const runtime = createAzureProviderRuntime()
+    const runtime = createAzureProviderRuntime("gpt-4")
 
     expect(runtime.id).toBe("azure")
     const ctorArgs = mockAzureOpenAICtor.mock.calls[0][0]
@@ -259,8 +257,8 @@ describe("createAzureProviderRuntime", () => {
     expect(mockDefaultAzureCredentialCtor).toHaveBeenCalledWith(undefined)
   })
 
-  it("still requires endpoint, deployment, and modelName in all paths", async () => {
-    emitTestEvent("requires endpoint deployment modelName")
+  it("still requires endpoint and deployment in all paths", async () => {
+    emitTestEvent("requires endpoint deployment")
 
     const config = await import("../../../heart/config")
     config.resetConfigCache()
@@ -270,17 +268,16 @@ describe("createAzureProviderRuntime", () => {
           apiKey: "test-key",
           endpoint: "",
           deployment: "",
-          modelName: "",
         },
       },
     })
 
     const { createAzureProviderRuntime } = await import("../../../heart/providers/azure")
-    expect(() => createAzureProviderRuntime()).toThrow(/incomplete/)
+    expect(() => createAzureProviderRuntime("gpt-4")).toThrow(/incomplete/)
   })
 
-  it("still requires endpoint, deployment, and modelName when using managed identity", async () => {
-    emitTestEvent("requires endpoint deployment modelName with managed identity")
+  it("still requires endpoint and deployment when using managed identity", async () => {
+    emitTestEvent("requires endpoint deployment with managed identity")
 
     const config = await import("../../../heart/config")
     config.resetConfigCache()
@@ -290,14 +287,13 @@ describe("createAzureProviderRuntime", () => {
           apiKey: "",
           endpoint: "",
           deployment: "",
-          modelName: "",
           managedIdentityClientId: "c404d5a9-test",
         },
       },
     })
 
     const { createAzureProviderRuntime } = await import("../../../heart/providers/azure")
-    expect(() => createAzureProviderRuntime()).toThrow(/incomplete/)
+    expect(() => createAzureProviderRuntime("gpt-4")).toThrow(/incomplete/)
   })
 
   it("includes authMethod in provider_init nerves event", async () => {
@@ -315,13 +311,12 @@ describe("createAzureProviderRuntime", () => {
           apiKey: "test-key",
           endpoint: "https://test.openai.azure.com",
           deployment: "gpt-4",
-          modelName: "gpt-4",
         },
       },
     })
 
     const { createAzureProviderRuntime } = await import("../../../heart/providers/azure")
-    createAzureProviderRuntime()
+    createAzureProviderRuntime("gpt-4")
 
     expect(emitSpy).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -346,13 +341,12 @@ describe("createAzureProviderRuntime", () => {
           apiKey: "",
           endpoint: "https://test.openai.azure.com",
           deployment: "gpt-4",
-          modelName: "gpt-4",
         },
       },
     })
 
     const { createAzureProviderRuntime } = await import("../../../heart/providers/azure")
-    createAzureProviderRuntime()
+    createAzureProviderRuntime("gpt-4")
 
     expect(emitSpy).toHaveBeenCalledWith(
       expect.objectContaining({

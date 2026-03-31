@@ -2,7 +2,22 @@
 // Pure lookup, no I/O, cannot fail. Unknown channel gets minimal defaults.
 
 import { emitNervesEvent } from "../../nerves/runtime"
-import type { ChannelCapabilities } from "./types"
+import type { ChannelCapabilities, Channel } from "./types"
+
+export type Facing = "human" | "agent"
+
+const AGENT_FACING_CHANNELS: ReadonlySet<string> = new Set(["inner", "mcp"])
+
+export function channelToFacing(channel?: Channel | string): Facing {
+  const facing: Facing = channel && AGENT_FACING_CHANNELS.has(channel) ? "agent" : "human"
+  emitNervesEvent({
+    component: "channels",
+    event: "channel.facing_lookup",
+    message: "channel facing lookup",
+    meta: { channel: channel ?? "undefined", facing },
+  })
+  return facing
+}
 
 const CHANNEL_CAPABILITIES: Record<string, ChannelCapabilities> = {
   cli: {

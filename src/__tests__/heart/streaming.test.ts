@@ -28,7 +28,7 @@ describe("toResponsesTools", () => {
     vi.resetModules()
     const config = await import("../../heart/config")
     config.resetConfigCache()
-    config.patchRuntimeConfig({ providers: { azure: { apiKey: "" }, minimax: { apiKey: "test-key", model: "test-model" } } })
+    config.patchRuntimeConfig({ providers: { azure: { apiKey: "" }, minimax: { apiKey: "test-key" } } })
     const streaming = await import("../../heart/streaming")
     const toolsMod = await import("../../repertoire/tools")
     toResponsesTools = streaming.toResponsesTools
@@ -131,7 +131,7 @@ describe("toResponsesInput", () => {
     vi.resetModules()
     const config = await import("../../heart/config")
     config.resetConfigCache()
-    config.patchRuntimeConfig({ providers: { azure: { apiKey: "" }, minimax: { apiKey: "test-key", model: "test-model" } } })
+    config.patchRuntimeConfig({ providers: { azure: { apiKey: "" }, minimax: { apiKey: "test-key" } } })
     const core = await import("../../heart/streaming")
     toResponsesInput = core.toResponsesInput
   })
@@ -570,7 +570,7 @@ describe("streamChatCompletion", () => {
     vi.resetModules()
     const config = await import("../../heart/config")
     config.resetConfigCache()
-    config.patchRuntimeConfig({ providers: { azure: { apiKey: "" }, minimax: { apiKey: "test-key", model: "test-model" } } })
+    config.patchRuntimeConfig({ providers: { azure: { apiKey: "" }, minimax: { apiKey: "test-key" } } })
     const core = await import("../../heart/streaming")
     streamChatCompletion = core.streamChatCompletion
   })
@@ -756,7 +756,7 @@ describe("streamResponsesApi", () => {
     vi.resetModules()
     const config = await import("../../heart/config")
     config.resetConfigCache()
-    config.patchRuntimeConfig({ providers: { azure: { apiKey: "" }, minimax: { apiKey: "test-key", model: "test-model" } } })
+    config.patchRuntimeConfig({ providers: { azure: { apiKey: "" }, minimax: { apiKey: "test-key" } } })
     const core = await import("../../heart/streaming")
     streamResponsesApi = core.streamResponsesApi
   })
@@ -1105,7 +1105,7 @@ describe("SettleParser", () => {
     vi.resetModules()
     const config = await import("../../heart/config")
     config.resetConfigCache()
-    config.patchRuntimeConfig({ providers: { azure: { apiKey: "" }, minimax: { apiKey: "test-key", model: "test-model" } } })
+    config.patchRuntimeConfig({ providers: { azure: { apiKey: "" }, minimax: { apiKey: "test-key" } } })
     const streaming = await import("../../heart/streaming")
     SettleParser = streaming.SettleParser
   })
@@ -1349,7 +1349,7 @@ describe("streamChatCompletion settle streaming", () => {
     vi.resetModules()
     const config = await import("../../heart/config")
     config.resetConfigCache()
-    config.patchRuntimeConfig({ providers: { azure: { apiKey: "" }, minimax: { apiKey: "test-key", model: "test-model" } } })
+    config.patchRuntimeConfig({ providers: { azure: { apiKey: "" }, minimax: { apiKey: "test-key" } } })
     const streaming = await import("../../heart/streaming")
     streamChatCompletion = streaming.streamChatCompletion
   })
@@ -1441,7 +1441,7 @@ describe("streamResponsesApi settle streaming", () => {
     vi.resetModules()
     const config = await import("../../heart/config")
     config.resetConfigCache()
-    config.patchRuntimeConfig({ providers: { azure: { apiKey: "" }, minimax: { apiKey: "test-key", model: "test-model" } } })
+    config.patchRuntimeConfig({ providers: { azure: { apiKey: "" }, minimax: { apiKey: "test-key" } } })
     const streaming = await import("../../heart/streaming")
     streamResponsesApi = streaming.streamResponsesApi
   })

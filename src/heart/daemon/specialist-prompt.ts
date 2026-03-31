@@ -4,6 +4,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 export interface SpecialistPromptContext {
   tempDir: string
   provider: AgentProvider
+  model: string
 }
 
 /**
@@ -83,8 +84,10 @@ export function buildSpecialistSystemPrompt(
       "It also needs an **agent.json** with at minimum:",
       '```json',
       '{',
+      '  "version": 2,',
       '  "name": "AgentName",',
-      `  "provider": "${context.provider}",`,
+      `  "humanFacing": { "provider": "${context.provider}", "model": "${context.model}" },`,
+      `  "agentFacing": { "provider": "${context.provider}", "model": "${context.model}" },`,
       '  "enabled": true',
       '}',
       '```',

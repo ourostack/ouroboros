@@ -6,6 +6,8 @@ vi.mock("../../heart/identity", () => ({
     name: "testagent",
     configPath: "~/.agentsecrets/testagent/secrets.json",
     provider: "minimax",
+    humanFacing: { provider: "minimax", model: "minimax-text-01" },
+    agentFacing: { provider: "minimax", model: "minimax-text-01" },
     phrases: {
       thinking: ["working"],
       tool: ["running tool"],
@@ -70,6 +72,8 @@ describe("phrases - getPhrases from agent.json", () => {
       name: "testagent",
       configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "minimax",
+      humanFacing: { provider: "minimax", model: "minimax-text-01" },
+      agentFacing: { provider: "minimax", model: "minimax-text-01" },
       phrases: {
         thinking: ["custom thinking"],
         tool: ["custom tool"],
@@ -103,6 +107,8 @@ describe("phrases - getPhrases from agent.json", () => {
       name: "testagent",
       configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "minimax",
+      humanFacing: { provider: "minimax", model: "minimax-text-01" },
+      agentFacing: { provider: "minimax", model: "minimax-text-01" },
       phrases: {
         thinking: ["working"],
         tool: ["running tool"],

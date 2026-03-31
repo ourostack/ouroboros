@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
-import { getAnthropicConfig, type AnthropicProviderConfig } from "../config";
+import { getAnthropicConfig } from "../config";
 import { getAgentName, getAgentSecretsPath } from "../identity";
 import type { UsageData } from "../../mind/context";
 import { emitNervesEvent } from "../../nerves/runtime";
@@ -429,29 +429,28 @@ async function streamAnthropicMessages(
   };
 }
 
-export function createAnthropicProviderRuntime(config?: AnthropicProviderConfig): ProviderRuntime {
+export function createAnthropicProviderRuntime(model: string): ProviderRuntime {
   emitNervesEvent({
     component: "engine",
     event: "engine.provider_init",
     message: "anthropic provider init",
     meta: { provider: "anthropic" },
   });
-  const anthropicConfig = config ?? getAnthropicConfig();
-  if (!(anthropicConfig.model && anthropicConfig.setupToken)) {
+  const anthropicConfig = getAnthropicConfig();
+  if (!anthropicConfig.setupToken) {
     throw new Error(
       getAnthropicReauthGuidance(
-        "provider 'anthropic' is selected in agent.json but providers.anthropic.model/setupToken is incomplete in secrets.json.",
+        "provider 'anthropic' is selected in agent.json but providers.anthropic.setupToken is missing in secrets.json.",
       ),
     );
   }
-  const modelCaps = getModelCapabilities(anthropicConfig.model);
+  const modelCaps = getModelCapabilities(model);
   const capabilities = new Set<ProviderCapability>();
   if (modelCaps.reasoningEffort) capabilities.add("reasoning-effort");
 
   const credential = resolveAnthropicSetupTokenCredential();
-  const fullConfig = config ?? getAnthropicConfig()
-  const refreshToken = (fullConfig as unknown as Record<string, unknown>).refreshToken as string | undefined
-  const expiresAt = (fullConfig as unknown as Record<string, unknown>).expiresAt as number | undefined
+  const refreshToken = (anthropicConfig as unknown as Record<string, unknown>).refreshToken as string | undefined
+  const expiresAt = (anthropicConfig as unknown as Record<string, unknown>).expiresAt as number | undefined
 
   function createClient(token: string): Anthropic {
     return new Anthropic({
@@ -489,7 +488,7 @@ export function createAnthropicProviderRuntime(config?: AnthropicProviderConfig)
 
   return {
     id: "anthropic",
-    model: anthropicConfig.model,
+    model,
     /* v8 ignore next -- getter: returns mutable client ref @preserve */
     get client() { return client },
     capabilities,
@@ -502,7 +501,7 @@ export function createAnthropicProviderRuntime(config?: AnthropicProviderConfig)
     },
     async streamTurn(request: ProviderTurnRequest): Promise<TurnResult> {
       const freshClient = await ensureClient();
-      return streamAnthropicMessages(freshClient, anthropicConfig.model, request);
+      return streamAnthropicMessages(freshClient, model, request);
     },
     /* v8 ignore next 3 -- delegation: classification logic tested via classifyAnthropicError @preserve */
     classifyError(error: Error): ProviderErrorClassification {

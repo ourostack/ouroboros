@@ -821,7 +821,7 @@ async function handleBlueBubblesNormalizedEvent(
     const controller = new AbortController()
 
     // BB-specific tool context wrappers
-    const summarize = createSummarize()
+    const summarize = createSummarize("human")
 
     const bbCapabilities = getChannelCapabilities("bluebubbles")
     const pendingDir = getPendingDir(resolvedDeps.getAgentName(), friendId, "bluebubbles", event.chat.sessionKey)

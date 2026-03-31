@@ -90,7 +90,14 @@ describe("bundle skeleton contract", () => {
     expect(sluggerConfig).toHaveProperty("enabled")
     expect(typeof sluggerConfig.version).toBe("number")
     expect(typeof sluggerConfig.enabled).toBe("boolean")
-    expect(typeof sluggerConfig.provider).toBe("string")
+    expect(sluggerConfig).toHaveProperty("humanFacing")
+    expect(sluggerConfig).toHaveProperty("agentFacing")
+    const humanFacing = sluggerConfig.humanFacing as Record<string, unknown>
+    const agentFacing = sluggerConfig.agentFacing as Record<string, unknown>
+    expect(typeof humanFacing.provider).toBe("string")
+    expect(typeof humanFacing.model).toBe("string")
+    expect(typeof agentFacing.provider).toBe("string")
+    expect(typeof agentFacing.model).toBe("string")
     expect(sluggerConfig).not.toHaveProperty("name")
     expect(sluggerConfig).not.toHaveProperty("configPath")
   })

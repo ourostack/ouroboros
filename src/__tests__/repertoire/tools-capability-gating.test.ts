@@ -74,7 +74,7 @@ describe("tool capability gating", () => {
     emitTestEvent("getToolsForChannel accepts providerCapabilities")
     const config = await import("../../heart/config")
     config.resetConfigCache()
-    config.patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    config.patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
     const { getToolsForChannel } = await import("../../repertoire/tools")
     // Should accept the new parameter without error
     const tools = getToolsForChannel(undefined, undefined, undefined, new Set(["reasoning-effort"]))
@@ -85,7 +85,7 @@ describe("tool capability gating", () => {
     emitTestEvent("getToolsForChannel filters gated tools")
     const config = await import("../../heart/config")
     config.resetConfigCache()
-    config.patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    config.patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
     const toolsBase = await import("../../repertoire/tools-base")
     // Add a mock tool with requiredCapability to baseToolDefinitions
     const mockGatedTool = {
@@ -120,7 +120,7 @@ describe("tool capability gating", () => {
     emitTestEvent("getToolsForChannel no param excludes gated")
     const config = await import("../../heart/config")
     config.resetConfigCache()
-    config.patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    config.patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
     const toolsBase = await import("../../repertoire/tools-base")
     const mockGatedTool = {
       tool: {

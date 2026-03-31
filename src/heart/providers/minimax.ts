@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import { getMinimaxConfig, type MinimaxProviderConfig } from "../config";
+import { getMinimaxConfig } from "../config";
 import { emitNervesEvent } from "../../nerves/runtime";
 import type { ProviderErrorClassification, ProviderRuntime, ProviderTurnRequest } from "../core";
 
@@ -26,21 +26,21 @@ export function classifyMinimaxError(error: Error): ProviderErrorClassification 
 import { streamChatCompletion } from "../streaming";
 import { getModelCapabilities } from "../model-capabilities";
 
-export function createMinimaxProviderRuntime(config?: MinimaxProviderConfig): ProviderRuntime {
+export function createMinimaxProviderRuntime(model: string): ProviderRuntime {
   emitNervesEvent({
     component: "engine",
     event: "engine.provider_init",
     message: "minimax provider init",
     meta: { provider: "minimax" },
   });
-  const minimaxConfig = config ?? getMinimaxConfig();
+  const minimaxConfig = getMinimaxConfig();
   if (!minimaxConfig.apiKey) {
     throw new Error(
       "provider 'minimax' is selected in agent.json but providers.minimax.apiKey is missing in secrets.json.",
     );
   }
   // Registry consulted; MiniMax models return empty defaults (no capabilities to derive)
-  getModelCapabilities(minimaxConfig.model);
+  getModelCapabilities(model);
 
   const client = new OpenAI({
     apiKey: minimaxConfig.apiKey,
@@ -50,7 +50,7 @@ export function createMinimaxProviderRuntime(config?: MinimaxProviderConfig): Pr
   });
   return {
     id: "minimax",
-    model: minimaxConfig.model,
+    model,
     client,
     capabilities: new Set(),
     resetTurnState(_messages: OpenAI.ChatCompletionMessageParam[]): void {

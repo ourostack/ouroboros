@@ -8,7 +8,7 @@ import { getAgentRoot, getAgentName, getAgentSecretsPath, getRepoRoot, loadAgent
 import { detectRuntimeMode } from "../heart/daemon/runtime-mode";
 import { isTrustedLevel, type Channel, type ChannelCapabilities, type ResolvedContext } from "./friends/types";
 import { describeTrustContext } from "./friends/trust-explanation";
-import { getChannelCapabilities, isRemoteChannel } from "./friends/channel";
+import { getChannelCapabilities, isRemoteChannel, channelToFacing } from "./friends/channel";
 import { emitNervesEvent } from "../nerves/runtime";
 import type { McpManager } from "../repertoire/mcp-manager";
 import { backfillBundleMeta, getPackageVersion, getChangelogPath } from "./bundle-manifest";
@@ -380,8 +380,8 @@ function senseRuntimeGuidance(channel: Channel): string[] {
   return lines
 }
 
-function providerSection(): string {
-  return `## my provider\n${getProviderDisplayLabel()}`;
+function providerSection(channel?: Channel): string {
+  return `## my provider\n${getProviderDisplayLabel(channelToFacing(channel))}`;
 }
 
 function dateSection(): string {
@@ -1001,7 +1001,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     runtimeInfoSection(channel),
     rhythmStatusSection(),
     channelNatureSection(getChannelCapabilities(channel)),
-    providerSection(),
+    providerSection(channel),
     dateSection(),
     toolsSection(channel, options, context),
     mcpToolsSection(options?.mcpManager),

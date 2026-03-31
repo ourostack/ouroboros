@@ -34,6 +34,8 @@ vi.mock("../../heart/identity", () => ({
     name: "testagent",
     configPath: "~/.agentsecrets/testagent/secrets.json",
     provider: "anthropic",
+    humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+    agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
   })),
   DEFAULT_AGENT_CONTEXT: { maxTokens: 80000, contextMargin: 20 },
   getAgentName: vi.fn(() => "testagent"),
@@ -76,6 +78,8 @@ async function createRuntime() {
     name: "testagent",
     configPath: "~/.agentsecrets/testagent/secrets.json",
     provider: "anthropic",
+    humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+    agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
   })
   const config = await import("../../heart/config")
   config.resetConfigCache()

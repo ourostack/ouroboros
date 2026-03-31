@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import { getGithubCopilotConfig, type GithubCopilotProviderConfig } from "../config";
+import { getGithubCopilotConfig } from "../config";
 import { emitNervesEvent } from "../../nerves/runtime";
 import type { ProviderCapability, ProviderErrorClassification, ProviderRuntime, ProviderTurnRequest } from "../core";
 import type { ResponseItem, TurnResult } from "../streaming";
@@ -30,14 +30,14 @@ export function classifyGithubCopilotError(error: Error): ProviderErrorClassific
 /* v8 ignore stop */
 
 
-export function createGithubCopilotProviderRuntime(injectedConfig?: GithubCopilotProviderConfig): ProviderRuntime {
+export function createGithubCopilotProviderRuntime(model: string): ProviderRuntime {
   emitNervesEvent({
     component: "engine",
     event: "engine.provider_init",
     message: "github-copilot provider init",
     meta: { provider: "github-copilot" },
   });
-  const config = injectedConfig ?? getGithubCopilotConfig();
+  const config = getGithubCopilotConfig();
   if (!config.githubToken) {
     throw new Error(
       "provider 'github-copilot' is selected in agent.json but providers.github-copilot.githubToken is missing in secrets.json.",
@@ -49,8 +49,8 @@ export function createGithubCopilotProviderRuntime(injectedConfig?: GithubCopilo
     );
   }
 
-  const isCompletionsModel = config.model.startsWith("claude");
-  const modelCaps = getModelCapabilities(config.model);
+  const isCompletionsModel = model.startsWith("claude");
+  const modelCaps = getModelCapabilities(model);
   const capabilities = new Set<ProviderCapability>();
   /* v8 ignore next -- branch: capability detection tested via unit test @preserve */
   if (modelCaps.reasoningEffort) capabilities.add("reasoning-effort");
@@ -66,7 +66,7 @@ export function createGithubCopilotProviderRuntime(injectedConfig?: GithubCopilo
     // Chat completions path (Claude models via Copilot)
     return {
       id: "github-copilot",
-      model: config.model,
+      model,
       client,
       capabilities,
       supportedReasoningEfforts: modelCaps.reasoningEffort,
@@ -111,7 +111,7 @@ export function createGithubCopilotProviderRuntime(injectedConfig?: GithubCopilo
   let nativeInstructions = "";
   return {
     id: "github-copilot",
-    model: config.model,
+    model,
     client,
     capabilities,
     supportedReasoningEfforts: modelCaps.reasoningEffort,

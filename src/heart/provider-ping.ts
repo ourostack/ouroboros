@@ -85,18 +85,31 @@ function hasEmptyCredentials(provider: AgentProvider, config: ProviderConfig): b
   }
 }
 
-function createRuntimeForPing(provider: AgentProvider, config: ProviderConfig): ProviderRuntime {
+function createRuntimeForPing(provider: AgentProvider, _config: ProviderConfig): ProviderRuntime {
+  // The provider constructors read credentials from the active config via getXxxConfig().
+  // For ping, this is acceptable because verifyProviderCredentials patches the runtime
+  // config before calling ping. The model string is a default — for anthropic the ping
+  // overrides it with haiku anyway, and for others it's used in a minimal API call.
+  const DEFAULT_MODELS: Record<AgentProvider, string> = {
+    anthropic: "claude-haiku-4-5-20251001",
+    azure: "gpt-4o",
+    minimax: "minimax-text-01",
+    "openai-codex": "codex-mini-latest",
+    "github-copilot": "gpt-4o",
+  }
+  /* v8 ignore next -- fallback: all known providers are in DEFAULT_MODELS @preserve */
+  const model = DEFAULT_MODELS[provider] ?? "unknown"
   switch (provider) {
     case "anthropic":
-      return createAnthropicProviderRuntime(config as AnthropicProviderConfig)
+      return createAnthropicProviderRuntime(model)
     case "azure":
-      return createAzureProviderRuntime(config as AzureProviderConfig)
+      return createAzureProviderRuntime(model)
     case "minimax":
-      return createMinimaxProviderRuntime(config as MinimaxProviderConfig)
+      return createMinimaxProviderRuntime(model)
     case "openai-codex":
-      return createOpenAICodexProviderRuntime(config as OpenAICodexProviderConfig)
+      return createOpenAICodexProviderRuntime(model)
     case "github-copilot":
-      return createGithubCopilotProviderRuntime(config as GithubCopilotProviderConfig)
+      return createGithubCopilotProviderRuntime(model)
     /* v8 ignore next 2 -- exhaustive: all providers handled above @preserve */
     default:
       throw new Error(`unsupported provider for ping: ${provider}`)

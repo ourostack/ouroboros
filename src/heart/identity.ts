@@ -2,6 +2,7 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
+import { migrateAgentConfigV1ToV2 } from "./migrate-config"
 
 export type AgentProvider = "azure" | "minimax" | "anthropic" | "openai-codex" | "github-copilot"
 export type SenseName = "cli" | "teams" | "bluebubbles"
@@ -24,10 +25,18 @@ export interface McpServerConfig {
   env?: Record<string, string>
 }
 
+export interface AgentFacingConfig {
+  provider: AgentProvider
+  model: string
+}
+
 export interface AgentConfig {
   version: number
   enabled: boolean
-  provider: AgentProvider
+  /** @deprecated Use humanFacing/agentFacing instead */
+  provider?: AgentProvider
+  humanFacing: AgentFacingConfig
+  agentFacing: AgentFacingConfig
   context?: {
     maxTokens?: number
     contextMargin?: number
@@ -119,9 +128,10 @@ function normalizeSenses(value: unknown, configFile: string): AgentSensesConfig 
 
 export function buildDefaultAgentTemplate(_agentName: string): AgentConfig {
   return {
-    version: 1,
+    version: 2,
     enabled: true,
-    provider: "anthropic",
+    humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+    agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
     context: { ...DEFAULT_AGENT_CONTEXT },
     senses: {
       cli: { ...DEFAULT_AGENT_SENSES.cli },
@@ -245,19 +255,13 @@ export function getAgentSecretsPath(agentName: string = getAgentName()): string 
   return path.join(os.homedir(), ".agentsecrets", agentName, "secrets.json")
 }
 
-/**
- * Load and parse `<agentRoot>/agent.json`.
- * Reads the file fresh on each call unless an override is set.
- * Throws descriptive error if file is missing or contains invalid JSON.
- */
-export function loadAgentConfig(): AgentConfig {
-  if (_agentConfigOverride) {
-    return _agentConfigOverride
-  }
+const VALID_PROVIDERS: readonly string[] = ["azure", "minimax", "anthropic", "openai-codex", "github-copilot"]
 
-  const agentRoot = getAgentRoot()
-  const configFile = path.join(agentRoot, "agent.json")
+function isValidProvider(value: unknown): value is AgentProvider {
+  return typeof value === "string" && VALID_PROVIDERS.includes(value)
+}
 
+function readAndParseAgentJson(configFile: string): Record<string, unknown> {
   let raw: string
   try {
     raw = fs.readFileSync(configFile, "utf-8")
@@ -277,9 +281,8 @@ export function loadAgentConfig(): AgentConfig {
     )
   }
 
-  let parsed: Record<string, unknown>
   try {
-    parsed = JSON.parse(raw) as Record<string, unknown>
+    return JSON.parse(raw) as Record<string, unknown>
   } catch (error) {
     emitNervesEvent({
       level: "error",
@@ -294,6 +297,77 @@ export function loadAgentConfig(): AgentConfig {
     throw new Error(
       `Invalid JSON in agent.json at ${configFile}. Check syntax.`
     )
+  }
+}
+
+function validateFacingConfig(
+  parsed: Record<string, unknown>,
+  facingName: "humanFacing" | "agentFacing",
+  configFile: string,
+): AgentFacingConfig {
+  const raw = parsed[facingName]
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    emitNervesEvent({
+      level: "error",
+      event: "config_identity.error",
+      component: "config/identity",
+      message: `agent config missing or invalid ${facingName}`,
+      meta: { path: configFile, [facingName]: raw ?? null },
+    })
+    throw new Error(
+      `agent.json at ${configFile} must include ${facingName} as { provider, model }.`,
+    )
+  }
+  const facing = raw as Record<string, unknown>
+  if (!isValidProvider(facing.provider)) {
+    emitNervesEvent({
+      level: "error",
+      event: "config_identity.error",
+      component: "config/identity",
+      message: `agent config has invalid provider in ${facingName}`,
+      meta: { path: configFile, provider: facing.provider ?? null },
+    })
+    throw new Error(
+      `agent.json at ${configFile} ${facingName}.provider must be one of: ${VALID_PROVIDERS.join(", ")}.`,
+    )
+  }
+  if (typeof facing.model !== "string") {
+    emitNervesEvent({
+      level: "error",
+      event: "config_identity.error",
+      component: "config/identity",
+      message: `agent config has invalid model in ${facingName}`,
+      meta: { path: configFile, model: facing.model ?? null },
+    })
+    throw new Error(
+      `agent.json at ${configFile} ${facingName}.model must be a string.`,
+    )
+  }
+  return { provider: facing.provider, model: facing.model }
+}
+
+/**
+ * Load and parse `<agentRoot>/agent.json`.
+ * Reads the file fresh on each call unless an override is set.
+ * If the config is v1, auto-migrates to v2 via migrateAgentConfigV1ToV2 and re-reads.
+ * Throws descriptive error if file is missing or contains invalid JSON.
+ */
+export function loadAgentConfig(): AgentConfig {
+  if (_agentConfigOverride) {
+    return _agentConfigOverride
+  }
+
+  const agentRoot = getAgentRoot()
+  const configFile = path.join(agentRoot, "agent.json")
+
+  let parsed = readAndParseAgentJson(configFile)
+
+  // Inline migration: v1 -> v2
+  const rawVersion = parsed.version
+  const initialVersion = typeof rawVersion === "number" ? rawVersion : 1
+  if (initialVersion < 2) {
+    migrateAgentConfigV1ToV2(agentRoot)
+    parsed = readAndParseAgentJson(configFile)
   }
 
   const existingPhrases = parsed.phrases as Partial<AgentConfig["phrases"]> | undefined
@@ -319,34 +393,12 @@ export function loadAgentConfig(): AgentConfig {
     fs.writeFileSync(configFile, JSON.stringify(parsed, null, 2) + "\n", "utf-8")
   }
 
-  const rawProvider = parsed.provider
-  if (
-    rawProvider !== "azure" &&
-    rawProvider !== "minimax" &&
-    rawProvider !== "anthropic" &&
-    rawProvider !== "openai-codex" &&
-    rawProvider !== "github-copilot"
-  ) {
-    emitNervesEvent({
-      level: "error",
-      event: "config_identity.error",
-      component: "config/identity",
-      message: "agent config missing or invalid provider",
-      meta: {
-        path: configFile,
-        provider: rawProvider,
-      },
-    })
-    throw new Error(
-      `agent.json at ${configFile} must include provider: "azure", "minimax", "anthropic", "openai-codex", or "github-copilot".`,
-    )
-  }
-  const provider: AgentProvider = rawProvider
+  // Validate v2 facing configs
+  const humanFacing = validateFacingConfig(parsed, "humanFacing", configFile)
+  const agentFacing = validateFacingConfig(parsed, "agentFacing", configFile)
 
-  const rawVersion = parsed.version
-  const version = rawVersion === undefined ? 1 : rawVersion
+  const version = typeof parsed.version === "number" ? parsed.version : 1
   if (
-    typeof version !== "number" ||
     !Number.isInteger(version) ||
     version < 1
   ) {
@@ -357,7 +409,7 @@ export function loadAgentConfig(): AgentConfig {
       message: "agent config missing or invalid version",
       meta: {
         path: configFile,
-        version: rawVersion,
+        version: parsed.version,
       },
     })
     throw new Error(
@@ -383,10 +435,16 @@ export function loadAgentConfig(): AgentConfig {
     )
   }
 
+  // Tolerate deprecated provider field for backward compatibility
+  const rawProvider = parsed.provider
+  const provider = isValidProvider(rawProvider) ? rawProvider : undefined
+
   const config: AgentConfig = {
     version,
     enabled,
-    provider,
+    ...(provider !== undefined ? { provider } : {}),
+    humanFacing,
+    agentFacing,
     context: parsed.context as AgentConfig["context"] | undefined,
     logging: parsed.logging as AgentConfig["logging"] | undefined,
     senses: normalizeSenses(parsed.senses, configFile),

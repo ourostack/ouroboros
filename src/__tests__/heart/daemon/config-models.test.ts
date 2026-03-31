@@ -32,13 +32,16 @@ function writeAgentConfig(
   bundlesRoot: string,
   agentName: string,
   provider: string,
+  model = "",
 ): void {
   const agentRoot = path.join(bundlesRoot, `${agentName}.ouro`)
   fs.mkdirSync(agentRoot, { recursive: true })
   const config = {
-    version: 1,
+    version: 2,
     enabled: true,
     provider,
+    humanFacing: { provider, model },
+    agentFacing: { provider, model },
     phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
     context: { maxTokens: 80000, contextMargin: 20 },
   }
@@ -247,11 +250,10 @@ describe("ouro config model validation for github-copilot", () => {
     emitTestEvent("config model validation accept")
     const bundlesRoot = makeTempDir("config-model-valid")
     const homeDir = makeTempDir("config-model-valid-home")
-    writeAgentConfig(bundlesRoot, "ValidAgent2", "github-copilot")
+    writeAgentConfig(bundlesRoot, "ValidAgent2", "github-copilot", "old-model")
     seedSecrets(homeDir, "ValidAgent2", {
       providers: {
         "github-copilot": {
-          model: "old-model",
           githubToken: "ghp_test",
           baseUrl: "https://api.copilot.example.com",
         },
@@ -348,10 +350,10 @@ describe("ouro config model validation for github-copilot", () => {
     emitTestEvent("config model validation skip non-ghc")
     const bundlesRoot = makeTempDir("config-model-azure")
     const homeDir = makeTempDir("config-model-azure-home")
-    writeAgentConfig(bundlesRoot, "AzModel", "anthropic")
+    writeAgentConfig(bundlesRoot, "AzModel", "anthropic", "claude-opus-4-6")
     seedSecrets(homeDir, "AzModel", {
       providers: {
-        anthropic: { model: "claude-opus-4-6", setupToken: "tok" },
+        anthropic: { setupToken: "tok" },
       },
     })
 

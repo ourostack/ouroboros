@@ -1,5 +1,5 @@
 import OpenAI, { AzureOpenAI } from "openai";
-import { getAzureConfig, type AzureProviderConfig } from "../config";
+import { getAzureConfig } from "../config";
 import { emitNervesEvent } from "../../nerves/runtime";
 import type { ProviderCapability, ProviderErrorClassification, ProviderRuntime, ProviderTurnRequest } from "../core";
 import type { ResponseItem, TurnResult } from "../streaming";
@@ -60,8 +60,8 @@ export function createAzureTokenProvider(managedIdentityClientId?: string): () =
   };
 }
 
-export function createAzureProviderRuntime(config?: AzureProviderConfig): ProviderRuntime {
-  const azureConfig = config ?? getAzureConfig();
+export function createAzureProviderRuntime(model: string): ProviderRuntime {
+  const azureConfig = getAzureConfig();
   const useApiKey = !!azureConfig.apiKey;
   const authMethod = useApiKey ? "key" : "managed-identity";
 
@@ -72,12 +72,12 @@ export function createAzureProviderRuntime(config?: AzureProviderConfig): Provid
     meta: { provider: "azure", authMethod },
   });
 
-  if (!(azureConfig.endpoint && azureConfig.deployment && azureConfig.modelName)) {
+  if (!(azureConfig.endpoint && azureConfig.deployment)) {
     throw new Error(
       "provider 'azure' is selected in agent.json but providers.azure is incomplete in secrets.json.",
     );
   }
-  const modelCaps = getModelCapabilities(azureConfig.modelName);
+  const modelCaps = getModelCapabilities(model);
   const capabilities = new Set<ProviderCapability>();
   if (modelCaps.reasoningEffort) capabilities.add("reasoning-effort");
 
@@ -101,7 +101,7 @@ export function createAzureProviderRuntime(config?: AzureProviderConfig): Provid
   let nativeInstructions = "";
   return {
     id: "azure",
-    model: azureConfig.modelName,
+    model,
     client,
     capabilities,
     supportedReasoningEfforts: modelCaps.reasoningEffort,

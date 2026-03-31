@@ -39,9 +39,11 @@ beforeEach(() => {
   vi.mocked(fs.mkdirSync).mockReset()
   vi.mocked(fs.writeFileSync).mockReset()
   vi.mocked(identity.loadAgentConfig).mockReturnValue({
-    version: 1,
+    version: 2,
     enabled: true,
     provider: "minimax",
+    humanFacing: { provider: "minimax", model: "minimax-text-01" },
+    agentFacing: { provider: "minimax", model: "minimax-text-01" },
     phrases: {
       thinking: ["working"],
       tool: ["running tool"],
@@ -125,11 +127,9 @@ describe("loadConfig", () => {
     expect(parsed).toMatchObject({
       providers: {
         anthropic: {
-          model: "claude-opus-4-6",
           setupToken: "",
         },
         "openai-codex": {
-          model: "gpt-5.4",
           oauthAccessToken: "",
         },
       },
@@ -349,14 +349,13 @@ describe("getAzureConfig", () => {
     vi.resetModules()
   })
 
-  it("returns azure config from config.json", async () => {
+  it("returns azure config from config.json (credentials only, no modelName)", async () => {
     const configData = {
       providers: {
         azure: {
           apiKey: "az-key",
           endpoint: "https://example.openai.azure.com",
           deployment: "gpt-4",
-          modelName: "gpt-4-model",
           apiVersion: "2025-01-01",
         },
       },
@@ -370,7 +369,7 @@ describe("getAzureConfig", () => {
     expect(azure.apiKey).toBe("az-key")
     expect(azure.endpoint).toBe("https://example.openai.azure.com")
     expect(azure.deployment).toBe("gpt-4")
-    expect(azure.modelName).toBe("gpt-4-model")
+    expect(azure).not.toHaveProperty("modelName")
     expect(azure.apiVersion).toBe("2025-01-01")
   })
 
@@ -451,12 +450,11 @@ describe("getMinimaxConfig", () => {
     vi.resetModules()
   })
 
-  it("returns minimax config from config.json", async () => {
+  it("returns minimax config from config.json (credentials only, no model)", async () => {
     const configData = {
       providers: {
         minimax: {
           apiKey: "mm-key",
-          model: "mm-model",
         },
       },
     }
@@ -467,7 +465,7 @@ describe("getMinimaxConfig", () => {
     const mm = getMinimaxConfig()
 
     expect(mm.apiKey).toBe("mm-key")
-    expect(mm.model).toBe("mm-model")
+    expect(mm).not.toHaveProperty("model")
   })
 
 })
@@ -477,11 +475,10 @@ describe("getOpenAICodexConfig", () => {
     vi.resetModules()
   })
 
-  it("exports openai-codex config getter and returns oauth config from secrets.json", async () => {
+  it("exports openai-codex config getter and returns oauth config from secrets.json (credentials only, no model)", async () => {
     const configData = {
       providers: {
         "openai-codex": {
-          model: "gpt-5.4",
           oauthAccessToken: "oauth-token-123",
         },
       },
@@ -492,7 +489,7 @@ describe("getOpenAICodexConfig", () => {
     expect(typeof (config as any).getOpenAICodexConfig).toBe("function")
     const codex = (config as any).getOpenAICodexConfig()
 
-    expect(codex.model).toBe("gpt-5.4")
+    expect(codex).not.toHaveProperty("model")
     expect(codex.oauthAccessToken).toBe("oauth-token-123")
   })
 })
@@ -530,9 +527,11 @@ describe("getContextConfig", () => {
 
   it("returns context config from agent.json", async () => {
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
-      version: 1,
+      version: 2,
       enabled: true,
       provider: "minimax",
+      humanFacing: { provider: "minimax", model: "minimax-text-01" },
+      agentFacing: { provider: "minimax", model: "minimax-text-01" },
       context: {
         maxTokens: 100000,
         contextMargin: 25,
@@ -573,9 +572,11 @@ describe("getContextConfig", () => {
 
   it("falls back per-field defaults when agent.json context has invalid types", async () => {
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
-      version: 1,
+      version: 2,
       enabled: true,
       provider: "minimax",
+      humanFacing: { provider: "minimax", model: "minimax-text-01" },
+      agentFacing: { provider: "minimax", model: "minimax-text-01" },
       context: {
         maxTokens: "bad",
         contextMargin: 12,
@@ -598,9 +599,11 @@ describe("getContextConfig", () => {
 
   it("falls back contextMargin to default when agent.json contextMargin is not numeric", async () => {
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
-      version: 1,
+      version: 2,
       enabled: true,
       provider: "minimax",
+      humanFacing: { provider: "minimax", model: "minimax-text-01" },
+      agentFacing: { provider: "minimax", model: "minimax-text-01" },
       context: {
         maxTokens: 91000,
         contextMargin: "bad",
@@ -1152,5 +1155,78 @@ describe("resolveOAuthForTenant", () => {
     const result = resolveOAuthForTenant("tenant-x")
     expect(result.graphConnectionName).toBe("tenant-x-graph")
     expect(result.adoConnectionName).toBe("default-ado")
+  })
+})
+
+describe("provider configs are credentials-only (no model fields)", () => {
+  beforeEach(async () => {
+    vi.resetModules()
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({}))
+  })
+
+  it("AnthropicProviderConfig has setupToken but no model", async () => {
+    const { getAnthropicConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    const cfg = getAnthropicConfig()
+    expect(cfg).toHaveProperty("setupToken")
+    expect(cfg).not.toHaveProperty("model")
+  })
+
+  it("AzureProviderConfig has credentials but no modelName", async () => {
+    const { getAzureConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    const cfg = getAzureConfig()
+    expect(cfg).toHaveProperty("apiKey")
+    expect(cfg).toHaveProperty("endpoint")
+    expect(cfg).toHaveProperty("deployment")
+    expect(cfg).not.toHaveProperty("modelName")
+  })
+
+  it("MinimaxProviderConfig has apiKey but no model", async () => {
+    const { getMinimaxConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    const cfg = getMinimaxConfig()
+    expect(cfg).toHaveProperty("apiKey")
+    expect(cfg).not.toHaveProperty("model")
+  })
+
+  it("OpenAICodexProviderConfig has oauthAccessToken but no model", async () => {
+    const { getOpenAICodexConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    const cfg = getOpenAICodexConfig()
+    expect(cfg).toHaveProperty("oauthAccessToken")
+    expect(cfg).not.toHaveProperty("model")
+  })
+
+  it("GithubCopilotProviderConfig has githubToken and baseUrl but no model", async () => {
+    const { getGithubCopilotConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    const cfg = getGithubCopilotConfig()
+    expect(cfg).toHaveProperty("githubToken")
+    expect(cfg).toHaveProperty("baseUrl")
+    expect(cfg).not.toHaveProperty("model")
+  })
+
+  it("DEFAULT_SECRETS_TEMPLATE providers have no model/modelName fields", async () => {
+    vi.mocked(fs.readFileSync).mockImplementation(() => {
+      const err: any = new Error("ENOENT")
+      err.code = "ENOENT"
+      throw err
+    })
+
+    const { resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    // Trigger a loadConfig so it writes the default template
+    const { loadConfig } = await import("../../heart/config")
+    loadConfig()
+
+    const written = vi.mocked(fs.writeFileSync).mock.calls[0]?.[1]
+    const parsed = JSON.parse(String(written)) as Record<string, any>
+    const providers = parsed.providers as Record<string, any>
+    expect(providers.anthropic).not.toHaveProperty("model")
+    expect(providers.azure).not.toHaveProperty("modelName")
+    expect(providers.minimax).not.toHaveProperty("model")
+    expect(providers["openai-codex"]).not.toHaveProperty("model")
+    expect(providers["github-copilot"]).not.toHaveProperty("model")
   })
 })

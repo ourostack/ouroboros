@@ -9,6 +9,8 @@ vi.mock("../../nerves/runtime", () => ({
 vi.mock("../../heart/identity", () => ({
   loadAgentConfig: vi.fn(() => ({
     provider: "anthropic",
+    humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+    agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
   })),
   getAgentToolsRoot: () => "/tmp/AgentBundles/slugger.ouro/state/tools",
 }))
@@ -1586,7 +1588,7 @@ describe("BlueBubbles client", () => {
 
   it("keeps OpenAI Codex voice notes on the local-transcription path for the current Responses contract", async () => {
     const { loadAgentConfig } = await import("../../heart/identity")
-    vi.mocked(loadAgentConfig).mockReturnValue({ provider: "openai-codex" } as any)
+    vi.mocked(loadAgentConfig).mockReturnValue({ humanFacing: { provider: "openai-codex", model: "gpt-5.4" }, agentFacing: { provider: "openai-codex", model: "gpt-5.4" } } as any)
     const hydrateBlueBubblesAttachments = vi.fn().mockResolvedValue({
       inputParts: [],
       transcriptAdditions: ["voice note transcript: hello from codex"],
@@ -1688,7 +1690,7 @@ describe("BlueBubbles client", () => {
 
   it("keeps MiniMax voice notes on the local-transcription path", async () => {
     const { loadAgentConfig } = await import("../../heart/identity")
-    vi.mocked(loadAgentConfig).mockReturnValue({ provider: "minimax" } as any)
+    vi.mocked(loadAgentConfig).mockReturnValue({ humanFacing: { provider: "minimax", model: "minimax-text-01" }, agentFacing: { provider: "minimax", model: "minimax-text-01" } } as any)
     const hydrateBlueBubblesAttachments = vi.fn().mockResolvedValue({
       inputParts: [],
       transcriptAdditions: ["voice note transcript: hello from minimax"],

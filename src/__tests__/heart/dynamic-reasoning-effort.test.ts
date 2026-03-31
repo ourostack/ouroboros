@@ -99,6 +99,8 @@ describe("Azure dynamic reasoning effort", () => {
       name: "testagent",
       configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "azure",
+      humanFacing: { provider: "azure", model: "gpt-4o" },
+      agentFacing: { provider: "azure", model: "gpt-4o" },
     })
     const config = await import("../../heart/config")
     config.resetConfigCache()
@@ -140,6 +142,8 @@ describe("Azure dynamic reasoning effort", () => {
       name: "testagent",
       configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "azure",
+      humanFacing: { provider: "azure", model: "gpt-4o" },
+      agentFacing: { provider: "azure", model: "gpt-4o" },
     })
     const config = await import("../../heart/config")
     config.resetConfigCache()
@@ -187,6 +191,8 @@ describe("Codex dynamic reasoning effort", () => {
       name: "testagent",
       configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "openai-codex",
+      humanFacing: { provider: "openai-codex", model: "gpt-5.4" },
+      agentFacing: { provider: "openai-codex", model: "gpt-5.4" },
     })
     const config = await import("../../heart/config")
     config.resetConfigCache()
@@ -226,6 +232,8 @@ describe("Codex dynamic reasoning effort", () => {
       name: "testagent",
       configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "openai-codex",
+      humanFacing: { provider: "openai-codex", model: "gpt-5.4" },
+      agentFacing: { provider: "openai-codex", model: "gpt-5.4" },
     })
     const config = await import("../../heart/config")
     config.resetConfigCache()

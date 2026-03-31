@@ -106,6 +106,8 @@ async function setAgentProvider(provider: "azure" | "minimax" | "anthropic" | "o
     name: "testagent",
     configPath: "~/.agentsecrets/testagent/secrets.json",
     provider,
+    humanFacing: { provider, model: "" },
+    agentFacing: { provider, model: "" },
   })
 }
 
@@ -122,11 +124,11 @@ describe("provider factory capability declarations", () => {
       config.resetConfigCache()
       config.patchRuntimeConfig({
         providers: {
-          anthropic: { model: "claude-opus-4-6", setupToken: makeAnthropicSetupToken() },
+          anthropic: { setupToken: makeAnthropicSetupToken() },
         },
       })
       const { createAnthropicProviderRuntime } = await import("../../heart/providers/anthropic")
-      const runtime = createAnthropicProviderRuntime()
+      const runtime = createAnthropicProviderRuntime("claude-opus-4-6")
       expect(runtime.capabilities.has("reasoning-effort")).toBe(true)
       expect(runtime.supportedReasoningEfforts).toEqual(["low", "medium", "high", "max"])
     })
@@ -138,11 +140,11 @@ describe("provider factory capability declarations", () => {
       config.resetConfigCache()
       config.patchRuntimeConfig({
         providers: {
-          anthropic: { model: "claude-sonnet-4-6", setupToken: makeAnthropicSetupToken() },
+          anthropic: { setupToken: makeAnthropicSetupToken() },
         },
       })
       const { createAnthropicProviderRuntime } = await import("../../heart/providers/anthropic")
-      const runtime = createAnthropicProviderRuntime()
+      const runtime = createAnthropicProviderRuntime("claude-sonnet-4-6")
       expect(runtime.capabilities.has("reasoning-effort")).toBe(true)
       expect(runtime.supportedReasoningEfforts).toEqual(["low", "medium", "high"])
     })
@@ -160,12 +162,11 @@ describe("provider factory capability declarations", () => {
             apiKey: "azure-test-key",
             endpoint: "https://test.openai.azure.com",
             deployment: "test-deployment",
-            modelName: "gpt-5.4",
           },
         },
       })
       const { createAzureProviderRuntime } = await import("../../heart/providers/azure")
-      const runtime = createAzureProviderRuntime()
+      const runtime = createAzureProviderRuntime("gpt-5.4")
       expect(runtime.capabilities.has("reasoning-effort")).toBe(true)
       expect(runtime.supportedReasoningEfforts).toEqual(["low", "medium", "high"])
     })
@@ -180,13 +181,12 @@ describe("provider factory capability declarations", () => {
       config.patchRuntimeConfig({
         providers: {
           "openai-codex": {
-            model: "gpt-5.4",
             oauthAccessToken: makeOpenAICodexAccessToken(),
           },
         },
       })
       const { createOpenAICodexProviderRuntime } = await import("../../heart/providers/openai-codex")
-      const runtime = createOpenAICodexProviderRuntime()
+      const runtime = createOpenAICodexProviderRuntime("gpt-5.4")
       expect(runtime.capabilities.has("reasoning-effort")).toBe(true)
       expect(runtime.capabilities.has("phase-annotation")).toBe(true)
       expect(runtime.supportedReasoningEfforts).toEqual(["low", "medium", "high"])
@@ -200,13 +200,12 @@ describe("provider factory capability declarations", () => {
       config.patchRuntimeConfig({
         providers: {
           "openai-codex": {
-            model: "custom-codex-preview",
             oauthAccessToken: makeOpenAICodexAccessToken(),
           },
         },
       })
       const { createOpenAICodexProviderRuntime } = await import("../../heart/providers/openai-codex")
-      const runtime = createOpenAICodexProviderRuntime()
+      const runtime = createOpenAICodexProviderRuntime("custom-codex-preview")
       expect(runtime.capabilities.size).toBe(0)
       expect(runtime.supportedReasoningEfforts).toBeUndefined()
     })
@@ -220,11 +219,11 @@ describe("provider factory capability declarations", () => {
       config.resetConfigCache()
       config.patchRuntimeConfig({
         providers: {
-          minimax: { apiKey: "test-key", model: "test-model" },
+          minimax: { apiKey: "test-key" },
         },
       })
       const { createMinimaxProviderRuntime } = await import("../../heart/providers/minimax")
-      const runtime = createMinimaxProviderRuntime()
+      const runtime = createMinimaxProviderRuntime("test-model")
       expect(runtime.capabilities.size).toBe(0)
       expect(runtime.supportedReasoningEfforts).toBeUndefined()
     })

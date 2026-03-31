@@ -126,10 +126,12 @@ If the human explicitly waives this workflow for the current task, the override 
 
 ### Runtime Config Contract (Required)
 
-- `agent.json` is the source of truth for agent identity, selected provider, `configPath`, phrases, and context settings.
+- `agent.json` is the source of truth for agent identity, provider+model selection per facing, `configPath`, phrases, and context settings.
+- Provider selection uses `humanFacing: { provider, model }` and `agentFacing: { provider, model }`. Human-facing covers CLI, Teams, and BlueBubbles; agent-facing covers inner dialog. Both facings are required; there is no fallback between them.
 - `configPath` must target `~/.agentsecrets/<agent>/secrets.json`.
-- `secrets.json` stores provider/team credentials and related secret config; keep agent-owned runtime/session/log/PII artifacts under `~/AgentBundles/<agent>.ouro/state/...` and machine-scoped test-run artifacts under `~/.agentstate/...`.
-- Selected provider config must be complete; runtime must fail fast with explicit guidance. Do not implement silent provider fallback behavior.
+- `secrets.json` stores provider credentials only (API keys, tokens, endpoints) — model selection lives in `agent.json`.
+- Keep agent-owned runtime/session/log/PII artifacts under `~/AgentBundles/<agent>.ouro/state/...` and machine-scoped test-run artifacts under `~/.agentstate/...`.
+- Both facing configs must be complete; runtime must fail fast with explicit guidance. Do not implement silent provider fallback behavior.
 
 ### Git Discipline
 

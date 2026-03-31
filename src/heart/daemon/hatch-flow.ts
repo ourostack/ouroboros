@@ -150,6 +150,8 @@ function writeDiaryScaffold(bundleRoot: string): void {
 function writeHatchlingAgentConfig(bundleRoot: string, input: HatchFlowInput): void {
   const template = buildDefaultAgentTemplate(input.agentName)
   template.provider = input.provider
+  template.humanFacing = { provider: input.provider, model: template.humanFacing.model }
+  template.agentFacing = { provider: input.provider, model: template.agentFacing.model }
   template.enabled = true
   fs.writeFileSync(path.join(bundleRoot, "agent.json"), `${JSON.stringify(template, null, 2)}\n`, "utf-8")
 }
