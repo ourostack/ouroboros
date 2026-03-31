@@ -126,6 +126,8 @@ export function scanTasks(root = getTaskRoot()): TaskIndex {
     }
 
     // Process only .md files at collection root (flat, no recursion)
+    let supportDocCount = 0
+
     for (const entry of entries) {
       if (!entry.isFile() || !entry.name.endsWith(".md")) continue
 
@@ -135,7 +137,8 @@ export function scanTasks(root = getTaskRoot()): TaskIndex {
       // Step 1: Try to extract frontmatter
       const frontmatter = tryExtractFrontmatter(content)
       if (!frontmatter) {
-        // No frontmatter — not a task, skip silently
+        // No frontmatter — not a task, count as support doc clutter
+        supportDocCount += 1
         continue
       }
 
@@ -201,6 +204,25 @@ export function scanTasks(root = getTaskRoot()): TaskIndex {
           category: "live",
         })
       }
+    }
+
+    // Summarize non-task support docs at collection root as one migration issue
+    if (supportDocCount > 0) {
+      emitNervesEvent({
+        event: "repertoire.support_docs_detected",
+        component: "repertoire",
+        message: "non-task support documents at collection root",
+        meta: { collection, count: supportDocCount },
+      })
+
+      issues.push({
+        target: collection,
+        code: "org-collection-root-clutter",
+        description: `${supportDocCount} non-task file${supportDocCount === 1 ? "" : "s"} at ${collection}/ root (doing docs, planning docs, etc.)`,
+        fix: "Move support docs into same-stem work directories for their parent tasks",
+        confidence: "needs_review",
+        category: "migration",
+      })
     }
   }
 
