@@ -34,6 +34,28 @@ export interface TaskIndex {
   fingerprint: string
 }
 
+export interface TaskIssue {
+  target: string
+  code: string
+  description: string
+  fix: string
+  confidence: "safe" | "needs_review"
+  category: "live" | "migration"
+}
+
+export interface FixOptions {
+  mode: "dry-run" | "safe" | "single"
+  issueId?: string
+  option?: number
+}
+
+export interface FixResult {
+  applied: TaskIssue[]
+  remaining: TaskIssue[]
+  skipped: TaskIssue[]
+  health: string
+}
+
 export interface TransitionResult {
   ok: boolean
   from: TaskStatus
