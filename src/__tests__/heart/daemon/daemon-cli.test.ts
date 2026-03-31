@@ -281,6 +281,13 @@ describe("ouro CLI parsing", () => {
       option: 1,
     })
 
+    // ouro task fix <id> --option without value (ignores incomplete flag)
+    expect(parseOuroCommand(["task", "fix", "schema-missing-kind:one-shots/foo.md", "--option"])).toEqual({
+      kind: "task.fix",
+      mode: "single",
+      issueId: "schema-missing-kind:one-shots/foo.md",
+    })
+
     // ouro task fix with --agent flag
     expect(parseOuroCommand(["task", "fix", "--agent", "slugger"])).toEqual({
       kind: "task.fix",
@@ -4179,6 +4186,40 @@ describe("ouro task CLI execution", () => {
     expect(result).toContain("safe fixes")
     expect(result).toContain("needs review")
     expect(result).toContain("2 migration")
+  })
+
+  it("ouro task fix dry-run with only safe issues omits review section", async () => {
+    mockTaskModule.fix.mockReturnValueOnce({
+      applied: [],
+      remaining: [
+        { target: "one-shots/foo.md", code: "schema-missing-kind", description: "missing kind: task", fix: "add kind: task", confidence: "safe", category: "migration" },
+      ],
+      skipped: [],
+      health: "1 migration",
+    })
+
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "fix"], deps)
+    expect(result).toContain("safe fixes (1)")
+    expect(result).not.toContain("needs review")
+    expect(result).toContain("1 migration")
+  })
+
+  it("ouro task fix dry-run with only review issues omits safe section", async () => {
+    mockTaskModule.fix.mockReturnValueOnce({
+      applied: [],
+      remaining: [
+        { target: "orphan.md", code: "org-root-level-doc", description: "root-level orphan doc", fix: "move to collection", confidence: "needs_review", category: "migration" },
+      ],
+      skipped: [],
+      health: "1 migration",
+    })
+
+    const deps = makeDeps()
+    const result = await runOuroCli(["task", "fix"], deps)
+    expect(result).not.toContain("safe fixes")
+    expect(result).toContain("needs review (1)")
+    expect(result).toContain("1 migration")
   })
 
   it("ouro task fix dry-run shows clean when no issues", async () => {
