@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.167",
+      "changes": [
+        "fix(outlook): sidebar border for visual separation between nav and content"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.166",
       "changes": [
         "fix(outlook): add dark class to html root \u2014 fixes white/blank page in production"
