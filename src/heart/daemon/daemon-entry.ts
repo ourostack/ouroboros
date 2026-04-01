@@ -195,3 +195,4 @@ process.on("unhandledRejection", (reason) => {
   })
 })
 /* v8 ignore stop */
+// daemon stdio fix
