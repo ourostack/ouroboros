@@ -55,17 +55,18 @@ export function WorkTab({ agentName, view, focus, onFocusConsumed }: { agentName
                     <span className="text-sm font-medium text-ouro-bone">{truncate(o.content, 120)}</span>
                   </div>
 
-                  {/* Chain: origin session */}
+                  {/* Chain: origin session — clickable card */}
                   {o.origin && (
-                    <div className="mt-2 flex items-center gap-1.5 text-xs">
-                      <span className="text-ouro-shadow">triggered from</span>
-                      <button
-                        onClick={() => nav({ tab: "sessions", focus: `${o.origin!.friendId}/${o.origin!.channel}/${o.origin!.key}` })}
-                        className="text-ouro-glow underline decoration-ouro-glow/30 underline-offset-2 hover:decoration-ouro-glow"
-                      >
-                        {o.origin.friendId.slice(0, 8)}…/{o.origin.channel}/{o.origin.key}
-                      </button>
-                    </div>
+                    <button
+                      onClick={() => nav({ tab: "sessions", focus: `${o.origin!.friendId}/${o.origin!.channel}/${o.origin!.key}` })}
+                      className="mt-2 flex w-full items-center gap-2 rounded-md bg-ouro-moss/8 px-2.5 py-1.5 text-left text-xs ring-1 ring-ouro-moss/10 hover:ring-ouro-glow/20 transition-colors"
+                    >
+                      <span className="text-ouro-shadow">from</span>
+                      <span className="font-medium text-ouro-glow">{o.origin.channel}</span>
+                      <span className="text-ouro-shadow">→</span>
+                      <span className="text-ouro-mist truncate">{o.origin.key}</span>
+                      <span className="ml-auto text-ouro-shadow">open session →</span>
+                    </button>
                   )}
 
                   {/* Chain: current surface */}
