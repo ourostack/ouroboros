@@ -93,7 +93,7 @@ function createRuntimeForPing(provider: AgentProvider, _config: ProviderConfig):
   const DEFAULT_MODELS: Record<AgentProvider, string> = {
     anthropic: "claude-haiku-4-5-20251001",
     azure: "gpt-4o",
-    minimax: "minimax-text-01",
+    minimax: "MiniMax-M2.7",
     "openai-codex": "codex-mini-latest",
     "github-copilot": "gpt-4o",
   }

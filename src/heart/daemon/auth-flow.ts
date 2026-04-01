@@ -70,7 +70,7 @@ const DEFAULT_SECRETS_TEMPLATE: SecretsTemplate = {
       apiVersion: "2025-04-01-preview",
     },
     minimax: {
-      model: "minimax-text-01",
+      model: "MiniMax-M2.7",
       apiKey: "",
     },
     anthropic: {
