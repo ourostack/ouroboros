@@ -89,12 +89,30 @@ export function SessionsTab({ agentName, focus, onFocusConsumed, deskPrefs }: { 
     return <Loading label="Loading sessions" />
   }
 
-  // Sort starred friends to top
-  const sortedItems = [...inventory.items].sort((a, b) => {
-    const aStarred = starredFriends.has(a.friendId) ? 0 : 1
-    const bStarred = starredFriends.has(b.friendId) ? 0 : 1
-    return aStarred - bStarred
+  // Group by person, sort starred to top, then by session count
+  const byPerson = new Map<string, SessionItem[]>()
+  for (const s of inventory.items) {
+    if (!byPerson.has(s.friendId)) byPerson.set(s.friendId, [])
+    byPerson.get(s.friendId)!.push(s)
+  }
+  const personEntries = [...byPerson.entries()].sort((a, b) => {
+    const aStarred = starredFriends.has(a[0]) ? 0 : 1
+    const bStarred = starredFriends.has(b[0]) ? 0 : 1
+    if (aStarred !== bStarred) return aStarred - bStarred
+    return b[1].length - a[1].length
   })
+
+  // Flatten back with person group separators
+  const sortedItems: SessionItem[] = []
+  const personHeaders = new Map<number, { name: string; channels: number; starred: boolean }>()
+  for (const [friendId, sessions] of personEntries) {
+    personHeaders.set(sortedItems.length, {
+      name: sessions[0]!.friendName,
+      channels: sessions.length,
+      starred: starredFriends.has(friendId),
+    })
+    sortedItems.push(...sessions)
+  }
 
   return (
     <div className="space-y-3">
@@ -103,7 +121,8 @@ export function SessionsTab({ agentName, focus, onFocusConsumed, deskPrefs }: { 
       </p>
 
       <div className="space-y-1.5">
-        {sortedItems.map((s) => {
+        {sortedItems.map((s, idx) => {
+          const header = personHeaders.get(idx)
           const isStarred = starredFriends.has(s.friendId)
           const key = `${s.friendId}/${s.channel}/${s.key}`
           const isOpen = expandedKey === key
@@ -116,6 +135,14 @@ export function SessionsTab({ agentName, focus, onFocusConsumed, deskPrefs }: { 
 
           return (
             <div key={key}>
+              {/* Person header — shows when same person has multiple channels */}
+              {header && header.channels > 1 && (
+                <div className="flex items-center gap-2 pt-3 pb-1">
+                  {header.starred && <span className="text-ouro-gold text-sm">★</span>}
+                  <span className="font-medium text-ouro-bone text-sm">{header.name}</span>
+                  <span className="text-xs text-ouro-shadow">{header.channels} channels</span>
+                </div>
+              )}
               <button
                 onClick={() => loadTranscript(key)}
                 className={`flex w-full flex-col gap-1.5 rounded-lg px-3 py-3 text-left transition-colors ring-1 ${
