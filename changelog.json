@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.168",
+      "changes": [
+        "fix(outlook): content area matches sidebar background \u2014 consistent dark surface"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.167",
       "changes": [
         "fix(outlook): sidebar border for visual separation between nav and content"
