@@ -284,6 +284,16 @@ function HabitCard({ h }: { h: Record<string, unknown> }) {
         {h.cadence && <span>every {h.cadence as string}</span>}
         <span>{h.lastRun ? `last ${relTime(h.lastRun as string)}` : "never run"}</span>
         {isDegraded && h.degradedReason && <span className="text-ouro-gold">{h.degradedReason as string}</span>}
+        {/* Confidence indicator */}
+        {!isOverdue && !isDegraded && status === "active" && h.lastRun && (
+          <span className="text-ouro-glow">on schedule</span>
+        )}
+        {isOverdue && h.overdueMs && (
+          <span className="text-ouro-fang">{Math.floor((h.overdueMs as number) / 60000)}m overdue</span>
+        )}
+        {!h.lastRun && status === "active" && (
+          <span className="text-ouro-gold">never fired — may be misconfigured</span>
+        )}
       </div>
       {h.bodyExcerpt && <p className="mt-1 text-xs text-ouro-shadow/70">{h.bodyExcerpt as string}</p>}
     </div>
