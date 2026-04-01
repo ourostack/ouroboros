@@ -388,6 +388,8 @@ describe("daemon CLI default dependency branches", () => {
       unlinkSync: vi.fn(),
       readFileSync: vi.fn(() => JSON.stringify({ version: "9.9.9" })),
       readdirSync: vi.fn(() => []),
+      openSync: vi.fn(() => 99),
+      closeSync: vi.fn(),
     }))
     vi.stubGlobal("console", { ...console, log: consoleLog })
 
@@ -399,7 +401,7 @@ describe("daemon CLI default dependency branches", () => {
     expect(spawn).toHaveBeenCalledWith(
       "node",
       ["/mock/repo/dist/heart/daemon/daemon-entry.js", "--socket", "/tmp/daemon.sock"],
-      expect.objectContaining({ detached: true, stdio: "ignore" }),
+      expect.objectContaining({ detached: true, stdio: ["ignore", 99, 99] }),
     )
     expect(unref).toHaveBeenCalled()
     expect(started.pid).toBeNull()

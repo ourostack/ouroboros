@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.163",
+      "changes": [
+        "fix(daemon): redirect detached spawn stdio to /dev/null \u2014 fixes ouro up daemon crash"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.162",
       "changes": [
         "fix(daemon): handle EPIPE in detached daemon \u2014 suppress pipe errors when parent exits after ouro up"
