@@ -104,10 +104,9 @@ describe("daemon CLI default dependency branches", () => {
       expect(plist).toContain("/mock/repo/dist/heart/daemon/daemon-entry.js")
       expect(plist).toContain("<key>RunAtLoad</key>")
       expect(plist).toContain(path.join(logDir, "ouro-daemon-stdout.log"))
-      expect(execSync).toHaveBeenCalledWith(
-        expect.stringContaining("launchctl bootstrap gui/"),
-        { stdio: "ignore" },
-      )
+      // No bootstrap call — daemon is started by ouro up directly
+      const bootstrapCalls = execSync.mock.calls.filter((c: unknown[]) => String(c[0]).includes("bootstrap"))
+      expect(bootstrapCalls).toHaveLength(0)
     } finally {
       restorePlatform()
       fs.rmSync(tempHome, { recursive: true, force: true })
@@ -149,10 +148,9 @@ describe("daemon CLI default dependency branches", () => {
         expect.stringContaining("launchctl bootout gui/"),
         { stdio: "ignore" },
       )
-      expect(execSync).toHaveBeenCalledWith(
-        expect.stringContaining("launchctl bootstrap gui/"),
-        { stdio: "ignore" },
-      )
+      // No bootstrap call — daemon is started by ouro up directly
+      const bootstrapCalls = execSync.mock.calls.filter((c: unknown[]) => String(c[0]).includes("bootstrap"))
+      expect(bootstrapCalls).toHaveLength(0)
     } finally {
       restorePlatform()
       fs.rmSync(tempHome, { recursive: true, force: true })

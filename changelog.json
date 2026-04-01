@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.165",
+      "changes": [
+        "fix(daemon): dont launchctl bootstrap during ouro up \u2014 write plist only, prevents competing daemon process"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.164",
       "changes": [
         "fix(daemon): keep /dev/null fds open until parent exits \u2014 fixes ouro up daemon crash"
