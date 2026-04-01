@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.174",
+      "changes": [
+        "feat(outlook): keyboard shortcuts \u2014 1-7 for tabs, Esc to collapse",
+        "feat(outlook): obligation origin cards \u2014 clickable visual chain from who asked through which channel"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.173",
       "changes": [
         "feat(outlook): sessions grouped by person \u2014 same friend across multiple channels shown together with person header"

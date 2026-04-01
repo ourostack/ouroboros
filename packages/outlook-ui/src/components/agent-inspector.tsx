@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { Badge } from "../catalyst/badge"
 import { buildHash, NavigationContext, type NavigateTarget, type RouteState, type TabId } from "../navigation"
+import { useKeyboardShortcuts } from "../hooks/use-keyboard"
 import { OverviewTab } from "./tabs/overview"
 import { SessionsTab } from "./tabs/sessions"
 import { WorkTab } from "./tabs/work"
@@ -62,6 +63,9 @@ export function AgentInspector({ agentName, view, deskPrefs, initialRoute }: Age
   }, [agentName])
 
   const consumeFocus = useCallback(() => setFocusTarget(undefined), [])
+
+  // Keyboard shortcuts: 1-7 for tabs, Esc to collapse
+  useKeyboardShortcuts(navigate)
 
   if (!view || !agentName) {
     return (
