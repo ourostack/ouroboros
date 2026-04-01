@@ -1316,13 +1316,14 @@ function defaultStartDaemonProcess(socketPath: string): Promise<{ pid: number | 
   const entry = path.join(getRepoRoot(), "dist", "heart", "daemon", "daemon-entry.js")
   // Redirect stdio to /dev/null via file descriptors — using 'ignore' causes EPIPE
   // when the daemon's logging system writes to stderr after the parent exits.
-  const devNull = fs.openSync(os.devNull, "w")
+  const outFd = fs.openSync(os.devNull, "w")
+  const errFd = fs.openSync(os.devNull, "w")
   const child = spawn("node", [entry, "--socket", socketPath], {
     detached: true,
-    stdio: ["ignore", devNull, devNull],
+    stdio: ["ignore", outFd, errFd],
   })
   child.unref()
-  fs.closeSync(devNull)
+  // Don't close fds — the child process needs them. They'll be cleaned up when the parent exits.
   return Promise.resolve({ pid: child.pid ?? null })
 }
 
