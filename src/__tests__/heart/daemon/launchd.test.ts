@@ -153,7 +153,7 @@ describe("launchd daemon management", () => {
       expect(fs.existsSync(logDir)).toBe(true)
     })
 
-    it("writes plist file without bootstrapping (daemon started separately)", () => {
+    it("writes plist file and bootstraps for KeepAlive crash recovery", () => {
       const deps = makeDeps()
 
       installLaunchAgent(deps, defaultPlistOptions)
@@ -163,13 +163,12 @@ describe("launchd daemon management", () => {
       const content = fs.readFileSync(plistPath, "utf-8")
       expect(content).toContain("<plist version=\"1.0\">")
 
-      // Should NOT call bootstrap — daemon is started by ouro up directly
-      expect(deps.exec).not.toHaveBeenCalledWith(
-        expect.stringContaining("launchctl bootstrap"),
+      expect(deps.exec).toHaveBeenCalledWith(
+        expect.stringContaining("launchctl bootstrap gui/501"),
       )
     })
 
-    it("boots out existing plist before writing new one (idempotent install)", () => {
+    it("boots out existing plist before bootstrapping new one (idempotent install)", () => {
       const deps = makeDeps()
 
       // Pre-install a plist
@@ -178,13 +177,11 @@ describe("launchd daemon management", () => {
 
       installLaunchAgent(deps, defaultPlistOptions)
 
-      // Should call bootout to unload old plist
       expect(deps.exec).toHaveBeenCalledWith(
         expect.stringContaining("launchctl bootout gui/501"),
       )
-      // But NOT bootstrap — daemon is started by ouro up directly
-      expect(deps.exec).not.toHaveBeenCalledWith(
-        expect.stringContaining("launchctl bootstrap"),
+      expect(deps.exec).toHaveBeenCalledWith(
+        expect.stringContaining("launchctl bootstrap gui/501"),
       )
     })
 

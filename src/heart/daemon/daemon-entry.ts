@@ -4,8 +4,10 @@ import * as path from "path"
 import { DaemonProcessManager } from "./process-manager"
 import { OuroDaemon } from "./daemon"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { registerGlobalLogSink } from "../../nerves/index"
 import { FileMessageRouter } from "./message-router"
 import { HealthMonitor } from "./health-monitor"
+import { DaemonHealthWriter, createHealthNervesSink, getDefaultHealthPath } from "./daemon-health"
 import { TaskDrivenScheduler } from "./task-scheduler"
 import { configureDaemonRuntimeLogger } from "./runtime-logging"
 import { DaemonSenseManager } from "./sense-manager"
@@ -97,6 +99,22 @@ const daemon = new OuroDaemon({
   router,
   mode,
 })
+
+/* v8 ignore start — daemon health writer wiring, tested via daemon-health.test.ts @preserve */
+const healthWriter = new DaemonHealthWriter(getDefaultHealthPath())
+const healthSink = createHealthNervesSink(healthWriter, () => ({
+  status: "ok",
+  mode,
+  pid: process.pid,
+  startedAt: new Date().toISOString(),
+  uptimeSeconds: Math.floor(process.uptime()),
+  safeMode: null,
+  degraded: [],
+  agents: {},
+  habits: {},
+}))
+registerGlobalLogSink(healthSink)
+/* v8 ignore stop */
 
 const habitSchedulers: HabitScheduler[] = []
 

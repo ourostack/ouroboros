@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.175",
+      "changes": [
+        "fix(daemon): launchd KeepAlive for crash recovery \u2014 auto-restarts on crash",
+        "fix(daemon): orphan killer excludes MCP server processes",
+        "fix(daemon): health file writer wired into daemon-entry",
+        "fix(engine): auth-failure errors include actionable guidance"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.174",
       "changes": [
         "feat(outlook): keyboard shortcuts \u2014 1-7 for tabs, Esc to collapse",
