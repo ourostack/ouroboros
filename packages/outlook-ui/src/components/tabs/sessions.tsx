@@ -15,6 +15,7 @@ interface SessionItem {
   lastUsage: { total_tokens: number } | null
   continuity: { mustResolveBeforeHandoff: boolean } | null
   latestUserExcerpt: string | null
+  latestAssistantExcerpt: string | null
   estimatedTokens: number | null
 }
 
@@ -133,8 +134,16 @@ export function SessionsTab({ agentName, focus, onFocusConsumed, deskPrefs }: { 
                 </div>
 
                 {/* Row 2: excerpt */}
+                {/* Last inbound + last outbound — session state at a glance */}
                 {s.latestUserExcerpt && (
-                  <p className="truncate text-sm text-ouro-shadow">{truncate(s.latestUserExcerpt, 120)}</p>
+                  <p className="truncate text-xs text-ouro-gold/70">
+                    <span className="font-mono text-[9px] uppercase tracking-wider">in:</span> {truncate(s.latestUserExcerpt, 100)}
+                  </p>
+                )}
+                {s.latestAssistantExcerpt && (
+                  <p className="truncate text-xs text-ouro-glow/60">
+                    <span className="font-mono text-[9px] uppercase tracking-wider">out:</span> {truncate(s.latestAssistantExcerpt, 100)}
+                  </p>
                 )}
 
                 {/* Row 3: stats + context pressure bar */}
