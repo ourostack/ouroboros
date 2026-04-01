@@ -27,6 +27,8 @@ export interface OutlookDeskPrefs {
   starredFriends: string[]
   /** Pinned constellations — linked threads the agent cares about */
   pinnedConstellations: OutlookConstellation[]
+  /** Obligation IDs the agent has dismissed from the needs-me queue */
+  dismissedObligations: string[]
 }
 
 export interface OutlookConstellation {

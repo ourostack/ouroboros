@@ -1541,7 +1541,7 @@ async function defaultRunAdoptionSpecialist(): Promise<string | null> {
     // Default models per provider (used when entering new credentials)
     const defaultModels: Record<AgentProvider, string> = {
       anthropic: "claude-opus-4-6",
-      minimax: "MiniMax-Text-01",
+      minimax: "MiniMax-M2.7",
       "openai-codex": "gpt-5.4",
       "github-copilot": "claude-sonnet-4.6",
       azure: "",

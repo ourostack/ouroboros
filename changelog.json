@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.169",
+      "changes": [
+        "fix(outlook): desk prefs wiring \u2014 carrying block, constellations, starred friends now load in production",
+        "feat(outlook): obligation dismiss \u2014 agents can clear stale obligations from needs-me queue",
+        "fix: default minimax model updated to MiniMax-M2.7"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.168",
       "changes": [
         "fix(outlook): content area matches sidebar background \u2014 consistent dark surface"

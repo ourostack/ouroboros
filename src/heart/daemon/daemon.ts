@@ -429,6 +429,7 @@ export class OuroDaemon {
         this.outlookServer = await startOutlookHttpServer({
           host: "127.0.0.1",
           port: OUTLOOK_DEFAULT_PORT,
+          bundlesRoot: this.bundlesRoot,
           readMachineState: () => readOutlookMachineState({ bundlesRoot: this.bundlesRoot }),
           readMachineView: ({ machine }) => {
             const overview = this.buildStatusPayload().overview

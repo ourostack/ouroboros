@@ -352,7 +352,30 @@ export async function startOutlookHttpServer(options: StartOutlookHttpServerOpti
         return
       }
 
-      /* v8 ignore start — desk prefs + needs-me use direct reads */
+      /* v8 ignore start — desk prefs write + reads */
+      if (surface === "dismiss-obligation" && request.method === "POST") {
+        let body = ""
+        request.on("data", (chunk) => { body += chunk })
+        request.on("end", () => {
+          try {
+            const { obligationId } = JSON.parse(body) as { obligationId: string }
+            if (!obligationId) { writeJson(response, 400, { ok: false, error: "obligationId required" }); return }
+            const prefsPath = path.join(agentRoot(agent), "state", "outlook-prefs.json")
+            let prefs: Record<string, unknown> = {}
+            try { prefs = JSON.parse(fs.readFileSync(prefsPath, "utf-8")) as Record<string, unknown> } catch { /* new file */ }
+            const dismissed = Array.isArray(prefs.dismissedObligations) ? prefs.dismissedObligations as string[] : []
+            if (!dismissed.includes(obligationId)) dismissed.push(obligationId)
+            prefs.dismissedObligations = dismissed
+            fs.mkdirSync(path.dirname(prefsPath), { recursive: true })
+            fs.writeFileSync(prefsPath, JSON.stringify(prefs, null, 2) + "\n", "utf-8")
+            writeJson(response, 200, { ok: true, dismissed: dismissed.length })
+          } catch (error) {
+            writeJson(response, 500, { ok: false, error: String(error) })
+          }
+        })
+        return
+      }
+
       if (surface === "desk-prefs") {
         writeJson(response, 200, readDeskPrefs(agentRoot(agent)))
         return
