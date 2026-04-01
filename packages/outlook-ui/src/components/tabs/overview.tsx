@@ -44,6 +44,7 @@ const ACTION_URGENCIES = new Set(["owed-reply", "blocking-obligation", "broken-r
 export function OverviewTab({ view, deskPrefs }: { view: Record<string, unknown>; deskPrefs?: Record<string, unknown> | null }) {
   const nav = useNavigate()
   const [needsMe, setNeedsMe] = useState<{ items: NeedsMeItem[] } | null>(null)
+  const [codingDeep, setCodingDeep] = useState<{ items: Array<Record<string, unknown>> } | null>(null)
   const agent = view.agent as Record<string, unknown>
   const work = view.work as Record<string, unknown>
   const inner = view.inner as Record<string, unknown>
@@ -62,6 +63,7 @@ export function OverviewTab({ view, deskPrefs }: { view: Record<string, unknown>
 
   useEffect(() => {
     fetchJson<{ items: NeedsMeItem[] }>(`/agents/${encodeURIComponent(agent.agentName as string)}/needs-me`).then(setNeedsMe)
+    fetchJson<{ items: Array<Record<string, unknown>> }>(`/agents/${encodeURIComponent(agent.agentName as string)}/coding`).then(setCodingDeep)
   }, [agent.agentName])
 
   return (
@@ -209,6 +211,31 @@ export function OverviewTab({ view, deskPrefs }: { view: Record<string, unknown>
         <Meter label="Coding" value={coding.activeCount} sub={`${coding.blockedCount} blocked`} onClick={() => nav({ tab: "work" })} />
         <Meter label="Inner" value={inner.status as string} sub={truncate((inner.summary as string) ?? "", 30)} onClick={() => nav({ tab: "inner" })} />
       </div>
+
+      {/* Active coding sessions — visible from overview */}
+      {codingDeep && codingDeep.items.length > 0 && (() => {
+        const active = codingDeep.items.filter((c) => ["spawning","running","waiting_input","stalled"].includes(c.status as string))
+        if (active.length === 0) return null
+        return (
+          <Section title={`Active coding (${active.length})`}>
+            <div className="space-y-1.5">
+              {active.map((c) => (
+                <button
+                  key={c.id as string}
+                  onClick={() => nav({ tab: "work" })}
+                  className="flex w-full items-center gap-2 rounded-lg bg-ouro-void/40 px-3 py-2 text-left ring-1 ring-ouro-moss/15 hover:ring-ouro-glow/20 transition-colors"
+                >
+                  <Badge color={(c.status as string) === "running" ? "lime" : (c.status as string) === "waiting_input" ? "yellow" : "zinc"}>
+                    {c.status as string}
+                  </Badge>
+                  <span className="truncate text-sm text-ouro-bone">{c.runner as string} — {truncate(c.workdir as string, 40)}</span>
+                  <span className="shrink-0 text-xs text-ouro-shadow">{relTime(c.lastActivityAt as string)}</span>
+                </button>
+              ))}
+            </div>
+          </Section>
+        )
+      })()}
 
       {/* Senses + Bridges */}
       <div className="grid gap-4 sm:grid-cols-2">

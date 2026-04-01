@@ -172,8 +172,45 @@ function InnerTranscriptView({ messages }: { messages: TranscriptMessage[] }) {
     if (containerRef.current) containerRef.current.scrollTop = containerRef.current.scrollHeight
   }, [visible.length])
 
+  // Extract landmarks for navigation
+  const landmarks: Array<{ index: number; kind: string; label: string }> = []
+  for (const m of conversation) {
+    if (m.role !== "assistant") continue
+    const calls = (m.tool_calls ?? []).map(classifyToolCall)
+    for (const c of calls) {
+      if (c.kind === "surface") landmarks.push({ index: m.index, kind: "surfaced", label: truncate(c.deliveredText ?? "", 40) })
+      if (c.kind === "rest") landmarks.push({ index: m.index, kind: "resting", label: "resting" })
+      if (c.kind === "delegation") landmarks.push({ index: m.index, kind: "delegated", label: "continued thinking" })
+    }
+  }
+
+  function scrollToMessage(index: number) {
+    const el = containerRef.current?.querySelector(`[data-msg-index="${index}"]`)
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "center" })
+  }
+
   return (
-    <div ref={containerRef} className="mt-2 max-h-[60vh] overflow-y-auto rounded-lg bg-ouro-void/60 p-3 ring-1 ring-ouro-moss/15 space-y-1">
+    <div>
+      {/* Landmark navigation bar */}
+      {landmarks.length > 0 && (
+        <div className="mt-2 mb-1 flex flex-wrap gap-1">
+          {landmarks.map((lm, i) => (
+            <button
+              key={i}
+              onClick={() => { setShowAll(true); setTimeout(() => scrollToMessage(lm.index), 100) }}
+              className={`rounded-md px-2 py-0.5 text-[10px] font-mono ring-1 transition-colors ${
+                lm.kind === "surfaced" ? "bg-ouro-scale/10 text-ouro-glow ring-ouro-scale/20 hover:ring-ouro-glow/30"
+                  : lm.kind === "resting" ? "bg-ouro-void/40 text-ouro-shadow ring-ouro-moss/10"
+                    : "bg-ouro-gold/5 text-ouro-gold ring-ouro-gold/10"
+              }`}
+            >
+              {lm.kind === "surfaced" ? "★" : lm.kind === "resting" ? "—" : "→"} #{lm.index}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div ref={containerRef} className="max-h-[60vh] overflow-y-auto rounded-lg bg-ouro-void/60 p-3 ring-1 ring-ouro-moss/15 space-y-1">
       {hiddenCount > 0 && (
         <button
           onClick={() => setShowAll(true)}
@@ -187,7 +224,7 @@ function InnerTranscriptView({ messages }: { messages: TranscriptMessage[] }) {
           const isDelegated = m.content?.includes("[pending from") || m.content?.includes("[delegated")
           const isWakeUp = m.content?.includes("waking up") || m.content?.includes("world-state checkpoint")
           return (
-            <div key={m.index} className="flex justify-start py-1">
+            <div key={m.index} data-msg-index={m.index} className="flex justify-start py-1">
               <div className={`max-w-[85%] rounded-2xl rounded-bl-sm px-3 py-2 ring-1 ${
                 isDelegated
                   ? "bg-ouro-gold/8 ring-ouro-gold/15"
@@ -218,7 +255,7 @@ function InnerTranscriptView({ messages }: { messages: TranscriptMessage[] }) {
           const ponders = classified.filter((c) => c.kind === "delegation")
 
           return (
-            <div key={m.index}>
+            <div key={m.index} data-msg-index={m.index}>
               {/* Surface = conclusion delivered outward — landmark */}
               {surfaces.map((sc) => (
                 <div key={sc.id} className="flex justify-end py-1">
@@ -258,6 +295,7 @@ function InnerTranscriptView({ messages }: { messages: TranscriptMessage[] }) {
         }
         return null
       })}
+      </div>
     </div>
   )
 }
