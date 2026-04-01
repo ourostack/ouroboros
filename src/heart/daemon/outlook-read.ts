@@ -1330,11 +1330,15 @@ export function readNeedsMeView(agentName: string, options: OutlookReadOptions =
     const ageMs = now.getTime() - Date.parse(o.updatedAt)
     const isStale = ageMs > 24 * 60 * 60 * 1000
 
-    if (o.status === "pending" || o.status === "investigating") {
+    // Return-ready: obligation has a surface (result exists) but status is still open
+    const hasResult = o.currentSurface !== null
+    const isOpen = o.status === "pending" || o.status === "investigating" || o.status === "waiting_for_merge" || o.status === "updating_runtime"
+
+    if (isOpen) {
       items.push({
-        urgency: isStale ? "stale-delegation" : "blocking-obligation",
+        urgency: hasResult ? "return-ready" : isStale ? "stale-delegation" : "blocking-obligation",
         label: truncateExcerpt(o.content, 80) ?? o.id,
-        detail: `${o.status}${o.nextAction ? ` · next: ${o.nextAction}` : ""}`,
+        detail: hasResult ? `result ready — ${o.currentSurface!.kind}: ${o.currentSurface!.label}` : `${o.status}${o.nextAction ? ` · next: ${o.nextAction}` : ""}`,
         ref: { tab: "work", focus: o.id },
         ageMs,
       })

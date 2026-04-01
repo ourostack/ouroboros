@@ -38,6 +38,9 @@ const URGENCY_WHY: Record<string, string> = {
   "overdue-habit": "This routine is past its scheduled cadence",
 }
 
+const STALE_URGENCIES = new Set(["stale-delegation"])
+const ACTION_URGENCIES = new Set(["owed-reply", "blocking-obligation", "broken-return", "return-ready", "overdue-habit"])
+
 export function OverviewTab({ view, deskPrefs }: { view: Record<string, unknown>; deskPrefs?: Record<string, unknown> | null }) {
   const nav = useNavigate()
   const [needsMe, setNeedsMe] = useState<{ items: NeedsMeItem[] } | null>(null)
@@ -63,37 +66,66 @@ export function OverviewTab({ view, deskPrefs }: { view: Record<string, unknown>
 
   return (
     <div className="space-y-6">
-      {/* "What needs me now" — the single brutally clear queue */}
-      {needsMe && needsMe.items.length > 0 && (
-        <div className="rounded-xl bg-ouro-fang/5 p-4 ring-1 ring-ouro-fang/15">
-          <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-ouro-fang">
-            Needs me now ({needsMe.items.length})
-          </p>
-          <div className="mt-2 space-y-1.5">
-            {needsMe.items.map((item, i) => (
-              <button
-                key={i}
-                onClick={() => item.ref && nav({ tab: item.ref.tab as TabId, focus: item.ref.focus })}
-                className="flex w-full items-start gap-2.5 rounded-lg bg-ouro-void/40 px-3 py-2.5 text-left ring-1 ring-ouro-moss/10 hover:ring-ouro-fang/20 transition-colors"
-              >
-                <Badge color={URGENCY_COLORS[item.urgency] ?? "zinc"}>
-                  {URGENCY_LABELS[item.urgency] ?? item.urgency}
-                </Badge>
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium text-ouro-bone">{item.label}</p>
-                  <p className="text-xs text-ouro-shadow truncate">{item.detail}</p>
-                  <p className="text-[10px] italic text-ouro-shadow/60 mt-0.5">{URGENCY_WHY[item.urgency] ?? ""}</p>
+      {/* "What needs me now" — triaged queue */}
+      {needsMe && needsMe.items.length > 0 && (() => {
+        const actionItems = needsMe.items.filter((i) => ACTION_URGENCIES.has(i.urgency))
+        const staleItems = needsMe.items.filter((i) => STALE_URGENCIES.has(i.urgency))
+
+        return (
+          <div className="space-y-3">
+            {/* Action now — things that need immediate attention */}
+            {actionItems.length > 0 && (
+              <div className="rounded-xl bg-ouro-fang/5 p-4 ring-1 ring-ouro-fang/15">
+                <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-ouro-fang">
+                  Action now ({actionItems.length})
+                </p>
+                <div className="mt-2 space-y-1.5">
+                  {actionItems.map((item, i) => (
+                    <NeedsMeRow key={`action-${i}`} item={item} nav={nav} agentName={agent.agentName as string} onDismiss={() => {
+                      setNeedsMe((prev) => prev ? { items: prev.items.filter((_, idx) => needsMe.items.indexOf(item) !== idx) } : prev)
+                    }} />
+                  ))}
                 </div>
-                {item.ageMs != null && (
-                  <span className="shrink-0 text-xs tabular-nums text-ouro-shadow">
-                    {item.ageMs < 3600000 ? `${Math.floor(item.ageMs / 60000)}m` : item.ageMs < 86400000 ? `${Math.floor(item.ageMs / 3600000)}h` : `${Math.floor(item.ageMs / 86400000)}d`}
-                  </span>
-                )}
-              </button>
-            ))}
+              </div>
+            )}
+
+            {/* Stale — old stuff that might need clearing */}
+            {staleItems.length > 0 && (
+              <div className="rounded-xl bg-ouro-gold/5 p-4 ring-1 ring-ouro-gold/15">
+                <div className="flex items-center justify-between">
+                  <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-ouro-gold">
+                    Stale ({staleItems.length})
+                  </p>
+                  <button
+                    onClick={async () => {
+                      for (const item of staleItems) {
+                        if (item.ref?.focus) {
+                          await fetch(`/outlook/api/agents/${encodeURIComponent(agent.agentName as string)}/dismiss-obligation`, {
+                            method: "POST",
+                            headers: { "content-type": "application/json" },
+                            body: JSON.stringify({ obligationId: item.ref.focus }),
+                          })
+                        }
+                      }
+                      fetchJson<{ items: NeedsMeItem[] }>(`/agents/${encodeURIComponent(agent.agentName as string)}/needs-me`).then(setNeedsMe)
+                    }}
+                    className="text-xs text-ouro-gold underline underline-offset-2 hover:text-ouro-bone transition-colors"
+                  >
+                    Clear all stale
+                  </button>
+                </div>
+                <div className="mt-2 space-y-1.5">
+                  {staleItems.map((item, i) => (
+                    <NeedsMeRow key={`stale-${i}`} item={item} nav={nav} agentName={agent.agentName as string} onDismiss={() => {
+                      fetchJson<{ items: NeedsMeItem[] }>(`/agents/${encodeURIComponent(agent.agentName as string)}/needs-me`).then(setNeedsMe)
+                    }} />
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
-        </div>
-      )}
+        )
+      })()}
 
       {/* "What I'm carrying" — agent-written, editable via outlook-prefs.json */}
       {(deskPrefs as any)?.carrying && (
@@ -245,6 +277,51 @@ export function OverviewTab({ view, deskPrefs }: { view: Record<string, unknown>
           <Muted>No recent activity yet.</Muted>
         )}
       </Section>
+    </div>
+  )
+}
+
+function NeedsMeRow({ item, nav, agentName, onDismiss }: { item: NeedsMeItem; nav: (t: { tab: TabId; focus?: string }) => void; agentName: string; onDismiss: () => void }) {
+  const isReturnReady = item.urgency === "return-ready"
+  return (
+    <div className={`flex w-full items-start gap-2.5 rounded-lg px-3 py-2.5 text-left ring-1 transition-colors ${
+      isReturnReady ? "bg-ouro-glow/5 ring-ouro-glow/15" : "bg-ouro-void/40 ring-ouro-moss/10"
+    }`}>
+      <button
+        onClick={() => item.ref && nav({ tab: item.ref.tab as TabId, focus: item.ref.focus })}
+        className="flex min-w-0 flex-1 items-start gap-2.5"
+      >
+        <Badge color={URGENCY_COLORS[item.urgency] ?? "zinc"}>
+          {URGENCY_LABELS[item.urgency] ?? item.urgency}
+        </Badge>
+        <div className="min-w-0 flex-1">
+          <p className={`text-sm font-medium ${isReturnReady ? "text-ouro-glow" : "text-ouro-bone"}`}>{item.label}</p>
+          <p className="text-xs text-ouro-shadow truncate">{item.detail}</p>
+          <p className="text-[10px] italic text-ouro-shadow/60 mt-0.5">{URGENCY_WHY[item.urgency] ?? ""}</p>
+        </div>
+        {item.ageMs != null && (
+          <span className="shrink-0 text-xs tabular-nums text-ouro-shadow">
+            {item.ageMs < 3600000 ? `${Math.floor(item.ageMs / 60000)}m` : item.ageMs < 86400000 ? `${Math.floor(item.ageMs / 3600000)}h` : `${Math.floor(item.ageMs / 86400000)}d`}
+          </span>
+        )}
+      </button>
+      {item.ref?.focus && (
+        <button
+          onClick={async (e) => {
+            e.stopPropagation()
+            await fetch(`/outlook/api/agents/${encodeURIComponent(agentName)}/dismiss-obligation`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ obligationId: item.ref!.focus }),
+            })
+            onDismiss()
+          }}
+          className="shrink-0 text-xs text-ouro-shadow hover:text-ouro-fang transition-colors"
+          title="Dismiss"
+        >
+          ✕
+        </button>
+      )}
     </div>
   )
 }
