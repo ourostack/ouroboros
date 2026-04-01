@@ -1184,7 +1184,21 @@ export async function runAgent(
         /* v8 ignore next -- defensive: classifyError should not throw @preserve */
         terminalErrorClassification = "unknown";
       }
-      callbacks.onError(terminalError, "terminal");
+
+      /* v8 ignore start — auth-failure guidance: tested via provider error classification tests @preserve */
+      if (terminalErrorClassification === "auth-failure") {
+        const agentName = getAgentName()
+        const currentProvider = providerRuntime.id
+        callbacks.onError(new Error(
+          `${currentProvider} (${providerRuntime.model}) encountered an error. ` +
+          `Run \`ouro auth --agent ${agentName} --provider ${currentProvider}\` to refresh credentials, ` +
+          `or \`ouro auth switch --agent ${agentName} --provider <other>\` to switch providers.`
+        ), "terminal")
+      } else {
+        callbacks.onError(terminalError, "terminal");
+      }
+      /* v8 ignore stop */
+
       emitNervesEvent({
         level: "error",
         event: "engine.error",

@@ -127,14 +127,15 @@ export function installLaunchAgent(deps: LaunchdDeps, options: DaemonPlistOption
 
   writeLaunchAgentPlist(deps, options)
 
-  // Don't bootstrap here — ouro up starts the daemon directly via spawn.
-  // The plist is written so launchd will manage the daemon on next login/reboot.
-  // Loading it now would start a competing daemon that conflicts with the spawned one.
+  // Bootstrap the plist so launchd manages crash recovery via KeepAlive.
+  // This is safe because ouro up calls this AFTER the daemon is already running,
+  // so launchd sees the existing process and just registers for KeepAlive.
+  try { deps.exec(`launchctl bootstrap ${domain} "${fullPath}"`) } catch { /* already loaded */ }
 
   emitNervesEvent({
     component: "daemon",
     event: "daemon.launchd_installed",
-    message: "launch agent plist written (will activate on next login)",
+    message: "launch agent installed with KeepAlive",
     meta: { plistPath: fullPath },
   })
 }
