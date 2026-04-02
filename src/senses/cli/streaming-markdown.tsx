@@ -38,6 +38,7 @@ interface Segment {
   strikethrough?: boolean
   link?: { text: string; url: string }
   autolink?: boolean
+  image?: boolean
 }
 
 // ─── Line-Level Block Types ────────────────────────────────────────
@@ -294,7 +295,23 @@ function parseInline(text: string): Segment[] {
     return `\x00PH${idx}\x00`
   })
 
-  // Step 3: extract links [text](url)
+  // Step 3a: extract image references ![alt](url) -> placeholder
+  processed = processed.replace(/!\[([^\]]*)\]\(([^)]*)\)/g, (_m, alt: string, _url: string) => {
+    const idx = placeholders.length
+    const label = alt ? `\ud83d\uddbc ${restoreEscapes(alt, escapes)}` : "\ud83d\uddbc image"
+    placeholders.push({ idx, segment: { text: label, image: true } })
+    return `\x00PH${idx}\x00`
+  })
+
+  // Step 3b: extract [Image: ...] references
+  processed = processed.replace(/\[Image:\s*([^\]]*)\]/gi, (_m, desc: string) => {
+    const idx = placeholders.length
+    const label = desc.trim() ? `\ud83d\uddbc ${restoreEscapes(desc.trim(), escapes)}` : "\ud83d\uddbc image"
+    placeholders.push({ idx, segment: { text: label, image: true } })
+    return `\x00PH${idx}\x00`
+  })
+
+  // Step 3c: extract links [text](url)
   processed = processed.replace(/\[([^\]]*)\]\(([^)]*)\)/g, (_m, linkText: string, url: string) => {
     const idx = placeholders.length
     const restoredText = restoreEscapes(linkText, escapes)
@@ -469,6 +486,9 @@ function wrapText(text: string, maxWidth: number): string {
 // ─── Segment Renderer ──────────────────────────────────────────────
 
 function SegmentRenderer({ segment }: { readonly segment: Segment }): React.ReactElement {
+  if (segment.image) {
+    return <Text dimColor>{segment.text}</Text>
+  }
   if (segment.codeBlock) {
     return <Text dimColor>{segment.text}</Text>
   }

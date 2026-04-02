@@ -11,6 +11,9 @@
 
 import { emitNervesEvent } from "../../nerves/runtime"
 
+// Flow control tools are invisible to the user — internal agent mechanics
+const FLOW_CONTROL_TOOLS = new Set(["settle", "ponder", "observe", "rest"])
+
 // Ouroboros teal: #4ec9b0 -> RGB escape
 const OURO_TEAL = "\x1b[38;2;78;201;176m"
 const GREEN = "\x1b[32m"
@@ -58,6 +61,7 @@ function getPrimaryArg(name: string, args: Record<string, unknown>): string {
  * Shows: [teal tool name] [dim primary arg]
  */
 export function writeToolStart(name: string, args: Record<string, string>): void {
+  if (FLOW_CONTROL_TOOLS.has(name)) return
   const primary = getPrimaryArg(name, args)
   const argDisplay = primary ? ` ${DIM}${primary}${RESET}` : ""
   process.stderr.write(`\r\x1b[K${OURO_TEAL}${BOLD}${name}${RESET}${argDisplay}\n`)
@@ -68,6 +72,7 @@ export function writeToolStart(name: string, args: Record<string, string>): void
  * Shows: [green check / red cross] [teal tool name] [dim summary]
  */
 export function writeToolEnd(name: string, argSummary: string, success: boolean): void {
+  if (FLOW_CONTROL_TOOLS.has(name)) return
   const icon = success ? `${GREEN}\u2713` : `${RED}\u2717`
   const summary = argSummary ? ` ${DIM}${truncate(argSummary, 100)}${RESET}` : ""
   process.stderr.write(`${icon}${RESET} ${OURO_TEAL}${name}${RESET}${summary}\n`)

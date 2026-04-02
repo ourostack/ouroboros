@@ -616,4 +616,40 @@ describe("StreamingMarkdown (Ink)", () => {
     expect(frame).toBeDefined()
     expect(frame).toContain("item one")
   })
+
+  // ─── Image placeholder tests ─────────────────────────────────────
+
+  it("renders ![alt](url) as dim image placeholder", () => {
+    const { lastFrame } = render(<StreamingMarkdown text="here is ![a cat](https://example.com/cat.png) in text" />)
+    const frame = lastFrame()!
+    expect(frame).toContain("\ud83d\uddbc a cat")
+    expect(frame).not.toContain("https://example.com/cat.png")
+    expect(frame).not.toContain("![")
+  })
+
+  it("renders ![](url) with no alt as generic image placeholder", () => {
+    const { lastFrame } = render(<StreamingMarkdown text="![](https://example.com/pic.png)" />)
+    const frame = lastFrame()!
+    expect(frame).toContain("\ud83d\uddbc image")
+  })
+
+  it("renders [Image: description] as image placeholder", () => {
+    const { lastFrame } = render(<StreamingMarkdown text="[Image: screenshot of dashboard]" />)
+    const frame = lastFrame()!
+    expect(frame).toContain("\ud83d\uddbc screenshot of dashboard")
+    expect(frame).not.toContain("[Image:")
+  })
+
+  it("renders [Image: ] with empty description as generic placeholder", () => {
+    const { lastFrame } = render(<StreamingMarkdown text="[Image: ]" />)
+    const frame = lastFrame()!
+    expect(frame).toContain("\ud83d\uddbc image")
+  })
+
+  it("does not treat regular links as images", () => {
+    const { lastFrame } = render(<StreamingMarkdown text="[click here](https://example.com)" />)
+    const frame = lastFrame()!
+    expect(frame).toContain("click here")
+    expect(frame).not.toContain("\ud83d\uddbc")
+  })
 })
