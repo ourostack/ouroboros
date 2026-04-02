@@ -96,7 +96,7 @@ This replaces the old pattern of diffing against `subagents/*.md` files in this 
 
 ### Gate Flow
 
-If the human explicitly waives this workflow for the current task, the override wins and the agent may continue without stopping at the intermediate review gates below.
+These gates are defaults for autonomous operation. The human may shorten or skip them for any task -- that's normal, not exceptional. When gates are active:
 
 0. **Branch + worktree**: Verify the current branch follows `<agent>/<slug>` and that the task is running from a dedicated worktree. If on `main`, on an ambiguous branch, or in the wrong shared checkout, create/switch to the correct branch/worktree before proceeding. Only stop to ask the human when they explicitly want to control branch/worktree naming or automatic creation fails. This is always the first step — no planning, converting, or implementing without a proper branch/worktree.
 1. **Plan**: Launch `work-planner`. It produces/updates a planning doc under `~/AgentBundles/<agent>.ouro/tasks/one-shots/`.
