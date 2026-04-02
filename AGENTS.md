@@ -104,7 +104,7 @@ These gates are defaults for autonomous operation. The human may shorten or skip
 3. **Convert**: Only after user approves the planning doc, re-run `work-planner` to convert to a doing doc in the same bundle `one-shots/` directory. User must also review and sign off on the doing doc before implementation.
 4. **Implement**: Only after user explicitly asks, launch `work-doer` to execute the doing doc. Never implement inside `work-planner`.
 5. **Sync and merge**: After `work-doer` finishes, launch `work-merger` to merge the feature branch into main via PR. It handles conflicts, CI, and race conditions autonomously.
-6. **Never self-approve**: Do not say "looks good" and proceed during default operation. If the human explicitly waives the review gate for the current task, continue under that override instead of blocking on this step.
+6. **Review cadence**: During default operation, pause at each gate for human review. When the human has waived review for the current task, proceed with your own judgment instead of blocking.
 
 ### Decision Collaboration (Required)
 
