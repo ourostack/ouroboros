@@ -75,6 +75,11 @@ export interface TuiProps {
 
 // ─── Header ─────────────────────────────────────────────────────────
 
+/** Safe terminal width: capped at 200, with 2-char margin */
+function safeWidth(): number {
+  return Math.min(process.stdout.columns || 80, 200) - 2
+}
+
 function Header({ agentName, model, contextPercent, cwd }: {
   readonly agentName: string
   readonly model: string
@@ -85,16 +90,6 @@ function Header({ agentName, model, contextPercent, cwd }: {
   const info = [agentName, model, cwd, showCtx ? `ctx ${contextPercent}%` : ""].filter(Boolean).join(" · ")
 
   // 3-segment snake: TAIL (fixed) + MIDDLE (stretches) + HEAD (fixed)
-  // From the reference art, segments split at the dots:
-  //
-  //    .                  .     ____
-  //  __.__________________.____/ O  \___/
-  // <__.__________________._________/   \
-  //
-  // TAIL:     line1=""     line2=" __"   line3="<__"
-  // MIDDLE:   line1=" "    line2="_"     line3="_" (or text)
-  // HEAD:     line1="     ____"  line2="____/ O  \\___/"  line3="_________/   \\"
-
   const HEAD1 = "     ____"
   const HEAD2 = "____/ O  \\___/"
   const HEAD3 = "_________/   \\"
@@ -102,12 +97,14 @@ function Header({ agentName, model, contextPercent, cwd }: {
   const TAIL2 = " __"
   const TAIL3 = "<__"
 
-  const middleLen = Math.max(info.length, 20)
-  const textPad = middleLen - info.length
+  const fixedWidth = TAIL1.length + HEAD1.length
+  const maxMiddle = safeWidth() - fixedWidth
+  const middleLen = Math.max(Math.min(Math.max(info.length, 20), maxMiddle), 10)
+  const textPad = Math.max(middleLen - info.length, 0)
 
   const line1 = TAIL1 + " ".repeat(middleLen) + HEAD1
   const line2 = TAIL2 + "_".repeat(middleLen) + HEAD2
-  const line3text = info + "_".repeat(textPad)
+  const line3text = (info.length > middleLen ? info.slice(0, middleLen) : info) + "_".repeat(textPad)
 
   return (
     <Box flexDirection="column">
@@ -139,7 +136,8 @@ function ToolResultLine({ tc }: { readonly tc: { name: string; argSummary: strin
 function MessageBlock({ msg }: { readonly msg: CompletedMessage }): React.ReactElement {
   if (msg.role === "tool") {
     const visibleCalls = msg.toolCalls?.filter(tc => !FLOW_CONTROL_TOOLS.has(tc.name))
-    if (!visibleCalls || visibleCalls.length === 0) return <Box height={1}><Text>{" "}</Text></Box>
+    // Flow control tools produce no visible output at all
+    if (!visibleCalls || visibleCalls.length === 0) return <Text>{""}</Text>
     return (
       <Box flexDirection="column">
         {visibleCalls.map((tc, i) => <ToolResultLine key={i} tc={tc} />)}
@@ -151,16 +149,15 @@ function MessageBlock({ msg }: { readonly msg: CompletedMessage }): React.ReactE
     return (
       <Box flexDirection="column" marginTop={1}>
         {msg.content ? <Text color={OURO.bone} bold>{msg.content}</Text> : null}
-        <Box height={1}><Text>{" "}</Text></Box>
+        <Box marginBottom={1}><Text>{""}</Text></Box>
       </Box>
     )
   }
 
   if (msg.role === "assistant") {
     return (
-      <Box flexDirection="column">
-        {msg.content ? <StreamingMarkdown text={msg.content} /> : null}
-        <Box height={1}><Text>{" "}</Text></Box>
+      <Box flexDirection="column" marginBottom={1}>
+        {msg.content ? <StreamingMarkdown text={msg.content} maxWidth={safeWidth()} /> : null}
       </Box>
     )
   }
@@ -168,7 +165,7 @@ function MessageBlock({ msg }: { readonly msg: CompletedMessage }): React.ReactE
   return (
     <Box flexDirection="column" marginTop={1}>
       <Text color={OURO.shadow}>{msg.content}</Text>
-      <Box height={1}><Text>{" "}</Text></Box>
+      <Box marginBottom={1}><Text>{""}</Text></Box>
     </Box>
   )
 }
@@ -235,7 +232,7 @@ function ActiveToolLine({ tool }: {
   readonly tool: { name: string; args: Record<string, string> }
 }): React.ReactElement {
   // Hide flow control tools from in-progress display
-  if (FLOW_CONTROL_TOOLS.has(tool.name)) return <Box height={1}><Text>{" "}</Text></Box>
+  if (FLOW_CONTROL_TOOLS.has(tool.name)) return <Text>{""}</Text>
   const argStr = formatActiveToolArgs(tool.name, tool.args)
   return (
     <Text>
@@ -254,7 +251,7 @@ function LiveArea({ live, elapsed }: {
     <Box flexDirection="column">
       {/* Streaming assistant text — only shown if there IS streaming text */}
       {live.streamingText ? (
-        <StreamingMarkdown text={live.streamingText} />
+        <StreamingMarkdown text={live.streamingText} maxWidth={safeWidth()} />
       ) : null}
 
       {live.activeTool ? (
@@ -337,6 +334,12 @@ function InputArea({ onSubmit, suppressed, onCtrlC, agentName, model, history }:
       return
     }
     if (key.return) {
+      // Alt+Enter: insert newline instead of submitting
+      if (key.meta) {
+        inputRef.current += "\n"
+        setInput(inputRef.current)
+        return
+      }
       const text = inputRef.current
       if (text.trim()) onSubmit(text)
       inputRef.current = ""
@@ -386,7 +389,7 @@ function InputArea({ onSubmit, suppressed, onCtrlC, agentName, model, history }:
   })
 
   // Get terminal width (capped for sanity)
-  const cols = Math.min(process.stdout.columns || 80, 200)
+  const cols = safeWidth()
 
   if (suppressed) {
     // During model generation: show status bar but no input
@@ -399,21 +402,39 @@ function InputArea({ onSubmit, suppressed, onCtrlC, agentName, model, history }:
     )
   }
 
+  const isMultiline = input.includes("\n")
+  const inputLines = input.split("\n")
+
   return (
     <Box flexDirection="column">
       {/* Top separator */}
       <Text dimColor>{"─".repeat(cols)}</Text>
-      {/* Input prompt */}
-      <Box>
-        <Text color={OURO.teal} bold>{") "}</Text>
-        <Text color={OURO.bone}>{input}</Text>
-        {cursorVisible ? <Text color={OURO.scale}>{"█"}</Text> : <Text>{" "}</Text>}
-      </Box>
+      {/* Input prompt — multi-line shows each line with continuation marker */}
+      {isMultiline ? (
+        <Box flexDirection="column">
+          {inputLines.map((line, i) => (
+            <Box key={i}>
+              <Text color={OURO.teal} bold>{i === 0 ? ") " : "· "}</Text>
+              <Text color={OURO.bone}>{line}</Text>
+              {i === inputLines.length - 1 ? (
+                cursorVisible ? <Text color={OURO.scale}>{"█"}</Text> : <Text>{" "}</Text>
+              ) : null}
+            </Box>
+          ))}
+        </Box>
+      ) : (
+        <Box>
+          <Text color={OURO.teal} bold>{") "}</Text>
+          <Text color={OURO.bone}>{input}</Text>
+          {cursorVisible ? <Text color={OURO.scale}>{"█"}</Text> : <Text>{" "}</Text>}
+        </Box>
+      )}
       {/* Status bar with right-aligned tooltip */}
       <Box>
         <Text dimColor>{agentName}{model ? ` · ${model}` : ""}</Text>
         <Box flexGrow={1} />
         {tooltip ? <Text dimColor>{tooltip}</Text> : null}
+        {isMultiline ? <Text dimColor>{" (multi-line)"}</Text> : null}
       </Box>
       {/* Bottom separator */}
       <Text dimColor>{"─".repeat(cols)}</Text>
@@ -442,11 +463,10 @@ export function OuroTui({
         {(item: any, index: number) => {
           if (index === 0) {
             return (
-              <Box key="header" flexDirection="column">
-                <Text>{" "}</Text>
+              <Box key="header" flexDirection="column" marginBottom={2}>
+                <Box marginTop={1}><Text>{""}</Text></Box>
                 <Header agentName={agentName} model={model} contextPercent={contextPercent} cwd={cwd} />
-                <Text color={OURO.shadow}>{"  Press Ctrl-C twice to exit \u00b7 \u2191\u2193 history \u00b7 Esc clear"}</Text>
-                <Text>{" "}</Text>
+                <Text color={OURO.shadow} dimColor>{"  Ctrl-C twice to exit \u00b7 \u2191\u2193 history \u00b7 Esc clear \u00b7 Alt+Enter newline"}</Text>
               </Box>
             )
           }
@@ -455,11 +475,12 @@ export function OuroTui({
       </Static>
 
       {/* Live area — re-renders on every state change */}
-      {(live.loading || live.streamingText || live.activeTool) ? <Box height={1}><Text>{" "}</Text></Box> : null}
+      {(live.loading || live.streamingText || live.activeTool) ? <Box marginTop={1}><Text>{""}</Text></Box> : null}
       <LiveArea live={live} elapsed={elapsedSeconds} />
-      {(live.loading || live.streamingText || live.activeTool) ? <Box height={1}><Text>{" "}</Text></Box> : null}
+      {(live.loading || live.streamingText || live.activeTool) ? <Box marginBottom={1}><Text>{""}</Text></Box> : null}
 
       {/* Input */}
+      <Box marginTop={1}><Text>{""}</Text></Box>
       <InputArea
         onSubmit={onSubmit}
         suppressed={live.inputSuppressed}
