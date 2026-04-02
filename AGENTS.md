@@ -46,7 +46,7 @@ This harness is built for the agent inhabiting it. Two principles guide everythi
 - Protect the parts of Ouro that are genuinely better AX. Novel interaction ideas are welcome when they improve capability, not when they make the agent lose the plot.
 - Compaction is not the goal. If context management is needed, combine Ouro's context-window model with durable state instead of defaulting to "shrink the prompt."
 
-## Planning/Doing Workflow (STRICT)
+## Planning/Doing Workflow
 
 ### Agent Context (Required)
 
