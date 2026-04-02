@@ -275,20 +275,29 @@ function LiveArea({ live, elapsed }: {
 
 // ─── Input ──────────────────────────────────────────────────────────
 
-function InputArea({ onSubmit, suppressed, onCtrlC, agentName, model, history }: {
+function InputArea({ onSubmit, onCtrlC, agentName, model, history }: {
   readonly onSubmit: (text: string) => void
-  readonly suppressed: boolean
   readonly onCtrlC: (hasInput: boolean) => CtrlCAction
   readonly agentName: string
   readonly model: string
   readonly history: readonly string[]
 }): React.ReactElement {
   const [input, setInput] = useState("")
+  const [cursorPos, setCursorPos] = useState(0) // cursor position within input
   const [tooltip, setTooltip] = useState("")
   const [cursorVisible, setCursorVisible] = useState(true)
   const inputRef = useRef("")
-  const historyIdx = useRef(-1) // -1 = not browsing history
-  const savedInput = useRef("") // saves current input when entering history
+  const cursorRef = useRef(0)
+  const historyIdx = useRef(-1)
+  const savedInput = useRef("")
+
+  // Helper: update input and cursor together
+  const updateInput = (text: string, pos?: number) => {
+    inputRef.current = text
+    cursorRef.current = pos ?? text.length
+    setInput(text)
+    setCursorPos(cursorRef.current)
+  }
 
   // Blinking cursor
   useEffect(() => {
@@ -316,15 +325,14 @@ function InputArea({ onSubmit, suppressed, onCtrlC, agentName, model, history }:
       handleCtrlC()
       return
     }
-    if (suppressed) return
+    // Input is NEVER blocked — user can type while agent responds (TTFA)
 
     // Any non-Ctrl-C input clears tooltip
     setTooltip("")
 
     if (key.escape) {
       if (inputRef.current) {
-        inputRef.current = ""
-        setInput("")
+        updateInput("")
         historyIdx.current = -1
         setTooltip("Esc again to clear")
         setTimeout(() => setTooltip(""), 2000)
@@ -334,73 +342,110 @@ function InputArea({ onSubmit, suppressed, onCtrlC, agentName, model, history }:
       return
     }
     if (key.return) {
-      // Alt+Enter: insert newline instead of submitting
       if (key.meta) {
-        inputRef.current += "\n"
-        setInput(inputRef.current)
+        // Alt+Enter: insert newline
+        const before = inputRef.current.slice(0, cursorRef.current)
+        const after = inputRef.current.slice(cursorRef.current)
+        updateInput(before + "\n" + after, cursorRef.current + 1)
         return
       }
       const text = inputRef.current
       if (text.trim()) onSubmit(text)
-      inputRef.current = ""
-      setInput("")
+      updateInput("")
       historyIdx.current = -1
       return
     }
     if (key.backspace || key.delete) {
-      inputRef.current = inputRef.current.slice(0, -1)
-      setInput(inputRef.current)
+      if (cursorRef.current > 0) {
+        // Option+Backspace: delete word
+        if (key.meta) {
+          const before = inputRef.current.slice(0, cursorRef.current)
+          const after = inputRef.current.slice(cursorRef.current)
+          const wordStart = before.replace(/\s*\S+\s*$/, "")
+          updateInput(wordStart + after, wordStart.length)
+        } else {
+          const before = inputRef.current.slice(0, cursorRef.current - 1)
+          const after = inputRef.current.slice(cursorRef.current)
+          updateInput(before + after, cursorRef.current - 1)
+        }
+      }
       historyIdx.current = -1
       return
     }
-    // Up arrow: browse history (newest first)
+    // Left/right arrow: move cursor
+    if (key.leftArrow) {
+      if (key.meta) {
+        // Option+Left: jump to previous word boundary
+        const before = inputRef.current.slice(0, cursorRef.current)
+        const match = before.match(/(?:^|\s)\S+\s*$/)
+        const newPos = match ? cursorRef.current - match[0].length + (match[0].startsWith(" ") ? 1 : 0) : 0
+        cursorRef.current = Math.max(0, newPos)
+        setCursorPos(cursorRef.current)
+      } else {
+        cursorRef.current = Math.max(0, cursorRef.current - 1)
+        setCursorPos(cursorRef.current)
+      }
+      return
+    }
+    if (key.rightArrow) {
+      if (key.meta) {
+        // Option+Right: jump to next word boundary
+        const after = inputRef.current.slice(cursorRef.current)
+        const match = after.match(/^\s*\S+/)
+        const newPos = match ? cursorRef.current + match[0].length : inputRef.current.length
+        cursorRef.current = Math.min(inputRef.current.length, newPos)
+        setCursorPos(cursorRef.current)
+      } else {
+        cursorRef.current = Math.min(inputRef.current.length, cursorRef.current + 1)
+        setCursorPos(cursorRef.current)
+      }
+      return
+    }
+    // Up/Down: history
     if (key.upArrow && history.length > 0) {
       if (historyIdx.current === -1) {
-        // Entering history — save current input
         savedInput.current = inputRef.current
         historyIdx.current = history.length - 1
       } else if (historyIdx.current > 0) {
         historyIdx.current--
       }
-      inputRef.current = history[historyIdx.current]
-      setInput(inputRef.current)
+      updateInput(history[historyIdx.current])
       return
     }
-    // Down arrow: browse forward or restore saved input
     if (key.downArrow) {
       if (historyIdx.current >= 0) {
         if (historyIdx.current < history.length - 1) {
           historyIdx.current++
-          inputRef.current = history[historyIdx.current]
+          updateInput(history[historyIdx.current])
         } else {
-          // Past end of history — restore saved input
           historyIdx.current = -1
-          inputRef.current = savedInput.current
+          updateInput(savedInput.current)
         }
-        setInput(inputRef.current)
       }
       return
     }
+    // Ctrl+A / Ctrl+E: home / end
+    if (key.ctrl && inputChar === "a") {
+      cursorRef.current = 0
+      setCursorPos(0)
+      return
+    }
+    if (key.ctrl && inputChar === "e") {
+      cursorRef.current = inputRef.current.length
+      setCursorPos(inputRef.current.length)
+      return
+    }
+    // Regular character: insert at cursor position
     if (!key.ctrl && !key.meta && inputChar) {
-      inputRef.current += inputChar
-      setInput(inputRef.current)
-      historyIdx.current = -1 // typing resets history browsing
+      const before = inputRef.current.slice(0, cursorRef.current)
+      const after = inputRef.current.slice(cursorRef.current)
+      updateInput(before + inputChar + after, cursorRef.current + 1)
+      historyIdx.current = -1
     }
   })
 
   // Get terminal width (capped for sanity)
   const cols = safeWidth()
-
-  if (suppressed) {
-    // During model generation: show status bar but no input
-    return (
-      <Box flexDirection="column">
-        <Text dimColor>{"─".repeat(cols)}</Text>
-        <Text dimColor>{agentName}{model ? ` · ${model}` : ""}</Text>
-        <Text dimColor>{"─".repeat(cols)}</Text>
-      </Box>
-    )
-  }
 
   const isMultiline = input.includes("\n")
   const inputLines = input.split("\n")
@@ -425,8 +470,9 @@ function InputArea({ onSubmit, suppressed, onCtrlC, agentName, model, history }:
       ) : (
         <Box>
           <Text color={OURO.teal} bold>{") "}</Text>
-          <Text color={OURO.bone}>{input}</Text>
-          {cursorVisible ? <Text color={OURO.scale}>{"█"}</Text> : <Text>{" "}</Text>}
+          <Text color={OURO.bone}>{input.slice(0, cursorPos)}</Text>
+          {cursorVisible ? <Text color={OURO.scale}>{"█"}</Text> : <Text color={OURO.bone}>{input[cursorPos] ?? " "}</Text>}
+          <Text color={OURO.bone}>{input.slice(cursorPos + (cursorVisible ? 0 : 1))}</Text>
         </Box>
       )}
       {/* Status bar with right-aligned tooltip */}
@@ -483,7 +529,6 @@ export function OuroTui({
       <Box marginTop={1}><Text>{""}</Text></Box>
       <InputArea
         onSubmit={onSubmit}
-        suppressed={live.inputSuppressed}
         onCtrlC={onCtrlC}
         agentName={agentName}
         model={model}

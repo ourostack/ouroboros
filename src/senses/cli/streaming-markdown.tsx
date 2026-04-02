@@ -602,7 +602,7 @@ function TableRenderer({ lines }: { readonly lines: string[] }): React.ReactElem
 
 // ─── Block Renderer ────────────────────────────────────────────────
 
-function BlockRenderer({ block, isFirst, isLast }: { readonly block: Block; readonly isFirst: boolean; readonly isLast: boolean }): React.ReactElement {
+function BlockRenderer({ block, isFirst, isLast, maxWidth }: { readonly block: Block; readonly isFirst: boolean; readonly isLast: boolean; readonly maxWidth?: number }): React.ReactElement {
   switch (block.type) {
     case "blank":
       return <Text>{""}</Text>
@@ -668,10 +668,29 @@ function BlockRenderer({ block, isFirst, isLast }: { readonly block: Block; read
     case "blockquote": {
       const depth = block.level ?? 1
       const barPrefix = "\u2502 ".repeat(depth)
+      const barLen = barPrefix.length
+      const wrapWidth = Math.max(40, (maxWidth || 80) - barLen)
+      // Pre-wrap each line so continuation lines also get the bar prefix
+      const wrappedLines: string[] = []
+      for (const line of block.lines) {
+        if (line.length <= wrapWidth) {
+          wrappedLines.push(line)
+        } else {
+          // Simple word wrap
+          let remaining = line
+          while (remaining.length > wrapWidth) {
+            let breakAt = remaining.lastIndexOf(" ", wrapWidth)
+            if (breakAt <= 0) breakAt = wrapWidth
+            wrappedLines.push(remaining.slice(0, breakAt))
+            remaining = remaining.slice(breakAt).trimStart()
+          }
+          if (remaining) wrappedLines.push(remaining)
+        }
+      }
       return (
         <Box flexDirection="column">
           {!isFirst && <Text>{""}</Text>}
-          {block.lines.map((line, i) => (
+          {wrappedLines.map((line, i) => (
             <Text key={i}>
               <Text dimColor>{barPrefix}</Text>
               <Text italic><InlineLine text={line} /></Text>
@@ -720,7 +739,7 @@ export function StreamingMarkdown({ text, maxWidth }: StreamingMarkdownProps): R
   return (
     <Box flexDirection="column">
       {blocks.map((block, i) => (
-        <BlockRenderer key={i} block={block} isFirst={i === 0} isLast={i === blocks.length - 1} />
+        <BlockRenderer key={i} block={block} isFirst={i === 0} isLast={i === blocks.length - 1} maxWidth={maxWidth} />
       ))}
     </Box>
   )
