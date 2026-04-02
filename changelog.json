@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.178",
+      "changes": [
+        "fix: add @types/react for TSX compilation in CI build"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.177",
       "changes": [
         "fix: add react and ink as production dependencies (TUI was silently falling back to imperative)"
