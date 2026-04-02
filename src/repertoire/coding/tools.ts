@@ -6,6 +6,7 @@ import type { ToolContext } from "../tools-base"
 import { getAgentRoot } from "../../heart/identity"
 import { advanceObligation, createObligation, findPendingObligationForOrigin } from "../../heart/obligations"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { getCodingCompletionScrutiny } from "../../mind/scrutiny"
 import type { CodingRunner, CodingSession, CodingSessionRequest } from "./types"
 
 const RUNNERS: CodingRunner[] = ["claude", "codex"]
@@ -36,6 +37,35 @@ function emitCodingToolEvent(toolName: string): void {
     message: "coding tool handler invoked",
     meta: { toolName },
   })
+}
+
+/**
+ * Count distinct file paths mentioned in a coding session's stdout output.
+ * Looks for path-like tokens (containing / and a file extension).
+ * Returns the count of unique paths found.
+ */
+export function countFilesInSessionOutput(session: CodingSession): number {
+  const text = `${session.stdoutTail}\n${session.stderrTail}`
+  // Match path-like tokens: contain at least one / and a file extension
+  const pathPattern = /(?:^|\s)((?:\/|\.\/|\.\.\/)?(?:[\w.@-]+\/)+[\w.-]+\.[\w]+)/gm
+  const paths = new Set<string>()
+  let match
+  while ((match = pathPattern.exec(text)) !== null) {
+    paths.add(match[1])
+  }
+  return paths.size
+}
+
+/**
+ * If a coding session is completed, append scrutiny to the result.
+ * Returns the original result with scrutiny appended, or unchanged if
+ * the session is not completed or has no file changes.
+ */
+function appendCompletionScrutiny(result: string, session: CodingSession): string {
+  if (session.status !== "completed") return result
+  const fileCount = countFilesInSessionOutput(session)
+  const scrutiny = getCodingCompletionScrutiny(fileCount)
+  return scrutiny ? `${result}\n\n${scrutiny}` : result
 }
 
 function sameOriginSession(
@@ -142,7 +172,7 @@ const codingSpawnTool: OpenAI.ChatCompletionTool = {
   type: "function",
   function: {
     name: "coding_spawn",
-    description: "spawn a coding session using claude/codex and explicit task-threaded guidance",
+    description: "Spawn a coding session using claude or codex with task-threaded guidance. The coding session runs as a separate process with its own context. Give it a COMPLETE, SELF-CONTAINED task description -- it cannot see this conversation, doesn't know what you've tried, doesn't understand the broader context. Include: what to do, why, what files are involved, what 'done' looks like. Never delegate understanding -- don't write 'based on the conversation, fix the bug.' Write the specific file paths, line numbers, and what to change. Include any required verification steps or tests in the task description so the coding session knows how to prove the work is done.",
     parameters: {
       type: "object",
       properties: {
@@ -162,7 +192,7 @@ const codingStatusTool: OpenAI.ChatCompletionTool = {
   type: "function",
   function: {
     name: "coding_status",
-    description: "inspect coding sessions; omit sessionId to list all active/known sessions",
+    description: "Inspect coding sessions. Omit sessionId to list all active/known sessions with their status. Use this to check progress before asking the human for a status update.",
     parameters: {
       type: "object",
       properties: {
@@ -176,7 +206,7 @@ const codingTailTool: OpenAI.ChatCompletionTool = {
   type: "function",
   function: {
     name: "coding_tail",
-    description: "show recent stdout/stderr tail for a coding session in a readable format",
+    description: "Show recent stdout/stderr output from a coding session. Use this to understand what the session is doing or why it might be stuck. Read the actual output before reporting status -- don't guess.",
     parameters: {
       type: "object",
       properties: {
@@ -332,7 +362,7 @@ export const codingToolDefinitions = [
 
       const session = manager.getSession(sessionId)
       if (!session) return `session not found: ${sessionId}`
-      return JSON.stringify(session)
+      return appendCompletionScrutiny(JSON.stringify(session), session)
     },
     summaryKeys: ["sessionId"],
   },
@@ -345,7 +375,7 @@ export const codingToolDefinitions = [
 
       const session = getCodingSessionManager().getSession(sessionId)
       if (!session) return `session not found: ${sessionId}`
-      return formatCodingTail(session)
+      return appendCompletionScrutiny(formatCodingTail(session), session)
     },
     summaryKeys: ["sessionId"],
   },

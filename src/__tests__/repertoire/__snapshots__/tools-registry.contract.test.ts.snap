@@ -24,6 +24,8 @@ exports[`tool registry contract > tool surface area snapshot 1`] = `
   "send_message",
   "set_reasoning_effort",
   "shell",
+  "shell_status",
+  "shell_tail",
   "web_search",
   "write_file",
 ]

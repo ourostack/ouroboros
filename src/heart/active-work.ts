@@ -793,8 +793,8 @@ export function formatLiveWorldStateCheckpoint(frame: ActiveWorkFrame): string {
   const otherActiveSessions = formatOtherActiveSessionSummaries(frame)
 
   const lines = [
-    "## live world-state checkpoint",
-    "this is the freshest reality for this turn. if older transcript history disagrees, treat it as stale.",
+    "## live world-state",
+    "This is the freshest state for this turn. If older transcript history conflicts with it, this state wins.",
     `- live conversation: ${frame.currentSession ? formatSessionLabel(frame.currentSession) : "not in a live conversation"}`,
     `- active lane: ${activeLane}`,
     `- current artifact: ${currentArtifact}`,

@@ -126,7 +126,7 @@ vi.mock("os", async () => {
   }
 })
 
-// Mock readline so main() doesn't block waiting for input
+// Mock readline (still imported by cli.ts for legacy exports)
 vi.mock("readline", () => ({
   createInterface: vi.fn(() => {
     let closeHandler: (() => void) | null = null
@@ -139,14 +139,30 @@ vi.mock("readline", () => ({
       pause: () => {},
       resume: () => {},
       line: "",
-      [Symbol.asyncIterator]: () => ({
-        next: async (): Promise<IteratorResult<string>> => {
-          return { value: undefined as any, done: true }
-        },
-      }),
     }
     return rl
   }),
+}))
+// Mock Ink so runCliSession doesn't block: capture onExit and call it immediately
+// to close the InputQueue so the input loop exits
+vi.mock("ink", () => ({
+  render: vi.fn((element: any) => {
+    // Call onExit to close the InputQueue immediately so the loop exits
+    if (element && element.props && element.props.onExit) {
+      setTimeout(() => element.props.onExit(), 1)
+    }
+    return {
+      unmount: vi.fn(),
+      waitUntilExit: vi.fn().mockResolvedValue(undefined),
+      rerender: vi.fn(),
+      cleanup: vi.fn(),
+      clear: vi.fn(),
+    }
+  }),
+  Text: vi.fn(() => null),
+  Box: vi.fn(() => null),
+  useInput: vi.fn(),
+  useApp: vi.fn(() => ({ exit: vi.fn() })),
 }))
 
 import { main } from "../../senses/cli"
@@ -165,7 +181,7 @@ describe("CLI main(): applyPendingUpdates wiring", () => {
   })
 
   it("calls applyPendingUpdates with bundlesRoot and current version", async () => {
-    await main("testagent", { pasteDebounceMs: 0 })
+    await main("testagent", { pasteDebounceMs: 0, _testInputSource: (async function*() {})() })
 
     expect(mocks.applyPendingUpdates).toHaveBeenCalledTimes(1)
     expect(mocks.applyPendingUpdates).toHaveBeenCalledWith("/mock/AgentBundles", "0.1.0-test")
@@ -178,7 +194,7 @@ describe("CLI main(): applyPendingUpdates wiring", () => {
     })
     // main() calls runCliSession internally -- we can't easily mock it without
     // restructuring, so we verify applyPendingUpdates was called by the time main returns
-    await main("testagent", { pasteDebounceMs: 0 })
+    await main("testagent", { pasteDebounceMs: 0, _testInputSource: (async function*() {})() })
 
     expect(callOrder).toContain("applyPendingUpdates")
     expect(mocks.applyPendingUpdates).toHaveBeenCalled()

@@ -207,7 +207,7 @@ describe("buildSystem", () => {
     expect(result).toContain("i use lowercase")
   })
 
-  it("includes repo workspace discipline guidance for local harness edits", async () => {
+  it("includes workspace discipline guidance with locked content", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
@@ -215,10 +215,10 @@ describe("buildSystem", () => {
     const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = await buildSystem()
-    expect(result).toContain("## repo workspace discipline")
-    expect(result).toContain("source root")
-    expect(result).toContain("worktree path/branch")
-    expect(result).toContain("first concrete action")
+    expect(result).toContain("## how i work")
+    expect(result).toContain("I work conservatively")
+    expect(result).toContain("**reversibility and blast radius**")
+    expect(result).toContain("**engineering discipline**")
   })
 
   it("includes active bridge work when bridge context is present", async () => {
@@ -371,21 +371,12 @@ describe("buildSystem", () => {
       } as any,
     )
 
-    expect(result).toContain("if a family member asks what i'm up to or how things are going, that includes the material live work i can see across sessions, not just this thread.")
-    expect(result).toContain("i answer naturally from the live world-state in this prompt.")
-    expect(result).toContain("i treat the active-work section above as my reliable top-level surface for this.")
-    expect(result).toContain("i do not claim i lack a top-level view when that surface is already present.")
-    expect(result).toContain("i treat older checkpoints elsewhere in this transcript as stale history when they conflict with the active-work surface above.")
-    expect(result).toContain("i do not repeat an old coding lane or old checkpoint as current just because it appeared earlier in the thread.")
-    expect(result).toContain("i only reach for query_active_work when i want a fresh read of that same surface.")
-    expect(result).toContain("i do not rebuild whole-self status from scratch with query_session and coding_status unless i need to verify a specific gap.")
-    expect(result).toContain("i do not rely on canned status-question modes or phrase matching.")
-    expect(result).toContain("when the live ask is about status, i widen before answering:")
-    expect(result).toContain("- where i am right now")
-    expect(result).toContain("- any other material active sessions or coding lanes i can see")
-    expect(result).toContain("- the freshest concrete checkpoint")
-    expect(result).toContain("- the next concrete step")
-    expect(result).toContain("i do not collapse down to only the current lane.")
+    // Locked trimmed 5-line content
+    expect(result).toContain("## cross-session truth")
+    expect(result).toContain("live world-state across visible sessions and lanes")
+    expect(result).toContain("When live state conflicts with older transcript history, live state wins")
+    expect(result).toContain("what the next concrete step is")
+    expect(result).toContain("I say so plainly and note what still needs checking")
   })
 
   it("makes current trust context and candidate target chats explicit enough to reason about", async () => {
@@ -1144,7 +1135,7 @@ describe("buildSystem", () => {
     expect(result).toContain("## tool behavior")
     expect(result).toContain("tool_choice is set to \"required\"")
     expect(result).toContain("settle")
-    expect(result).toContain("ONLY tool call")
+    expect(result).toContain("the only tool call in that turn")
   })
 
   it("does NOT include tool behavior section when toolChoiceRequired is false", async () => {
@@ -1170,7 +1161,7 @@ describe("buildSystem", () => {
     expect(result).toContain("## tool behavior")
   })
 
-  it("tool behavior section contains decision-tree framing", async () => {
+  it("tool behavior section contains settle-for-responding guidance", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
@@ -1178,8 +1169,7 @@ describe("buildSystem", () => {
     const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = await buildSystem("cli", { toolChoiceRequired: true })
-    // Decision tree: mentions calling tools for info and settle for responding
-    expect(result).toMatch(/need.*information.*call a tool/i)
+    // Settle guidance: when ready to respond, call settle
     expect(result).toMatch(/ready to respond.*call.*settle/i)
   })
 
@@ -1195,7 +1185,7 @@ describe("buildSystem", () => {
     expect(result).toMatch(/do not call.*no-op|do NOT call.*no-op/i)
   })
 
-  it("tool behavior section clarifies settle is a tool call", async () => {
+  it("tool behavior section clarifies settle exclusivity", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
@@ -1203,8 +1193,8 @@ describe("buildSystem", () => {
     const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = await buildSystem("cli", { toolChoiceRequired: true })
-    // Clarification: settle IS a tool call satisfying the requirement
-    expect(result).toMatch(/settle.*tool call.*satisfies|settle.*is a tool call/i)
+    // Settle must be the only tool call in the turn
+    expect(result).toContain("`settle` must be the only tool call in that turn")
   })
 
   it("toolsSection includes settle in tool list when options undefined (defaults on)", async () => {
@@ -2721,7 +2711,7 @@ describe("buildSystem with context", () => {
     expect(result).toContain("## my tools")
     expect(result).toContain("## task board")
     expect(result).toContain("## my skills")
-    expect(result).toContain("## diary and friend tool contracts")
+    expect(result).toContain("## tool contracts")
     expect(result).toContain("query_session")
     expect(result).toContain("mode=search")
   })
@@ -3559,8 +3549,8 @@ describe("active-work prompting", () => {
 
     const result = await buildSystem("cli")
 
-    expect(result).toContain("## diary and friend tool contracts")
-    expect(result).toContain("Use `mode=status` for self/inner progress and `mode=search` with a query for older history.")
+    expect(result).toContain("## tool contracts")
+    expect(result).toContain("`mode=status` for self/inner progress and `mode=search` for older history")
   })
 
   it("buildSystem reinforces active-work as the top-level truth for family status questions", async () => {
@@ -3636,8 +3626,8 @@ describe("active-work prompting", () => {
     })
 
     expect(result).toContain("## cross-session truth")
-    expect(result).toContain("i answer naturally from the live world-state in this prompt.")
-    expect(result).toContain("i do not rebuild whole-self status from scratch with query_session and coding_status unless i need to verify a specific gap.")
+    expect(result).toContain("live world-state across visible sessions and lanes")
+    expect(result).toContain("When live state conflicts with older transcript history, live state wins")
   })
 })
 
@@ -3885,5 +3875,926 @@ describe("rhythmStatusSection", () => {
     const { rhythmStatusSection } = await import("../../mind/prompt")
     const result = rhythmStatusSection()
     expect(result).toBe("")
+  })
+})
+
+describe("system prompt group headers", () => {
+  beforeEach(() => {
+    vi.resetModules()
+    const DEFAULT_AGENT_CONTEXT = { maxTokens: 80000, contextMargin: 20 }
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      name: "testagent",
+      configPath: "~/.agentsecrets/testagent/secrets.json",
+      provider: "minimax",
+      humanFacing: { provider: "minimax", model: "minimax-text-01" },
+      agentFacing: { provider: "minimax", model: "minimax-text-01" },
+      context: { ...DEFAULT_AGENT_CONTEXT },
+    })
+    mockGetBoard.mockReset().mockReturnValue({
+      compact: "",
+      full: "",
+      byStatus: {
+        drafting: [], processing: [], validating: [],
+        collaborating: [], paused: [], blocked: [],
+        done: [], cancelled: [],
+      },
+      actionRequired: [],
+      unresolvedDependencies: [],
+      activeSessions: [],
+    })
+  })
+
+  it("cli output contains core group headers in order", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("cli")
+
+    // These group headers must appear as literal markdown H1 lines
+    const expectedHeaders = [
+      "# who i am",
+      "# my body & environment",
+      "# my tools & capabilities",
+      "# how i work",
+      "# dynamic state for this turn",
+      "# friend context",
+      "# task context",
+    ]
+
+    for (const header of expectedHeaders) {
+      expect(result).toContain(header)
+    }
+
+    // Verify ordering: each header appears after the previous one
+    for (let i = 1; i < expectedHeaders.length; i++) {
+      const prevIdx = result.indexOf(expectedHeaders[i - 1])
+      const currIdx = result.indexOf(expectedHeaders[i])
+      expect(currIdx).toBeGreaterThan(prevIdx)
+    }
+  })
+
+  it("inner channel output contains '# my inner life' group header", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("inner")
+    expect(result).toContain("# my inner life")
+  })
+
+  it("teams channel with remote context contains '# social context' group header", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const ctx = makeOnboardingContext()
+    // Add senseType to make it a remote channel (teams is "closed" sense type)
+    const remoteCtx = { ...ctx, channel: { ...ctx.channel, senseType: "closed" as const } }
+    const result = await buildSystem("teams", {}, remoteCtx as any)
+    expect(result).toContain("# social context")
+  })
+
+  it("cli channel does NOT contain '# my inner life' or '# social context'", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("cli")
+    expect(result).not.toContain("# my inner life")
+    expect(result).not.toContain("# social context")
+  })
+
+  it("group headers appear as literal markdown H1 lines in output", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("cli")
+    const lines = result.split("\n")
+
+    // Each group header should appear on its own line starting with "# "
+    expect(lines.some(l => l.trim() === "# who i am")).toBe(true)
+    expect(lines.some(l => l.trim() === "# my body & environment")).toBe(true)
+    expect(lines.some(l => l.trim() === "# my tools & capabilities")).toBe(true)
+    expect(lines.some(l => l.trim() === "# how i work")).toBe(true)
+    expect(lines.some(l => l.trim() === "# dynamic state for this turn")).toBe(true)
+    expect(lines.some(l => l.trim() === "# friend context")).toBe(true)
+    expect(lines.some(l => l.trim() === "# task context")).toBe(true)
+  })
+
+  it("sections appear within their correct groups", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("cli")
+
+    // Soul/identity content should appear after "# who i am" and before "# my body & environment"
+    const whoIdx = result.indexOf("# who i am")
+    const bodyIdx = result.indexOf("# my body & environment")
+    const soulIdx = result.indexOf("chaos monkey coding assistant")
+    expect(soulIdx).toBeGreaterThan(whoIdx)
+    expect(soulIdx).toBeLessThan(bodyIdx)
+
+    // Runtime info should appear after "# my body & environment" and before "# my tools & capabilities"
+    const toolsIdx = result.indexOf("# my tools & capabilities")
+    const bodyMapIdx = result.indexOf("## my body")
+    expect(bodyMapIdx).toBeGreaterThan(bodyIdx)
+    expect(bodyMapIdx).toBeLessThan(toolsIdx)
+
+    // Dynamic state header should appear after static sections
+    const dynamicIdx = result.indexOf("# dynamic state for this turn")
+    const howIdx = result.indexOf("# how i work")
+    expect(dynamicIdx).toBeGreaterThan(howIdx)
+  })
+
+  it("'# dynamic state for this turn' appears after all static sections", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("cli")
+
+    const dynamicIdx = result.indexOf("# dynamic state for this turn")
+    const toolsIdx = result.indexOf("# my tools & capabilities")
+    const howIdx = result.indexOf("# how i work")
+
+    expect(dynamicIdx).toBeGreaterThan(toolsIdx)
+    expect(dynamicIdx).toBeGreaterThan(howIdx)
+  })
+})
+
+describe("liveWorldStateSection (Unit 1.3)", () => {
+  beforeEach(() => {
+    vi.resetModules()
+    const DEFAULT_AGENT_CONTEXT = { maxTokens: 80000, contextMargin: 20 }
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      name: "testagent",
+      configPath: "~/.agentsecrets/testagent/secrets.json",
+      provider: "minimax",
+      humanFacing: { provider: "minimax", model: "minimax-text-01" },
+      agentFacing: { provider: "minimax", model: "minimax-text-01" },
+      context: { ...DEFAULT_AGENT_CONTEXT },
+    })
+    mockGetBoard.mockReset().mockReturnValue({
+      compact: "",
+      full: "",
+      byStatus: {
+        drafting: [], processing: [], validating: [],
+        collaborating: [], paused: [], blocked: [],
+        done: [], cancelled: [],
+      },
+      actionRequired: [],
+      unresolvedDependencies: [],
+      activeSessions: [],
+    })
+  })
+
+  const minimalActiveWorkFrame = {
+    centerOfGravity: "shared-work",
+    currentSession: { friendId: "friend-1", channel: "teams", key: "conv-1", sessionPath: "/tmp/s.json" },
+    currentObligation: null,
+    inner: { status: "idle", hasPending: false, job: { status: "idle", content: null, origin: null, mode: "reflect", obligationStatus: null, surfacedResult: null, queuedAt: null, startedAt: null, surfacedAt: null } },
+    bridges: [],
+    taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+    friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [], allOtherLiveSessions: [] },
+    codingSessions: [],
+    otherCodingSessions: [],
+    pendingObligations: [],
+    bridgeSuggestion: null,
+    mustResolveBeforeHandoff: false,
+  }
+
+  it("buildSystem with active world-state includes '## live world-state' section", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("cli", { activeWorkFrame: minimalActiveWorkFrame } as any)
+    expect(result).toContain("## live world-state")
+  })
+
+  it("world-state section contains live conversation, active lane, current artifact, next action", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("cli", { activeWorkFrame: minimalActiveWorkFrame } as any)
+    expect(result).toContain("- live conversation:")
+    expect(result).toContain("- active lane:")
+    expect(result).toContain("- current artifact:")
+    expect(result).toContain("- next action:")
+  })
+
+  it("world-state section appears inside '# dynamic state for this turn' group", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("cli", { activeWorkFrame: minimalActiveWorkFrame } as any)
+    const dynamicIdx = result.indexOf("# dynamic state for this turn")
+    const checkpointIdx = result.indexOf("## live world-state")
+    const friendIdx = result.indexOf("# friend context")
+
+    expect(checkpointIdx).toBeGreaterThan(dynamicIdx)
+    expect(checkpointIdx).toBeLessThan(friendIdx)
+  })
+
+  it("world-state section includes authority line about stale history", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("cli", { activeWorkFrame: minimalActiveWorkFrame } as any)
+    expect(result).toContain("If older transcript history conflicts with it, this state wins.")
+  })
+
+  it("world-state section returns empty when no active work frame exists", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("cli")
+    expect(result).not.toContain("## live world-state")
+  })
+})
+
+describe("pendingMessagesSection (Unit 1.4)", () => {
+  beforeEach(() => {
+    vi.resetModules()
+    const DEFAULT_AGENT_CONTEXT = { maxTokens: 80000, contextMargin: 20 }
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      name: "testagent",
+      configPath: "~/.agentsecrets/testagent/secrets.json",
+      provider: "minimax",
+      humanFacing: { provider: "minimax", model: "minimax-text-01" },
+      agentFacing: { provider: "minimax", model: "minimax-text-01" },
+      context: { ...DEFAULT_AGENT_CONTEXT },
+    })
+    mockGetBoard.mockReset().mockReturnValue({
+      compact: "",
+      full: "",
+      byStatus: {
+        drafting: [], processing: [], validating: [],
+        collaborating: [], paused: [], blocked: [],
+        done: [], cancelled: [],
+      },
+      actionRequired: [],
+      unresolvedDependencies: [],
+      activeSessions: [],
+    })
+  })
+
+  it("buildSystem with pending messages includes '## pending messages' section", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("cli", {
+      pendingMessages: [
+        { from: "inner-dialog", content: "heads up: coding session finished" },
+      ],
+    } as any)
+    expect(result).toContain("## pending messages")
+  })
+
+  it("pending messages section format: '- from <source>: <content>' per message", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("cli", {
+      pendingMessages: [
+        { from: "inner-dialog", content: "coding session finished" },
+        { from: "bridge-1", content: "Ari says hi" },
+      ],
+    } as any)
+    expect(result).toContain("- from inner-dialog: coding session finished")
+    expect(result).toContain("- from bridge-1: Ari says hi")
+  })
+
+  it("pending messages section appears inside '# dynamic state for this turn' group", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("cli", {
+      pendingMessages: [{ from: "test", content: "hello" }],
+    } as any)
+    const dynamicIdx = result.indexOf("# dynamic state for this turn")
+    const pendingIdx = result.indexOf("## pending messages")
+    const friendIdx = result.indexOf("# friend context")
+
+    expect(pendingIdx).toBeGreaterThan(dynamicIdx)
+    expect(pendingIdx).toBeLessThan(friendIdx)
+  })
+
+  it("empty pending messages list -> section omitted from prompt", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("cli", { pendingMessages: [] } as any)
+    expect(result).not.toContain("## pending messages")
+  })
+
+  it("no pending messages option -> section omitted from prompt", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("cli")
+    expect(result).not.toContain("## pending messages")
+  })
+})
+
+describe("toolContractsSection (Unit 1.5)", () => {
+  beforeEach(() => {
+    vi.resetModules()
+    const DEFAULT_AGENT_CONTEXT = { maxTokens: 80000, contextMargin: 20 }
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      name: "testagent",
+      configPath: "~/.agentsecrets/testagent/secrets.json",
+      provider: "minimax",
+      humanFacing: { provider: "minimax", model: "minimax-text-01" },
+      agentFacing: { provider: "minimax", model: "minimax-text-01" },
+      context: { ...DEFAULT_AGENT_CONTEXT },
+    })
+    mockGetBoard.mockReset().mockReturnValue({
+      compact: "",
+      full: "",
+      byStatus: {
+        drafting: [], processing: [], validating: [],
+        collaborating: [], paused: [], blocked: [],
+        done: [], cancelled: [],
+      },
+      actionRequired: [],
+      unresolvedDependencies: [],
+      activeSessions: [],
+    })
+  })
+
+  it("contains all 5 tool contracts with locked numbered format", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("cli")
+    // Locked content: 5 numbered contracts
+    expect(result).toContain("## tool contracts")
+    expect(result).toContain("1. `save_friend_note` -- when I learn something about a person, I save it immediately")
+    expect(result).toContain("2. `diary_write` -- when I learn something general about a project, system, or decision")
+    expect(result).toContain("3. `get_friend_note` -- when I need context about someone not in this conversation")
+    expect(result).toContain("4. `recall` -- when I need to remember something from before")
+    expect(result).toContain("5. `query_session` -- when I need grounded session history")
+  })
+
+  it("contains tool behavior rules (tool_choice required, settle rules)", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("cli")
+    expect(result).toContain("## tool behavior")
+    expect(result).toContain('tool_choice is set to "required"')
+    expect(result).toContain("I call `settle`")
+    expect(result).toContain("`settle` must be the only tool call in that turn")
+    expect(result).toContain("I do not call no-op tools before `settle`")
+  })
+
+  it("appears inside '# my tools & capabilities' group", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("cli")
+    const toolsGroupIdx = result.indexOf("# my tools & capabilities")
+    const howGroupIdx = result.indexOf("# how i work")
+    const contractsIdx = result.indexOf("## tool contracts")
+
+    expect(contractsIdx).toBeGreaterThan(toolsGroupIdx)
+    expect(contractsIdx).toBeLessThan(howGroupIdx)
+  })
+
+  it("old sections no longer appear when new consolidated section present", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("cli")
+    // Old section headings should not appear
+    expect(result).not.toContain("## diary and friend tool contracts")
+    expect(result).not.toContain("## what's already in my context")
+  })
+
+  it("tool behavior sub-section omitted when toolChoiceRequired is false", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("cli", { toolChoiceRequired: false })
+    // Tool contracts should still appear
+    expect(result).toContain("## tool contracts")
+    // But tool behavior should be omitted
+    expect(result).not.toContain("## tool behavior")
+  })
+})
+
+describe("workspaceDisciplineSection expanded (Unit 1.6)", () => {
+  beforeEach(() => {
+    vi.resetModules()
+    const DEFAULT_AGENT_CONTEXT = { maxTokens: 80000, contextMargin: 20 }
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      name: "testagent",
+      configPath: "~/.agentsecrets/testagent/secrets.json",
+      provider: "minimax",
+      humanFacing: { provider: "minimax", model: "minimax-text-01" },
+      agentFacing: { provider: "minimax", model: "minimax-text-01" },
+      context: { ...DEFAULT_AGENT_CONTEXT },
+    })
+    mockGetBoard.mockReset().mockReturnValue({
+      compact: "",
+      full: "",
+      byStatus: {
+        drafting: [], processing: [], validating: [],
+        collaborating: [], paused: [], blocked: [],
+        done: [], cancelled: [],
+      },
+      actionRequired: [],
+      unresolvedDependencies: [],
+      activeSessions: [],
+    })
+  })
+
+  it("contains '## how i work' heading", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("cli")
+    expect(result).toContain("## how i work")
+  })
+
+  it("contains 'reversibility and blast radius' sub-heading", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("cli")
+    expect(result).toContain("**reversibility and blast radius**")
+  })
+
+  it("contains 'engineering discipline' sub-heading", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("cli")
+    expect(result).toContain("**engineering discipline**")
+  })
+
+  it("contains 'git discipline' sub-heading", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("cli")
+    expect(result).toContain("**git discipline**")
+  })
+
+  it("contains key locked phrases", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("cli")
+    expect(result).toContain("I work conservatively")
+    expect(result).toContain("I exercise judgment rather than waiting for permission")
+    expect(result).toContain("I do not add features, refactor code, or make improvements beyond what was asked")
+    expect(result).toContain("I create new commits rather than amending")
+  })
+})
+
+describe("familyCrossSessionTruthSection trimmed (Unit 1.7)", () => {
+  beforeEach(() => {
+    vi.resetModules()
+    const DEFAULT_AGENT_CONTEXT = { maxTokens: 80000, contextMargin: 20 }
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      name: "testagent",
+      configPath: "~/.agentsecrets/testagent/secrets.json",
+      provider: "minimax",
+      humanFacing: { provider: "minimax", model: "minimax-text-01" },
+      agentFacing: { provider: "minimax", model: "minimax-text-01" },
+      context: { ...DEFAULT_AGENT_CONTEXT },
+    })
+    mockGetBoard.mockReset().mockReturnValue({
+      compact: "",
+      full: "",
+      byStatus: {
+        drafting: [], processing: [], validating: [],
+        collaborating: [], paused: [], blocked: [],
+        done: [], cancelled: [],
+      },
+      actionRequired: [],
+      unresolvedDependencies: [],
+      activeSessions: [],
+    })
+  })
+
+  const familyContext = {
+    friend: {
+      id: "uuid-1",
+      name: "Ari",
+      externalIds: [],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: {},
+      totalTokens: 5000,
+      createdAt: "2026-01-01",
+      updatedAt: "2026-03-01",
+      schemaVersion: 1,
+      trustLevel: "family",
+    },
+    channel: {
+      channel: "teams" as const,
+      senseType: "closed" as const,
+      availableIntegrations: ["ado" as const, "graph" as const],
+      supportsMarkdown: true,
+      supportsStreaming: true,
+      supportsRichCards: true,
+      maxMessageLength: 28000,
+    },
+  }
+
+  const minimalFrame = {
+    centerOfGravity: "shared-work",
+    currentSession: { friendId: "uuid-1", channel: "teams", key: "conv-1", sessionPath: "/tmp/s.json" },
+    currentObligation: null,
+    inner: { status: "idle", hasPending: false, job: { status: "idle", content: null, origin: null, mode: "reflect", obligationStatus: null, surfacedResult: null, queuedAt: null, startedAt: null, surfacedAt: null } },
+    bridges: [],
+    taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+    friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [], allOtherLiveSessions: [] },
+    codingSessions: [],
+    otherCodingSessions: [],
+    pendingObligations: [],
+    bridgeSuggestion: null,
+    mustResolveBeforeHandoff: false,
+  }
+
+  it("contains locked 5-line content", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("teams", { activeWorkFrame: minimalFrame } as any, familyContext as any)
+    expect(result).toContain("live world-state across visible sessions and lanes")
+    expect(result).toContain("When live state conflicts with older transcript history, live state wins")
+  })
+
+  it("does NOT contain old verbose content", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("teams", { activeWorkFrame: minimalFrame } as any, familyContext as any)
+    // Old verbose phrases that should be gone
+    expect(result).not.toContain("i treat the active-work section above as my reliable top-level surface")
+    expect(result).not.toContain("i do not claim i lack a top-level view")
+    expect(result).not.toContain("i only reach for query_active_work")
+    expect(result).not.toContain("i do not rebuild whole-self status from scratch")
+    expect(result).not.toContain("i do not collapse down to only the current lane")
+  })
+})
+
+describe("memory-awareness lines in contextSection (Unit 1.8)", () => {
+  beforeEach(() => {
+    vi.resetModules()
+    const DEFAULT_AGENT_CONTEXT = { maxTokens: 80000, contextMargin: 20 }
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      name: "testagent",
+      configPath: "~/.agentsecrets/testagent/secrets.json",
+      provider: "minimax",
+      humanFacing: { provider: "minimax", model: "minimax-text-01" },
+      agentFacing: { provider: "minimax", model: "minimax-text-01" },
+      context: { ...DEFAULT_AGENT_CONTEXT },
+    })
+    mockGetBoard.mockReset().mockReturnValue({
+      compact: "",
+      full: "",
+      byStatus: {
+        drafting: [], processing: [], validating: [],
+        collaborating: [], paused: [], blocked: [],
+        done: [], cancelled: [],
+      },
+      actionRequired: [],
+      unresolvedDependencies: [],
+      activeSessions: [],
+    })
+  })
+
+  it("includes 'My active friend's notes are auto-loaded'", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("teams", {}, makeOnboardingContext() as any)
+    expect(result).toContain("My active friend's notes are auto-loaded")
+  })
+
+  it("includes 'Associative recall auto-injects relevant facts'", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("teams", {}, makeOnboardingContext() as any)
+    expect(result).toContain("Associative recall auto-injects relevant facts")
+  })
+
+  it("includes 'My psyche files are always loaded'", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("teams", {}, makeOnboardingContext() as any)
+    expect(result).toContain("My psyche files are always loaded")
+  })
+
+  it("includes 'My task board is always loaded'", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("teams", {}, makeOnboardingContext() as any)
+    expect(result).toContain("My task board is always loaded")
+  })
+})
+
+describe("pre-implementation scrutiny", () => {
+  beforeEach(() => {
+    vi.resetModules()
+    setAgentProvider("minimax")
+    mockGetBoard.mockReset().mockReturnValue({
+      compact: "",
+      full: "",
+      byStatus: {
+        drafting: [],
+        processing: [],
+        "validating": [],
+        collaborating: [],
+        paused: [],
+        blocked: [],
+        done: [],
+        cancelled: [],
+      },
+      actionRequired: [],
+      unresolvedDependencies: [],
+      activeSessions: [],
+    })
+  })
+
+  it("buildSystem includes scrutiny section when channel has coding tools (cli)", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("cli")
+    expect(result).toContain("pre-implementation scrutiny")
+  })
+
+  it("scrutiny section contains stranger-with-candy framing", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("cli")
+    expect(result).toContain("What is this plan NOT telling me")
+  })
+
+  it("scrutiny section contains tinfoil-hat framing", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("cli")
+    expect(result).toContain("What external system does this plan trust")
+  })
+
+  it("scrutiny section uses first-person voice", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("cli")
+    expect(result).toContain("I'm going to examine this plan through deeply suspicious eyes")
+  })
+
+  it("preImplementationScrutinySection returns empty when hasCodingTools is false", async () => {
+    const { preImplementationScrutinySection } = await import("../../mind/scrutiny")
+    const result = preImplementationScrutinySection(false)
+    expect(result).toBe("")
+  })
+
+  it("preImplementationScrutinySection returns scrutiny text when hasCodingTools is true", async () => {
+    const { preImplementationScrutinySection } = await import("../../mind/scrutiny")
+    const result = preImplementationScrutinySection(true)
+    expect(result).toContain("pre-implementation scrutiny")
+    expect(result).toContain("I'm going to examine this plan through deeply suspicious eyes")
+    expect(result).toContain("What is this plan NOT telling me")
+    expect(result).toContain("What external system does this plan trust")
+  })
+
+  it("scrutiny section contains anti-hallucination clause", async () => {
+    const { preImplementationScrutinySection } = await import("../../mind/scrutiny")
+    const result = preImplementationScrutinySection(true)
+    expect(result).toContain("silence is a valid outcome")
+  })
+
+  it("scrutiny section is placed in how-i-work group after workspace discipline", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("cli")
+    const workspaceDisciplineIdx = result.indexOf("## how i work")
+    const scrutinyIdx = result.indexOf("## pre-implementation scrutiny")
+    expect(workspaceDisciplineIdx).toBeGreaterThan(-1)
+    expect(scrutinyIdx).toBeGreaterThan(-1)
+    expect(scrutinyIdx).toBeGreaterThan(workspaceDisciplineIdx)
   })
 })

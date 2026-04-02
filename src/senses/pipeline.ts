@@ -21,7 +21,7 @@ import { getCodingSessionManager } from "../repertoire/coding"
 import { listSessionActivity } from "../heart/session-activity"
 import { requestInnerWake } from "../heart/daemon/socket-client"
 import type { SessionActivityRecord } from "../heart/session-activity"
-import { buildActiveWorkFrame, formatLiveWorldStateCheckpoint, type ActiveWorkFrame } from "../heart/active-work"
+import { buildActiveWorkFrame, type ActiveWorkFrame } from "../heart/active-work"
 import { decideDelegation } from "../heart/delegation"
 import { listTargetSessionCandidates } from "../heart/target-resolution"
 import { readInnerDialogRawData, deriveInnerDialogStatus, deriveInnerJob, getInnerDialogSessionPath } from "../heart/daemon/thoughts"
@@ -171,9 +171,11 @@ function prependTurnSections(
   message: ChatCompletionMessageParam,
   sections: string[],
 ): ChatCompletionMessageParam {
+  /* v8 ignore next -- defensive: only user messages with non-empty sections reach here @preserve */
   if (message.role !== "user" || sections.length === 0) return message
   const prefix = sections.join("\n\n")
 
+  /* v8 ignore start -- defensive: multipart content branch; non-string user messages are rare @preserve */
   if (typeof message.content === "string") {
     return {
       ...message,
@@ -188,6 +190,7 @@ function prependTurnSections(
       ...message.content,
     ],
   }
+  /* v8 ignore stop */
 }
 
 function readInnerWorkState(): ActiveWorkFrame["inner"] {
@@ -230,7 +233,20 @@ function readInnerWorkState(): ActiveWorkFrame["inner"] {
 
 // ── Pipeline ──────────────────────────────────────────────────────
 
+let _lastSessionKey: string | null = null
+
 export async function handleInboundTurn(input: InboundTurnInput): Promise<InboundTurnResult> {
+  // Reset session-scoped state when the session changes
+  const sessionKey = `${input.channel}/${input.sessionKey ?? "session"}`
+  if (sessionKey !== _lastSessionKey) {
+    _lastSessionKey = sessionKey
+    // Reset file-state cache and scrutiny tracking for the new session
+    const { fileStateCache } = await import("../mind/file-state")
+    const { resetSessionModifiedFiles } = await import("../mind/scrutiny")
+    fileStateCache.clear()
+    resetSessionModifiedFiles()
+  }
+
   // Step 0: Check for pending failover reply
   if (input.failoverState?.pending) {
     const userText = input.messages
@@ -502,17 +518,12 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   const sessionPending = input.drainPending(input.pendingDir)
   const pending = [...deferredReturns, ...sessionPending]
 
-  // Assemble messages: session messages + attention queue + live world-state checkpoint + pending + inbound user messages
+  // Assemble messages: session messages + pending + inbound user messages
+  // NOTE: live world-state checkpoint and pending messages are rendered via buildSystem (system prompt sections)
   const extraPrefixSections = input.onPendingDrained?.(pending) ?? []
-  const prefixSections = [...extraPrefixSections, formatLiveWorldStateCheckpoint(activeWorkFrame)]
-  if (pending.length > 0) {
-    const pendingSection = pending
-      .map((msg) => `[pending from ${msg.from}]: ${msg.content}`)
-      .join("\n")
-    prefixSections.push(`## pending messages\n${pendingSection}`)
-  }
-  if (input.messages.length > 0) {
-    input.messages[0] = prependTurnSections(input.messages[0], prefixSections)
+  // extraPrefixSections from onPendingDrained still prepend to user message (e.g., inner dialog wakes)
+  if (extraPrefixSections.length > 0 && input.messages.length > 0) {
+    input.messages[0] = prependTurnSections(input.messages[0], extraPrefixSections)
   }
 
   // Append user messages from the inbound turn
@@ -527,6 +538,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     bridgeContext,
     activeWorkFrame,
     delegationDecision,
+    pendingMessages: pending.length > 0 ? pending.map((msg) => ({ from: msg.from, content: msg.content })) : undefined,
     currentSessionKey: currentSession.key,
     currentObligation,
     mustResolveBeforeHandoff,

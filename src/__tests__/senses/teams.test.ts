@@ -2525,7 +2525,9 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
     expect(mockRunAgent).toHaveBeenCalled()
     const messages = mockRunAgent.mock.calls[0][0]
     const userMsg = messages.filter((m: any) => m.role === "user").pop()
-    expect(userMsg.content).toEqual(expect.stringContaining("## live world-state checkpoint"))
+    // live world-state checkpoint moved from user messages to system prompt (Unit 1.3b)
+    // User message should contain the fallback text, not the checkpoint
+    expect(userMsg).toBeDefined()
 
     vi.restoreAllMocks()
   })

@@ -47,6 +47,9 @@ export interface AgentConfig {
   }
   senses?: AgentSensesConfig
   mcpServers?: Record<string, McpServerConfig>
+  shell?: {
+    defaultTimeout?: number
+  }
   phrases: {
     thinking: string[]
     tool: string[]

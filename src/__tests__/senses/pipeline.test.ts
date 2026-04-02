@@ -82,6 +82,17 @@ vi.mock("../../heart/daemon/auth-flow", async () => {
   }
 })
 
+const mockFileStateCacheClear = vi.fn()
+const mockResetSessionModifiedFiles = vi.fn()
+
+vi.mock("../../mind/file-state", () => ({
+  fileStateCache: { clear: (...args: any[]) => mockFileStateCacheClear(...args) },
+}))
+
+vi.mock("../../mind/scrutiny", () => ({
+  resetSessionModifiedFiles: (...args: any[]) => mockResetSessionModifiedFiles(...args),
+}))
+
 // ── Test helpers ──────────────────────────────────────────────────
 
 function makeFriend(overrides: Partial<FriendRecord> = {}): FriendRecord {
@@ -186,6 +197,8 @@ describe("handleInboundTurn", () => {
     mockFindBridgesForSession.mockReset().mockReturnValue([])
     mockListTargetSessionCandidates.mockReset().mockResolvedValue([])
     mockListCodingSessions.mockReset().mockReturnValue([])
+    mockFileStateCacheClear.mockReset()
+    mockResetSessionModifiedFiles.mockReset()
   })
 
   // Step 1: friend resolution
@@ -321,7 +334,7 @@ describe("handleInboundTurn", () => {
       expect(input.drainPending).not.toHaveBeenCalled()
     })
 
-    it("includes pending messages in runAgent context when present", async () => {
+    it("includes pending messages in runAgent options when present", async () => {
       const pendingMsgs: PendingMessage[] = [
         { from: "trust-gate", content: "someone tried to reach you", timestamp: 1000 },
         { from: "inner-dialog", content: "thought about something", timestamp: 1001 },
@@ -333,17 +346,20 @@ describe("handleInboundTurn", () => {
       await handleInboundTurn(input)
 
       expect(input.runAgent).toHaveBeenCalledTimes(1)
-      // The pipeline should have included pending in the messages
       const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
+      const options = runAgentCall[4] as RunAgentOptions
+      // Pending messages now flow through runAgentOptions.pendingMessages
+      expect(options.pendingMessages).toEqual([
+        { from: "trust-gate", content: "someone tried to reach you" },
+        { from: "inner-dialog", content: "thought about something" },
+      ])
+      // Messages should NOT contain pending content directly
       const messagesArg = runAgentCall[0] as ChatCompletionMessageParam[]
-      // Pending messages should be formatted and included before the user message
       const allContent = messagesArg.map(m => typeof m.content === "string" ? m.content : "").join("\n")
-      expect(allContent).toContain("## live world-state checkpoint")
-      expect(allContent).toContain("if older transcript history disagrees, treat it as stale.")
-      expect(allContent).toContain("someone tried to reach you")
+      expect(allContent).not.toContain("someone tried to reach you")
     })
 
-    it("injects a fresh live world-state checkpoint ahead of the inbound user turn", async () => {
+    it("does not inject live world-state checkpoint in user messages (moved to system prompt)", async () => {
       const input = makeInput({
         continuityIngressTexts: ["what are you up to?"],
         messages: [{ role: "user", content: "what are you up to?" }] as ChatCompletionMessageParam[],
@@ -354,9 +370,8 @@ describe("handleInboundTurn", () => {
       const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
       const messagesArg = runAgentCall[0] as ChatCompletionMessageParam[]
       const allContent = messagesArg.map((m) => typeof m.content === "string" ? m.content : "").join("\n")
-      expect(allContent).toContain("## live world-state checkpoint")
-      expect(allContent).toContain("- live conversation: cli/session")
-      expect(allContent).toContain("- current artifact: no artifact yet")
+      // world-state no longer prepended to user messages -- now in system prompt via buildSystem
+      expect(allContent).not.toContain("## live world-state")
       expect(allContent).toContain("what are you up to?")
     })
 
@@ -381,9 +396,12 @@ describe("handleInboundTurn", () => {
       ])
 
       const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
-      const messagesArg = runAgentCall[0] as ChatCompletionMessageParam[]
-      const allContent = messagesArg.map(m => typeof m.content === "string" ? m.content : "").join("\n")
-      expect(allContent.indexOf("penguins surfaced")).toBeLessThan(allContent.indexOf("a local pending note"))
+      const options = runAgentCall[4] as RunAgentOptions
+      // Deferred returns should come before session pending in the pendingMessages array
+      expect(options.pendingMessages).toEqual([
+        { from: "testagent", content: "penguins surfaced" },
+        { from: "inner-dialog", content: "a local pending note" },
+      ])
     })
 
     it("does not modify messages when pending exists but input.messages is empty", async () => {
@@ -401,7 +419,7 @@ describe("handleInboundTurn", () => {
       expect(input.runAgent).toHaveBeenCalledTimes(1)
     })
 
-    it("prepends pending to multimodal (array) content without losing parts", async () => {
+    it("pending messages go to runAgentOptions, not user content (multimodal preserved)", async () => {
       const pendingMsgs: PendingMessage[] = [
         { from: "instinct", content: "someone reached out", timestamp: 1000 },
       ]
@@ -418,14 +436,17 @@ describe("handleInboundTurn", () => {
 
       const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
       const msgs = runAgentCall[0] as ChatCompletionMessageParam[]
+      // User message should be unchanged -- pending flows through runAgentOptions
       const userMsg = msgs.find(m => m.role === "user" && Array.isArray(m.content))
       expect(userMsg).toBeTruthy()
       const parts = (userMsg as any).content as Array<{ type: string; text?: string }>
-      // Pending text part prepended, original parts preserved
-      expect(parts[0].type).toBe("text")
-      expect(parts[0].text).toContain("someone reached out")
-      expect(parts[1]).toEqual({ type: "text", text: "hello" })
-      expect(parts[2]).toEqual({ type: "image_url", image_url: { url: "https://example.com/img.png" } })
+      expect(parts[0]).toEqual({ type: "text", text: "hello" })
+      expect(parts[1]).toEqual({ type: "image_url", image_url: { url: "https://example.com/img.png" } })
+      // Pending messages should be in runAgentOptions, not in session messages
+      const options = runAgentCall[4] as RunAgentOptions
+      expect(options.pendingMessages).toEqual([
+        { from: "instinct", content: "someone reached out" },
+      ])
     })
 
     it("does not modify first message when pending exists but first message is not user role", async () => {
@@ -1405,7 +1426,7 @@ describe("handleInboundTurn", () => {
       },
     )
 
-    it("injects the live world-state checkpoint into the inbound user message", async () => {
+    it("does not inject live world-state checkpoint into user messages (moved to system prompt)", async () => {
       const input = makeInput({
         messages: [{ role: "user", content: "hello" }],
       })
@@ -1413,11 +1434,10 @@ describe("handleInboundTurn", () => {
       const result = await handleInboundTurn(input)
 
       const userMessage = (result.messages ?? []).find((message) => message.role === "user")
-      expect(userMessage).toEqual(expect.objectContaining({
-        role: "user",
-        content: expect.stringContaining("## live world-state checkpoint"),
-      }))
-      expect(typeof userMessage?.content === "string" ? userMessage.content : "").toContain("hello")
+      // checkpoint no longer prepended to user messages -- now in system prompt
+      const content = typeof userMessage?.content === "string" ? userMessage.content : ""
+      expect(content).not.toContain("## live world-state checkpoint")
+      expect(content).toContain("hello")
     })
   })
 
@@ -1566,6 +1586,114 @@ describe("handleInboundTurn", () => {
       expect(result.failoverMessage).toBeUndefined()
       expect(result.turnOutcome).toBe("errored")
       expect(mockRunHealthInventory).not.toHaveBeenCalled()
+    })
+  })
+
+  // Session reset (lines 238-244)
+  describe("session reset on key change", () => {
+    it("resets file-state cache and scrutiny tracking when session key changes", async () => {
+      // First call establishes a session key
+      const input1 = makeInput({
+        channel: "cli",
+        sessionKey: "session-A",
+      } as any)
+      await handleInboundTurn(input1)
+
+      // Clear mocks so we can assert they're called on the second call
+      mockFileStateCacheClear.mockClear()
+      mockResetSessionModifiedFiles.mockClear()
+
+      // Second call with a different session key triggers the reset
+      const input2 = makeInput({
+        channel: "cli",
+        sessionKey: "session-B",
+      } as any)
+      await handleInboundTurn(input2)
+
+      expect(mockFileStateCacheClear).toHaveBeenCalledTimes(1)
+      expect(mockResetSessionModifiedFiles).toHaveBeenCalledTimes(1)
+    })
+
+    it("resets when channel changes even with same session key", async () => {
+      const input1 = makeInput({
+        channel: "cli",
+        sessionKey: "same-key",
+      } as any)
+      await handleInboundTurn(input1)
+
+      mockFileStateCacheClear.mockClear()
+      mockResetSessionModifiedFiles.mockClear()
+
+      const input2 = makeInput({
+        channel: "teams",
+        capabilities: makeCapabilities({ channel: "teams", senseType: "closed" }),
+        sessionKey: "same-key",
+      } as any)
+      await handleInboundTurn(input2)
+
+      expect(mockFileStateCacheClear).toHaveBeenCalledTimes(1)
+      expect(mockResetSessionModifiedFiles).toHaveBeenCalledTimes(1)
+    })
+
+    it("does not reset when session key stays the same", async () => {
+      const input1 = makeInput({
+        channel: "cli",
+        sessionKey: "stable-key",
+      } as any)
+      await handleInboundTurn(input1)
+
+      mockFileStateCacheClear.mockClear()
+      mockResetSessionModifiedFiles.mockClear()
+
+      const input2 = makeInput({
+        channel: "cli",
+        sessionKey: "stable-key",
+      } as any)
+      await handleInboundTurn(input2)
+
+      expect(mockFileStateCacheClear).not.toHaveBeenCalled()
+      expect(mockResetSessionModifiedFiles).not.toHaveBeenCalled()
+    })
+  })
+
+  // extraPrefixSections from onPendingDrained (line 523)
+  describe("onPendingDrained extra prefix sections", () => {
+    it("prepends extra sections to first user message when onPendingDrained returns non-empty array", async () => {
+      const pendingMsgs: PendingMessage[] = [
+        { from: "inner-dialog", content: "woke up", timestamp: 1000 },
+      ]
+      const input = makeInput({
+        drainPending: vi.fn().mockReturnValue(pendingMsgs),
+        messages: [{ role: "user", content: "hi there" }] as ChatCompletionMessageParam[],
+        onPendingDrained: vi.fn().mockReturnValue(["## Wake context", "Inner dialog surfaced a thought"]),
+      } as any)
+
+      await handleInboundTurn(input)
+
+      expect(input.runAgent).toHaveBeenCalledTimes(1)
+      const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
+      const msgs = runAgentCall[0] as ChatCompletionMessageParam[]
+      const userMsg = msgs.find(m => m.role === "user" && typeof m.content === "string")
+      expect(userMsg).toBeTruthy()
+      expect((userMsg as any).content).toContain("## Wake context")
+      expect((userMsg as any).content).toContain("Inner dialog surfaced a thought")
+      expect((userMsg as any).content).toContain("hi there")
+    })
+
+    it("does not prepend when onPendingDrained returns empty array", async () => {
+      const input = makeInput({
+        drainPending: vi.fn().mockReturnValue([]),
+        messages: [{ role: "user", content: "hi there" }] as ChatCompletionMessageParam[],
+        onPendingDrained: vi.fn().mockReturnValue([]),
+      } as any)
+
+      await handleInboundTurn(input)
+
+      const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
+      const msgs = runAgentCall[0] as ChatCompletionMessageParam[]
+      const userMsg = msgs.find(m => m.role === "user" && typeof m.content === "string")
+      expect(userMsg).toBeTruthy()
+      expect((userMsg as any).content).toBe("hi there")
     })
   })
 })

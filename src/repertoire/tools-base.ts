@@ -4,11 +4,14 @@ import * as fg from "fast-glob";
 import { execSync, spawnSync } from "child_process";
 import * as path from "path";
 import { listSkills, loadSkill } from "./skills";
+import { spawnBackgroundShell, getShellSession, listShellSessions, tailShellSession, detectDestructivePatterns } from "./shell-sessions";
 import { getIntegrationsConfig, resolveSessionPath } from "../heart/config";
 import type { Integration, ResolvedContext, FriendRecord } from "../mind/friends/types";
 import type { FriendStore } from "../mind/friends/store";
 import { emitNervesEvent } from "../nerves/runtime";
-import { getAgentRoot, getAgentName } from "../heart/identity";
+import { fileStateCache } from "../mind/file-state";
+import { trackModifiedFile, getModifiedFileCount, getPostImplementationScrutiny } from "../mind/scrutiny";
+import { getAgentRoot, getAgentName, loadAgentConfig } from "../heart/identity";
 import { getRepoRoot } from "../heart/identity";
 import { requestInnerWake } from "../heart/daemon/socket-client";
 import {
@@ -403,7 +406,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "read_file",
-        description: "read file contents",
+        description: "Read file contents. Results include line numbers. Use offset/limit for large files -- don't read the whole thing if you only need a section. Use this tool before editing any file. When reading code, read enough context to understand the surrounding logic, not just the target line.",
         parameters: {
           type: "object",
           properties: {
@@ -421,6 +424,18 @@ export const baseToolDefinitions: ToolDefinition[] = [
       editFileReadTracker.add(resolvedPath)
       const offset = a.offset ? parseInt(a.offset, 10) : undefined
       const limit = a.limit ? parseInt(a.limit, 10) : undefined
+
+      // Record in file state cache for staleness detection
+      try {
+        const mtime = fs.statSync(resolvedPath).mtimeMs
+        const readContent = (offset === undefined && limit === undefined)
+          ? content
+          : content.split("\n").slice(offset ? offset - 1 : 0, limit !== undefined ? (offset ? offset - 1 : 0) + limit : undefined).join("\n")
+        fileStateCache.record(resolvedPath, readContent, mtime, offset, limit)
+      } catch {
+        // stat failed -- skip cache recording
+      }
+
       if (offset === undefined && limit === undefined) return content
       const lines = content.split("\n")
       const start = offset ? offset - 1 : 0
@@ -434,7 +449,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "write_file",
-        description: "write content to file",
+        description: "Prefer this tool for creating new files or fully replacing existing ones. You MUST read an existing file with read_file before overwriting it. Prefer edit_file for modifying existing files -- it only sends the diff. Do not create documentation files (*.md, README) by default; only do so when explicitly asked or when documentation is clearly part of the requested change.",
         parameters: {
           type: "object",
           properties: { path: { type: "string" }, content: { type: "string" } },
@@ -446,7 +461,10 @@ export const baseToolDefinitions: ToolDefinition[] = [
       const resolvedPath = resolveLocalToolPath(a.path)
       fs.mkdirSync(path.dirname(resolvedPath), { recursive: true })
       fs.writeFileSync(resolvedPath, a.content, "utf-8")
-      return "ok"
+      trackModifiedFile(resolvedPath)
+      const scrutiny = getPostImplementationScrutiny(getModifiedFileCount())
+      /* v8 ignore next -- scrutiny appendix branch depends on session-level file count @preserve */
+      return scrutiny ? `ok\n\n${scrutiny}` : "ok"
     },
     summaryKeys: ["path"],
   },
@@ -456,7 +474,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
       function: {
         name: "edit_file",
         description:
-          "surgically edit a file by replacing an exact string. the file must have been read via read_file first. old_string must match exactly one location in the file.",
+          "Surgically edit a file by replacing an exact string. The file MUST have been read via read_file first -- this tool will reject the call otherwise. old_string must match EXACTLY ONE location in the file -- if it matches zero or multiple, the edit fails. To fix: provide more surrounding context to make the match unique. Preserve exact indentation (tabs/spaces) from the file. Prefer this over write_file for modifications -- it only sends the diff.",
         parameters: {
           type: "object",
           properties: {
@@ -473,6 +491,9 @@ export const baseToolDefinitions: ToolDefinition[] = [
       if (!editFileReadTracker.has(resolvedPath)) {
         return `error: you must read the file with read_file before editing it. call read_file on ${a.path} first.`
       }
+
+      // Check staleness before editing
+      const stalenessCheck = fileStateCache.isStale(resolvedPath)
 
       let content: string
       try {
@@ -504,6 +525,14 @@ export const baseToolDefinitions: ToolDefinition[] = [
       const updated = content.slice(0, idx) + a.new_string + content.slice(idx + a.old_string.length)
       fs.writeFileSync(resolvedPath, updated, "utf-8")
 
+      // Update file state cache with new content
+      try {
+        const newMtime = fs.statSync(resolvedPath).mtimeMs
+        fileStateCache.record(resolvedPath, updated, newMtime)
+      } catch {
+        // stat failed -- skip cache update
+      }
+
       // Build contextual diff
       const lines = updated.split("\n")
       const prefixLines = content.slice(0, idx).split("\n")
@@ -511,7 +540,21 @@ export const baseToolDefinitions: ToolDefinition[] = [
       const newStringLines = a.new_string.split("\n")
       const changeEndLine = changeStartLine + newStringLines.length
 
-      return buildContextDiff(lines, changeStartLine, changeEndLine)
+      const diffResult = buildContextDiff(lines, changeStartLine, changeEndLine)
+
+      // Track modified file and compute scrutiny appendix
+      trackModifiedFile(resolvedPath)
+      const scrutiny = getPostImplementationScrutiny(getModifiedFileCount())
+
+      // Append staleness warning if detected (do not block -- TTFA)
+      /* v8 ignore start -- staleness+diff+scrutiny combo not exercised in integration tests @preserve */
+      if (stalenessCheck.stale) {
+        const base = `${diffResult}\n\n⚠️ warning: file changed externally since last read -- re-read recommended`
+        return scrutiny ? `${base}\n\n${scrutiny}` : base
+      }
+      /* v8 ignore stop */
+      /* v8 ignore next -- scrutiny appendix branch depends on session-level file count @preserve */
+      return scrutiny ? `${diffResult}\n\n${scrutiny}` : diffResult
     },
     summaryKeys: ["path"],
   },
@@ -520,7 +563,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "glob",
-        description: "find files matching a glob pattern. returns matching paths sorted alphabetically, one per line.",
+        description: "Find files matching a glob pattern, sorted alphabetically. Use this instead of shell commands like `find` or `ls`. For broad exploratory searches that would require multiple rounds of globbing and grepping, consider using claude or coding_spawn.",
         parameters: {
           type: "object",
           properties: {
@@ -544,7 +587,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
       function: {
         name: "grep",
         description:
-          "search file contents for lines matching a regex pattern. searches recursively when given a directory. returns matching lines with file path and line numbers.",
+          "Search file contents for lines matching a regex pattern. Searches recursively in directories. Use this instead of shell commands like `grep` or `rg`. Returns matching lines with file path and line numbers. Use context_lines for surrounding context. Use include to filter file types (e.g., '*.ts').",
         parameters: {
           type: "object",
           properties: {
@@ -656,21 +699,108 @@ export const baseToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "shell",
-        description: "run shell command",
+        description: "Run a shell command and return stdout/stderr. Working directory persists between calls. Use dedicated tools instead of shell when available: read_file instead of cat, edit_file instead of sed, glob instead of find, grep instead of grep/rg. Reserve shell for operations that genuinely need the shell: installing packages, running builds/tests, git operations, process management. Be careful with destructive commands -- consider reversibility before running. If a command fails, read the error output before retrying with a different approach.",
         parameters: {
           type: "object",
-          properties: { command: { type: "string" } },
+          properties: {
+            command: { type: "string" },
+            timeout_ms: {
+              type: "number",
+              description: "Timeout in milliseconds. Default: 30000. Max: 600000.",
+            },
+            background: {
+              type: "boolean",
+              description: "Run in background. Returns immediately with a process ID. Use shell_status/shell_tail to monitor.",
+            },
+          },
           required: ["command"],
         },
       },
     },
     handler: (a) => {
-      return execSync(a.command, {
+      // Destructive pattern detection (friction, not a block)
+      const destructivePatterns = detectDestructivePatterns(a.command)
+      if (destructivePatterns.length > 0) {
+        emitNervesEvent({
+          level: "warn",
+          event: "tool.shell.destructive_detected",
+          component: "tools",
+          message: `destructive pattern detected: ${destructivePatterns.join(", ")}`,
+          meta: { command: a.command, patterns: destructivePatterns },
+        })
+      }
+
+      // Background mode: spawn and return immediately
+      if (a.background === "true") {
+        const session = spawnBackgroundShell(a.command)
+        return JSON.stringify({ id: session.id, command: session.command, status: session.status })
+      }
+
+      const MAX_TIMEOUT = 600000
+      const requestedTimeout = Number(a.timeout_ms) || 0
+      let configDefault = 30000
+      try { configDefault = loadAgentConfig().shell?.defaultTimeout ?? 30000 } catch { /* test env: no --agent flag */ }
+      const baseTimeout = requestedTimeout > 0 ? requestedTimeout : configDefault
+      const timeout = Math.min(baseTimeout, MAX_TIMEOUT)
+      const output = execSync(a.command, {
         encoding: "utf-8",
-        timeout: 30000,
+        timeout,
       })
+
+      if (destructivePatterns.length > 0) {
+        return `${output}\n\n--- destructive pattern detected: ${destructivePatterns.join(", ")} ---`
+      }
+      return output
     },
     summaryKeys: ["command"],
+  },
+  {
+    tool: {
+      type: "function",
+      function: {
+        name: "shell_status",
+        description: "Check status of background shell processes. Omit id to list all.",
+        parameters: {
+          type: "object",
+          properties: {
+            id: { type: "string", description: "Background shell process ID" },
+          },
+        },
+      },
+    },
+    handler: (a) => {
+      if (!a.id) {
+        return JSON.stringify(listShellSessions())
+      }
+      const session = getShellSession(a.id)
+      if (!session) return `process not found: ${a.id}`
+      return JSON.stringify(session)
+    },
+    summaryKeys: ["id"],
+  },
+  {
+    tool: {
+      type: "function",
+      function: {
+        name: "shell_tail",
+        description: "Show recent output from a background shell process.",
+        parameters: {
+          type: "object",
+          properties: {
+            id: { type: "string", description: "Background shell process ID" },
+          },
+          required: ["id"],
+        },
+      },
+    },
+    handler: (a) => {
+      /* v8 ignore next -- schema requires id, defensive guard @preserve */
+      if (!a.id) return "id is required"
+      const output = tailShellSession(a.id)
+      if (output === undefined) return `process not found: ${a.id}`
+      return output || "(no output yet)"
+    },
+    summaryKeys: ["id"],
   },
   {
     tool: {
@@ -711,7 +841,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
       function: {
         name: "claude",
         description:
-          "use claude code to query this codebase or get an outside perspective. useful for code review, second opinions, and asking questions about your own source.",
+          "use claude code to query this codebase or get an outside perspective. Use for code review, second opinions, or questions that benefit from a fresh perspective outside this conversation's context.",
         parameters: {
           type: "object",
           properties: { prompt: { type: "string" } },
@@ -786,7 +916,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
       function: {
         name: "recall",
         description:
-          "recall what i know — search my diary and journal for facts, thoughts, and working notes that match a query",
+          "Search my diary and journal for facts, thoughts, and working notes matching a query. Uses semantic similarity -- phrasing matters. Try different angles if the first query doesn't find what you're looking for. Check recall before asking the human something you might already know.",
         parameters: {
           type: "object",
           properties: { query: { type: "string" } },
@@ -843,7 +973,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
       function: {
         name: "diary_write",
         description:
-          "write an entry in my diary — something i learned, noticed, or concluded that i want to recall later. optional 'about' tags the entry to a person, topic, or context.",
+          "Write an entry in my diary -- something I learned, noticed, or concluded that I want to recall later. Use 'about' to tag the entry to a person, topic, or context. Write for my future self: include enough context that the entry makes sense without the surrounding conversation. Prefer durable conclusions over passing noise. Don't duplicate what already belongs in friend notes.",
         parameters: {
           type: "object",
           properties: {
@@ -1489,7 +1619,7 @@ export const ponderTool: OpenAI.ChatCompletionFunctionTool = {
   type: "function",
   function: {
     name: "ponder",
-    description: "i need to sit with this. from a conversation, takes the thread inward with a thought and a parting word. from inner dialog, keeps the wheel turning for another pass. must be the only tool call in the turn.",
+    description: "i need to sit with this. from a conversation, takes the thread inward with a thought and a parting word. from inner dialog, keeps the wheel turning for another pass. must be the only tool call in the turn. Use when a question deserves more thought than this turn allows. Don't ponder trivial questions.",
     parameters: {
       type: "object",
       properties: {
@@ -1525,7 +1655,7 @@ export const settleTool: OpenAI.ChatCompletionFunctionTool = {
   function: {
     name: "settle",
     description:
-      "respond to the user with your message. call this tool when you are ready to deliver your response.",
+      "respond to the user with your message. call this tool when you are ready to deliver your response. Only call when you have a substantive response. If you're settling with 'I'll look into that,' you probably should be using a tool instead.",
     parameters: {
       type: "object",
       properties: {

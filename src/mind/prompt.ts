@@ -16,11 +16,12 @@ import type { BundleMeta } from "./bundle-manifest";
 import { getFirstImpressions } from "./first-impressions";
 import { getTaskModule } from "../repertoire/tasks";
 import { listSessionActivity, type SessionActivityQuery } from "../heart/session-activity";
-import { formatActiveWorkFrame, formatOtherActiveSessionSummaries, type ActiveWorkFrame } from "../heart/active-work";
+import { formatActiveWorkFrame, formatLiveWorldStateCheckpoint, formatOtherActiveSessionSummaries, type ActiveWorkFrame } from "../heart/active-work";
 import type { DelegationDecision } from "../heart/delegation";
 import { deriveCommitments, formatCommitments } from "../heart/commitments";
 import { findActivePersistentObligation, findStatusObligation, renderActiveObligationSteering, renderConcreteStatusGuidance, renderLiveThreadStatusShape } from "./obligation-steering";
 import { readHealth, getDefaultHealthPath } from "../heart/daemon/daemon-health";
+import { preImplementationScrutinySection } from "./scrutiny";
 
 // Lazy-loaded psyche text cache
 let _psycheCache: {
@@ -432,6 +433,7 @@ export function toolRestrictionSection(context?: ResolvedContext): string {
 function trustContextSection(context?: ResolvedContext): string {
   if (!context?.friend) return ""
   const channelName = context.channel.channel
+  /* v8 ignore next -- inner channel not reachable in unit tests @preserve */
   if (channelName === "cli" || channelName === "inner") return ""
 
   const explanation = describeTrustContext({
@@ -471,20 +473,28 @@ function taskBoardSection(): string {
   }
 }
 
-function diaryFriendToolContractSection(): string {
-  return `## diary and friend tool contracts
-1. \`save_friend_note\` — When I learn something about a person - a preference, a tool setting, a personal detail, or how they like to work - I call \`save_friend_note\` immediately. This is how I build knowledge about people.
-2. \`diary_write\` — When I learn something general - about a project, codebase, system, decision, or anything I might need later that isn't about a specific person - I call \`diary_write\`. When in doubt, I save it.
-3. \`get_friend_note\` — When I need to check what I know about someone who isn't in this conversation - cross-referencing before mentioning someone, or checking context about a person someone else brought up - I call \`get_friend_note\`.
-4. \`recall\` — When I need to recall something I learned before - a topic comes up and I want to check what I know - I call \`recall\`.
-5. \`query_session\` — When I need grounded session history, especially for ad-hoc questions or older turns beyond my prompt, I call \`query_session\`. Use \`mode=status\` for self/inner progress and \`mode=search\` with a query for older history.
+function toolContractsSection(options?: BuildSystemOptions): string {
+  const lines = [
+    `## tool contracts`,
+    `1. \`save_friend_note\` -- when I learn something about a person, I save it immediately. Saving comes before responding.`,
+    `2. \`diary_write\` -- when I learn something general about a project, system, or decision, I save it. When in doubt, I save.`,
+    `3. \`get_friend_note\` -- when I need context about someone not in this conversation, I check their notes.`,
+    `4. \`recall\` -- when I need to remember something from before, I search my diary and journal.`,
+    `5. \`query_session\` -- when I need grounded session history or want to verify older turns beyond my prompt. Use \`mode=status\` for self/inner progress and \`mode=search\` for older history.`,
+  ]
 
-## what's already in my context
-- My active friend's notes are auto-loaded (I don't need \`get_friend_note\` for the person I'm talking to).
-- Associative recall auto-injects relevant facts (but \`recall\` is there when I need something specific).
-- My psyche files (SOUL, IDENTITY, TACIT, LORE, ASPIRATIONS) are always loaded - I already know who I am.
-- My task board is always loaded - I already know my work.`;
+  if (options?.toolChoiceRequired ?? true) {
+    lines.push(``)
+    lines.push(`## tool behavior`)
+    lines.push(`tool_choice is set to "required" -- I must call a tool on every turn.`)
+    lines.push(`- When I am ready to respond to the user, I call \`settle\`.`)
+    lines.push(`- \`settle\` must be the only tool call in that turn.`)
+    lines.push(`- I do not call no-op tools before \`settle\`.`)
+  }
+
+  return lines.join("\n")
 }
+
 
 export interface BuildSystemOptions {
   toolChoiceRequired?: boolean;
@@ -498,6 +508,7 @@ export interface BuildSystemOptions {
   providerCapabilities?: ReadonlySet<import("../heart/core").ProviderCapability>;
   supportedReasoningEfforts?: readonly string[];
   mcpManager?: McpManager;
+  pendingMessages?: Array<{ from: string; content: string }>;
 }
 
 function bridgeContextSection(options?: BuildSystemOptions): string {
@@ -512,26 +523,29 @@ function activeWorkSection(options?: BuildSystemOptions): string {
   return formatActiveWorkFrame(options.activeWorkFrame)
 }
 
+function liveWorldStateSection(options?: BuildSystemOptions): string {
+  if (!options?.activeWorkFrame) return ""
+  return formatLiveWorldStateCheckpoint(options.activeWorkFrame)
+}
+
+function pendingMessagesSection(options?: BuildSystemOptions): string {
+  const pending = options?.pendingMessages
+  if (!pending || pending.length === 0) return ""
+  const lines = ["## pending messages"]
+  for (const msg of pending) {
+    lines.push(`- from ${msg.from}: ${msg.content}`)
+  }
+  return lines.join("\n")
+}
+
 function familyCrossSessionTruthSection(context?: ResolvedContext, options?: BuildSystemOptions): string {
   if (!options?.activeWorkFrame) return ""
   if (context?.friend?.trustLevel !== "family") return ""
   return `## cross-session truth
-if a family member asks what i'm up to or how things are going, that includes the material live work i can see across sessions, not just this thread.
-i answer naturally from the live world-state in this prompt.
-i treat the active-work section above as my reliable top-level surface for this.
-i do not claim i lack a top-level view when that surface is already present.
-i treat older checkpoints elsewhere in this transcript as stale history when they conflict with the active-work surface above.
-i do not repeat an old coding lane or old checkpoint as current just because it appeared earlier in the thread.
-i only reach for query_active_work when i want a fresh read of that same surface.
-i do not rebuild whole-self status from scratch with query_session and coding_status unless i need to verify a specific gap.
-i do not rely on canned status-question modes or phrase matching.
-if part of the picture is still fuzzy, i say what i can see and what still needs checking.
-when the live ask is about status, i widen before answering:
-- where i am right now
-- any other material active sessions or coding lanes i can see
-- the freshest concrete checkpoint
-- the next concrete step
-i do not collapse down to only the current lane.`
+When family asks what I'm up to or how things are going, I answer from the live world-state across visible sessions and lanes, not just the current thread.
+When live state conflicts with older transcript history, live state wins.
+I say what I can see, what is active, and what the next concrete step is.
+If part of the picture is still unclear, I say so plainly and note what still needs checking.`
 }
 
 export function centerOfGravitySteeringSection(
@@ -680,27 +694,36 @@ function reasoningEffortSection(options?: BuildSystemOptions): string {
 i can adjust my own reasoning depth using the set_reasoning_effort tool. i use higher effort for complex analysis and lower effort for simple tasks. available levels: ${levelList}.`;
 }
 
-function toolBehaviorSection(options?: BuildSystemOptions): string {
-  if (!(options?.toolChoiceRequired ?? true)) return "";
-  return `## tool behavior
-tool_choice is set to "required" -- i must call a tool on every turn.
-- need more information? i call a tool.
-- ready to respond to the user? i call \`settle\`.
-\`settle\` is a tool call -- it satisfies the tool_choice requirement.
-\`settle\` must be the ONLY tool call in that turn. do not combine it with other tool calls.
-do NOT call no-op tools just before \`settle\`. if i am done, i call \`settle\` directly.`;
-}
 
 function workspaceDisciplineSection(): string {
-  return `## repo workspace discipline
-my source code lives at the path shown in \`source root\` above. that always matches my running version.
-when i need to read my own code to understand my tools or debug behavior, i read from source root.
-when i need to EDIT harness code (self-fix, feature work), i create a git worktree first so i don't dirty the working tree.
+  return `## how i work
 
-before the first repo edit, i tell the user in 1-2 short lines:
-- the friction i'm fixing
-- the worktree path/branch i'm using
-- the first concrete action i'm taking`
+I work conservatively when changing real systems. I prefer reversible actions, verify before claiming success, and avoid expanding scope without clear cause.
+
+**reversibility and blast radius**
+I consider the reversibility and blast radius of my actions before taking them.
+- I freely take local, reversible actions: reading files, searching, recalling, web lookups, status checks.
+- For state-changing, shared-state, or hard-to-reverse actions, I make my intent visible, prefer the reversible path, and proceed with care.
+- I exercise judgment rather than waiting for permission.
+- When I encounter an obstacle, I do not use destructive actions as a shortcut. I investigate root causes before bypassing safeguards or changing tactics.
+- If I discover unexpected state -- unfamiliar files, branches, or configuration -- I investigate before deleting or overwriting. It may be in-progress work.
+
+**engineering discipline**
+- I do not add features, refactor code, or make improvements beyond what was asked.
+- If an approach fails, I diagnose why before switching tactics. I read the error, check my assumptions, and try a focused fix. I do not retry blindly, but I do not abandon a viable approach after one failure.
+- I do not modify code I have not read.
+- I consider security impact before changing code.
+- I describe outcomes faithfully. I do not imply success where there was uncertainty, failure, or skipped verification.
+- If tests fail, I say so with the output. If I did not run a verification step, I say that plainly.
+- Three similar lines of code are better than a premature abstraction. I do not over-engineer.
+
+**git discipline**
+- I do not run destructive git commands (\`push --force\`, \`reset --hard\`, \`checkout .\`, \`clean -f\`, \`branch -D\`) without explicit request.
+- I do not skip hooks (\`--no-verify\`) without explicit request.
+- I do not force-push to \`main\` or \`master\`; if asked, I warn clearly.
+- I create new commits rather than amending unless amendment is explicitly requested. When a pre-commit hook fails, the commit did not happen -- amending would modify the previous commit.
+- I stage specific files rather than sweeping additions (\`git add -A\` can catch secrets or binaries).
+- I do not commit unless asked.`
 }
 
 export function contextSection(context?: ResolvedContext, options?: BuildSystemOptions): string {
@@ -752,6 +775,13 @@ export function contextSection(context?: ResolvedContext, options?: BuildSystemO
       lines.push(`- ${key}: [${entry.savedAt.slice(0, 10)}] ${entry.value}`)
     }
   }
+
+  // Memory-awareness lines (locked content)
+  lines.push("")
+  lines.push("My active friend's notes are auto-loaded -- I do not need `get_friend_note` for the person I'm talking to.")
+  lines.push("Associative recall auto-injects relevant facts, but `recall` is there when I need something specific.")
+  lines.push("My psyche files are always loaded -- I already know who I am.")
+  lines.push("My task board is always loaded -- I already know my work.")
 
   return lines.join("\n")
 }
@@ -977,6 +1007,19 @@ export function rhythmStatusSection(): string {
   /* v8 ignore stop */
 }
 
+/**
+ * Returns true if the channel's resolved tool set includes coding tools
+ * (edit_file, write_file, shell). Used to gate scrutiny prompts.
+ */
+function channelHasCodingTools(
+  channel: Channel,
+  providerCapabilities?: ReadonlySet<import("../heart/core").ProviderCapability>,
+): boolean {
+  const tools = getToolsForChannel(getChannelCapabilities(channel), undefined, undefined, providerCapabilities)
+  const codingToolNames = new Set(["edit_file", "write_file", "shell", "coding_spawn"])
+  return tools.some((t) => codingToolNames.has(t.function.name))
+}
+
 export async function buildSystem(channel: Channel = "cli", options?: BuildSystemOptions, context?: ResolvedContext): Promise<string> {
   emitNervesEvent({
     event: "mind.step_start",
@@ -989,33 +1032,61 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
   backfillBundleMeta(getAgentRoot());
 
   const system = [
+    // Group 1: who i am
+    "# who i am",
     soulSection(),
     identitySection(),
     loreSection(),
     tacitKnowledgeSection(),
     aspirationsSection(),
+
+    // Group 2: my body & environment
+    "# my body & environment",
     bodyMapSection(getAgentName()),
-    metacognitiveFramingSection(channel),
-    channel === "inner" ? journalSection(getAgentRoot()) : "",
-    loopOrientationSection(channel),
     runtimeInfoSection(channel),
     rhythmStatusSection(),
     channelNatureSection(getChannelCapabilities(channel)),
     providerSection(channel),
     dateSection(),
+
+    // Group 3: my tools & capabilities
+    "# my tools & capabilities",
     toolsSection(channel, options, context),
     mcpToolsSection(options?.mcpManager),
     reasoningEffortSection(options),
-    workspaceDisciplineSection(),
-    toolRestrictionSection(context),
-    trustContextSection(context),
-    mixedTrustGroupSection(context),
-    groupChatParticipationSection(context),
-    feedbackSignalSection(context),
     skillsSection(),
-    taskBoardSection(),
+    toolContractsSection(options),
+
+    // Group 4: how i work
+    "# how i work",
+    workspaceDisciplineSection(),
+    preImplementationScrutinySection(channelHasCodingTools(channel, options?.providerCapabilities)),
+    toolRestrictionSection(context),
+    loopOrientationSection(channel),
+
+    // Group 5: my inner life (inner channel only)
+    ...(channel === "inner" ? [
+      "# my inner life",
+      metacognitiveFramingSection(channel),
+      journalSection(getAgentRoot()),
+    ] : []),
+
+    // Group 6: social context (non-local, non-inner channels)
+    // Individual sections self-gate on isRemoteChannel/channel checks.
+    // The group header appears when the channel is social-capable.
+    ...(channel !== "cli" && channel !== "inner" ? [
+      "# social context",
+      trustContextSection(context),
+      mixedTrustGroupSection(context),
+      groupChatParticipationSection(context),
+      feedbackSignalSection(context),
+    ] : []),
+
+    // Group 7: dynamic state for this turn
+    "# dynamic state for this turn",
+    liveWorldStateSection(options),
+    pendingMessagesSection(options),
     activeWorkSection(options),
-    familyCrossSessionTruthSection(context, options),
     centerOfGravitySteeringSection(channel, options, context),
     commitmentsSection(options),
     delegationHintSection(options),
@@ -1028,9 +1099,15 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
       currentChannel: channel,
       currentKey: options?.currentSessionKey ?? "session",
     }),
-    diaryFriendToolContractSection(),
-    toolBehaviorSection(options),
+
+    // Group 8: friend context
+    "# friend context",
     contextSection(context, options),
+    familyCrossSessionTruthSection(context, options),
+
+    // Group 9: task context
+    "# task context",
+    taskBoardSection(),
   ]
     .filter(Boolean)
     .join("\n\n");

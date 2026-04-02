@@ -369,3 +369,44 @@ export function summarizeArgs(name: string, args: Record<string, string>): strin
   }
   return summarizeUnknownArgs(args);
 }
+
+/**
+ * Build an enriched tool result summary for display on remote channels.
+ * For recognized tools, includes result-derived info (diff stats, exit codes, etc.).
+ * Falls back to arg-based summary for unrecognized tools.
+ */
+export function buildToolResultSummary(
+  name: string,
+  args: Record<string, string>,
+  _result: string,
+  success: boolean,
+): string {
+  switch (name) {
+    case "edit_file": {
+      if (!success) return summarizeArgs(name, args)
+      const addedLines = (args.new_string ?? "").split("\n").length
+      const removedLines = (args.old_string ?? "").split("\n").length
+      return `+${addedLines} -${removedLines} lines in ${args.path ?? "unknown"}`
+    }
+    case "shell": {
+      const cmd = args.command ?? "?"
+      const exitCode = success ? 0 : 1
+      return `$ ${cmd} (exit ${exitCode})`
+    }
+    case "read_file":
+      return `path=${args.path ?? "unknown"}`
+    case "write_file":
+      return `path=${args.path ?? "unknown"}`
+    case "glob":
+      return `pattern=${args.pattern ?? "?"} ${args.cwd ? `cwd=${args.cwd}` : ""}`.trim()
+    case "grep":
+      return `pattern=${args.pattern ?? "?"} ${args.path ? `path=${args.path}` : ""}`.trim()
+    case "coding_spawn": {
+      const taskRef = args.taskRef ?? "unknown"
+      const status = success ? "spawned" : "failed"
+      return `${taskRef} -> ${status}`
+    }
+    default:
+      return summarizeArgs(name, args)
+  }
+}
