@@ -1,6 +1,6 @@
 {
   "name": "@ouro.bot/cli",
-  "version": "0.1.0-alpha.177",
+  "version": "0.1.0-alpha.178",
   "main": "dist/heart/daemon/ouro-entry.js",
   "bin": {
     "cli": "dist/heart/daemon/ouro-bot-entry.js",
@@ -38,10 +38,11 @@
     "@azure/identity": "^4.13.0",
     "@microsoft/teams.apps": "^2.0.5",
     "@microsoft/teams.dev": "^2.0.5",
+    "@types/react": "^17.0.91",
     "fast-glob": "^3.3.3",
     "ink": "^3.2.0",
     "openai": "^6.27.0",
-    "react": "^18.3.1",
+    "react": "^17.0.2",
     "semver": "^7.7.4"
   },
   "repository": {
