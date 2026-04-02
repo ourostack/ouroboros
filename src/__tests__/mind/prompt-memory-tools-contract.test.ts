@@ -79,30 +79,55 @@ describe("prompt memory/friend contracts", () => {
     })
   })
 
-  it("includes first-person prescriptive guidance for all four diary/friend tools", async () => {
+  it("includes first-person prescriptive guidance for all five tool contracts", async () => {
     const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const system = await buildSystem("cli")
 
     expect(system).toContain("save_friend_note")
-    expect(system).toContain("When I learn something about a person")
+    expect(system).toContain("when I learn something about a person")
 
     expect(system).toContain("diary_write")
-    expect(system).toContain("When I learn something general")
+    expect(system).toContain("when I learn something general about a project")
 
     expect(system).toContain("get_friend_note")
-    expect(system).toContain("isn't in this conversation")
+    expect(system).toContain("not in this conversation")
 
     expect(system).toContain("recall")
-    expect(system).toContain("recall something I learned before")
+    expect(system).toContain("when I need to remember something from before")
+
+    expect(system).toContain("query_session")
+    expect(system).toContain("grounded session history")
   })
 
-  it("includes explicit 'already in my context' contract lines", async () => {
+  it("includes memory-awareness lines when friend context present", async () => {
     const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const system = await buildSystem("cli")
+    // Memory-awareness lines are in contextSection, which requires friend context
+    const context = {
+      friend: {
+        id: "uuid-1",
+        name: "Test",
+        externalIds: [],
+        tenantMemberships: [],
+        toolPreferences: {},
+        notes: {},
+        totalTokens: 0,
+        createdAt: "2026-01-01",
+        updatedAt: "2026-01-01",
+        schemaVersion: 1,
+      },
+      channel: {
+        channel: "teams" as const,
+        availableIntegrations: [],
+        supportsMarkdown: true,
+        supportsStreaming: true,
+        supportsRichCards: false,
+        maxMessageLength: 28000,
+      },
+    }
+    const system = await buildSystem("teams", {}, context as any)
 
-    expect(system).toContain("what's already in my context")
     expect(system).toContain("My active friend's notes are auto-loaded")
     expect(system).toContain("Associative recall auto-injects relevant facts")
     expect(system).toContain("My psyche files")

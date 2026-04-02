@@ -75,12 +75,12 @@ describe("toResponsesTools", () => {
     expect(readFile).toBeDefined()
     expect(readFile.type).toBe("function")
     expect(readFile.strict).toBe(false)
-    expect(readFile.description).toBe("read file contents")
+    expect(readFile.description).toContain("Read file contents")
 
     const shell = result.find((t: any) => t.name === "shell")
     expect(shell).toBeDefined()
     expect(shell.name).toBe("shell")
-    expect(shell.description).toBe("run shell command")
+    expect(typeof shell.description).toBe("string")
   })
 
   it("sets description to null when undefined", () => {

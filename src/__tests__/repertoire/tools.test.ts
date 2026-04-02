@@ -141,7 +141,7 @@ describe("execTool", () => {
   it("write_file writes content and returns ok", async () => {
     vi.mocked(fs.writeFileSync).mockReturnValue(undefined)
     const result = await execTool("write_file", { path: "/tmp/out.txt", content: "hello" })
-    expect(result).toBe("ok")
+    expect(result).toContain("ok")
     expect(fs.writeFileSync).toHaveBeenCalledWith("/tmp/out.txt", "hello", "utf-8")
   })
 

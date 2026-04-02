@@ -157,7 +157,7 @@ function scanSourceFiles(sourceRoot: string | undefined): {
         // reflection/ tests mock emitNervesEvent, so events are not observed
         if (entry.name === "__tests__" || entry.name === "nerves" || entry.name === "reflection") continue
         walkDir(full)
-      } else if (entry.name.endsWith(".ts")) {
+      } else if (entry.name.endsWith(".ts") && !entry.name.endsWith(".d.ts")) {
         const content = readFileSync(full, "utf8")
         const relPath = full.slice(root.length - "src".length)
         fileContents.set(relPath, content)

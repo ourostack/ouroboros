@@ -267,7 +267,7 @@ describe("formatActiveWorkFrame (selfhood framing)", () => {
     const result = formatLiveWorldStateCheckpoint(makeFrame({
       currentSession: null,
     }))
-    expect(result).toContain("## live world-state checkpoint")
+    expect(result).toContain("## live world-state")
     expect(result).toContain("- live conversation: not in a live conversation")
     expect(result).toContain("- active lane: no explicit live lane")
     expect(result).toContain("- current artifact: no artifact yet")

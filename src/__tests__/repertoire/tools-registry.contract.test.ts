@@ -128,7 +128,11 @@ describe("tool registry contract", () => {
     expect(names).toContain("coding_kill");
     expect(names).toContain("set_reasoning_effort");
 
-    // Exact count: 25 tools total
-    expect(names).toHaveLength(24);
+    // Added in Phase 3: shell background mode tools
+    expect(names).toContain("shell_status");
+    expect(names).toContain("shell_tail");
+
+    // Exact count: 26 tools total
+    expect(names).toHaveLength(26);
   });
 });

@@ -283,7 +283,7 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
       function: {
         name: "ado_backlog_list",
         description:
-          "Query the backlog and return enriched work items with hierarchy, type, parent, assignee, area path, and iteration. Supports filtering. Use this instead of raw WIQL queries.",
+          "Query the backlog and return enriched work items with hierarchy, type, parent, assignee, area path, and iteration. Supports filtering. Use this instead of raw WIQL queries. Provides enriched results with hierarchy.",
         parameters: {
           type: "object",
           properties: {
@@ -372,7 +372,7 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "ado_create_epic",
-        description: "Create an epic in Azure DevOps with title, description, area path, and optional parent.",
+        description: "Create an epic in Azure DevOps with title, description, area path, and optional parent. Use ado_preview_changes first to dry-run the operation.",
         parameters: {
           type: "object",
           properties: {
@@ -414,7 +414,7 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "ado_create_issue",
-        description: "Create an issue or user story in Azure DevOps with title, description, area path, and parent epic.",
+        description: "Create an issue or user story in Azure DevOps with title, description, area path, and parent epic. Use ado_preview_changes first to dry-run the operation.",
         parameters: {
           type: "object",
           properties: {
@@ -458,7 +458,7 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "ado_move_items",
-        description: "Reparent work items -- move them to a new parent epic or feature.",
+        description: "Reparent work items -- move them to a new parent epic or feature. Use ado_preview_changes first. These mutations affect real work items.",
         parameters: {
           type: "object",
           properties: {
@@ -515,7 +515,7 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "ado_restructure_backlog",
-        description: "Bulk restructure: reparent multiple work items in a single logical operation.",
+        description: "Bulk restructure: reparent multiple work items in a single logical operation. Use ado_preview_changes first. These mutations affect real work items.",
         parameters: {
           type: "object",
           properties: {

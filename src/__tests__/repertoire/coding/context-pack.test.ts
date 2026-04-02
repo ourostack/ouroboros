@@ -184,7 +184,7 @@ describe("coding context pack", () => {
     expect(state).toContain("branch: slugger/pi-mono-capability-adoption")
     expect(state).toContain("head: 42ee0bf")
     expect(state).toContain(" M src/repertoire/coding/tools.ts")
-    expect(state).toContain("## live world-state checkpoint")
+    expect(state).toContain("## live world-state")
     expect(state).toContain("- live conversation: teams/thread-9")
     expect(state).toContain("- next action: finish the coding pass and bring the result back here")
     expect(state).toContain("coding-001")
