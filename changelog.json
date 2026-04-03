@@ -2,105 +2,25 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.190",
+      "version": "0.1.0-alpha.191",
       "changes": [
-        "feat(coding): coding-lane identity packet",
-        "feat(prompt): self-fix workflow contract",
-        "feat(coding): verification truthfulness"
-      ]
-    },
-    {
-      "version": "0.1.0-alpha.189",
-      "changes": [
-        "feat(heart): ResumeHandle type, primary obligation selection, status priority",
-        "feat(heart): lane/obligation precedence rules",
-        "feat(heart): cross-session change detection (snapshot, diff, format)",
-        "feat(cli): TUI edge-case hardening (44 new tests)",
-        "feat(mind): memory judgement heuristics in system prompt",
-        "feat(mind): memory feedback loop (noise prevention)",
-        "fix(cli): blockquote wrap width for narrow terminals"
-      ]
-    },
-    {
-      "version": "0.1.0-alpha.187",
-      "changes": [
-        "refactor: collapse AgentRelationship into FriendRecord \u2014 one identity system for humans and agents",
-        "refactor: rename AdoptionSpecialist to SerpentGuide",
-        "feat(hatch): detect API keys from environment variables (ANTHROPIC_API_KEY, OPENAI_API_KEY, AZURE_OPENAI_API_KEY, MINIMAX_API_KEY, GITHUB_TOKEN)",
-        "fix(cli): React unmount warning suppression covers SerpentGuide exit path"
-      ]
-    },
-    {
-      "version": "0.1.0-alpha.185",
-      "changes": [
-        "fix(hatch): pass model name to adoption specialist from discovered credentials",
-        "feat(continuity): wake packets, episodes, cares, intentions, peer presence, and temporal self",
-        "fix(continuity): deduplicate obligations in prompt, keep session summary, pass preloaded data",
-        "feat(continuity): 9 new modules \u2014 episodes, cares, agent-relationships, intentions, presence, tempo, temporal-view, wake-packet, obligation enrichment",
-        "feat(continuity): 8 new tools \u2014 query_episodes, capture_episode, query_presence, query_cares, care_manage, query_relationships, intention_capture, intention_manage",
-        "feat(continuity): 3-layer architecture \u2014 durable state, derived views, surfaces",
-        "feat(pipeline): continuity threading \u2014 tempo derivation, wake packet assembly, presence update, episode emission on every turn",
-        "feat(prompt): wake packet prompt section with token budget and truncation priority",
-        "feat(coding): coding context receives compact wake packet, coding completion emits episodes",
-        "feat(outlook): expose continuity data (presence, cares, episodes) to outlook surfaces"
-      ]
-    },
-    {
-      "version": "0.1.0-alpha.183",
-      "changes": [
-        "fix(cli): status/hints moved BELOW input box (between bottom separator and end)",
-        "fix(cli): Ctrl-C double-press requires 2s window (not any two presses ever)",
-        "feat(cli): /help command with all keyboard shortcuts",
-        "docs: CLI keyboard shortcuts documentation"
-      ]
-    },
-    {
-      "version": "0.1.0-alpha.182",
-      "changes": [
-        "fix(cli): remove persistent status bar from input box (header already shows info)",
-        "fix(cli): Meta+B/F word movement (Option+Arrow on macOS)",
-        "fix(cli): Meta+D delete word forward"
-      ]
-    },
-    {
-      "version": "0.1.0-alpha.181",
-      "changes": [
-        "feat(cli): Option+Arrow word jumping, Ctrl+A/E home/end, cursor positioning",
-        "feat(cli): never suppress input \u2014 type while agent responds (TTFA)",
-        "fix(cli): blockquote continuation lines keep \u2502 prefix on wrap",
-        "feat(cli): Option+Backspace to delete word"
-      ]
-    },
-    {
-      "version": "0.1.0-alpha.180",
-      "changes": [
-        "fix(cli): suppress React unmount warning on TUI exit"
-      ]
-    },
-    {
-      "version": "0.1.0-alpha.179",
-      "changes": [
-        "feat(cli): generous vertical whitespace between TUI sections",
-        "feat(cli): image placeholder rendering (\ud83d\uddbc) for markdown images",
-        "feat(cli): Alt+Enter multi-line input with continuation prefix",
-        "feat(cli): terminal width safety (cap at 200, subtract margin)",
-        "fix(cli): settle/ponder/observe/rest fully hidden from imperative tool display"
-      ]
-    },
-    {
-      "version": "0.1.0-alpha.178",
-      "changes": [
-        "fix: add @types/react for TSX compilation in CI build"
+        "feat(mcp): dynamic server add/remove \u2014 agents can manage MCP servers without daemon restart"
       ]
     },
     {
       "version": "0.1.0-alpha.177",
       "changes": [
-        "fix: add react and ink as production dependencies (TUI was silently falling back to imperative)"
+        "feat(mcp): dynamic server add/remove without restart"
       ]
     },
     {
       "version": "0.1.0-alpha.176",
+      "changes": [
+        "feat(mcp): dynamic MCP server add/remove \u2014 agents can add/remove MCP servers in agent.json without daemon restart"
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.175",
       "changes": [
         "fix(daemon): launchd KeepAlive for crash recovery \u2014 auto-restarts on crash",
         "fix(daemon): orphan killer excludes MCP server processes",

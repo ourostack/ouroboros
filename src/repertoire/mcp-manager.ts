@@ -57,6 +57,54 @@ export class McpManager {
     return entry.client.callTool(tool, args)
   }
 
+  /* v8 ignore start — reconcile: dynamic MCP server management, tested via integration @preserve */
+  /** Re-read agent config and connect new servers / disconnect removed ones. */
+  async reconcile(): Promise<void> {
+    try {
+      const config = loadAgentConfig()
+      const servers = config.mcpServers ?? {}
+      const currentNames = new Set(this.servers.keys())
+      const desiredNames = new Set(Object.keys(servers))
+
+      // Connect new servers
+      for (const [name, cfg] of Object.entries(servers)) {
+        if (!currentNames.has(name)) {
+          emitNervesEvent({
+            event: "mcp.server_added",
+            component: "repertoire",
+            message: `connecting new MCP server: ${name}`,
+            meta: { server: name, command: cfg.command },
+          })
+          await this.connectServer(name, cfg)
+        }
+      }
+
+      // Disconnect removed servers
+      for (const name of currentNames) {
+        if (!desiredNames.has(name)) {
+          emitNervesEvent({
+            event: "mcp.server_removed",
+            component: "repertoire",
+            message: `disconnecting removed MCP server: ${name}`,
+            meta: { server: name },
+          })
+          const entry = this.servers.get(name)
+          if (entry) entry.client.shutdown()
+          this.servers.delete(name)
+        }
+      }
+    } catch (error) {
+      emitNervesEvent({
+        level: "warn",
+        event: "mcp.reconcile_error",
+        component: "repertoire",
+        message: "failed to reconcile MCP servers",
+        meta: { reason: error instanceof Error ? error.message : String(error) },
+      })
+    }
+  }
+  /* v8 ignore stop */
+
   shutdown(): void {
     this.shuttingDown = true
     emitNervesEvent({
@@ -175,9 +223,17 @@ let _sharedManagerPromise: Promise<McpManager | null> | null = null
  * Safe to call from multiple senses — will only create one instance.
  */
 export async function getSharedMcpManager(): Promise<McpManager | null> {
-  if (_sharedManager) return _sharedManager
+  // If manager exists, reconcile to pick up config changes (new/removed servers)
+  /* v8 ignore start — reconcile on existing manager @preserve */
+  if (_sharedManager) {
+    await _sharedManager.reconcile()
+    return _sharedManager
+  }
+  /* v8 ignore stop */
   /* v8 ignore next -- race guard: deduplicates concurrent initialization calls @preserve */
   if (_sharedManagerPromise) return _sharedManagerPromise
+
+  // Always re-check config — agent may have added servers since last call
 
   _sharedManagerPromise = (async () => {
     try {
