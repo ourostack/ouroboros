@@ -275,11 +275,9 @@ function LiveArea({ live, elapsed }: {
 
 // ─── Input ──────────────────────────────────────────────────────────
 
-function InputArea({ onSubmit, onCtrlC, agentName, model, history }: {
+function InputArea({ onSubmit, onCtrlC, history }: {
   readonly onSubmit: (text: string) => void
   readonly onCtrlC: (hasInput: boolean) => CtrlCAction
-  readonly agentName: string
-  readonly model: string
   readonly history: readonly string[]
 }): React.ReactElement {
   const [input, setInput] = useState("")
@@ -424,6 +422,32 @@ function InputArea({ onSubmit, onCtrlC, agentName, model, history }: {
       }
       return
     }
+    // Meta+B / Meta+F: word movement (emacs — Option+Arrow on macOS sends these)
+    if (key.meta && inputChar === "b") {
+      const before = inputRef.current.slice(0, cursorRef.current)
+      const match = before.match(/(?:^|\s)\S+\s*$/)
+      cursorRef.current = match ? Math.max(0, cursorRef.current - match[0].length + (match[0][0] === " " ? 1 : 0)) : 0
+      setCursorPos(cursorRef.current)
+      return
+    }
+    if (key.meta && inputChar === "f") {
+      const after = inputRef.current.slice(cursorRef.current)
+      const match = after.match(/^\s*\S+/)
+      cursorRef.current = match ? Math.min(inputRef.current.length, cursorRef.current + match[0].length) : inputRef.current.length
+      setCursorPos(cursorRef.current)
+      return
+    }
+    // Meta+D: delete word forward
+    if (key.meta && inputChar === "d") {
+      const after = inputRef.current.slice(cursorRef.current)
+      const match = after.match(/^\s*\S+/)
+      if (match) {
+        const before = inputRef.current.slice(0, cursorRef.current)
+        const rest = after.slice(match[0].length)
+        updateInput(before + rest, cursorRef.current)
+      }
+      return
+    }
     // Ctrl+A / Ctrl+E: home / end
     if (key.ctrl && inputChar === "a") {
       cursorRef.current = 0
@@ -475,13 +499,13 @@ function InputArea({ onSubmit, onCtrlC, agentName, model, history }: {
           <Text color={OURO.bone}>{input.slice(cursorPos + (cursorVisible ? 0 : 1))}</Text>
         </Box>
       )}
-      {/* Status bar with right-aligned tooltip */}
-      <Box>
-        <Text dimColor>{agentName}{model ? ` · ${model}` : ""}</Text>
-        <Box flexGrow={1} />
-        {tooltip ? <Text dimColor>{tooltip}</Text> : null}
-        {isMultiline ? <Text dimColor>{" (multi-line)"}</Text> : null}
-      </Box>
+      {/* Tooltip (right-aligned, auto-dismissing) */}
+      {tooltip ? (
+        <Box>
+          <Box flexGrow={1} />
+          <Text dimColor>{tooltip}</Text>
+        </Box>
+      ) : null}
       {/* Bottom separator */}
       <Text dimColor>{"─".repeat(cols)}</Text>
     </Box>
@@ -530,8 +554,6 @@ export function OuroTui({
       <InputArea
         onSubmit={onSubmit}
         onCtrlC={onCtrlC}
-        agentName={agentName}
-        model={model}
         history={inputHistory}
       />
     </Box>
