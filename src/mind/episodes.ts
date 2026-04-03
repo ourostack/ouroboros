@@ -22,7 +22,7 @@ export interface EpisodeRecord {
 }
 
 function episodesDir(agentRoot: string): string {
-  return path.join(agentRoot, "state", "episodes")
+  return path.join(agentRoot, "arc", "episodes")
 }
 
 function generateId(): string {
