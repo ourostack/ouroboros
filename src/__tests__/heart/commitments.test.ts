@@ -321,3 +321,63 @@ describe("formatCommitments", () => {
     expect(result).toContain("## what \"done\" looks like")
   })
 })
+
+// ── Unit 1.1: Obligation truth audit for commitments ──
+
+describe("deriveCommitments: obligation truth audit", () => {
+  let deriveCommitments: typeof import("../../heart/commitments").deriveCommitments
+
+  beforeAll(async () => {
+    const mod = await import("../../heart/commitments")
+    deriveCommitments = mod.deriveCommitments
+  })
+
+  it("distinguishes investigating obligations from pending ones in committedTo ordering", () => {
+    const obligations = [
+      {
+        id: "ob-1",
+        origin: { friendId: "alex", channel: "cli", key: "session" },
+        content: "fix the build",
+        status: "pending" as const,
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: "ob-2",
+        origin: { friendId: "bob", channel: "teams", key: "session" },
+        content: "review the architecture",
+        status: "investigating" as const,
+        currentSurface: { kind: "coding" as const, label: "codex coding-001" },
+        createdAt: "2026-01-01T00:01:00Z",
+        updatedAt: "2026-01-01T00:02:00Z",
+      },
+    ]
+    const result = deriveCommitments(makeFrame(), makeIdleJob(), obligations)
+    // Investigating obligations should appear before pending ones
+    const fixIndex = result.committedTo.findIndex((c) => c.includes("fix the build"))
+    const reviewIndex = result.committedTo.findIndex((c) => c.includes("review the architecture"))
+    expect(reviewIndex).toBeLessThan(fixIndex)
+  })
+
+  it("reports obligation count in completionCriteria for multiple obligations", () => {
+    const obligations = [
+      {
+        id: "ob-1",
+        origin: { friendId: "alex", channel: "cli", key: "session" },
+        content: "fix the build",
+        status: "investigating" as const,
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:01:00Z",
+      },
+      {
+        id: "ob-2",
+        origin: { friendId: "bob", channel: "teams", key: "session" },
+        content: "review the PR",
+        status: "pending" as const,
+        createdAt: "2026-01-01T00:01:00Z",
+      },
+    ]
+    const result = deriveCommitments(makeFrame(), makeIdleJob(), obligations)
+    expect(result.completionCriteria).toContain("fulfill my outstanding obligations")
+    expect(result.completionCriteria).toContain("close my active obligation loops")
+  })
+})

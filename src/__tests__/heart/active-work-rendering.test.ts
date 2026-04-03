@@ -351,3 +351,298 @@ describe("formatActiveWorkFrame (selfhood framing)", () => {
     expect(emitNervesEvent).toBeDefined()
   })
 })
+
+// ── Unit 1.2: Resume handle contract ──
+
+describe("resume handle contract", () => {
+  let buildActiveWorkFrame: typeof import("../../heart/active-work").buildActiveWorkFrame
+  let formatActiveWorkFrame: typeof import("../../heart/active-work").formatActiveWorkFrame
+  let formatLiveWorldStateCheckpoint: typeof import("../../heart/active-work").formatLiveWorldStateCheckpoint
+
+  beforeAll(async () => {
+    const mod = await import("../../heart/active-work")
+    buildActiveWorkFrame = mod.buildActiveWorkFrame
+    formatActiveWorkFrame = mod.formatActiveWorkFrame
+    formatLiveWorldStateCheckpoint = mod.formatLiveWorldStateCheckpoint
+  })
+
+  function recentIso(minutesAgo: number): string {
+    return new Date(Date.now() - minutesAgo * 60 * 1000).toISOString()
+  }
+
+  it("produces a resume handle with all fields for a full active work state", () => {
+    const frame = buildActiveWorkFrame({
+      currentSession: { friendId: "friend-1", channel: "cli", key: "session", sessionPath: "/tmp/s.json" },
+      mustResolveBeforeHandoff: true,
+      inner: { status: "idle", hasPending: false },
+      bridges: [],
+      codingSessions: [{
+        id: "coding-001",
+        runner: "codex",
+        status: "running",
+        startedAt: recentIso(15),
+        originSession: { friendId: "friend-1", channel: "cli", key: "session" },
+        artifactPath: "/tmp/pr-789",
+        checkpoint: "tests passing, awaiting review",
+        lastActivityAt: recentIso(2),
+        failure: null,
+      }],
+      taskBoard: {
+        compact: "",
+        activeBridges: [],
+        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
+      },
+      friendActivity: [],
+      pendingObligations: [{
+        id: "ob-1",
+        origin: { friendId: "friend-1", channel: "cli", key: "session" },
+        content: "fix the build system",
+        status: "investigating",
+        createdAt: recentIso(20),
+        updatedAt: recentIso(5),
+        currentArtifact: "/tmp/pr-789",
+        nextAction: "review PR and merge",
+        currentSurface: { kind: "coding", label: "codex coding-001" },
+      }],
+    })
+
+    expect(frame.resumeHandle).toBeDefined()
+    expect(frame.resumeHandle?.sessionLabel).toBe("cli/session")
+    expect(frame.resumeHandle?.lane).toContain("codex coding-001")
+    expect(frame.resumeHandle?.artifact).toBe("/tmp/pr-789")
+    expect(frame.resumeHandle?.nextAction).toBe("review PR and merge")
+    expect(frame.resumeHandle?.confidence).toBeDefined()
+    // Coding identity hook should be populated from coding session
+    expect(frame.resumeHandle?.codingIdentity).toBeDefined()
+  })
+
+  it("produces an empty resume handle for a minimal idle frame", () => {
+    const frame = buildActiveWorkFrame({
+      currentSession: { friendId: "friend-1", channel: "cli", key: "session", sessionPath: "/tmp/s.json" },
+      mustResolveBeforeHandoff: false,
+      inner: { status: "idle", hasPending: false },
+      bridges: [],
+      taskBoard: {
+        compact: "",
+        activeBridges: [],
+        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
+      },
+      friendActivity: [],
+    })
+
+    // For idle state, resumeHandle should still exist but with null/empty fields
+    expect(frame.resumeHandle).toBeDefined()
+    expect(frame.resumeHandle?.sessionLabel).toBe("cli/session")
+    expect(frame.resumeHandle?.lane).toBeNull()
+    expect(frame.resumeHandle?.artifact).toBeNull()
+    expect(frame.resumeHandle?.nextAction).toBeNull()
+  })
+
+  it("produces a partial resume handle when only obligation exists without coding", () => {
+    const frame = buildActiveWorkFrame({
+      currentSession: { friendId: "friend-1", channel: "cli", key: "session", sessionPath: "/tmp/s.json" },
+      mustResolveBeforeHandoff: true,
+      inner: { status: "idle", hasPending: false },
+      bridges: [],
+      taskBoard: {
+        compact: "",
+        activeBridges: [],
+        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
+      },
+      friendActivity: [],
+      pendingObligations: [{
+        id: "ob-1",
+        origin: { friendId: "friend-1", channel: "cli", key: "session" },
+        content: "review the design doc",
+        status: "pending",
+        createdAt: recentIso(10),
+        updatedAt: recentIso(10),
+      }],
+    })
+
+    expect(frame.resumeHandle).toBeDefined()
+    expect(frame.resumeHandle?.sessionLabel).toBe("cli/session")
+    expect(frame.resumeHandle?.lane).toBeNull()
+    expect(frame.resumeHandle?.codingIdentity).toBeNull()
+    // nextAction should derive from the obligation content
+    expect(frame.resumeHandle?.nextAction).toBeDefined()
+  })
+
+  it("renders resume handle fields in formatted active work output", () => {
+    const frame = buildActiveWorkFrame({
+      currentSession: { friendId: "friend-1", channel: "cli", key: "session", sessionPath: "/tmp/s.json" },
+      mustResolveBeforeHandoff: true,
+      inner: { status: "idle", hasPending: false },
+      bridges: [],
+      codingSessions: [{
+        id: "coding-001",
+        runner: "codex",
+        status: "running",
+        startedAt: recentIso(15),
+        originSession: { friendId: "friend-1", channel: "cli", key: "session" },
+        artifactPath: "/tmp/pr-789",
+        checkpoint: "tests passing",
+        lastActivityAt: recentIso(2),
+        failure: null,
+      }],
+      taskBoard: {
+        compact: "",
+        activeBridges: [],
+        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
+      },
+      friendActivity: [],
+      pendingObligations: [{
+        id: "ob-1",
+        origin: { friendId: "friend-1", channel: "cli", key: "session" },
+        content: "fix the build",
+        status: "investigating",
+        createdAt: recentIso(20),
+        updatedAt: recentIso(5),
+        currentArtifact: "/tmp/pr-789",
+        nextAction: "review PR and merge",
+        currentSurface: { kind: "coding", label: "codex coding-001" },
+      }],
+    })
+
+    const formatted = formatActiveWorkFrame(frame)
+    // The resume handle fields should appear in the concrete state section
+    expect(formatted).toContain("## current concrete state")
+    expect(formatted).toContain("active lane:")
+    expect(formatted).toContain("current artifact:")
+    expect(formatted).toContain("next action:")
+    // Last verified checkpoint from coding session
+    expect(formatted).toContain("last checkpoint: tests passing")
+  })
+
+  it("includes last verified checkpoint in live world-state checkpoint", () => {
+    const frame = buildActiveWorkFrame({
+      currentSession: { friendId: "friend-1", channel: "cli", key: "session", sessionPath: "/tmp/s.json" },
+      mustResolveBeforeHandoff: false,
+      inner: { status: "idle", hasPending: false },
+      bridges: [],
+      codingSessions: [{
+        id: "coding-001",
+        runner: "codex",
+        status: "running",
+        startedAt: recentIso(15),
+        originSession: { friendId: "friend-1", channel: "cli", key: "session" },
+        artifactPath: null,
+        checkpoint: "compiles but 2 tests failing",
+        lastActivityAt: recentIso(2),
+        failure: null,
+      }],
+      taskBoard: {
+        compact: "",
+        activeBridges: [],
+        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
+      },
+      friendActivity: [],
+    })
+
+    const checkpoint = formatLiveWorldStateCheckpoint(frame)
+    expect(checkpoint).toContain("last checkpoint: compiles but 2 tests failing")
+  })
+})
+
+// ── Unit 1.4: Cross-session change detection ──
+
+describe("cross-session change detection", () => {
+  let detectActiveWorkChanges: typeof import("../../heart/active-work").detectActiveWorkChanges
+
+  beforeAll(async () => {
+    const mod = await import("../../heart/active-work")
+    detectActiveWorkChanges = mod.detectActiveWorkChanges
+  })
+
+  function recentIso(minutesAgo: number): string {
+    return new Date(Date.now() - minutesAgo * 60 * 1000).toISOString()
+  }
+
+  it("detects obligation status transition from investigating to fulfilled", () => {
+    const previous: import("../../heart/active-work").ActiveWorkSnapshot = {
+      obligationSnapshots: [
+        { id: "ob-1", status: "investigating", artifact: "/tmp/pr-1", nextAction: "merge the PR" },
+      ],
+      codingSnapshots: [],
+      timestamp: recentIso(10),
+    }
+    const current: import("../../heart/active-work").ActiveWorkSnapshot = {
+      obligationSnapshots: [
+        { id: "ob-1", status: "fulfilled", artifact: "/tmp/pr-1", nextAction: null },
+      ],
+      codingSnapshots: [],
+      timestamp: recentIso(0),
+    }
+
+    const changes = detectActiveWorkChanges(previous, current)
+    expect(changes.length).toBeGreaterThan(0)
+    expect(changes.some((c) => c.kind === "obligation_status_changed" && c.id === "ob-1")).toBe(true)
+  })
+
+  it("detects coding session artifact change", () => {
+    const previous: import("../../heart/active-work").ActiveWorkSnapshot = {
+      obligationSnapshots: [],
+      codingSnapshots: [
+        { id: "coding-001", status: "running", artifact: null, checkpoint: "compiling" },
+      ],
+      timestamp: recentIso(10),
+    }
+    const current: import("../../heart/active-work").ActiveWorkSnapshot = {
+      obligationSnapshots: [],
+      codingSnapshots: [
+        { id: "coding-001", status: "running", artifact: "/tmp/pr-new", checkpoint: "tests passing" },
+      ],
+      timestamp: recentIso(0),
+    }
+
+    const changes = detectActiveWorkChanges(previous, current)
+    expect(changes.length).toBeGreaterThan(0)
+    expect(changes.some((c) => c.kind === "coding_artifact_changed" && c.id === "coding-001")).toBe(true)
+  })
+
+  it("detects new obligation appearing", () => {
+    const previous: import("../../heart/active-work").ActiveWorkSnapshot = {
+      obligationSnapshots: [],
+      codingSnapshots: [],
+      timestamp: recentIso(10),
+    }
+    const current: import("../../heart/active-work").ActiveWorkSnapshot = {
+      obligationSnapshots: [
+        { id: "ob-new", status: "pending", artifact: null, nextAction: "investigate" },
+      ],
+      codingSnapshots: [],
+      timestamp: recentIso(0),
+    }
+
+    const changes = detectActiveWorkChanges(previous, current)
+    expect(changes.length).toBeGreaterThan(0)
+    expect(changes.some((c) => c.kind === "obligation_appeared" && c.id === "ob-new")).toBe(true)
+  })
+
+  it("returns empty changes array when nothing changed", () => {
+    const snapshot: import("../../heart/active-work").ActiveWorkSnapshot = {
+      obligationSnapshots: [
+        { id: "ob-1", status: "investigating", artifact: "/tmp/pr-1", nextAction: "merge" },
+      ],
+      codingSnapshots: [],
+      timestamp: recentIso(5),
+    }
+
+    const changes = detectActiveWorkChanges(snapshot, snapshot)
+    expect(changes).toEqual([])
+  })
+
+  it("formats changes into concise human-readable summary", async () => {
+    const { formatActiveWorkChanges } = await import("../../heart/active-work")
+
+    const changes: import("../../heart/active-work").ActiveWorkChange[] = [
+      { kind: "obligation_status_changed", id: "ob-1", from: "investigating", to: "fulfilled", summary: "obligation fulfilled" },
+      { kind: "coding_artifact_changed", id: "coding-001", from: null, to: "/tmp/pr-new", summary: "PR created" },
+    ]
+
+    const formatted = formatActiveWorkChanges(changes)
+    expect(formatted).toContain("obligation fulfilled")
+    expect(formatted).toContain("PR created")
+    expect(formatted.split("\n").length).toBeLessThanOrEqual(changes.length + 2) // concise
+  })
+})

@@ -3499,3 +3499,501 @@ describe("ActiveWorkFrame.inner with InnerJob", () => {
     expect(formatted).not.toContain("inner return obligations")
   })
 })
+
+// ── Unit 1.1: Obligation truth audit ─────────────────────────────
+// These tests pin desired behaviors for primary obligation selection,
+// deterministic conflict rendering, vague fallback suppression,
+// session-level obligation binding, and resume handle presence.
+
+function recentIso(minutesAgo: number): string {
+  return new Date(Date.now() - minutesAgo * 60 * 1000).toISOString()
+}
+
+describe("obligation truth audit: primary obligation selection", () => {
+  it("exposes primaryObligation on the frame when multiple open obligations exist", async () => {
+    const { buildActiveWorkFrame } = await import("../../heart/active-work")
+
+    const frame = buildActiveWorkFrame({
+      currentSession: { friendId: "friend-1", channel: "cli", key: "session", sessionPath: "/tmp/s.json" },
+      mustResolveBeforeHandoff: false,
+      inner: { status: "idle", hasPending: false },
+      bridges: [],
+      taskBoard: {
+        compact: "",
+        activeBridges: [],
+        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
+      },
+      friendActivity: [],
+      pendingObligations: [
+        {
+          id: "ob-1",
+          origin: { friendId: "friend-1", channel: "cli", key: "session" },
+          content: "fix the build",
+          status: "investigating",
+          createdAt: recentIso(10),
+          updatedAt: recentIso(5),
+          currentSurface: { kind: "coding", label: "codex coding-001" },
+          currentArtifact: "/tmp/pr-1",
+        },
+        {
+          id: "ob-2",
+          origin: { friendId: "friend-2", channel: "teams", key: "thread-1" },
+          content: "review the PR",
+          status: "pending",
+          createdAt: recentIso(8),
+          updatedAt: recentIso(8),
+        },
+      ],
+    })
+
+    // The frame should expose a primaryObligation field for explicit selection
+    expect(frame.primaryObligation).toBeDefined()
+    // The primary should be the investigating one that matches the current session
+    expect(frame.primaryObligation?.id).toBe("ob-1")
+  })
+
+  it("renders all open obligations in the return obligations section even when one is primary", async () => {
+    const { buildActiveWorkFrame, formatActiveWorkFrame } = await import("../../heart/active-work")
+
+    const frame = buildActiveWorkFrame({
+      currentSession: { friendId: "friend-1", channel: "cli", key: "session", sessionPath: "/tmp/s.json" },
+      mustResolveBeforeHandoff: false,
+      inner: { status: "idle", hasPending: false },
+      bridges: [],
+      taskBoard: {
+        compact: "",
+        activeBridges: [],
+        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
+      },
+      friendActivity: [],
+      pendingObligations: [
+        {
+          id: "ob-1",
+          origin: { friendId: "friend-1", channel: "cli", key: "session" },
+          content: "fix the build",
+          status: "investigating",
+          createdAt: recentIso(10),
+          updatedAt: recentIso(5),
+          currentArtifact: "/tmp/pr-1",
+        },
+        {
+          id: "ob-2",
+          origin: { friendId: "friend-2", channel: "teams", key: "thread-1" },
+          content: "review the PR",
+          status: "pending",
+          createdAt: recentIso(8),
+          updatedAt: recentIso(8),
+        },
+      ],
+    })
+
+    const formatted = formatActiveWorkFrame(frame)
+    expect(formatted).toContain("return obligations")
+    expect(formatted).toContain("fix the build")
+    expect(formatted).toContain("review the PR")
+  })
+})
+
+describe("obligation truth audit: deterministic conflict rendering", () => {
+  it("renders active lane from live coding session even when obligation surface disagrees", async () => {
+    const { buildActiveWorkFrame, formatActiveWorkFrame } = await import("../../heart/active-work")
+
+    const frame = buildActiveWorkFrame({
+      currentSession: { friendId: "friend-1", channel: "cli", key: "session", sessionPath: "/tmp/s.json" },
+      mustResolveBeforeHandoff: false,
+      inner: { status: "idle", hasPending: false },
+      bridges: [],
+      codingSessions: [{
+        id: "coding-001",
+        runner: "codex",
+        status: "running",
+        startedAt: recentIso(10),
+        originSession: { friendId: "friend-1", channel: "cli", key: "session" },
+        artifactPath: "/tmp/pr-123",
+        checkpoint: "tests passing",
+        lastActivityAt: recentIso(2),
+        failure: null,
+      }],
+      taskBoard: {
+        compact: "",
+        activeBridges: [],
+        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
+      },
+      friendActivity: [],
+      pendingObligations: [{
+        id: "ob-1",
+        origin: { friendId: "friend-1", channel: "cli", key: "session" },
+        content: "fix the build",
+        status: "investigating",
+        createdAt: recentIso(10),
+        updatedAt: recentIso(5),
+        currentSurface: { kind: "coding", label: "codex coding-old" },
+        currentArtifact: "/tmp/pr-old",
+      }],
+    })
+
+    const formatted = formatActiveWorkFrame(frame)
+    // Live coding session takes precedence over obligation surface for active lane
+    expect(formatted).toContain("active lane: codex coding-001")
+    // Should NOT show the stale obligation surface as the active lane
+    expect(formatted).not.toContain("active lane: codex coding-old")
+  })
+
+  it("renders consistent output for same inputs across multiple calls", async () => {
+    const { buildActiveWorkFrame, formatActiveWorkFrame } = await import("../../heart/active-work")
+
+    const input = {
+      currentSession: { friendId: "friend-1", channel: "cli" as const, key: "session", sessionPath: "/tmp/s.json" },
+      mustResolveBeforeHandoff: true,
+      inner: { status: "idle" as const, hasPending: false },
+      bridges: [],
+      taskBoard: {
+        compact: "",
+        activeBridges: [],
+        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
+      },
+      friendActivity: [],
+      pendingObligations: [
+        {
+          id: "ob-1",
+          origin: { friendId: "friend-1", channel: "cli", key: "session" },
+          content: "fix the build",
+          status: "investigating" as const,
+          createdAt: recentIso(10),
+          updatedAt: recentIso(5),
+          currentArtifact: "/tmp/pr-1",
+        },
+        {
+          id: "ob-2",
+          origin: { friendId: "friend-2", channel: "teams", key: "thread-1" },
+          content: "review the PR",
+          status: "investigating" as const,
+          createdAt: recentIso(8),
+          updatedAt: recentIso(3),
+          currentArtifact: "/tmp/pr-2",
+        },
+      ],
+    }
+
+    const frame1 = buildActiveWorkFrame(input)
+    const frame2 = buildActiveWorkFrame(input)
+    const formatted1 = formatActiveWorkFrame(frame1)
+    const formatted2 = formatActiveWorkFrame(frame2)
+    expect(formatted1).toBe(formatted2)
+  })
+})
+
+describe("obligation truth audit: vague fallback suppression", () => {
+  it("does not emit 'no artifact yet' when a coding session has an artifact path", async () => {
+    const { buildActiveWorkFrame, formatActiveWorkFrame } = await import("../../heart/active-work")
+
+    const frame = buildActiveWorkFrame({
+      currentSession: { friendId: "friend-1", channel: "cli", key: "session", sessionPath: "/tmp/s.json" },
+      mustResolveBeforeHandoff: false,
+      inner: { status: "idle", hasPending: false },
+      bridges: [],
+      codingSessions: [{
+        id: "coding-001",
+        runner: "codex",
+        status: "running",
+        startedAt: recentIso(10),
+        originSession: { friendId: "friend-1", channel: "cli", key: "session" },
+        artifactPath: "/tmp/pr-456",
+        checkpoint: null,
+        lastActivityAt: recentIso(2),
+        failure: null,
+      }],
+      taskBoard: {
+        compact: "",
+        activeBridges: [],
+        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
+      },
+      friendActivity: [],
+      pendingObligations: [{
+        id: "ob-1",
+        origin: { friendId: "friend-1", channel: "cli", key: "session" },
+        content: "fix the build",
+        status: "investigating",
+        createdAt: recentIso(10),
+        updatedAt: recentIso(5),
+        currentArtifact: "/tmp/pr-456",
+      }],
+    })
+
+    const formatted = formatActiveWorkFrame(frame)
+    expect(formatted).not.toContain("no artifact yet")
+    expect(formatted).toContain("/tmp/pr-456")
+  })
+
+  it("does not emit 'continue from the live world-state' when obligation has a concrete next action", async () => {
+    const { buildActiveWorkFrame, formatLiveWorldStateCheckpoint } = await import("../../heart/active-work")
+
+    const frame = buildActiveWorkFrame({
+      currentSession: { friendId: "friend-1", channel: "cli", key: "session", sessionPath: "/tmp/s.json" },
+      mustResolveBeforeHandoff: false,
+      inner: { status: "idle", hasPending: false },
+      bridges: [],
+      taskBoard: {
+        compact: "",
+        activeBridges: [],
+        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
+      },
+      friendActivity: [],
+      pendingObligations: [{
+        id: "ob-1",
+        origin: { friendId: "friend-1", channel: "cli", key: "session" },
+        content: "fix the build",
+        status: "investigating",
+        createdAt: recentIso(10),
+        updatedAt: recentIso(5),
+        nextAction: "run tests and verify green",
+        currentArtifact: "/tmp/pr-1",
+      }],
+    })
+
+    const checkpoint = formatLiveWorldStateCheckpoint(frame)
+    expect(checkpoint).not.toContain("continue from the live world-state")
+    expect(checkpoint).toContain("run tests and verify green")
+  })
+})
+
+describe("obligation truth audit: session-bound obligations", () => {
+  it("return obligations carry session/channel origin info in rendered output", async () => {
+    const { buildActiveWorkFrame, formatActiveWorkFrame } = await import("../../heart/active-work")
+
+    const frame = buildActiveWorkFrame({
+      currentSession: { friendId: "friend-1", channel: "cli", key: "session", sessionPath: "/tmp/s.json" },
+      mustResolveBeforeHandoff: false,
+      inner: { status: "idle", hasPending: false },
+      bridges: [],
+      taskBoard: {
+        compact: "",
+        activeBridges: [],
+        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
+      },
+      friendActivity: [],
+      pendingObligations: [
+        {
+          id: "ob-1",
+          origin: { friendId: "friend-1", channel: "cli", key: "session" },
+          content: "fix the build",
+          status: "investigating",
+          createdAt: recentIso(10),
+          updatedAt: recentIso(5),
+          currentArtifact: "/tmp/pr-1",
+        },
+        {
+          id: "ob-2",
+          origin: { friendId: "friend-2", channel: "teams", key: "thread-1" },
+          content: "review the PR",
+          status: "pending",
+          createdAt: recentIso(8),
+          updatedAt: recentIso(8),
+        },
+      ],
+    })
+
+    const formatted = formatActiveWorkFrame(frame)
+    // Each obligation should carry its origin session/channel in the rendered output
+    expect(formatted).toContain("friend-1/cli/session")
+    expect(formatted).toContain("friend-2/teams/thread-1")
+  })
+})
+
+// ── Unit 1.3: Lane and obligation precedence rules ──
+
+describe("lane and obligation precedence rules", () => {
+  it("primary obligation from another session outranks local conversation when material", async () => {
+    const { buildActiveWorkFrame } = await import("../../heart/active-work")
+
+    // Scenario: agent is answering on cli/session, but has an investigating obligation
+    // for teams/thread-1 with a coding lane. The primary obligation should still be
+    // the teams one because it's investigating with a concrete surface.
+    const frame = buildActiveWorkFrame({
+      currentSession: { friendId: "friend-1", channel: "cli", key: "session", sessionPath: "/tmp/s.json" },
+      mustResolveBeforeHandoff: false,
+      inner: { status: "idle", hasPending: false },
+      bridges: [],
+      taskBoard: {
+        compact: "",
+        activeBridges: [],
+        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
+      },
+      friendActivity: [],
+      pendingObligations: [
+        {
+          id: "ob-1",
+          origin: { friendId: "friend-2", channel: "teams", key: "thread-1" },
+          content: "fix the deployment pipeline",
+          status: "investigating",
+          createdAt: recentIso(30),
+          updatedAt: recentIso(3),
+          currentSurface: { kind: "coding", label: "codex coding-005" },
+          currentArtifact: "/tmp/pr-deploy",
+        },
+      ],
+    })
+
+    // The primary obligation should be the teams one, not null just because
+    // we're in a different session
+    expect(frame.primaryObligation).toBeDefined()
+    expect(frame.primaryObligation?.id).toBe("ob-1")
+  })
+
+  it("prefers current-session investigating obligation over other session's investigating obligation", async () => {
+    const { buildActiveWorkFrame } = await import("../../heart/active-work")
+
+    const frame = buildActiveWorkFrame({
+      currentSession: { friendId: "friend-1", channel: "cli", key: "session", sessionPath: "/tmp/s.json" },
+      mustResolveBeforeHandoff: false,
+      inner: { status: "idle", hasPending: false },
+      bridges: [],
+      taskBoard: {
+        compact: "",
+        activeBridges: [],
+        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
+      },
+      friendActivity: [],
+      pendingObligations: [
+        {
+          id: "ob-1",
+          origin: { friendId: "friend-1", channel: "cli", key: "session" },
+          content: "fix the build",
+          status: "investigating",
+          createdAt: recentIso(20),
+          updatedAt: recentIso(10),
+          currentArtifact: "/tmp/pr-build",
+        },
+        {
+          id: "ob-2",
+          origin: { friendId: "friend-2", channel: "teams", key: "thread-1" },
+          content: "review the PR",
+          status: "investigating",
+          createdAt: recentIso(15),
+          updatedAt: recentIso(3), // fresher, but not current session
+          currentArtifact: "/tmp/pr-review",
+        },
+      ],
+    })
+
+    // Current session match should win for primary obligation
+    expect(frame.primaryObligation?.id).toBe("ob-1")
+  })
+
+  it("does not treat stale checkpoint as active when fresher state exists", async () => {
+    const { buildActiveWorkFrame, formatActiveWorkFrame } = await import("../../heart/active-work")
+
+    const frame = buildActiveWorkFrame({
+      currentSession: { friendId: "friend-1", channel: "cli", key: "session", sessionPath: "/tmp/s.json" },
+      mustResolveBeforeHandoff: false,
+      inner: { status: "idle", hasPending: false },
+      bridges: [],
+      codingSessions: [{
+        id: "coding-new",
+        runner: "codex",
+        status: "running",
+        startedAt: recentIso(5),
+        originSession: { friendId: "friend-1", channel: "cli", key: "session" },
+        artifactPath: "/tmp/pr-new",
+        checkpoint: "fresh checkpoint from new coding session",
+        lastActivityAt: recentIso(1),
+        failure: null,
+      }],
+      taskBoard: {
+        compact: "",
+        activeBridges: [],
+        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
+      },
+      friendActivity: [],
+      pendingObligations: [{
+        id: "ob-1",
+        origin: { friendId: "friend-1", channel: "cli", key: "session" },
+        content: "fix the build",
+        status: "investigating",
+        createdAt: recentIso(60),
+        updatedAt: recentIso(30),
+        currentArtifact: "/tmp/pr-old",
+        nextAction: "stale action from old checkpoint",
+      }],
+    })
+
+    const formatted = formatActiveWorkFrame(frame)
+    // The fresh coding session should drive the active lane, not the stale obligation surface
+    expect(formatted).toContain("active lane: codex coding-new")
+    // The fresh coding artifact should win
+    expect(formatted).toContain("/tmp/pr-new")
+    // The last checkpoint should come from the fresh coding session
+    expect(formatted).toContain("last checkpoint: fresh checkpoint from new coding session")
+  })
+
+  it("renders center of gravity as inward-work when material obligations exist but no bridge", async () => {
+    const { buildActiveWorkFrame } = await import("../../heart/active-work")
+
+    const frame = buildActiveWorkFrame({
+      currentSession: { friendId: "friend-1", channel: "cli", key: "session", sessionPath: "/tmp/s.json" },
+      mustResolveBeforeHandoff: false,
+      inner: { status: "idle", hasPending: false },
+      bridges: [],
+      taskBoard: {
+        compact: "",
+        activeBridges: [],
+        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
+      },
+      friendActivity: [],
+      pendingObligations: [{
+        id: "ob-1",
+        origin: { friendId: "friend-2", channel: "teams", key: "thread-1" },
+        content: "fix the deployment",
+        status: "investigating",
+        createdAt: recentIso(10),
+        updatedAt: recentIso(5),
+        currentArtifact: "/tmp/pr-deploy",
+      }],
+    })
+
+    // Material open obligations should cause inward-work center of gravity
+    expect(frame.centerOfGravity).toBe("inward-work")
+  })
+
+  it("surfaces active lane from other session when it differs from the current conversation", async () => {
+    const { buildActiveWorkFrame, formatActiveWorkFrame } = await import("../../heart/active-work")
+
+    const frame = buildActiveWorkFrame({
+      currentSession: { friendId: "friend-1", channel: "cli", key: "session", sessionPath: "/tmp/s.json" },
+      mustResolveBeforeHandoff: false,
+      inner: { status: "idle", hasPending: false },
+      bridges: [],
+      otherCodingSessions: [{
+        id: "coding-other",
+        runner: "codex",
+        status: "running",
+        startedAt: recentIso(15),
+        originSession: { friendId: "friend-2", channel: "teams", key: "thread-1" },
+        artifactPath: "/tmp/pr-other",
+        checkpoint: "tests passing in other session",
+        lastActivityAt: recentIso(2),
+        failure: null,
+      }],
+      taskBoard: {
+        compact: "",
+        activeBridges: [],
+        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
+      },
+      friendActivity: [],
+      pendingObligations: [{
+        id: "ob-1",
+        origin: { friendId: "friend-2", channel: "teams", key: "thread-1" },
+        content: "fix the deployment",
+        status: "investigating",
+        createdAt: recentIso(10),
+        updatedAt: recentIso(5),
+        currentArtifact: "/tmp/pr-other",
+      }],
+    })
+
+    const formatted = formatActiveWorkFrame(frame)
+    // The other session's coding lane and obligation should appear in "other active sessions"
+    expect(formatted).toContain("other active sessions")
+    expect(formatted).toContain("friend-2/teams/thread-1")
+  })
+})
