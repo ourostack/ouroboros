@@ -439,6 +439,123 @@ describe("buildSessionSummary", () => {
   })
 })
 
+describe("buildSessionSummary: currentSession option", () => {
+  beforeEach(() => {
+    vi.resetModules()
+  })
+
+  it("uses currentSession to exclude current session when provided", async () => {
+    const { buildSessionSummary } = await import("../../mind/prompt")
+
+    const sessionsDir = "/mock/sessions"
+    const friendsDir = "/mock/friends"
+
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    vi.mocked(fs.readdirSync).mockImplementation(((p: string) => {
+      if (p === sessionsDir) return ["friend-uuid-1"] as any
+      if (p === path.join(sessionsDir, "friend-uuid-1")) return ["cli"] as any
+      if (p === path.join(sessionsDir, "friend-uuid-1", "cli")) return ["session.json"] as any
+      return [] as any
+    }) as any)
+
+    vi.mocked(fs.statSync).mockReturnValue({ mtimeMs: Date.now() - 1000 * 60 * 5 } as any)
+
+    vi.mocked(fs.readFileSync).mockImplementation(((p: string) => {
+      if (p === path.join(friendsDir, "friend-uuid-1.json")) {
+        return JSON.stringify({ id: "friend-uuid-1", name: "Bob" })
+      }
+      throw new Error("ENOENT")
+    }) as any)
+
+    // Use currentSession option instead of individual fields
+    const result = buildSessionSummary({
+      sessionsDir,
+      friendsDir,
+      agentName: "slugger",
+      currentSession: { friendId: "friend-uuid-1", channel: "cli", key: "session" },
+    })
+
+    // Current session should be excluded
+    expect(result).not.toContain("Bob")
+  })
+
+  it("currentSession takes precedence over individual fields", async () => {
+    const { buildSessionSummary } = await import("../../mind/prompt")
+
+    const sessionsDir = "/mock/sessions"
+    const friendsDir = "/mock/friends"
+
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    vi.mocked(fs.readdirSync).mockImplementation(((p: string) => {
+      if (p === sessionsDir) return ["friend-1", "friend-2"] as any
+      if (p === path.join(sessionsDir, "friend-1")) return ["cli"] as any
+      if (p === path.join(sessionsDir, "friend-2")) return ["teams"] as any
+      if (p === path.join(sessionsDir, "friend-1", "cli")) return ["session.json"] as any
+      if (p === path.join(sessionsDir, "friend-2", "teams")) return ["thread.json"] as any
+      return [] as any
+    }) as any)
+
+    vi.mocked(fs.statSync).mockReturnValue({ mtimeMs: Date.now() - 1000 * 60 * 5 } as any)
+
+    vi.mocked(fs.readFileSync).mockImplementation(((p: string) => {
+      if (p === path.join(friendsDir, "friend-1.json")) return JSON.stringify({ id: "friend-1", name: "Alice" })
+      if (p === path.join(friendsDir, "friend-2.json")) return JSON.stringify({ id: "friend-2", name: "Bob" })
+      throw new Error("ENOENT")
+    }) as any)
+
+    // currentSession says friend-2/teams/thread, individual fields say friend-1/cli/session
+    // currentSession should win — friend-2 should be excluded, friend-1 should be included
+    const result = buildSessionSummary({
+      sessionsDir,
+      friendsDir,
+      agentName: "slugger",
+      currentSession: { friendId: "friend-2", channel: "teams", key: "thread" },
+      currentFriendId: "friend-1",
+      currentChannel: "cli",
+      currentKey: "session",
+    })
+
+    expect(result).toContain("Alice")
+    expect(result).not.toContain("Bob")
+  })
+
+  it("falls back to individual fields when currentSession is absent", async () => {
+    const { buildSessionSummary } = await import("../../mind/prompt")
+
+    const sessionsDir = "/mock/sessions"
+    const friendsDir = "/mock/friends"
+
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    vi.mocked(fs.readdirSync).mockImplementation(((p: string) => {
+      if (p === sessionsDir) return ["friend-uuid-1"] as any
+      if (p === path.join(sessionsDir, "friend-uuid-1")) return ["cli"] as any
+      if (p === path.join(sessionsDir, "friend-uuid-1", "cli")) return ["session.json"] as any
+      return [] as any
+    }) as any)
+
+    vi.mocked(fs.statSync).mockReturnValue({ mtimeMs: Date.now() - 1000 * 60 * 5 } as any)
+
+    vi.mocked(fs.readFileSync).mockImplementation(((p: string) => {
+      if (p === path.join(friendsDir, "friend-uuid-1.json")) {
+        return JSON.stringify({ id: "friend-uuid-1", name: "Bob" })
+      }
+      throw new Error("ENOENT")
+    }) as any)
+
+    // No currentSession — individual fields should be used (backward compat)
+    const result = buildSessionSummary({
+      sessionsDir,
+      friendsDir,
+      agentName: "slugger",
+      currentFriendId: "friend-uuid-1",
+      currentChannel: "cli",
+      currentKey: "session",
+    })
+
+    expect(result).not.toContain("Bob")
+  })
+})
+
 // ── Unit 1.1: Session summary distinguishes active vs paused vs superseded work ──
 
 describe("buildSessionSummary: work status classification", () => {

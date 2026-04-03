@@ -76,6 +76,7 @@ export interface SessionSummaryOptions {
   currentFriendId?: string
   currentChannel?: string
   currentKey?: string
+  currentSession?: { friendId: string; channel: string; key: string }
   activeThresholdMs?: number
 }
 
@@ -84,11 +85,12 @@ export function buildSessionSummary(options: SessionSummaryOptions): string {
     sessionsDir,
     friendsDir,
     agentName,
-    currentFriendId,
-    currentChannel,
-    currentKey,
+    currentSession,
     activeThresholdMs = DEFAULT_ACTIVE_THRESHOLD_MS,
   } = options
+  const currentFriendId = currentSession?.friendId ?? options.currentFriendId
+  const currentChannel = currentSession?.channel ?? options.currentChannel
+  const currentKey = currentSession?.key ?? options.currentKey
 
   const now = Date.now()
   const query: SessionActivityQuery = {
@@ -557,7 +559,7 @@ export function wakePacketSection(options?: BuildSystemOptions): string {
 
 function activeWorkSection(options?: BuildSystemOptions): string {
   if (!options?.activeWorkFrame) return ""
-  return formatActiveWorkFrame(options.activeWorkFrame, { hasWakePacket: !!options?.wakePacket })
+  return formatActiveWorkFrame(options.activeWorkFrame, { obligationDetailsRenderedElsewhere: !!options?.wakePacket })
 }
 
 function liveWorldStateSection(options?: BuildSystemOptions): string {
@@ -1155,6 +1157,9 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
       sessionsDir: path.join(getAgentRoot(), "state", "sessions"),
       friendsDir: path.join(getAgentRoot(), "friends"),
       agentName: getAgentName(),
+      currentSession: options?.activeWorkFrame?.currentSession
+        ? { friendId: options.activeWorkFrame.currentSession.friendId, channel: options.activeWorkFrame.currentSession.channel, key: options.activeWorkFrame.currentSession.key }
+        : undefined,
       currentFriendId: context?.friend?.id,
       currentChannel: channel,
       currentKey: options?.currentSessionKey ?? "session",

@@ -326,7 +326,7 @@ describe("pipeline continuity integration", () => {
       )
     })
 
-    it("calls buildWakePacket with temporal view", async () => {
+    it("calls buildWakePacket with temporal view and canonical obligations from activeWorkFrame", async () => {
       const mockView = {
         recentEpisodes: [],
         activeObligations: [],
@@ -338,10 +338,27 @@ describe("pipeline continuity integration", () => {
       }
       mockBuildTemporalView.mockReturnValue(mockView)
 
+      const testObligation = {
+        id: "ob-pipeline",
+        origin: { friendId: "friend-1", channel: "cli", key: "session" },
+        content: "pipeline test obligation",
+        status: "pending" as const,
+        createdAt: new Date().toISOString(),
+      }
+      mockReadPendingObligations.mockReturnValue([testObligation])
+
       const input = makeInput()
       const { handleInboundTurn } = await import("../../senses/pipeline")
       await handleInboundTurn(input)
-      expect(mockBuildWakePacket).toHaveBeenCalledWith(mockView)
+      expect(mockBuildWakePacket).toHaveBeenCalledWith(
+        mockView,
+        {
+          canonicalObligations: {
+            primary: expect.objectContaining({ id: "ob-pipeline" }),
+            all: expect.arrayContaining([expect.objectContaining({ id: "ob-pipeline" })]),
+          },
+        },
+      )
     })
 
     it("passes rendered wake packet to runAgent options", async () => {
