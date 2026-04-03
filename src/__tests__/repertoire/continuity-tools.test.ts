@@ -9,8 +9,6 @@ const mockReadCares = vi.fn()
 const mockCreateCare = vi.fn()
 const mockUpdateCare = vi.fn()
 const mockResolveCare = vi.fn()
-const mockReadRelationships = vi.fn()
-const mockReadRelationship = vi.fn()
 const mockReadPresence = vi.fn()
 const mockReadPeerPresence = vi.fn()
 const mockCaptureIntention = vi.fn()
@@ -28,11 +26,6 @@ vi.mock("../../heart/cares", () => ({
   createCare: (...args: any[]) => mockCreateCare(...args),
   updateCare: (...args: any[]) => mockUpdateCare(...args),
   resolveCare: (...args: any[]) => mockResolveCare(...args),
-}))
-
-vi.mock("../../heart/agent-relationships", () => ({
-  readRelationships: (...args: any[]) => mockReadRelationships(...args),
-  readRelationship: (...args: any[]) => mockReadRelationship(...args),
 }))
 
 vi.mock("../../heart/presence", () => ({
@@ -270,23 +263,48 @@ describe("continuity tools", () => {
       expect(tool).toBeDefined()
     })
 
-    it("returns all relationships when no agentName", async () => {
-      const rels = [{ agentName: "slugger", familiarity: 3, trust: "high" }]
-      mockReadRelationships.mockReturnValue(rels)
+    it("returns all agent friends when no agentName", async () => {
+      const mockListAll = vi.fn().mockResolvedValue([
+        { id: "uuid-1", name: "Slugger", kind: "agent", agentMeta: { bundleName: "slugger.ouro", familiarity: 3, sharedMissions: [], outcomes: [] } },
+        { id: "uuid-2", name: "Jordan", kind: "human" },
+      ])
+      const ctx = { friendStore: { listAll: mockListAll } } as any
 
       const tool = findTool("query_relationships")
-      const result = await tool.handler({})
-      expect(mockReadRelationships).toHaveBeenCalled()
-      expect(result).toContain("slugger")
+      const result = await tool.handler({}, ctx)
+      expect(mockListAll).toHaveBeenCalled()
+      expect(result).toContain("Slugger")
+      expect(result).not.toContain("Jordan")
     })
 
-    it("returns single relationship when agentName provided", async () => {
-      const rel = { agentName: "slugger", familiarity: 3, trust: "high" }
-      mockReadRelationship.mockReturnValue(rel)
+    it("filters by agentName (case-insensitive)", async () => {
+      const mockListAll = vi.fn().mockResolvedValue([
+        { id: "uuid-1", name: "Slugger", kind: "agent", agentMeta: { bundleName: "slugger.ouro", familiarity: 3, sharedMissions: [], outcomes: [] } },
+        { id: "uuid-2", name: "Copilot", kind: "agent", agentMeta: { bundleName: "copilot.ouro", familiarity: 1, sharedMissions: [], outcomes: [] } },
+      ])
+      const ctx = { friendStore: { listAll: mockListAll } } as any
 
       const tool = findTool("query_relationships")
-      const result = await tool.handler({ agentName: "slugger" })
-      expect(mockReadRelationship).toHaveBeenCalledWith("/mock/agent-root", "slugger")
+      const result = await tool.handler({ agentName: "SLUGGER" }, ctx)
+      expect(result).toContain("Slugger")
+      expect(result).not.toContain("Copilot")
+    })
+
+    it("returns empty when no agent friends exist", async () => {
+      const mockListAll = vi.fn().mockResolvedValue([
+        { id: "uuid-1", name: "Jordan", kind: "human" },
+      ])
+      const ctx = { friendStore: { listAll: mockListAll } } as any
+
+      const tool = findTool("query_relationships")
+      const result = await tool.handler({}, ctx)
+      expect(result).toBe("[]")
+    })
+
+    it("returns empty array when friendStore is not available", async () => {
+      const tool = findTool("query_relationships")
+      const result = await tool.handler({})
+      expect(result).toBe("[]")
     })
   })
 

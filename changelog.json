@@ -2,8 +2,9 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.186",
+      "version": "0.1.0-alpha.187",
       "changes": [
+        "refactor: collapse AgentRelationship into FriendRecord — one identity system for humans and agents",
         "refactor: rename AdoptionSpecialist to SerpentGuide",
         "feat(hatch): detect API keys from environment variables (ANTHROPIC_API_KEY, OPENAI_API_KEY, AZURE_OPENAI_API_KEY, MINIMAX_API_KEY, GITHUB_TOKEN)",
         "fix(cli): React unmount warning suppression covers SerpentGuide exit path"

@@ -35,6 +35,7 @@ function makeFriend(overrides: Partial<FriendRecord> = {}): FriendRecord {
     createdAt: "2026-03-02T00:00:00.000Z",
     updatedAt: "2026-03-02T00:00:00.000Z",
     schemaVersion: 1,
+    kind: "human",
     ...overrides,
   }
 }
@@ -278,6 +279,214 @@ describe("FileFriendStore", () => {
       const r2 = await store.get("uuid-2")
       expect(r1!.name).toBe("Friend1")
       expect(r2!.name).toBe("Friend2")
+    })
+  })
+
+  describe("normalize kind and agentMeta", () => {
+    it("defaults missing kind to 'human'", async () => {
+      const store = new FileFriendStore(friendsPath)
+      await fs.mkdir(friendsPath, { recursive: true })
+      await fs.writeFile(
+        path.join(friendsPath, "no-kind.json"),
+        JSON.stringify({
+          id: "no-kind",
+          name: "Legacy",
+          externalIds: [],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          totalTokens: 0,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+          schemaVersion: 1,
+        }),
+      )
+
+      const result = await store.get("no-kind")
+      expect(result).not.toBeNull()
+      expect(result!.kind).toBe("human")
+    })
+
+    it("passes through valid kind 'human'", async () => {
+      const store = new FileFriendStore(friendsPath)
+      const friend = makeFriend({ kind: "human" })
+      await store.put("uuid-h", friend)
+      const result = await store.get("uuid-h")
+      expect(result!.kind).toBe("human")
+    })
+
+    it("passes through valid kind 'agent'", async () => {
+      const store = new FileFriendStore(friendsPath)
+      const friend = makeFriend({
+        kind: "agent",
+        agentMeta: {
+          bundleName: "slugger.ouro",
+          familiarity: 5,
+          sharedMissions: ["m1"],
+          outcomes: [],
+        },
+      })
+      await store.put("uuid-a", friend)
+      const result = await store.get("uuid-a")
+      expect(result!.kind).toBe("agent")
+    })
+
+    it("defaults invalid kind to 'human'", async () => {
+      const store = new FileFriendStore(friendsPath)
+      await fs.mkdir(friendsPath, { recursive: true })
+      await fs.writeFile(
+        path.join(friendsPath, "bad-kind.json"),
+        JSON.stringify({
+          id: "bad-kind",
+          name: "Bad Kind",
+          kind: "robot",
+          externalIds: [],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          totalTokens: 0,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+          schemaVersion: 1,
+        }),
+      )
+
+      const result = await store.get("bad-kind")
+      expect(result!.kind).toBe("human")
+    })
+
+    it("missing agentMeta stays undefined", async () => {
+      const store = new FileFriendStore(friendsPath)
+      const friend = makeFriend({ kind: "human" })
+      await store.put("uuid-no-meta", friend)
+      const result = await store.get("uuid-no-meta")
+      expect(result!.agentMeta).toBeUndefined()
+    })
+
+    it("passes through valid agentMeta when kind is agent", async () => {
+      const store = new FileFriendStore(friendsPath)
+      const friend = makeFriend({
+        kind: "agent",
+        agentMeta: {
+          bundleName: "slugger.ouro",
+          familiarity: 10,
+          sharedMissions: ["m1", "m2"],
+          outcomes: [{ missionId: "m1", result: "success", timestamp: "2026-04-01T00:00:00.000Z" }],
+        },
+      })
+      await store.put("uuid-agent-meta", friend)
+      const result = await store.get("uuid-agent-meta")
+      expect(result!.agentMeta).toBeDefined()
+      expect(result!.agentMeta!.bundleName).toBe("slugger.ouro")
+      expect(result!.agentMeta!.familiarity).toBe(10)
+      expect(result!.agentMeta!.sharedMissions).toEqual(["m1", "m2"])
+      expect(result!.agentMeta!.outcomes).toHaveLength(1)
+    })
+
+    it("strips agentMeta when kind is human", async () => {
+      const store = new FileFriendStore(friendsPath)
+      await fs.mkdir(friendsPath, { recursive: true })
+      await fs.writeFile(
+        path.join(friendsPath, "human-with-meta.json"),
+        JSON.stringify({
+          id: "human-with-meta",
+          name: "Human With Meta",
+          kind: "human",
+          agentMeta: { bundleName: "rogue.ouro", familiarity: 1, sharedMissions: [], outcomes: [] },
+          externalIds: [],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          totalTokens: 0,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+          schemaVersion: 1,
+        }),
+      )
+
+      const result = await store.get("human-with-meta")
+      expect(result!.kind).toBe("human")
+      expect(result!.agentMeta).toBeUndefined()
+    })
+
+    it("defaults agentMeta to undefined when shape is invalid (non-object)", async () => {
+      const store = new FileFriendStore(friendsPath)
+      await fs.mkdir(friendsPath, { recursive: true })
+      await fs.writeFile(
+        path.join(friendsPath, "bad-meta-type.json"),
+        JSON.stringify({
+          id: "bad-meta-type",
+          name: "Bad Meta",
+          kind: "agent",
+          agentMeta: "not-an-object",
+          externalIds: [],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          totalTokens: 0,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+          schemaVersion: 1,
+        }),
+      )
+
+      const result = await store.get("bad-meta-type")
+      expect(result!.kind).toBe("agent")
+      expect(result!.agentMeta).toBeUndefined()
+    })
+
+    it("defaults agentMeta to undefined when bundleName is missing", async () => {
+      const store = new FileFriendStore(friendsPath)
+      await fs.mkdir(friendsPath, { recursive: true })
+      await fs.writeFile(
+        path.join(friendsPath, "no-bundle.json"),
+        JSON.stringify({
+          id: "no-bundle",
+          name: "No Bundle",
+          kind: "agent",
+          agentMeta: { familiarity: 1, sharedMissions: [], outcomes: [] },
+          externalIds: [],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          totalTokens: 0,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+          schemaVersion: 1,
+        }),
+      )
+
+      const result = await store.get("no-bundle")
+      expect(result!.agentMeta).toBeUndefined()
+    })
+
+    it("defaults agentMeta subfields: familiarity to 0, sharedMissions to [], outcomes to []", async () => {
+      const store = new FileFriendStore(friendsPath)
+      await fs.mkdir(friendsPath, { recursive: true })
+      await fs.writeFile(
+        path.join(friendsPath, "partial-meta.json"),
+        JSON.stringify({
+          id: "partial-meta",
+          name: "Partial Meta",
+          kind: "agent",
+          agentMeta: { bundleName: "peer.ouro", familiarity: "bad", sharedMissions: "bad", outcomes: "bad" },
+          externalIds: [],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          totalTokens: 0,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+          schemaVersion: 1,
+        }),
+      )
+
+      const result = await store.get("partial-meta")
+      expect(result!.agentMeta).toBeDefined()
+      expect(result!.agentMeta!.bundleName).toBe("peer.ouro")
+      expect(result!.agentMeta!.familiarity).toBe(0)
+      expect(result!.agentMeta!.sharedMissions).toEqual([])
+      expect(result!.agentMeta!.outcomes).toEqual([])
     })
   })
 

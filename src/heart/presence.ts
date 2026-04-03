@@ -1,6 +1,5 @@
 import * as fs from "fs"
 import * as path from "path"
-import * as os from "os"
 import { emitNervesEvent } from "../nerves/runtime"
 
 export type TempoMode = "brief" | "standard" | "dense" | "crisis"
@@ -137,44 +136,44 @@ export function readPresence(agentRoot: string, _agentName: string): AgentPresen
 }
 
 export function readPeerPresence(agentRoot: string): AgentPresence[] {
-  const relDir = path.join(agentRoot, "state", "relationships")
-  if (!fs.existsSync(relDir)) {
+  const friendsDir = path.join(agentRoot, "friends")
+  if (!fs.existsSync(friendsDir)) {
     emitNervesEvent({
       component: "heart",
       event: "heart.peer_presence_read",
-      message: "no relationships directory, no peers",
+      message: "no friends directory, no peers",
       meta: { peerCount: 0 },
     })
     return []
   }
 
-  const files = fs.readdirSync(relDir).filter((f) => f.endsWith(".json"))
+  const files = fs.readdirSync(friendsDir).filter((f) => f.endsWith(".json"))
   const peers: AgentPresence[] = []
 
   for (const file of files) {
     try {
-      const raw = fs.readFileSync(path.join(relDir, file), "utf-8")
-      const rel = JSON.parse(raw) as { agentName: string }
-      const peerName = rel.agentName
+      const raw = fs.readFileSync(path.join(friendsDir, file), "utf-8")
+      const friend = JSON.parse(raw) as { kind?: string; name?: string; updatedAt?: string }
 
-      // Read peer's presence from their bundle
-      const peerRoot = path.join(os.homedir(), "AgentBundles", `${peerName}.ouro`)
-      const peerPresencePath = path.join(peerRoot, "state", "presence", "self.json")
+      if (friend.kind !== "agent") continue
 
-      if (fs.existsSync(peerPresencePath)) {
-        const presenceRaw = fs.readFileSync(peerPresencePath, "utf-8")
-        const presence = JSON.parse(presenceRaw) as AgentPresence
-        peers.push(presence)
-      }
+      peers.push({
+        agentName: friend.name ?? path.basename(file, ".json"),
+        availability: "idle",
+        lane: "idle",
+        mission: "",
+        tempo: "brief",
+        updatedAt: friend.updatedAt ?? new Date().toISOString(),
+      })
     } catch {
-      // Skip peers with unreadable data
+      // Skip malformed or unreadable files
     }
   }
 
   emitNervesEvent({
     component: "heart",
     event: "heart.peer_presence_read",
-    message: `read ${peers.length} peer presence records`,
+    message: `read ${peers.length} agent peer records from friends`,
     meta: { peerCount: peers.length },
   })
 

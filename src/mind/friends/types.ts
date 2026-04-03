@@ -58,6 +58,24 @@ export interface FriendConnection {
   relationship: string
 }
 
+// -- Relationship Outcome --
+// Records the result of a shared mission with an agent peer.
+export interface RelationshipOutcome {
+  missionId: string
+  result: "success" | "partial" | "failed"
+  timestamp: string
+  note?: string
+}
+
+// -- Agent Meta --
+// Extended metadata for friend records that represent agent peers.
+export interface AgentMeta {
+  bundleName: string
+  familiarity: number
+  sharedMissions: string[]
+  outcomes: RelationshipOutcome[]
+}
+
 // -- Friend Record --
 // The single merged type for a person the agent interacts with.
 // Combines identity (who they are) and memory (what the agent knows about them).
@@ -76,6 +94,8 @@ export interface FriendRecord {
   createdAt: string                       // ISO date
   updatedAt: string
   schemaVersion: number
+  kind?: "human" | "agent"
+  agentMeta?: AgentMeta
 }
 
 // -- Sense Type --

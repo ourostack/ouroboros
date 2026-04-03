@@ -48,7 +48,6 @@ import { deliverCrossChatMessage, type CrossChatDeliveryResult } from "../heart/
 import { createObligation, readPendingObligations } from "../heart/obligations";
 import { readRecentEpisodes, emitEpisode } from "../mind/episodes";
 import { readActiveCares, readCares, createCare, updateCare, resolveCare } from "../heart/cares";
-import { readRelationships, readRelationship } from "../heart/agent-relationships";
 import { readPresence, readPeerPresence } from "../heart/presence";
 import { captureIntention, resolveIntention, dismissIntention } from "../heart/intentions";
 
@@ -1779,13 +1778,15 @@ export const baseToolDefinitions: ToolDefinition[] = [
         },
       },
     },
-    handler: (a) => {
-      const agentRoot = getAgentRoot();
-      const result = a.agentName
-        ? readRelationship(agentRoot, a.agentName)
-        : readRelationships(agentRoot);
+    handler: async (a, ctx) => {
+      const allFriends = ctx?.friendStore?.listAll ? await ctx.friendStore.listAll() : [];
+      let agents = allFriends.filter((f: { kind?: string }) => f.kind === "agent");
+      if (a.agentName) {
+        const needle = a.agentName.toLowerCase();
+        agents = agents.filter((f: { name?: string }) => f.name?.toLowerCase() === needle);
+      }
       emitNervesEvent({ component: "repertoire", event: "repertoire.query_relationships", message: `queried relationships`, meta: { agentName: a.agentName ?? "all" } });
-      return JSON.stringify(result, null, 2);
+      return JSON.stringify(agents, null, 2);
     },
   },
   {

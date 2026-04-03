@@ -8,6 +8,8 @@ import {
   type FriendRecord,
   type ChannelCapabilities,
   type ResolvedContext,
+  type AgentMeta,
+  type RelationshipOutcome,
 } from "../../../mind/friends/types"
 
 describe("IdentityProvider type guard", () => {
@@ -194,6 +196,146 @@ describe("ChannelCapabilities type", () => {
     expect(caps.availableIntegrations).toEqual([])
     expect(caps.supportsStreaming).toBe(false)
     expect(caps.supportsRichCards).toBe(false)
+  })
+})
+
+describe("RelationshipOutcome type", () => {
+  it("constructs with all required fields", () => {
+    const outcome: RelationshipOutcome = {
+      missionId: "mission-1",
+      result: "success",
+      timestamp: "2026-04-01T00:00:00.000Z",
+    }
+    expect(outcome.missionId).toBe("mission-1")
+    expect(outcome.result).toBe("success")
+    expect(outcome.timestamp).toBe("2026-04-01T00:00:00.000Z")
+    expect(outcome.note).toBeUndefined()
+  })
+
+  it("constructs with optional note", () => {
+    const outcome: RelationshipOutcome = {
+      missionId: "mission-2",
+      result: "partial",
+      timestamp: "2026-04-01T12:00:00.000Z",
+      note: "halfway there",
+    }
+    expect(outcome.note).toBe("halfway there")
+  })
+
+  it("accepts all result values", () => {
+    const results: RelationshipOutcome["result"][] = ["success", "partial", "failed"]
+    for (const r of results) {
+      const outcome: RelationshipOutcome = {
+        missionId: "m",
+        result: r,
+        timestamp: "2026-04-01T00:00:00.000Z",
+      }
+      expect(outcome.result).toBe(r)
+    }
+  })
+})
+
+describe("AgentMeta type", () => {
+  it("constructs with all required fields", () => {
+    const meta: AgentMeta = {
+      bundleName: "slugger.ouro",
+      familiarity: 5,
+      sharedMissions: ["mission-1", "mission-2"],
+      outcomes: [],
+    }
+    expect(meta.bundleName).toBe("slugger.ouro")
+    expect(meta.familiarity).toBe(5)
+    expect(meta.sharedMissions).toEqual(["mission-1", "mission-2"])
+    expect(meta.outcomes).toEqual([])
+  })
+
+  it("constructs with outcomes", () => {
+    const outcome: RelationshipOutcome = {
+      missionId: "mission-1",
+      result: "success",
+      timestamp: "2026-04-01T00:00:00.000Z",
+      note: "nailed it",
+    }
+    const meta: AgentMeta = {
+      bundleName: "copilot.ouro",
+      familiarity: 3,
+      sharedMissions: ["mission-1"],
+      outcomes: [outcome],
+    }
+    expect(meta.outcomes).toHaveLength(1)
+    expect(meta.outcomes[0].result).toBe("success")
+  })
+})
+
+describe("FriendRecord kind and agentMeta fields", () => {
+  it("accepts kind: 'human'", () => {
+    const record: FriendRecord = {
+      id: "uuid-h",
+      name: "Jordan",
+      externalIds: [],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: {},
+      totalTokens: 0,
+      createdAt: "2026-04-01T00:00:00.000Z",
+      updatedAt: "2026-04-01T00:00:00.000Z",
+      schemaVersion: 1,
+      kind: "human",
+    }
+    expect(record.kind).toBe("human")
+    expect(record.agentMeta).toBeUndefined()
+  })
+
+  it("accepts kind: 'agent' with agentMeta", () => {
+    const record: FriendRecord = {
+      id: "uuid-a",
+      name: "Slugger",
+      externalIds: [],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: {},
+      totalTokens: 0,
+      createdAt: "2026-04-01T00:00:00.000Z",
+      updatedAt: "2026-04-01T00:00:00.000Z",
+      schemaVersion: 1,
+      kind: "agent",
+      agentMeta: {
+        bundleName: "slugger.ouro",
+        familiarity: 10,
+        sharedMissions: ["deploy-v2"],
+        outcomes: [
+          {
+            missionId: "deploy-v2",
+            result: "success",
+            timestamp: "2026-04-01T00:00:00.000Z",
+            note: "smooth deploy",
+          },
+        ],
+      },
+    }
+    expect(record.kind).toBe("agent")
+    expect(record.agentMeta).toBeDefined()
+    expect(record.agentMeta!.bundleName).toBe("slugger.ouro")
+    expect(record.agentMeta!.familiarity).toBe(10)
+    expect(record.agentMeta!.sharedMissions).toEqual(["deploy-v2"])
+    expect(record.agentMeta!.outcomes).toHaveLength(1)
+  })
+
+  it("kind and agentMeta are optional", () => {
+    const record: FriendRecord = {
+      id: "uuid-legacy",
+      name: "Legacy Friend",
+      externalIds: [],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: {},
+      totalTokens: 0,
+      createdAt: "2026-04-01T00:00:00.000Z",
+      updatedAt: "2026-04-01T00:00:00.000Z",
+      schemaVersion: 1,
+    }
+    expect(record.kind).toBeUndefined()
+    expect(record.agentMeta).toBeUndefined()
   })
 })
 
