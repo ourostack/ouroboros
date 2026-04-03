@@ -26,7 +26,7 @@ export interface CareRecord {
 }
 
 function caresDir(agentRoot: string): string {
-  return path.join(agentRoot, "state", "cares")
+  return path.join(agentRoot, "arc", "cares")
 }
 
 function careFilePath(agentRoot: string, id: string): string {

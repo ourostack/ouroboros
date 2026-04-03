@@ -46,7 +46,7 @@ export interface Obligation {
 }
 
 function obligationsDir(agentRoot: string): string {
-  return path.join(agentRoot, "state", "obligations")
+  return path.join(agentRoot, "arc", "obligations")
 }
 
 function obligationFilePath(agentRoot: string, id: string): string {

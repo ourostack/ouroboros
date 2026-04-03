@@ -17,7 +17,7 @@ export interface IntentionRecord {
 }
 
 function intentionsDir(agentRoot: string): string {
-  return path.join(agentRoot, "state", "intentions")
+  return path.join(agentRoot, "arc", "intentions")
 }
 
 function intentionFilePath(agentRoot: string, id: string): string {
