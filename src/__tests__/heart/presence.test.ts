@@ -234,79 +234,245 @@ describe("presence", () => {
   })
 
   describe("readPeerPresence", () => {
-    it("returns empty array when no relationships exist", () => {
-      const peers = readPeerPresence(tmpDir)
-      expect(peers).toEqual([])
-    })
-
-    it("returns empty array when relationships dir is missing", () => {
-      const peers = readPeerPresence(tmpDir)
-      expect(peers).toEqual([])
-    })
-
-    it("reads peer presence from their bundles when available", () => {
-      // Create a relationship file to establish a known peer
-      const relDir = path.join(tmpDir, "state", "relationships")
-      fs.mkdirSync(relDir, { recursive: true })
+    it("reads from friends/ directory, not state/relationships/", () => {
+      const friendsDir = path.join(tmpDir, "friends")
+      fs.mkdirSync(friendsDir, { recursive: true })
       fs.writeFileSync(
-        path.join(relDir, "slugger.json"),
-        JSON.stringify({ agentName: "slugger", displayName: "Slugger" }),
-        "utf-8",
-      )
-
-      // Create the peer's presence file at the expected location
-      const peerRoot = path.join(os.homedir(), "AgentBundles", "slugger.ouro")
-      const peerPresenceDir = path.join(peerRoot, "state", "presence")
-      const peerPresenceExists = fs.existsSync(peerPresenceDir)
-
-      // Create temp peer presence for test (skip if we can't write to peer bundle)
-      let createdPeerPresence = false
-      try {
-        fs.mkdirSync(peerPresenceDir, { recursive: true })
-        fs.writeFileSync(
-          path.join(peerPresenceDir, "self.json"),
-          JSON.stringify({
-            agentName: "slugger",
-            availability: "active",
-            lane: "coding",
-            mission: "working on tests",
-            tempo: "standard",
-            updatedAt: new Date().toISOString(),
-          }),
-          "utf-8",
-        )
-        createdPeerPresence = true
-      } catch {
-        // Cannot write to peer bundle in test environment - skip
-      }
-
-      if (createdPeerPresence) {
-        const peers = readPeerPresence(tmpDir)
-        expect(peers.length).toBeGreaterThanOrEqual(1)
-        const slugger = peers.find((p) => p.agentName === "slugger")
-        expect(slugger).toBeDefined()
-        expect(slugger!.availability).toBe("active")
-
-        // Clean up peer presence
-        if (!peerPresenceExists) {
-          fs.rmSync(peerPresenceDir, { recursive: true, force: true })
-        }
-      }
-    })
-
-    it("skips peers whose presence files do not exist", () => {
-      // Create a relationship file for a peer that has no presence
-      const relDir = path.join(tmpDir, "state", "relationships")
-      fs.mkdirSync(relDir, { recursive: true })
-      fs.writeFileSync(
-        path.join(relDir, "nonexistent-agent.json"),
-        JSON.stringify({ agentName: "nonexistent-agent", displayName: "Ghost" }),
+        path.join(friendsDir, "slugger-uuid.json"),
+        JSON.stringify({
+          id: "slugger-uuid",
+          name: "Slugger",
+          kind: "agent",
+          agentMeta: { bundleName: "slugger.ouro", familiarity: 5, sharedMissions: [], outcomes: [] },
+          updatedAt: "2026-04-01T10:00:00.000Z",
+          externalIds: [],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          totalTokens: 0,
+          createdAt: "2026-04-01T00:00:00.000Z",
+          schemaVersion: 1,
+        }),
         "utf-8",
       )
 
       const peers = readPeerPresence(tmpDir)
-      // Should not crash, just return empty or skip the missing peer
-      expect(Array.isArray(peers)).toBe(true)
+      expect(peers).toHaveLength(1)
+      expect(peers[0].agentName).toBe("Slugger")
+    })
+
+    it("returns AgentPresence[] for kind=agent friends only", () => {
+      const friendsDir = path.join(tmpDir, "friends")
+      fs.mkdirSync(friendsDir, { recursive: true })
+
+      // Agent friend
+      fs.writeFileSync(
+        path.join(friendsDir, "agent-uuid.json"),
+        JSON.stringify({
+          id: "agent-uuid",
+          name: "Copilot",
+          kind: "agent",
+          agentMeta: { bundleName: "copilot.ouro", familiarity: 3, sharedMissions: [], outcomes: [] },
+          updatedAt: "2026-04-01T10:00:00.000Z",
+          externalIds: [],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          totalTokens: 0,
+          createdAt: "2026-04-01T00:00:00.000Z",
+          schemaVersion: 1,
+        }),
+        "utf-8",
+      )
+
+      // Human friend
+      fs.writeFileSync(
+        path.join(friendsDir, "human-uuid.json"),
+        JSON.stringify({
+          id: "human-uuid",
+          name: "Jordan",
+          kind: "human",
+          updatedAt: "2026-04-01T10:00:00.000Z",
+          externalIds: [],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          totalTokens: 0,
+          createdAt: "2026-04-01T00:00:00.000Z",
+          schemaVersion: 1,
+        }),
+        "utf-8",
+      )
+
+      const peers = readPeerPresence(tmpDir)
+      expect(peers).toHaveLength(1)
+      expect(peers[0].agentName).toBe("Copilot")
+    })
+
+    it("skips friend records where kind is missing", () => {
+      const friendsDir = path.join(tmpDir, "friends")
+      fs.mkdirSync(friendsDir, { recursive: true })
+      fs.writeFileSync(
+        path.join(friendsDir, "legacy-uuid.json"),
+        JSON.stringify({
+          id: "legacy-uuid",
+          name: "Legacy",
+          updatedAt: "2026-04-01T10:00:00.000Z",
+          externalIds: [],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          totalTokens: 0,
+          createdAt: "2026-04-01T00:00:00.000Z",
+          schemaVersion: 1,
+        }),
+        "utf-8",
+      )
+
+      const peers = readPeerPresence(tmpDir)
+      expect(peers).toEqual([])
+    })
+
+    it("returns empty array when friends directory does not exist", () => {
+      const peers = readPeerPresence(tmpDir)
+      expect(peers).toEqual([])
+    })
+
+    it("returns empty array when no agent friends exist", () => {
+      const friendsDir = path.join(tmpDir, "friends")
+      fs.mkdirSync(friendsDir, { recursive: true })
+      fs.writeFileSync(
+        path.join(friendsDir, "human-uuid.json"),
+        JSON.stringify({
+          id: "human-uuid",
+          name: "Jordan",
+          kind: "human",
+          updatedAt: "2026-04-01T10:00:00.000Z",
+          externalIds: [],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          totalTokens: 0,
+          createdAt: "2026-04-01T00:00:00.000Z",
+          schemaVersion: 1,
+        }),
+        "utf-8",
+      )
+
+      const peers = readPeerPresence(tmpDir)
+      expect(peers).toEqual([])
+    })
+
+    it("handles malformed JSON files gracefully", () => {
+      const friendsDir = path.join(tmpDir, "friends")
+      fs.mkdirSync(friendsDir, { recursive: true })
+      fs.writeFileSync(path.join(friendsDir, "bad.json"), "not valid json{{{", "utf-8")
+
+      const peers = readPeerPresence(tmpDir)
+      expect(peers).toEqual([])
+    })
+
+    it("handles non-JSON files gracefully", () => {
+      const friendsDir = path.join(tmpDir, "friends")
+      fs.mkdirSync(friendsDir, { recursive: true })
+      fs.writeFileSync(path.join(friendsDir, ".DS_Store"), "junk", "utf-8")
+      fs.writeFileSync(path.join(friendsDir, "readme.txt"), "not a friend", "utf-8")
+
+      const peers = readPeerPresence(tmpDir)
+      expect(peers).toEqual([])
+    })
+
+    it("populates AgentPresence fields correctly", () => {
+      const friendsDir = path.join(tmpDir, "friends")
+      fs.mkdirSync(friendsDir, { recursive: true })
+      fs.writeFileSync(
+        path.join(friendsDir, "slugger-uuid.json"),
+        JSON.stringify({
+          id: "slugger-uuid",
+          name: "Slugger",
+          kind: "agent",
+          agentMeta: { bundleName: "slugger.ouro", familiarity: 5, sharedMissions: [], outcomes: [] },
+          updatedAt: "2026-04-01T10:00:00.000Z",
+          externalIds: [],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          totalTokens: 0,
+          createdAt: "2026-04-01T00:00:00.000Z",
+          schemaVersion: 1,
+        }),
+        "utf-8",
+      )
+
+      const peers = readPeerPresence(tmpDir)
+      expect(peers).toHaveLength(1)
+      const peer = peers[0]
+      expect(peer.agentName).toBe("Slugger")
+      expect(peer.availability).toBe("idle")
+      expect(peer.lane).toBe("idle")
+      expect(peer.mission).toBe("")
+      expect(peer.tempo).toBe("brief")
+      expect(peer.updatedAt).toBe("2026-04-01T10:00:00.000Z")
+    })
+
+    it("stays synchronous (uses fs.readdirSync/readFileSync)", () => {
+      // readPeerPresence returns AgentPresence[] directly, not a Promise
+      const result = readPeerPresence(tmpDir)
+      expect(Array.isArray(result)).toBe(true)
+      // Not a promise
+      expect(result).not.toHaveProperty("then")
+    })
+
+    it("falls back to filename when name is missing", () => {
+      const friendsDir = path.join(tmpDir, "friends")
+      fs.mkdirSync(friendsDir, { recursive: true })
+      fs.writeFileSync(
+        path.join(friendsDir, "nameless-agent.json"),
+        JSON.stringify({
+          id: "nameless",
+          kind: "agent",
+          updatedAt: "2026-04-01T10:00:00.000Z",
+          externalIds: [],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          totalTokens: 0,
+          createdAt: "2026-04-01T00:00:00.000Z",
+          schemaVersion: 1,
+        }),
+        "utf-8",
+      )
+
+      const peers = readPeerPresence(tmpDir)
+      expect(peers).toHaveLength(1)
+      expect(peers[0].agentName).toBe("nameless-agent")
+    })
+
+    it("falls back to current timestamp when updatedAt is missing", () => {
+      const friendsDir = path.join(tmpDir, "friends")
+      fs.mkdirSync(friendsDir, { recursive: true })
+      fs.writeFileSync(
+        path.join(friendsDir, "no-updated.json"),
+        JSON.stringify({
+          id: "no-updated",
+          name: "NoUpdate",
+          kind: "agent",
+          externalIds: [],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          totalTokens: 0,
+          createdAt: "2026-04-01T00:00:00.000Z",
+          schemaVersion: 1,
+        }),
+        "utf-8",
+      )
+
+      const peers = readPeerPresence(tmpDir)
+      expect(peers).toHaveLength(1)
+      expect(peers[0].agentName).toBe("NoUpdate")
+      // updatedAt should be a valid ISO date string (fallback to current time)
+      expect(new Date(peers[0].updatedAt).getTime()).not.toBeNaN()
     })
   })
 })

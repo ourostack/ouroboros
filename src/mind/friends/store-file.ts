@@ -6,7 +6,7 @@ import * as fsPromises from "fs/promises"
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { FriendStore } from "./store"
-import type { FriendRecord, TrustLevel } from "./types"
+import type { FriendRecord, TrustLevel, AgentMeta } from "./types"
 
 const DEFAULT_ROLE = "friend"
 const DEFAULT_TRUST_LEVEL: TrustLevel = "friend"
@@ -114,6 +114,11 @@ export class FileFriendStore implements FriendStore {
         ? trustLevel
         : DEFAULT_TRUST_LEVEL
 
+    const kind: "human" | "agent" =
+      raw.kind === "human" || raw.kind === "agent" ? raw.kind : "human"
+
+    const agentMeta = kind === "agent" ? this.normalizeAgentMeta(raw.agentMeta) : undefined
+
     return {
       id: raw.id,
       name: raw.name,
@@ -144,6 +149,21 @@ export class FileFriendStore implements FriendStore {
       createdAt: typeof raw.createdAt === "string" ? raw.createdAt : new Date().toISOString(),
       updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : new Date().toISOString(),
       schemaVersion: typeof raw.schemaVersion === "number" ? raw.schemaVersion : 1,
+      kind,
+      agentMeta,
+    }
+  }
+
+  private normalizeAgentMeta(raw: unknown): AgentMeta | undefined {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined
+    const meta = raw as Record<string, unknown>
+    if (typeof meta.bundleName !== "string") return undefined
+
+    return {
+      bundleName: meta.bundleName,
+      familiarity: typeof meta.familiarity === "number" ? meta.familiarity : 0,
+      sharedMissions: Array.isArray(meta.sharedMissions) ? meta.sharedMissions : [],
+      outcomes: Array.isArray(meta.outcomes) ? meta.outcomes : [],
     }
   }
 
