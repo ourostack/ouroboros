@@ -85,7 +85,10 @@ describe("bundle skeleton contract", () => {
       readFileSync(join(roots.slugger, "agent.json"), "utf-8"),
     ) as Record<string, unknown>
 
-    expect(Object.keys(sluggerConfig).sort()).toEqual(Object.keys(ouroborosConfig).sort())
+    // Slugger's config may have optional keys (e.g., mcpServers) beyond the template
+    for (const key of Object.keys(ouroborosConfig)) {
+      expect(sluggerConfig).toHaveProperty(key)
+    }
     expect(sluggerConfig).toHaveProperty("version")
     expect(sluggerConfig).toHaveProperty("enabled")
     expect(typeof sluggerConfig.version).toBe("number")
