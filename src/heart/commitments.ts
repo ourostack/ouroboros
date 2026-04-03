@@ -32,9 +32,15 @@ export function deriveCommitments(
   const safeToIgnore: string[] = []
 
   // Persistent obligations from the obligation store
+  // Sort by status priority: investigating/waiting/updating before pending
   if (pendingObligations && pendingObligations.length > 0) {
+    const sorted = [...pendingObligations].sort((a, b) => {
+      const advancedA = a.status !== "pending" && a.status !== "fulfilled" ? 0 : 1
+      const advancedB = b.status !== "pending" && b.status !== "fulfilled" ? 0 : 1
+      return advancedA - advancedB
+    })
     let hasAdvancedObligation = false
-    for (const ob of pendingObligations) {
+    for (const ob of sorted) {
       if (!isOpenObligationStatus(ob.status)) continue
       committedTo.push(describeActiveObligation(ob))
       if (ob.status !== "pending") hasAdvancedObligation = true

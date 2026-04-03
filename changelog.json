@@ -2,9 +2,21 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.189",
+      "changes": [
+        "feat(heart): ResumeHandle type, primary obligation selection, status priority",
+        "feat(heart): lane/obligation precedence rules",
+        "feat(heart): cross-session change detection (snapshot, diff, format)",
+        "feat(cli): TUI edge-case hardening (44 new tests)",
+        "feat(mind): memory judgement heuristics in system prompt",
+        "feat(mind): memory feedback loop (noise prevention)",
+        "fix(cli): blockquote wrap width for narrow terminals"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.187",
       "changes": [
-        "refactor: collapse AgentRelationship into FriendRecord — one identity system for humans and agents",
+        "refactor: collapse AgentRelationship into FriendRecord \u2014 one identity system for humans and agents",
         "refactor: rename AdoptionSpecialist to SerpentGuide",
         "feat(hatch): detect API keys from environment variables (ANTHROPIC_API_KEY, OPENAI_API_KEY, AZURE_OPENAI_API_KEY, MINIMAX_API_KEY, GITHUB_TOKEN)",
         "fix(cli): React unmount warning suppression covers SerpentGuide exit path"

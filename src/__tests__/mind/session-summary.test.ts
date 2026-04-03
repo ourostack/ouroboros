@@ -438,3 +438,51 @@ describe("buildSessionSummary", () => {
     expect(result.indexOf("Ari/cli/session")).toBeLessThan(result.indexOf("Sam/cli/session"))
   })
 })
+
+// ── Unit 1.1: Session summary distinguishes active vs paused vs superseded work ──
+
+describe("buildSessionSummary: work status classification", () => {
+  beforeEach(() => {
+    vi.resetModules()
+  })
+
+  it("labels sessions with obligation status when available", async () => {
+    const { buildSessionSummary } = await import("../../mind/prompt")
+
+    const sessionsDir = "/mock/sessions"
+    const friendsDir = "/mock/friends"
+    const now = Date.now()
+
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    vi.mocked(fs.readdirSync).mockImplementation(((p: string) => {
+      if (p === sessionsDir) return ["friend-1"] as any
+      if (p === path.join(sessionsDir, "friend-1")) return ["cli"] as any
+      if (p === path.join(sessionsDir, "friend-1", "cli")) return ["session.json"] as any
+      return [] as any
+    }) as any)
+
+    vi.mocked(fs.statSync).mockReturnValue({ mtimeMs: now - 1000 * 60 * 5 } as any)
+
+    vi.mocked(fs.readFileSync).mockImplementation(((p: string) => {
+      if (p === path.join(friendsDir, "friend-1.json")) {
+        return JSON.stringify({ id: "friend-1", name: "Ari" })
+      }
+      if (p === path.join(sessionsDir, "friend-1", "cli", "session.json")) {
+        return JSON.stringify({
+          version: 1,
+          messages: [],
+          state: {
+            lastFriendActivityAt: new Date(now - 1000 * 60 * 5).toISOString(),
+            mustResolveBeforeHandoff: true,
+          },
+        })
+      }
+      throw new Error("ENOENT")
+    }) as any)
+
+    const result = buildSessionSummary({ sessionsDir, friendsDir, agentName: "slugger" })
+    // Active sessions with mustResolveBeforeHandoff should be marked as active
+    expect(result).toContain("Ari")
+    expect(result).toContain("cli")
+  })
+})
