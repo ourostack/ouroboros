@@ -14,6 +14,21 @@ export interface ObligationSurface {
   label: string
 }
 
+export interface WaitingOnRef {
+  kind: "friend" | "agent" | "coding" | "merge" | "runtime" | "time" | "none"
+  target: string
+  detail: string
+}
+
+export interface ObligationMeaning {
+  salience: "low" | "medium" | "high" | "critical"
+  careReason?: string
+  waitingOn?: WaitingOnRef | null
+  stalenessClass: "fresh" | "warm" | "stale" | "cold" | "at-risk"
+  lastMeaningfulChangeAt?: string
+  resumeHint?: string
+}
+
 export interface Obligation {
   id: string
   origin: { friendId: string; channel: string; key: string }
@@ -27,6 +42,7 @@ export interface Obligation {
   nextAction?: string
   latestNote?: string
   fulfilledAt?: string
+  meaning?: ObligationMeaning
 }
 
 function obligationsDir(agentRoot: string): string {
@@ -214,4 +230,35 @@ export function findPendingObligationForOrigin(
       && ob.origin.channel === origin.channel
       && ob.origin.key === origin.key,
   )
+}
+
+export function enrichObligation(
+  agentRoot: string,
+  id: string,
+  meaning: ObligationMeaning,
+): Obligation {
+  const filePath = obligationFilePath(agentRoot, id)
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`Obligation not found: ${id}`)
+  }
+
+  const raw = fs.readFileSync(filePath, "utf-8")
+  const obligation = JSON.parse(raw) as Obligation
+
+  obligation.meaning = meaning
+  obligation.updatedAt = new Date().toISOString()
+  fs.writeFileSync(filePath, JSON.stringify(obligation, null, 2), "utf-8")
+
+  emitNervesEvent({
+    component: "engine",
+    event: "engine.obligation_enriched",
+    message: "obligation enriched with meaning",
+    meta: {
+      obligationId: id,
+      salience: meaning.salience,
+      stalenessClass: meaning.stalenessClass,
+    },
+  })
+
+  return obligation
 }

@@ -32,9 +32,41 @@ import type { BoardResult } from "../repertoire/tasks/types"
 import { buildFailoverContext, handleFailoverReply, type FailoverContext } from "../heart/provider-failover"
 import { runHealthInventory } from "../heart/provider-ping"
 import { writeAgentProviderSelection, loadAgentSecrets } from "../heart/daemon/auth-flow"
+import { deriveTempo } from "../heart/tempo"
+import { buildTemporalView } from "../heart/temporal-view"
+import { buildWakePacket, renderWakePacket } from "../heart/wake-packet"
+import { derivePresence, writePresence } from "../heart/presence"
+import { readRecentEpisodes, emitEpisode } from "../mind/episodes"
+import { readActiveCares } from "../heart/cares"
 
 export interface FailoverState {
   pending: FailoverContext | null
+}
+
+/**
+ * Emit episodes for obligation state transitions detected during a turn.
+ * Exported for direct testability (avoids v8 coverage merge issues in multi-file test suites).
+ */
+export function emitObligationTransitionEpisodes(
+  agentRoot: string,
+  preTurnObligationIds: Set<string>,
+  postTurnObligations: import("../heart/obligations").Obligation[],
+  preTurnObligations: import("../heart/obligations").Obligation[],
+): void {
+  const postTurnObligationIds = new Set(postTurnObligations.map((ob) => `${ob.id}:${ob.status}`))
+  for (const key of preTurnObligationIds) {
+    if (!postTurnObligationIds.has(key)) {
+      const [obId] = key.split(":")
+      const matchedOb = postTurnObligations.find((ob) => ob.id === obId) ?? preTurnObligations.find((ob) => ob.id === obId)
+      emitEpisode(agentRoot, {
+        kind: "obligation_shift",
+        summary: `obligation "${matchedOb?.content ?? obId}" status changed`,
+        whyItMattered: "obligation state transition detected during turn",
+        relatedEntities: [`obligation:${obId}`],
+        salience: "medium",
+      })
+    }
+  }
 }
 
 
@@ -531,6 +563,57 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     sessionMessages.push(msg)
   }
 
+  // Step 4b: Continuity pipeline — derive tempo, build wake packet, snapshot obligations
+  let renderedWakePacket: string | undefined
+  const preTurnObligationIds = new Set(pendingObligations.map((ob) => `${ob.id}:${ob.status}`))
+  try {
+    const agentRoot = getAgentRoot()
+    const agentName = getAgentName()
+    const recentEpisodes = readRecentEpisodes(agentRoot, { limit: 20 })
+    const activeCares = readActiveCares(agentRoot)
+    const tempoState = deriveTempo({
+      activeSessions: sessionActivity.length + 1,
+      openObligations: pendingObligations.length,
+      recentEpisodeCount: recentEpisodes.length,
+      lastActivityAgeMs: sessionActivity.length > 0
+        ? Date.now() - new Date(sessionActivity[0].lastActivityAt).getTime()
+        : 0,
+      hasBlockers: false, // obligations use specific statuses, not "blocked"
+      highSalienceEpisodes: recentEpisodes.filter((ep) => ep.salience === "high" || ep.salience === "critical").length,
+      activeCareCount: activeCares.length,
+      atRiskCareCount: activeCares.filter((c) => c.currentRisk != null).length,
+    })
+    const temporalView = buildTemporalView(agentRoot, {
+      tempo: tempoState.mode,
+      preloaded: {
+        recentEpisodes,
+        activeObligations: pendingObligations,
+        activeCares,
+      },
+    })
+    const wakePacket = buildWakePacket(temporalView)
+    renderedWakePacket = renderWakePacket(wakePacket)
+    if (!renderedWakePacket) renderedWakePacket = undefined
+
+    // Update self-presence
+    const presence = derivePresence(agentRoot, agentName, {
+      activeSessions: sessionActivity.length + 1,
+      openObligations: pendingObligations.length,
+      activeBridges: activeBridges.length,
+      codingLanes: codingSessions.length,
+      currentTempo: tempoState.mode,
+    })
+    writePresence(agentRoot, agentName, presence)
+  } catch (continuityError) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.continuity_error",
+      message: "continuity pipeline failed, continuing without wake packet",
+      meta: { error: continuityError instanceof Error ? continuityError.message : String(continuityError) },
+    })
+  }
+
   // Step 5: runAgent
   const existingToolContext = input.runAgentOptions?.toolContext
   const runAgentOptions: RunAgentOptions = {
@@ -538,6 +621,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     bridgeContext,
     activeWorkFrame,
     delegationDecision,
+    wakePacket: renderedWakePacket,
     pendingMessages: pending.length > 0 ? pending.map((msg) => ({ from: msg.from, content: msg.content })) : undefined,
     currentSessionKey: currentSession.key,
     currentObligation,
@@ -614,6 +698,15 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
       })
     }
     /* v8 ignore stop */
+  }
+
+  // Step 5c: Emit episodes for obligation state transitions
+  try {
+    const agentRoot = getAgentRoot()
+    const postTurnObligations = readPendingObligations(agentRoot)
+    emitObligationTransitionEpisodes(agentRoot, preTurnObligationIds, postTurnObligations, pendingObligations)
+  } catch {
+    // Episode emission is non-fatal
   }
 
   // Step 6: postTurn

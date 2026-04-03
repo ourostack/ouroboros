@@ -47,7 +47,11 @@ import {
   type OutlookTaskSummary,
   type OutlookTranscriptMessage,
   type OutlookTranscriptToolCall,
+  type OutlookContinuityView,
 } from "./outlook-types"
+import { readPresence, readPeerPresence } from "../presence"
+import { readActiveCares } from "../cares"
+import { readRecentEpisodes } from "../../mind/episodes"
 
 interface OutlookReadOptions {
   bundlesRoot?: string
@@ -1440,4 +1444,44 @@ function parseCadenceMs(cadence: string | null): number | null {
   if (unit === "d" || unit === "day") return value * 24 * 60 * 60 * 1000
   /* v8 ignore next */
   return null
+}
+
+// ---------------------------------------------------------------------------
+// Continuity — presence, cares, episodes for outlook surfaces
+// ---------------------------------------------------------------------------
+
+export function readOutlookContinuity(agentRoot: string, agentName: string): OutlookContinuityView {
+  const self = readPresence(agentRoot, agentName)
+  const peers = readPeerPresence(agentRoot)
+  const cares = readActiveCares(agentRoot)
+  const episodes = readRecentEpisodes(agentRoot, { limit: 10 })
+
+  emitNervesEvent({
+    component: "heart",
+    event: "heart.outlook_continuity_read",
+    message: `outlook continuity: ${cares.length} cares, ${episodes.length} episodes`,
+    meta: { careCount: cares.length, episodeCount: episodes.length, hasSelf: self != null, peerCount: peers.length },
+  })
+
+  return {
+    presence: { self, peers },
+    cares: {
+      activeCount: cares.length,
+      items: cares.map((c) => ({
+        id: c.id,
+        label: c.label,
+        status: c.status,
+        salience: c.salience,
+      })),
+    },
+    episodes: {
+      recentCount: episodes.length,
+      items: episodes.map((ep) => ({
+        id: ep.id,
+        kind: ep.kind,
+        summary: ep.summary,
+        timestamp: ep.timestamp,
+      })),
+    },
+  }
 }
