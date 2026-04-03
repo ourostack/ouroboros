@@ -1628,12 +1628,13 @@ async function defaultRunAdoptionSpecialist(): Promise<string | null> {
     const { loadIdentityPhrases } = await import("./specialist-orchestrator")
     const phrases = loadIdentityPhrases(bundleSourceDir, identity.fileName)
 
+    const resolvedModel = providerConfig.model || providerConfig.deployment || ""
     setAgentConfigOverride({
       version: 2,
       enabled: true,
       provider: providerRaw,
-      humanFacing: { provider: providerRaw, model: "" },
-      agentFacing: { provider: providerRaw, model: "" },
+      humanFacing: { provider: providerRaw, model: resolvedModel },
+      agentFacing: { provider: providerRaw, model: resolvedModel },
       phrases,
     })
     patchRuntimeConfig({
