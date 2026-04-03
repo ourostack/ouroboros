@@ -744,7 +744,7 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
   return frame
 }
 
-export function formatActiveWorkFrame(frame: ActiveWorkFrame, options?: { hasWakePacket?: boolean }): string {
+export function formatActiveWorkFrame(frame: ActiveWorkFrame, options?: { obligationDetailsRenderedElsewhere?: boolean }): string {
   const lines = ["## what i'm holding"]
   lines.push("this is my top-level live world-state right now. inner work, coding lanes, other sessions, and return obligations all belong inside this picture.")
   lines.push("if older checkpoints elsewhere in the transcript disagree with this picture, this picture wins.")
@@ -869,8 +869,8 @@ export function formatActiveWorkFrame(frame: ActiveWorkFrame, options?: { hasWak
 
   if ((frame.pendingObligations ?? []).length > 0) {
     const openCount = frame.pendingObligations.filter((ob) => isOpenObligationStatus(ob.status)).length
-    if (options?.hasWakePacket && openCount > 0) {
-      // Wake packet carries enriched obligations (with resumeHint, stalenessClass, waitingOn).
+    if (options?.obligationDetailsRenderedElsewhere && openCount > 0) {
+      // Enriched obligation data (with resumeHint, stalenessClass, waitingOn) is rendered elsewhere.
       // Avoid duplicating the full list — just anchor the count here.
       lines.push("")
       lines.push(`return obligations: ${openCount} active (canonical details in **Owed** section of wake packet)`)

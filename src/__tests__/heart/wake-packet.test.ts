@@ -469,6 +469,84 @@ describe("wake packet", () => {
     })
   })
 
+  describe("buildWakePacket with canonicalObligations", () => {
+    it("uses canonicalObligations.all for obligations section when provided", () => {
+      const view = makeView({
+        activeObligations: [makeObligation({ content: "view obligation (should be ignored)" })],
+      })
+      const canonical = {
+        primary: makeObligation({ content: "canonical primary", meaning: { salience: "high" as const, stalenessClass: "fresh" as const, resumeHint: "start here" } }),
+        all: [
+          makeObligation({ content: "canonical primary", meaning: { salience: "high" as const, stalenessClass: "fresh" as const, resumeHint: "start here" } }),
+          makeObligation({ id: "ob-2", content: "canonical secondary" }),
+        ],
+      }
+
+      const packet = buildWakePacket(view, { canonicalObligations: canonical })
+      expect(packet.obligations).toContain("canonical primary")
+      expect(packet.obligations).toContain("canonical secondary")
+      expect(packet.obligations).not.toContain("view obligation (should be ignored)")
+    })
+
+    it("uses view.activeObligations when canonicalObligations is not provided (backward compat)", () => {
+      const view = makeView({
+        activeObligations: [makeObligation({ content: "view obligation" })],
+      })
+
+      const packet = buildWakePacket(view)
+      expect(packet.obligations).toContain("view obligation")
+    })
+
+    it("produces empty obligations when canonicalObligations.all is empty", () => {
+      const view = makeView({
+        activeObligations: [makeObligation({ content: "view obligation" })],
+        openIntentions: [makeIntention({ content: "fallback intention" })],
+      })
+      const canonical = { primary: null, all: [] as Obligation[] }
+
+      const packet = buildWakePacket(view, { canonicalObligations: canonical })
+      expect(packet.obligations).toBe("")
+      // resumeHint should fall back to intentions since no obligation hints
+      expect(packet.resumeHint).toContain("fallback intention")
+    })
+
+    it("prepends primary resumeHint in resume hint when canonicalObligations.primary has one", () => {
+      const view = makeView({
+        activeObligations: [makeObligation({ content: "view ob" })],
+        openIntentions: [makeIntention({ content: "some intention" })],
+      })
+      const canonical = {
+        primary: makeObligation({
+          content: "primary task",
+          meaning: { salience: "high" as const, stalenessClass: "fresh" as const, resumeHint: "start with the test file" },
+        }),
+        all: [
+          makeObligation({
+            content: "primary task",
+            meaning: { salience: "high" as const, stalenessClass: "fresh" as const, resumeHint: "start with the test file" },
+          }),
+        ],
+      }
+
+      const packet = buildWakePacket(view, { canonicalObligations: canonical })
+      expect(packet.resumeHint).toContain("start with the test file")
+    })
+
+    it("uses canonical obligations for resumeHint instead of view.activeObligations", () => {
+      const view = makeView({
+        activeObligations: [makeObligation({ content: "view ob", meaning: { salience: "high" as const, stalenessClass: "fresh" as const, resumeHint: "view hint (should be ignored)" } })],
+      })
+      const canonical = {
+        primary: null,
+        all: [makeObligation({ content: "canonical ob", meaning: { salience: "high" as const, stalenessClass: "fresh" as const, resumeHint: "canonical hint" } })],
+      }
+
+      const packet = buildWakePacket(view, { canonicalObligations: canonical })
+      expect(packet.resumeHint).toContain("canonical hint")
+      expect(packet.resumeHint).not.toContain("view hint (should be ignored)")
+    })
+  })
+
   describe("renderCompactWakePacket", () => {
     it("produces ultra-compact output (max 200 tokens)", () => {
       const view = makeView({

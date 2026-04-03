@@ -67,7 +67,7 @@ function makeFrame(overrides: Partial<ActiveWorkFrame> = {}): ActiveWorkFrame {
 }
 
 describe("active-work coding identity rendering", () => {
-  let formatActiveWorkFrame: (frame: ActiveWorkFrame, options?: { hasWakePacket?: boolean }) => string
+  let formatActiveWorkFrame: (frame: ActiveWorkFrame, options?: { obligationDetailsRenderedElsewhere?: boolean }) => string
 
   beforeAll(async () => {
     const mod = await import("../../heart/active-work")

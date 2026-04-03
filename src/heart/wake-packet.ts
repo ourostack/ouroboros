@@ -88,11 +88,12 @@ function buildPresenceSection(peers: AgentPresence[]): string {
     .join("\n")
 }
 
-function buildResumeHint(view: TemporalView): string {
+function buildResumeHint(view: TemporalView, obligations?: Obligation[]): string {
   // Compose from authored obligation resumeHints and top intentions
   const hints: string[] = []
+  const effectiveObligations = obligations ?? view.activeObligations
 
-  for (const ob of view.activeObligations) {
+  for (const ob of effectiveObligations) {
     if (ob.meaning?.resumeHint) {
       hints.push(ob.meaning.resumeHint)
     }
@@ -104,8 +105,8 @@ function buildResumeHint(view: TemporalView): string {
 
   if (hints.length === 0) {
     // Fall back to top obligation content
-    if (view.activeObligations.length > 0) {
-      hints.push(view.activeObligations[0].content)
+    if (effectiveObligations.length > 0) {
+      hints.push(effectiveObligations[0].content)
     }
   }
 
@@ -113,16 +114,17 @@ function buildResumeHint(view: TemporalView): string {
   return hints.join("; ")
 }
 
-export function buildWakePacket(view: TemporalView): WakePacket {
+export function buildWakePacket(view: TemporalView, opts?: { canonicalObligations?: { primary: Obligation | null; all: Obligation[] } }): WakePacket {
   const tempo = view.tempo
   const tokenBudget = TEMPO_BUDGETS[tempo]
+  const effectiveObligations = opts?.canonicalObligations ? opts.canonicalObligations.all : view.activeObligations
 
   const packet: WakePacket = {
     plotLine: buildPlotLine(view.recentEpisodes, tempo),
-    obligations: buildObligationsSection(view.activeObligations),
+    obligations: buildObligationsSection(effectiveObligations),
     cares: buildCaresSection(view.activeCares),
     presence: buildPresenceSection(view.peerPresence),
-    resumeHint: buildResumeHint(view),
+    resumeHint: buildResumeHint(view, opts?.canonicalObligations ? effectiveObligations : undefined),
     tempo,
     tokenBudget,
     assembledAt: new Date().toISOString(),
