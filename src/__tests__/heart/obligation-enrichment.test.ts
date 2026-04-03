@@ -117,7 +117,7 @@ describe("obligation enrichment", () => {
       })
 
       // Read the obligation back - should have no meaning field
-      const filePath = path.join(tmpDir, "state", "obligations", `${ob.id}.json`)
+      const filePath = path.join(tmpDir, "arc", "obligations", `${ob.id}.json`)
       const stored = JSON.parse(fs.readFileSync(filePath, "utf-8")) as Obligation
       expect(stored.meaning).toBeUndefined()
       expect(stored.content).toBe("plain obligation")
@@ -139,7 +139,7 @@ describe("obligation enrichment", () => {
 
       enrichObligation(tmpDir, ob.id, meaning)
 
-      const filePath = path.join(tmpDir, "state", "obligations", `${ob.id}.json`)
+      const filePath = path.join(tmpDir, "arc", "obligations", `${ob.id}.json`)
       const stored = JSON.parse(fs.readFileSync(filePath, "utf-8")) as Obligation
       expect(stored.meaning).toBeDefined()
       expect(stored.meaning!.salience).toBe("high")
@@ -158,7 +158,7 @@ describe("obligation enrichment", () => {
         stalenessClass: "cold",
       })
 
-      const filePath = path.join(tmpDir, "state", "obligations", `${ob.id}.json`)
+      const filePath = path.join(tmpDir, "arc", "obligations", `${ob.id}.json`)
       const stored = JSON.parse(fs.readFileSync(filePath, "utf-8")) as Obligation
       expect(stored.id).toBe(ob.id)
       expect(stored.content).toBe("preserve fields test")
