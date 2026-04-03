@@ -1906,7 +1906,7 @@ describe("ouro CLI execution", () => {
     const runHatchFlow = vi.fn(async () => ({
       bundleRoot: "/tmp/AgentBundles/Mini.ouro",
       selectedIdentity: "python.md",
-      specialistSecretsPath: "/tmp/.agentsecrets/AdoptionSpecialist/secrets.json",
+      specialistSecretsPath: "/tmp/.agentsecrets/SerpentGuide/secrets.json",
       hatchlingSecretsPath: "/tmp/.agentsecrets/Mini/secrets.json",
     }))
     const promptInput = vi.fn(async (question: string) => {
@@ -1956,7 +1956,7 @@ describe("ouro CLI execution", () => {
     const runHatchFlow = vi.fn(async () => ({
       bundleRoot: "/tmp/AgentBundles/ClaudeSprout.ouro",
       selectedIdentity: "medusa.md",
-      specialistSecretsPath: "/tmp/.agentsecrets/AdoptionSpecialist/secrets.json",
+      specialistSecretsPath: "/tmp/.agentsecrets/SerpentGuide/secrets.json",
       hatchlingSecretsPath: "/tmp/.agentsecrets/ClaudeSprout/secrets.json",
     }))
     const promptInput = vi.fn(async (question: string) => {
@@ -2006,7 +2006,7 @@ describe("ouro CLI execution", () => {
     const runHatchFlow = vi.fn(async () => ({
       bundleRoot: "/tmp/AgentBundles/CodexSprout.ouro",
       selectedIdentity: "python.md",
-      specialistSecretsPath: "/tmp/.agentsecrets/AdoptionSpecialist/secrets.json",
+      specialistSecretsPath: "/tmp/.agentsecrets/SerpentGuide/secrets.json",
       hatchlingSecretsPath: "/tmp/.agentsecrets/CodexSprout/secrets.json",
     }))
     const promptInput = vi.fn(async (question: string) => {
@@ -2056,7 +2056,7 @@ describe("ouro CLI execution", () => {
     const runHatchFlow = vi.fn(async () => ({
       bundleRoot: "/tmp/AgentBundles/ClaudeSprout.ouro",
       selectedIdentity: "medusa.md",
-      specialistSecretsPath: "/tmp/.agentsecrets/AdoptionSpecialist/secrets.json",
+      specialistSecretsPath: "/tmp/.agentsecrets/SerpentGuide/secrets.json",
       hatchlingSecretsPath: "/tmp/.agentsecrets/ClaudeSprout/secrets.json",
     }))
     const runAuthFlow = vi.fn(async () => ({
@@ -2119,7 +2119,7 @@ describe("ouro CLI execution", () => {
     const runHatchFlow = vi.fn(async () => ({
       bundleRoot: "/tmp/AgentBundles/CodexSprout.ouro",
       selectedIdentity: "python.md",
-      specialistSecretsPath: "/tmp/.agentsecrets/AdoptionSpecialist/secrets.json",
+      specialistSecretsPath: "/tmp/.agentsecrets/SerpentGuide/secrets.json",
       hatchlingSecretsPath: "/tmp/.agentsecrets/CodexSprout/secrets.json",
     }))
     const runAuthFlow = vi.fn(async () => ({
@@ -2227,7 +2227,7 @@ describe("ouro CLI execution", () => {
     const runHatchFlow = vi.fn(async () => ({
       bundleRoot: "/tmp/AgentBundles/AzureProvided.ouro",
       selectedIdentity: "medusa.md",
-      specialistSecretsPath: "/tmp/.agentsecrets/AdoptionSpecialist/secrets.json",
+      specialistSecretsPath: "/tmp/.agentsecrets/SerpentGuide/secrets.json",
       hatchlingSecretsPath: "/tmp/.agentsecrets/AzureProvided/secrets.json",
     }))
     const promptInput = vi.fn(async () => "unexpected")
@@ -2293,7 +2293,7 @@ describe("ouro CLI execution", () => {
     const runHatchFlow = vi.fn(async () => ({
       bundleRoot: "/tmp/AgentBundles/StringInstall.ouro",
       selectedIdentity: "python.md",
-      specialistSecretsPath: "/tmp/.agentsecrets/AdoptionSpecialist/secrets.json",
+      specialistSecretsPath: "/tmp/.agentsecrets/SerpentGuide/secrets.json",
       hatchlingSecretsPath: "/tmp/.agentsecrets/StringInstall/secrets.json",
     }))
 
@@ -2329,7 +2329,7 @@ describe("ouro CLI execution", () => {
     const runHatchFlow = vi.fn(async () => ({
       bundleRoot: "/tmp/AgentBundles/Alive.ouro",
       selectedIdentity: "python.md",
-      specialistSecretsPath: "/tmp/.agentsecrets/AdoptionSpecialist/secrets.json",
+      specialistSecretsPath: "/tmp/.agentsecrets/SerpentGuide/secrets.json",
       hatchlingSecretsPath: "/tmp/.agentsecrets/Alive/secrets.json",
     }))
     const deps = {
@@ -2367,7 +2367,7 @@ describe("ouro CLI execution", () => {
     const runHatchFlow = vi.fn(async () => ({
       bundleRoot: "/tmp/AgentBundles/UnknownPid.ouro",
       selectedIdentity: "python.md",
-      specialistSecretsPath: "/tmp/.agentsecrets/AdoptionSpecialist/secrets.json",
+      specialistSecretsPath: "/tmp/.agentsecrets/SerpentGuide/secrets.json",
       hatchlingSecretsPath: "/tmp/.agentsecrets/UnknownPid/secrets.json",
     }))
     const deps = {
@@ -2435,7 +2435,7 @@ describe("ouro CLI execution", () => {
     const runHatchFlow = vi.fn(async () => ({
       bundleRoot: "/tmp/AgentBundles/AzureSprout.ouro",
       selectedIdentity: "medusa.md",
-      specialistSecretsPath: "/tmp/.agentsecrets/AdoptionSpecialist/secrets.json",
+      specialistSecretsPath: "/tmp/.agentsecrets/SerpentGuide/secrets.json",
       hatchlingSecretsPath: "/tmp/.agentsecrets/AzureSprout/secrets.json",
     }))
     const promptInput = vi.fn(async (question: string) => {
@@ -2491,7 +2491,7 @@ describe("ouro CLI execution", () => {
     const runHatchFlow = vi.fn(async () => ({
       bundleRoot: "/tmp/AgentBundles/Sprout.ouro",
       selectedIdentity: "medusa.md",
-      specialistSecretsPath: "/tmp/.agentsecrets/AdoptionSpecialist/secrets.json",
+      specialistSecretsPath: "/tmp/.agentsecrets/SerpentGuide/secrets.json",
       hatchlingSecretsPath: "/tmp/.agentsecrets/Sprout/secrets.json",
     }))
 
@@ -2880,7 +2880,7 @@ describe("hatch → auto-chat", () => {
     const runHatchFlow = vi.fn(async () => ({
       bundleRoot: "/tmp/AgentBundles/Sprout.ouro",
       selectedIdentity: "medusa.md",
-      specialistSecretsPath: "/tmp/.agentsecrets/AdoptionSpecialist/secrets.json",
+      specialistSecretsPath: "/tmp/.agentsecrets/SerpentGuide/secrets.json",
       hatchlingSecretsPath: "/tmp/.agentsecrets/Sprout/secrets.json",
     }))
 
@@ -2922,7 +2922,7 @@ describe("hatch → auto-chat", () => {
     const runHatchFlow = vi.fn(async () => ({
       bundleRoot: "/tmp/AgentBundles/Sprout.ouro",
       selectedIdentity: "medusa.md",
-      specialistSecretsPath: "/tmp/.agentsecrets/AdoptionSpecialist/secrets.json",
+      specialistSecretsPath: "/tmp/.agentsecrets/SerpentGuide/secrets.json",
       hatchlingSecretsPath: "/tmp/.agentsecrets/Sprout/secrets.json",
     }))
 
@@ -2963,7 +2963,7 @@ describe("hatch → auto-chat", () => {
     const runHatchFlow = vi.fn(async () => ({
       bundleRoot: "/tmp/AgentBundles/Sprout.ouro",
       selectedIdentity: "medusa.md",
-      specialistSecretsPath: "/tmp/.agentsecrets/AdoptionSpecialist/secrets.json",
+      specialistSecretsPath: "/tmp/.agentsecrets/SerpentGuide/secrets.json",
       hatchlingSecretsPath: "/tmp/.agentsecrets/Sprout/secrets.json",
     }))
 
@@ -3463,9 +3463,9 @@ describe("ensureDaemonRunning", () => {
   })
 })
 
-describe("specialist integration (zero agents -> adoption specialist)", () => {
-  it("routes bare ouro to adoption specialist when zero agents discovered and dep is provided", async () => {
-    const runAdoptionSpecialist = vi.fn(async () => "HatchedBot")
+describe("specialist integration (zero agents -> serpent guide)", () => {
+  it("routes bare ouro to serpent guide when zero agents discovered and dep is provided", async () => {
+    const runSerpentGuide = vi.fn(async () => "HatchedBot")
     const startChat = vi.fn(async () => {})
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
@@ -3477,19 +3477,19 @@ describe("specialist integration (zero agents -> adoption specialist)", () => {
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
       listDiscoveredAgents: vi.fn(async () => []),
-      runAdoptionSpecialist,
+      runSerpentGuide,
       startChat,
     }
 
     await runOuroCli([], deps)
 
-    expect(runAdoptionSpecialist).toHaveBeenCalledTimes(1)
+    expect(runSerpentGuide).toHaveBeenCalledTimes(1)
     // Should NOT have fallen through to the old hatch flow
     expect(deps.sendCommand).not.toHaveBeenCalled()
   })
 
   it("starts daemon and chat with hatchling name after specialist returns a name", async () => {
-    const runAdoptionSpecialist = vi.fn(async () => "MyNewBot")
+    const runSerpentGuide = vi.fn(async () => "MyNewBot")
     const startChat = vi.fn(async () => {})
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
@@ -3502,20 +3502,20 @@ describe("specialist integration (zero agents -> adoption specialist)", () => {
 
       registerOuroBundleType: vi.fn(async () => ({ attempted: true, registered: true })),
       listDiscoveredAgents: vi.fn(async () => []),
-      runAdoptionSpecialist,
+      runSerpentGuide,
       startChat,
     }
 
     await runOuroCli([], deps)
 
-    expect(runAdoptionSpecialist).toHaveBeenCalledTimes(1)
+    expect(runSerpentGuide).toHaveBeenCalledTimes(1)
     expect(deps.registerOuroBundleType).toHaveBeenCalledTimes(1)
     expect(deps.startDaemonProcess).toHaveBeenCalled()
     expect(startChat).toHaveBeenCalledWith("MyNewBot")
   })
 
   it("exits cleanly without starting chat when specialist returns null (aborted)", async () => {
-    const runAdoptionSpecialist = vi.fn(async () => null)
+    const runSerpentGuide = vi.fn(async () => null)
     const startChat = vi.fn(async () => {})
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
@@ -3527,13 +3527,13 @@ describe("specialist integration (zero agents -> adoption specialist)", () => {
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
       listDiscoveredAgents: vi.fn(async () => []),
-      runAdoptionSpecialist,
+      runSerpentGuide,
       startChat,
     }
 
     const result = await runOuroCli([], deps)
 
-    expect(runAdoptionSpecialist).toHaveBeenCalledTimes(1)
+    expect(runSerpentGuide).toHaveBeenCalledTimes(1)
     expect(startChat).not.toHaveBeenCalled()
     expect(deps.startDaemonProcess).not.toHaveBeenCalled()
     expect(result).toBe("")
@@ -3549,8 +3549,8 @@ describe("specialist integration (zero agents -> adoption specialist)", () => {
       callOrder.push("syncGlobalOuroBotWrapper")
       return { installed: true }
     })
-    const runAdoptionSpecialist = vi.fn(async () => {
-      callOrder.push("runAdoptionSpecialist")
+    const runSerpentGuide = vi.fn(async () => {
+      callOrder.push("runSerpentGuide")
       return "OrderBot"
     })
     const startChat = vi.fn(async () => {})
@@ -3563,7 +3563,7 @@ describe("specialist integration (zero agents -> adoption specialist)", () => {
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
       listDiscoveredAgents: vi.fn(async () => []),
-      runAdoptionSpecialist,
+      runSerpentGuide,
       installOuroCommand,
       syncGlobalOuroBotWrapper,
       startChat,
@@ -3574,13 +3574,13 @@ describe("specialist integration (zero agents -> adoption specialist)", () => {
     expect(installOuroCommand).toHaveBeenCalledTimes(1)
     expect(syncGlobalOuroBotWrapper).toHaveBeenCalledTimes(1)
     // System setup should happen before the specialist
-    expect(callOrder.indexOf("installOuroCommand")).toBeLessThan(callOrder.indexOf("runAdoptionSpecialist"))
-    expect(callOrder.indexOf("syncGlobalOuroBotWrapper")).toBeLessThan(callOrder.indexOf("runAdoptionSpecialist"))
+    expect(callOrder.indexOf("installOuroCommand")).toBeLessThan(callOrder.indexOf("runSerpentGuide"))
+    expect(callOrder.indexOf("syncGlobalOuroBotWrapper")).toBeLessThan(callOrder.indexOf("runSerpentGuide"))
   })
 
   it("handles installOuroCommand failure gracefully during system setup", async () => {
     const installOuroCommand = vi.fn(() => { throw new Error("permission denied") })
-    const runAdoptionSpecialist = vi.fn(async () => "GracefulBot")
+    const runSerpentGuide = vi.fn(async () => "GracefulBot")
     const startChat = vi.fn(async () => {})
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
@@ -3592,7 +3592,7 @@ describe("specialist integration (zero agents -> adoption specialist)", () => {
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
       listDiscoveredAgents: vi.fn(async () => []),
-      runAdoptionSpecialist,
+      runSerpentGuide,
       installOuroCommand,
       startChat,
     }
@@ -3601,13 +3601,13 @@ describe("specialist integration (zero agents -> adoption specialist)", () => {
     await runOuroCli([], deps)
 
     expect(installOuroCommand).toHaveBeenCalledTimes(1)
-    expect(runAdoptionSpecialist).toHaveBeenCalledTimes(1)
+    expect(runSerpentGuide).toHaveBeenCalledTimes(1)
     expect(startChat).toHaveBeenCalledWith("GracefulBot")
   })
 
   it("handles syncGlobalOuroBotWrapper failure gracefully during system setup", async () => {
     const syncGlobalOuroBotWrapper = vi.fn(async () => { throw new Error("npm install failed") })
-    const runAdoptionSpecialist = vi.fn(async () => "WrapperBot")
+    const runSerpentGuide = vi.fn(async () => "WrapperBot")
     const startChat = vi.fn(async () => {})
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
@@ -3619,7 +3619,7 @@ describe("specialist integration (zero agents -> adoption specialist)", () => {
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
       listDiscoveredAgents: vi.fn(async () => []),
-      runAdoptionSpecialist,
+      runSerpentGuide,
       syncGlobalOuroBotWrapper,
       startChat,
     }
@@ -3627,16 +3627,16 @@ describe("specialist integration (zero agents -> adoption specialist)", () => {
     await runOuroCli([], deps)
 
     expect(syncGlobalOuroBotWrapper).toHaveBeenCalledTimes(1)
-    expect(runAdoptionSpecialist).toHaveBeenCalledTimes(1)
+    expect(runSerpentGuide).toHaveBeenCalledTimes(1)
     expect(startChat).toHaveBeenCalledWith("WrapperBot")
   })
 
   it("falls back to old hatch flow for explicit ouro hatch command even when specialist dep exists", async () => {
-    const runAdoptionSpecialist = vi.fn(async () => "ShouldNotBeUsed")
+    const runSerpentGuide = vi.fn(async () => "ShouldNotBeUsed")
     const runHatchFlow = vi.fn(async () => ({
       bundleRoot: "/tmp/AgentBundles/ExplicitBot.ouro",
       selectedIdentity: "python.md",
-      specialistSecretsPath: "/tmp/.agentsecrets/AdoptionSpecialist/secrets.json",
+      specialistSecretsPath: "/tmp/.agentsecrets/SerpentGuide/secrets.json",
       hatchlingSecretsPath: "/tmp/.agentsecrets/ExplicitBot/secrets.json",
     }))
 
@@ -3650,7 +3650,7 @@ describe("specialist integration (zero agents -> adoption specialist)", () => {
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
       registerOuroBundleType: vi.fn(async () => ({ attempted: true, registered: true })),
-      runAdoptionSpecialist,
+      runSerpentGuide,
       runHatchFlow,
     }
 
@@ -3666,13 +3666,13 @@ describe("specialist integration (zero agents -> adoption specialist)", () => {
       "sk-ant-oat01-test-token",
     ], deps)
 
-    expect(runAdoptionSpecialist).not.toHaveBeenCalled()
+    expect(runSerpentGuide).not.toHaveBeenCalled()
     expect(runHatchFlow).toHaveBeenCalled()
     expect(result).toContain("hatched ExplicitBot")
   })
 
   it("routes bare ouro hatch through specialist when no explicit args given", async () => {
-    const runAdoptionSpecialist = vi.fn(async () => "HatchedViaSpecialist")
+    const runSerpentGuide = vi.fn(async () => "HatchedViaSpecialist")
     const startChat = vi.fn(async () => {})
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
@@ -3684,19 +3684,19 @@ describe("specialist integration (zero agents -> adoption specialist)", () => {
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
       registerOuroBundleType: vi.fn(async () => ({ attempted: true, registered: true })),
-      runAdoptionSpecialist,
+      runSerpentGuide,
       startChat,
     }
 
     const result = await runOuroCli(["hatch"], deps)
 
-    expect(runAdoptionSpecialist).toHaveBeenCalledTimes(1)
+    expect(runSerpentGuide).toHaveBeenCalledTimes(1)
     expect(startChat).toHaveBeenCalledWith("HatchedViaSpecialist")
     expect(result).toBe("")
   })
 
   it("returns empty string without starting chat on bare ouro hatch when startChat is not provided", async () => {
-    const runAdoptionSpecialist = vi.fn(async () => "NoChatHatch")
+    const runSerpentGuide = vi.fn(async () => "NoChatHatch")
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
       sendCommand: vi.fn(async () => ({ ok: true })),
@@ -3707,18 +3707,18 @@ describe("specialist integration (zero agents -> adoption specialist)", () => {
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
       registerOuroBundleType: vi.fn(async () => ({ attempted: true, registered: true })),
-      runAdoptionSpecialist,
+      runSerpentGuide,
       // No startChat provided
     }
 
     const result = await runOuroCli(["hatch"], deps)
 
-    expect(runAdoptionSpecialist).toHaveBeenCalledTimes(1)
+    expect(runSerpentGuide).toHaveBeenCalledTimes(1)
     expect(result).toBe("")
   })
 
   it("returns empty string when specialist returns null on bare ouro hatch", async () => {
-    const runAdoptionSpecialist = vi.fn(async () => null)
+    const runSerpentGuide = vi.fn(async () => null)
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
       sendCommand: vi.fn(async () => ({ ok: true })),
@@ -3728,17 +3728,17 @@ describe("specialist integration (zero agents -> adoption specialist)", () => {
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
-      runAdoptionSpecialist,
+      runSerpentGuide,
     }
 
     const result = await runOuroCli(["hatch"], deps)
 
-    expect(runAdoptionSpecialist).toHaveBeenCalledTimes(1)
+    expect(runSerpentGuide).toHaveBeenCalledTimes(1)
     expect(result).toBe("")
   })
 
   it("returns empty string without starting chat when startChat is not provided", async () => {
-    const runAdoptionSpecialist = vi.fn(async () => "NoChatBot")
+    const runSerpentGuide = vi.fn(async () => "NoChatBot")
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
       sendCommand: vi.fn(async () => ({ ok: true })),
@@ -3750,13 +3750,13 @@ describe("specialist integration (zero agents -> adoption specialist)", () => {
 
       registerOuroBundleType: vi.fn(async () => ({ attempted: true, registered: true })),
       listDiscoveredAgents: vi.fn(async () => []),
-      runAdoptionSpecialist,
+      runSerpentGuide,
       // No startChat provided
     }
 
     const result = await runOuroCli([], deps)
 
-    expect(runAdoptionSpecialist).toHaveBeenCalledTimes(1)
+    expect(runSerpentGuide).toHaveBeenCalledTimes(1)
     expect(deps.startDaemonProcess).toHaveBeenCalled()
     expect(result).toBe("")
   })

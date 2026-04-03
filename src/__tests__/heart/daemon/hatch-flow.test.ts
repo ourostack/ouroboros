@@ -392,7 +392,7 @@ describe("hatch flow", () => {
     cleanup.push(tempCwd)
 
     const homeDir = os.homedir()
-    const specialistBundleDir = path.join(homeDir, "AgentBundles", "AdoptionSpecialist.ouro")
+    const specialistBundleDir = path.join(homeDir, "AgentBundles", "SerpentGuide.ouro")
     const sourceDir = path.join(specialistBundleDir, "psyche", "identities")
     fs.mkdirSync(sourceDir, { recursive: true })
     fs.writeFileSync(path.join(sourceDir, "python.md"), "# Python\n", "utf-8")
@@ -400,7 +400,7 @@ describe("hatch flow", () => {
     const agentName = `DefaultsBot-${Date.now()}`
     const bundleRoot = path.join(homeDir, "AgentBundles", `${agentName}.ouro`)
     const secretsDir = path.join(homeDir, ".agentsecrets", agentName)
-    const specialistSecretsDir = path.join(homeDir, ".agentsecrets", "AdoptionSpecialist")
+    const specialistSecretsDir = path.join(homeDir, ".agentsecrets", "SerpentGuide")
     cleanup.push(bundleRoot, secretsDir, specialistBundleDir, specialistSecretsDir)
 
     const originalCwd = process.cwd()
@@ -416,7 +416,7 @@ describe("hatch flow", () => {
       })
 
       expect(result.bundleRoot).toBe(bundleRoot)
-      expect(fs.existsSync(path.join(tempCwd, "AdoptionSpecialist.ouro", "psyche", "identities", "python.md"))).toBe(true)
+      expect(fs.existsSync(path.join(tempCwd, "SerpentGuide.ouro", "psyche", "identities", "python.md"))).toBe(true)
       expect(fs.existsSync(path.join(secretsDir, "secrets.json"))).toBe(true)
     } finally {
       process.chdir(originalCwd)

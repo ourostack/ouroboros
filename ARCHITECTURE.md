@@ -267,11 +267,11 @@ When resolving skills, agent-level skills take priority. Harness skills are fall
 - Update hooks run against bundles using `bundle-meta.json`.
 - The bootstrap wrapper and installed launcher are designed to converge on the same runtime channel.
 
-## Adoption Specialist
+## Serpent Guide
 
-`AdoptionSpecialist.ouro/` is shipped with the package and used by `ouro hatch`.
+`SerpentGuide.ouro/` is shipped with the package and used by `ouro hatch`.
 
-The specialist:
+The serpent guide:
 
 - interviews the human
 - helps define the new agent
@@ -285,7 +285,7 @@ Top-level repo layout:
 
 - `src/`
 - `subagents/`
-- `AdoptionSpecialist.ouro/`
+- `SerpentGuide.ouro/`
 - `docs/`
 - `scripts/teams-sense/`
 - `packages/ouro.bot/`

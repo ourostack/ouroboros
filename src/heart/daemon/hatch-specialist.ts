@@ -20,14 +20,14 @@ export interface SpecialistIdentityPick {
 
 export function getSpecialistIdentitySourceDir(): string {
   // Prefer ~/AgentBundles/ if it exists (user may have customized identities)
-  const userSource = path.join(os.homedir(), "AgentBundles", "AdoptionSpecialist.ouro", "psyche", "identities")
+  const userSource = path.join(os.homedir(), "AgentBundles", "SerpentGuide.ouro", "psyche", "identities")
   if (fs.existsSync(userSource)) return userSource
   // Fall back to the bundled copy shipped with the npm package
-  return path.join(__dirname, "..", "..", "..", "AdoptionSpecialist.ouro", "psyche", "identities")
+  return path.join(__dirname, "..", "..", "..", "SerpentGuide.ouro", "psyche", "identities")
 }
 
 export function getRepoSpecialistIdentitiesDir(): string {
-  return path.join(process.cwd(), "AdoptionSpecialist.ouro", "psyche", "identities")
+  return path.join(process.cwd(), "SerpentGuide.ouro", "psyche", "identities")
 }
 
 function listMarkdownIdentityFiles(dir: string): string[] {
