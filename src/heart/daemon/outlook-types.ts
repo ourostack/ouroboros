@@ -610,3 +610,28 @@ export interface OutlookLogView {
   totalLines: number
   entries: OutlookLogEntry[]
 }
+
+// ---------------------------------------------------------------------------
+// Continuity — presence, cares, episodes
+// ---------------------------------------------------------------------------
+
+export interface OutlookPresenceView {
+  self: import("../../heart/presence").AgentPresence | null
+  peers: import("../../heart/presence").AgentPresence[]
+}
+
+export interface OutlookCareSummary {
+  activeCount: number
+  items: { id: string; label: string; status: string; salience: string }[]
+}
+
+export interface OutlookEpisodeSummary {
+  recentCount: number
+  items: { id: string; kind: string; summary: string; timestamp: string }[]
+}
+
+export interface OutlookContinuityView {
+  presence: OutlookPresenceView
+  cares: OutlookCareSummary
+  episodes: OutlookEpisodeSummary
+}

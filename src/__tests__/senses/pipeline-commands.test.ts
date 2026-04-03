@@ -52,6 +52,62 @@ vi.mock("../../heart/provider-ping", async () => ({
   runHealthInventory: vi.fn(),
 }))
 
+// ── Continuity mocks (needed for obligation episode emission coverage) ───
+const mockReadPendingObligations = vi.fn().mockReturnValue([])
+const mockEmitEpisode = vi.fn()
+
+vi.mock("../../heart/obligations", async () => {
+  const actual = await vi.importActual<typeof import("../../heart/obligations")>("../../heart/obligations")
+  return {
+    ...actual,
+    readPendingObligations: (...args: any[]) => mockReadPendingObligations(...args),
+  }
+})
+
+vi.mock("../../mind/episodes", async () => {
+  const actual = await vi.importActual<typeof import("../../mind/episodes")>("../../mind/episodes")
+  return {
+    ...actual,
+    emitEpisode: (...args: any[]) => mockEmitEpisode(...args),
+    readRecentEpisodes: vi.fn().mockReturnValue([]),
+  }
+})
+
+vi.mock("../../heart/cares", async () => {
+  const actual = await vi.importActual<typeof import("../../heart/cares")>("../../heart/cares")
+  return { ...actual, readActiveCares: vi.fn().mockReturnValue([]) }
+})
+
+vi.mock("../../heart/tempo", async () => {
+  const actual = await vi.importActual<typeof import("../../heart/tempo")>("../../heart/tempo")
+  return {
+    ...actual,
+    deriveTempo: vi.fn().mockReturnValue({ mode: "brief", significance: "low", reentryDepth: "warm", effectiveBudget: { min: 150, max: 250 } }),
+  }
+})
+
+vi.mock("../../heart/temporal-view", async () => {
+  const actual = await vi.importActual<typeof import("../../heart/temporal-view")>("../../heart/temporal-view")
+  return {
+    ...actual,
+    buildTemporalView: vi.fn().mockReturnValue({ recentEpisodes: [], activeObligations: [], activeCares: [], openIntentions: [], peerPresence: [], tempo: "brief", assembledAt: new Date().toISOString() }),
+  }
+})
+
+vi.mock("../../heart/wake-packet", async () => {
+  const actual = await vi.importActual<typeof import("../../heart/wake-packet")>("../../heart/wake-packet")
+  return {
+    ...actual,
+    buildWakePacket: vi.fn().mockReturnValue({ plotLine: "", obligations: "", cares: "", presence: "", resumeHint: "", tempo: "brief", tokenBudget: { min: 150, max: 250 }, assembledAt: new Date().toISOString() }),
+    renderWakePacket: vi.fn().mockReturnValue(""),
+  }
+})
+
+vi.mock("../../heart/presence", async () => {
+  const actual = await vi.importActual<typeof import("../../heart/presence")>("../../heart/presence")
+  return { ...actual, derivePresence: vi.fn().mockReturnValue({}), writePresence: vi.fn() }
+})
+
 vi.mock("../../heart/daemon/auth-flow", async () => ({
   writeAgentProviderSelection: vi.fn(),
   loadAgentSecrets: vi.fn().mockReturnValue({
@@ -310,6 +366,42 @@ describe("pipeline slash command interception", () => {
 
     expect(result.turnOutcome).toBe("command")
     expect(input.runAgent).not.toHaveBeenCalled()
+  })
+
+  it("emits episode when obligation status changes between pre/post turn", async () => {
+    const beforeObligations = [
+      { id: "ob-1", content: "review PR", status: "pending", createdAt: "2026-04-01T10:00:00Z", updatedAt: "2026-04-01T10:00:00Z" },
+    ]
+    const afterObligations = [
+      { id: "ob-1", content: "review PR", status: "fulfilled", createdAt: "2026-04-01T10:00:00Z", updatedAt: "2026-04-02T10:00:00Z" },
+    ]
+
+    // Default to beforeObligations; switch to afterObligations after runAgent
+    mockReadPendingObligations.mockReturnValue(beforeObligations)
+
+    const usageData: UsageData = { input_tokens: 100, output_tokens: 50, reasoning_tokens: 10, total_tokens: 160 }
+    const originalRunAgent = vi.fn().mockResolvedValue({ usage: usageData, outcome: "settled" })
+    const runAgentWrapper = async (...args: any[]) => {
+      const result = await originalRunAgent(...args)
+      mockReadPendingObligations.mockReturnValue(afterObligations)
+      return result
+    }
+
+    const { handleInboundTurn } = await import("../../senses/pipeline")
+    const input = makeInput({
+      messages: [{ role: "user", content: "hello world" }],
+      runAgent: runAgentWrapper as any,
+    })
+    await handleInboundTurn(input)
+
+    expect(mockEmitEpisode).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ kind: "obligation_shift", salience: "medium" }),
+    )
+
+    // Reset for subsequent tests
+    mockReadPendingObligations.mockReturnValue([])
+    mockEmitEpisode.mockReset()
   })
 })
 

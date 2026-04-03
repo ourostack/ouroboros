@@ -1909,6 +1909,117 @@ describe("delegation router", () => {
     expect(rendered).toContain("working in codex coding-001")
   })
 
+  it("compresses obligation list to a pointer when hasWakePacket is true", async () => {
+    const { formatActiveWorkFrame, buildActiveWorkFrame } = await import("../../heart/active-work")
+
+    const wakeFrame = buildActiveWorkFrame({
+      currentSession: {
+        friendId: "friend-1",
+        channel: "bluebubbles",
+        key: "chat",
+        sessionPath: "/tmp/state/sessions/friend-1/bluebubbles/chat.json",
+      },
+      mustResolveBeforeHandoff: false,
+      inner: {
+        status: "idle",
+        hasPending: false,
+        job: {
+          status: "idle" as const,
+          content: null,
+          origin: null,
+          mode: "reflect" as const,
+          obligationStatus: null,
+          surfacedResult: null,
+          queuedAt: null,
+          startedAt: null,
+          surfacedAt: null,
+        },
+      },
+      bridges: [],
+      pendingObligations: [
+        {
+          id: "ob-1",
+          origin: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
+          content: "close the loop on the fix",
+          status: "investigating" as const,
+          currentSurface: { kind: "coding", label: "codex coding-001" },
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      ],
+      taskBoard: {
+        compact: "",
+        activeBridges: [],
+        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
+      },
+      friendActivity: [],
+    })
+
+    const rendered = formatActiveWorkFrame(wakeFrame, { hasWakePacket: true })
+    expect(rendered).not.toContain("## return obligations")
+    expect(rendered).toContain("return obligations: 1 active (canonical details in **Owed** section of wake packet)")
+  })
+
+  it("suppresses obligation rendering when all obligations in the frame are fulfilled", async () => {
+    const { formatActiveWorkFrame } = await import("../../heart/active-work")
+
+    // Construct frame manually (bypassing buildActiveWorkFrame normalization)
+    // to simulate a frame with obligations that are all fulfilled
+    const fulfilledFrame = {
+      currentSession: {
+        friendId: "friend-1",
+        channel: "cli" as const,
+        key: "session",
+        sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+      },
+      currentObligation: null,
+      mustResolveBeforeHandoff: false,
+      centerOfGravity: "local-turn" as const,
+      inner: {
+        status: "idle" as const,
+        hasPending: false,
+        job: {
+          status: "idle" as const,
+          content: null,
+          origin: null,
+          mode: "reflect" as const,
+          obligationStatus: null,
+          surfacedResult: null,
+          queuedAt: null,
+          startedAt: null,
+          surfacedAt: null,
+        },
+      },
+      bridges: [],
+      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
+      friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
+      codingSessions: [],
+      pendingObligations: [
+        {
+          id: "ob-done",
+          origin: { friendId: "friend-1", channel: "cli", key: "session" },
+          content: "already done",
+          status: "fulfilled" as const,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      ],
+      innerReturnObligations: [],
+      bridgeSuggestion: null,
+    }
+
+    // With hasWakePacket — should suppress (openCount=0, no pointer)
+    const rendered = formatActiveWorkFrame(fulfilledFrame, { hasWakePacket: true })
+    expect(rendered).not.toContain("## return obligations")
+    expect(rendered).not.toContain("return obligations:")
+    expect(rendered).not.toContain("canonical details in **Owed**")
+
+    // Without hasWakePacket — should also suppress (openCount=0, no list)
+    const renderedWithoutWake = formatActiveWorkFrame(fulfilledFrame)
+    expect(renderedWithoutWake).not.toContain("## return obligations")
+    expect(renderedWithoutWake).not.toContain("return obligations:")
+  })
+
   it("renders queued inner thought content when present", async () => {
     const { formatActiveWorkFrame } = await import("../../heart/active-work")
 

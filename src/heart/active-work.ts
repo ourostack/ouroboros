@@ -633,7 +633,7 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
   return frame
 }
 
-export function formatActiveWorkFrame(frame: ActiveWorkFrame): string {
+export function formatActiveWorkFrame(frame: ActiveWorkFrame, options?: { hasWakePacket?: boolean }): string {
   const lines = ["## what i'm holding"]
   lines.push("this is my top-level live world-state right now. inner work, coding lanes, other sessions, and return obligations all belong inside this picture.")
   lines.push("if older checkpoints elsewhere in the transcript disagree with this picture, this picture wins.")
@@ -748,16 +748,24 @@ export function formatActiveWorkFrame(frame: ActiveWorkFrame): string {
   }
 
   if ((frame.pendingObligations ?? []).length > 0) {
-    lines.push("")
-    lines.push("## return obligations")
-    for (const obligation of frame.pendingObligations) {
-      if (!isOpenObligationStatus(obligation.status)) continue
-      let obligationLine =
-        `- [${obligation.status}] ${obligation.origin.friendId}/${obligation.origin.channel}/${obligation.origin.key}: ${obligation.content}${formatObligationSurface(obligation)}`
-      if (obligation.latestNote?.trim()) {
-        obligationLine += `\n  latest: ${obligation.latestNote.trim()}`
+    const openCount = frame.pendingObligations.filter((ob) => isOpenObligationStatus(ob.status)).length
+    if (options?.hasWakePacket && openCount > 0) {
+      // Wake packet carries enriched obligations (with resumeHint, stalenessClass, waitingOn).
+      // Avoid duplicating the full list — just anchor the count here.
+      lines.push("")
+      lines.push(`return obligations: ${openCount} active (canonical details in **Owed** section of wake packet)`)
+    } else if (openCount > 0) {
+      lines.push("")
+      lines.push("## return obligations")
+      for (const obligation of frame.pendingObligations) {
+        if (!isOpenObligationStatus(obligation.status)) continue
+        let obligationLine =
+          `- [${obligation.status}] ${obligation.origin.friendId}/${obligation.origin.channel}/${obligation.origin.key}: ${obligation.content}${formatObligationSurface(obligation)}`
+        if (obligation.latestNote?.trim()) {
+          obligationLine += `\n  latest: ${obligation.latestNote.trim()}`
+        }
+        lines.push(obligationLine)
       }
-      lines.push(obligationLine)
     }
   }
 
