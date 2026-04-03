@@ -557,9 +557,9 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
       // Idle empty (first): warn
       // Idle empty (second): exit
       let ctrlCWarned = false
+      let ctrlCTimer: ReturnType<typeof setTimeout> | null = null
       const handleCtrlC = (hasInput: boolean): import("./cli/ouro-tui").CtrlCAction => {
         if (currentAbort) {
-          // During generation: abort the request
           currentAbort.abort()
           ctrlCWarned = false
           return "abort"
@@ -570,11 +570,14 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
         }
         if (ctrlCWarned) {
           ctrlCWarned = false
+          if (ctrlCTimer) { clearTimeout(ctrlCTimer); ctrlCTimer = null }
           closed = true
           inputQueue!.close()
           return "exit"
         }
         ctrlCWarned = true
+        // Reset after 2 seconds — must press twice within window
+        ctrlCTimer = setTimeout(() => { ctrlCWarned = false }, 2000)
         return "warn"
       }
 

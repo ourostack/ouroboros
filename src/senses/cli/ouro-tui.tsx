@@ -275,10 +275,12 @@ function LiveArea({ live, elapsed }: {
 
 // ─── Input ──────────────────────────────────────────────────────────
 
-function InputArea({ onSubmit, onCtrlC, history }: {
+function InputArea({ onSubmit, onCtrlC, history, agentName, model }: {
   readonly onSubmit: (text: string) => void
   readonly onCtrlC: (hasInput: boolean) => CtrlCAction
   readonly history: readonly string[]
+  readonly agentName: string
+  readonly model: string
 }): React.ReactElement {
   const [input, setInput] = useState("")
   const [cursorPos, setCursorPos] = useState(0) // cursor position within input
@@ -499,15 +501,14 @@ function InputArea({ onSubmit, onCtrlC, history }: {
           <Text color={OURO.bone}>{input.slice(cursorPos + (cursorVisible ? 0 : 1))}</Text>
         </Box>
       )}
-      {/* Tooltip (right-aligned, auto-dismissing) */}
-      {tooltip ? (
-        <Box>
-          <Box flexGrow={1} />
-          <Text dimColor>{tooltip}</Text>
-        </Box>
-      ) : null}
       {/* Bottom separator */}
       <Text dimColor>{"─".repeat(cols)}</Text>
+      {/* Status + hints + tooltip — BELOW the box */}
+      <Box>
+        <Text dimColor>{agentName}{model ? ` · ${model}` : ""} · /help</Text>
+        <Box flexGrow={1} />
+        {tooltip ? <Text dimColor>{tooltip}</Text> : null}
+      </Box>
     </Box>
   )
 }
@@ -555,6 +556,8 @@ export function OuroTui({
         onSubmit={onSubmit}
         onCtrlC={onCtrlC}
         history={inputHistory}
+        agentName={agentName}
+        model={model}
       />
     </Box>
   )
