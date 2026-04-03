@@ -27,7 +27,7 @@ export interface ReturnObligation {
 // ── Paths ────────────────────────────────────────────────────────
 
 export function getObligationsDir(agentName: string): string {
-  return path.join(getAgentRoot(agentName), "state", "obligations", "inner")
+  return path.join(getAgentRoot(agentName), "arc", "obligations", "inner")
 }
 
 // ── ID generation ────────────────────────────────────────────────

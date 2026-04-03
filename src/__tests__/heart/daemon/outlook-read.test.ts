@@ -146,7 +146,7 @@ describe("outlook direct reads", () => {
       created: "2026-03-29",
       updated: "2026-03-29",
     })
-    writeJson(path.join(alphaRoot, "state", "obligations", "ob-1.json"), {
+    writeJson(path.join(alphaRoot, "arc", "obligations", "ob-1.json"), {
       id: "ob-1",
       origin: { friendId: "friend-1", channel: "cli", key: "session" },
       content: "Bring daemon hosting back with tests.",
@@ -155,7 +155,7 @@ describe("outlook direct reads", () => {
       updatedAt: "2026-03-29T11:56:00.000Z",
       nextAction: "finish the read layer and move to daemon hosting",
     })
-    writeJson(path.join(alphaRoot, "state", "obligations", "ob-0.json"), {
+    writeJson(path.join(alphaRoot, "arc", "obligations", "ob-0.json"), {
       id: "ob-0",
       origin: { friendId: "friend-2", channel: "teams", key: "thread" },
       content: "Older open thread.",
@@ -795,7 +795,7 @@ describe("outlook deep readers", () => {
       writeAgentConfig(alphaRoot)
       writeJson(path.join(alphaRoot, "state", "sessions", "self", "inner", "dialog.json"), { version: 1, messages: [] })
       writeJson(path.join(alphaRoot, "state", "sessions", "self", "inner", "runtime.json"), { status: "idle" })
-      writeJson(path.join(alphaRoot, "state", "obligations", "ob-no-origin.json"), {
+      writeJson(path.join(alphaRoot, "arc", "obligations", "ob-no-origin.json"), {
         id: "ob-no-origin",
         content: "test obligation",
         status: "pending",
@@ -952,7 +952,7 @@ describe("outlook deep readers", () => {
       })
 
       // Write obligation for return obligations
-      writeJson(path.join(alphaRoot, "state", "obligations", "ob-1.json"), {
+      writeJson(path.join(alphaRoot, "arc", "obligations", "ob-1.json"), {
         id: "ob-1",
         origin: { friendId: "friend-1", channel: "cli", key: "session" },
         content: "Deploy check requested.",
