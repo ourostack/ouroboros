@@ -182,7 +182,7 @@ export async function runHatchFlow(input: HatchFlowInput, deps: HatchFlowDeps = 
     random,
   })
 
-  const specialistSecretsPath = writeSecretsFile("AdoptionSpecialist", input.provider, input.credentials, secretsRoot)
+  const specialistSecretsPath = writeSecretsFile("SerpentGuide", input.provider, input.credentials, secretsRoot)
   const hatchlingSecretsPath = writeSecretsFile(input.agentName, input.provider, input.credentials, secretsRoot)
 
   const bundleRoot = path.join(bundlesRoot, `${input.agentName}.ouro`)

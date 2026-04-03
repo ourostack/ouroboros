@@ -1232,7 +1232,7 @@ describe("runCliSession", () => {
     })
 
     const result = await runCliSession({
-      agentName: "AdoptionSpecialist",
+      agentName: "SerpentGuide",
       execTool: customExecTool,
       exitOnToolCall: "complete_adoption",
       pasteDebounceMs: 0,
@@ -1256,7 +1256,7 @@ describe("runCliSession", () => {
     })
 
     const result = await runCliSession({
-      agentName: "AdoptionSpecialist",
+      agentName: "SerpentGuide",
       execTool: customExecTool,
       exitOnToolCall: "complete_adoption",
       pasteDebounceMs: 0,

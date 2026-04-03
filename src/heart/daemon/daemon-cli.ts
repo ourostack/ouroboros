@@ -117,7 +117,7 @@ export interface OuroCliDeps {
   fallbackPendingMessage: (command: Extract<DaemonCommand, { kind: "message.send" }>) => string
   listDiscoveredAgents?: () => Promise<string[]> | string[]
   runHatchFlow?: (input: HatchFlowInput) => Promise<HatchFlowResult>
-  runAdoptionSpecialist?: () => Promise<string | null>
+  runSerpentGuide?: () => Promise<string | null>
   runAuthFlow?: (input: RuntimeAuthInput) => Promise<RuntimeAuthResult>
   promptInput?: (question: string) => Promise<string>
   registerOuroBundleType?: () => Promise<unknown> | unknown
@@ -1512,7 +1512,7 @@ export function discoverExistingCredentials(secretsRoot: string): DiscoveredCred
 }
 
 /* v8 ignore start -- integration: interactive terminal specialist session @preserve */
-async function defaultRunAdoptionSpecialist(): Promise<string | null> {
+async function defaultRunSerpentGuide(): Promise<string | null> {
   const { runCliSession } = await import("../../senses/cli")
   const { patchRuntimeConfig } = await import("../config")
   const { setAgentName, setAgentConfigOverride } = await import("../identity")
@@ -1547,6 +1547,34 @@ async function defaultRunAdoptionSpecialist(): Promise<string | null> {
       azure: "",
     }
 
+    // Scan environment variables for API keys
+    const envKeys: Array<{ provider: AgentProvider; envVar: string; credKey: string }> = [
+      { provider: "anthropic", envVar: "ANTHROPIC_API_KEY", credKey: "setupToken" },
+      { provider: "openai-codex", envVar: "OPENAI_API_KEY", credKey: "oauthAccessToken" },
+      { provider: "azure", envVar: "AZURE_OPENAI_API_KEY", credKey: "apiKey" },
+      { provider: "azure", envVar: "AZURE_OPENAI_KEY", credKey: "apiKey" },
+      { provider: "minimax", envVar: "MINIMAX_API_KEY", credKey: "apiKey" },
+      { provider: "github-copilot", envVar: "GITHUB_TOKEN", credKey: "token" },
+    ]
+    const envDiscovered: Array<DiscoveredCredential & { envVar: string }> = []
+    for (const { provider, envVar, credKey } of envKeys) {
+      const value = process.env[envVar]
+      if (value) {
+        const envCred: HatchCredentialsInput = { [credKey]: value }
+        // For Azure, also check for endpoint and deployment env vars
+        if (provider === "azure") {
+          const endpoint = process.env.AZURE_OPENAI_ENDPOINT
+          const deployment = process.env.AZURE_OPENAI_DEPLOYMENT
+          if (endpoint) envCred.endpoint = endpoint
+          if (deployment) envCred.deployment = deployment
+        }
+        const provCfg: Record<string, string> = { model: defaultModels[provider] }
+        if (provider === "azure" && envCred.deployment) provCfg.deployment = envCred.deployment
+        envDiscovered.push({ provider, agentName: "env", credentials: envCred, providerConfig: provCfg, envVar })
+        discovered.push({ provider, agentName: "env", credentials: envCred, providerConfig: provCfg })
+      }
+    }
+
     if (discovered.length > 0) {
       process.stdout.write(`\n\ud83d\udc0d welcome to ouroboros! ${hatchVerb}\n`)
       process.stdout.write("i found existing API credentials:\n\n")
@@ -1554,7 +1582,9 @@ async function defaultRunAdoptionSpecialist(): Promise<string | null> {
       for (let i = 0; i < unique.length; i++) {
         const model = unique[i].providerConfig.model || unique[i].providerConfig.deployment || ""
         const modelLabel = model ? `, ${model}` : ""
-        process.stdout.write(`  ${i + 1}. ${unique[i].provider}${modelLabel} (from ${unique[i].agentName})\n`)
+        const envMatch = envDiscovered.find((e) => e.provider === unique[i].provider && unique[i].agentName === "env")
+        const sourceLabel = envMatch ? `from env: $${envMatch.envVar}` : `from ${unique[i].agentName}`
+        process.stdout.write(`  ${i + 1}. ${unique[i].provider}${modelLabel} (${sourceLabel})\n`)
       }
       process.stdout.write("\n")
       const choice = await coldPrompt("use one of these? enter number, or 'new' for a different key: ")
@@ -1606,19 +1636,19 @@ async function defaultRunAdoptionSpecialist(): Promise<string | null> {
     coldRl.close()
     process.stdout.write("\n")
 
-    // Phase 2: configure runtime for adoption specialist
-    const bundleSourceDir = path.resolve(__dirname, "..", "..", "..", "AdoptionSpecialist.ouro")
+    // Phase 2: configure runtime for serpent guide
+    const bundleSourceDir = path.resolve(__dirname, "..", "..", "..", "SerpentGuide.ouro")
     const bundlesRoot = getAgentBundlesRoot()
     const secretsRoot2 = path.join(os.homedir(), ".agentsecrets")
 
-    // Suppress non-critical log noise during adoption (no secrets.json, etc.)
+    // Suppress non-critical log noise during hatch (no secrets.json, etc.)
     const { setRuntimeLogger } = await import("../../nerves/runtime")
     const { createLogger } = await import("../../nerves")
     setRuntimeLogger(createLogger({ level: "error" }))
 
     // Configure runtime: set agent identity + config override so runAgent
-    // doesn't try to read from ~/AgentBundles/AdoptionSpecialist.ouro/
-    setAgentName("AdoptionSpecialist")
+    // doesn't try to read from ~/AgentBundles/SerpentGuide.ouro/
+    setAgentName("SerpentGuide")
     // Build specialist system prompt
     const soulText = loadSoulText(bundleSourceDir)
     const identitiesDir = path.join(bundleSourceDir, "psyche", "identities")
@@ -1660,9 +1690,9 @@ async function defaultRunAdoptionSpecialist(): Promise<string | null> {
       animationWriter: (text: string) => process.stdout.write(text),
     })
 
-    // Run the adoption specialist session via runCliSession
+    // Run the serpent guide session via runCliSession
     const result = await runCliSession({
-      agentName: "AdoptionSpecialist",
+      agentName: "SerpentGuide",
       tools: specialistTools,
       execTool: specialistExecTool,
       exitOnToolCall: "complete_adoption",
@@ -1685,7 +1715,7 @@ async function defaultRunAdoptionSpecialist(): Promise<string | null> {
 
     return null
   } catch (err) {
-    process.stderr.write(`\nouro adoption error: ${err instanceof Error ? err.stack ?? err.message : String(err)}\n`)
+    process.stderr.write(`\nouro hatch error: ${err instanceof Error ? err.stack ?? err.message : String(err)}\n`)
     coldRl.close()
     return null
   } finally {
@@ -1723,7 +1753,7 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     listDiscoveredAgents: defaultListDiscoveredAgents,
     runHatchFlow: defaultRunHatchFlow,
     promptInput: defaultPromptInput,
-    runAdoptionSpecialist: defaultRunAdoptionSpecialist,
+    runSerpentGuide: defaultRunSerpentGuide,
     runAuthFlow: defaultRunRuntimeAuthFlow,
     registerOuroBundleType: defaultRegisterOuroBundleUti,
     installOuroCommand: defaultInstallOuroCommand,
@@ -2360,11 +2390,11 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     const discovered = await Promise.resolve(
       deps.listDiscoveredAgents ? deps.listDiscoveredAgents() : defaultListDiscoveredAgents(),
     )
-    if (discovered.length === 0 && deps.runAdoptionSpecialist) {
+    if (discovered.length === 0 && deps.runSerpentGuide) {
       // System setup first — ouro command, subagents, UTI — before the interactive specialist
       await performSystemSetup(deps)
 
-      const hatchlingName = await deps.runAdoptionSpecialist()
+      const hatchlingName = await deps.runSerpentGuide()
       if (!hatchlingName) {
         return ""
       }
@@ -3498,13 +3528,13 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   }
 
   if (command.kind === "hatch.start") {
-    // Route through adoption specialist when no explicit hatch args were provided
+    // Route through serpent guide when no explicit hatch args were provided
     const hasExplicitHatchArgs = !!(command.agentName || command.humanName || command.provider || command.credentials)
-    if (deps.runAdoptionSpecialist && !hasExplicitHatchArgs) {
+    if (deps.runSerpentGuide && !hasExplicitHatchArgs) {
       // System setup first — ouro command, subagents, UTI — before the interactive specialist
       await performSystemSetup(deps)
 
-      const hatchlingName = await deps.runAdoptionSpecialist()
+      const hatchlingName = await deps.runSerpentGuide()
       if (!hatchlingName) {
         return ""
       }

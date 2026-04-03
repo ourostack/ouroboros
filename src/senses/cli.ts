@@ -825,7 +825,7 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
             continue
           }
         } else {
-          // Legacy path: inline runAgent (used by adoption specialist and tests)
+          // Legacy path: inline runAgent (used by serpent guide and tests)
           const prefix = options.getContentPrefix?.()
           messages.push({ role: "user", content: prefix ? `${prefix}\n\n${input}` : input })
           const traceId = createTraceId()
@@ -872,6 +872,8 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
     if (inkRef) {
       // Suppress React "state update on unmounted component" warnings during cleanup.
       // Ink's useInput hook fires after unmount — this is harmless but noisy.
+      // This also covers the SerpentGuide exitOnToolCall path, which aborts the
+      // current request and breaks out of the loop into this finally block.
       // eslint-disable-next-line no-console -- intentional console.warn/error override for cleanup
       const origWarn = console.warn; const origError = console.error // eslint-disable-line no-console
       // eslint-disable-next-line no-console -- suppress React unmount warnings

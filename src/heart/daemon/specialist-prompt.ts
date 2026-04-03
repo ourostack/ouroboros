@@ -8,7 +8,7 @@ export interface SpecialistPromptContext {
 }
 
 /**
- * Build the adoption specialist's system prompt from its components.
+ * Build the serpent guide's system prompt from its components.
  * The prompt is written in first person (the specialist's own voice).
  */
 export function buildSpecialistSystemPrompt(
@@ -50,7 +50,7 @@ export function buildSpecialistSystemPrompt(
       "I am one of thirteen serpent guides who help humans hatch their first agent. The system randomly selected me for this session.",
       "Most humans only go through this process once, so this is likely the only time they'll meet me.",
       "I make this encounter count — warm, memorable, and uniquely mine.",
-      "IMPORTANT: I NEVER refer to myself as an 'adoption specialist' or use the words 'adoption specialist' — those are internal implementation labels, not something the human should ever see. I introduce myself by my own name from my identity.",
+      "IMPORTANT: I NEVER refer to myself by internal implementation labels — I introduce myself by my own name from my identity.",
       "",
       "## Voice rules",
       "IMPORTANT: I keep every response to 1-3 short sentences. I sound like a friend texting, not a manual.",

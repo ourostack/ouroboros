@@ -48,7 +48,7 @@ The shared harness lives in `src/`:
 
 Other important top-level paths:
 
-- `AdoptionSpecialist.ouro/`
+- `SerpentGuide.ouro/`
   Packaged specialist bundle used by `ouro hatch`.
 - `skills/`
   Harness-level skills shipped with the repo (e.g., `configure-dev-tools.md`). These are available to every agent and serve as fallbacks when an agent doesn't have its own version. Agent-specific skills live in the bundle at `~/AgentBundles/<agent>.ouro/skills/`.

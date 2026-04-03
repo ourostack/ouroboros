@@ -78,8 +78,8 @@ describe("hatch specialist identities", () => {
     const source = getSpecialistIdentitySourceDir()
     const target = getRepoSpecialistIdentitiesDir()
 
-    expect(source).toContain(path.join("AdoptionSpecialist.ouro", "psyche", "identities"))
-    expect(target).toContain(path.join("AdoptionSpecialist.ouro", "psyche", "identities"))
+    expect(source).toContain(path.join("SerpentGuide.ouro", "psyche", "identities"))
+    expect(target).toContain(path.join("SerpentGuide.ouro", "psyche", "identities"))
   })
 
   it("falls back to __dirname-relative path when ~/AgentBundles/ does not exist", () => {
@@ -90,7 +90,7 @@ describe("hatch specialist identities", () => {
     try {
       const source = getSpecialistIdentitySourceDir()
       expect(source.startsWith(path.join(tempHome, "AgentBundles"))).toBe(false)
-      expect(source).toContain(path.join("AdoptionSpecialist.ouro", "psyche", "identities"))
+      expect(source).toContain(path.join("SerpentGuide.ouro", "psyche", "identities"))
     } finally {
       vi.unstubAllEnvs()
     }

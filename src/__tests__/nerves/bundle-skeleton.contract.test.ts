@@ -120,8 +120,8 @@ describe("bundle skeleton contract", () => {
     expect(readPsyche("ASPIRATIONS.md").length).toBeGreaterThan(0)
   })
 
-  it("ships Adoption Specialist bundle with pre-authored identities", () => {
-    const specialistRoot = join(process.cwd(), "AdoptionSpecialist.ouro")
+  it("ships Serpent Guide bundle with pre-authored identities", () => {
+    const specialistRoot = join(process.cwd(), "SerpentGuide.ouro")
     const identitiesDir = join(specialistRoot, "psyche", "identities")
 
     expect(existsSync(specialistRoot)).toBe(true)
@@ -136,7 +136,7 @@ describe("bundle skeleton contract", () => {
   it("keeps bundles external to harness repo root", () => {
     expect(existsSync(join(process.cwd(), "ouroboros.ouro"))).toBe(false)
     expect(existsSync(join(process.cwd(), "slugger.ouro"))).toBe(false)
-    expect(existsSync(join(process.cwd(), "AdoptionSpecialist.ouro"))).toBe(true)
+    expect(existsSync(join(process.cwd(), "SerpentGuide.ouro"))).toBe(true)
 
     const gitignore = readFileSync(join(process.cwd(), ".gitignore"), "utf-8")
       .split(/\r?\n/)
