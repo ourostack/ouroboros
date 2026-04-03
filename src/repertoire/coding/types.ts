@@ -29,6 +29,7 @@ export interface CodingSessionRequest {
   autoRestartOnCrash?: boolean
   autoRestartOnStall?: boolean
   stallThresholdMs?: number
+  verificationCommands?: string[]
 }
 
 export interface CodingFailureDiagnostics {
@@ -38,6 +39,20 @@ export interface CodingFailureDiagnostics {
   signal: NodeJS.Signals | null
   stdoutTail: string
   stderrTail: string
+}
+
+export type CodingVerificationStatus = "not-verified" | "verified-pass" | "verified-fail"
+
+export interface CodingIdentityPacket {
+  repoPath: string | null
+  worktreePath: string | null
+  branch: string | null
+  commit: string | null
+  dirty: boolean
+  dirtyFiles: string[]
+  taskRef: string | null
+  verificationCommands: string[]
+  verificationStatus: CodingVerificationStatus
 }
 
 export interface CodingSession {
@@ -51,6 +66,7 @@ export interface CodingSession {
   stateFile?: string
   checkpoint?: string | null
   artifactPath?: string
+  codingIdentity?: CodingIdentityPacket
   status: CodingSessionStatus
   stdoutTail: string
   stderrTail: string
