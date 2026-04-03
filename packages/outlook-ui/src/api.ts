@@ -1,4 +1,4 @@
-const BASE = "/outlook/api"
+const BASE = "/api"
 
 export async function fetchJson<T>(path: string): Promise<T> {
   const response = await fetch(`${BASE}${path}`, { headers: { accept: "application/json" } })

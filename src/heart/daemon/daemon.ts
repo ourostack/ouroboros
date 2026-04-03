@@ -333,7 +333,7 @@ export class OuroDaemon {
         daemon: "running",
         health: workers.every((worker) => worker.status === "running") ? "ok" : "warn",
         socketPath: this.socketPath,
-        outlookUrl: `${this.outlookServer?.origin ?? "http://127.0.0.1:0"}/outlook`,
+        outlookUrl: this.outlookServer?.origin ?? "http://127.0.0.1:0",
         ...getRuntimeMetadata(),
         workerCount: workers.length,
         senseCount: senses.length,
