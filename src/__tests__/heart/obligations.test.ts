@@ -25,7 +25,7 @@ describe("obligations store", () => {
   const sampleOrigin = { friendId: "friend-1", channel: "cli", key: "session" }
 
   describe("createObligation", () => {
-    it("writes a JSON file under state/obligations/", () => {
+    it("writes a JSON file under arc/obligations/", () => {
       const obligation = createObligation(tmpDir, {
         origin: sampleOrigin,
         content: "think about their architecture question",
@@ -37,7 +37,7 @@ describe("obligations store", () => {
       expect(obligation.origin).toEqual(sampleOrigin)
       expect(obligation.content).toBe("think about their architecture question")
 
-      const filePath = path.join(tmpDir, "state", "obligations", `${obligation.id}.json`)
+      const filePath = path.join(tmpDir, "arc", "obligations", `${obligation.id}.json`)
       expect(fs.existsSync(filePath)).toBe(true)
 
       const stored = JSON.parse(fs.readFileSync(filePath, "utf-8"))
@@ -78,7 +78,7 @@ describe("obligations store", () => {
     it("skips malformed JSON files", () => {
       createObligation(tmpDir, { origin: sampleOrigin, content: "valid" })
 
-      const obligationsDir = path.join(tmpDir, "state", "obligations")
+      const obligationsDir = path.join(tmpDir, "arc", "obligations")
       fs.writeFileSync(path.join(obligationsDir, "bad.json"), "not json", "utf-8")
 
       const all = readObligations(tmpDir)
@@ -89,7 +89,7 @@ describe("obligations store", () => {
     it("skips non-json files", () => {
       createObligation(tmpDir, { origin: sampleOrigin, content: "valid" })
 
-      const obligationsDir = path.join(tmpDir, "state", "obligations")
+      const obligationsDir = path.join(tmpDir, "arc", "obligations")
       fs.writeFileSync(path.join(obligationsDir, "readme.txt"), "ignore me", "utf-8")
 
       const all = readObligations(tmpDir)

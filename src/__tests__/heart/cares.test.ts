@@ -66,10 +66,10 @@ describe("care store", () => {
   })
 
   describe("createCare", () => {
-    it("writes a JSON file under state/cares/", () => {
+    it("writes a JSON file under arc/cares/", () => {
       const care = createCare(tmpDir, baseCareInput)
 
-      const filePath = path.join(tmpDir, "state", "cares", `${care.id}.json`)
+      const filePath = path.join(tmpDir, "arc", "cares", `${care.id}.json`)
       expect(fs.existsSync(filePath)).toBe(true)
 
       const stored = JSON.parse(fs.readFileSync(filePath, "utf-8")) as CareRecord
@@ -84,7 +84,7 @@ describe("care store", () => {
     })
 
     it("creates the cares directory if it does not exist", () => {
-      const caresDir = path.join(tmpDir, "state", "cares")
+      const caresDir = path.join(tmpDir, "arc", "cares")
       expect(fs.existsSync(caresDir)).toBe(false)
 
       createCare(tmpDir, baseCareInput)
@@ -147,7 +147,7 @@ describe("care store", () => {
     it("skips malformed JSON files", () => {
       createCare(tmpDir, baseCareInput)
 
-      const caresDir = path.join(tmpDir, "state", "cares")
+      const caresDir = path.join(tmpDir, "arc", "cares")
       fs.writeFileSync(path.join(caresDir, "bad.json"), "not valid json{{{", "utf-8")
 
       const cares = readCares(tmpDir)
@@ -157,7 +157,7 @@ describe("care store", () => {
     it("skips non-JSON files", () => {
       createCare(tmpDir, baseCareInput)
 
-      const caresDir = path.join(tmpDir, "state", "cares")
+      const caresDir = path.join(tmpDir, "arc", "cares")
       fs.writeFileSync(path.join(caresDir, "readme.txt"), "not a care", "utf-8")
 
       const cares = readCares(tmpDir)
@@ -203,7 +203,7 @@ describe("care store", () => {
 
       updateCare(tmpDir, care.id, { label: "updated" })
 
-      const filePath = path.join(tmpDir, "state", "cares", `${care.id}.json`)
+      const filePath = path.join(tmpDir, "arc", "cares", `${care.id}.json`)
       const stored = JSON.parse(fs.readFileSync(filePath, "utf-8")) as CareRecord
       expect(stored.label).toBe("updated")
     })
@@ -229,7 +229,7 @@ describe("care store", () => {
 
       resolveCare(tmpDir, care.id)
 
-      const filePath = path.join(tmpDir, "state", "cares", `${care.id}.json`)
+      const filePath = path.join(tmpDir, "arc", "cares", `${care.id}.json`)
       const stored = JSON.parse(fs.readFileSync(filePath, "utf-8")) as CareRecord
       expect(stored.status).toBe("resolved")
       expect(stored.resolvedAt).toBeTruthy()
@@ -242,7 +242,7 @@ describe("care store", () => {
 
   describe("backward compatibility", () => {
     it("handles care files from disk with missing optional fields", () => {
-      const caresDir = path.join(tmpDir, "state", "cares")
+      const caresDir = path.join(tmpDir, "arc", "cares")
       fs.mkdirSync(caresDir, { recursive: true })
 
       // Minimal care file (as might exist from older version)
