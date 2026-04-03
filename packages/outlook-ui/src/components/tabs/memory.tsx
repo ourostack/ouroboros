@@ -2,12 +2,27 @@ import { useEffect, useState } from "react"
 import { Badge } from "../../catalyst/badge"
 import { fetchJson, relTime } from "../../api"
 
+interface MemoryDecision {
+  kind: string
+  decision: string
+  reason: string | null
+  excerpt: string | null
+  timestamp: string
+}
+
+interface MemoryDecisionView {
+  totalCount: number
+  items: MemoryDecision[]
+}
+
 export function MemoryTab({ agentName }: { agentName: string }) {
   const [data, setData] = useState<Record<string, unknown> | null>(null)
-  const [view, setView] = useState<"diary" | "journal">("diary")
+  const [decisions, setDecisions] = useState<MemoryDecisionView | null>(null)
+  const [view, setView] = useState<"diary" | "journal" | "decisions">("diary")
 
   useEffect(() => {
     fetchJson<Record<string, unknown>>(`/agents/${encodeURIComponent(agentName)}/memory`).then(setData)
+    fetchJson<MemoryDecisionView>(`/agents/${encodeURIComponent(agentName)}/memory-decisions`).then(setDecisions).catch(() => {})
   }, [agentName])
 
   if (!data) {
@@ -42,6 +57,15 @@ export function MemoryTab({ agentName }: { agentName: string }) {
           }`}
         >
           Journal ({data.journalEntryCount as number})
+        </button>
+        <span className="text-ouro-shadow/30">|</span>
+        <button
+          onClick={() => setView("decisions")}
+          className={`font-mono text-xs uppercase tracking-wider transition-colors ${
+            view === "decisions" ? "text-ouro-glow" : "text-ouro-shadow hover:text-ouro-mist"
+          }`}
+        >
+          Decisions ({decisions?.totalCount ?? 0})
         </button>
       </div>
 
@@ -80,6 +104,30 @@ export function MemoryTab({ agentName }: { agentName: string }) {
             </div>
           ) : (
             <p className="text-sm text-ouro-shadow italic">No journal entries yet.</p>
+          )}
+        </div>
+      )}
+
+      {view === "decisions" && (
+        <div>
+          {decisions && decisions.items.length > 0 ? (
+            <div className="space-y-2">
+              {decisions.items.map((d, i) => (
+                <div key={i} className="rounded-xl bg-ouro-void/40 px-4 py-3 ring-1 ring-ouro-moss/15">
+                  <div className="flex items-center gap-2">
+                    <Badge color={d.decision === "saved" ? "lime" : "zinc"}>
+                      {d.decision}
+                    </Badge>
+                    <Badge>{d.kind.replace(/_/g, " ")}</Badge>
+                    <span className="text-xs text-ouro-shadow">{relTime(d.timestamp)}</span>
+                  </div>
+                  {d.reason && <p className="mt-1 text-sm text-ouro-mist">{d.reason}</p>}
+                  {d.excerpt && <p className="mt-0.5 text-xs text-ouro-shadow italic truncate">{d.excerpt}</p>}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-ouro-shadow italic">No memory decisions logged yet.</p>
           )}
         </div>
       )}
