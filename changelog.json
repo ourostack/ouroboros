@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.183",
+      "changes": [
+        "fix(cli): status/hints moved BELOW input box (between bottom separator and end)",
+        "fix(cli): Ctrl-C double-press requires 2s window (not any two presses ever)",
+        "feat(cli): /help command with all keyboard shortcuts",
+        "docs: CLI keyboard shortcuts documentation"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.182",
       "changes": [
         "fix(cli): remove persistent status bar from input box (header already shows info)",
