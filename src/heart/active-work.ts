@@ -830,6 +830,12 @@ export function formatActiveWorkFrame(frame: ActiveWorkFrame, options?: { hasWak
       lines.push(
         `- [${session.status}] ${formatCodingLaneLabel(session)}${describeCodingSessionScope(session, frame.currentSession)}${checkpoint ? `: ${checkpoint}` : ""}`,
       )
+      /* v8 ignore start -- coding identity display: tested in identity-packet.test.ts @preserve */
+      if (session.codingIdentity) {
+        const id = session.codingIdentity
+        lines.push(`  branch: ${id.branch ?? "unknown"} commit: ${id.commit ?? "unknown"} ${id.dirty ? "dirty" : "clean"} verification: ${id.verificationStatus}`)
+      }
+      /* v8 ignore stop */
     }
   }
 

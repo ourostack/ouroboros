@@ -669,7 +669,8 @@ function BlockRenderer({ block, isFirst, isLast, maxWidth }: { readonly block: B
       const depth = block.level ?? 1
       const barPrefix = "\u2502 ".repeat(depth)
       const barLen = barPrefix.length
-      const wrapWidth = Math.max(40, (maxWidth || 80) - barLen)
+      const effectiveMax = maxWidth || 80
+      const wrapWidth = Math.max(effectiveMax - barLen, 10)
       // Pre-wrap each line so continuation lines also get the bar prefix
       const wrappedLines: string[] = []
       for (const line of block.lines) {
