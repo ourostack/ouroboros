@@ -6,13 +6,16 @@ if (!process.argv.includes("--agent")) {
   process.exit(1)
 }
 
-import { startInnerDialogWorker } from "../senses/inner-dialog-worker"
 import { configureCliRuntimeLogger } from "../nerves/cli-logging"
 
 configureCliRuntimeLogger("self")
 
-startInnerDialogWorker().catch((error) => {
-  // eslint-disable-next-line no-console -- fatal startup guard for worker process
-  console.error(error instanceof Error ? error.message : String(error))
-  process.exit(1)
-})
+// Dynamic import: agent-entry is boot-time wiring that starts a sense process.
+// Using dynamic import avoids a static heart/ -> senses/ dependency.
+import("../senses/inner-dialog-worker")
+  .then(({ startInnerDialogWorker }) => startInnerDialogWorker())
+  .catch((error) => {
+    // eslint-disable-next-line no-console -- fatal startup guard for worker process
+    console.error(error instanceof Error ? error.message : String(error))
+    process.exit(1)
+  })
