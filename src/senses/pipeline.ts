@@ -37,7 +37,7 @@ import { writeAgentProviderSelection, loadAgentSecrets } from "../heart/daemon/a
 import { deriveTempo } from "../heart/tempo"
 import { buildTemporalView } from "../heart/temporal-view"
 import { buildWakePacket, renderWakePacket } from "../heart/wake-packet"
-import { preTurnPull, postTurnPush, drainSyncWrites, resetSyncWrites } from "../heart/sync"
+import { preTurnPull, postTurnPush, drainSyncWrites, runWithSyncContext } from "../heart/sync"
 import { getSyncConfig } from "../heart/config"
 import { derivePresence, writePresence } from "../heart/presence"
 import { readRecentEpisodes, emitEpisode } from "../mind/episodes"
@@ -272,6 +272,7 @@ function readInnerWorkState(): ActiveWorkFrame["inner"] {
 let _lastSessionKey: string | null = null
 
 export async function handleInboundTurn(input: InboundTurnInput): Promise<InboundTurnResult> {
+  return runWithSyncContext(async () => {
   // Reset session-scoped state when the session changes
   const sessionKey = `${input.channel}/${input.sessionKey ?? "session"}`
   if (sessionKey !== _lastSessionKey) {
@@ -445,10 +446,6 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     key: input.sessionKey ?? "session",
     sessionPath: session.sessionPath,
   }
-
-  // Reset turn-scoped sync write tracker before any writes can happen.
-  // Paired with drainSyncWrites() in the finally block below.
-  resetSyncWrites()
 
   // Step 3b: Pre-turn sync pull (opt-in) — MUST happen before any continuity state reads
   // so that obligations, episodes, cares, etc. reflect the latest remote state.
@@ -810,4 +807,5 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
       postTurnPush(getAgentRoot(), syncConfig, writtenPaths)
     }
   }
+  }) // end runWithSyncContext
 }
