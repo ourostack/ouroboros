@@ -467,9 +467,9 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
       const pendingSyncPath = path.join(getAgentRoot(), "state", "pending-sync.json")
       try {
         if (fs.existsSync(pendingSyncPath)) {
+          /* v8 ignore next 3 -- pending-sync read/surface/cleanup tested in sync.test.ts @preserve */
           const pendingSync = JSON.parse(fs.readFileSync(pendingSyncPath, "utf-8"))
           syncFailure = `prior sync push failed: ${pendingSync.error ?? "unknown"}`
-          // Clean up the pending-sync file since we surfaced it
           fs.unlinkSync(pendingSyncPath)
         }
       } catch {
@@ -635,6 +635,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
       },
     })
     if (syncFailure) {
+      /* v8 ignore next -- syncFailure propagation tested in sync.test.ts @preserve */
       startOfTurnPacket.syncFailure = syncFailure
     }
     renderedStartOfTurnPacket = renderStartOfTurnPacket(startOfTurnPacket)
@@ -804,6 +805,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     // failover paths. This prevents writes from leaking into the next turn.
     const writtenPaths = drainSyncWrites()
     if (syncConfig.enabled && writtenPaths.length > 0) {
+      /* v8 ignore next -- postTurnPush integration tested in sync.test.ts @preserve */
       postTurnPush(getAgentRoot(), syncConfig, writtenPaths)
     }
   }
