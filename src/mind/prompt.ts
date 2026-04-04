@@ -580,7 +580,7 @@ function pendingMessagesSection(options?: BuildSystemOptions): string {
 function familyCrossSessionTruthSection(context?: ResolvedContext, options?: BuildSystemOptions): string {
   if (!options?.activeWorkFrame) return ""
   if (context?.friend?.trustLevel !== "family") return ""
-  // When wake packet is present, compress to one line
+  // When start-of-turn packet is present, compress to one line
   if (options?.startOfTurnPacket) {
     return "When family asks whole-self status, answer from the cross-session picture above."
   }

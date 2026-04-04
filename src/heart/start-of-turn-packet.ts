@@ -132,8 +132,8 @@ export function buildStartOfTurnPacket(view: TemporalView, opts?: { canonicalObl
 
   emitNervesEvent({
     component: "heart",
-    event: "heart.wake_packet_built",
-    message: `wake packet built: tempo=${tempo}`,
+    event: "heart.start_of_turn_packet_built",
+    message: `start-of-turn packet built: tempo=${tempo}`,
     meta: {
       tempo,
       plotLineTokens: estimateTokens(packet.plotLine),
@@ -148,7 +148,7 @@ export function buildStartOfTurnPacket(view: TemporalView, opts?: { canonicalObl
 }
 
 /**
- * Renders a wake packet to prompt text, respecting token budget.
+ * Renders a start-of-turn packet to prompt text, respecting token budget.
  * Truncation priority (last truncated first):
  *   resumeHint (PROTECTED) > obligations > cares > plotLine > presence
  * So presence is truncated first, then plotLine, then cares, then obligations.
@@ -170,8 +170,8 @@ export function renderStartOfTurnPacket(packet: StartOfTurnPacket): string {
   if (sections.length === 0) {
     emitNervesEvent({
       component: "heart",
-      event: "heart.wake_packet_rendered",
-      message: "wake packet rendered: empty",
+      event: "heart.start_of_turn_packet_rendered",
+      message: "start-of-turn packet rendered: empty",
       meta: { tokens: 0, tempo: packet.tempo },
     })
     return ""
@@ -204,8 +204,8 @@ export function renderStartOfTurnPacket(packet: StartOfTurnPacket): string {
 
   emitNervesEvent({
     component: "heart",
-    event: "heart.wake_packet_rendered",
-    message: `wake packet rendered: ${tokens} tokens`,
+    event: "heart.start_of_turn_packet_rendered",
+    message: `start-of-turn packet rendered: ${tokens} tokens`,
     meta: { tokens, tempo: packet.tempo, sectionCount: sections.length },
   })
 
@@ -266,8 +266,8 @@ export function renderCompactStartOfTurnPacket(packet: StartOfTurnPacket): strin
 
   emitNervesEvent({
     component: "heart",
-    event: "heart.wake_packet_compact_rendered",
-    message: `compact wake packet: ${estimateTokens(result)} tokens`,
+    event: "heart.start_of_turn_packet_compact_rendered",
+    message: `compact start-of-turn packet: ${estimateTokens(result)} tokens`,
     meta: { tokens: estimateTokens(result) },
   })
 

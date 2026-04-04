@@ -126,7 +126,7 @@ describe("start-of-turn packet prompt section", () => {
 
     expect(startOfTurnPacketIdx).toBeGreaterThan(-1)
     expect(liveWorldIdx).toBeGreaterThan(-1)
-    // Wake packet appears after the group header but as part of the dynamic state section
+    // Start-of-turn packet appears after the group header but as part of the dynamic state section
     expect(startOfTurnPacketIdx).toBeGreaterThan(liveWorldIdx)
   })
 
