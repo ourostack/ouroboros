@@ -43,12 +43,13 @@ function resolveRequiredBundleRoots(): { ouroboros: string; slugger: string } | 
 
 /** Paths that must exist on disk for existing bundles.
  *  - `state` is runtime-only (created on first run)
+ *  - `arc` is created on first write or migration
  *  - `diary` is new (migrated from psyche/memory on first write)
  *  - `journal` is new (created on first journal write)
  */
 function requiredPaths(root: string): string[] {
   return CANONICAL_BUNDLE_MANIFEST
-    .filter((entry) => entry.path !== "state" && entry.path !== "diary" && entry.path !== "journal")
+    .filter((entry) => entry.path !== "state" && entry.path !== "diary" && entry.path !== "journal" && !entry.path.startsWith("arc"))
     .map((entry) => join(root, entry.path))
 }
 
