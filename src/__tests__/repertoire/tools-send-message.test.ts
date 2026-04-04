@@ -70,8 +70,9 @@ vi.mock("../../heart/identity", () => ({
 }))
 
 const mockCreateObligation = vi.fn()
-vi.mock("../../mind/obligations", () => ({
-  createObligation: (...args: any[]) => mockCreateObligation(...args),
+vi.mock("../../heart/obligations", async (importOriginal) => ({
+  ...await importOriginal() as any,
+  createReturnObligation: (...args: any[]) => mockCreateObligation(...args),
   generateObligationId: vi.fn(() => "1709900001000-testid"),
 }))
 

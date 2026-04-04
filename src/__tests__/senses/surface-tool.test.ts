@@ -18,15 +18,16 @@ vi.mock("../../heart/identity", () => ({
 }))
 
 describe("surface tool", () => {
-  let surfaceToolDef: typeof import("../../senses/surface-tool").surfaceToolDef
+  let surfaceToolDef: typeof import("../../repertoire/tools").surfaceToolDef
   let handleSurface: typeof import("../../senses/surface-tool").handleSurface
-  type AttentionItem = import("../../senses/attention-queue").AttentionItem
+  type AttentionItem = import("../../heart/attention-types").AttentionItem
 
   beforeEach(async () => {
     vi.resetModules()
-    const mod = await import("../../senses/surface-tool")
-    surfaceToolDef = mod.surfaceToolDef
-    handleSurface = mod.handleSurface
+    const toolsMod = await import("../../repertoire/tools")
+    surfaceToolDef = toolsMod.surfaceToolDef
+    const surfaceMod = await import("../../senses/surface-tool")
+    handleSurface = surfaceMod.handleSurface
   })
 
   describe("tool definition", () => {

@@ -42,11 +42,10 @@ import { type JournalIndexEntry } from "../mind/associative-recall";
 import { getTaskModule } from "./tasks";
 import { getPendingDir, getInnerDialogPendingDir } from "../mind/pending";
 import type { PendingMessage } from "../mind/pending";
-import { createObligation as createInnerObligation, generateObligationId } from "../mind/obligations";
+import { createReturnObligation, generateObligationId, createObligation, readPendingObligations } from "../heart/obligations";
 import type { BridgeRecord, BridgeSessionRef } from "../heart/bridges/store";
 import { buildProgressStory, renderProgressStory } from "../heart/progress-story";
 import { deliverCrossChatMessage, type CrossChatDeliveryResult } from "../heart/cross-chat-delivery";
-import { createObligation, readPendingObligations } from "../heart/obligations";
 import { readRecentEpisodes, emitEpisode } from "../mind/episodes";
 import { readActiveCares, readCares, createCare, updateCare, resolveCare } from "../heart/cares";
 import { readPresence, readPeerPresence } from "../heart/presence";
@@ -88,7 +87,7 @@ export interface ToolContext {
   activeWorkFrame?: ActiveWorkFrame;
   supportedReasoningEfforts?: readonly string[];
   setReasoningEffort?: (level: string) => void;
-  delegatedOrigins?: import("../senses/attention-queue").AttentionItem[];
+  delegatedOrigins?: import("../heart/attention-types").AttentionItem[];
 }
 
 export type ToolHandler = (args: Record<string, string>, ctx?: ToolContext) => string | Promise<string>;
@@ -1420,7 +1419,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
           }
           /* v8 ignore next -- obligationId always set when delegatedFrom is set (see generateObligationId above) @preserve */
           if (obligationId) {
-            createInnerObligation(agentName, {
+            createReturnObligation(agentName, {
               id: obligationId,
               origin: delegatedFrom,
               status: "queued",

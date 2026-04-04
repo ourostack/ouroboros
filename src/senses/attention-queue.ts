@@ -1,21 +1,10 @@
 import type { PendingMessage } from "../mind/pending"
-import type { ReturnObligation } from "../mind/obligations"
+import type { ReturnObligation } from "../heart/obligations"
 import { emitNervesEvent } from "../nerves/runtime"
+import type { AttentionItem } from "../heart/attention-types"
 
-// ── Types ────────────────────────────────────────────────────────
-
-export interface AttentionItem {
-  id: string
-  friendId: string
-  friendName: string
-  channel: string
-  key: string
-  bridgeId?: string
-  delegatedContent: string
-  obligationId?: string
-  source: "drained" | "obligation-recovery"
-  timestamp: number
-}
+// Re-export for consumers that import from here
+export type { AttentionItem }
 
 // ── Queue construction ───────────────────────────────────────────
 

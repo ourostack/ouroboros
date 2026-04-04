@@ -8,7 +8,7 @@ import { loadAgentConfig } from "./identity";
 import { execTool, summarizeArgs, buildToolResultSummary, settleTool, observeTool, ponderTool, restTool, getToolsForChannel, isConfirmationRequired, isConfirmationAlwaysRequired } from "../repertoire/tools";
 import type { ToolContext } from "../repertoire/tools";
 import { getChannelCapabilities, channelToFacing, type Facing } from "../mind/friends/channel";
-import { surfaceToolDef } from "../senses/surface-tool";
+import { surfaceToolDef } from "../repertoire/tools";
 import type { AssistantMessageWithReasoning, ResponseItem } from "./streaming";
 import { emitNervesEvent } from "../nerves/runtime";
 import type { TurnResult } from "./streaming";
@@ -23,7 +23,7 @@ import { createAzureProviderRuntime } from "./providers/azure";
 import { createMinimaxProviderRuntime } from "./providers/minimax";
 import { createOpenAICodexProviderRuntime } from "./providers/openai-codex";
 import { createGithubCopilotProviderRuntime } from "./providers/github-copilot";
-import type { SteeringFollowUpEffect } from "../senses/continuity";
+import type { SteeringFollowUpEffect } from "./turn-coordinator";
 import type { ActiveWorkFrame } from "./active-work";
 import type { DelegationDecision, DelegationReason } from "./delegation";
 import type { InnerJob } from "./daemon/thoughts";
@@ -252,6 +252,18 @@ export interface RunAgentOptions {
   pendingMessages?: Array<{ from: string; content: string }>;
   /** Rendered start-of-turn packet for continuity-aware prompt. */
   startOfTurnPacket?: string;
+
+  // ── Pre-read state from TurnContext ─────────────────────────────
+  /** Whether the daemon socket is alive. When provided, skips the fs check. */
+  daemonRunning?: boolean;
+  /** Pre-read sense status lines. When provided, skips secrets.json read. */
+  senseStatusLines?: string[];
+  /** Pre-read bundle-meta.json. When provided, skips the fs read. */
+  bundleMeta?: import("../mind/bundle-manifest").BundleMeta | null;
+  /** Pre-read daemon health state. When provided, skips the health file read. */
+  daemonHealth?: import("./daemon/daemon-health").DaemonHealthState | null;
+  /** Pre-read journal file entries. When provided, skips the journal dir read. */
+  journalFiles?: import("../mind/prompt").JournalFileEntry[];
 }
 
 export type RunAgentOutcome =

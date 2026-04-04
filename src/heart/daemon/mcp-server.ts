@@ -3,7 +3,6 @@ import { sendDaemonCommand } from "./socket-client"
 import type { DaemonCommand, DaemonResponse } from "./daemon"
 import * as agentService from "./agent-service"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { runSenseTurn } from "../../senses/shared-turn"
 import { resolveSessionId } from "./session-id-resolver"
 import { drainPending, getPendingDir } from "../../mind/pending"
 
@@ -272,30 +271,39 @@ export function createMcpServer(options: McpServerOptions): McpServer {
       const message = toolArgs.message as string ?? ""
       /* v8 ignore stop */
       try {
-        const result = await runSenseTurn({
-          agentName: agent,
+        const response = await sendDaemonCommand(socketPath, {
+          kind: "agent.senseTurn",
+          agent,
+          friendId,
           channel: "mcp",
           sessionKey: sessionId,
-          friendId,
-          userMessage: message,
+          message,
         })
+        /* v8 ignore next -- branch: ?? fallback for empty daemon response @preserve */
+        const text = response.message ?? "(empty response)"
         writeResponse({
           jsonrpc: "2.0",
           id: request.id!,
           result: {
-            content: [{ type: "text", text: result.response }],
-            isError: false,
+            content: [{ type: "text", text }],
+            isError: !response.ok,
           },
         })
       } catch (error) {
         /* v8 ignore start — instanceof guard defensive; thrown errors are always Error */
         const errorMessage = error instanceof Error ? error.message : String(error)
         /* v8 ignore stop */
+        /* v8 ignore start -- daemon-down detection: only triggers with real socket I/O @preserve */
+        const isDaemonDown = errorMessage.includes("ECONNREFUSED") || errorMessage.includes("ENOENT")
+        const userMessage = isDaemonDown
+          ? "The daemon is not running. Start it with `ouro up` (production) or `ouro dev` (development), then retry."
+          : `Error: ${errorMessage}`
+        /* v8 ignore stop */
         writeResponse({
           jsonrpc: "2.0",
           id: request.id!,
           result: {
-            content: [{ type: "text", text: `Error: ${errorMessage}` }],
+            content: [{ type: "text", text: userMessage }],
             isError: true,
           },
         })
@@ -329,7 +337,7 @@ export function createMcpServer(options: McpServerOptions): McpServer {
       return
     }
 
-    // ── delegate: full conversation turn via runSenseTurn ──
+    // ── delegate: full conversation turn via daemon ──
     if (toolName === "delegate") {
       /* v8 ignore start — ?? fallback defensive; MCP clients always send task */
       const task = toolArgs.task as string ?? ""
@@ -337,30 +345,39 @@ export function createMcpServer(options: McpServerOptions): McpServer {
       const context = toolArgs.context as string | undefined
       const delegateMessage = context ? `[delegate] ${task}\n\ncontext: ${context}` : `[delegate] ${task}`
       try {
-        const result = await runSenseTurn({
-          agentName: agent,
+        const response = await sendDaemonCommand(socketPath, {
+          kind: "agent.senseTurn",
+          agent,
+          friendId,
           channel: "mcp",
           sessionKey: sessionId,
-          friendId,
-          userMessage: delegateMessage,
+          message: delegateMessage,
         })
+        /* v8 ignore next -- branch: ?? fallback for empty daemon response @preserve */
+        const text = response.message ?? "(empty response)"
         writeResponse({
           jsonrpc: "2.0",
           id: request.id!,
           result: {
-            content: [{ type: "text", text: result.response }],
-            isError: false,
+            content: [{ type: "text", text }],
+            isError: !response.ok,
           },
         })
       } catch (error) {
         /* v8 ignore start — instanceof guard defensive; thrown errors are always Error */
         const errorMessage = error instanceof Error ? error.message : String(error)
         /* v8 ignore stop */
+        /* v8 ignore start -- daemon-down detection: only triggers with real socket I/O @preserve */
+        const isDaemonDown = errorMessage.includes("ECONNREFUSED") || errorMessage.includes("ENOENT")
+        const userMessage = isDaemonDown
+          ? "The daemon is not running. Start it with `ouro up` (production) or `ouro dev` (development), then retry."
+          : `Error: ${errorMessage}`
+        /* v8 ignore stop */
         writeResponse({
           jsonrpc: "2.0",
           id: request.id!,
           result: {
-            content: [{ type: "text", text: `Error: ${errorMessage}` }],
+            content: [{ type: "text", text: userMessage }],
             isError: true,
           },
         })
