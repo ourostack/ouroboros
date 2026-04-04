@@ -11,6 +11,8 @@ import type { Channel, ChannelCapabilities, IdentityProvider, ResolvedContext } 
 import type { FriendStore } from "../mind/friends/store"
 import type { TrustGateInput, TrustGateResult } from "./trust-gate"
 import type { PendingMessage } from "../mind/pending"
+import * as fs from "fs"
+import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
 import { parseSlashCommand, getSharedCommandRegistry } from "./commands"
 import { resolveMustResolveBeforeHandoff } from "./continuity"
@@ -35,7 +37,7 @@ import { writeAgentProviderSelection, loadAgentSecrets } from "../heart/daemon/a
 import { deriveTempo } from "../heart/tempo"
 import { buildTemporalView } from "../heart/temporal-view"
 import { buildWakePacket, renderWakePacket } from "../heart/wake-packet"
-import { preTurnPull } from "../heart/sync"
+import { preTurnPull, postTurnPush } from "../heart/sync"
 import { getSyncConfig } from "../heart/config"
 import { derivePresence, writePresence } from "../heart/presence"
 import { readRecentEpisodes, emitEpisode } from "../mind/episodes"
@@ -573,6 +575,20 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     if (!pullResult.ok) {
       syncFailure = pullResult.error
     }
+    // Check for pending-sync from a prior failed push
+    if (!syncFailure) {
+      const pendingSyncPath = path.join(getAgentRoot(), "state", "pending-sync.json")
+      try {
+        if (fs.existsSync(pendingSyncPath)) {
+          const pending = JSON.parse(fs.readFileSync(pendingSyncPath, "utf-8"))
+          syncFailure = `prior sync push failed: ${pending.error ?? "unknown"}`
+          // Clean up the pending-sync file since we surfaced it
+          fs.unlinkSync(pendingSyncPath)
+        }
+      } catch {
+        // Ignore read errors for pending-sync
+      }
+    }
   }
 
   // Step 4b: Continuity pipeline — derive tempo, build wake packet, snapshot obligations
@@ -740,6 +756,11 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
       : undefined)
     : (Object.keys(continuingState).length > 0 ? continuingState : undefined)
   input.postTurn(sessionMessages, session.sessionPath, result.usage, undefined, nextState)
+
+  // Step 6b: Post-turn sync push (opt-in)
+  if (syncConfig.enabled) {
+    postTurnPush(getAgentRoot(), syncConfig)
+  }
 
   // Step 7: Token accumulation
   await input.accumulateFriendTokens(input.friendStore, resolvedContext.friend.id, result.usage)
