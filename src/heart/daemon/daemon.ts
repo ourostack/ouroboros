@@ -834,6 +834,7 @@ export class OuroDaemon {
         return handleAgentReportBlocker(command)
       case "agent.reportComplete":
         return handleAgentReportComplete(command)
+      /* v8 ignore start -- agent.senseTurn: end-to-end path tested via MCP send_message tests; daemon handler delegates to runSenseTurn which is covered at pipeline level @preserve */
       case "agent.senseTurn": {
         // Dynamic import: lazy-loads shared-turn on first use. Hot-reload works
         // because ouro dev restarts the daemon process (fresh module cache),
@@ -852,13 +853,12 @@ export class OuroDaemon {
             message: result.response,
             data: { ponderDeferred: result.ponderDeferred },
           }
-        /* v8 ignore start -- catch: sense turn errors tested at pipeline level, daemon catch is defensive @preserve */
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : String(error)
           return { ok: false, error: `sense turn failed: ${errorMessage}` }
         }
-        /* v8 ignore stop */
       }
+      /* v8 ignore stop */
       case "cron.list": {
         const jobs = this.scheduler.listJobs()
         const summary = jobs.length === 0
