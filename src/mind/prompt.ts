@@ -542,8 +542,8 @@ export interface BuildSystemOptions {
   supportedReasoningEfforts?: readonly string[];
   mcpManager?: McpManager;
   pendingMessages?: Array<{ from: string; content: string }>;
-  /** Rendered wake packet for continuity-aware prompt. */
-  wakePacket?: string;
+  /** Rendered start-of-turn packet for continuity-aware prompt. */
+  startOfTurnPacket?: string;
 }
 
 function bridgeContextSection(options?: BuildSystemOptions): string {
@@ -553,13 +553,13 @@ function bridgeContextSection(options?: BuildSystemOptions): string {
   return bridgeContext.startsWith("## ") ? bridgeContext : `## active bridge work\n${bridgeContext}`
 }
 
-export function wakePacketSection(options?: BuildSystemOptions): string {
-  return options?.wakePacket ?? ""
+export function startOfTurnPacketSection(options?: BuildSystemOptions): string {
+  return options?.startOfTurnPacket ?? ""
 }
 
 function activeWorkSection(options?: BuildSystemOptions): string {
   if (!options?.activeWorkFrame) return ""
-  return formatActiveWorkFrame(options.activeWorkFrame, { obligationDetailsRenderedElsewhere: !!options?.wakePacket })
+  return formatActiveWorkFrame(options.activeWorkFrame, { obligationDetailsRenderedElsewhere: !!options?.startOfTurnPacket })
 }
 
 function liveWorldStateSection(options?: BuildSystemOptions): string {
@@ -581,7 +581,7 @@ function familyCrossSessionTruthSection(context?: ResolvedContext, options?: Bui
   if (!options?.activeWorkFrame) return ""
   if (context?.friend?.trustLevel !== "family") return ""
   // When wake packet is present, compress to one line
-  if (options?.wakePacket) {
+  if (options?.startOfTurnPacket) {
     return "When family asks whole-self status, answer from the cross-session picture above."
   }
   return `## cross-session truth
@@ -1145,7 +1145,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
 
     // Group 7: dynamic state for this turn
     "# dynamic state for this turn",
-    wakePacketSection(options),
+    startOfTurnPacketSection(options),
     liveWorldStateSection(options),
     pendingMessagesSection(options),
     activeWorkSection(options),
