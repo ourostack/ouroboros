@@ -1109,7 +1109,7 @@ describe("outlook deep readers", () => {
       expect(memory.journalEntryCount).toBe(0)
     })
 
-    it("reads from legacy psyche/memory path when diary/ does not exist", async () => {
+    it("does NOT read from legacy psyche/memory path -- only diary/", async () => {
       const tmpRoot = makeBundleRoot()
       const agentRoot = path.join(tmpRoot, "agent.ouro")
 
@@ -1120,8 +1120,8 @@ describe("outlook deep readers", () => {
       const { readMemoryView } = await import("../../../heart/daemon/outlook-read")
       const memory = readMemoryView(agentRoot)
 
-      expect(memory.diaryEntryCount).toBe(1)
-      expect(memory.recentDiaryEntries[0]!.text).toBe("Legacy fact.")
+      // Should NOT find entries in psyche/memory since we no longer fall back
+      expect(memory.diaryEntryCount).toBe(0)
     })
   })
 

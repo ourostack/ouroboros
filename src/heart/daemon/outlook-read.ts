@@ -1042,8 +1042,7 @@ export function readDaemonHealthDeep(healthPath?: string): OutlookDaemonHealthDe
 export function readMemoryView(agentRoot: string): OutlookMemoryView {
   // Read diary entries from facts.jsonl
   const diaryRoot = path.join(agentRoot, "diary")
-  const legacyDiaryRoot = path.join(agentRoot, "psyche", "memory")
-  const effectiveDiaryRoot = fs.existsSync(diaryRoot) ? diaryRoot : fs.existsSync(legacyDiaryRoot) ? legacyDiaryRoot : null
+  const effectiveDiaryRoot = fs.existsSync(diaryRoot) ? diaryRoot : null
 
   const diaryEntries: OutlookDiaryEntry[] = []
   if (effectiveDiaryRoot) {
