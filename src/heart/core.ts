@@ -252,6 +252,18 @@ export interface RunAgentOptions {
   pendingMessages?: Array<{ from: string; content: string }>;
   /** Rendered start-of-turn packet for continuity-aware prompt. */
   startOfTurnPacket?: string;
+
+  // ── Pre-read state from TurnContext ─────────────────────────────
+  /** Whether the daemon socket is alive. When provided, skips the fs check. */
+  daemonRunning?: boolean;
+  /** Pre-read sense status lines. When provided, skips secrets.json read. */
+  senseStatusLines?: string[];
+  /** Pre-read bundle-meta.json. When provided, skips the fs read. */
+  bundleMeta?: import("../mind/bundle-manifest").BundleMeta | null;
+  /** Pre-read daemon health state. When provided, skips the health file read. */
+  daemonHealth?: import("./daemon/daemon-health").DaemonHealthState | null;
+  /** Pre-read journal file entries. When provided, skips the journal dir read. */
+  journalFiles?: import("../mind/prompt").JournalFileEntry[];
 }
 
 export type RunAgentOutcome =

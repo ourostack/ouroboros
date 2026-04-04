@@ -3,8 +3,9 @@ import { PassThrough } from "stream"
 import { emitNervesEvent } from "../../../nerves/runtime"
 
 // Mock the socket client
+const mockSendDaemonCommand = vi.fn()
 vi.mock("../../../heart/daemon/socket-client", () => ({
-  sendDaemonCommand: vi.fn(),
+  sendDaemonCommand: (...args: any[]) => mockSendDaemonCommand(...args),
   checkDaemonSocketAlive: vi.fn(),
   DEFAULT_DAEMON_SOCKET_PATH: "/tmp/ouroboros-daemon.sock",
 }))
@@ -24,12 +25,6 @@ vi.mock("../../../heart/daemon/agent-service", () => ({
   handleAgentReportProgress: vi.fn(async () => ({ ok: true, message: "Recorded" })),
   handleAgentReportBlocker: vi.fn(async () => ({ ok: true, message: "Recorded" })),
   handleAgentReportComplete: vi.fn(async () => ({ ok: true, message: "Recorded" })),
-}))
-
-// Mock shared-turn (runSenseTurn for send_message/delegate tools)
-const mockRunSenseTurn = vi.fn()
-vi.mock("../../../senses/shared-turn", () => ({
-  runSenseTurn: (...args: any[]) => mockRunSenseTurn(...args),
 }))
 
 // Mock session-id-resolver
@@ -53,7 +48,6 @@ vi.mock("fs", () => ({
 }))
 
 import * as fs from "fs"
-import { sendDaemonCommand } from "../../../heart/daemon/socket-client"
 import { handleAgentStatus } from "../../../heart/daemon/agent-service"
 
 describe("MCP server protocol layer", () => {
@@ -61,7 +55,12 @@ describe("MCP server protocol layer", () => {
   let stdout: PassThrough
 
   beforeEach(() => {
-    vi.mocked(sendDaemonCommand).mockReset()
+    mockSendDaemonCommand.mockReset()
+    mockSendDaemonCommand.mockResolvedValue({
+      ok: true,
+      message: "daemon response",
+      data: { ponderDeferred: false },
+    })
     vi.mocked(fs.existsSync).mockReturnValue(true)
     stdin = new PassThrough()
     stdout = new PassThrough()
@@ -218,11 +217,6 @@ describe("MCP server protocol layer", () => {
   })
 
   it("responds to tools/call by forwarding to daemon", async () => {
-    vi.mocked(sendDaemonCommand).mockResolvedValue({
-      ok: true,
-      message: "agent is idle",
-      data: { status: "idle" },
-    })
 
     const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
     const server = createMcpServer({
@@ -728,7 +722,7 @@ describe("MCP server protocol layer", () => {
   })
 
   it("returns error when delegate tool throws", async () => {
-    mockRunSenseTurn.mockRejectedValueOnce(new Error("delegate pipeline failed"))
+    mockSendDaemonCommand.mockRejectedValueOnce(new Error("delegate pipeline failed"))
 
     const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
     const localStdin = new PassThrough()
@@ -778,7 +772,7 @@ describe("MCP server protocol layer", () => {
   })
 
   it("returns response from send_message tool", async () => {
-    mockRunSenseTurn.mockResolvedValueOnce({ response: "hello from agent", ponderDeferred: false })
+    mockSendDaemonCommand.mockResolvedValueOnce({ ok: true, message: "hello from agent", data: { ponderDeferred: false } })
 
     const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
     const localStdin = new PassThrough()
@@ -828,7 +822,7 @@ describe("MCP server protocol layer", () => {
   })
 
   it("returns error when send_message throws", async () => {
-    mockRunSenseTurn.mockRejectedValueOnce(new Error("pipeline broke"))
+    mockSendDaemonCommand.mockRejectedValueOnce(new Error("pipeline broke"))
 
     const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
     const localStdin = new PassThrough()
