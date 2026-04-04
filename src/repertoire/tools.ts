@@ -11,8 +11,7 @@ import type { ProviderCapability } from "../heart/core";
 import { guardInvocation } from "./guardrails";
 import { getAgentRoot, getAgentName } from "../heart/identity";
 import { surfaceToolDef, handleSurface, type SurfaceRouteResult } from "../senses/surface-tool";
-import { advanceObligation as advanceInnerObligation } from "../mind/obligations";
-import { findPendingObligationForOrigin, fulfillObligation } from "../heart/obligations";
+import { advanceReturnObligation, findPendingObligationForOrigin, fulfillObligation } from "../heart/obligations";
 import { findFreshestFriendSession, listSessionActivity } from "../heart/session-activity";
 import * as path from "path";
 import type { AttentionItem } from "../senses/attention-queue";
@@ -158,7 +157,7 @@ const surfaceToolDefinition: ToolDefinition = {
         /* v8 ignore start -- obligation advance: tested via attention-queue tests @preserve */
         try {
           const name = (() => { try { return getAgentName() } catch { return "unknown" } })()
-          advanceInnerObligation(name, obligationId, {
+          advanceReturnObligation(name, obligationId, {
             status: update.status as any,
             ...(update.returnedAt !== undefined ? { returnedAt: update.returnedAt } : {}),
             ...(update.returnTarget !== undefined ? { returnTarget: update.returnTarget as any } : {}),
