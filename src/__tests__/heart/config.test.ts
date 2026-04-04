@@ -1230,3 +1230,56 @@ describe("provider configs are credentials-only (no model fields)", () => {
     expect(providers["github-copilot"]).not.toHaveProperty("model")
   })
 })
+
+describe("getSyncConfig", () => {
+  beforeEach(async () => {
+    vi.resetModules()
+  })
+
+  it("defaults to disabled when sync is not in agent.json", async () => {
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      version: 2,
+      enabled: true,
+      humanFacing: { provider: "minimax", model: "minimax-text-01" },
+      agentFacing: { provider: "minimax", model: "minimax-text-01" },
+      phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
+    })
+
+    const { getSyncConfig } = await import("../../heart/config")
+    const sync = getSyncConfig()
+    expect(sync.enabled).toBe(false)
+    expect(sync.remote).toBe("origin")
+  })
+
+  it("reads sync config from agent.json", async () => {
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      version: 2,
+      enabled: true,
+      humanFacing: { provider: "minimax", model: "minimax-text-01" },
+      agentFacing: { provider: "minimax", model: "minimax-text-01" },
+      phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
+      sync: { enabled: true, remote: "upstream" },
+    })
+
+    const { getSyncConfig } = await import("../../heart/config")
+    const sync = getSyncConfig()
+    expect(sync.enabled).toBe(true)
+    expect(sync.remote).toBe("upstream")
+  })
+
+  it("defaults remote to origin when only enabled is specified", async () => {
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      version: 2,
+      enabled: true,
+      humanFacing: { provider: "minimax", model: "minimax-text-01" },
+      agentFacing: { provider: "minimax", model: "minimax-text-01" },
+      phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
+      sync: { enabled: true },
+    })
+
+    const { getSyncConfig } = await import("../../heart/config")
+    const sync = getSyncConfig()
+    expect(sync.enabled).toBe(true)
+    expect(sync.remote).toBe("origin")
+  })
+})
