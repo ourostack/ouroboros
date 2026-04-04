@@ -470,6 +470,90 @@ describe("daemon process manager", () => {
     expect(() => manager.sendToAgent("slugger", { type: "poke" })).not.toThrow()
   })
 
+  it("skips spawn and sets crashed when configCheck returns not ok", async () => {
+    now.mockReturnValue(1_000)
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+      configCheck: () => ({ ok: false, error: "missing creds", fix: "run ouro auth" }),
+    })
+
+    await manager.startAgent("slugger")
+
+    expect(spawn).not.toHaveBeenCalled()
+    expect(manager.getAgentSnapshot("slugger")?.status).toBe("crashed")
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("missing creds"))
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("run ouro auth"))
+    stderrSpy.mockRestore()
+  })
+
+  it("skips spawn when configCheck fails without fix message", async () => {
+    now.mockReturnValue(1_000)
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+      configCheck: () => ({ ok: false, error: "bad config" }),
+    })
+
+    await manager.startAgent("slugger")
+
+    expect(spawn).not.toHaveBeenCalled()
+    expect(manager.getAgentSnapshot("slugger")?.status).toBe("crashed")
+    // Should write error but no fix line
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("bad config"))
+    stderrSpy.mockRestore()
+  })
+
+  it("uses fallback error message when configCheck returns no error string", async () => {
+    now.mockReturnValue(1_000)
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+      configCheck: () => ({ ok: false }),
+    })
+
+    await manager.startAgent("slugger")
+
+    expect(spawn).not.toHaveBeenCalled()
+    expect(manager.getAgentSnapshot("slugger")?.status).toBe("crashed")
+    stderrSpy.mockRestore()
+  })
+
+  it("proceeds with spawn when configCheck returns ok", async () => {
+    const child = new MockChild()
+    spawn.mockReturnValue(child)
+    now.mockReturnValue(1_000)
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+      configCheck: () => ({ ok: true }),
+    })
+
+    await manager.startAgent("slugger")
+
+    expect(spawn).toHaveBeenCalledTimes(1)
+    expect(manager.getAgentSnapshot("slugger")?.status).toBe("running")
+  })
+
   it("sendToAgent throws for unknown agent", async () => {
     const manager = new DaemonProcessManager({
       agents,

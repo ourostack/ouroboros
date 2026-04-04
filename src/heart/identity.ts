@@ -225,6 +225,18 @@ export function getAgentStateRoot(agentName?: string): string {
   return path.join(getAgentRoot(resolveOptionalAgentName(agentName)), "state")
 }
 
+/**
+ * Required credential fields per provider.
+ * Used by daemon config-check to validate secrets before spawning an agent.
+ */
+export const PROVIDER_CREDENTIALS: Record<AgentProvider, string[]> = {
+  azure: ["apiKey", "endpoint", "deployment"],
+  minimax: ["apiKey"],
+  anthropic: ["setupToken"],
+  "openai-codex": ["oauthAccessToken"],
+  "github-copilot": ["githubToken", "baseUrl"],
+}
+
 export const HARNESS_CANONICAL_REPO_URL = "https://github.com/ouroborosbot/ouroboros.git"
 
 export function getAgentRepoWorkspacesRoot(agentName?: string): string {
