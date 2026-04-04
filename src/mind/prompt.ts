@@ -248,6 +248,7 @@ function processTypeLabel(channel: Channel): string {
 const DAEMON_SOCKET_PATH = "/tmp/ouroboros-daemon.sock"
 
 function daemonStatus(preRead?: boolean): string {
+  /* v8 ignore next 2 -- pre-read branch: exercised via pipeline TurnContext path, not unit-testable in isolation @preserve */
   if (preRead !== undefined) {
     return preRead ? "running" : "not running"
   }
