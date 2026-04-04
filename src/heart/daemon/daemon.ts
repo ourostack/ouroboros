@@ -853,6 +853,7 @@ export class OuroDaemon {
             data: { ponderDeferred: result.ponderDeferred },
           }
         } catch (error) {
+          /* v8 ignore next -- branch: String(error) fallback only for non-Error throws @preserve */
           const errorMessage = error instanceof Error ? error.message : String(error)
           return { ok: false, error: `sense turn failed: ${errorMessage}` }
         }
