@@ -36,7 +36,7 @@ import { runHealthInventory } from "../heart/provider-ping"
 import { writeAgentProviderSelection, loadAgentSecrets } from "../heart/daemon/auth-flow"
 import { deriveTempo } from "../heart/tempo"
 import { buildTemporalView } from "../heart/temporal-view"
-import { buildStartOfTurnPacket, renderStartOfTurnPacket } from "../heart/start-of-turn-packet"
+import { buildStartOfTurnPacket, renderStartOfTurnPacket, buildCapabilitiesSection } from "../heart/start-of-turn-packet"
 import { preTurnPull, postTurnPush, drainSyncWrites, runWithSyncContext } from "../heart/sync"
 import { getSyncConfig } from "../heart/config"
 import { derivePresence, writePresence } from "../heart/presence"
@@ -638,6 +638,10 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     /* v8 ignore next 3 -- syncFailure propagation tested in sync.test.ts @preserve */
     if (syncFailure) {
       startOfTurnPacket.syncFailure = syncFailure
+    }
+    const capabilities = buildCapabilitiesSection(agentRoot)
+    if (capabilities) {
+      startOfTurnPacket.capabilities = capabilities
     }
     renderedStartOfTurnPacket = renderStartOfTurnPacket(startOfTurnPacket)
     if (!renderedStartOfTurnPacket) renderedStartOfTurnPacket = undefined
