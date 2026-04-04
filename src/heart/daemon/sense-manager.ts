@@ -232,9 +232,11 @@ function readBlueBubblesRuntimeJson(runtimePath: string): BlueBubblesRuntimeStat
         : "startup health probe pending",
       lastCheckedAt: typeof parsed.lastCheckedAt === "string" ? parsed.lastCheckedAt : undefined,
     }
+  /* v8 ignore start -- defensive: catch for missing/corrupt BB runtime state file @preserve */
   } catch {
     return { upstreamStatus: "unknown", detail: "startup health probe pending" }
   }
+  /* v8 ignore stop */
 }
 
 function readBlueBubblesRuntimeFacts(
