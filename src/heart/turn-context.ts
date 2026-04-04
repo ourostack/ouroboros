@@ -167,11 +167,12 @@ function readInnerWorkState(): InnerWorkState {
       obligationPending: dialogStatus.obligationPending || storeObligationPending,
       job,
     }
-  /* v8 ignore next -- defensive: fallback on read failure @preserve */ } catch {
+  } catch { /* v8 ignore start -- defensive: fallback on read failure @preserve */
     return {
       status: "idle",
       hasPending: false,
       job: defaultJob,
+  /* v8 ignore stop */
     }
   }
 }
@@ -179,8 +180,9 @@ function readInnerWorkState(): InnerWorkState {
 function checkDaemonRunning(): boolean {
   try {
     return fs.existsSync(DAEMON_SOCKET_PATH)
-  /* v8 ignore next -- defensive: fallback on read failure @preserve */ } catch {
+  } catch { /* v8 ignore start -- defensive: fallback on read failure @preserve */
     return false
+  /* v8 ignore stop */
   }
 }
 
@@ -202,8 +204,9 @@ function readSenseStatusLines(): string[] {
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
       payload = parsed as Record<string, unknown>
     }
-  /* v8 ignore next -- defensive: fallback on read failure @preserve */ } catch {
+  } catch { /* v8 ignore start -- defensive: fallback on read failure @preserve */
     payload = {}
+  /* v8 ignore stop */
   }
 
   const teams = payload.teams as Record<string, unknown> | undefined
@@ -234,8 +237,9 @@ function readBundleMetaFile(): BundleMeta | null {
     const metaPath = path.join(getAgentRoot(), "bundle-meta.json")
     const raw = fs.readFileSync(metaPath, "utf-8")
     return JSON.parse(raw) as BundleMeta
-  /* v8 ignore next -- defensive: fallback on read failure @preserve */ } catch {
+  } catch { /* v8 ignore start -- defensive: fallback on read failure @preserve */
     return null
+  /* v8 ignore stop */
   }
 }
 
@@ -269,8 +273,9 @@ export async function buildTurnContext(input: BuildTurnContextInput): Promise<Tu
         key: input.currentSession.key,
       },
     })
-  /* v8 ignore next -- defensive: fallback on read failure @preserve */ } catch {
+  } catch { /* v8 ignore start -- defensive: fallback on read failure @preserve */
     sessionActivity = []
+  /* v8 ignore stop */
   }
 
   // Target candidates
@@ -289,16 +294,18 @@ export async function buildTurnContext(input: BuildTurnContextInput): Promise<Tu
         friendStore: input.friendStore,
       })
     }
-  /* v8 ignore next -- defensive: fallback on read failure @preserve */ } catch {
+  } catch { /* v8 ignore start -- defensive: fallback on read failure @preserve */
     targetCandidates = []
+  /* v8 ignore stop */
   }
 
   // Pending obligations
   let pendingObligations: Obligation[] = []
   try {
     pendingObligations = readPendingObligations(agentRoot)
-  /* v8 ignore next -- defensive: fallback on read failure @preserve */ } catch {
+  } catch { /* v8 ignore start -- defensive: fallback on read failure @preserve */
     pendingObligations = []
+  /* v8 ignore stop */
   }
 
   // Coding sessions
@@ -320,9 +327,10 @@ export async function buildTurnContext(input: BuildTurnContextInput): Promise<Tu
         && session.originSession.key === input.currentSession.key
       ),
     )
-  /* v8 ignore next -- defensive: fallback on read failure @preserve */ } catch {
+  } catch { /* v8 ignore start -- defensive: fallback on read failure @preserve */
     codingSessions = []
     otherCodingSessions = []
+  /* v8 ignore stop */
   }
 
   // Inner work state
@@ -332,16 +340,18 @@ export async function buildTurnContext(input: BuildTurnContextInput): Promise<Tu
   let taskBoard: BoardResult
   try {
     taskBoard = getTaskModule().getBoard()
-  /* v8 ignore next -- defensive: fallback on read failure @preserve */ } catch {
+  } catch { /* v8 ignore start -- defensive: fallback on read failure @preserve */
     taskBoard = emptyTaskBoard()
+  /* v8 ignore stop */
   }
 
   // Return obligations
   let returnObligations: ReturnObligation[] = []
   try {
     returnObligations = listActiveReturnObligations(agentName)
-  /* v8 ignore next -- defensive: fallback on read failure @preserve */ } catch {
+  } catch { /* v8 ignore start -- defensive: fallback on read failure @preserve */
     returnObligations = []
+  /* v8 ignore stop */
   }
 
   // Recent episodes
@@ -357,8 +367,9 @@ export async function buildTurnContext(input: BuildTurnContextInput): Promise<Tu
   let senseStatusLines: string[] = []
   try {
     senseStatusLines = readSenseStatusLines()
-  /* v8 ignore next -- defensive: fallback on read failure @preserve */ } catch {
+  } catch { /* v8 ignore start -- defensive: fallback on read failure @preserve */
     senseStatusLines = []
+  /* v8 ignore stop */
   }
 
   const bundleMeta = readBundleMetaFile()
@@ -366,16 +377,18 @@ export async function buildTurnContext(input: BuildTurnContextInput): Promise<Tu
   let daemonHealth: DaemonHealthState | null = null
   try {
     daemonHealth = readHealth(getDefaultHealthPath())
-  /* v8 ignore next -- defensive: fallback on read failure @preserve */ } catch {
+  } catch { /* v8 ignore start -- defensive: fallback on read failure @preserve */
     daemonHealth = null
+  /* v8 ignore stop */
   }
 
   let journalFiles: JournalFileEntry[] = []
   try {
     const journalDir = path.join(agentRoot, "journal")
     journalFiles = readJournalFiles(journalDir)
-  /* v8 ignore next -- defensive: fallback on read failure @preserve */ } catch {
+  } catch { /* v8 ignore start -- defensive: fallback on read failure @preserve */
     journalFiles = []
+  /* v8 ignore stop */
   }
 
   emitNervesEvent({
