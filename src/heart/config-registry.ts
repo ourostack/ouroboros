@@ -37,12 +37,32 @@ function validateStringEnum(allowed: readonly string[]) {
   }
 }
 
+function validateInteger(min: number, max: number) {
+  return (value: unknown): string | undefined => {
+    if (typeof value !== "number") return `expected number, got ${typeof value}`
+    if (!Number.isInteger(value)) return `expected integer, got ${value}`
+    if (value < min || value > max) return `expected integer between ${min} and ${max}, got ${value}`
+    return undefined
+  }
+}
+
 function validateStringArray(value: unknown): string | undefined {
   if (!Array.isArray(value)) return `expected array, got ${typeof value}`
   for (let i = 0; i < value.length; i++) {
     if (typeof value[i] !== "string") return `expected string at index ${i}, got ${typeof value[i]}`
   }
   return undefined
+}
+
+function validateStringEnumArray(allowed: readonly string[]) {
+  return (value: unknown): string | undefined => {
+    if (!Array.isArray(value)) return `expected array, got ${typeof value}`
+    for (let i = 0; i < value.length; i++) {
+      if (typeof value[i] !== "string") return `expected string at index ${i}, got ${typeof value[i]}`
+      if (!allowed.includes(value[i] as string)) return `expected one of [${allowed.join(", ")}] at index ${i}, got "${value[i]}"`
+    }
+    return undefined
+  }
 }
 
 function validateObject(requiredFields: Record<string, (v: unknown) => string | undefined>) {
@@ -133,7 +153,7 @@ const registryData: ConfigRegistryEntry[] = [
     default: 80000,
     effects: "Larger values allow more context but increase cost and latency. Must match model capability.",
     topics: ["context", "tokens", "memory", "performance"],
-    validate: validateNumber,
+    validate: validateInteger(1000, 1000000),
   },
   {
     path: "senses.cli",
@@ -189,7 +209,7 @@ const registryData: ConfigRegistryEntry[] = [
     default: 20,
     effects: "Higher values trigger compaction earlier, preserving more headroom. Lower values use more context.",
     topics: ["context", "compaction", "memory", "performance"],
-    validate: validateNumber,
+    validate: validateInteger(0, 100),
   },
   {
     path: "phrases.thinking",
@@ -225,7 +245,7 @@ const registryData: ConfigRegistryEntry[] = [
     default: undefined,
     effects: "Controls how long shell commands run before timing out. Undefined uses system default.",
     topics: ["shell", "timeout", "execution", "tools"],
-    validate: validateNumber,
+    validate: validateInteger(1000, 600000),
   },
   {
     path: "logging.level",
@@ -243,7 +263,7 @@ const registryData: ConfigRegistryEntry[] = [
     default: undefined,
     effects: "Controls where log output is directed. Terminal shows in console, ndjson writes structured logs.",
     topics: ["logging", "output", "diagnostics"],
-    validate: validateStringArray,
+    validate: validateStringEnumArray(["terminal", "ndjson"]),
   },
 ]
 
