@@ -1,6 +1,7 @@
 import * as fs from "fs"
 import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
+import { trackSyncWrite } from "./sync"
 
 export type CareKind = "person" | "agent" | "project" | "mission" | "system"
 export type CareStatus = "active" | "watching" | "resolved" | "dormant"
@@ -26,7 +27,7 @@ export interface CareRecord {
 }
 
 function caresDir(agentRoot: string): string {
-  return path.join(agentRoot, "state", "cares")
+  return path.join(agentRoot, "arc", "cares")
 }
 
 function careFilePath(agentRoot: string, id: string): string {
@@ -65,7 +66,9 @@ export function createCare(
 
   const dir = caresDir(agentRoot)
   fs.mkdirSync(dir, { recursive: true })
-  fs.writeFileSync(careFilePath(agentRoot, id), JSON.stringify(care, null, 2), "utf-8")
+  const filePath = careFilePath(agentRoot, id)
+  fs.writeFileSync(filePath, JSON.stringify(care, null, 2), "utf-8")
+  trackSyncWrite(filePath)
 
   emitNervesEvent({
     component: "heart",
@@ -135,7 +138,9 @@ function readCareFile(agentRoot: string, id: string): CareRecord {
 }
 
 function writeCareFile(agentRoot: string, care: CareRecord): void {
-  fs.writeFileSync(careFilePath(agentRoot, care.id), JSON.stringify(care, null, 2), "utf-8")
+  const filePath = careFilePath(agentRoot, care.id)
+  fs.writeFileSync(filePath, JSON.stringify(care, null, 2), "utf-8")
+  trackSyncWrite(filePath)
 }
 
 export function updateCare(

@@ -55,6 +55,10 @@ export interface AgentConfig {
     tool: string[]
     followup: string[]
   }
+  sync?: {
+    enabled?: boolean
+    remote?: string
+  }
 }
 
 export const DEFAULT_AGENT_CONTEXT = {

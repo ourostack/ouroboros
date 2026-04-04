@@ -65,13 +65,13 @@ describe("intentions store", () => {
   })
 
   describe("captureIntention", () => {
-    it("writes JSON to state/intentions/ directory", () => {
+    it("writes JSON to arc/intentions/ directory", () => {
       const intention = captureIntention(tmpDir, {
         content: "test writing",
         source: "tool",
       })
 
-      const filePath = path.join(tmpDir, "state", "intentions", `${intention.id}.json`)
+      const filePath = path.join(tmpDir, "arc", "intentions", `${intention.id}.json`)
       expect(fs.existsSync(filePath)).toBe(true)
 
       const stored = JSON.parse(fs.readFileSync(filePath, "utf-8")) as IntentionRecord
@@ -86,7 +86,7 @@ describe("intentions store", () => {
     })
 
     it("creates the intentions directory if it does not exist", () => {
-      const dir = path.join(tmpDir, "state", "intentions")
+      const dir = path.join(tmpDir, "arc", "intentions")
       expect(fs.existsSync(dir)).toBe(false)
 
       captureIntention(tmpDir, { content: "test", source: "thought" })
@@ -177,7 +177,7 @@ describe("intentions store", () => {
     it("skips malformed JSON files", () => {
       captureIntention(tmpDir, { content: "valid", source: "thought" })
 
-      const dir = path.join(tmpDir, "state", "intentions")
+      const dir = path.join(tmpDir, "arc", "intentions")
       fs.writeFileSync(path.join(dir, "bad.json"), "not valid{{{", "utf-8")
 
       const intentions = readOpenIntentions(tmpDir)
@@ -187,7 +187,7 @@ describe("intentions store", () => {
     it("skips non-JSON files", () => {
       captureIntention(tmpDir, { content: "valid", source: "thought" })
 
-      const dir = path.join(tmpDir, "state", "intentions")
+      const dir = path.join(tmpDir, "arc", "intentions")
       fs.writeFileSync(path.join(dir, "readme.txt"), "not an intention", "utf-8")
 
       const intentions = readOpenIntentions(tmpDir)
@@ -222,7 +222,7 @@ describe("intentions store", () => {
       })
 
       // Manually write an unrecognized salience value to disk
-      const dir = path.join(tmpDir, "state", "intentions")
+      const dir = path.join(tmpDir, "arc", "intentions")
       const filePath = path.join(dir, `${weird.id}.json`)
       const data = JSON.parse(fs.readFileSync(filePath, "utf-8")) as IntentionRecord
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- testing backward-compat with unknown salience
@@ -256,7 +256,7 @@ describe("intentions store", () => {
 
       resolveIntention(tmpDir, intention.id)
 
-      const filePath = path.join(tmpDir, "state", "intentions", `${intention.id}.json`)
+      const filePath = path.join(tmpDir, "arc", "intentions", `${intention.id}.json`)
       const stored = JSON.parse(fs.readFileSync(filePath, "utf-8")) as IntentionRecord
       expect(stored.status).toBe("done")
     })
@@ -286,7 +286,7 @@ describe("intentions store", () => {
 
       dismissIntention(tmpDir, intention.id)
 
-      const filePath = path.join(tmpDir, "state", "intentions", `${intention.id}.json`)
+      const filePath = path.join(tmpDir, "arc", "intentions", `${intention.id}.json`)
       const stored = JSON.parse(fs.readFileSync(filePath, "utf-8")) as IntentionRecord
       expect(stored.status).toBe("dismissed")
     })

@@ -33,7 +33,7 @@ function readAgentFile(agent: string, ...segments: string[]): string | null {
 
 /** Resolve the diary root for a specific agent. */
 function agentDiaryRoot(agent: string): string {
-  return resolveDiaryRoot(path.join(getAgentRoot(agent), "psyche", "memory"))
+  return resolveDiaryRoot(path.join(getAgentRoot(agent), "diary"))
 }
 
 /** Read inner dialog runtime status. */

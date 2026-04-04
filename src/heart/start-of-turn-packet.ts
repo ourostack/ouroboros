@@ -15,6 +15,7 @@ export interface StartOfTurnPacket {
   tempo: TempoMode
   tokenBudget: TempoTokenBudget
   assembledAt: string
+  syncFailure?: string
 }
 
 function estimateTokens(text: string): number {
@@ -160,6 +161,7 @@ export function renderStartOfTurnPacket(packet: StartOfTurnPacket): string {
   // Assemble sections in priority order (highest priority first for budget allocation)
   // Each section is { label, content, priority } where lower priority number = truncated first
   const sections = [
+    { label: "syncFailure", content: packet.syncFailure ?? "", priority: 6 },
     { label: "resume", content: packet.resumeHint, priority: 5 },
     { label: "obligations", content: packet.obligations, priority: 4 },
     { label: "cares", content: packet.cares, priority: 3 },
@@ -231,6 +233,9 @@ function formatSections(sections: Array<{ label: string; content: string }>): st
         break
       case "presence":
         parts.push(`**Peers:**\n${section.content}`)
+        break
+      case "syncFailure":
+        parts.push(`**Sync warning:** ${section.content}`)
         break
     }
   }

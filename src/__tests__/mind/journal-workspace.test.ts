@@ -108,12 +108,10 @@ describe("metacognitiveFramingSection vocabulary", () => {
     expect(result.toLowerCase()).toMatch(/rhythm/)
   })
 
-  it("mentions diary migration awareness", async () => {
+  it("mentions diary location", async () => {
     const { metacognitiveFramingSection } = await import("../../mind/prompt")
     const result = metacognitiveFramingSection("inner")
-    expect(result).toContain("psyche/memory/")
     expect(result).toContain("diary/")
-    expect(result).toContain("migrate")
   })
 
   it("returns empty string for non-inner channels", async () => {

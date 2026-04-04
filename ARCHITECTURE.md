@@ -57,7 +57,7 @@ Canonical paths:
 - `psyche/LORE.md`
 - `psyche/TACIT.md`
 - `psyche/ASPIRATIONS.md`
-- `diary/` — durable facts, conclusions, things worth recalling (renamed from `psyche/memory/`; legacy path still works as fallback)
+- `diary/` — durable facts, conclusions, things worth recalling (migrated from `psyche/memory/`; legacy fallback removed)
 - `journal/` — thinking-in-progress, working notes, drafts (the agent's desk)
 - `habits/` — autonomous rhythms: heartbeat, reflections, check-ins (extracted from `tasks/habits/`)
 - `friends/`

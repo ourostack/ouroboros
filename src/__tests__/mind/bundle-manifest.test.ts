@@ -43,7 +43,10 @@ describe("bundle-manifest", () => {
     expect(isCanonicalBundlePath("skills/custom/review.md")).toBe(true)
     expect(isCanonicalBundlePath("diary/facts.jsonl")).toBe(true)
     expect(isCanonicalBundlePath("diary/daily/2026-03-25.md")).toBe(true)
-    expect(isCanonicalBundlePath("psyche/memory/daily/2026-03-07.md")).toBe(true)
+    expect(isCanonicalBundlePath("arc/episodes/ep-123.json")).toBe(true)
+    expect(isCanonicalBundlePath("arc/obligations/ob-123.json")).toBe(true)
+    expect(isCanonicalBundlePath("arc/cares/care-123.json")).toBe(true)
+    expect(isCanonicalBundlePath("arc/intentions/int-123.json")).toBe(true)
     expect(isCanonicalBundlePath("state/sessions/self/inner/dialog.json")).toBe(true)
   })
 
@@ -57,7 +60,11 @@ describe("bundle-manifest", () => {
   it("finds non-canonical files and directories", () => {
     const root = createTempBundleRoot()
 
-    fs.mkdirSync(path.join(root, "psyche", "memory", "daily"), { recursive: true })
+    fs.mkdirSync(path.join(root, "arc", "episodes"), { recursive: true })
+    fs.mkdirSync(path.join(root, "arc", "obligations"), { recursive: true })
+    fs.mkdirSync(path.join(root, "arc", "cares"), { recursive: true })
+    fs.mkdirSync(path.join(root, "arc", "intentions"), { recursive: true })
+    fs.mkdirSync(path.join(root, "psyche"), { recursive: true })
     fs.mkdirSync(path.join(root, "friends"), { recursive: true })
     fs.mkdirSync(path.join(root, "tasks"), { recursive: true })
     fs.mkdirSync(path.join(root, "skills"), { recursive: true })

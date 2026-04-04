@@ -227,7 +227,7 @@ describe("associative recall", () => {
 
   it("uses default agent-root memory path when options.diaryRoot is omitted", async () => {
     const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "agent-root-"))
-    const diaryRoot = path.join(agentRoot, "psyche", "memory")
+    const diaryRoot = path.join(agentRoot, "diary")
     writeFacts(diaryRoot, [makeFact("f1", "Ari likes mushroom pizza", [0.99, 0.01])])
     mockGetAgentRoot.mockReturnValue(agentRoot)
 

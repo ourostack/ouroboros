@@ -48,7 +48,7 @@ describe("getObligationsDir", () => {
   it("returns correct path under agent state", async () => {
     const { getObligationsDir } = await import("../../mind/obligations")
     const result = getObligationsDir("testagent")
-    expect(result).toContain(path.join("testagent.ouro", "state", "obligations", "inner"))
+    expect(result).toContain(path.join("testagent.ouro", "arc", "obligations", "inner"))
   })
 })
 
@@ -68,7 +68,7 @@ describe("createObligation", () => {
     createObligation("testagent", obligation)
 
     expect(fs.mkdirSync).toHaveBeenCalledWith(
-      expect.stringContaining(path.join("state", "obligations", "inner")),
+      expect.stringContaining(path.join("arc", "obligations", "inner")),
       { recursive: true },
     )
     expect(fs.writeFileSync).toHaveBeenCalledWith(

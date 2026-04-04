@@ -146,7 +146,7 @@ describe("outlook direct reads", () => {
       created: "2026-03-29",
       updated: "2026-03-29",
     })
-    writeJson(path.join(alphaRoot, "state", "obligations", "ob-1.json"), {
+    writeJson(path.join(alphaRoot, "arc", "obligations", "ob-1.json"), {
       id: "ob-1",
       origin: { friendId: "friend-1", channel: "cli", key: "session" },
       content: "Bring daemon hosting back with tests.",
@@ -155,7 +155,7 @@ describe("outlook direct reads", () => {
       updatedAt: "2026-03-29T11:56:00.000Z",
       nextAction: "finish the read layer and move to daemon hosting",
     })
-    writeJson(path.join(alphaRoot, "state", "obligations", "ob-0.json"), {
+    writeJson(path.join(alphaRoot, "arc", "obligations", "ob-0.json"), {
       id: "ob-0",
       origin: { friendId: "friend-2", channel: "teams", key: "thread" },
       content: "Older open thread.",
@@ -795,7 +795,7 @@ describe("outlook deep readers", () => {
       writeAgentConfig(alphaRoot)
       writeJson(path.join(alphaRoot, "state", "sessions", "self", "inner", "dialog.json"), { version: 1, messages: [] })
       writeJson(path.join(alphaRoot, "state", "sessions", "self", "inner", "runtime.json"), { status: "idle" })
-      writeJson(path.join(alphaRoot, "state", "obligations", "ob-no-origin.json"), {
+      writeJson(path.join(alphaRoot, "arc", "obligations", "ob-no-origin.json"), {
         id: "ob-no-origin",
         content: "test obligation",
         status: "pending",
@@ -952,7 +952,7 @@ describe("outlook deep readers", () => {
       })
 
       // Write obligation for return obligations
-      writeJson(path.join(alphaRoot, "state", "obligations", "ob-1.json"), {
+      writeJson(path.join(alphaRoot, "arc", "obligations", "ob-1.json"), {
         id: "ob-1",
         origin: { friendId: "friend-1", channel: "cli", key: "session" },
         content: "Deploy check requested.",
@@ -1109,7 +1109,7 @@ describe("outlook deep readers", () => {
       expect(memory.journalEntryCount).toBe(0)
     })
 
-    it("reads from legacy psyche/memory path when diary/ does not exist", async () => {
+    it("does NOT read from legacy psyche/memory path -- only diary/", async () => {
       const tmpRoot = makeBundleRoot()
       const agentRoot = path.join(tmpRoot, "agent.ouro")
 
@@ -1120,8 +1120,8 @@ describe("outlook deep readers", () => {
       const { readMemoryView } = await import("../../../heart/daemon/outlook-read")
       const memory = readMemoryView(agentRoot)
 
-      expect(memory.diaryEntryCount).toBe(1)
-      expect(memory.recentDiaryEntries[0]!.text).toBe("Legacy fact.")
+      // Should NOT find entries in psyche/memory since we no longer fall back
+      expect(memory.diaryEntryCount).toBe(0)
     })
   })
 
@@ -1335,7 +1335,7 @@ describe("outlook deep readers", () => {
       agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "orient-full-"))
       agentName = "test-agent"
       // Write obligation
-      writeJson(path.join(agentRoot, "state", "obligations", "ob-1.json"), {
+      writeJson(path.join(agentRoot, "arc", "obligations", "ob-1.json"), {
         id: "ob-1",
         status: "pending",
         content: "Deploy the new version",
@@ -1385,7 +1385,7 @@ describe("outlook deep readers", () => {
       }), "utf-8")
 
       // Write current obligation with different status
-      writeJson(path.join(agentRoot, "state", "obligations", "ob-1.json"), {
+      writeJson(path.join(agentRoot, "arc", "obligations", "ob-1.json"), {
         id: "ob-1",
         status: "in_progress",
         content: "Deploy v2",
@@ -1431,7 +1431,7 @@ describe("outlook deep readers", () => {
 
     it("returns obligations with primary selection", async () => {
       agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "oblig-full-"))
-      writeJson(path.join(agentRoot, "state", "obligations", "ob-1.json"), {
+      writeJson(path.join(agentRoot, "arc", "obligations", "ob-1.json"), {
         id: "ob-1",
         status: "pending",
         content: "Primary task",
@@ -1441,7 +1441,7 @@ describe("outlook deep readers", () => {
         meaning: { waitingOn: { detail: "nothing" } },
         updatedAt: "2026-04-03T10:00:00Z",
       })
-      writeJson(path.join(agentRoot, "state", "obligations", "ob-2.json"), {
+      writeJson(path.join(agentRoot, "arc", "obligations", "ob-2.json"), {
         id: "ob-2",
         status: "pending",
         content: "Secondary task",
@@ -1452,7 +1452,7 @@ describe("outlook deep readers", () => {
         updatedAt: "2026-04-03T09:00:00Z",
       })
       // Fulfilled obligations should be excluded
-      writeJson(path.join(agentRoot, "state", "obligations", "ob-3.json"), {
+      writeJson(path.join(agentRoot, "arc", "obligations", "ob-3.json"), {
         id: "ob-3",
         status: "fulfilled",
         content: "Done task",
