@@ -7,8 +7,10 @@ export interface StagedRestartDeps {
   spawnSync: (command: string, args: string[], options: Record<string, unknown>) => SpawnSyncReturns<Buffer>
   resolveNewCodePath: (version: string) => string | null
   gracefulShutdown: () => Promise<void>
+  spawnNewDaemon: (entryPath: string, socketPath: string) => { pid: number | null }
   nodePath: string
   bundlesRoot: string
+  socketPath?: string
 }
 
 export interface StagedRestartResult {
@@ -83,26 +85,51 @@ export async function performStagedRestart(
     return { ok: false, error: `hook runner exited with code ${spawnResult.status}` }
   }
 
-  // Step 4: Graceful shutdown (launchd will restart with new code)
+  // Step 4: Graceful shutdown then self-spawn new daemon
+  // We can't rely on launchd KeepAlive — the plist may not be loaded.
+  // Instead: shut down (releases socket), spawn new daemon from updated code.
   emitNervesEvent({
     component: "daemon",
     event: "daemon.staged_restart_hooks_passed",
-    message: "hooks passed, shutting down for restart",
+    message: "hooks passed, shutting down and spawning new daemon",
     meta: { version },
   })
 
+  let shutdownError: string | undefined
   try {
     await deps.gracefulShutdown()
   } catch (err) {
-    const shutdownError = err instanceof Error ? err.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(err)
+    shutdownError = err instanceof Error ? err.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(err)
     emitNervesEvent({
       component: "daemon",
       event: "daemon.staged_restart_shutdown_error",
-      message: "graceful shutdown encountered error",
+      message: "graceful shutdown encountered error (continuing with spawn)",
       meta: { version, error: shutdownError },
     })
-    return { ok: true, shutdownError }
   }
 
-  return { ok: true }
+  // Spawn new daemon from updated code path
+  const newEntry = path.join(newCodePath, "dist", "heart", "daemon", "daemon-entry.js")
+  const socketArg = deps.socketPath ?? "/tmp/ouroboros-daemon.sock"
+
+  try {
+    const { pid } = deps.spawnNewDaemon(newEntry, socketArg)
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.staged_restart_spawned",
+      message: "new daemon spawned successfully",
+      meta: { version, pid, entry: newEntry },
+    })
+  } catch (err) {
+    const spawnError = err instanceof Error ? err.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(err)
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.staged_restart_respawn_failed",
+      message: "failed to spawn new daemon after shutdown",
+      meta: { version, error: spawnError, entry: newEntry },
+    })
+    return { ok: false, error: `shutdown succeeded but failed to spawn new daemon: ${spawnError}`, shutdownError }
+  }
+
+  return { ok: true, shutdownError }
 }
