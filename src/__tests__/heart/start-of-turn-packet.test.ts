@@ -588,4 +588,15 @@ describe("start-of-turn packet", () => {
       expect(tokens).toBeLessThanOrEqual(200)
     })
   })
+
+  describe("syncFailure rendering", () => {
+    it("renders sync warning when syncFailure is set", () => {
+      const view = makeView()
+      const packet = buildStartOfTurnPacket(view)
+      packet.syncFailure = "prior sync push failed: network timeout"
+      const rendered = renderStartOfTurnPacket(packet)
+      expect(rendered).toContain("Sync warning")
+      expect(rendered).toContain("prior sync push failed: network timeout")
+    })
+  })
 })
