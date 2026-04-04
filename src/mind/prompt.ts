@@ -549,6 +549,10 @@ export interface BuildSystemOptions {
   startOfTurnPacket?: string;
 
   // ── Pre-read state from TurnContext ─────────────────────────────
+  // These fields are populated by buildTurnContext() in the main pipeline path.
+  // The filesystem fallback in each section is transitional — it exists for
+  // callers that don't go through the pipeline (e.g. shared-turn.ts).
+  // Goal: all production turn paths provide these values; fallback is backup only.
   /** Whether the daemon socket is alive. When provided, skips the fs check. */
   daemonRunning?: boolean;
   /** Pre-read sense status lines. When provided, skips secrets.json read. */
