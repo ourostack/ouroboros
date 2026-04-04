@@ -4565,6 +4565,9 @@ describe("anthropic setup-token provider contract", () => {
         maxTokens: 120000,
         contextMargin: 2000,
       }),
+      getProviderConfig: () => {
+        throw "config-exploded"
+      },
     }))
 
     const mockExit = vi.spyOn(process, "exit").mockImplementation((() => {

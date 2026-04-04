@@ -468,7 +468,7 @@ describe("runtime auth flow", () => {
       }, {
         homeDir,
       }),
-    ).rejects.toThrow("Azure API key, endpoint, and deployment are required.")
+    ).rejects.toThrow("Azure endpoint is required.")
   })
 
   it("fails fast when an existing secrets file is unreadable", async () => {

@@ -65,8 +65,8 @@ export function checkAgentConfig(
     }
   }
 
-  const requiredFields = PROVIDER_CREDENTIALS[provider as AgentProvider]
-  if (!requiredFields) {
+  const desc = PROVIDER_CREDENTIALS[provider as AgentProvider]
+  if (!desc) {
     return {
       ok: false,
       error: `Unknown provider '${provider}' in agent.json for '${agentName}'`,
@@ -110,7 +110,7 @@ export function checkAgentConfig(
     }
   }
 
-  const missing = requiredFields.filter((field) => {
+  const missing = desc.required.filter((field: string) => {
     const val = providerSecrets[field]
     return typeof val !== "string" || val.length === 0
   })

@@ -1,7 +1,7 @@
 import type Anthropic from "@anthropic-ai/sdk"
 import OpenAI from "openai"
 import type { ProviderErrorClassification, ProviderRuntime } from "./core"
-import type { AgentProvider } from "./identity"
+import { PROVIDER_CREDENTIALS, type AgentProvider } from "./identity"
 import type {
   AnthropicProviderConfig,
   AzureProviderConfig,
@@ -64,25 +64,8 @@ export function sanitizeErrorMessage(message: string): string {
 }
 
 function hasEmptyCredentials(provider: AgentProvider, config: ProviderConfig): boolean {
-  switch (provider) {
-    case "anthropic":
-      return !(config as AnthropicProviderConfig).setupToken
-    case "openai-codex":
-      return !(config as OpenAICodexProviderConfig).oauthAccessToken
-    case "minimax":
-      return !(config as MinimaxProviderConfig).apiKey
-    case "azure": {
-      const azure = config as AzureProviderConfig
-      return !(azure.apiKey && azure.endpoint && azure.deployment)
-    }
-    case "github-copilot": {
-      const copilot = config as GithubCopilotProviderConfig
-      return !(copilot.githubToken && copilot.baseUrl)
-    }
-    /* v8 ignore next 2 -- exhaustive: all providers handled above @preserve */
-    default:
-      return true
-  }
+  const record = config as unknown as Record<string, unknown>
+  return PROVIDER_CREDENTIALS[provider].required.some((key) => !record[key])
 }
 
 function createRuntimeForPing(provider: AgentProvider, _config: ProviderConfig): ProviderRuntime {

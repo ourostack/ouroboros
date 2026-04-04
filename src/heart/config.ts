@@ -5,6 +5,7 @@ import {
   getAgentRoot,
   getAgentSecretsPath,
   DEFAULT_AGENT_CONTEXT,
+  type AgentProvider,
 } from "./identity"
 import { emitNervesEvent } from "../nerves/runtime"
 
@@ -334,6 +335,11 @@ export function getOpenAICodexConfig(): OpenAICodexProviderConfig {
 export function getGithubCopilotConfig(): GithubCopilotProviderConfig {
   const config = loadConfig()
   return { ...config.providers["github-copilot"] }
+}
+
+export function getProviderConfig(provider: AgentProvider): Record<string, unknown> {
+  const config = loadConfig()
+  return { ...(config.providers[provider] as unknown as Record<string, unknown>) }
 }
 
 export function getTeamsConfig(): TeamsConfig {
