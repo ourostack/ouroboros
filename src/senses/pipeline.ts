@@ -445,6 +445,33 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     key: input.sessionKey ?? "session",
     sessionPath: session.sessionPath,
   }
+
+  // Step 3b: Pre-turn sync pull (opt-in) — MUST happen before any continuity state reads
+  // so that obligations, episodes, cares, etc. reflect the latest remote state.
+  let syncFailure: string | undefined
+  let syncConfig: import("../heart/config").SyncConfig = { enabled: false, remote: "origin" }
+  try { syncConfig = getSyncConfig() } catch { /* config not available */ }
+  if (syncConfig.enabled) {
+    const pullResult = preTurnPull(getAgentRoot(), syncConfig)
+    if (!pullResult.ok) {
+      syncFailure = pullResult.error
+    }
+    // Check for pending-sync from a prior failed push
+    if (!syncFailure) {
+      const pendingSyncPath = path.join(getAgentRoot(), "state", "pending-sync.json")
+      try {
+        if (fs.existsSync(pendingSyncPath)) {
+          const pendingSync = JSON.parse(fs.readFileSync(pendingSyncPath, "utf-8"))
+          syncFailure = `prior sync push failed: ${pendingSync.error ?? "unknown"}`
+          // Clean up the pending-sync file since we surfaced it
+          fs.unlinkSync(pendingSyncPath)
+        }
+      } catch {
+        // Ignore read errors for pending-sync
+      }
+    }
+  }
+
   const activeBridges = createBridgeManager().findBridgesForSession({
     friendId: currentSession.friendId,
     channel: currentSession.channel,
@@ -565,31 +592,6 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   // Append user messages from the inbound turn
   for (const msg of input.messages) {
     sessionMessages.push(msg)
-  }
-
-  // Step 4b-pre: Pre-turn sync pull (opt-in)
-  let syncFailure: string | undefined
-  let syncConfig: import("../heart/config").SyncConfig = { enabled: false, remote: "origin" }
-  try { syncConfig = getSyncConfig() } catch { /* config not available */ }
-  if (syncConfig.enabled) {
-    const pullResult = preTurnPull(getAgentRoot(), syncConfig)
-    if (!pullResult.ok) {
-      syncFailure = pullResult.error
-    }
-    // Check for pending-sync from a prior failed push
-    if (!syncFailure) {
-      const pendingSyncPath = path.join(getAgentRoot(), "state", "pending-sync.json")
-      try {
-        if (fs.existsSync(pendingSyncPath)) {
-          const pending = JSON.parse(fs.readFileSync(pendingSyncPath, "utf-8"))
-          syncFailure = `prior sync push failed: ${pending.error ?? "unknown"}`
-          // Clean up the pending-sync file since we surfaced it
-          fs.unlinkSync(pendingSyncPath)
-        }
-      } catch {
-        // Ignore read errors for pending-sync
-      }
-    }
   }
 
   // Step 4b: Continuity pipeline — derive tempo, build wake packet, snapshot obligations

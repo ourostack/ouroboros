@@ -84,6 +84,27 @@ vi.mock("../../heart/obligations", async () => {
   }
 })
 
+const mockPreTurnPull = vi.fn()
+const mockPostTurnPush = vi.fn()
+const mockGetSyncConfig = vi.fn()
+
+vi.mock("../../heart/sync", async () => {
+  const actual = await vi.importActual<typeof import("../../heart/sync")>("../../heart/sync")
+  return {
+    ...actual,
+    preTurnPull: (...args: any[]) => mockPreTurnPull(...args),
+    postTurnPush: (...args: any[]) => mockPostTurnPush(...args),
+  }
+})
+
+vi.mock("../../heart/config", async () => {
+  const actual = await vi.importActual<typeof import("../../heart/config")>("../../heart/config")
+  return {
+    ...actual,
+    getSyncConfig: (...args: any[]) => mockGetSyncConfig(...args),
+  }
+})
+
 // ── Standard pipeline mocks (same as pipeline.test.ts) ───────────
 
 vi.mock("../../heart/daemon/socket-client", () => ({
@@ -292,6 +313,11 @@ describe("pipeline continuity integration", () => {
     })
     mockWritePresence.mockReturnValue(undefined)
     mockEmitEpisode.mockReturnValue({ id: "ep-1", timestamp: new Date().toISOString() })
+
+    // Default sync mock returns (disabled by default)
+    mockGetSyncConfig.mockReturnValue({ enabled: false, remote: "origin" })
+    mockPreTurnPull.mockReturnValue({ ok: true })
+    mockPostTurnPush.mockReturnValue({ ok: true })
   })
 
   afterEach(() => {
@@ -306,6 +332,9 @@ describe("pipeline continuity integration", () => {
     mockReadRecentEpisodes.mockReset()
     mockReadActiveCares.mockReset()
     mockReadPendingObligations.mockReset()
+    mockGetSyncConfig.mockReset()
+    mockPreTurnPull.mockReset()
+    mockPostTurnPush.mockReset()
     mockListSessionActivity.mockReset()
   })
 
@@ -574,6 +603,88 @@ describe("pipeline continuity integration", () => {
           salience: "medium",
         }),
       )
+    })
+  })
+
+  describe("sync pull ordering", () => {
+    it("reads obligations AFTER preTurnPull so pulled state is reflected in the turn packet", async () => {
+      // Enable sync
+      mockGetSyncConfig.mockReturnValue({ enabled: true, remote: "origin" })
+
+      // Track the order: preTurnPull should be called BEFORE readPendingObligations
+      const callOrder: string[] = []
+
+      mockPreTurnPull.mockImplementation(() => {
+        callOrder.push("preTurnPull")
+        return { ok: true }
+      })
+
+      // Simulate: pull brings new obligations. After pull, readPendingObligations returns the synced data.
+      // The key invariant: readPendingObligations is called AFTER preTurnPull, not before.
+      mockReadPendingObligations.mockImplementation(() => {
+        callOrder.push("readPendingObligations")
+        return [
+          { id: "ob-pulled", origin: { friendId: "friend-1", channel: "cli", key: "session" }, content: "synced from remote", status: "pending", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+        ]
+      })
+
+      const runAgentSpy = vi.fn().mockResolvedValue({ usage: usageData, outcome: "settled" })
+      const input = makeInput({ runAgent: runAgentSpy })
+      const { handleInboundTurn } = await import("../../senses/pipeline")
+      await handleInboundTurn(input)
+
+      // Verify ordering: pull happens before obligations are read
+      const pullIdx = callOrder.indexOf("preTurnPull")
+      const firstObligationIdx = callOrder.indexOf("readPendingObligations")
+      expect(pullIdx).toBeGreaterThanOrEqual(0)
+      expect(firstObligationIdx).toBeGreaterThan(pullIdx)
+
+      // Verify the pulled obligation is visible to buildWakePacket (which receives temporal view
+      // built from the post-pull state). The wake packet builder is called with canonical obligations
+      // that include our synced obligation.
+      expect(mockBuildWakePacket).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          canonicalObligations: expect.objectContaining({
+            all: expect.arrayContaining([
+              expect.objectContaining({ id: "ob-pulled" }),
+            ]),
+          }),
+        }),
+      )
+    })
+
+    it("reads episodes and cares AFTER preTurnPull", async () => {
+      mockGetSyncConfig.mockReturnValue({ enabled: true, remote: "origin" })
+
+      const callOrder: string[] = []
+
+      mockPreTurnPull.mockImplementation(() => {
+        callOrder.push("preTurnPull")
+        return { ok: true }
+      })
+
+      mockReadRecentEpisodes.mockImplementation(() => {
+        callOrder.push("readRecentEpisodes")
+        return []
+      })
+
+      mockReadActiveCares.mockImplementation(() => {
+        callOrder.push("readActiveCares")
+        return []
+      })
+
+      const input = makeInput()
+      const { handleInboundTurn } = await import("../../senses/pipeline")
+      await handleInboundTurn(input)
+
+      const pullIdx = callOrder.indexOf("preTurnPull")
+      const episodesIdx = callOrder.indexOf("readRecentEpisodes")
+      const caresIdx = callOrder.indexOf("readActiveCares")
+
+      expect(pullIdx).toBeGreaterThanOrEqual(0)
+      expect(episodesIdx).toBeGreaterThan(pullIdx)
+      expect(caresIdx).toBeGreaterThan(pullIdx)
     })
   })
 })
