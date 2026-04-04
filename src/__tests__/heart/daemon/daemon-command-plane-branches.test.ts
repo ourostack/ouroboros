@@ -4,7 +4,7 @@ import * as net from "net"
 import * as os from "os"
 import * as path from "path"
 
-import { OuroDaemon } from "../../../heart/daemon/daemon"
+import { OuroDaemon, handleAgentSenseTurn } from "../../../heart/daemon/daemon"
 
 function tmpSocketPath(name: string): string {
   return path.join(os.tmpdir(), `${name}-${Date.now()}-${Math.random().toString(16).slice(2)}.sock`)
@@ -486,20 +486,15 @@ describe("daemon command plane branches", () => {
     fs.rmSync(unreadableRoot, { force: true })
   })
 
-  it("routes agent.senseTurn through dynamic import to runSenseTurn", async () => {
-    const socketPath = tmpSocketPath("daemon-sense-turn")
-    const { daemon } = make(socketPath)
-
-    // Mock the dynamic import of shared-turn
-    const mockRunSenseTurn = vi.fn().mockResolvedValue({
-      response: "hello from agent",
-      ponderDeferred: false,
-    })
+  it("handleAgentSenseTurn runs a full turn and returns response", async () => {
     vi.doMock("../../../senses/shared-turn", () => ({
-      runSenseTurn: mockRunSenseTurn,
+      runSenseTurn: vi.fn().mockResolvedValue({
+        response: "hello from agent",
+        ponderDeferred: false,
+      }),
     }))
 
-    const result = await daemon.handleCommand({
+    const result = await handleAgentSenseTurn({
       kind: "agent.senseTurn",
       agent: "test-agent",
       friendId: "friend-1",
@@ -513,15 +508,12 @@ describe("daemon command plane branches", () => {
     expect(result.data).toEqual({ ponderDeferred: false })
   })
 
-  it("returns error when agent.senseTurn fails", async () => {
-    const socketPath = tmpSocketPath("daemon-sense-turn-error")
-    const { daemon } = make(socketPath)
-
+  it("handleAgentSenseTurn returns error on failure", async () => {
     vi.doMock("../../../senses/shared-turn", () => ({
       runSenseTurn: vi.fn().mockRejectedValue(new Error("provider down")),
     }))
 
-    const result = await daemon.handleCommand({
+    const result = await handleAgentSenseTurn({
       kind: "agent.senseTurn",
       agent: "test-agent",
       friendId: "friend-1",

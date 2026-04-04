@@ -300,6 +300,35 @@ function parseIncomingCommand(raw: string): DaemonCommand {
   return parsed as DaemonCommand
 }
 
+/**
+ * Handle agent.senseTurn command: runs a full agent turn via the daemon process.
+ * Dynamic import lazy-loads shared-turn. Hot-reload works because ouro dev
+ * restarts the daemon process (fresh module cache).
+ */
+export async function handleAgentSenseTurn(
+  command: Extract<DaemonCommand, { kind: "agent.senseTurn" }>,
+): Promise<DaemonResponse> {
+  try {
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const result = await runSenseTurn({
+      agentName: command.agent,
+      channel: command.channel as import("../../mind/friends/types").Channel,
+      sessionKey: command.sessionKey,
+      friendId: command.friendId,
+      userMessage: command.message,
+    })
+    return {
+      ok: true,
+      message: result.response,
+      data: { ponderDeferred: result.ponderDeferred },
+    }
+  } catch (error) {
+    /* v8 ignore next -- branch: String(error) fallback only for non-Error throws @preserve */
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    return { ok: false, error: `sense turn failed: ${errorMessage}` }
+  }
+}
+
 export class OuroDaemon {
   private readonly socketPath: string
   private readonly processManager: DaemonProcessManagerLike
@@ -834,32 +863,8 @@ export class OuroDaemon {
         return handleAgentReportBlocker(command)
       case "agent.reportComplete":
         return handleAgentReportComplete(command)
-      /* v8 ignore next -- case branch: tested directly in daemon-command-plane-branches.test.ts @preserve */
-      case "agent.senseTurn": {
-        // Dynamic import: lazy-loads shared-turn on first use. Hot-reload works
-        // because ouro dev restarts the daemon process (fresh module cache),
-        // NOT because dynamic import bypasses caching.
-        try {
-          const { runSenseTurn } = await import("../../senses/shared-turn")
-          const result = await runSenseTurn({
-            agentName: command.agent,
-            channel: command.channel as import("../../mind/friends/types").Channel,
-            sessionKey: command.sessionKey,
-            friendId: command.friendId,
-            userMessage: command.message,
-          })
-          return {
-            ok: true,
-            message: result.response,
-            data: { ponderDeferred: result.ponderDeferred },
-          }
-        /* v8 ignore start -- catch: error path tested, but instanceof ternary has unreachable String(error) branch @preserve */
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : String(error)
-          return { ok: false, error: `sense turn failed: ${errorMessage}` }
-        }
-        /* v8 ignore stop */
-      }
+      case "agent.senseTurn":
+        return handleAgentSenseTurn(command)
       /* v8 ignore stop */
       case "cron.list": {
         const jobs = this.scheduler.listJobs()
