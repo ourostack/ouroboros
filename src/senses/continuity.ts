@@ -1,6 +1,7 @@
 import { emitNervesEvent } from "../nerves/runtime"
+import type { SteeringFollowUpEffect } from "../heart/turn-coordinator"
 
-export type SteeringFollowUpEffect = "none" | "set_no_handoff" | "clear_and_supersede"
+export type { SteeringFollowUpEffect }
 
 const NO_HANDOFF_CLAUSES = new Set([
   "dont return control until complete or blocked",

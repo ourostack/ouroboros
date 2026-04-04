@@ -10,12 +10,11 @@ import { emitNervesEvent } from "../nerves/runtime";
 import type { ProviderCapability } from "../heart/core";
 import { guardInvocation } from "./guardrails";
 import { getAgentRoot, getAgentName } from "../heart/identity";
-import { surfaceToolDef, handleSurface, type SurfaceRouteResult } from "../senses/surface-tool";
-import { advanceObligation as advanceInnerObligation } from "../mind/obligations";
-import { findPendingObligationForOrigin, fulfillObligation } from "../heart/obligations";
+import { handleSurface, type SurfaceRouteResult } from "../senses/surface-tool";
+import { advanceReturnObligation, findPendingObligationForOrigin, fulfillObligation } from "../heart/obligations";
 import { findFreshestFriendSession, listSessionActivity } from "../heart/session-activity";
 import * as path from "path";
-import type { AttentionItem } from "../senses/attention-queue";
+import type { AttentionItem } from "../heart/attention-types";
 
 function safeGetAgentRoot(): string | undefined {
   try {
@@ -28,6 +27,34 @@ function safeGetAgentRoot(): string | undefined {
 // Re-export types and constants used by the rest of the codebase
 export { tools, settleTool, observeTool, ponderTool, restTool } from "./tools-base";
 export type { ToolContext, ToolHandler, ToolDefinition } from "./tools-base";
+
+// Surface tool schema — canonical home. Handler lives in senses/surface-tool.ts.
+export const surfaceToolDef: OpenAI.ChatCompletionFunctionTool = {
+  type: "function",
+  function: {
+    name: "surface",
+    description:
+      "share a thought outward — deliver an answer, ask a follow-up, or surface progress to whoever needs to hear it. pass delegationId to address a held thought (see your attention queue above), or friendId for spontaneous outreach. does not end your turn.",
+    parameters: {
+      type: "object",
+      properties: {
+        content: {
+          type: "string",
+          description: "the message to deliver",
+        },
+        delegationId: {
+          type: "string",
+          description: "ID from your attention queue — addresses a specific held thought",
+        },
+        friendId: {
+          type: "string",
+          description: "friend to reach out to spontaneously (when not addressing a held thought)",
+        },
+      },
+      required: ["content"],
+    },
+  },
+}
 
 // Surface tool handler: routes content to friend's freshest session
 /* v8 ignore start -- surface handler wiring: core logic tested via surface-tool.test.ts; this wires identity/routing deps @preserve */
@@ -158,7 +185,7 @@ const surfaceToolDefinition: ToolDefinition = {
         /* v8 ignore start -- obligation advance: tested via attention-queue tests @preserve */
         try {
           const name = (() => { try { return getAgentName() } catch { return "unknown" } })()
-          advanceInnerObligation(name, obligationId, {
+          advanceReturnObligation(name, obligationId, {
             status: update.status as any,
             ...(update.returnedAt !== undefined ? { returnedAt: update.returnedAt } : {}),
             ...(update.returnTarget !== undefined ? { returnTarget: update.returnTarget as any } : {}),

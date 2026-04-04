@@ -1,5 +1,6 @@
-import type { SteeringFollowUpEffect } from "../senses/continuity"
 import { emitNervesEvent } from "../nerves/runtime"
+
+export type SteeringFollowUpEffect = "none" | "set_no_handoff" | "clear_and_supersede"
 
 export interface SteeringFollowUp {
   conversationId: string

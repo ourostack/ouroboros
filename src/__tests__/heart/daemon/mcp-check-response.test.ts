@@ -4,16 +4,6 @@ import { emitNervesEvent } from "../../../nerves/runtime"
 
 // ── Mocks ──────────────────────────────────────────────────────
 
-const mockRunSenseTurn = vi.fn().mockResolvedValue({ response: "ok", ponderDeferred: false })
-
-vi.mock("../../../senses/shared-turn", async () => {
-  const actual = await vi.importActual<typeof import("../../../senses/shared-turn")>("../../../senses/shared-turn")
-  return {
-    ...actual,
-    runSenseTurn: (...args: any[]) => mockRunSenseTurn(...args),
-  }
-})
-
 const mockResolveSessionId = vi.fn().mockReturnValue("session-check-test")
 
 vi.mock("../../../heart/daemon/session-id-resolver", async () => {
@@ -234,7 +224,8 @@ describe("MCP check_response tool", () => {
 
     // Should complete quickly (within timeout buffer), not wait for agent turn
     expect(elapsed).toBeLessThan(1000)
-    // Should NOT call runSenseTurn
-    expect(mockRunSenseTurn).not.toHaveBeenCalled()
+    // check_response reads pending dir directly, no daemon senseTurn call
+    const { sendDaemonCommand } = await import("../../../heart/daemon/socket-client")
+    expect(sendDaemonCommand).not.toHaveBeenCalled()
   })
 })

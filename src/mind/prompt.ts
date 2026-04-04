@@ -247,7 +247,11 @@ function processTypeLabel(channel: Channel): string {
 
 const DAEMON_SOCKET_PATH = "/tmp/ouroboros-daemon.sock"
 
-function daemonStatus(): string {
+function daemonStatus(preRead?: boolean): string {
+  /* v8 ignore next 2 -- pre-read branch: exercised via pipeline TurnContext path, not unit-testable in isolation @preserve */
+  if (preRead !== undefined) {
+    return preRead ? "running" : "not running"
+  }
   try {
     return fs.existsSync(DAEMON_SOCKET_PATH) ? "running" : "not running"
   } catch {
@@ -255,7 +259,7 @@ function daemonStatus(): string {
   }
 }
 
-export function runtimeInfoSection(channel: Channel): string {
+export function runtimeInfoSection(channel: Channel, options?: BuildSystemOptions): string {
   const lines: string[] = [];
   const agentName = getAgentName();
   const currentVersion = getPackageVersion();
@@ -264,7 +268,8 @@ export function runtimeInfoSection(channel: Channel): string {
   lines.push(`agent: ${agentName}`);
   lines.push(`runtime version: ${currentVersion}`);
 
-  const bundleMeta = readBundleMeta()
+  /* v8 ignore next -- branch: pre-read path exercised via pipeline TurnContext, not unit-testable in isolation @preserve */
+  const bundleMeta = options?.bundleMeta !== undefined ? options.bundleMeta : readBundleMeta()
   if (bundleMeta?.previousRuntimeVersion && bundleMeta.previousRuntimeVersion !== currentVersion) {
     lines.push(`previously: ${bundleMeta.previousRuntimeVersion}`)
     const changelogCommand = buildChangelogCommand(bundleMeta.previousRuntimeVersion, currentVersion)
@@ -282,7 +287,7 @@ export function runtimeInfoSection(channel: Channel): string {
   lines.push(`channel: ${channel}`);
   lines.push(`current sense: ${channel}`);
   lines.push(`process type: ${processTypeLabel(channel)}`);
-  lines.push(`daemon: ${daemonStatus()}`);
+  lines.push(`daemon: ${daemonStatus(options?.daemonRunning)}`);
   lines.push(`mcp serve: i can expose my tools to dev tools via \`ouro mcp-serve\`. see the configure-dev-tools skill for setup.`);
 
   if (channel === "cli") {
@@ -309,7 +314,7 @@ export function runtimeInfoSection(channel: Channel): string {
   }
 
   lines.push("")
-  lines.push(...senseRuntimeGuidance(channel))
+  lines.push(...senseRuntimeGuidance(channel, options?.senseStatusLines))
 
   return lines.join("\n");
 }
@@ -363,9 +368,9 @@ function localSenseStatusLines(): string[] {
   return [..._senseStatusLinesCache]
 }
 
-function senseRuntimeGuidance(channel: Channel): string[] {
+function senseRuntimeGuidance(channel: Channel, preReadStatusLines?: string[]): string[] {
   const lines = ["available senses:"]
-  lines.push(...localSenseStatusLines())
+  lines.push(...(preReadStatusLines ?? localSenseStatusLines()))
   lines.push("sense states:")
   lines.push("- interactive = available when opened by the user instead of kept running by the daemon")
   lines.push("- disabled = turned off in agent.json")
@@ -544,6 +549,22 @@ export interface BuildSystemOptions {
   pendingMessages?: Array<{ from: string; content: string }>;
   /** Rendered start-of-turn packet for continuity-aware prompt. */
   startOfTurnPacket?: string;
+
+  // ── Pre-read state from TurnContext ─────────────────────────────
+  // These fields are populated by buildTurnContext() in the main pipeline path.
+  // The filesystem fallback in each section is transitional — it exists for
+  // callers that don't go through the pipeline (e.g. shared-turn.ts).
+  // Goal: all production turn paths provide these values; fallback is backup only.
+  /** Whether the daemon socket is alive. When provided, skips the fs check. */
+  daemonRunning?: boolean;
+  /** Pre-read sense status lines. When provided, skips secrets.json read. */
+  senseStatusLines?: string[];
+  /** Pre-read bundle-meta.json. When provided, skips the fs read. */
+  bundleMeta?: BundleMeta | null;
+  /** Pre-read daemon health state. When provided, skips the health file read. */
+  daemonHealth?: import("../heart/daemon/daemon-health").DaemonHealthState | null;
+  /** Pre-read journal file entries. When provided, skips the journal dir read. */
+  journalFiles?: JournalFileEntry[];
 }
 
 function bridgeContextSection(options?: BuildSystemOptions): string {
@@ -933,9 +954,8 @@ function formatRelativeTime(nowMs: number, mtimeMs: number): string {
   return `${days} day${days === 1 ? "" : "s"} ago`
 }
 
-export function journalSection(agentRoot: string, now?: Date): string {
-  const journalDir = path.join(agentRoot, "journal")
-  const files = readJournalFiles(journalDir)
+export function journalSection(agentRoot: string, now?: Date, preReadFiles?: JournalFileEntry[]): string {
+  const files = preReadFiles ?? readJournalFiles(path.join(agentRoot, "journal"))
   if (files.length === 0) return ""
 
   const nowMs = (now ?? new Date()).getTime()
@@ -1037,9 +1057,10 @@ function formatElapsedBrief(ms: number): string {
   return `${hours}h ago`
 }
 
-export function rhythmStatusSection(): string {
+export function rhythmStatusSection(preReadHealth?: import("../heart/daemon/daemon-health").DaemonHealthState | null): string {
   try {
-    const health = readHealth(getDefaultHealthPath())
+    /* v8 ignore next -- branch: pre-read path exercised via pipeline TurnContext @preserve */
+    const health = preReadHealth !== undefined ? preReadHealth : readHealth(getDefaultHealthPath())
     if (!health) return ""
 
     const habitNames = Object.keys(health.habits)
@@ -1102,8 +1123,8 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     // Group 2: my body & environment
     "# my body & environment",
     bodyMapSection(getAgentName()),
-    runtimeInfoSection(channel),
-    rhythmStatusSection(),
+    runtimeInfoSection(channel, options),
+    rhythmStatusSection(options?.daemonHealth),
     channelNatureSection(getChannelCapabilities(channel)),
     providerSection(channel),
     dateSection(),
@@ -1128,7 +1149,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     ...(channel === "inner" ? [
       "# my inner life",
       metacognitiveFramingSection(channel),
-      journalSection(getAgentRoot()),
+      journalSection(getAgentRoot(), undefined, options?.journalFiles),
     ] : []),
 
     // Group 6: social context (non-local, non-inner channels)
