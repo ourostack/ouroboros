@@ -21,12 +21,8 @@ describe("daemon CLI default dependency branches", () => {
     const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-boot-deps-"))
     const restorePlatform = withProcessPlatform("darwin")
     const originalGetuid = Object.getOwnPropertyDescriptor(process, "getuid")
-    const installLaunchAgent = vi.fn((deps: any) => {
-      const removablePath = path.join(tempHome, "remove-me")
-      fs.writeFileSync(removablePath, "x", "utf-8")
-      deps.removeFile(removablePath)
-      expect(fs.existsSync(removablePath)).toBe(false)
-      expect(deps.userUid).toBe(0)
+    const writeLaunchAgentPlist = vi.fn((deps: any) => {
+      deps.mkdirp(path.join(tempHome, "Library", "LaunchAgents"))
     })
 
     try {
@@ -39,7 +35,7 @@ describe("daemon CLI default dependency branches", () => {
       })
       vi.doMock("../../../heart/daemon/launchd", async () => {
         const actual = await vi.importActual<typeof import("../../../heart/daemon/launchd")>("../../../heart/daemon/launchd")
-        return { ...actual, installLaunchAgent }
+        return { ...actual, writeLaunchAgentPlist }
       })
       vi.doMock("../../../heart/identity", () => ({
         getRepoRoot: () => "/mock/repo",
@@ -54,7 +50,7 @@ describe("daemon CLI default dependency branches", () => {
 
       deps.ensureDaemonBootPersistence?.("/tmp/daemon.sock")
 
-      expect(installLaunchAgent).toHaveBeenCalledOnce()
+      expect(writeLaunchAgentPlist).toHaveBeenCalledOnce()
     } finally {
       vi.doUnmock("../../../heart/daemon/launchd")
       restorePlatform()
@@ -144,13 +140,10 @@ describe("daemon CLI default dependency branches", () => {
 
       deps.ensureDaemonBootPersistence?.("/tmp/daemon.sock")
 
-      expect(execSync).toHaveBeenCalledWith(
-        expect.stringContaining("launchctl bootout gui/"),
-        { stdio: "ignore" },
-      )
-      // Bootstrap IS called — for KeepAlive crash recovery (runs after daemon start)
-      const bootstrapCalls = execSync.mock.calls.filter((c: unknown[]) => String(c[0]).includes("bootstrap"))
-      expect(bootstrapCalls.length).toBeGreaterThanOrEqual(0) // may or may not be called depending on test ordering
+      // Boot persistence only writes the plist — no launchctl commands.
+      // (bootstrapping would start a competing daemon)
+      const launchctlCalls = execSync.mock.calls.filter((c: unknown[]) => String(c[0]).includes("launchctl"))
+      expect(launchctlCalls.length).toBe(0)
     } finally {
       restorePlatform()
       fs.rmSync(tempHome, { recursive: true, force: true })
