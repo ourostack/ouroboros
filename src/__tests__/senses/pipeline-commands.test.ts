@@ -94,12 +94,12 @@ vi.mock("../../heart/temporal-view", async () => {
   }
 })
 
-vi.mock("../../heart/wake-packet", async () => {
-  const actual = await vi.importActual<typeof import("../../heart/wake-packet")>("../../heart/wake-packet")
+vi.mock("../../heart/start-of-turn-packet", async () => {
+  const actual = await vi.importActual<typeof import("../../heart/start-of-turn-packet")>("../../heart/start-of-turn-packet")
   return {
     ...actual,
-    buildWakePacket: vi.fn().mockReturnValue({ plotLine: "", obligations: "", cares: "", presence: "", resumeHint: "", tempo: "brief", tokenBudget: { min: 150, max: 250 }, assembledAt: new Date().toISOString() }),
-    renderWakePacket: vi.fn().mockReturnValue(""),
+    buildStartOfTurnPacket: vi.fn().mockReturnValue({ plotLine: "", obligations: "", cares: "", presence: "", resumeHint: "", tempo: "brief", tokenBudget: { min: 150, max: 250 }, assembledAt: new Date().toISOString() }),
+    renderStartOfTurnPacket: vi.fn().mockReturnValue(""),
   }
 })
 

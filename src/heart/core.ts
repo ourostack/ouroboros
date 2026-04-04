@@ -276,8 +276,8 @@ export interface RunAgentOptions {
   isReactionSignal?: boolean;
   /** Pending messages from other sessions/inner dialog, rendered in system prompt. */
   pendingMessages?: Array<{ from: string; content: string }>;
-  /** Rendered wake packet for continuity-aware prompt. */
-  wakePacket?: string;
+  /** Rendered start-of-turn packet for continuity-aware prompt. */
+  startOfTurnPacket?: string;
 }
 
 export type RunAgentOutcome =
