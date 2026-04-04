@@ -668,8 +668,8 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
         const model = (cfg as Record<string, unknown>).model ?? (cfg as Record<string, unknown>).modelName
         if (typeof model === "string" && model) providerModels[p] = model
       }
-      /* v8 ignore next -- defensive: current provider always in secrets @preserve */
-      const currentModel = providerModels[currentProvider] ?? ""
+      // Use agent.json model (source of truth), not secrets model (may be stale)
+      const currentModel = agentConfig.humanFacing.model
       const failoverContext = buildFailoverContext(
         /* v8 ignore next -- defensive: error always set when errored @preserve */
         result.error?.message ?? "unknown error",
