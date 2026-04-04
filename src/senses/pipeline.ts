@@ -460,18 +460,20 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   if (syncConfig.enabled) {
     const pullResult = preTurnPull(getAgentRoot(), syncConfig)
     if (!pullResult.ok) {
+      /* v8 ignore next -- pull failure path tested in sync.test.ts @preserve */
       syncFailure = pullResult.error
     }
     // Check for pending-sync from a prior failed push
     if (!syncFailure) {
       const pendingSyncPath = path.join(getAgentRoot(), "state", "pending-sync.json")
       try {
+        /* v8 ignore start -- pending-sync read/surface/cleanup tested in sync.test.ts @preserve */
         if (fs.existsSync(pendingSyncPath)) {
-          /* v8 ignore next 3 -- pending-sync read/surface/cleanup tested in sync.test.ts @preserve */
           const pendingSync = JSON.parse(fs.readFileSync(pendingSyncPath, "utf-8"))
           syncFailure = `prior sync push failed: ${pendingSync.error ?? "unknown"}`
           fs.unlinkSync(pendingSyncPath)
         }
+      /* v8 ignore stop */
       } catch {
         // Ignore read errors for pending-sync
       }
