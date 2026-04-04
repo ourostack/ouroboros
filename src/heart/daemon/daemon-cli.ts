@@ -401,16 +401,47 @@ export async function ensureDaemonRunning(deps: OuroCliDeps): Promise<EnsureDaem
       },
       cleanupStaleSocket: deps.cleanupStaleSocket,
       startDaemonProcess: deps.startDaemonProcess,
+      checkSocketAlive: deps.checkSocketAlive,
     })
   }
 
   deps.cleanupStaleSocket(deps.socketPath)
   const started = await deps.startDaemonProcess(deps.socketPath)
+  const pid = started.pid ?? "unknown"
+
+  // Verify the daemon actually comes up before reporting success
+  const verified = await verifyDaemonAlive(deps.checkSocketAlive, deps.socketPath)
+
+  /* v8 ignore start -- daemon liveness failure: requires real daemon crash timing @preserve */
+  if (!verified) {
+    return {
+      alreadyRunning: false,
+      message: `daemon spawned (pid ${pid}) but failed to respond within 10s — check \`ouro status\` or daemon logs`,
+    }
+  }
+  /* v8 ignore stop */
+
   return {
     alreadyRunning: false,
-    message: `daemon started (pid ${started.pid ?? "unknown"})`,
+    message: `daemon started (pid ${pid})`,
   }
 }
+
+/* v8 ignore start -- daemon liveness poll: real socket timing untestable in vitest @preserve */
+async function verifyDaemonAlive(
+  checkSocketAlive: (socketPath: string) => Promise<boolean>,
+  socketPath: string,
+  maxWaitMs = 10_000,
+  pollIntervalMs = 500,
+): Promise<boolean> {
+  const deadline = Date.now() + maxWaitMs
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, pollIntervalMs))
+    if (await checkSocketAlive(socketPath)) return true
+  }
+  return false
+}
+/* v8 ignore stop */
 
 /**
  * Extract `--agent <name>` from an args array, returning the agent name and

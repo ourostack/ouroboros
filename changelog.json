@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.196",
+      "changes": [
+        "fix: ouro up verifies daemon is alive before reporting started (polls socket for 10s)",
+        "fix: daemon-runtime-sync also verifies after replacing a stale daemon"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.195",
       "changes": [
         "fix: failover error message reads model from agent.json instead of stale secrets"
