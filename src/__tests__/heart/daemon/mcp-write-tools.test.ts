@@ -4,16 +4,6 @@ import { emitNervesEvent } from "../../../nerves/runtime"
 
 // ── Mocks ──────────────────────────────────────────────────────
 
-const mockRunSenseTurn = vi.fn()
-
-vi.mock("../../../senses/shared-turn", async () => {
-  const actual = await vi.importActual<typeof import("../../../senses/shared-turn")>("../../../senses/shared-turn")
-  return {
-    ...actual,
-    runSenseTurn: (...args: any[]) => mockRunSenseTurn(...args),
-  }
-})
-
 const mockResolveSessionId = vi.fn().mockReturnValue("session-write-test")
 
 vi.mock("../../../heart/daemon/session-id-resolver", async () => {
@@ -97,11 +87,11 @@ describe("MCP write tools routing", () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
-    mockRunSenseTurn.mockResolvedValue({
-      response: "task accepted and working on it",
-      ponderDeferred: false,
+    mockSendDaemonCommand.mockResolvedValue({
+      ok: true,
+      message: "task accepted and working on it",
+      data: { ponderDeferred: false },
     })
-    mockSendDaemonCommand.mockResolvedValue({ ok: true, message: "sent" })
     stdin = new PassThrough()
     stdout = new PassThrough()
     emitNervesEvent({
@@ -118,7 +108,7 @@ describe("MCP write tools routing", () => {
   })
 
   describe("delegate", () => {
-    it("delegate calls runSenseTurn for a full conversation turn", async () => {
+    it("delegate routes through daemon socket for a full conversation turn", async () => {
       const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
       const server = createMcpServer({
         agent: "test-agent",
@@ -145,11 +135,18 @@ describe("MCP write tools routing", () => {
       const output = await outputPromise
       server.stop()
 
-      expect(mockRunSenseTurn).toHaveBeenCalledTimes(1)
-      const call = mockRunSenseTurn.mock.calls[0][0]
-      expect(call.channel).toBe("mcp")
-      expect(call.userMessage).toContain("build the widget")
-      expect(call.userMessage).toContain("it should be blue")
+      expect(mockSendDaemonCommand).toHaveBeenCalledTimes(1)
+      expect(mockSendDaemonCommand).toHaveBeenCalledWith(
+        "/tmp/test.sock",
+        expect.objectContaining({
+          kind: "agent.senseTurn",
+          agent: "test-agent",
+          channel: "mcp",
+          message: expect.stringContaining("build the widget"),
+        }),
+      )
+      const call = mockSendDaemonCommand.mock.calls[0][1]
+      expect(call.message).toContain("it should be blue")
     })
 
     it("delegate returns agent response", async () => {
@@ -212,8 +209,8 @@ describe("MCP write tools routing", () => {
       const output = await outputPromise
       server.stop()
 
-      // report_* should NOT call runSenseTurn
-      expect(mockRunSenseTurn).not.toHaveBeenCalled()
+      // report_* should NOT route through daemon senseTurn
+      expect(mockSendDaemonCommand).not.toHaveBeenCalled()
       // Should return a response (via agent-service fallback)
       const response = parseResponse(output)
       expect(response.result.content[0].text).toBeDefined()
@@ -221,7 +218,7 @@ describe("MCP write tools routing", () => {
   })
 
   describe("report_blocker", () => {
-    it("report_blocker returns without calling runSenseTurn", async () => {
+    it("report_blocker returns without routing through daemon", async () => {
       const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
       const server = createMcpServer({
         agent: "test-agent",
@@ -248,14 +245,14 @@ describe("MCP write tools routing", () => {
       const output = await outputPromise
       server.stop()
 
-      expect(mockRunSenseTurn).not.toHaveBeenCalled()
+      expect(mockSendDaemonCommand).not.toHaveBeenCalled()
       const response = parseResponse(output)
       expect(response.result.isError).toBeFalsy()
     })
   })
 
   describe("report_complete", () => {
-    it("report_complete returns without calling runSenseTurn", async () => {
+    it("report_complete returns without routing through daemon", async () => {
       const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
       const server = createMcpServer({
         agent: "test-agent",
@@ -282,7 +279,7 @@ describe("MCP write tools routing", () => {
       const output = await outputPromise
       server.stop()
 
-      expect(mockRunSenseTurn).not.toHaveBeenCalled()
+      expect(mockSendDaemonCommand).not.toHaveBeenCalled()
       const response = parseResponse(output)
       expect(response.result.isError).toBeFalsy()
     })

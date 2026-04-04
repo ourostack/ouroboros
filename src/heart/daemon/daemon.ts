@@ -198,6 +198,7 @@ export type DaemonCommand =
   | { kind: "mcp.list" }
   | { kind: "mcp.call"; server: string; tool: string; args?: string }
   | { kind: "hatch.start" }
+  | { kind: "agent.senseTurn"; agent: string; friendId: string; channel: string; sessionKey: string; message: string }
 
 export interface DaemonResponse {
   ok: boolean
@@ -833,6 +834,26 @@ export class OuroDaemon {
         return handleAgentReportBlocker(command)
       case "agent.reportComplete":
         return handleAgentReportComplete(command)
+      case "agent.senseTurn": {
+        try {
+          const { runSenseTurn } = await import("../../senses/shared-turn")
+          const result = await runSenseTurn({
+            agentName: command.agent,
+            channel: command.channel as import("../../mind/friends/types").Channel,
+            sessionKey: command.sessionKey,
+            friendId: command.friendId,
+            userMessage: command.message,
+          })
+          return {
+            ok: true,
+            message: result.response,
+            data: { ponderDeferred: result.ponderDeferred },
+          }
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : String(error)
+          return { ok: false, error: `sense turn failed: ${errorMessage}` }
+        }
+      }
       case "cron.list": {
         const jobs = this.scheduler.listJobs()
         const summary = jobs.length === 0
