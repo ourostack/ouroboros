@@ -1,5 +1,5 @@
 import type { PendingMessage } from "../mind/pending"
-import type { ReturnObligation } from "../mind/obligations"
+import type { ReturnObligation } from "../heart/obligations"
 import { emitNervesEvent } from "../nerves/runtime"
 
 // ── Types ────────────────────────────────────────────────────────

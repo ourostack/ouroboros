@@ -3386,10 +3386,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   if (command.kind === "attention.list" || command.kind === "attention.show" || command.kind === "attention.history") {
     try {
       const agentName = command.agent ?? getAgentName()
-      const { listActiveObligations, readObligation } = await import("../../mind/obligations")
+      const { listActiveReturnObligations, readReturnObligation } = await import("../obligations")
 
       if (command.kind === "attention.list") {
-        const obligations = listActiveObligations(agentName)
+        const obligations = listActiveReturnObligations(agentName)
         if (obligations.length === 0) {
           const message = "nothing held — attention queue is empty"
           deps.writeStdout(message)
@@ -3403,7 +3403,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       }
 
       if (command.kind === "attention.show") {
-        const obligation = readObligation(agentName, (command as Extract<OuroCliCommand, { kind: "attention.show" }>).id)
+        const obligation = readReturnObligation(agentName, (command as Extract<OuroCliCommand, { kind: "attention.show" }>).id)
         if (!obligation) {
           const message = `no obligation found with id ${(command as Extract<OuroCliCommand, { kind: "attention.show" }>).id}`
           deps.writeStdout(message)
@@ -3415,8 +3415,8 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       }
 
       // attention.history: show returned obligations
-      const { getObligationsDir } = await import("../../mind/obligations")
-      const obligationsDir = getObligationsDir(agentName)
+      const { getReturnObligationsDir } = await import("../obligations")
+      const obligationsDir = getReturnObligationsDir(agentName)
       let entries: string[] = []
       try { entries = fs.readdirSync(obligationsDir) } catch { /* empty */ }
       const returned = entries
@@ -3456,7 +3456,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       const { sessionPath: getSessionPath } = await import("../config")
       const { parseCadenceToMs: parseCadenceMs, DEFAULT_CADENCE_MS } = await import("./cadence")
       const { parseFrontmatter } = await import("../../repertoire/tasks/parser")
-      const { listActiveObligations } = await import("../../mind/obligations")
+      const { listActiveReturnObligations } = await import("../obligations")
 
       // Read runtime state
       const innerSessionPath = getSessionPath("inner-dialog", "inner", "session")
@@ -3508,7 +3508,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       } catch { /* no habits — heartbeat unknown */ }
 
       // Attention count
-      const activeObligations = listActiveObligations(agentName)
+      const activeObligations = listActiveReturnObligations(agentName)
 
       const message = buildInnerStatusOutput({
         agentName,
