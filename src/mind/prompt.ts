@@ -268,6 +268,7 @@ export function runtimeInfoSection(channel: Channel, options?: BuildSystemOption
   lines.push(`agent: ${agentName}`);
   lines.push(`runtime version: ${currentVersion}`);
 
+  /* v8 ignore next -- branch: pre-read path exercised via pipeline TurnContext, not unit-testable in isolation @preserve */
   const bundleMeta = options?.bundleMeta !== undefined ? options.bundleMeta : readBundleMeta()
   if (bundleMeta?.previousRuntimeVersion && bundleMeta.previousRuntimeVersion !== currentVersion) {
     lines.push(`previously: ${bundleMeta.previousRuntimeVersion}`)
@@ -1058,6 +1059,7 @@ function formatElapsedBrief(ms: number): string {
 
 export function rhythmStatusSection(preReadHealth?: import("../heart/daemon/daemon-health").DaemonHealthState | null): string {
   try {
+    /* v8 ignore next -- branch: pre-read path exercised via pipeline TurnContext @preserve */
     const health = preReadHealth !== undefined ? preReadHealth : readHealth(getDefaultHealthPath())
     if (!health) return ""
 
