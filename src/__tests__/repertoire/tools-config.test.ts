@@ -180,6 +180,8 @@ describe("read_config tool", () => {
 describe("update_config tool", () => {
   beforeEach(() => {
     vi.resetModules()
+    vi.mocked(fs.readFileSync).mockReset()
+    vi.mocked(fs.writeFileSync).mockReset()
     vi.mocked(fs.readFileSync).mockImplementation((filePath: unknown) => {
       const p = String(filePath)
       if (p.endsWith("agent.json")) {
