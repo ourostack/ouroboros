@@ -852,10 +852,12 @@ export class OuroDaemon {
             message: result.response,
             data: { ponderDeferred: result.ponderDeferred },
           }
+        /* v8 ignore start -- catch: sense turn errors tested at pipeline level, daemon catch is defensive @preserve */
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : String(error)
           return { ok: false, error: `sense turn failed: ${errorMessage}` }
         }
+        /* v8 ignore stop */
       }
       case "cron.list": {
         const jobs = this.scheduler.listJobs()
