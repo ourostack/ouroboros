@@ -486,6 +486,33 @@ describe("daemon command plane branches", () => {
     fs.rmSync(unreadableRoot, { force: true })
   })
 
+  it("routes agent.senseTurn through dynamic import to runSenseTurn", async () => {
+    const socketPath = tmpSocketPath("daemon-sense-turn")
+    const { daemon } = make(socketPath)
+
+    // Mock the dynamic import of shared-turn
+    const mockRunSenseTurn = vi.fn().mockResolvedValue({
+      response: "hello from agent",
+      ponderDeferred: false,
+    })
+    vi.doMock("../../../senses/shared-turn", () => ({
+      runSenseTurn: mockRunSenseTurn,
+    }))
+
+    const result = await daemon.handleCommand({
+      kind: "agent.senseTurn",
+      agent: "test-agent",
+      friendId: "friend-1",
+      channel: "mcp",
+      sessionKey: "session-abc",
+      message: "hello",
+    })
+
+    expect(result.ok).toBe(true)
+    expect(result.message).toBe("hello from agent")
+    expect(result.data).toEqual({ ponderDeferred: false })
+  })
+
   it("skips non-bundle directories and bundle dirs without pending files", async () => {
     const socketPath = tmpSocketPath("daemon-skip-non-bundles")
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-bundles-skip-"))
