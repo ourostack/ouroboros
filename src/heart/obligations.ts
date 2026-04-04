@@ -273,6 +273,18 @@ export function enrichObligation(
 // Delegated inner-work obligations (formerly mind/obligations.ts).
 // Stored under arc/obligations/inner/ to keep them separate from
 // the main obligation files.
+//
+// **When to use which:**
+// - Obligation (above): "I owe someone a response or completion."
+//   Created when a friend asks something that requires sustained work.
+//   Rich lifecycle: pending → investigating → waiting_for_merge → fulfilled.
+//
+// - ReturnObligation (below): "I've been delegated work via inner dialog
+//   and need to route the result back." Created when ponder delegates
+//   inward. Lightweight lifecycle: queued → running → returned/deferred.
+//
+// Nerves events use component: "mind" (conceptual domain, not file location)
+// to keep observability semantics stable across refactors.
 
 export type ReturnObligationStatus = "queued" | "running" | "returned" | "deferred"
 export type ReturnTarget = "bridge-session" | "direct-originator" | "freshest-session" | "deferred" | "surface"
