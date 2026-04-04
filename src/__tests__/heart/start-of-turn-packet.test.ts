@@ -708,6 +708,37 @@ describe("start-of-turn packet", () => {
       expect(result).not.toContain("baseline")
     })
 
+    it("handles changelog entries with non-array changes field", async () => {
+      const fn = await setup(
+        { runtimeVersion: "1.3.0", previousRuntimeVersion: "1.2.0" },
+        [
+          { version: "1.3.0", changes: "not-an-array" as unknown as string[] },
+          { version: "1.2.0", changes: ["baseline"] },
+        ],
+      )
+      const result = fn("/bundle")
+      expect(result).toBeDefined()
+      // Should still have version info but no change details from the malformed entry
+      expect(result).toContain("1.2.0")
+      expect(result).toContain("1.3.0")
+    })
+
+    it("handles changelog with no relevant changes (empty changes arrays)", async () => {
+      const fn = await setup(
+        { runtimeVersion: "1.3.0", previousRuntimeVersion: "1.2.0" },
+        [
+          { version: "1.3.0", changes: [] },
+          { version: "1.2.0", changes: ["baseline"] },
+        ],
+      )
+      const result = fn("/bundle")
+      expect(result).toBeDefined()
+      expect(result).toContain("1.2.0")
+      expect(result).toContain("1.3.0")
+      // No change descriptions
+      expect(result).not.toContain("baseline")
+    })
+
     it("capabilities section appears in rendered packet when present", async () => {
       const view = makeView({
         activeObligations: [makeObligation()],
