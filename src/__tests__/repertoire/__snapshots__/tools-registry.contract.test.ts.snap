@@ -26,6 +26,7 @@ exports[`tool registry contract > tool surface area snapshot 1`] = `
   "query_presence",
   "query_relationships",
   "query_session",
+  "read_config",
   "read_file",
   "recall",
   "save_friend_note",
@@ -34,6 +35,7 @@ exports[`tool registry contract > tool surface area snapshot 1`] = `
   "shell",
   "shell_status",
   "shell_tail",
+  "update_config",
   "web_search",
   "write_file",
 ]

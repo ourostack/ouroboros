@@ -142,7 +142,11 @@ describe("tool registry contract", () => {
     expect(names).toContain("intention_capture");
     expect(names).toContain("intention_manage");
 
-    // Exact count: 34 tools total
-    expect(names).toHaveLength(34);
+    // Added in capability discovery: 2 tools
+    expect(names).toContain("read_config");
+    expect(names).toContain("update_config");
+
+    // Exact count: 36 tools total
+    expect(names).toHaveLength(36);
   });
 });
