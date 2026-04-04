@@ -414,6 +414,19 @@ export function getIntegrationsConfig(): IntegrationsConfig {
   return { ...config.integrations }
 }
 
+export interface SyncConfig {
+  enabled: boolean
+  remote: string
+}
+
+export function getSyncConfig(): SyncConfig {
+  const agentConfig = loadAgentConfig()
+  return {
+    enabled: agentConfig.sync?.enabled ?? false,
+    remote: agentConfig.sync?.remote ?? "origin",
+  }
+}
+
 export function getOpenAIEmbeddingsApiKey(): string {
   return getIntegrationsConfig().openaiEmbeddingsApiKey
 }
