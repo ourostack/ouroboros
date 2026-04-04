@@ -2,6 +2,16 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.200",
+      "changes": [
+        "feat: arc/ directory replaces state/ for continuity data (episodes, obligations, cares, intentions)",
+        "feat: diary migration -- psyche/memory fallback removed, diary/ is the sole diary root",
+        "feat: bundle schema v2 -- lossless migration moves existing data on first boot",
+        "feat: turn-boundary sync -- opt-in pre-turn pull and post-turn push for bundle replication",
+        "fix: bundle .gitignore updated by migration to track arc/, diary/, journal/ and ignore state/"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.199",
       "changes": [
         "refactor: rename wake packet to start-of-turn packet across codebase (types, modules, events, tests)"
