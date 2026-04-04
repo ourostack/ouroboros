@@ -4,7 +4,7 @@ import * as net from "net"
 import * as os from "os"
 import * as path from "path"
 
-import { OuroDaemon } from "../../../heart/daemon/daemon"
+import { OuroDaemon, handleAgentSenseTurn } from "../../../heart/daemon/daemon"
 
 function tmpSocketPath(name: string): string {
   return path.join(os.tmpdir(), `${name}-${Date.now()}-${Math.random().toString(16).slice(2)}.sock`)
@@ -484,6 +484,71 @@ describe("daemon command plane branches", () => {
 
     fs.rmSync(bundlesRoot, { recursive: true, force: true })
     fs.rmSync(unreadableRoot, { force: true })
+  })
+
+  it("daemon routes agent.senseTurn to handleAgentSenseTurn", async () => {
+    const socketPath = tmpSocketPath("daemon-sense-turn-route")
+    const { daemon } = make(socketPath)
+
+    vi.doMock("../../../senses/shared-turn", () => ({
+      runSenseTurn: vi.fn().mockResolvedValue({
+        response: "routed correctly",
+        ponderDeferred: false,
+      }),
+    }))
+
+    const result = await daemon.handleCommand({
+      kind: "agent.senseTurn",
+      agent: "test-agent",
+      friendId: "friend-1",
+      channel: "mcp",
+      sessionKey: "session-abc",
+      message: "hello",
+    })
+
+    expect(result.ok).toBe(true)
+    expect(result.message).toBe("routed correctly")
+  })
+
+  it("handleAgentSenseTurn runs a full turn and returns response", async () => {
+    vi.doMock("../../../senses/shared-turn", () => ({
+      runSenseTurn: vi.fn().mockResolvedValue({
+        response: "hello from agent",
+        ponderDeferred: false,
+      }),
+    }))
+
+    const result = await handleAgentSenseTurn({
+      kind: "agent.senseTurn",
+      agent: "test-agent",
+      friendId: "friend-1",
+      channel: "mcp",
+      sessionKey: "session-abc",
+      message: "hello",
+    })
+
+    expect(result.ok).toBe(true)
+    expect(result.message).toBe("hello from agent")
+    expect(result.data).toEqual({ ponderDeferred: false })
+  })
+
+  it("handleAgentSenseTurn returns error on failure", async () => {
+    vi.doMock("../../../senses/shared-turn", () => ({
+      runSenseTurn: vi.fn().mockRejectedValue(new Error("provider down")),
+    }))
+
+    const result = await handleAgentSenseTurn({
+      kind: "agent.senseTurn",
+      agent: "test-agent",
+      friendId: "friend-1",
+      channel: "mcp",
+      sessionKey: "session-abc",
+      message: "hello",
+    })
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain("sense turn failed")
+    expect(result.error).toContain("provider down")
   })
 
   it("skips non-bundle directories and bundle dirs without pending files", async () => {

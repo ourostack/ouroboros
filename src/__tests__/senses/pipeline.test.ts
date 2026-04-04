@@ -93,6 +93,11 @@ vi.mock("../../mind/scrutiny", () => ({
   resetSessionModifiedFiles: (...args: any[]) => mockResetSessionModifiedFiles(...args),
 }))
 
+const mockBuildTurnContext = vi.fn()
+vi.mock("../../heart/turn-context", () => ({
+  buildTurnContext: (...args: any[]) => mockBuildTurnContext(...args),
+}))
+
 // ── Test helpers ──────────────────────────────────────────────────
 
 function makeFriend(overrides: Partial<FriendRecord> = {}): FriendRecord {
@@ -158,6 +163,55 @@ function makeStore(friend?: FriendRecord): FriendStore {
   }
 }
 
+function defaultTurnContext() {
+  return {
+    activeBridges: [] as any[],
+    sessionActivity: [] as any[],
+    targetCandidates: [] as any[],
+    pendingObligations: [] as any[],
+    codingSessions: [] as any[],
+    otherCodingSessions: [] as any[],
+    innerWorkState: {
+      status: "idle" as const,
+      hasPending: false,
+      job: {
+        status: "idle" as const,
+        content: null,
+        origin: null,
+        mode: "reflect" as const,
+        obligationStatus: null,
+        surfacedResult: null,
+        queuedAt: null,
+        startedAt: null,
+        surfacedAt: null,
+      },
+    },
+    taskBoard: {
+      compact: "",
+      full: "",
+      byStatus: {
+        drafting: [], processing: [], validating: [], collaborating: [],
+        paused: [], blocked: [], done: [], cancelled: [],
+      },
+      issues: [],
+      actionRequired: [],
+      unresolvedDependencies: [],
+      activeSessions: [],
+      activeBridges: [],
+    },
+    returnObligations: [] as any[],
+    recentEpisodes: [] as any[],
+    activeCares: [] as any[],
+    syncConfig: { enabled: false, remote: "origin" },
+    syncFailure: undefined,
+    daemonRunning: false,
+    senseStatusLines: [] as string[],
+    bundleMeta: null,
+    daemonHealth: null,
+    journalFiles: [] as any[],
+  }
+}
+
 // ── Default input builder ─────────────────────────────────────────
 
 function makeInput(overrides: Partial<InboundTurnInput> = {}): InboundTurnInput {
@@ -199,6 +253,7 @@ describe("handleInboundTurn", () => {
     mockListCodingSessions.mockReset().mockReturnValue([])
     mockFileStateCacheClear.mockReset()
     mockResetSessionModifiedFiles.mockReset()
+    mockBuildTurnContext.mockReset().mockResolvedValue(defaultTurnContext())
   })
 
   // Step 1: friend resolution
@@ -816,7 +871,7 @@ describe("handleInboundTurn", () => {
     })
 
     it("loads active bridge context for the current canonical session", async () => {
-      mockFindBridgesForSession.mockReturnValue([
+      const bridgeData = [
         {
           id: "bridge-1",
           objective: "relay Ari between cli and teams",
@@ -828,7 +883,8 @@ describe("handleInboundTurn", () => {
           attachedSessions: [],
           task: { taskName: "2026-03-13-1600-shared-relay", path: "/tmp/task.md", mode: "promoted", boundAt: "2026-03-13T16:00:00.000Z" },
         },
-      ])
+      ]
+      mockBuildTurnContext.mockResolvedValue({ ...defaultTurnContext(), activeBridges: bridgeData })
       const input = makeInput({
         channel: "teams",
         capabilities: makeCapabilities({ channel: "teams" }),
@@ -837,11 +893,6 @@ describe("handleInboundTurn", () => {
 
       await handleInboundTurn(input as InboundTurnInput)
 
-      expect(mockFindBridgesForSession).toHaveBeenCalledWith({
-        friendId: "friend-1",
-        channel: "teams",
-        key: "conv-1",
-      })
       const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
       const options = runAgentCall[4] as RunAgentOptions
       expect((options.toolContext as any).currentSession).toMatchObject({
@@ -855,7 +906,7 @@ describe("handleInboundTurn", () => {
     })
 
     it("formats non-idle bridge runtime states without task linkage", async () => {
-      mockFindBridgesForSession.mockReturnValue([
+      const bridges = [
         {
           id: "bridge-processing",
           objective: "processing bridge",
@@ -889,7 +940,8 @@ describe("handleInboundTurn", () => {
           attachedSessions: [],
           task: null,
         },
-      ])
+      ]
+      mockBuildTurnContext.mockResolvedValue({ ...defaultTurnContext(), activeBridges: bridges })
       const input = makeInput() as InboundTurnInput & { sessionKey: string }
       input.sessionKey = "session"
 
@@ -903,7 +955,7 @@ describe("handleInboundTurn", () => {
     })
 
     it("passes a shared active-work frame and delegation hint into runAgent options", async () => {
-      mockFindBridgesForSession.mockReturnValue([
+      const bridges = [
         {
           id: "bridge-1",
           objective: "carry Ari across cli and bluebubbles",
@@ -922,7 +974,8 @@ describe("handleInboundTurn", () => {
           ],
           task: null,
         },
-      ])
+      ]
+      mockBuildTurnContext.mockResolvedValue({ ...defaultTurnContext(), activeBridges: bridges })
       const input = makeInput({
         channel: "bluebubbles",
         capabilities: makeCapabilities({ channel: "bluebubbles", senseType: "open" }),
@@ -944,9 +997,7 @@ describe("handleInboundTurn", () => {
     })
 
     it("threads explicit cross-relationship target candidates into the active-work frame without inventing a shared-work suggestion from raw text alone", async () => {
-      const getAgentRootSpy = vi.spyOn(identity, "getAgentRoot").mockReturnValue("/tmp/AgentBundles/slugger.ouro")
-      const getAgentNameSpy = vi.spyOn(identity, "getAgentName").mockReturnValue("slugger")
-      mockListTargetSessionCandidates.mockResolvedValue([
+      const targets = [
         {
           friendId: "group-1",
           friendName: "Project Group",
@@ -971,7 +1022,8 @@ describe("handleInboundTurn", () => {
           lastActivityMs: Date.parse("2026-03-14T18:01:00.000Z"),
           activitySource: "friend-facing",
         },
-      ])
+      ]
+      mockBuildTurnContext.mockResolvedValue({ ...defaultTurnContext(), targetCandidates: targets })
       const input = makeInput({
         channel: "bluebubbles",
         capabilities: makeCapabilities({ channel: "bluebubbles", senseType: "open" }),
@@ -990,23 +1042,25 @@ describe("handleInboundTurn", () => {
         }),
       ])
       expect((options as any).activeWorkFrame.bridgeSuggestion).toBeNull()
-      expect(getAgentRootSpy).toHaveBeenCalled()
-      expect(getAgentNameSpy).toHaveBeenCalled()
-      getAgentRootSpy.mockRestore()
-      getAgentNameSpy.mockRestore()
     })
 
     it("marks active-work inner status as running when live inner processing has started", async () => {
-      const getAgentRootSpy = vi.spyOn(identity, "getAgentRoot").mockReturnValue("/tmp/AgentBundles/slugger.ouro")
-      const getAgentNameSpy = vi.spyOn(identity, "getAgentName").mockReturnValue("slugger")
-      const getInnerDialogPendingDirSpy = vi.spyOn(pending, "getInnerDialogPendingDir").mockReturnValue("/tmp/pending/inner")
-      const getInnerDialogSessionPathSpy = vi.spyOn(daemonThoughts, "getInnerDialogSessionPath")
-        .mockReturnValue("/tmp/AgentBundles/slugger.ouro/state/sessions/self/inner/dialog.json")
-      const readInnerDialogRawDataSpy = vi.spyOn(daemonThoughts, "readInnerDialogRawData").mockReturnValue({
-        pendingMessages: [],
-        turns: [],
-        runtimeState: { status: "running" },
-      })
+      const runningInnerState = {
+        status: "running" as const,
+        hasPending: false,
+        job: {
+          status: "running" as const,
+          content: null,
+          origin: null,
+          mode: "reflect" as const,
+          obligationStatus: null,
+          surfacedResult: null,
+          queuedAt: null,
+          startedAt: "2026-03-13T16:00:00.000Z",
+          surfacedAt: null,
+        },
+      }
+      mockBuildTurnContext.mockResolvedValue({ ...defaultTurnContext(), innerWorkState: runningInnerState })
       const input = makeInput()
 
       await handleInboundTurn(input)
@@ -1017,14 +1071,6 @@ describe("handleInboundTurn", () => {
       expect((options as any).activeWorkFrame.inner.hasPending).toBe(false)
       expect((options as any).activeWorkFrame.inner.job).toBeDefined()
       expect((options as any).activeWorkFrame.inner.job.status).toBe("running")
-      expect(getAgentRootSpy).toHaveBeenCalled()
-      expect(getAgentNameSpy).toHaveBeenCalled()
-      expect(getInnerDialogPendingDirSpy).toHaveBeenCalledWith("slugger")
-      expect(getInnerDialogSessionPathSpy).toHaveBeenCalledWith("/tmp/AgentBundles/slugger.ouro")
-      expect(readInnerDialogRawDataSpy).toHaveBeenCalledWith(
-        "/tmp/AgentBundles/slugger.ouro/state/sessions/self/inner/dialog.json",
-        "/tmp/pending/inner",
-      )
     })
 
     it("derives currentObligation from the last continuity ingress text", async () => {
@@ -1246,64 +1292,27 @@ describe("handleInboundTurn", () => {
 
   describe("active work coding-session salience", () => {
     it("passes only live coding sessions for the current thread into active work", async () => {
+      // buildTurnContext already filters: codingSessions = current-thread only, otherCodingSessions = rest
+      const currentThreadSession = {
+        id: "coding-004",
+        runner: "claude",
+        workdir: "/tmp/repo",
+        taskRef: "task-4",
+        status: "waiting_input",
+        startedAt: "2026-03-20T17:00:00.000Z",
+        lastActivityAt: "2026-03-20T17:05:00.000Z",
+        endedAt: null,
+        restartCount: 0,
+        lastExitCode: null,
+        lastSignal: null,
+        originSession: { friendId: "friend-1", channel: "cli", key: "session" },
+      }
+      mockBuildTurnContext.mockResolvedValue({
+        ...defaultTurnContext(),
+        codingSessions: [currentThreadSession],
+        otherCodingSessions: [],
+      })
       const input = makeInput()
-      mockListCodingSessions.mockReturnValue([
-        {
-          id: "coding-001",
-          runner: "claude",
-          workdir: "/tmp/repo",
-          taskRef: "task-1",
-          status: "completed",
-          startedAt: "2026-03-20T17:00:00.000Z",
-          lastActivityAt: "2026-03-20T17:01:00.000Z",
-          endedAt: "2026-03-20T17:02:00.000Z",
-          restartCount: 0,
-          lastExitCode: 0,
-          lastSignal: null,
-          originSession: { friendId: "friend-1", channel: "cli", key: "session" },
-        },
-        {
-          id: "coding-002",
-          runner: "claude",
-          workdir: "/tmp/repo",
-          taskRef: "task-2",
-          status: "running",
-          startedAt: "2026-03-20T17:00:00.000Z",
-          lastActivityAt: "2026-03-20T17:03:00.000Z",
-          endedAt: null,
-          restartCount: 0,
-          lastExitCode: null,
-          lastSignal: null,
-        },
-        {
-          id: "coding-003",
-          runner: "codex",
-          workdir: "/tmp/repo",
-          taskRef: "task-3",
-          status: "stalled",
-          startedAt: "2026-03-20T17:00:00.000Z",
-          lastActivityAt: "2026-03-20T17:04:00.000Z",
-          endedAt: null,
-          restartCount: 0,
-          lastExitCode: null,
-          lastSignal: null,
-          originSession: { friendId: "other-friend", channel: "cli", key: "session" },
-        },
-        {
-          id: "coding-004",
-          runner: "claude",
-          workdir: "/tmp/repo",
-          taskRef: "task-4",
-          status: "waiting_input",
-          startedAt: "2026-03-20T17:00:00.000Z",
-          lastActivityAt: "2026-03-20T17:05:00.000Z",
-          endedAt: null,
-          restartCount: 0,
-          lastExitCode: null,
-          lastSignal: null,
-          originSession: { friendId: "friend-1", channel: "cli", key: "session" },
-        },
-      ])
 
       await handleInboundTurn(input)
 
@@ -1317,42 +1326,45 @@ describe("handleInboundTurn", () => {
       const friend = makeFriend({ trustLevel: "family" })
       const caps = makeCapabilities({ channel: "cli", senseType: "local" as SenseType })
       const context: ResolvedContext = { friend, channel: caps }
+      const currentSession = {
+        id: "coding-010",
+        runner: "codex",
+        workdir: "/tmp/repo",
+        taskRef: "current-thread-fix",
+        status: "running",
+        startedAt: "2026-03-20T17:00:00.000Z",
+        lastActivityAt: "2026-03-20T17:01:00.000Z",
+        endedAt: null,
+        restartCount: 0,
+        lastExitCode: null,
+        lastSignal: null,
+        originSession: { friendId: "friend-1", channel: "cli", key: "session" },
+      }
+      const otherSession = {
+        id: "coding-011",
+        runner: "claude",
+        workdir: "/tmp/repo",
+        taskRef: "bb-follow-up",
+        status: "waiting_input",
+        startedAt: "2026-03-20T17:00:00.000Z",
+        lastActivityAt: "2026-03-20T17:02:00.000Z",
+        endedAt: null,
+        restartCount: 0,
+        lastExitCode: null,
+        lastSignal: null,
+        originSession: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
+      }
+      mockBuildTurnContext.mockResolvedValue({
+        ...defaultTurnContext(),
+        codingSessions: [currentSession],
+        otherCodingSessions: [otherSession],
+      })
       const input = makeInput({
         channel: "cli",
         capabilities: caps,
         continuityIngressTexts: ["what are you doing?"],
         friendResolver: { resolve: vi.fn().mockResolvedValue(context) },
       })
-      mockListCodingSessions.mockReturnValue([
-        {
-          id: "coding-010",
-          runner: "codex",
-          workdir: "/tmp/repo",
-          taskRef: "current-thread-fix",
-          status: "running",
-          startedAt: "2026-03-20T17:00:00.000Z",
-          lastActivityAt: "2026-03-20T17:01:00.000Z",
-          endedAt: null,
-          restartCount: 0,
-          lastExitCode: null,
-          lastSignal: null,
-          originSession: { friendId: "friend-1", channel: "cli", key: "session" },
-        },
-        {
-          id: "coding-011",
-          runner: "claude",
-          workdir: "/tmp/repo",
-          taskRef: "bb-follow-up",
-          status: "waiting_input",
-          startedAt: "2026-03-20T17:00:00.000Z",
-          lastActivityAt: "2026-03-20T17:02:00.000Z",
-          endedAt: null,
-          restartCount: 0,
-          lastExitCode: null,
-          lastSignal: null,
-          originSession: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
-        },
-      ])
 
       await handleInboundTurn(input)
 
@@ -1371,10 +1383,8 @@ describe("handleInboundTurn", () => {
     })
 
     it("falls back to an empty live coding list when the coding session manager throws", async () => {
+      // buildTurnContext handles the error internally and returns empty arrays
       const input = makeInput()
-      mockListCodingSessions.mockImplementation(() => {
-        throw new Error("manager exploded")
-      })
 
       await handleInboundTurn(input)
 

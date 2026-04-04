@@ -4,15 +4,7 @@ import { emitNervesEvent } from "../../../nerves/runtime"
 
 // ── Mocks ──────────────────────────────────────────────────────
 
-const mockRunSenseTurn = vi.fn()
-
-vi.mock("../../../senses/shared-turn", async () => {
-  const actual = await vi.importActual<typeof import("../../../senses/shared-turn")>("../../../senses/shared-turn")
-  return {
-    ...actual,
-    runSenseTurn: (...args: any[]) => mockRunSenseTurn(...args),
-  }
-})
+const mockSendDaemonCommand = vi.fn()
 
 const mockResolveSessionId = vi.fn().mockReturnValue("session-abc-123")
 
@@ -35,9 +27,9 @@ vi.mock("../../../mind/pending", async () => {
   }
 })
 
-// Mock socket client
+// Mock socket client — send_message now routes through daemon socket
 vi.mock("../../../heart/daemon/socket-client", () => ({
-  sendDaemonCommand: vi.fn(),
+  sendDaemonCommand: (...args: any[]) => mockSendDaemonCommand(...args),
   checkDaemonSocketAlive: vi.fn(),
   DEFAULT_DAEMON_SOCKET_PATH: "/tmp/ouroboros-daemon.sock",
 }))
@@ -106,9 +98,10 @@ describe("MCP send_message tool", () => {
     vi.clearAllMocks()
     stdin = new PassThrough()
     stdout = new PassThrough()
-    mockRunSenseTurn.mockResolvedValue({
-      response: "hello from the agent",
-      ponderDeferred: false,
+    mockSendDaemonCommand.mockResolvedValue({
+      ok: true,
+      message: "hello from the agent",
+      data: { ponderDeferred: false },
     })
     emitNervesEvent({
       component: "daemon",
@@ -150,7 +143,7 @@ describe("MCP send_message tool", () => {
     expect(response.result.tools.some((t: any) => t.name === "send_message")).toBe(true)
   })
 
-  it("send_message calls runSenseTurn and returns response text", async () => {
+  it("send_message routes through daemon socket and returns response text", async () => {
     const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
     const server = createMcpServer({
       agent: "test-agent",
@@ -177,13 +170,16 @@ describe("MCP send_message tool", () => {
     const output = await outputPromise
     server.stop()
 
-    expect(mockRunSenseTurn).toHaveBeenCalledTimes(1)
-    expect(mockRunSenseTurn).toHaveBeenCalledWith(expect.objectContaining({
-      agentName: "test-agent",
-      channel: "mcp",
-      friendId: "friend-1",
-      userMessage: "hello agent",
-    }))
+    expect(mockSendDaemonCommand).toHaveBeenCalledWith(
+      "/tmp/test.sock",
+      expect.objectContaining({
+        kind: "agent.senseTurn",
+        agent: "test-agent",
+        channel: "mcp",
+        friendId: "friend-1",
+        message: "hello agent",
+      }),
+    )
 
     const response = parseResponse(output)
     expect(response.result.content[0].text).toBe("hello from the agent")
@@ -191,9 +187,10 @@ describe("MCP send_message tool", () => {
   })
 
   it("send_message returns ponder deferral message", async () => {
-    mockRunSenseTurn.mockResolvedValue({
-      response: "the agent is pondering this — check back shortly via check_response.",
-      ponderDeferred: true,
+    mockSendDaemonCommand.mockResolvedValue({
+      ok: true,
+      message: "the agent is pondering this — check back shortly via check_response.",
+      data: { ponderDeferred: true },
     })
 
     const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
@@ -255,13 +252,17 @@ describe("MCP send_message tool", () => {
     await outputPromise
     server.stop()
 
-    expect(mockRunSenseTurn).toHaveBeenCalledWith(expect.objectContaining({
-      sessionKey: "claude-session-456",
-    }))
+    expect(mockSendDaemonCommand).toHaveBeenCalledWith(
+      "/tmp/test.sock",
+      expect.objectContaining({
+        kind: "agent.senseTurn",
+        sessionKey: "claude-session-456",
+      }),
+    )
   })
 
-  it("send_message handles runSenseTurn errors gracefully", async () => {
-    mockRunSenseTurn.mockRejectedValue(new Error("agent exploded"))
+  it("send_message handles daemon command errors gracefully", async () => {
+    mockSendDaemonCommand.mockRejectedValue(new Error("agent exploded"))
 
     const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
     const server = createMcpServer({
@@ -328,10 +329,10 @@ describe("MCP send_message tool", () => {
 
     server.stop()
 
-    expect(mockRunSenseTurn).toHaveBeenCalledTimes(2)
+    expect(mockSendDaemonCommand).toHaveBeenCalledTimes(2)
     // Both calls should use the same session key
-    const call1 = mockRunSenseTurn.mock.calls[0][0]
-    const call2 = mockRunSenseTurn.mock.calls[1][0]
+    const call1 = mockSendDaemonCommand.mock.calls[0][1]
+    const call2 = mockSendDaemonCommand.mock.calls[1][1]
     expect(call1.sessionKey).toBe("persistent-session")
     expect(call2.sessionKey).toBe("persistent-session")
   })
