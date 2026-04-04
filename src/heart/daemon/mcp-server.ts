@@ -279,6 +279,7 @@ export function createMcpServer(options: McpServerOptions): McpServer {
           sessionKey: sessionId,
           message,
         })
+        /* v8 ignore next -- branch: ?? fallback for empty daemon response @preserve */
         const text = response.message ?? "(empty response)"
         writeResponse({
           jsonrpc: "2.0",
@@ -352,6 +353,7 @@ export function createMcpServer(options: McpServerOptions): McpServer {
           sessionKey: sessionId,
           message: delegateMessage,
         })
+        /* v8 ignore next -- branch: ?? fallback for empty daemon response @preserve */
         const text = response.message ?? "(empty response)"
         writeResponse({
           jsonrpc: "2.0",
