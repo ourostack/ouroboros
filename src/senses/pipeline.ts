@@ -35,6 +35,8 @@ import { writeAgentProviderSelection, loadAgentSecrets } from "../heart/daemon/a
 import { deriveTempo } from "../heart/tempo"
 import { buildTemporalView } from "../heart/temporal-view"
 import { buildWakePacket, renderWakePacket } from "../heart/wake-packet"
+import { preTurnPull } from "../heart/sync"
+import { getSyncConfig } from "../heart/config"
 import { derivePresence, writePresence } from "../heart/presence"
 import { readRecentEpisodes, emitEpisode } from "../mind/episodes"
 import { readActiveCares } from "../heart/cares"
@@ -563,6 +565,16 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     sessionMessages.push(msg)
   }
 
+  // Step 4b-pre: Pre-turn sync pull (opt-in)
+  let syncFailure: string | undefined
+  const syncConfig = getSyncConfig()
+  if (syncConfig.enabled) {
+    const pullResult = preTurnPull(getAgentRoot(), syncConfig)
+    if (!pullResult.ok) {
+      syncFailure = pullResult.error
+    }
+  }
+
   // Step 4b: Continuity pipeline — derive tempo, build wake packet, snapshot obligations
   let renderedWakePacket: string | undefined
   const preTurnObligationIds = new Set(pendingObligations.map((ob) => `${ob.id}:${ob.status}`))
@@ -597,6 +609,9 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
         all: activeWorkFrame.pendingObligations,
       },
     })
+    if (syncFailure) {
+      wakePacket.syncFailure = syncFailure
+    }
     renderedWakePacket = renderWakePacket(wakePacket)
     if (!renderedWakePacket) renderedWakePacket = undefined
 
