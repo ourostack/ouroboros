@@ -97,7 +97,7 @@ describe("bundleMetaHook", () => {
     expect(new Date(updated.lastUpdated).toISOString()).toBe(updated.lastUpdated)
   })
 
-  it("preserves bundleSchemaVersion", async () => {
+  it("bumps bundleSchemaVersion from 1 to 2 on migration", async () => {
     const agentRoot = createTempDir("bundle-meta-hook-schema-")
     const metaPath = path.join(agentRoot, "bundle-meta.json")
     fs.writeFileSync(
@@ -118,7 +118,31 @@ describe("bundleMetaHook", () => {
     await bundleMetaHook(ctx)
 
     const updated = JSON.parse(fs.readFileSync(metaPath, "utf-8"))
-    expect(updated.bundleSchemaVersion).toBe(1)
+    expect(updated.bundleSchemaVersion).toBe(2)
+  })
+
+  it("preserves bundleSchemaVersion when already at 2 or higher", async () => {
+    const agentRoot = createTempDir("bundle-meta-hook-schema-preserve-")
+    const metaPath = path.join(agentRoot, "bundle-meta.json")
+    fs.writeFileSync(
+      metaPath,
+      JSON.stringify({
+        runtimeVersion: "0.0.1",
+        bundleSchemaVersion: 2,
+        lastUpdated: "2025-01-01T00:00:00Z",
+      }),
+    )
+
+    const ctx: UpdateHookContext = {
+      agentRoot,
+      currentVersion: "0.1.0",
+      previousVersion: "0.0.1",
+    }
+
+    await bundleMetaHook(ctx)
+
+    const updated = JSON.parse(fs.readFileSync(metaPath, "utf-8"))
+    expect(updated.bundleSchemaVersion).toBe(2)
   })
 
   it("handles first-boot case (no bundle-meta.json) -- creates fresh meta with no previousRuntimeVersion", async () => {
@@ -138,7 +162,7 @@ describe("bundleMetaHook", () => {
     const created = JSON.parse(fs.readFileSync(metaPath, "utf-8"))
     expect(created.runtimeVersion).toBe("0.1.0")
     expect(created.previousRuntimeVersion).toBeUndefined()
-    expect(created.bundleSchemaVersion).toBe(1)
+    expect(created.bundleSchemaVersion).toBe(2)
   })
 
   it("handles malformed existing bundle-meta.json (overwrites with fresh)", async () => {
@@ -157,7 +181,7 @@ describe("bundleMetaHook", () => {
     expect(result.ok).toBe(true)
     const updated = JSON.parse(fs.readFileSync(metaPath, "utf-8"))
     expect(updated.runtimeVersion).toBe("0.1.0")
-    expect(updated.bundleSchemaVersion).toBe(1)
+    expect(updated.bundleSchemaVersion).toBe(2)
   })
 
   it("returns error result on write failure (does not throw)", async () => {
