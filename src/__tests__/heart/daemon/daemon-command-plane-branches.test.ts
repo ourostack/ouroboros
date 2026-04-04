@@ -513,6 +513,28 @@ describe("daemon command plane branches", () => {
     expect(result.data).toEqual({ ponderDeferred: false })
   })
 
+  it("returns error when agent.senseTurn fails", async () => {
+    const socketPath = tmpSocketPath("daemon-sense-turn-error")
+    const { daemon } = make(socketPath)
+
+    vi.doMock("../../../senses/shared-turn", () => ({
+      runSenseTurn: vi.fn().mockRejectedValue(new Error("provider down")),
+    }))
+
+    const result = await daemon.handleCommand({
+      kind: "agent.senseTurn",
+      agent: "test-agent",
+      friendId: "friend-1",
+      channel: "mcp",
+      sessionKey: "session-abc",
+      message: "hello",
+    })
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain("sense turn failed")
+    expect(result.error).toContain("provider down")
+  })
+
   it("skips non-bundle directories and bundle dirs without pending files", async () => {
     const socketPath = tmpSocketPath("daemon-skip-non-bundles")
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-bundles-skip-"))
