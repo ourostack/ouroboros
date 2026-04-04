@@ -5,6 +5,19 @@ import { emitNervesEvent } from "../nerves/runtime"
 import { migrateAgentConfigV1ToV2 } from "./migrate-config"
 
 export type AgentProvider = "azure" | "minimax" | "anthropic" | "openai-codex" | "github-copilot"
+
+/** Single source of truth for per-provider credential field names, env var mappings, and prompt labels. */
+export const PROVIDER_CREDENTIALS: Record<AgentProvider, {
+  required: string[]
+  envVars: Record<string, string>
+  promptLabels: Record<string, string>
+}> = {
+  anthropic:        { required: ["setupToken"],                        envVars: { ANTHROPIC_API_KEY: "setupToken" },                                                                                        promptLabels: { setupToken: "Anthropic setup-token" } },
+  "openai-codex":   { required: ["oauthAccessToken"],                  envVars: { OPENAI_API_KEY: "oauthAccessToken" },                                                                                     promptLabels: { oauthAccessToken: "OpenAI Codex OAuth token" } },
+  azure:            { required: ["apiKey", "endpoint", "deployment"],   envVars: { AZURE_OPENAI_API_KEY: "apiKey", AZURE_OPENAI_KEY: "apiKey", AZURE_OPENAI_ENDPOINT: "endpoint", AZURE_OPENAI_DEPLOYMENT: "deployment" }, promptLabels: { apiKey: "Azure API key", endpoint: "Azure endpoint", deployment: "Azure deployment" } },
+  minimax:          { required: ["apiKey"],                             envVars: { MINIMAX_API_KEY: "apiKey" },                                                                                              promptLabels: { apiKey: "MiniMax API key" } },
+  "github-copilot": { required: ["githubToken", "baseUrl"],             envVars: { GH_TOKEN: "githubToken", GITHUB_TOKEN: "githubToken" },                                                                   promptLabels: { githubToken: "GitHub token" } },
+}
 export type SenseName = "cli" | "teams" | "bluebubbles"
 
 export type LogLevel = "debug" | "info" | "warn" | "error"
@@ -227,18 +240,6 @@ function resolveOptionalAgentName(agentName?: string): string {
  */
 export function getAgentStateRoot(agentName?: string): string {
   return path.join(getAgentRoot(resolveOptionalAgentName(agentName)), "state")
-}
-
-/**
- * Required credential fields per provider.
- * Used by daemon config-check to validate secrets before spawning an agent.
- */
-export const PROVIDER_CREDENTIALS: Record<AgentProvider, string[]> = {
-  azure: ["apiKey", "endpoint", "deployment"],
-  minimax: ["apiKey"],
-  anthropic: ["setupToken"],
-  "openai-codex": ["oauthAccessToken"],
-  "github-copilot": ["githubToken", "baseUrl"],
 }
 
 export const HARNESS_CANONICAL_REPO_URL = "https://github.com/ouroborosbot/ouroboros.git"

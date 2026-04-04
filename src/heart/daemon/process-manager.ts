@@ -51,6 +51,7 @@ interface AgentRuntimeState {
   stopRequested: boolean
   cooldownTimer: unknown | null
   cooldownRetryCount: number
+  fastCrashCount: number
 }
 
 function startOfHour(ms: number): number {
@@ -95,6 +96,7 @@ export class DaemonProcessManager {
         stopRequested: false,
         cooldownTimer: null,
         cooldownRetryCount: 0,
+        fastCrashCount: 0,
         snapshot: {
           name: agent.name,
           channel: agent.channel,
@@ -168,6 +170,12 @@ export class DaemonProcessManager {
       stdio: ["ignore", "ignore", "ignore", "ipc"],
     })
 
+    /* v8 ignore next 7 -- defensive: spawn should always return a ChildProcess @preserve */
+    if (!child) {
+      state.snapshot.status = "crashed"
+      emitNervesEvent({ level: "error", component: "daemon", event: "daemon.agent_spawn_failed", message: "spawn returned null", meta: { agent } })
+      return
+    }
     state.process = child
     state.snapshot.status = "running"
     state.snapshot.pid = child.pid ?? null
@@ -291,6 +299,30 @@ export class DaemonProcessManager {
     }
 
     state.snapshot.lastCrashAt = new Date(now).toISOString()
+
+    // Fast-crash detection: if the agent dies within 5 seconds of starting, it's likely
+    // a configuration issue (missing credentials, bad provider, etc.) not a transient failure.
+    // After 3 consecutive fast crashes, stop retrying and mark as config-failed.
+    const FAST_CRASH_THRESHOLD_MS = 5000
+    const FAST_CRASH_MAX = 3
+    if (runDuration < FAST_CRASH_THRESHOLD_MS) {
+      state.fastCrashCount = state.fastCrashCount + 1
+      if (state.fastCrashCount >= FAST_CRASH_MAX) {
+        state.snapshot.status = "crashed"
+        emitNervesEvent({
+          level: "error",
+          component: "daemon",
+          event: "daemon.agent_config_failure",
+          message: `agent crashed ${FAST_CRASH_MAX} times within ${FAST_CRASH_THRESHOLD_MS}ms of startup — likely a configuration issue (missing credentials, bad provider). Not retrying. Fix the config and run \`ouro up\` to restart.`,
+          meta: { agent: state.config.name, fastCrashCount: state.fastCrashCount, avgRunDurationMs: runDuration },
+        })
+        return // Don't schedule cooldown recovery — this needs human/agent intervention
+      }
+    } else {
+      // Reset fast-crash counter on a stable run
+      state.fastCrashCount = 0
+    }
+
     state.crashTimestamps = state.crashTimestamps.filter((crashTs) => crashTs >= startOfHour(now))
     state.crashTimestamps.push(now)
 

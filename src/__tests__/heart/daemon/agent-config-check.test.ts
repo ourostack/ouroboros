@@ -9,13 +9,7 @@ vi.mock("../../../heart/identity", async () => {
   const actual = await vi.importActual<typeof import("../../../heart/identity")>("../../../heart/identity")
   return {
     ...actual,
-    PROVIDER_CREDENTIALS: {
-      azure: ["apiKey", "endpoint", "deployment"],
-      minimax: ["apiKey"],
-      anthropic: ["setupToken"],
-      "openai-codex": ["oauthAccessToken"],
-      "github-copilot": ["githubToken", "baseUrl"],
-    },
+    PROVIDER_CREDENTIALS: actual.PROVIDER_CREDENTIALS,
   }
 })
 

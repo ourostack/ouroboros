@@ -290,6 +290,11 @@ function InputArea({ onSubmit, onCtrlC, history, agentName, model }: {
   const cursorRef = useRef(0)
   const historyIdx = useRef(-1)
   const savedInput = useRef("")
+  const tooltipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => () => {
+    if (tooltipTimerRef.current) clearTimeout(tooltipTimerRef.current)
+  }, [])
 
   // Helper: update input and cursor together
   const updateInput = (text: string, pos?: number) => {
@@ -315,7 +320,8 @@ function InputArea({ onSubmit, onCtrlC, history, agentName, model }: {
     } else if (action === "warn") {
       // tooltip handled below
       setTooltip("Ctrl-C again to exit")
-      setTimeout(() => setTooltip(""), 3000)
+      if (tooltipTimerRef.current) clearTimeout(tooltipTimerRef.current)
+      tooltipTimerRef.current = setTimeout(() => setTooltip(""), 3000)
     }
     // "abort" and "exit" are handled by the parent (cli.ts)
   }, [onCtrlC])
@@ -335,7 +341,8 @@ function InputArea({ onSubmit, onCtrlC, history, agentName, model }: {
         updateInput("")
         historyIdx.current = -1
         setTooltip("Esc again to clear")
-        setTimeout(() => setTooltip(""), 2000)
+        if (tooltipTimerRef.current) clearTimeout(tooltipTimerRef.current)
+        tooltipTimerRef.current = setTimeout(() => setTooltip(""), 2000)
       } else {
         setTooltip("")
       }

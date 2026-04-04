@@ -2,6 +2,16 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.202",
+      "changes": [
+        "refactor: unify hatch + runtime auth into single credential path (PROVIDER_CREDENTIALS table)",
+        "fix: github-copilot credential discovery from stored secrets and env vars",
+        "feat: ping-verify credentials before entering serpent guide session",
+        "fix: clean up React tooltip timeouts on unmount to prevent state update warning",
+        "fix: guard against undefined child from spawn to prevent unhandled rejections"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.201",
       "changes": [
         "fix: don't launchctl bootstrap after daemon start \u2014 was starting competing daemon that killed the first"

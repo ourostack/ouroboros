@@ -1,11 +1,8 @@
 import OpenAI from "openai";
 import {
-  getAnthropicConfig,
   getAzureConfig,
   getContextConfig,
-  getGithubCopilotConfig,
-  getMinimaxConfig,
-  getOpenAICodexConfig,
+  getProviderConfig,
 } from "./config";
 import { loadAgentConfig } from "./identity";
 import { execTool, summarizeArgs, buildToolResultSummary, settleTool, observeTool, ponderTool, restTool, getToolsForChannel, isConfirmationRequired } from "../repertoire/tools";
@@ -91,31 +88,8 @@ function getProviderRuntimeFingerprint(facing: Facing): string {
   const facingConfig = facing === "human" ? config.humanFacing : config.agentFacing;
   const provider = facingConfig.provider;
   const model = facingConfig.model;
-  /* v8 ignore next -- switch: not all provider branches exercised in CI @preserve */
-  switch (provider) {
-    case "azure": {
-      const { apiKey, endpoint, deployment, apiVersion, managedIdentityClientId } = getAzureConfig();
-      return JSON.stringify({ provider, model, apiKey, endpoint, deployment, apiVersion, managedIdentityClientId });
-    }
-    case "anthropic": {
-      const { setupToken } = getAnthropicConfig();
-      return JSON.stringify({ provider, model, setupToken });
-    }
-    case "minimax": {
-      const { apiKey } = getMinimaxConfig();
-      return JSON.stringify({ provider, model, apiKey });
-    }
-    case "openai-codex": {
-      const { oauthAccessToken } = getOpenAICodexConfig();
-      return JSON.stringify({ provider, model, oauthAccessToken });
-    }
-    /* v8 ignore start -- fingerprint: tested via provider init tests @preserve */
-    case "github-copilot": {
-      const { githubToken, baseUrl } = getGithubCopilotConfig();
-      return JSON.stringify({ provider, model, githubToken, baseUrl });
-    }
-    /* v8 ignore stop */
-  }
+  const providerConfig = getProviderConfig(provider);
+  return JSON.stringify({ provider, model, ...providerConfig });
 }
 
 export function createProviderRegistry(): ProviderRegistry {

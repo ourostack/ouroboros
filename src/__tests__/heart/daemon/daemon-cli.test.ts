@@ -3936,6 +3936,29 @@ describe("discoverExistingCredentials", () => {
     }
   })
 
+  it("discovers github-copilot credentials with githubToken", () => {
+    const tmpDir = makeTempSecrets()
+    const agentDir = path.join(tmpDir, "copilotagent")
+    fs.mkdirSync(agentDir)
+    fs.writeFileSync(
+      path.join(agentDir, "secrets.json"),
+      JSON.stringify({ providers: { "github-copilot": { githubToken: "ghp-tok", baseUrl: "https://copilot.api" } } }),
+    )
+    try {
+      const result = discoverExistingCredentials(tmpDir)
+      expect(result).toEqual([
+        {
+          agentName: "copilotagent",
+          provider: "github-copilot",
+          credentials: { githubToken: "ghp-tok", baseUrl: "https://copilot.api" },
+          providerConfig: { githubToken: "ghp-tok", baseUrl: "https://copilot.api" },
+        },
+      ])
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
   it("skips azure with missing fields", () => {
     const tmpDir = makeTempSecrets()
     const agentDir = path.join(tmpDir, "azuepartial")

@@ -1,7 +1,7 @@
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
-import { buildDefaultAgentTemplate, type AgentProvider } from "../identity"
+import { buildDefaultAgentTemplate, PROVIDER_CREDENTIALS, type AgentProvider } from "../identity"
 import { slugify } from "../config"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { writeProviderCredentials } from "./auth-flow"
@@ -50,12 +50,7 @@ export interface HatchFlowResult {
 }
 
 function requiredCredentialKeys(provider: AgentProvider): string[] {
-  if (provider === "anthropic") return ["setupToken"]
-  if (provider === "openai-codex") return ["oauthAccessToken"]
-  /* v8 ignore next -- branch tested via requiredCredentialKeys unit test @preserve */
-  if (provider === "github-copilot") return ["githubToken"]
-  if (provider === "minimax") return ["apiKey"]
-  return ["apiKey", "endpoint", "deployment"]
+  return PROVIDER_CREDENTIALS[provider].required
 }
 
 function validateCredentials(provider: AgentProvider, credentials: HatchCredentialsInput): void {
