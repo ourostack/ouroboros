@@ -269,11 +269,7 @@ async function buildEmbedding(text: string, embeddingProvider?: DiaryEmbeddingPr
 export function resolveDiaryRoot(explicitRoot?: string): string {
   if (explicitRoot) return explicitRoot;
   const agentRoot = getAgentRoot();
-  const diaryPath = path.join(agentRoot, "diary");
-  if (fs.existsSync(diaryPath)) return diaryPath;
-  const legacyPath = path.join(agentRoot, "psyche", "memory");
-  if (fs.existsSync(legacyPath)) return legacyPath;
-  return diaryPath; // default to new path (will be created on first write)
+  return path.join(agentRoot, "diary");
 }
 
 export function readDiaryEntries(diaryRoot?: string): DiaryEntry[] {
