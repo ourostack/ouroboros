@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.201",
+      "changes": [
+        "fix: don't launchctl bootstrap after daemon start \u2014 was starting competing daemon that killed the first"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.200",
       "changes": [
         "feat: arc/ directory replaces state/ for continuity data (episodes, obligations, cares, intentions)",
