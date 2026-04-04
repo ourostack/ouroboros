@@ -16,20 +16,12 @@ import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
 import { parseSlashCommand, getSharedCommandRegistry } from "./commands"
 import { resolveMustResolveBeforeHandoff } from "./continuity"
-import { createBridgeManager, formatBridgeContext } from "../heart/bridges/manager"
+import { formatBridgeContext } from "../heart/bridges/manager"
 import { getAgentName, getAgentRoot, loadAgentConfig } from "../heart/identity"
-import { getTaskModule } from "../repertoire/tasks"
-import { getCodingSessionManager } from "../repertoire/coding"
-import { listSessionActivity } from "../heart/session-activity"
 import { requestInnerWake } from "../heart/daemon/socket-client"
-import type { SessionActivityRecord } from "../heart/session-activity"
-import { buildActiveWorkFrame, type ActiveWorkFrame } from "../heart/active-work"
+import { buildActiveWorkFrame } from "../heart/active-work"
 import { decideDelegation } from "../heart/delegation"
-import { listTargetSessionCandidates } from "../heart/target-resolution"
-import { readInnerDialogRawData, deriveInnerDialogStatus, deriveInnerJob, getInnerDialogSessionPath } from "../heart/daemon/thoughts"
-import { getInnerDialogPendingDir } from "../mind/pending"
-import { readPendingObligations, listActiveReturnObligations } from "../heart/obligations"
-import type { BoardResult } from "../repertoire/tasks/types"
+import { readPendingObligations } from "../heart/obligations"
 import { buildFailoverContext, handleFailoverReply, type FailoverContext } from "../heart/provider-failover"
 import { runHealthInventory } from "../heart/provider-ping"
 import { writeAgentProviderSelection, loadAgentSecrets } from "../heart/daemon/auth-flow"
@@ -39,8 +31,8 @@ import { buildStartOfTurnPacket, renderStartOfTurnPacket } from "../heart/start-
 import { preTurnPull, postTurnPush, drainSyncWrites, runWithSyncContext } from "../heart/sync"
 import { getSyncConfig } from "../heart/config"
 import { derivePresence, writePresence } from "../heart/presence"
-import { readRecentEpisodes, emitEpisode } from "../mind/episodes"
-import { readActiveCares } from "../heart/cares"
+import { emitEpisode } from "../mind/episodes"
+import { buildTurnContext } from "../heart/turn-context"
 
 export interface FailoverState {
   pending: FailoverContext | null
@@ -171,37 +163,6 @@ export interface InboundTurnResult {
   commandAction?: "exit" | "new" | "response"
 }
 
-function emptyTaskBoard(): BoardResult {
-  return {
-    compact: "",
-    full: "",
-    byStatus: {
-      drafting: [],
-      processing: [],
-      validating: [],
-      collaborating: [],
-      paused: [],
-      blocked: [],
-      done: [],
-      cancelled: [],
-    },
-    issues: [],
-    actionRequired: [],
-    unresolvedDependencies: [],
-    activeSessions: [],
-    activeBridges: [],
-  }
-}
-
-function isLiveCodingSessionStatus(
-  status: import("../repertoire/coding/types").CodingSessionStatus,
-): boolean {
-  return status === "spawning"
-    || status === "running"
-    || status === "waiting_input"
-    || status === "stalled"
-}
-
 function prependTurnSections(
   message: ChatCompletionMessageParam,
   sections: string[],
@@ -226,44 +187,6 @@ function prependTurnSections(
     ],
   }
   /* v8 ignore stop */
-}
-
-function readInnerWorkState(): ActiveWorkFrame["inner"] {
-  const defaultJob = {
-    status: "idle" as const,
-    content: null,
-    origin: null,
-    mode: "reflect" as const,
-    obligationStatus: null,
-    surfacedResult: null,
-    queuedAt: null,
-    startedAt: null,
-    surfacedAt: null,
-  }
-  try {
-    const agentRoot = getAgentRoot()
-    const pendingDir = getInnerDialogPendingDir(getAgentName())
-    const sessionPath = getInnerDialogSessionPath(agentRoot)
-    const { pendingMessages, turns, runtimeState } = readInnerDialogRawData(sessionPath, pendingDir)
-    const dialogStatus = deriveInnerDialogStatus(pendingMessages, turns, runtimeState)
-    const job = deriveInnerJob(pendingMessages, turns, runtimeState)
-    // Derive obligationPending from both the pending message field and the obligation store
-    const storeObligationPending = readPendingObligations(agentRoot).length > 0
-    return {
-      status: dialogStatus.processing === "started" ? "running" : "idle",
-      hasPending: dialogStatus.queue !== "clear",
-      origin: dialogStatus.origin,
-      contentSnippet: dialogStatus.contentSnippet,
-      obligationPending: dialogStatus.obligationPending || storeObligationPending,
-      job,
-    }
-  } catch {
-    return {
-      status: "idle",
-      hasPending: false,
-      job: defaultJob,
-    }
-  }
 }
 
 // ── Pipeline ──────────────────────────────────────────────────────
@@ -478,100 +401,29 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   }
   /* v8 ignore stop */
 
-  const activeBridges = createBridgeManager().findBridgesForSession({
-    friendId: currentSession.friendId,
-    channel: currentSession.channel,
-    key: currentSession.key,
+  // Build the turn context snapshot — centralizes all state reads
+  const ctx = await buildTurnContext({
+    currentSession,
+    channel: input.channel,
+    friendStore: input.friendStore,
   })
+  // Propagate sync failure from pre-turn pull
+  ctx.syncFailure = syncFailure
+  const { activeBridges, sessionActivity, pendingObligations, codingSessions, otherCodingSessions } = ctx
   const bridgeContext = formatBridgeContext(activeBridges) || undefined
-  let sessionActivity: SessionActivityRecord[] = []
-  try {
-    const agentRoot = getAgentRoot()
-    sessionActivity = listSessionActivity({
-      sessionsDir: `${agentRoot}/state/sessions`,
-      friendsDir: `${agentRoot}/friends`,
-      agentName: getAgentName(),
-      currentSession: {
-        friendId: currentSession.friendId,
-        channel: currentSession.channel,
-        key: currentSession.key,
-      },
-    })
-  } catch {
-    sessionActivity = []
-  }
-  let targetCandidates = [] as Awaited<ReturnType<typeof listTargetSessionCandidates>>
-  try {
-    if (input.channel !== "inner") {
-      const agentRoot = getAgentRoot()
-      targetCandidates = await listTargetSessionCandidates({
-        sessionsDir: `${agentRoot}/state/sessions`,
-        friendsDir: `${agentRoot}/friends`,
-        agentName: getAgentName(),
-        currentSession: {
-          friendId: currentSession.friendId,
-          channel: currentSession.channel,
-          key: currentSession.key,
-        },
-        friendStore: input.friendStore,
-      })
-    }
-  } catch {
-    targetCandidates = []
-  }
-  let pendingObligations: import("../heart/obligations").Obligation[] = []
-  try {
-    pendingObligations = readPendingObligations(getAgentRoot())
-  } catch {
-    pendingObligations = []
-  }
-  let codingSessions = [] as ReturnType<ReturnType<typeof getCodingSessionManager>["listSessions"]>
-  let otherCodingSessions = [] as ReturnType<ReturnType<typeof getCodingSessionManager>["listSessions"]>
-  try {
-    const liveCodingSessions = getCodingSessionManager()
-      .listSessions()
-      .filter((session) => isLiveCodingSessionStatus(session.status) && Boolean(session.originSession))
-    codingSessions = liveCodingSessions.filter((session) =>
-      session.originSession?.friendId === currentSession.friendId
-      && session.originSession.channel === currentSession.channel
-      && session.originSession.key === currentSession.key,
-    )
-    otherCodingSessions = liveCodingSessions.filter((session) =>
-      !(
-        session.originSession?.friendId === currentSession.friendId
-        && session.originSession.channel === currentSession.channel
-        && session.originSession.key === currentSession.key
-      ),
-    )
-  } catch {
-    codingSessions = []
-    otherCodingSessions = []
-  }
   const activeWorkFrame = buildActiveWorkFrame({
     currentSession,
     currentObligation,
     mustResolveBeforeHandoff,
-    inner: readInnerWorkState(),
+    inner: ctx.innerWorkState,
     bridges: activeBridges,
     codingSessions,
     otherCodingSessions,
     pendingObligations,
-    taskBoard: (() => {
-      try {
-        return getTaskModule().getBoard()
-      } catch {
-        return emptyTaskBoard()
-      }
-    })(),
+    taskBoard: ctx.taskBoard,
     friendActivity: sessionActivity,
-    targetCandidates,
-    innerReturnObligations: (() => {
-      try {
-        return listActiveReturnObligations(getAgentName())
-      } catch {
-        return []
-      }
-    })(),
+    targetCandidates: ctx.targetCandidates,
+    innerReturnObligations: ctx.returnObligations,
   })
   const delegationDecision = decideDelegation({
     channel: input.channel,
@@ -606,8 +458,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   try {
     const agentRoot = getAgentRoot()
     const agentName = getAgentName()
-    const recentEpisodes = readRecentEpisodes(agentRoot, { limit: 20 })
-    const activeCares = readActiveCares(agentRoot)
+    const { recentEpisodes, activeCares } = ctx
     const tempoState = deriveTempo({
       activeSessions: sessionActivity.length + 1,
       openObligations: pendingObligations.length,
