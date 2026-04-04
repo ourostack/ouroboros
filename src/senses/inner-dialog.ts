@@ -17,7 +17,7 @@ import {
   type PendingMessage,
   type DelegatedFrom,
 } from "../mind/pending"
-import { advanceObligation, listActiveObligations } from "../mind/obligations"
+import { advanceReturnObligation, listActiveReturnObligations, findPendingObligationForOrigin, fulfillObligation } from "../heart/obligations"
 import { buildAttentionQueue, buildAttentionQueueSummary, type AttentionItem } from "./attention-queue"
 import { getChannelCapabilities } from "../mind/friends/channel"
 import { enforceTrustGate } from "./trust-gate"
@@ -30,7 +30,6 @@ import type { FriendStore } from "../mind/friends/store"
 import { createBridgeManager } from "../heart/bridges/manager"
 import { findFreshestFriendSession, listSessionActivity, type SessionActivityRecord } from "../heart/session-activity"
 import { sendProactiveBlueBubblesMessageToSession } from "./bluebubbles"
-import { findPendingObligationForOrigin, fulfillObligation } from "../heart/obligations"
 import { buildHabitTurnMessage } from "./habit-turn-message"
 import { indexJournalFiles } from "../mind/journal-index"
 import { parseHabitFile } from "../heart/daemon/habit-parser"
@@ -352,11 +351,11 @@ export function enrichDelegatedFromWithBridge(delegatedFrom: DelegatedFrom): Del
 function advanceObligationQuietly(
   agentName: string,
   obligationId: string | undefined,
-  update: Parameters<typeof advanceObligation>[2],
+  update: Parameters<typeof advanceReturnObligation>[2],
 ): void {
   if (!obligationId) return
   try {
-    advanceObligation(agentName, obligationId, update)
+    advanceReturnObligation(agentName, obligationId, update)
   /* v8 ignore start -- best-effort: obligation fs errors must never block return routing @preserve */
   } catch {
     // swallowed
@@ -632,7 +631,7 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
         userContent = `habit "${habitName}" could not be read (file not found or unreadable). check habits/${habitName}.md exists.`
       } else {
         // Unified path: gather context for ALL habits (heartbeat included)
-        const obligations = listActiveObligations(agentName)
+        const obligations = listActiveReturnObligations(agentName)
         const nowMs = now().getTime()
         const staleObligations = obligations.map((o) => ({
           friendName: o.origin.friendId,
@@ -733,7 +732,7 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
     signal: options?.signal,
     /* v8 ignore start -- attention queue: callback invoked by pipeline during pending drain; tested via attention-queue unit tests @preserve */
     onPendingDrained: (drained) => {
-      const outstandingObligations = listActiveObligations(agentName)
+      const outstandingObligations = listActiveReturnObligations(agentName)
       attentionQueue = buildAttentionQueue({
         drainedPending: drained,
         outstandingObligations,
