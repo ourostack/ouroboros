@@ -36,7 +36,7 @@ import { runHealthInventory } from "../heart/provider-ping"
 import { writeAgentProviderSelection, loadAgentSecrets } from "../heart/daemon/auth-flow"
 import { deriveTempo } from "../heart/tempo"
 import { buildTemporalView } from "../heart/temporal-view"
-import { buildWakePacket, renderWakePacket } from "../heart/wake-packet"
+import { buildStartOfTurnPacket, renderStartOfTurnPacket } from "../heart/start-of-turn-packet"
 import { preTurnPull, postTurnPush, drainSyncWrites, runWithSyncContext } from "../heart/sync"
 import { getSyncConfig } from "../heart/config"
 import { derivePresence, writePresence } from "../heart/presence"
@@ -600,8 +600,8 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     sessionMessages.push(msg)
   }
 
-  // Step 4b: Continuity pipeline — derive tempo, build wake packet, snapshot obligations
-  let renderedWakePacket: string | undefined
+  // Step 4b: Continuity pipeline — derive tempo, build start-of-turn packet, snapshot obligations
+  let renderedStartOfTurnPacket: string | undefined
   const preTurnObligationIds = new Set(pendingObligations.map((ob) => `${ob.id}:${ob.status}`))
   try {
     const agentRoot = getAgentRoot()
@@ -628,17 +628,17 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
         activeCares,
       },
     })
-    const wakePacket = buildWakePacket(temporalView, {
+    const startOfTurnPacket = buildStartOfTurnPacket(temporalView, {
       canonicalObligations: {
         primary: activeWorkFrame.primaryObligation,
         all: activeWorkFrame.pendingObligations,
       },
     })
     if (syncFailure) {
-      wakePacket.syncFailure = syncFailure
+      startOfTurnPacket.syncFailure = syncFailure
     }
-    renderedWakePacket = renderWakePacket(wakePacket)
-    if (!renderedWakePacket) renderedWakePacket = undefined
+    renderedStartOfTurnPacket = renderStartOfTurnPacket(startOfTurnPacket)
+    if (!renderedStartOfTurnPacket) renderedStartOfTurnPacket = undefined
 
     // Update self-presence
     const presence = derivePresence(agentRoot, agentName, {
@@ -654,7 +654,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
       level: "warn",
       component: "senses",
       event: "senses.continuity_error",
-      message: "continuity pipeline failed, continuing without wake packet",
+      message: "continuity pipeline failed, continuing without start-of-turn packet",
       meta: { error: continuityError instanceof Error ? continuityError.message : String(continuityError) },
     })
   }
@@ -666,7 +666,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     bridgeContext,
     activeWorkFrame,
     delegationDecision,
-    wakePacket: renderedWakePacket,
+    startOfTurnPacket: renderedStartOfTurnPacket,
     pendingMessages: pending.length > 0 ? pending.map((msg) => ({ from: msg.from, content: msg.content })) : undefined,
     currentSessionKey: currentSession.key,
     currentObligation,
@@ -708,8 +708,8 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
         const model = (cfg as Record<string, unknown>).model ?? (cfg as Record<string, unknown>).modelName
         if (typeof model === "string" && model) providerModels[p] = model
       }
-      /* v8 ignore next -- defensive: current provider always in secrets @preserve */
-      const currentModel = providerModels[currentProvider] ?? ""
+      // Use agent.json model (source of truth), not secrets model (may be stale)
+      const currentModel = agentConfig.humanFacing.model
       const failoverContext = buildFailoverContext(
         /* v8 ignore next -- defensive: error always set when errored @preserve */
         result.error?.message ?? "unknown error",

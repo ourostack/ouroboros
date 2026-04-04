@@ -9,14 +9,16 @@ function makeDeps(overrides?: Partial<StagedRestartDeps>): StagedRestartDeps {
     spawnSync: vi.fn().mockReturnValue({ status: 0, error: undefined }),
     resolveNewCodePath: vi.fn().mockReturnValue("/usr/local/lib/node_modules/@ouro.bot/cli"),
     gracefulShutdown: vi.fn().mockResolvedValue(undefined),
+    spawnNewDaemon: vi.fn().mockReturnValue({ pid: 12345 }),
     nodePath: "/usr/local/bin/node",
     bundlesRoot: "/tmp/test-bundles",
+    socketPath: "/tmp/test.sock",
     ...overrides,
   }
 }
 
 describe("performStagedRestart", () => {
-  it("installs new version, runs hook runner, and calls graceful shutdown on success", async () => {
+  it("installs, runs hooks, shuts down, and spawns new daemon on success", async () => {
     const deps = makeDeps()
 
     const result = await performStagedRestart("0.2.0-alpha.1", deps)
@@ -35,6 +37,22 @@ describe("performStagedRestart", () => {
       expect.any(Object),
     )
     expect(deps.gracefulShutdown).toHaveBeenCalled()
+    expect(deps.spawnNewDaemon).toHaveBeenCalledWith(
+      expect.stringContaining("daemon-entry.js"),
+      "/tmp/test.sock",
+    )
+  })
+
+  it("uses default socket path when socketPath not provided", async () => {
+    const deps = makeDeps({ socketPath: undefined })
+
+    const result = await performStagedRestart("0.2.0-alpha.1", deps)
+
+    expect(result.ok).toBe(true)
+    expect(deps.spawnNewDaemon).toHaveBeenCalledWith(
+      expect.any(String),
+      "/tmp/ouroboros-daemon.sock",
+    )
   })
 
   it("does not call graceful shutdown when hook runner exits non-zero", async () => {
@@ -47,6 +65,7 @@ describe("performStagedRestart", () => {
     expect(result.ok).toBe(false)
     expect(result.error).toBeDefined()
     expect(deps.gracefulShutdown).not.toHaveBeenCalled()
+    expect(deps.spawnNewDaemon).not.toHaveBeenCalled()
   })
 
   it("handles npm install failure", async () => {
@@ -61,6 +80,7 @@ describe("performStagedRestart", () => {
     expect(result.ok).toBe(false)
     expect(result.error).toContain("npm install failed")
     expect(deps.gracefulShutdown).not.toHaveBeenCalled()
+    expect(deps.spawnNewDaemon).not.toHaveBeenCalled()
   })
 
   it("handles spawn failure (error in spawnSync result)", async () => {
@@ -73,6 +93,7 @@ describe("performStagedRestart", () => {
     expect(result.ok).toBe(false)
     expect(result.error).toContain("spawn failed")
     expect(deps.gracefulShutdown).not.toHaveBeenCalled()
+    expect(deps.spawnNewDaemon).not.toHaveBeenCalled()
   })
 
   it("handles new code path not existing", async () => {
@@ -85,18 +106,35 @@ describe("performStagedRestart", () => {
     expect(result.ok).toBe(false)
     expect(result.error).toBeDefined()
     expect(deps.gracefulShutdown).not.toHaveBeenCalled()
+    expect(deps.spawnNewDaemon).not.toHaveBeenCalled()
   })
 
-  it("handles graceful shutdown failure (still returns ok since hooks succeeded)", async () => {
+  it("still spawns new daemon when graceful shutdown fails", async () => {
     const deps = makeDeps({
       gracefulShutdown: vi.fn().mockRejectedValue(new Error("shutdown failed")),
     })
 
     const result = await performStagedRestart("0.2.0-alpha.1", deps)
 
-    // Hooks succeeded, so the update is good even if shutdown had trouble
+    // Hooks succeeded and daemon spawned, so overall ok even if shutdown had trouble
     expect(result.ok).toBe(true)
-    expect(result.shutdownError).toBeDefined()
+    expect(result.shutdownError).toBe("shutdown failed")
+    expect(deps.spawnNewDaemon).toHaveBeenCalled()
+  })
+
+  it("returns error when new daemon spawn fails after shutdown", async () => {
+    const deps = makeDeps({
+      spawnNewDaemon: vi.fn().mockImplementation(() => {
+        throw new Error("ENOENT: no such file")
+      }),
+    })
+
+    const result = await performStagedRestart("0.2.0-alpha.1", deps)
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain("failed to spawn new daemon")
+    expect(result.error).toContain("ENOENT")
+    expect(deps.gracefulShutdown).toHaveBeenCalled()
   })
 
   it("handles non-Error thrown from execSync", async () => {

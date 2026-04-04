@@ -1957,7 +1957,7 @@ describe("delegation router", () => {
 
     const rendered = formatActiveWorkFrame(wakeFrame, { obligationDetailsRenderedElsewhere: true })
     expect(rendered).not.toContain("## return obligations")
-    expect(rendered).toContain("return obligations: 1 active (canonical details in **Owed** section of wake packet)")
+    expect(rendered).toContain("return obligations: 1 active (canonical details in **Owed** section of start-of-turn packet)")
   })
 
   it("renders full obligation list when obligationDetailsRenderedElsewhere is false", async () => {

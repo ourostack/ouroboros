@@ -13,7 +13,7 @@ import { agentConfigV2Hook } from "./hooks/agent-config-v2"
 import { getPackageVersion } from "../../mind/bundle-manifest"
 import { startUpdateChecker, stopUpdateChecker } from "./update-checker"
 import { performStagedRestart } from "./staged-restart"
-import { execSync, spawnSync } from "child_process"
+import { execSync, spawn, spawnSync } from "child_process"
 import { drainPending } from "../../mind/pending"
 import {
   handleAgentAsk, handleAgentCatchup, handleAgentCheckGuidance,
@@ -333,7 +333,7 @@ export class OuroDaemon {
         daemon: "running",
         health: workers.every((worker) => worker.status === "running") ? "ok" : "warn",
         socketPath: this.socketPath,
-        outlookUrl: `${this.outlookServer?.origin ?? "http://127.0.0.1:0"}/outlook`,
+        outlookUrl: this.outlookServer?.origin ?? "http://127.0.0.1:0",
         ...getRuntimeMetadata(),
         workerCount: workers.length,
         senseCount: senses.length,
@@ -364,6 +364,7 @@ export class OuroDaemon {
     // Start periodic update checker (polls npm registry every 30 minutes)
     // Skip in dev mode — dev builds should not auto-update from npm
     const bundlesRoot = this.bundlesRoot
+    const daemonSocketPath = this.socketPath
     if (this.mode === "dev") {
       emitNervesEvent({
         component: "daemon",
@@ -396,8 +397,19 @@ export class OuroDaemon {
               }
             },
             gracefulShutdown: () => daemon.stop(),
+            spawnNewDaemon: (entryPath, sock) => {
+              const outFd = fs.openSync(os.devNull, "w")
+              const errFd = fs.openSync(os.devNull, "w")
+              const child = spawn(process.execPath, [entryPath, "--socket", sock], {
+                detached: true,
+                stdio: ["ignore", outFd, errFd],
+              })
+              child.unref()
+              return { pid: child.pid ?? null }
+            },
             nodePath: process.execPath,
             bundlesRoot,
+            socketPath: daemonSocketPath,
           })
         },
         /* v8 ignore stop */
