@@ -1,3 +1,5 @@
+import * as fs from "fs"
+import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
 import { type TemporalView } from "./temporal-view"
 import { type TempoMode, TEMPO_BUDGETS, type TempoTokenBudget } from "./tempo"
@@ -16,6 +18,7 @@ export interface StartOfTurnPacket {
   tokenBudget: TempoTokenBudget
   assembledAt: string
   syncFailure?: string
+  capabilities?: string
 }
 
 function estimateTokens(text: string): number {
@@ -115,6 +118,73 @@ function buildResumeHint(view: TemporalView, obligations?: Obligation[]): string
   return hints.join("; ")
 }
 
+interface ChangelogEntry {
+  version: string
+  changes: string[]
+}
+
+/**
+ * Build a compact summary of capability changes between runtime versions.
+ * Reads bundle-meta.json for version info and changelog.json for change descriptions.
+ * Returns undefined if no version change detected or files are missing/malformed.
+ */
+export function buildCapabilitiesSection(bundleRoot: string): string | undefined {
+  let meta: Record<string, unknown>
+  try {
+    const raw = fs.readFileSync(path.join(bundleRoot, "bundle-meta.json"), "utf-8")
+    meta = JSON.parse(raw) as Record<string, unknown>
+  } catch {
+    emitNervesEvent({
+      component: "heart",
+      event: "heart.capabilities_check",
+      message: "bundle-meta.json missing or malformed",
+      meta: { bundleRoot },
+    })
+    return undefined
+  }
+
+  const currentVersion = meta.runtimeVersion
+  const previousVersion = meta.previousRuntimeVersion
+  if (typeof currentVersion !== "string" || typeof previousVersion !== "string") {
+    return undefined
+  }
+  if (currentVersion === previousVersion) {
+    return undefined
+  }
+
+  emitNervesEvent({
+    component: "heart",
+    event: "heart.capabilities_version_change",
+    message: `runtime version changed from ${previousVersion} to ${currentVersion}`,
+    meta: { previousVersion, currentVersion },
+  })
+
+  let changelog: ChangelogEntry[] | undefined
+  try {
+    const raw = fs.readFileSync(path.join(bundleRoot, "changelog.json"), "utf-8")
+    changelog = JSON.parse(raw) as ChangelogEntry[]
+  } catch {
+    // changelog missing -- still report the version change
+  }
+
+  const parts: string[] = [`Updated from ${previousVersion} to ${currentVersion}`]
+
+  if (changelog && Array.isArray(changelog)) {
+    const relevantChanges: string[] = []
+    for (const entry of changelog) {
+      if (entry.version === previousVersion) break
+      if (Array.isArray(entry.changes)) {
+        relevantChanges.push(...entry.changes)
+      }
+    }
+    if (relevantChanges.length > 0) {
+      parts.push(`: ${relevantChanges.join("; ")}`)
+    }
+  }
+
+  return parts.join("")
+}
+
 export function buildStartOfTurnPacket(view: TemporalView, opts?: { canonicalObligations?: { primary: Obligation | null; all: Obligation[] } }): StartOfTurnPacket {
   const tempo = view.tempo
   const tokenBudget = TEMPO_BUDGETS[tempo]
@@ -161,11 +231,12 @@ export function renderStartOfTurnPacket(packet: StartOfTurnPacket): string {
   // Assemble sections in priority order (highest priority first for budget allocation)
   // Each section is { label, content, priority } where lower priority number = truncated first
   const sections = [
-    { label: "syncFailure", content: packet.syncFailure ?? "", priority: 6 },
-    { label: "resume", content: packet.resumeHint, priority: 5 },
-    { label: "obligations", content: packet.obligations, priority: 4 },
-    { label: "cares", content: packet.cares, priority: 3 },
-    { label: "plot", content: packet.plotLine, priority: 2 },
+    { label: "syncFailure", content: packet.syncFailure ?? "", priority: 7 },
+    { label: "resume", content: packet.resumeHint, priority: 6 },
+    { label: "obligations", content: packet.obligations, priority: 5 },
+    { label: "cares", content: packet.cares, priority: 4 },
+    { label: "plot", content: packet.plotLine, priority: 3 },
+    { label: "capabilities", content: packet.capabilities ?? "", priority: 2 },
     { label: "presence", content: packet.presence, priority: 1 },
   ].filter((s) => s.content.length > 0)
 
@@ -233,6 +304,9 @@ function formatSections(sections: Array<{ label: string; content: string }>): st
         break
       case "presence":
         parts.push(`**Peers:**\n${section.content}`)
+        break
+      case "capabilities":
+        parts.push(`**Capabilities:** ${section.content}`)
         break
       case "syncFailure":
         parts.push(`**Sync warning:** ${section.content}`)
