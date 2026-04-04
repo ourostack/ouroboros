@@ -326,7 +326,7 @@
       "version": "0.1.0-alpha.138",
       "changes": [
         "Memory renamed to diary: memory.ts \u2192 diary.ts, MemoryFact \u2192 DiaryEntry, memory_save \u2192 diary_write, memory_search \u2192 recall. All types, functions, events, and variables renamed throughout.",
-        "Diary path: diary/ (top-level) replaces psyche/memory/. Fallback reads from legacy path for existing bundles.",
+        "Diary path: diary/ (top-level) replaces psyche/memory/. Schema-2 migration copies files; legacy fallback removed.",
         "Journal workspace: journal/ directory for freeform thinking-in-progress. Agent writes with write_file, system reads for heartbeat context.",
         "Unified recall tool: searches both diary entries and journal files. Results tagged [diary] or [journal].",
         "Journal embeddings: file-level embeddings indexed during heartbeat via journal/.index.json sidecar.",
