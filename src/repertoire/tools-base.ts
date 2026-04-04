@@ -1888,9 +1888,14 @@ export const baseToolDefinitions: ToolDefinition[] = [
             break;
           }
         }
+        const isExplicit = current !== undefined;
+        const source: "explicit" | "default" | "unset" = isExplicit
+          ? "explicit"
+          : entry.default !== undefined ? "default" : "unset";
         return {
           path: entry.path,
-          currentValue: current !== undefined ? current : (entry.default !== undefined ? entry.default : null),
+          currentValue: isExplicit ? current : (entry.default !== undefined ? entry.default : null),
+          source,
           tier: entry.tier,
           description: entry.description,
           default: entry.default !== undefined ? entry.default : null,
@@ -1908,18 +1913,18 @@ export const baseToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "update_config",
-        description: "Update an agent configuration value. Tier 1 (self-service) keys are applied immediately. Tier 2 (proposal) keys require operator confirmation. Tier 3 (operator-only) keys are refused.",
+        description: "Update an agent configuration value. Tier 1 (self-service) keys are applied immediately. Tier 2 (proposal) keys require operator confirmation via the harness confirmation prompt. Tier 3 (operator-only) keys are refused.",
         parameters: {
           type: "object",
           properties: {
-            path: { type: "string", description: "Config key in dot-notation (e.g., 'context.contextMargin', 'logging.level')" },
+            path: { type: "string", description: "Config key in dot-notation (e.g., 'context.contextMargin', 'humanFacing.model')" },
             value: { type: "string", description: "New value as JSON (e.g., '25', '\"debug\"', '[\"terminal\", \"ndjson\"]')" },
-            confirmed: { type: "string", description: "Set to 'true' to confirm a Tier 2 change after reviewing the proposal." },
           },
           required: ["path", "value"],
         },
       },
     },
+    confirmationRequired: true,
     handler: (a) => {
       const entry = getRegistryEntry(a.path);
       if (!entry) {
@@ -1933,6 +1938,15 @@ export const baseToolDefinitions: ToolDefinition[] = [
       } catch {
         emitNervesEvent({ component: "repertoire", event: "repertoire.update_config_error", message: `invalid JSON value for ${a.path}`, meta: { path: a.path, value: a.value } });
         return `Error: invalid JSON value. Provide value as valid JSON (e.g., 25, "debug", ["terminal"]).`;
+      }
+
+      // Validate value against registry entry's validator
+      if (entry.validate) {
+        const validationError = entry.validate(parsedValue);
+        if (validationError) {
+          emitNervesEvent({ component: "repertoire", event: "repertoire.update_config_error", message: `validation failed for ${a.path}: ${validationError}`, meta: { path: a.path, value: a.value, validationError } });
+          return `Error: validation failed for "${a.path}": ${validationError}`;
+        }
       }
 
       // Tier 3: refuse
@@ -1951,23 +1965,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
         return `Error: failed to read agent.json at ${configPath}`;
       }
 
-      // Tier 2 without confirmation: return proposal
-      if (entry.tier === 2 && a.confirmed !== "true") {
-        const parts = entry.path.split(".");
-        let current: unknown = rawConfig;
-        for (const part of parts) {
-          if (current && typeof current === "object" && !Array.isArray(current)) {
-            current = (current as Record<string, unknown>)[part];
-          } else {
-            current = undefined;
-            break;
-          }
-        }
-        emitNervesEvent({ component: "repertoire", event: "repertoire.update_config_proposal", message: `T2 proposal for ${a.path}`, meta: { path: a.path, currentValue: current, proposedValue: parsedValue } });
-        return `Proposal: change "${a.path}" (Tier 2 — requires operator approval)\n\nCurrent: ${JSON.stringify(current)}\nProposed: ${JSON.stringify(parsedValue)}\n\nEffect: ${entry.effects}\n\nTo apply, call update_config with confirmed: "true".`;
-      }
-
-      // Apply the change (T1 or confirmed T2)
+      // Apply the change (T1 or T2 — harness confirmation already handled by confirmationRequired)
       const parts = entry.path.split(".");
       let target: Record<string, unknown> = rawConfig;
       for (let i = 0; i < parts.length - 1; i++) {

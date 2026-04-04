@@ -7,6 +7,57 @@ export interface ConfigRegistryEntry {
   default: unknown
   effects: string
   topics: string[]
+  validate?: (value: unknown) => string | undefined
+}
+
+// --- Validation helpers ---
+
+const KNOWN_PROVIDERS = ["anthropic", "azure", "minimax", "openai-codex", "github-copilot"] as const
+
+function validateNumber(value: unknown): string | undefined {
+  if (typeof value !== "number") return `expected number, got ${typeof value}`
+  return undefined
+}
+
+function validateBoolean(value: unknown): string | undefined {
+  if (typeof value !== "boolean") return `expected boolean, got ${typeof value}`
+  return undefined
+}
+
+function validateString(value: unknown): string | undefined {
+  if (typeof value !== "string") return `expected string, got ${typeof value}`
+  return undefined
+}
+
+function validateStringEnum(allowed: readonly string[]) {
+  return (value: unknown): string | undefined => {
+    if (typeof value !== "string") return `expected string, got ${typeof value}`
+    if (!allowed.includes(value)) return `expected one of [${allowed.join(", ")}], got "${value}"`
+    return undefined
+  }
+}
+
+function validateStringArray(value: unknown): string | undefined {
+  if (!Array.isArray(value)) return `expected array, got ${typeof value}`
+  for (let i = 0; i < value.length; i++) {
+    if (typeof value[i] !== "string") return `expected string at index ${i}, got ${typeof value[i]}`
+  }
+  return undefined
+}
+
+function validateObject(requiredFields: Record<string, (v: unknown) => string | undefined>) {
+  return (value: unknown): string | undefined => {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      return `expected object, got ${Array.isArray(value) ? "array" : typeof value}`
+    }
+    const obj = value as Record<string, unknown>
+    for (const [field, validator] of Object.entries(requiredFields)) {
+      if (!(field in obj)) return `missing required field "${field}"`
+      const err = validator(obj[field])
+      if (err) return `field "${field}": ${err}`
+    }
+    return undefined
+  }
 }
 
 const registryData: ConfigRegistryEntry[] = [
@@ -18,6 +69,7 @@ const registryData: ConfigRegistryEntry[] = [
     default: 2,
     effects: "Controls which config migrations apply on load. Changing incorrectly can corrupt config.",
     topics: ["schema", "migration"],
+    validate: validateNumber,
   },
   {
     path: "enabled",
@@ -26,6 +78,7 @@ const registryData: ConfigRegistryEntry[] = [
     default: true,
     effects: "Disables all agent functionality when set to false.",
     topics: ["lifecycle", "activation"],
+    validate: validateBoolean,
   },
   {
     path: "mcpServers",
@@ -38,20 +91,40 @@ const registryData: ConfigRegistryEntry[] = [
 
   // --- Tier 2: Proposal ---
   {
-    path: "humanFacing",
+    path: "humanFacing.provider",
     tier: 2,
-    description: "Provider and model for human-facing interactions (CLI, Teams, BlueBubbles).",
-    default: { provider: "anthropic", model: "claude-opus-4-6" },
-    effects: "Changes the LLM used for all human-facing conversations. Affects quality, latency, and cost.",
+    description: "Provider for human-facing interactions (CLI, Teams, BlueBubbles).",
+    default: "anthropic",
+    effects: "Changes the LLM provider used for all human-facing conversations. Affects quality, latency, and cost.",
     topics: ["model", "provider", "llm", "human"],
+    validate: validateStringEnum(KNOWN_PROVIDERS),
   },
   {
-    path: "agentFacing",
+    path: "humanFacing.model",
     tier: 2,
-    description: "Provider and model for agent-facing interactions (inner dialog, delegation).",
-    default: { provider: "anthropic", model: "claude-opus-4-6" },
-    effects: "Changes the LLM used for inner dialog and agent-to-agent communication.",
+    description: "Model name for human-facing interactions.",
+    default: "claude-opus-4-6",
+    effects: "Changes the specific model used for human-facing conversations.",
+    topics: ["model", "provider", "llm", "human"],
+    validate: validateString,
+  },
+  {
+    path: "agentFacing.provider",
+    tier: 2,
+    description: "Provider for agent-facing interactions (inner dialog, delegation).",
+    default: "anthropic",
+    effects: "Changes the LLM provider used for inner dialog and agent-to-agent communication.",
     topics: ["model", "provider", "llm", "agent", "inner-dialog"],
+    validate: validateStringEnum(KNOWN_PROVIDERS),
+  },
+  {
+    path: "agentFacing.model",
+    tier: 2,
+    description: "Model name for agent-facing interactions.",
+    default: "claude-opus-4-6",
+    effects: "Changes the specific model used for inner dialog and agent-to-agent communication.",
+    topics: ["model", "provider", "llm", "agent", "inner-dialog"],
+    validate: validateString,
   },
   {
     path: "context.maxTokens",
@@ -60,6 +133,7 @@ const registryData: ConfigRegistryEntry[] = [
     default: 80000,
     effects: "Larger values allow more context but increase cost and latency. Must match model capability.",
     topics: ["context", "tokens", "memory", "performance"],
+    validate: validateNumber,
   },
   {
     path: "senses.cli",
@@ -68,6 +142,7 @@ const registryData: ConfigRegistryEntry[] = [
     default: { enabled: true },
     effects: "Enables or disables the CLI (terminal) interaction channel.",
     topics: ["senses", "cli", "channels", "interface"],
+    validate: validateObject({ enabled: validateBoolean }),
   },
   {
     path: "senses.teams",
@@ -76,6 +151,7 @@ const registryData: ConfigRegistryEntry[] = [
     default: { enabled: false },
     effects: "Enables or disables the Microsoft Teams interaction channel.",
     topics: ["senses", "teams", "channels", "interface"],
+    validate: validateObject({ enabled: validateBoolean }),
   },
   {
     path: "senses.bluebubbles",
@@ -84,6 +160,7 @@ const registryData: ConfigRegistryEntry[] = [
     default: { enabled: false },
     effects: "Enables or disables the BlueBubbles (iMessage) interaction channel.",
     topics: ["senses", "bluebubbles", "imessage", "channels", "interface"],
+    validate: validateObject({ enabled: validateBoolean }),
   },
   {
     path: "sync.enabled",
@@ -92,6 +169,7 @@ const registryData: ConfigRegistryEntry[] = [
     default: false,
     effects: "Enables automatic synchronization of agent state via git. Requires sync.remote to be configured.",
     topics: ["sync", "git", "state", "backup"],
+    validate: validateBoolean,
   },
   {
     path: "sync.remote",
@@ -100,6 +178,7 @@ const registryData: ConfigRegistryEntry[] = [
     default: "origin",
     effects: "Controls which git remote is used when sync is enabled.",
     topics: ["sync", "git", "remote"],
+    validate: validateString,
   },
 
   // --- Tier 1: Self-service ---
@@ -110,6 +189,7 @@ const registryData: ConfigRegistryEntry[] = [
     default: 20,
     effects: "Higher values trigger compaction earlier, preserving more headroom. Lower values use more context.",
     topics: ["context", "compaction", "memory", "performance"],
+    validate: validateNumber,
   },
   {
     path: "phrases.thinking",
@@ -118,6 +198,7 @@ const registryData: ConfigRegistryEntry[] = [
     default: ["working"],
     effects: "Changes the thinking indicator text shown to users. Purely cosmetic.",
     topics: ["phrases", "ux", "display", "personality"],
+    validate: validateStringArray,
   },
   {
     path: "phrases.tool",
@@ -126,6 +207,7 @@ const registryData: ConfigRegistryEntry[] = [
     default: ["running tool"],
     effects: "Changes the tool-use indicator text shown to users. Purely cosmetic.",
     topics: ["phrases", "ux", "display", "personality"],
+    validate: validateStringArray,
   },
   {
     path: "phrases.followup",
@@ -134,6 +216,7 @@ const registryData: ConfigRegistryEntry[] = [
     default: ["processing"],
     effects: "Changes the follow-up indicator text shown to users. Purely cosmetic.",
     topics: ["phrases", "ux", "display", "personality"],
+    validate: validateStringArray,
   },
   {
     path: "shell.defaultTimeout",
@@ -142,6 +225,7 @@ const registryData: ConfigRegistryEntry[] = [
     default: undefined,
     effects: "Controls how long shell commands run before timing out. Undefined uses system default.",
     topics: ["shell", "timeout", "execution", "tools"],
+    validate: validateNumber,
   },
   {
     path: "logging.level",
@@ -150,6 +234,7 @@ const registryData: ConfigRegistryEntry[] = [
     default: undefined,
     effects: "Controls verbosity of runtime logging. Lower levels produce more output.",
     topics: ["logging", "debug", "diagnostics"],
+    validate: validateStringEnum(["debug", "info", "warn", "error"]),
   },
   {
     path: "logging.sinks",
@@ -158,6 +243,7 @@ const registryData: ConfigRegistryEntry[] = [
     default: undefined,
     effects: "Controls where log output is directed. Terminal shows in console, ndjson writes structured logs.",
     topics: ["logging", "output", "diagnostics"],
+    validate: validateStringArray,
   },
 ]
 

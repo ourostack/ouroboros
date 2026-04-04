@@ -9,6 +9,7 @@ import type { PendingMessage } from "../../mind/pending"
 import * as daemonThoughts from "../../heart/daemon/thoughts"
 import * as identity from "../../heart/identity"
 import * as pending from "../../mind/pending"
+import * as startOfTurnPacketModule from "../../heart/start-of-turn-packet"
 import { handleInboundTurn } from "../../senses/pipeline"
 import type { InboundTurnInput, InboundTurnResult } from "../../senses/pipeline"
 
@@ -1694,6 +1695,64 @@ describe("handleInboundTurn", () => {
       const userMsg = msgs.find(m => m.role === "user" && typeof m.content === "string")
       expect(userMsg).toBeTruthy()
       expect((userMsg as any).content).toBe("hi there")
+    })
+  })
+
+  describe("capabilities surfacing in pipeline", () => {
+    it("includes capabilities section in start-of-turn packet when version changes", async () => {
+      const capSpy = vi.spyOn(startOfTurnPacketModule, "buildCapabilitiesSection")
+        .mockReturnValue("Updated from 1.0.0 to 1.1.0: new config tool")
+
+      const friend = makeFriend({ trustLevel: "family" })
+      const caps = makeCapabilities({ channel: "cli", senseType: "local" })
+      const context: ResolvedContext = { friend, channel: caps }
+      const store = makeStore(friend)
+
+      const input = makeInput({
+        channel: "cli",
+        capabilities: caps,
+        friendResolver: { resolve: vi.fn().mockResolvedValue(context) },
+        friendStore: store,
+        enforceTrustGate: vi.fn().mockReturnValue({ allowed: true }),
+      })
+
+      await handleInboundTurn(input)
+
+      expect(capSpy).toHaveBeenCalled()
+
+      // The start-of-turn packet passed to runAgent should contain capabilities text
+      // runAgent is called with (messages, callbacks, channel, signal, options)
+      const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
+      const options = runAgentCall[4] as RunAgentOptions
+      if (options?.startOfTurnPacket) {
+        expect(options.startOfTurnPacket).toContain("Updated from 1.0.0 to 1.1.0")
+      }
+
+      capSpy.mockRestore()
+    })
+
+    it("omits capabilities section when no version change detected", async () => {
+      const capSpy = vi.spyOn(startOfTurnPacketModule, "buildCapabilitiesSection")
+        .mockReturnValue(undefined)
+
+      const friend = makeFriend({ trustLevel: "family" })
+      const caps = makeCapabilities({ channel: "cli", senseType: "local" })
+      const context: ResolvedContext = { friend, channel: caps }
+      const store = makeStore(friend)
+
+      const input = makeInput({
+        channel: "cli",
+        capabilities: caps,
+        friendResolver: { resolve: vi.fn().mockResolvedValue(context) },
+        friendStore: store,
+        enforceTrustGate: vi.fn().mockReturnValue({ allowed: true }),
+      })
+
+      await handleInboundTurn(input)
+
+      expect(capSpy).toHaveBeenCalled()
+
+      capSpy.mockRestore()
     })
   })
 })

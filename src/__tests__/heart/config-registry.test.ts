@@ -49,8 +49,10 @@ describe("config-registry", () => {
       const expectedKeys = [
         "version",
         "enabled",
-        "humanFacing",
-        "agentFacing",
+        "humanFacing.provider",
+        "humanFacing.model",
+        "agentFacing.provider",
+        "agentFacing.model",
         "context.maxTokens",
         "context.contextMargin",
         "logging.level",
@@ -94,8 +96,10 @@ describe("config-registry", () => {
       emitTestEvent("T2 keys are proposal")
       const { CONFIG_REGISTRY } = await import("../../heart/config-registry")
       const t2Keys = [
-        "humanFacing",
-        "agentFacing",
+        "humanFacing.provider",
+        "humanFacing.model",
+        "agentFacing.provider",
+        "agentFacing.model",
         "context.maxTokens",
         "senses.cli",
         "senses.teams",
@@ -192,6 +196,84 @@ describe("config-registry", () => {
       // Empty string matches everything since every string includes ""
       const entries = getRegistryEntriesByTopic("")
       expect(Array.isArray(entries)).toBe(true)
+    })
+  })
+
+  describe("registry entry validators", () => {
+    it("entries with validate function have a callable validator", async () => {
+      emitTestEvent("validate functions are callable")
+      const { CONFIG_REGISTRY } = await import("../../heart/config-registry")
+      for (const [, entry] of CONFIG_REGISTRY) {
+        if (entry.validate) {
+          expect(typeof entry.validate).toBe("function")
+        }
+      }
+    })
+
+    it("number validators accept numbers and reject non-numbers", async () => {
+      emitTestEvent("number validator works")
+      const { getRegistryEntry } = await import("../../heart/config-registry")
+      const entry = getRegistryEntry("context.contextMargin")
+      expect(entry).toBeDefined()
+      expect(entry!.validate).toBeDefined()
+      expect(entry!.validate!(42)).toBeUndefined()
+      expect(entry!.validate!("not a number")).toContain("expected number")
+    })
+
+    it("string enum validators accept valid values and reject invalid ones", async () => {
+      emitTestEvent("string enum validator works")
+      const { getRegistryEntry } = await import("../../heart/config-registry")
+      const entry = getRegistryEntry("humanFacing.provider")
+      expect(entry).toBeDefined()
+      expect(entry!.validate).toBeDefined()
+      expect(entry!.validate!("anthropic")).toBeUndefined()
+      expect(entry!.validate!("invalid-provider")).toContain("expected one of")
+      expect(entry!.validate!(42)).toContain("expected string")
+    })
+
+    it("string validators accept strings and reject non-strings", async () => {
+      emitTestEvent("string validator works")
+      const { getRegistryEntry } = await import("../../heart/config-registry")
+      const entry = getRegistryEntry("humanFacing.model")
+      expect(entry).toBeDefined()
+      expect(entry!.validate).toBeDefined()
+      expect(entry!.validate!("claude-opus-4-6")).toBeUndefined()
+      expect(entry!.validate!(42)).toContain("expected string")
+    })
+
+    it("string array validators accept string arrays and reject non-arrays", async () => {
+      emitTestEvent("string array validator works")
+      const { getRegistryEntry } = await import("../../heart/config-registry")
+      const entry = getRegistryEntry("phrases.thinking")
+      expect(entry).toBeDefined()
+      expect(entry!.validate).toBeDefined()
+      expect(entry!.validate!(["a", "b"])).toBeUndefined()
+      expect(entry!.validate!("not an array")).toContain("expected array")
+      expect(entry!.validate!(["ok", 42])).toContain("expected string at index")
+    })
+
+    it("boolean validators accept booleans and reject non-booleans", async () => {
+      emitTestEvent("boolean validator works")
+      const { getRegistryEntry } = await import("../../heart/config-registry")
+      const entry = getRegistryEntry("sync.enabled")
+      expect(entry).toBeDefined()
+      expect(entry!.validate).toBeDefined()
+      expect(entry!.validate!(true)).toBeUndefined()
+      expect(entry!.validate!("true")).toContain("expected boolean")
+    })
+
+    it("object validators accept valid objects and reject invalid ones", async () => {
+      emitTestEvent("object validator works")
+      const { getRegistryEntry } = await import("../../heart/config-registry")
+      const entry = getRegistryEntry("senses.cli")
+      expect(entry).toBeDefined()
+      expect(entry!.validate).toBeDefined()
+      expect(entry!.validate!({ enabled: true })).toBeUndefined()
+      expect(entry!.validate!({ enabled: "yes" })).toContain('field "enabled"')
+      expect(entry!.validate!({ foo: true })).toContain('missing required field "enabled"')
+      expect(entry!.validate!("not an object")).toContain("expected object")
+      expect(entry!.validate!(null)).toContain("expected object")
+      expect(entry!.validate!([true])).toContain("expected object, got array")
     })
   })
 

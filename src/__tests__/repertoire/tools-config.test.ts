@@ -184,6 +184,58 @@ describe("read_config tool", () => {
     expect(shellEntry.currentValue).toBeNull()
   })
 
+  // Source field tests (Major 5)
+  it("includes source field: explicit for values in agent.json", async () => {
+    emitTestEvent("read_config source explicit")
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const def = baseToolDefinitions.find(d => d.tool.function.name === "read_config")
+    const result = await def!.handler({ related_to: "context" })
+    const parsed = JSON.parse(result)
+    const marginEntry = parsed.entries.find((e: Record<string, unknown>) => e.path === "context.contextMargin")
+    expect(marginEntry).toBeDefined()
+    expect(marginEntry.source).toBe("explicit")
+  })
+
+  it("includes source field: default for values not in agent.json but with defaults", async () => {
+    emitTestEvent("read_config source default")
+    // Mock config without logging section
+    vi.mocked(fs.readFileSync).mockImplementation((filePath: unknown) => {
+      const p = String(filePath)
+      if (p.endsWith("agent.json")) {
+        return JSON.stringify({ version: 2, enabled: true, humanFacing: { provider: "anthropic", model: "x" }, agentFacing: { provider: "anthropic", model: "x" }, phrases: { thinking: [], tool: [], followup: [] } })
+      }
+      return ""
+    })
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const def = baseToolDefinitions.find(d => d.tool.function.name === "read_config")
+    const result = await def!.handler({ related_to: "context" })
+    const parsed = JSON.parse(result)
+    const maxTokensEntry = parsed.entries.find((e: Record<string, unknown>) => e.path === "context.maxTokens")
+    expect(maxTokensEntry).toBeDefined()
+    expect(maxTokensEntry.source).toBe("default")
+    expect(maxTokensEntry.currentValue).toBe(80000)
+  })
+
+  it("includes source field: unset for values not in agent.json and with no default", async () => {
+    emitTestEvent("read_config source unset")
+    // Mock config without shell section
+    vi.mocked(fs.readFileSync).mockImplementation((filePath: unknown) => {
+      const p = String(filePath)
+      if (p.endsWith("agent.json")) {
+        return JSON.stringify({ version: 2, enabled: true, humanFacing: { provider: "anthropic", model: "x" }, agentFacing: { provider: "anthropic", model: "x" }, phrases: { thinking: [], tool: [], followup: [] } })
+      }
+      return ""
+    })
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const def = baseToolDefinitions.find(d => d.tool.function.name === "read_config")
+    const result = await def!.handler({ related_to: "shell" })
+    const parsed = JSON.parse(result)
+    const shellEntry = parsed.entries.find((e: Record<string, unknown>) => e.path === "shell.defaultTimeout")
+    expect(shellEntry).toBeDefined()
+    expect(shellEntry.source).toBe("unset")
+    expect(shellEntry.currentValue).toBeNull()
+  })
+
   it("includes available-but-disabled features", async () => {
     emitTestEvent("read_config includes disabled features")
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
@@ -219,7 +271,7 @@ describe("update_config tool", () => {
     expect(def).toBeDefined()
   })
 
-  it("has required path and value parameters, optional confirmed", async () => {
+  it("has required path and value parameters, no confirmed parameter", async () => {
     emitTestEvent("update_config has correct parameters")
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const def = baseToolDefinitions.find(d => d.tool.function.name === "update_config")
@@ -227,10 +279,17 @@ describe("update_config tool", () => {
     const params = def!.tool.function.parameters as { properties: Record<string, unknown>; required: string[] }
     expect(params.properties).toHaveProperty("path")
     expect(params.properties).toHaveProperty("value")
-    expect(params.properties).toHaveProperty("confirmed")
+    expect(params.properties).not.toHaveProperty("confirmed")
     expect(params.required).toContain("path")
     expect(params.required).toContain("value")
-    expect(params.required).not.toContain("confirmed")
+  })
+
+  it("has confirmationRequired set to true", async () => {
+    emitTestEvent("update_config has confirmationRequired")
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const def = baseToolDefinitions.find(d => d.tool.function.name === "update_config")
+    expect(def).toBeDefined()
+    expect(def!.confirmationRequired).toBe(true)
   })
 
   // Tier 1 tests
@@ -256,25 +315,17 @@ describe("update_config tool", () => {
     expect(result.toLowerCase()).toContain("success")
   })
 
-  // Tier 2 tests
-  it("T2 without confirmed: returns diff showing current vs proposed, asks for approval", async () => {
-    emitTestEvent("update_config T2 returns diff")
+  // Tier 2 tests (harness confirmation is handled at the tool execution layer via confirmationRequired)
+  it("T2: applies the change directly (harness confirmation already approved)", async () => {
+    emitTestEvent("update_config T2 applies change")
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const def = baseToolDefinitions.find(d => d.tool.function.name === "update_config")
     const result = await def!.handler({ path: "context.maxTokens", value: "120000" })
-    expect(result.toLowerCase()).toContain("proposal")
-    expect(result).toContain("120000")
-    // Should NOT have written to disk
-    expect(vi.mocked(fs.writeFileSync)).not.toHaveBeenCalled()
-  })
-
-  it("T2 with confirmed: applies the change and returns success", async () => {
-    emitTestEvent("update_config T2 confirmed applies change")
-    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
-    const def = baseToolDefinitions.find(d => d.tool.function.name === "update_config")
-    const result = await def!.handler({ path: "context.maxTokens", value: "120000", confirmed: "true" })
     expect(result.toLowerCase()).toContain("success")
     expect(vi.mocked(fs.writeFileSync)).toHaveBeenCalled()
+    const writeCall = vi.mocked(fs.writeFileSync).mock.calls[0]
+    const written = JSON.parse(writeCall[1] as string)
+    expect(written.context.maxTokens).toBe(120000)
   })
 
   // Tier 3 tests
@@ -340,8 +391,8 @@ describe("update_config tool", () => {
     expect(marginEntry.currentValue).toBe(30)
   })
 
-  it("T2 proposal handles path that does not resolve in current config", async () => {
-    emitTestEvent("update_config T2 proposal unresolvable path")
+  it("T2 creates nested parent objects when sync section does not exist", async () => {
+    emitTestEvent("update_config T2 creates nested parent")
     // Mock config with no sync section at all
     vi.mocked(fs.readFileSync).mockImplementation((filePath: unknown) => {
       const p = String(filePath)
@@ -353,8 +404,99 @@ describe("update_config tool", () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const def = baseToolDefinitions.find(d => d.tool.function.name === "update_config")
     const result = await def!.handler({ path: "sync.enabled", value: "true" })
-    expect(result.toLowerCase()).toContain("proposal")
-    expect(result).toContain("undefined")
+    expect(result.toLowerCase()).toContain("success")
+    const writeCall = vi.mocked(fs.writeFileSync).mock.calls[0]
+    const written = JSON.parse(writeCall[1] as string)
+    expect(written.sync.enabled).toBe(true)
+  })
+
+  // Validation tests (Blocker 3)
+  it("rejects value with wrong type (string instead of number)", async () => {
+    emitTestEvent("update_config rejects wrong type")
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const def = baseToolDefinitions.find(d => d.tool.function.name === "update_config")
+    const result = await def!.handler({ path: "context.contextMargin", value: '"not a number"' })
+    expect(result.toLowerCase()).toContain("validation failed")
+    expect(result).toContain("expected number")
+    expect(vi.mocked(fs.writeFileSync)).not.toHaveBeenCalled()
+  })
+
+  it("rejects invalid enum value for humanFacing.provider", async () => {
+    emitTestEvent("update_config rejects invalid enum")
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const def = baseToolDefinitions.find(d => d.tool.function.name === "update_config")
+    const result = await def!.handler({ path: "humanFacing.provider", value: '"invalid-provider"' })
+    expect(result.toLowerCase()).toContain("validation failed")
+    expect(result).toContain("expected one of")
+    expect(vi.mocked(fs.writeFileSync)).not.toHaveBeenCalled()
+  })
+
+  it("accepts valid enum value for humanFacing.provider", async () => {
+    emitTestEvent("update_config accepts valid enum")
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const def = baseToolDefinitions.find(d => d.tool.function.name === "update_config")
+    const result = await def!.handler({ path: "humanFacing.provider", value: '"azure"' })
+    expect(result.toLowerCase()).toContain("success")
+  })
+
+  it("rejects array with non-string elements for phrases.thinking", async () => {
+    emitTestEvent("update_config rejects bad array elements")
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const def = baseToolDefinitions.find(d => d.tool.function.name === "update_config")
+    const result = await def!.handler({ path: "phrases.thinking", value: '["ok", 42]' })
+    expect(result.toLowerCase()).toContain("validation failed")
+    expect(result).toContain("expected string at index")
+    expect(vi.mocked(fs.writeFileSync)).not.toHaveBeenCalled()
+  })
+
+  it("rejects object missing required field for senses.cli", async () => {
+    emitTestEvent("update_config rejects missing required field")
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const def = baseToolDefinitions.find(d => d.tool.function.name === "update_config")
+    const result = await def!.handler({ path: "senses.cli", value: '{"foo": "bar"}' })
+    expect(result.toLowerCase()).toContain("validation failed")
+    expect(result).toContain('missing required field "enabled"')
+    expect(vi.mocked(fs.writeFileSync)).not.toHaveBeenCalled()
+  })
+
+  it("rejects non-object value for senses.teams", async () => {
+    emitTestEvent("update_config rejects non-object for object key")
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const def = baseToolDefinitions.find(d => d.tool.function.name === "update_config")
+    const result = await def!.handler({ path: "senses.teams", value: '"not an object"' })
+    expect(result.toLowerCase()).toContain("validation failed")
+    expect(result).toContain("expected object")
+    expect(vi.mocked(fs.writeFileSync)).not.toHaveBeenCalled()
+  })
+
+  it("rejects array value where object expected for senses.bluebubbles", async () => {
+    emitTestEvent("update_config rejects array for object key")
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const def = baseToolDefinitions.find(d => d.tool.function.name === "update_config")
+    const result = await def!.handler({ path: "senses.bluebubbles", value: '[true]' })
+    expect(result.toLowerCase()).toContain("validation failed")
+    expect(result).toContain("expected object, got array")
+    expect(vi.mocked(fs.writeFileSync)).not.toHaveBeenCalled()
+  })
+
+  it("rejects invalid logging.level enum value", async () => {
+    emitTestEvent("update_config rejects invalid log level")
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const def = baseToolDefinitions.find(d => d.tool.function.name === "update_config")
+    const result = await def!.handler({ path: "logging.level", value: '"verbose"' })
+    expect(result.toLowerCase()).toContain("validation failed")
+    expect(result).toContain("expected one of")
+    expect(vi.mocked(fs.writeFileSync)).not.toHaveBeenCalled()
+  })
+
+  it("rejects object with wrong field type for senses.cli", async () => {
+    emitTestEvent("update_config rejects wrong field type in object")
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const def = baseToolDefinitions.find(d => d.tool.function.name === "update_config")
+    const result = await def!.handler({ path: "senses.cli", value: '{"enabled": "yes"}' })
+    expect(result.toLowerCase()).toContain("validation failed")
+    expect(result).toContain('field "enabled"')
+    expect(vi.mocked(fs.writeFileSync)).not.toHaveBeenCalled()
   })
 
   it("T1 creates nested parent objects when they do not exist", async () => {
