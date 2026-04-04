@@ -8,7 +8,7 @@ import type { UpdateHookContext, UpdateHookResult } from "../update-hooks"
  * Migrate bundle from schema 1 to schema 2:
  * - Move state/{episodes,obligations,cares,intentions}/* to arc/{name}/*
  * - Move psyche/memory/* to diary/
- * Idempotent: skips missing sources and existing targets.
+ * Idempotent: skips missing sources; on collision, newer mtime wins.
  */
 function migrateToSchema2(agentRoot: string): void {
   emitNervesEvent({

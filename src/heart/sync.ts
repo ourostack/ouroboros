@@ -9,8 +9,25 @@ export interface SyncResult {
   error?: string
 }
 
-/** Sync-tracked path prefixes — only files under these roots are staged for push. */
-const SYNC_PATH_PREFIXES = ["arc/", "diary/", "friends/", "tasks/"]
+/**
+ * Turn-scoped write tracker.
+ * Continuity writers (episodes, obligations, cares, intentions, diary, presence)
+ * call trackSyncWrite() after every fs write. drainSyncWrites() returns the
+ * accumulated set and resets it for the next turn.
+ */
+const turnWrites = new Set<string>()
+
+/** Register an absolute file path written during this turn. */
+export function trackSyncWrite(absolutePath: string): void {
+  turnWrites.add(absolutePath)
+}
+
+/** Return all paths written this turn and clear the set. */
+export function drainSyncWrites(): string[] {
+  const paths = [...turnWrites]
+  turnWrites.clear()
+  return paths
+}
 
 /**
  * Pre-turn pull: sync the agent bundle from remote before assembling the start-of-turn packet.
@@ -53,10 +70,11 @@ export function preTurnPull(agentRoot: string, config: SyncConfig): SyncResult {
 }
 
 /**
- * Post-turn push: sync changed arc/diary/friends/tasks files to remote after a turn.
- * Stages only the specific changed files (not entire directories) to avoid sweeping in unrelated WIP.
+ * Post-turn push: commit and push files written during this turn.
+ * Receives an explicit list of absolute paths (from drainSyncWrites) instead of
+ * discovering changes via git status. Empty list = no changes = skip.
  */
-export function postTurnPush(agentRoot: string, config: SyncConfig): SyncResult {
+export function postTurnPush(agentRoot: string, config: SyncConfig, writtenPaths: string[]): SyncResult {
   emitNervesEvent({
     component: "heart",
     event: "heart.sync_push_start",
@@ -64,32 +82,34 @@ export function postTurnPush(agentRoot: string, config: SyncConfig): SyncResult 
     meta: { agentRoot, remote: config.remote },
   })
 
+  if (writtenPaths.length === 0) {
+    emitNervesEvent({
+      component: "heart",
+      event: "heart.sync_push_end",
+      message: "post-turn push: no changes to sync",
+      meta: { agentRoot },
+    })
+    return { ok: true }
+  }
+
+  // Convert absolute paths to relative (for git add)
+  const relativePaths = writtenPaths
+    .map((p) => path.relative(agentRoot, p))
+    .filter((p) => p.length > 0 && !p.startsWith(".."))
+
+  if (relativePaths.length === 0) {
+    emitNervesEvent({
+      component: "heart",
+      event: "heart.sync_push_end",
+      message: "post-turn push: no in-bundle paths to sync",
+      meta: { agentRoot },
+    })
+    return { ok: true }
+  }
+
   try {
-    // Check for changes in tracked sync paths
-    const statusOutput = execFileSync("git", ["status", "--porcelain"], {
-      cwd: agentRoot,
-      stdio: "pipe",
-      timeout: 10000,
-    }).toString()
-
-    const changedFiles = statusOutput
-      .split("\n")
-      .filter((line) => line.trim().length > 0)
-      .map((line) => line.slice(3))
-      .filter((filePath) => SYNC_PATH_PREFIXES.some((prefix) => filePath.startsWith(prefix)))
-
-    if (changedFiles.length === 0) {
-      emitNervesEvent({
-        component: "heart",
-        event: "heart.sync_push_end",
-        message: "post-turn push: no changes to sync",
-        meta: { agentRoot },
-      })
-      return { ok: true }
-    }
-
-    // Stage only the specific changed files (not entire directories)
-    execFileSync("git", ["add", "--", ...changedFiles], {
+    // Stage only the specific files written during this turn
+    execFileSync("git", ["add", "--", ...relativePaths], {
       cwd: agentRoot,
       stdio: "pipe",
       timeout: 10000,
@@ -130,7 +150,7 @@ export function postTurnPush(agentRoot: string, config: SyncConfig): SyncResult 
           JSON.stringify({
             error: retryError,
             failedAt: new Date().toISOString(),
-            paths: changedFiles,
+            paths: relativePaths,
           }, null, 2),
           "utf-8",
         )
@@ -150,7 +170,7 @@ export function postTurnPush(agentRoot: string, config: SyncConfig): SyncResult 
       component: "heart",
       event: "heart.sync_push_end",
       message: "post-turn push complete",
-      meta: { agentRoot, changedCount: changedFiles.length },
+      meta: { agentRoot, changedCount: relativePaths.length },
     })
 
     return { ok: true }

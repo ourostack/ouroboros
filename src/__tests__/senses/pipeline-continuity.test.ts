@@ -86,6 +86,7 @@ vi.mock("../../heart/obligations", async () => {
 
 const mockPreTurnPull = vi.fn()
 const mockPostTurnPush = vi.fn()
+const mockDrainSyncWrites = vi.fn().mockReturnValue([])
 const mockGetSyncConfig = vi.fn()
 
 vi.mock("../../heart/sync", async () => {
@@ -94,6 +95,7 @@ vi.mock("../../heart/sync", async () => {
     ...actual,
     preTurnPull: (...args: any[]) => mockPreTurnPull(...args),
     postTurnPush: (...args: any[]) => mockPostTurnPush(...args),
+    drainSyncWrites: (...args: any[]) => mockDrainSyncWrites(...args),
   }
 })
 
