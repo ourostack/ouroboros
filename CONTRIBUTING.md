@@ -122,7 +122,7 @@ This points the MCP server at your local build so your agent uses your dev code,
 - `secrets.json` stores credentials only (API keys, tokens, endpoints) — model selection lives in `agent.json`.
 - Secrets do not belong in the repo.
 - Agent-owned state belongs under `~/AgentBundles/<agent>.ouro/state/...`.
-- Agent diary lives at `~/AgentBundles/<agent>.ouro/diary/` (not `psyche/memory/` — legacy fallback still works).
+- Agent diary lives at `~/AgentBundles/<agent>.ouro/diary/` (migrated from `psyche/memory/`; legacy fallback removed).
 - Agent journal (thinking-in-progress) lives at `~/AgentBundles/<agent>.ouro/journal/`.
 - Agent habits (rhythms) live at `~/AgentBundles/<agent>.ouro/habits/`.
 - Machine-scoped temporary/test artifacts belong under `~/.agentstate/...`.
