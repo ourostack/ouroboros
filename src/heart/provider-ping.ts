@@ -154,8 +154,16 @@ export async function pingProvider(
           { model: "claude-haiku-4-5-20251001", max_tokens: 1, messages: [{ role: "user", content: "ping" }] },
           { signal: controller.signal, headers: { "anthropic-beta": "claude-code-20250219,oauth-2025-04-20" } },
         )
+      } else if (provider === "openai-codex") {
+        // Codex uses the Responses API (chatgpt.com/backend-api/codex/responses),
+        // not the Chat Completions API. Ping via responses endpoint.
+        const client = runtime.client as OpenAI
+        await (client as unknown as { responses: { create: (params: Record<string, unknown>, opts: Record<string, unknown>) => Promise<unknown> } }).responses.create(
+          { model: runtime.model, input: "ping", store: false },
+          { signal: controller.signal },
+        )
       } else {
-        // OpenAI-compatible providers (azure, codex, minimax, github-copilot)
+        // OpenAI-compatible providers (azure, minimax, github-copilot)
         const client = runtime.client as OpenAI
         await client.chat.completions.create(
           { model: runtime.model, max_tokens: 1, messages: [{ role: "user", content: "ping" }] },
