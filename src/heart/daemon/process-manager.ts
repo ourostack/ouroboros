@@ -39,6 +39,7 @@ export interface DaemonProcessManagerOptions {
   setTimeoutFn?: (cb: () => void, delay: number) => unknown
   clearTimeoutFn?: (timer: unknown) => void
   existsSync?: (p: string) => boolean
+  configCheck?: (agent: string) => { ok: boolean; error?: string; fix?: string }
 }
 
 interface AgentRuntimeState {
@@ -69,6 +70,7 @@ export class DaemonProcessManager {
   private readonly cooldownRecoveryMs: number
   private readonly maxCooldownRetries: number
   private readonly existsSyncFn: ((p: string) => boolean) | null
+  private readonly configCheckFn: ((agent: string) => { ok: boolean; error?: string; fix?: string }) | null
 
   constructor(options: DaemonProcessManagerOptions) {
     this.maxRestartsPerHour = options.maxRestartsPerHour ?? 10
@@ -82,6 +84,7 @@ export class DaemonProcessManager {
     this.setTimeoutFn = options.setTimeoutFn ?? ((cb, delay) => setTimeout(cb, delay))
     this.clearTimeoutFn = options.clearTimeoutFn ?? ((timer) => clearTimeout(timer as NodeJS.Timeout))
     this.existsSyncFn = options.existsSync ?? null
+    this.configCheckFn = options.configCheck ?? null
 
     for (const agent of options.agents) {
       this.agents.set(agent.name, {
@@ -123,6 +126,25 @@ export class DaemonProcessManager {
     this.clearRestartTimer(state)
     state.stopRequested = false
     state.snapshot.status = "starting"
+
+    if (this.configCheckFn) {
+      const result = this.configCheckFn(agent)
+      if (!result.ok) {
+        state.snapshot.status = "crashed"
+        emitNervesEvent({
+          level: "error",
+          component: "daemon",
+          event: "daemon.agent_config_invalid",
+          message: result.error ?? "agent config validation failed",
+          meta: { agent, fix: result.fix ?? null },
+        })
+        process.stderr.write(
+          `[daemon] ${agent}: ${result.error}\n` +
+          (result.fix ? `  Fix: ${result.fix}\n` : ""),
+        )
+        return
+      }
+    }
 
     const runCwd = getRepoRoot()
     const entryScript = path.join(getRepoRoot(), "dist", state.config.entry)
