@@ -13,16 +13,48 @@ interface ObligationItem {
   currentSurface: { kind: string; label: string } | null
 }
 
+interface ObligationDetailItem extends ObligationItem {
+  meaning: { waitingOn: string | null } | null
+  isPrimary: boolean
+}
+
+interface ObligationDetailView {
+  openCount: number
+  primaryId: string | null
+  primarySelectionReason: string | null
+  items: ObligationDetailItem[]
+}
+
+interface SelfFixStep {
+  label: string
+  status: "done" | "active" | "pending" | "skipped"
+  detail: string | null
+}
+
+interface SelfFixView {
+  active: boolean
+  currentStep: string | null
+  steps: SelfFixStep[]
+}
+
 export function WorkTab({ agentName, view, focus, onFocusConsumed }: { agentName: string; view: Record<string, unknown>; focus?: string; onFocusConsumed?: () => void }) {
   const nav = useNavigate()
   const [coding, setCoding] = useState<Record<string, unknown> | null>(null)
+  const [obligationDetail, setObligationDetail] = useState<ObligationDetailView | null>(null)
+  const [selfFix, setSelfFix] = useState<SelfFixView | null>(null)
   const work = view.work as Record<string, unknown>
   const obligations = work.obligations as { openCount: number; items: ObligationItem[] }
   const tasks = work.tasks as { liveCount: number; blockedCount: number; liveTaskNames: string[]; actionRequired: string[] }
 
   useEffect(() => {
     fetchJson<Record<string, unknown>>(`/agents/${encodeURIComponent(agentName)}/coding`).then(setCoding)
+    fetchJson<ObligationDetailView>(`/agents/${encodeURIComponent(agentName)}/obligations`).then(setObligationDetail).catch(() => {})
+    fetchJson<SelfFixView>(`/agents/${encodeURIComponent(agentName)}/self-fix`).then(setSelfFix).catch(() => {})
   }, [agentName])
+
+  // Use enriched obligations when available, fall back to summary
+  const displayObligations = obligationDetail?.items ?? obligations.items ?? []
+  const displayOpenCount = obligationDetail?.openCount ?? obligations.openCount
 
   const codingItems = (coding?.items ?? []) as Array<Record<string, unknown>>
 
@@ -40,15 +72,21 @@ export function WorkTab({ agentName, view, focus, onFocusConsumed }: { agentName
     <div className="space-y-8">
       {/* Obligations — with full chain tracing */}
       <section>
-        <SH label={`Obligations (${obligations.openCount} open)`} />
-        {obligations.items?.length > 0 ? (
+        <SH label={`Obligations (${displayOpenCount} open)`} />
+        {obligationDetail?.primarySelectionReason && (
+          <p className="mt-1 text-xs text-ouro-shadow">Primary: {obligationDetail.primarySelectionReason}</p>
+        )}
+        {displayObligations.length > 0 ? (
           <div className="mt-3 space-y-3">
-            {obligations.items.map((o) => {
+            {displayObligations.map((o) => {
               const linkedCoding = codingByObligation.get(o.id) ?? []
+              const isPrimary = "isPrimary" in o && (o as ObligationDetailItem).isPrimary
+              const meaning = "meaning" in o ? (o as ObligationDetailItem).meaning : null
               return (
-                <div key={o.id} className="rounded-lg bg-ouro-void/40 px-3 py-3 ring-1 ring-ouro-moss/15">
+                <div key={o.id} className={`rounded-lg px-3 py-3 ring-1 ${isPrimary ? "bg-ouro-glow/5 ring-ouro-glow/20" : "bg-ouro-void/40 ring-ouro-moss/15"}`}>
                   {/* Status + content */}
                   <div className="flex items-start gap-2">
+                    {isPrimary && <Badge color="lime">primary</Badge>}
                     <Badge color={o.status === "pending" ? "yellow" : o.status === "fulfilled" ? "lime" : "zinc"}>
                       {o.status}
                     </Badge>
@@ -63,9 +101,9 @@ export function WorkTab({ agentName, view, focus, onFocusConsumed }: { agentName
                     >
                       <span className="text-ouro-shadow">from</span>
                       <span className="font-medium text-ouro-glow">{o.origin.channel}</span>
-                      <span className="text-ouro-shadow">→</span>
+                      <span className="text-ouro-shadow">&rarr;</span>
                       <span className="text-ouro-mist truncate">{o.origin.key}</span>
-                      <span className="ml-auto text-ouro-shadow">open session →</span>
+                      <span className="ml-auto text-ouro-shadow">open session &rarr;</span>
                     </button>
                   )}
 
@@ -74,6 +112,11 @@ export function WorkTab({ agentName, view, focus, onFocusConsumed }: { agentName
                     <div className="mt-1 text-xs text-ouro-mist">
                       surface: <span className="text-ouro-bone">{o.currentSurface.kind}</span> — {o.currentSurface.label}
                     </div>
+                  )}
+
+                  {/* Waiting on */}
+                  {meaning?.waitingOn && (
+                    <p className="mt-1 text-xs text-ouro-shadow">Waiting on: {meaning.waitingOn}</p>
                   )}
 
                   {/* Chain: linked coding lanes */}
@@ -101,6 +144,40 @@ export function WorkTab({ agentName, view, focus, onFocusConsumed }: { agentName
           <p className="mt-2 text-sm text-ouro-shadow">No open obligations.</p>
         )}
       </section>
+
+      {/* Self-fix workflow */}
+      {selfFix && selfFix.steps.length > 0 && (
+        <section>
+          <SH label={`Self-fix ${selfFix.active ? "(active)" : "(inactive)"}`} />
+          {selfFix.currentStep && (
+            <p className="mt-1 text-xs text-ouro-glow">Current: {selfFix.currentStep}</p>
+          )}
+          <div className="mt-3 space-y-1.5">
+            {selfFix.steps.map((step, i) => (
+              <div
+                key={i}
+                className={`flex items-center gap-2.5 rounded-lg px-3 py-2 ring-1 ${
+                  step.status === "active" ? "bg-ouro-glow/5 ring-ouro-glow/20" :
+                  step.status === "done" ? "bg-ouro-void/40 ring-ouro-glow/10" :
+                  "bg-ouro-void/40 ring-ouro-moss/10"
+                }`}
+              >
+                <Badge color={
+                  step.status === "done" ? "lime" :
+                  step.status === "active" ? "yellow" :
+                  step.status === "skipped" ? "zinc" : "zinc"
+                }>
+                  {step.status}
+                </Badge>
+                <span className={`text-sm ${step.status === "active" ? "font-medium text-ouro-bone" : "text-ouro-mist"}`}>
+                  {step.label}
+                </span>
+                {step.detail && <span className="ml-auto text-xs text-ouro-shadow">{step.detail}</span>}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* Coding lanes */}
       <section>

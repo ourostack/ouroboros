@@ -4611,7 +4611,7 @@ describe("familyCrossSessionTruthSection trimmed (Unit 1.7)", () => {
     expect(result).not.toContain("i do not collapse down to only the current lane")
   })
 
-  it("returns compressed one-liner when wakePacket is present", async () => {
+  it("returns compressed one-liner when startOfTurnPacket is present", async () => {
     setupReadFileSync()
     vi.mocked(fs.existsSync).mockReturnValue(false)
     vi.mocked(fs.readdirSync).mockReturnValue([])
@@ -4621,7 +4621,7 @@ describe("familyCrossSessionTruthSection trimmed (Unit 1.7)", () => {
     const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("teams", { activeWorkFrame: minimalFrame, wakePacket: "**Next:** check inbox" } as any, familyContext as any)
+    const result = await buildSystem("teams", { activeWorkFrame: minimalFrame, startOfTurnPacket: "**Next:** check inbox" } as any, familyContext as any)
     expect(result).toContain("answer from the cross-session picture above")
     // Should NOT contain the verbose multi-line version
     expect(result).not.toContain("live world-state across visible sessions and lanes")

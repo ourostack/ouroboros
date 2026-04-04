@@ -2,9 +2,46 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.199",
+      "changes": [
+        "refactor: rename wake packet to start-of-turn packet across codebase (types, modules, events, tests)"
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.197",
+      "changes": [
+        "fix(daemon): validate agent config before spawn \u2014 skips agents with missing credentials instead of crash-looping"
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.196",
+      "changes": [
+        "fix: ouro up verifies daemon is alive before reporting started (polls socket for 10s)",
+        "fix: daemon-runtime-sync also verifies after replacing a stale daemon"
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.195",
+      "changes": [
+        "fix: failover error message reads model from agent.json instead of stale secrets"
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.194",
+      "changes": [
+        "fix(daemon): self-spawn restart \u2014 no longer relies on launchd KeepAlive for staged restarts",
+        "fix(daemon): error boundary with circuit breaker \u2014 uncaught exceptions logged and survived, exits only after 10+ in 60s",
+        "fix(daemon): EPIPE suppression in uncaughtException handler",
+        "fix(daemon): 5-second force-exit timeouts on all shutdown paths",
+        "feat: human-facing and agent-facing provider configs",
+        "fix(auth): always refresh codex OAuth token, responses API verification",
+        "feat: Outlook visibility \u2014 orientation, obligations, changes, self-fix, memory decisions, route migration to /"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.192",
       "changes": [
-        "refactor: canonical obligations — ActiveWorkFrame as single source of truth for prompt sections",
+        "refactor: canonical obligations \u2014 ActiveWorkFrame as single source of truth for prompt sections",
         "feat(mcp): dynamic server add/remove \u2014 agents can manage MCP servers without daemon restart"
       ]
     },

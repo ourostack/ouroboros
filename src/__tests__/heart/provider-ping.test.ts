@@ -6,6 +6,7 @@ vi.mock("../../nerves/runtime", () => ({
 
 const mockAnthropicCreate = vi.fn()
 const mockOpenAICreate = vi.fn()
+const mockResponsesCreate = vi.fn()
 const mockClassifyError = vi.fn()
 
 
@@ -13,6 +14,8 @@ const mockClassifyError = vi.fn()
 const anthropicClient = { messages: { create: (...args: any[]) => mockAnthropicCreate(...args) } }
 // OpenAI-compatible client mock: client.chat.completions.create(...)
 const openaiClient = { chat: { completions: { create: (...args: any[]) => mockOpenAICreate(...args) } } }
+// Codex client mock: uses responses.create instead of chat.completions.create
+const codexClient = { chat: { completions: { create: (...args: any[]) => mockOpenAICreate(...args) } }, responses: { create: (...args: any[]) => mockResponsesCreate(...args) } }
 
 vi.mock("../../heart/providers/anthropic", () => ({
   createAnthropicProviderRuntime: vi.fn(() => ({
@@ -48,7 +51,7 @@ vi.mock("../../heart/providers/openai-codex", () => ({
   createOpenAICodexProviderRuntime: vi.fn(() => ({
     id: "openai-codex",
     model: "gpt-5.4",
-    client: openaiClient,
+    client: codexClient,
     classifyError: mockClassifyError,
   })),
   classifyOpenAICodexError: vi.fn(() => "unknown"),
@@ -127,14 +130,14 @@ describe("pingProvider", () => {
   })
 
   it("returns ok: true when ping succeeds for openai-codex", async () => {
-    mockOpenAICreate.mockResolvedValue({ choices: [{ message: { content: "hi" } }] })
+    mockResponsesCreate.mockResolvedValue({ output: [{ text: "hi" }] })
     const result = await pingProvider("openai-codex", {
       model: "gpt-5.4",
       oauthAccessToken: "valid-token",
     })
     expect(result.ok).toBe(true)
-    expect(mockOpenAICreate).toHaveBeenCalledWith(
-      expect.objectContaining({ model: "gpt-5.4", max_tokens: 1 }),
+    expect(mockResponsesCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "gpt-5.4", input: "ping", store: false }),
       expect.anything(),
     )
   })
@@ -247,7 +250,7 @@ describe("pingProvider", () => {
 
   it("classifies usage-limit error", async () => {
     const err = Object.assign(new Error("exceeded your usage limit"), { status: 429 })
-    mockOpenAICreate.mockRejectedValue(err)
+    mockResponsesCreate.mockRejectedValue(err)
     mockClassifyError.mockReturnValue("usage-limit" as ProviderErrorClassification)
 
     const result = await pingProvider("openai-codex", {

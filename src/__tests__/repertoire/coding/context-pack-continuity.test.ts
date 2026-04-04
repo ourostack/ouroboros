@@ -55,12 +55,12 @@ function makeDeps() {
 }
 
 describe("coding context pack continuity integration", () => {
-  it("includes compact wake packet in state content when wakePacket provided", () => {
+  it("includes compact start-of-turn packet in state content when startOfTurnPacket provided", () => {
     const deps = makeDeps()
     const result = prepareCodingContextPack(
       {
         request: makeRequest(),
-        wakePacket: "next: review PR | owed: deploy fix",
+        startOfTurnPacket: "next: review PR | owed: deploy fix",
       },
       deps,
     )
@@ -68,21 +68,21 @@ describe("coding context pack continuity integration", () => {
     expect(result.stateContent).toContain("next: review PR | owed: deploy fix")
   })
 
-  it("state content omits wake packet section when no wakePacket provided", () => {
+  it("state content omits start-of-turn packet section when no startOfTurnPacket provided", () => {
     const deps = makeDeps()
     const result = prepareCodingContextPack(
       { request: makeRequest() },
       deps,
     )
 
-    // Should not contain any wake packet marker
+    // Should not contain any start-of-turn packet marker
     expect(result.stateContent).not.toContain("## Continuity")
   })
 
-  it("gracefully handles empty wake packet string", () => {
+  it("gracefully handles empty start-of-turn packet string", () => {
     const deps = makeDeps()
     const result = prepareCodingContextPack(
-      { request: makeRequest(), wakePacket: "" },
+      { request: makeRequest(), startOfTurnPacket: "" },
       deps,
     )
 

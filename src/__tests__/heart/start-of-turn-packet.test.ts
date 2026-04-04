@@ -1,10 +1,10 @@
 import { describe, it, expect } from "vitest"
 import {
-  buildWakePacket,
-  renderWakePacket,
-  renderCompactWakePacket,
-  type WakePacket,
-} from "../../heart/wake-packet"
+  buildStartOfTurnPacket,
+  renderStartOfTurnPacket,
+  renderCompactStartOfTurnPacket,
+  type StartOfTurnPacket,
+} from "../../heart/start-of-turn-packet"
 import { type TemporalView } from "../../heart/temporal-view"
 import { type TempoMode } from "../../heart/tempo"
 import { type EpisodeRecord } from "../../mind/episodes"
@@ -87,11 +87,11 @@ function makeView(overrides: Partial<TemporalView> = {}): TemporalView {
   }
 }
 
-describe("wake packet", () => {
-  describe("WakePacket interface", () => {
-    it("buildWakePacket returns all required fields", () => {
+describe("start-of-turn packet", () => {
+  describe("StartOfTurnPacket interface", () => {
+    it("buildStartOfTurnPacket returns all required fields", () => {
       const view = makeView()
-      const packet = buildWakePacket(view)
+      const packet = buildStartOfTurnPacket(view)
 
       expect(packet.plotLine).toBeDefined()
       expect(packet.obligations).toBeDefined()
@@ -104,7 +104,7 @@ describe("wake packet", () => {
     })
   })
 
-  describe("buildWakePacket", () => {
+  describe("buildStartOfTurnPacket", () => {
     it("composes plotLine from recent episodes", () => {
       const view = makeView({
         recentEpisodes: [
@@ -113,7 +113,7 @@ describe("wake packet", () => {
         ],
       })
 
-      const packet = buildWakePacket(view)
+      const packet = buildStartOfTurnPacket(view)
       expect(packet.plotLine).toContain("PR merged for continuity substrate")
     })
 
@@ -125,7 +125,7 @@ describe("wake packet", () => {
         ],
       })
 
-      const packet = buildWakePacket(view)
+      const packet = buildStartOfTurnPacket(view)
       expect(packet.obligations).toContain("research architecture")
       expect(packet.obligations).toContain("review Slugger PR")
     })
@@ -135,7 +135,7 @@ describe("wake packet", () => {
         activeCares: [makeCare({ label: "harness stability" })],
       })
 
-      const packet = buildWakePacket(view)
+      const packet = buildStartOfTurnPacket(view)
       expect(packet.cares).toContain("harness stability")
     })
 
@@ -153,7 +153,7 @@ describe("wake packet", () => {
         ],
       })
 
-      const packet = buildWakePacket(view)
+      const packet = buildStartOfTurnPacket(view)
       expect(packet.presence).toContain("slugger")
     })
 
@@ -162,22 +162,22 @@ describe("wake packet", () => {
         activeObligations: [makeObligation({ content: "finish the review", meaning: { salience: "high", stalenessClass: "fresh", resumeHint: "start with the test file" } })],
       })
 
-      const packet = buildWakePacket(view)
+      const packet = buildStartOfTurnPacket(view)
       expect(packet.resumeHint.length).toBeGreaterThan(0)
     })
 
     it("carries tempo from view", () => {
       const view = makeView({ tempo: "crisis" })
-      const packet = buildWakePacket(view)
+      const packet = buildStartOfTurnPacket(view)
       expect(packet.tempo).toBe("crisis")
     })
   })
 
-  describe("renderWakePacket", () => {
+  describe("renderStartOfTurnPacket", () => {
     it("produces output within brief token budget", () => {
       const view = makeView({ tempo: "brief" })
-      const packet = buildWakePacket(view)
-      const rendered = renderWakePacket(packet)
+      const packet = buildStartOfTurnPacket(view)
+      const rendered = renderStartOfTurnPacket(packet)
       const tokens = estimateTokens(rendered)
       // Soft lower bound: sparse state can produce fewer tokens than mode min
       expect(tokens).toBeLessThanOrEqual(TEMPO_BUDGETS.brief.max)
@@ -190,8 +190,8 @@ describe("wake packet", () => {
         activeObligations: [makeObligation()],
         activeCares: [makeCare()],
       })
-      const packet = buildWakePacket(view)
-      const rendered = renderWakePacket(packet)
+      const packet = buildStartOfTurnPacket(view)
+      const rendered = renderStartOfTurnPacket(packet)
       const tokens = estimateTokens(rendered)
       expect(tokens).toBeLessThanOrEqual(TEMPO_BUDGETS.standard.max)
     })
@@ -205,8 +205,8 @@ describe("wake packet", () => {
         activeObligations: [makeObligation(), makeObligation({ id: "ob-2", content: "second obligation" })],
         activeCares: [makeCare(), makeCare({ id: "care-2", label: "second care" })],
       })
-      const packet = buildWakePacket(view)
-      const rendered = renderWakePacket(packet)
+      const packet = buildStartOfTurnPacket(view)
+      const rendered = renderStartOfTurnPacket(packet)
       const tokens = estimateTokens(rendered)
       expect(tokens).toBeLessThanOrEqual(TEMPO_BUDGETS.dense.max)
     })
@@ -218,16 +218,16 @@ describe("wake packet", () => {
         activeObligations: [makeObligation({ content: "urgent fix needed" })],
         activeCares: [makeCare({ salience: "critical" })],
       })
-      const packet = buildWakePacket(view)
-      const rendered = renderWakePacket(packet)
+      const packet = buildStartOfTurnPacket(view)
+      const rendered = renderStartOfTurnPacket(packet)
       const tokens = estimateTokens(rendered)
       expect(tokens).toBeLessThanOrEqual(TEMPO_BUDGETS.crisis.max)
     })
 
     it("empty temporal view produces empty packet (sparse state is normal)", () => {
       const view = makeView({ tempo: "brief" })
-      const packet = buildWakePacket(view)
-      const rendered = renderWakePacket(packet)
+      const packet = buildStartOfTurnPacket(view)
+      const rendered = renderStartOfTurnPacket(packet)
       // Empty state produces empty output — not failure, just quiet
       expect(rendered).toBe("")
     })
@@ -238,8 +238,8 @@ describe("wake packet", () => {
         activeObligations: [makeObligation()],
         activeCares: [makeCare()],
       })
-      const packet = buildWakePacket(view)
-      const rendered = renderWakePacket(packet)
+      const packet = buildStartOfTurnPacket(view)
+      const rendered = renderStartOfTurnPacket(packet)
       // Should have some structure
       expect(rendered.length).toBeGreaterThan(10)
     })
@@ -265,11 +265,11 @@ describe("wake packet", () => {
         activeCares: manyCares,
       })
 
-      const packet = buildWakePacket(view)
+      const packet = buildStartOfTurnPacket(view)
       // Even when truncated, resumeHint should be present
       expect(packet.resumeHint.length).toBeGreaterThanOrEqual(0)
 
-      const rendered = renderWakePacket(packet)
+      const rendered = renderStartOfTurnPacket(packet)
       // The resumeHint should survive truncation if any content was generated
       if (packet.resumeHint.length > 0) {
         expect(rendered).toContain(packet.resumeHint.slice(0, 20))
@@ -288,8 +288,8 @@ describe("wake packet", () => {
         ],
       })
 
-      const packet = buildWakePacket(view)
-      const rendered = renderWakePacket(packet)
+      const packet = buildStartOfTurnPacket(view)
+      const rendered = renderStartOfTurnPacket(packet)
 
       // Should NOT contain emotional embellishment
       expect(rendered).not.toMatch(/you felt/i)
@@ -306,7 +306,7 @@ describe("wake packet", () => {
         ],
       })
 
-      const packet = buildWakePacket(view)
+      const packet = buildStartOfTurnPacket(view)
       // plotLine should contain the actual authored summaries
       expect(packet.plotLine).toContain("PR merged for auth module")
     })
@@ -318,7 +318,7 @@ describe("wake packet", () => {
         ],
       })
 
-      const packet = buildWakePacket(view)
+      const packet = buildStartOfTurnPacket(view)
       expect(packet.cares).toContain("overnight deploy may fail")
     })
 
@@ -330,7 +330,7 @@ describe("wake packet", () => {
         ],
       })
 
-      const packet = buildWakePacket(view)
+      const packet = buildStartOfTurnPacket(view)
       // If salience appears, it should use the authored values
       if (packet.cares.includes("critical")) {
         expect(packet.cares).toContain("critical")
@@ -350,8 +350,8 @@ describe("wake packet", () => {
         peerPresence: [],
       })
 
-      const packet = buildWakePacket(view)
-      const rendered = renderWakePacket(packet)
+      const packet = buildStartOfTurnPacket(view)
+      const rendered = renderStartOfTurnPacket(packet)
 
       // Should NOT fill empty state with inferred framing
       expect(rendered).not.toMatch(/you seem to be/i)
@@ -381,8 +381,8 @@ describe("wake packet", () => {
         ],
         activeObligations: [makeObligation()],
       })
-      const packet = buildWakePacket(view)
-      const rendered = renderWakePacket(packet)
+      const packet = buildStartOfTurnPacket(view)
+      const rendered = renderStartOfTurnPacket(packet)
       expect(rendered).toContain("Peers:")
       expect(rendered).toContain("slugger")
     })
@@ -394,7 +394,7 @@ describe("wake packet", () => {
         makeEpisode({ id: `ep-${i}`, summary: `crisis event ${i}` }),
       )
       const view = makeView({ tempo: "crisis", recentEpisodes: episodes })
-      const packet = buildWakePacket(view)
+      const packet = buildStartOfTurnPacket(view)
       // In crisis mode, plotLine should only mention up to 3 episodes
       const lines = packet.plotLine.split("\n").filter((l) => l.startsWith("- "))
       expect(lines.length).toBeLessThanOrEqual(3)
@@ -405,7 +405,7 @@ describe("wake packet", () => {
         tempo: "brief",
         recentEpisodes: [makeEpisode({ summary: "thing happened", whyItMattered: "secret reason" })],
       })
-      const packet = buildWakePacket(view)
+      const packet = buildStartOfTurnPacket(view)
       expect(packet.plotLine).toContain("thing happened")
       expect(packet.plotLine).not.toContain("secret reason")
     })
@@ -415,7 +415,7 @@ describe("wake packet", () => {
         tempo: "standard",
         recentEpisodes: [makeEpisode({ summary: "thing happened", whyItMattered: "because context" })],
       })
-      const packet = buildWakePacket(view)
+      const packet = buildStartOfTurnPacket(view)
       expect(packet.plotLine).toContain("because context")
     })
   })
@@ -428,8 +428,8 @@ describe("wake packet", () => {
         tempo: "brief",
         openIntentions: [makeIntention({ content: longHint })],
       })
-      const packet = buildWakePacket(view)
-      const rendered = renderWakePacket(packet)
+      const packet = buildStartOfTurnPacket(view)
+      const rendered = renderStartOfTurnPacket(packet)
       const tokens = estimateTokens(rendered)
       // Should be hard-capped to budget max
       expect(tokens).toBeLessThanOrEqual(TEMPO_BUDGETS.brief.max)
@@ -446,7 +446,7 @@ describe("wake packet", () => {
           }),
         ],
       })
-      const packet = buildWakePacket(view)
+      const packet = buildStartOfTurnPacket(view)
       expect(packet.obligations).toContain("stale")
     })
 
@@ -463,13 +463,13 @@ describe("wake packet", () => {
           }),
         ],
       })
-      const packet = buildWakePacket(view)
+      const packet = buildStartOfTurnPacket(view)
       expect(packet.obligations).toContain("friend")
       expect(packet.obligations).toContain("ari")
     })
   })
 
-  describe("buildWakePacket with canonicalObligations", () => {
+  describe("buildStartOfTurnPacket with canonicalObligations", () => {
     it("uses canonicalObligations.all for obligations section when provided", () => {
       const view = makeView({
         activeObligations: [makeObligation({ content: "view obligation (should be ignored)" })],
@@ -482,7 +482,7 @@ describe("wake packet", () => {
         ],
       }
 
-      const packet = buildWakePacket(view, { canonicalObligations: canonical })
+      const packet = buildStartOfTurnPacket(view, { canonicalObligations: canonical })
       expect(packet.obligations).toContain("canonical primary")
       expect(packet.obligations).toContain("canonical secondary")
       expect(packet.obligations).not.toContain("view obligation (should be ignored)")
@@ -493,7 +493,7 @@ describe("wake packet", () => {
         activeObligations: [makeObligation({ content: "view obligation" })],
       })
 
-      const packet = buildWakePacket(view)
+      const packet = buildStartOfTurnPacket(view)
       expect(packet.obligations).toContain("view obligation")
     })
 
@@ -504,7 +504,7 @@ describe("wake packet", () => {
       })
       const canonical = { primary: null, all: [] as Obligation[] }
 
-      const packet = buildWakePacket(view, { canonicalObligations: canonical })
+      const packet = buildStartOfTurnPacket(view, { canonicalObligations: canonical })
       expect(packet.obligations).toBe("")
       // resumeHint should fall back to intentions since no obligation hints
       expect(packet.resumeHint).toContain("fallback intention")
@@ -528,7 +528,7 @@ describe("wake packet", () => {
         ],
       }
 
-      const packet = buildWakePacket(view, { canonicalObligations: canonical })
+      const packet = buildStartOfTurnPacket(view, { canonicalObligations: canonical })
       expect(packet.resumeHint).toContain("start with the test file")
     })
 
@@ -541,21 +541,21 @@ describe("wake packet", () => {
         all: [makeObligation({ content: "canonical ob", meaning: { salience: "high" as const, stalenessClass: "fresh" as const, resumeHint: "canonical hint" } })],
       }
 
-      const packet = buildWakePacket(view, { canonicalObligations: canonical })
+      const packet = buildStartOfTurnPacket(view, { canonicalObligations: canonical })
       expect(packet.resumeHint).toContain("canonical hint")
       expect(packet.resumeHint).not.toContain("view hint (should be ignored)")
     })
   })
 
-  describe("renderCompactWakePacket", () => {
+  describe("renderCompactStartOfTurnPacket", () => {
     it("produces ultra-compact output (max 200 tokens)", () => {
       const view = makeView({
         recentEpisodes: [makeEpisode()],
         activeObligations: [makeObligation()],
         activeCares: [makeCare()],
       })
-      const packet = buildWakePacket(view)
-      const compact = renderCompactWakePacket(packet)
+      const packet = buildStartOfTurnPacket(view)
+      const compact = renderCompactStartOfTurnPacket(packet)
       const tokens = estimateTokens(compact)
       expect(tokens).toBeLessThanOrEqual(200)
     })
@@ -564,15 +564,15 @@ describe("wake packet", () => {
       const view = makeView({
         activeObligations: [makeObligation()],
       })
-      const packet = buildWakePacket(view)
-      const compact = renderCompactWakePacket(packet)
+      const packet = buildStartOfTurnPacket(view)
+      const compact = renderCompactStartOfTurnPacket(packet)
       expect(compact.length).toBeGreaterThan(0)
     })
 
     it("handles empty packet gracefully", () => {
       const view = makeView()
-      const packet = buildWakePacket(view)
-      const compact = renderCompactWakePacket(packet)
+      const packet = buildStartOfTurnPacket(view)
+      const compact = renderCompactStartOfTurnPacket(packet)
       expect(typeof compact).toBe("string")
     })
 
@@ -582,8 +582,8 @@ describe("wake packet", () => {
         activeObligations: [makeObligation({ content: longContent })],
         openIntentions: [makeIntention({ content: longContent })],
       })
-      const packet = buildWakePacket(view)
-      const compact = renderCompactWakePacket(packet)
+      const packet = buildStartOfTurnPacket(view)
+      const compact = renderCompactStartOfTurnPacket(packet)
       const tokens = estimateTokens(compact)
       expect(tokens).toBeLessThanOrEqual(200)
     })

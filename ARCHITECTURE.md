@@ -214,12 +214,65 @@ Both are searchable. The diary is the shelf; the journal is the desk.
 
 ## Daemon Resilience
 
-The daemon is designed to keep running and to leave useful evidence when it can't.
+The daemon is designed to be unkillable under normal conditions and to leave useful evidence when something truly fatal happens.
 
-- **Tombstone on crash:** If the daemon process dies unexpectedly, it writes a tombstone to `~/.ouro-cli/daemon-death.json` with the reason, error message, stack trace, PID, and uptime at death. `ouro up` reads this on next start and reports what happened.
-- **Log rotation:** Runtime logs use an NDJSON file sink with automatic rotation. When a log file exceeds the size threshold, it's rotated so logs don't grow unbounded.
-- **Cooldown recovery:** When a managed agent's sense crashes, the process manager schedules a cooldown recovery rather than immediately restarting. After a configurable delay (default 5 minutes), it retries. If retries are exhausted, the agent is permanently stopped for that daemon lifetime.
-- **Error isolation:** Individual agent failures don't take down the daemon. Each managed agent runs in its own error boundary — one agent crashing doesn't affect the others.
+### Error boundary and circuit breaker
+
+The daemon's `uncaughtException` handler does NOT exit on errors. Instead:
+
+- **EPIPE** is silently ignored (normal when the parent CLI exits and stdio pipes close).
+- **Any other uncaught exception** is logged to nerves and written to the tombstone, but the daemon **continues running**.
+- **Circuit breaker:** If 10+ uncaught exceptions occur within 60 seconds, the daemon exits — the process is in a bad state and needs a fresh start. launchd KeepAlive (or the next `ouro up`) restarts it.
+
+This means a stray error from an MCP server, a bad JSON parse, or a flaky network call won't kill the daemon. Only a sustained crash loop triggers exit.
+
+### Force-exit timeouts
+
+`daemon.stop()` can hang if a child process or MCP server won't die. All shutdown paths have a 5-second force-exit timeout:
+
+- SIGINT/SIGTERM signal handlers
+- Startup failure catch handler
+- Circuit breaker exit path
+
+If graceful shutdown doesn't complete in 5 seconds, the process force-exits.
+
+### Self-spawning staged restart
+
+When the update checker finds a new version, `performStagedRestart`:
+
+1. Installs the new version via npm
+2. Resolves the new code path
+3. Runs update hooks from the new code
+4. Gracefully shuts down the old daemon (releases the socket)
+5. **Self-spawns the new daemon** as a detached process
+
+The daemon does NOT rely on launchd KeepAlive for restart — it spawns its own replacement. This works whether or not launchd is configured.
+
+### launchd KeepAlive
+
+`ouro up` installs a launchd LaunchAgent (`bot.ouro.daemon`) with `KeepAlive: true` and `RunAtLoad: true`. This provides:
+
+- Automatic restart if the daemon crashes outside of a staged restart
+- Automatic start on login
+
+`ouro dev` explicitly uninstalls the LaunchAgent to prevent the production daemon from fighting the dev daemon. `ouro up` reinstalls it.
+
+### Crash forensics
+
+- **Tombstone:** `~/.ouro-cli/daemon-death.json` records the reason, error, stack trace, PID, uptime, and recent crash timestamps.
+- **Health file:** `~/.ouro-cli/daemon-health.json` is updated by a nerves sink with daemon status, mode, PID, and uptime.
+- **Pidfile:** `~/.ouro-cli/daemon.pids` tracks all managed PIDs. On startup, the new daemon reads and kills stale PIDs before taking over.
+
+### Process isolation
+
+- **Agent isolation:** Each managed agent runs in its own error boundary. One agent crashing doesn't affect others.
+- **MCP server isolation:** MCP servers are managed by `McpManager` with per-server crash handling and automatic restart (up to 5 retries with 1-second backoff). Servers can be added/removed at runtime via `reconcile()` without restarting the daemon.
+- **Sense isolation:** Each sense (Teams, BlueBubbles, etc.) runs as a separate child process with its own crash recovery.
+- **Cooldown recovery:** When a managed process crashes, the process manager schedules a cooldown recovery rather than immediately restarting.
+
+### Log rotation
+
+Runtime logs use an NDJSON file sink with automatic rotation. When a log file exceeds the size threshold (~50MB), it's rotated so logs don't grow unbounded.
 
 ## Scheduling And Messaging
 

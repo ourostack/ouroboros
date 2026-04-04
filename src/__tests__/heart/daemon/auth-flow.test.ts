@@ -122,14 +122,14 @@ describe("runtime auth flow", () => {
     expect(() => readAgentConfigForAgent(agentName, bundlesRoot)).toThrow("unsupported provider 'not-real'")
   })
 
-  it("reuses an existing Codex token and deep-merges secrets defaults", async () => {
-    emitTestEvent("reuses existing codex token")
+  it("always runs codex login and deep-merges secrets defaults", async () => {
+    emitTestEvent("always refreshes codex token")
     const homeDir = makeTempDir("auth-flow-home-codex-existing")
     const agentName = "CodexExisting"
     fs.mkdirSync(path.join(homeDir, ".codex"), { recursive: true })
     fs.writeFileSync(
       path.join(homeDir, ".codex", "auth.json"),
-      `${JSON.stringify({ tokens: { access_token: "  oauth-token-existing  " } }, null, 2)}\n`,
+      `${JSON.stringify({ tokens: { access_token: "  oauth-token-refreshed  " } }, null, 2)}\n`,
       "utf8",
     )
     fs.mkdirSync(path.join(homeDir, ".agentsecrets", agentName), { recursive: true })
@@ -142,7 +142,7 @@ describe("runtime auth flow", () => {
       "utf8",
     )
 
-    const spawnSync = vi.fn(() => ({ status: 99 })) as any
+    const spawnSync = vi.fn(() => ({ status: 0 })) as any
     const result = await runRuntimeAuthFlow(
       {
         agentName,
@@ -155,10 +155,10 @@ describe("runtime auth flow", () => {
     )
 
     expect(result.message).toBe(`authenticated ${agentName} with openai-codex`)
-    expect(spawnSync).not.toHaveBeenCalled()
+    expect(spawnSync).toHaveBeenCalledWith("codex", ["login"], expect.any(Object))
 
     const secrets = readSecrets(homeDir, agentName)
-    expect(secrets.providers["openai-codex"].oauthAccessToken).toBe("oauth-token-existing")
+    expect(secrets.providers["openai-codex"].oauthAccessToken).toBe("oauth-token-refreshed")
     expect(secrets.providers.minimax.model).toBe("custom-minimax")
     expect(secrets.oauth.graphConnectionName).toBe("graph")
     expect(secrets.oauth.githubConnectionName).toBe("github-oauth")

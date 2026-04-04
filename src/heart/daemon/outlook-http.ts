@@ -6,16 +6,22 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import {
   readAttentionView,
   readBridgeInventory,
+  readChangesView,
   readCodingDeep,
   readDaemonHealthDeep,
   readFriendView,
   readHabitView,
   readDeskPrefs,
   readLogView,
+  readMemoryDecisionView,
   readMemoryView,
   readNeedsMeView,
+  readObligationDetailView,
+  readOrientationView,
   readOutlookAgentState,
+  readOutlookContinuity,
   readOutlookMachineState,
+  readSelfFixView,
   readSessionInventory,
   readSessionTranscript,
 } from "./outlook-read"
@@ -27,7 +33,13 @@ import type {
   OutlookAttentionView,
   OutlookBridgeInventory,
   OutlookCodingDeep,
+  OutlookChangesView,
+  OutlookContinuityView,
   OutlookDaemonHealthDeep,
+  OutlookMemoryDecisionView,
+  OutlookObligationDetailView,
+  OutlookOrientationView,
+  OutlookSelfFixView,
   OutlookFriendView,
   OutlookHabitView,
   OutlookLogView,
@@ -55,6 +67,12 @@ export interface StartOutlookHttpServerOptions {
   readAgentBridges?: (agentName: string) => OutlookBridgeInventory
   readAgentMemory?: (agentName: string) => OutlookMemoryView
   readAgentFriends?: (agentName: string) => OutlookFriendView
+  readAgentContinuity?: (agentName: string) => OutlookContinuityView
+  readAgentOrientation?: (agentName: string) => OutlookOrientationView
+  readAgentObligations?: (agentName: string) => OutlookObligationDetailView
+  readAgentChanges?: (agentName: string) => OutlookChangesView
+  readAgentSelfFix?: (agentName: string) => OutlookSelfFixView
+  readAgentMemoryDecisions?: (agentName: string) => OutlookMemoryDecisionView
   readAgentHabits?: (agentName: string) => OutlookHabitView
   readDaemonHealth?: () => OutlookDaemonHealthDeep | null
   readLogs?: () => OutlookLogView
@@ -233,6 +251,12 @@ export async function startOutlookHttpServer(options: StartOutlookHttpServerOpti
     readAgentBridges: options.readAgentBridges ?? ((agentName: string) => readBridgeInventory(agentRoot(agentName))),
     readAgentMemory: options.readAgentMemory ?? ((agentName: string) => readMemoryView(agentRoot(agentName))),
     readAgentFriends: options.readAgentFriends ?? ((agentName: string) => readFriendView(agentName, bundlesRoot ? { bundlesRoot } : undefined)),
+    readAgentContinuity: options.readAgentContinuity ?? ((agentName: string) => readOutlookContinuity(agentRoot(agentName), agentName)),
+    readAgentOrientation: options.readAgentOrientation ?? ((agentName: string) => readOrientationView(agentRoot(agentName), agentName)),
+    readAgentObligations: options.readAgentObligations ?? ((agentName: string) => readObligationDetailView(agentRoot(agentName))),
+    readAgentChanges: options.readAgentChanges ?? ((agentName: string) => readChangesView(agentRoot(agentName))),
+    readAgentSelfFix: options.readAgentSelfFix ?? ((agentName: string) => readSelfFixView(agentRoot(agentName))),
+    readAgentMemoryDecisions: options.readAgentMemoryDecisions ?? ((agentName: string) => readMemoryDecisionView(agentRoot(agentName))),
     readAgentHabits: options.readAgentHabits ?? ((agentName: string) => readHabitView(agentRoot(agentName))),
     readDaemonHealth: options.readDaemonHealth ?? (() => readDaemonHealthDeep(options.healthPath)),
     readLogs: options.readLogs ?? (() => readLogView(options.logPath ?? null)),
@@ -247,15 +271,8 @@ export async function startOutlookHttpServer(options: StartOutlookHttpServerOpti
   /* v8 ignore stop */
 
   const server = http.createServer((request, response) => {
-    const pathname = normalizePath(request.url)
+    let pathname = normalizePath(request.url)
     const origin = `http://${host}:${(server.address() as AddressInfo).port}`
-
-    if (pathname === "/outlook/api/events") {
-      response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", "connection": "keep-alive", "access-control-allow-origin": "*" })
-      response.write(":ok\n\n")
-      sse.add(response)
-      return
-    }
 
     /* v8 ignore start — SPA static asset serving */
     // Serve built SPA static assets: /assets/*
@@ -278,26 +295,43 @@ export async function startOutlookHttpServer(options: StartOutlookHttpServerOpti
       return
     }
 
-    if (pathname === "/outlook/api/machine") {
+    // Compatibility alias: /outlook/api/* → /api/*
+    /* v8 ignore start -- legacy compat path: tested via integration @preserve */
+    if (pathname.startsWith("/outlook/api/")) {
+      pathname = pathname.slice("/outlook".length)
+    } else if (pathname === "/outlook/api") {
+      pathname = "/api"
+    }
+    /* v8 ignore stop */
+
+    // SSE event stream
+    if (pathname === "/api/events") {
+      response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", "connection": "keep-alive", "access-control-allow-origin": "*" })
+      response.write(":ok\n\n")
+      sse.add(response)
+      return
+    }
+
+    if (pathname === "/api/machine") {
       const machine = readMachineState()
       const machineView = readMachineView?.({ origin, machine })
       writeJson(response, 200, machineView ?? machine)
       return
     }
 
-    if (pathname === "/outlook/api/machine/health") {
+    if (pathname === "/api/machine/health") {
       const health = hooks.readDaemonHealth()
       writeJson(response, 200, health ?? { status: "unavailable" })
       return
     }
 
-    if (pathname === "/outlook/api/machine/logs") {
+    if (pathname === "/api/machine/logs") {
       writeJson(response, 200, hooks.readLogs())
       return
     }
 
-    // Agent-level endpoints: /outlook/api/agents/:agent[/:surface[/:params...]]
-    const agentMatch = /^\/outlook\/api\/agents\/([^/]+)(?:\/(.+))?$/.exec(pathname)
+    // Agent-level endpoints: /api/agents/:agent[/:surface[/:params...]]
+    const agentMatch = /^\/api\/agents\/([^/]+)(?:\/(.+))?$/.exec(pathname)
     if (agentMatch) {
       const agent = decodeURIComponent(agentMatch[1]!)
       const surface = agentMatch[2] ?? null
@@ -349,6 +383,36 @@ export async function startOutlookHttpServer(options: StartOutlookHttpServerOpti
 
       if (surface === "friends") {
         writeJson(response, 200, hooks.readAgentFriends(agent))
+        return
+      }
+
+      if (surface === "continuity") {
+        writeJson(response, 200, hooks.readAgentContinuity(agent))
+        return
+      }
+
+      if (surface === "orientation") {
+        writeJson(response, 200, hooks.readAgentOrientation(agent))
+        return
+      }
+
+      if (surface === "obligations") {
+        writeJson(response, 200, hooks.readAgentObligations(agent))
+        return
+      }
+
+      if (surface === "changes") {
+        writeJson(response, 200, hooks.readAgentChanges(agent))
+        return
+      }
+
+      if (surface === "self-fix") {
+        writeJson(response, 200, hooks.readAgentSelfFix(agent))
+        return
+      }
+
+      if (surface === "memory-decisions") {
+        writeJson(response, 200, hooks.readAgentMemoryDecisions(agent))
         return
       }
 

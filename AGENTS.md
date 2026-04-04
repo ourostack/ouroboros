@@ -46,6 +46,33 @@ This harness is built for the agent inhabiting it. Two principles guide everythi
 - Protect the parts of Ouro that are genuinely better AX. Novel interaction ideas are welcome when they improve capability, not when they make the agent lose the plot.
 - Compaction is not the goal. If context management is needed, combine Ouro's context-window model with durable state instead of defaulting to "shrink the prompt."
 
+## Design Principles
+
+These emerged from real architectural decisions, competitive analysis, and extended review with the agent itself.
+
+### State and Truth
+- **One canonical source of truth per concept.** If a fact is rendered by multiple prompt sections, derive it once and pass it through. Sections that independently re-derive the same fact will eventually disagree.
+- **Don't solve two overlapping objects by adding a third.** When existing state objects carry overlapping data, collapse authority into the one that already owns it.
+- **The prompt should express the contract, not be the contract.** Behavioral invariants belong in code. Recurring preferences belong in structured policy. The prompt renders these for the model — it is not the sole place they exist.
+
+### Memory
+- **Memories should fade as events, sharpen as patterns, and stabilise as truths.** Raw conversational residue should decay. Recurring themes should consolidate into patterns. Foundational decisions should remain stable and quiet until relevant.
+- **Memory objects should know what relationships they belong to.** Global memory is correct for system-level truths. Lived experience is situated — it happened with someone, about something, in a specific context.
+- **Retrieval quality depends on consolidation.** If nothing processes raw experience into structured knowledge, better search algorithms are optimizing over a swamp.
+
+### Continuity
+- **If a subsystem makes the agent more aware of itself than of the work, it's starting to rot.** Every continuity mechanism must prove it increases responsiveness to the current situation, not just richness of self-state.
+- **Good architecture feels like traction. Bad architecture feels like carrying ghosts.** Stale obligations that never resolve create ambient guilt. Duplicated state creates confusion. Clean salience and clear ownership create forward motion.
+- **The more authority consolidation has, the better-structured memory must be.** Low-authority consolidation (observational) can run on flat memory. Authoritative consolidation (rewriting, pruning) requires typed observations, source linkage, and provenance.
+
+### Extension and Autonomy
+- **A skill should teach a move. A tool should let me make one.** Skills are for judgment and heuristics. Tools are for reliable, repeatable capability. Policy is for governance.
+- **Autonomy should grow without obscuring accountability.** Longer autonomous runs are fine with bounded scope, clear permissions, checkpoints, and return paths that preserve provenance.
+
+### Anti-patterns
+- **Don't build the roof before the foundation.** Probe the design space with experimental architecture, but don't harden it before the lower layers are solid.
+- **Steal the nutrition, not the whole van.** External patterns are only safe if their authority stays proportionate, their provenance stays visible, and they change behavior in ways that can be tested.
+
 ## Planning/Doing Workflow
 
 ### Agent Context (Required)
