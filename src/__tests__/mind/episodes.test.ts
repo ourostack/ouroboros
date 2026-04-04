@@ -77,7 +77,7 @@ describe("episode store", () => {
   })
 
   describe("emitEpisode", () => {
-    it("writes JSON to state/episodes/ directory", () => {
+    it("writes JSON to arc/episodes/ directory", () => {
       const episode = emitEpisode(tmpDir, {
         kind: "coding_milestone",
         summary: "PR merged",
@@ -86,7 +86,7 @@ describe("episode store", () => {
         salience: "high",
       })
 
-      const filePath = path.join(tmpDir, "state", "episodes", `${episode.id}.json`)
+      const filePath = path.join(tmpDir, "arc", "episodes", `${episode.id}.json`)
       expect(fs.existsSync(filePath)).toBe(true)
 
       const stored = JSON.parse(fs.readFileSync(filePath, "utf-8")) as EpisodeRecord
@@ -115,7 +115,7 @@ describe("episode store", () => {
     })
 
     it("creates the episodes directory if it does not exist", () => {
-      const episodesDir = path.join(tmpDir, "state", "episodes")
+      const episodesDir = path.join(tmpDir, "arc", "episodes")
       expect(fs.existsSync(episodesDir)).toBe(false)
 
       emitEpisode(tmpDir, {
@@ -153,7 +153,7 @@ describe("episode store", () => {
       })
 
       // Ensure distinct timestamps by backdating ep1
-      const ep1Path = path.join(tmpDir, "state", "episodes", `${ep1.id}.json`)
+      const ep1Path = path.join(tmpDir, "arc", "episodes", `${ep1.id}.json`)
       const ep1Data = JSON.parse(fs.readFileSync(ep1Path, "utf-8")) as EpisodeRecord
       ep1Data.timestamp = "2020-01-01T00:00:00.000Z"
       fs.writeFileSync(ep1Path, JSON.stringify(ep1Data, null, 2), "utf-8")
@@ -205,7 +205,7 @@ describe("episode store", () => {
       })
 
       // Manually backdate the old episode
-      const oldPath = path.join(tmpDir, "state", "episodes", `${old.id}.json`)
+      const oldPath = path.join(tmpDir, "arc", "episodes", `${old.id}.json`)
       const oldData = JSON.parse(fs.readFileSync(oldPath, "utf-8")) as EpisodeRecord
       oldData.timestamp = "2020-01-01T00:00:00.000Z"
       fs.writeFileSync(oldPath, JSON.stringify(oldData, null, 2), "utf-8")
@@ -261,7 +261,7 @@ describe("episode store", () => {
       })
 
       // Write a malformed file
-      const episodesDir = path.join(tmpDir, "state", "episodes")
+      const episodesDir = path.join(tmpDir, "arc", "episodes")
       fs.writeFileSync(path.join(episodesDir, "bad-file.json"), "not valid json{{{", "utf-8")
 
       const episodes = readRecentEpisodes(tmpDir)
@@ -278,7 +278,7 @@ describe("episode store", () => {
         salience: "low",
       })
 
-      const episodesDir = path.join(tmpDir, "state", "episodes")
+      const episodesDir = path.join(tmpDir, "arc", "episodes")
       fs.writeFileSync(path.join(episodesDir, "readme.txt"), "not an episode", "utf-8")
 
       const episodes = readRecentEpisodes(tmpDir)
@@ -304,7 +304,7 @@ describe("episode store", () => {
       // Set both to the exact same timestamp
       const sharedTimestamp = "2025-06-15T12:00:00.000Z"
       for (const id of [ep1.id, ep2.id]) {
-        const filePath = path.join(tmpDir, "state", "episodes", `${id}.json`)
+        const filePath = path.join(tmpDir, "arc", "episodes", `${id}.json`)
         const data = JSON.parse(fs.readFileSync(filePath, "utf-8")) as EpisodeRecord
         data.timestamp = sharedTimestamp
         fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf-8")
@@ -326,7 +326,7 @@ describe("episode store", () => {
       })
 
       // Backdate
-      const oldPath = path.join(tmpDir, "state", "episodes", `${old.id}.json`)
+      const oldPath = path.join(tmpDir, "arc", "episodes", `${old.id}.json`)
       const oldData = JSON.parse(fs.readFileSync(oldPath, "utf-8")) as EpisodeRecord
       oldData.timestamp = "2020-01-01T00:00:00.000Z"
       fs.writeFileSync(oldPath, JSON.stringify(oldData, null, 2), "utf-8")

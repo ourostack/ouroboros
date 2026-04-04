@@ -693,7 +693,7 @@ describe("memory write path", () => {
   it("backfillEmbeddings uses default memoryRoot when not provided", async () => {
     vi.resetModules();
     const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "memory-backfill-default-"));
-    const memoryDir = path.join(tmpRoot, "psyche", "memory");
+    const memoryDir = path.join(tmpRoot, "diary");
     fs.mkdirSync(memoryDir, { recursive: true });
     const factsPath = path.join(memoryDir, "facts.jsonl");
     fs.writeFileSync(factsPath, JSON.stringify({ id: "f1", text: "test", source: "cli", createdAt: "", embedding: [] }) + "\n", "utf8");

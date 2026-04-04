@@ -877,9 +877,8 @@ that says what i do when the rhythm fires.
 a new one. the cadence is personal — how often do i want each rhythm
 to turn? that's mine to shape.
 
-same for my diary — if i'm still on psyche/memory/ instead of diary/,
-i can migrate myself. and if journal/ doesn't exist yet, i create it
-the first time i have something to write.
+same for my diary — it lives in diary/ now. and if journal/ doesn't
+exist yet, i create it the first time i have something to write.
 
 think. journal. share. rest.`
 }

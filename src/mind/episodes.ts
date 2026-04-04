@@ -1,6 +1,7 @@
 import * as fs from "fs"
 import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
+import { trackSyncWrite } from "../heart/sync"
 
 export type EpisodeKind =
   | "obligation_shift"
@@ -22,7 +23,7 @@ export interface EpisodeRecord {
 }
 
 function episodesDir(agentRoot: string): string {
-  return path.join(agentRoot, "state", "episodes")
+  return path.join(agentRoot, "arc", "episodes")
 }
 
 function generateId(): string {
@@ -50,7 +51,9 @@ export function emitEpisode(
 
   const dir = episodesDir(agentRoot)
   fs.mkdirSync(dir, { recursive: true })
-  fs.writeFileSync(path.join(dir, `${id}.json`), JSON.stringify(episode, null, 2), "utf-8")
+  const filePath = path.join(dir, `${id}.json`)
+  fs.writeFileSync(filePath, JSON.stringify(episode, null, 2), "utf-8")
+  trackSyncWrite(filePath)
 
   emitNervesEvent({
     component: "mind",

@@ -1,6 +1,7 @@
 import * as fs from "fs"
 import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
+import { trackSyncWrite } from "./sync"
 
 export type ObligationStatus =
   | "pending"
@@ -46,7 +47,7 @@ export interface Obligation {
 }
 
 function obligationsDir(agentRoot: string): string {
-  return path.join(agentRoot, "state", "obligations")
+  return path.join(agentRoot, "arc", "obligations")
 }
 
 function obligationFilePath(agentRoot: string, id: string): string {
@@ -85,7 +86,9 @@ export function createObligation(
 
   const dir = obligationsDir(agentRoot)
   fs.mkdirSync(dir, { recursive: true })
-  fs.writeFileSync(obligationFilePath(agentRoot, id), JSON.stringify(obligation, null, 2), "utf-8")
+  const filePath = obligationFilePath(agentRoot, id)
+  fs.writeFileSync(filePath, JSON.stringify(obligation, null, 2), "utf-8")
+  trackSyncWrite(filePath)
 
   emitNervesEvent({
     component: "engine",
@@ -177,6 +180,7 @@ export function advanceObligation(
   }
   obligation.updatedAt = new Date().toISOString()
   fs.writeFileSync(filePath, JSON.stringify(obligation, null, 2), "utf-8")
+  trackSyncWrite(filePath)
 
   emitNervesEvent({
     component: "engine",
@@ -248,6 +252,7 @@ export function enrichObligation(
   obligation.meaning = meaning
   obligation.updatedAt = new Date().toISOString()
   fs.writeFileSync(filePath, JSON.stringify(obligation, null, 2), "utf-8")
+  trackSyncWrite(filePath)
 
   emitNervesEvent({
     component: "engine",
