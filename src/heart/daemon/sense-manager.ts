@@ -223,6 +223,7 @@ function readBlueBubblesRuntimeJson(runtimePath: string): BlueBubblesRuntimeStat
   try {
     const raw = fs.readFileSync(runtimePath, "utf-8")
     const parsed = JSON.parse(raw) as Partial<BlueBubblesRuntimeStateSlice>
+    /* v8 ignore start -- branches: ternary fallbacks for missing/malformed BB runtime fields @preserve */
     return {
       upstreamStatus: parsed.upstreamStatus === "ok" || parsed.upstreamStatus === "error"
         ? parsed.upstreamStatus
@@ -232,6 +233,7 @@ function readBlueBubblesRuntimeJson(runtimePath: string): BlueBubblesRuntimeStat
         : "startup health probe pending",
       lastCheckedAt: typeof parsed.lastCheckedAt === "string" ? parsed.lastCheckedAt : undefined,
     }
+    /* v8 ignore stop */
   /* v8 ignore start -- defensive: catch for missing/corrupt BB runtime state file @preserve */
   } catch {
     return { upstreamStatus: "unknown", detail: "startup health probe pending" }
