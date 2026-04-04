@@ -34,7 +34,7 @@ import { runHealthInventory } from "../heart/provider-ping"
 import { writeAgentProviderSelection, loadAgentSecrets } from "../heart/daemon/auth-flow"
 import { deriveTempo } from "../heart/tempo"
 import { buildTemporalView } from "../heart/temporal-view"
-import { buildWakePacket, renderWakePacket } from "../heart/wake-packet"
+import { buildStartOfTurnPacket, renderStartOfTurnPacket } from "../heart/start-of-turn-packet"
 import { derivePresence, writePresence } from "../heart/presence"
 import { readRecentEpisodes, emitEpisode } from "../mind/episodes"
 import { readActiveCares } from "../heart/cares"
@@ -564,7 +564,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   }
 
   // Step 4b: Continuity pipeline — derive tempo, build wake packet, snapshot obligations
-  let renderedWakePacket: string | undefined
+  let renderedStartOfTurnPacket: string | undefined
   const preTurnObligationIds = new Set(pendingObligations.map((ob) => `${ob.id}:${ob.status}`))
   try {
     const agentRoot = getAgentRoot()
@@ -591,14 +591,14 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
         activeCares,
       },
     })
-    const wakePacket = buildWakePacket(temporalView, {
+    const startOfTurnPacket = buildStartOfTurnPacket(temporalView, {
       canonicalObligations: {
         primary: activeWorkFrame.primaryObligation,
         all: activeWorkFrame.pendingObligations,
       },
     })
-    renderedWakePacket = renderWakePacket(wakePacket)
-    if (!renderedWakePacket) renderedWakePacket = undefined
+    renderedStartOfTurnPacket = renderStartOfTurnPacket(startOfTurnPacket)
+    if (!renderedStartOfTurnPacket) renderedStartOfTurnPacket = undefined
 
     // Update self-presence
     const presence = derivePresence(agentRoot, agentName, {
@@ -626,7 +626,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     bridgeContext,
     activeWorkFrame,
     delegationDecision,
-    wakePacket: renderedWakePacket,
+    startOfTurnPacket: renderedStartOfTurnPacket,
     pendingMessages: pending.length > 0 ? pending.map((msg) => ({ from: msg.from, content: msg.content })) : undefined,
     currentSessionKey: currentSession.key,
     currentObligation,

@@ -27,8 +27,8 @@ export interface CodingContextPackInput {
   request: CodingSessionRequest
   existingSessions?: CodingSession[]
   activeWorkFrame?: ActiveWorkFrame
-  /** Compact rendered wake packet for continuity-aware coding context. */
-  wakePacket?: string
+  /** Compact rendered start-of-turn packet for continuity-aware coding context. */
+  startOfTurnPacket?: string
 }
 
 interface CommandResult {
@@ -278,7 +278,7 @@ function buildStateContent(
   agentName: string,
   identityPacket: CodingIdentityPacket,
   activeWorkFrame?: ActiveWorkFrame,
-  wakePacket?: string,
+  startOfTurnPacket?: string,
 ): string {
   const gitSection = snapshot.available
     ? [
@@ -297,7 +297,7 @@ function buildStateContent(
     `agent: ${request.parentAgent ?? agentName}`,
     formatOrigin(request),
     `obligationId: ${request.obligationId ?? "none"}`,
-    ...(wakePacket ? ["", "## Continuity", wakePacket] : []),
+    ...(startOfTurnPacket ? ["", "## Continuity", startOfTurnPacket] : []),
     "",
     formatIdentitySection(identityPacket),
     "",
@@ -357,7 +357,7 @@ export function prepareCodingContextPack(
     agentName,
     identityPacket,
     input.activeWorkFrame,
-    input.wakePacket || undefined,
+    input.startOfTurnPacket || undefined,
   )
 
   mkdirSync(contextDir, { recursive: true })

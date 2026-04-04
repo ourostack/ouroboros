@@ -15,8 +15,8 @@ import * as daemonThoughts from "../../heart/daemon/thoughts"
 
 const mockDeriveTempo = vi.fn()
 const mockBuildTemporalView = vi.fn()
-const mockBuildWakePacket = vi.fn()
-const mockRenderWakePacket = vi.fn()
+const mockBuildStartOfTurnPacket = vi.fn()
+const mockRenderStartOfTurnPacket = vi.fn()
 const mockDerivePresence = vi.fn()
 const mockWritePresence = vi.fn()
 const mockEmitEpisode = vi.fn()
@@ -41,12 +41,12 @@ vi.mock("../../heart/temporal-view", async () => {
   }
 })
 
-vi.mock("../../heart/wake-packet", async () => {
-  const actual = await vi.importActual<typeof import("../../heart/wake-packet")>("../../heart/wake-packet")
+vi.mock("../../heart/start-of-turn-packet", async () => {
+  const actual = await vi.importActual<typeof import("../../heart/start-of-turn-packet")>("../../heart/start-of-turn-packet")
   return {
     ...actual,
-    buildWakePacket: (...args: any[]) => mockBuildWakePacket(...args),
-    renderWakePacket: (...args: any[]) => mockRenderWakePacket(...args),
+    buildStartOfTurnPacket: (...args: any[]) => mockBuildStartOfTurnPacket(...args),
+    renderStartOfTurnPacket: (...args: any[]) => mockRenderStartOfTurnPacket(...args),
   }
 })
 
@@ -271,7 +271,7 @@ describe("pipeline continuity integration", () => {
       tempo: "brief",
       assembledAt: new Date().toISOString(),
     })
-    mockBuildWakePacket.mockReturnValue({
+    mockBuildStartOfTurnPacket.mockReturnValue({
       plotLine: "",
       obligations: "",
       cares: "",
@@ -281,7 +281,7 @@ describe("pipeline continuity integration", () => {
       tokenBudget: { min: 150, max: 250 },
       assembledAt: new Date().toISOString(),
     })
-    mockRenderWakePacket.mockReturnValue("**Next:** check inbox")
+    mockRenderStartOfTurnPacket.mockReturnValue("**Next:** check inbox")
     mockDerivePresence.mockReturnValue({
       agentName: "ouroboros",
       availability: "active",
@@ -298,8 +298,8 @@ describe("pipeline continuity integration", () => {
     vi.restoreAllMocks()
     mockDeriveTempo.mockReset()
     mockBuildTemporalView.mockReset()
-    mockBuildWakePacket.mockReset()
-    mockRenderWakePacket.mockReset()
+    mockBuildStartOfTurnPacket.mockReset()
+    mockRenderStartOfTurnPacket.mockReset()
     mockDerivePresence.mockReset()
     mockWritePresence.mockReset()
     mockEmitEpisode.mockReset()
@@ -326,7 +326,7 @@ describe("pipeline continuity integration", () => {
       )
     })
 
-    it("calls buildWakePacket with temporal view and canonical obligations from activeWorkFrame", async () => {
+    it("calls buildStartOfTurnPacket with temporal view and canonical obligations from activeWorkFrame", async () => {
       const mockView = {
         recentEpisodes: [],
         activeObligations: [],
@@ -350,7 +350,7 @@ describe("pipeline continuity integration", () => {
       const input = makeInput()
       const { handleInboundTurn } = await import("../../senses/pipeline")
       await handleInboundTurn(input)
-      expect(mockBuildWakePacket).toHaveBeenCalledWith(
+      expect(mockBuildStartOfTurnPacket).toHaveBeenCalledWith(
         mockView,
         {
           canonicalObligations: {
@@ -362,7 +362,7 @@ describe("pipeline continuity integration", () => {
     })
 
     it("passes rendered wake packet to runAgent options", async () => {
-      mockRenderWakePacket.mockReturnValue("**Next:** review PR #42")
+      mockRenderStartOfTurnPacket.mockReturnValue("**Next:** review PR #42")
 
       const runAgentSpy = vi.fn().mockResolvedValue({ usage: usageData, outcome: "settled" })
       const input = makeInput({ runAgent: runAgentSpy })
@@ -371,7 +371,7 @@ describe("pipeline continuity integration", () => {
 
       // runAgent is called with (messages, callbacks, channel, signal, options)
       const options = runAgentSpy.mock.calls[0][4] as RunAgentOptions
-      expect(options.wakePacket).toBe("**Next:** review PR #42")
+      expect(options.startOfTurnPacket).toBe("**Next:** review PR #42")
     })
 
     it("derives tempo with episode salience and care risk data", async () => {
