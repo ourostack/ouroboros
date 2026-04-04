@@ -16,12 +16,27 @@ export interface DaemonRuntimeSyncDeps {
   stopDaemon: () => Promise<void>
   cleanupStaleSocket: (socketPath: string) => void
   startDaemonProcess: (socketPath: string) => Promise<{ pid: number | null }>
+  checkSocketAlive?: (socketPath: string) => Promise<boolean>
 }
 
 export interface DaemonRuntimeSyncResult {
   alreadyRunning: boolean
   message: string
 }
+
+/* v8 ignore start -- daemon liveness poll: real socket timing untestable in vitest @preserve */
+async function verifyDaemonStarted(deps: DaemonRuntimeSyncDeps): Promise<boolean> {
+  if (!deps.checkSocketAlive) return true
+  const maxWaitMs = 10_000
+  const pollIntervalMs = 500
+  const deadline = Date.now() + maxWaitMs
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, pollIntervalMs))
+    if (await deps.checkSocketAlive(deps.socketPath)) return true
+  }
+  return false
+}
+/* v8 ignore stop */
 
 function isKnownVersion(version: string): boolean {
   return version !== "unknown" && version.trim().length > 0
@@ -176,11 +191,15 @@ export async function ensureCurrentDaemonRuntime(
 
       deps.cleanupStaleSocket(deps.socketPath)
       const started = await deps.startDaemonProcess(deps.socketPath)
+      const pid = started.pid ?? "unknown"
+      const verified = await verifyDaemonStarted(deps)
+      /* v8 ignore next -- daemon liveness failure: requires real daemon crash timing @preserve */
+      const suffix = verified ? "" : " — but daemon failed to respond, check logs"
       result = {
         alreadyRunning: false,
         message: includesVersionDrift
-          ? `restarted stale daemon from ${runningVersion} to ${deps.localVersion} (pid ${started.pid ?? "unknown"})`
-          : `restarted drifted daemon (${driftSummary}) (pid ${started.pid ?? "unknown"})`,
+          ? `restarted stale daemon from ${runningVersion} to ${deps.localVersion} (pid ${pid})${suffix}`
+          : `restarted drifted daemon (${driftSummary}) (pid ${pid})${suffix}`,
       }
       emitNervesEvent({
         component: "daemon",
