@@ -1,6 +1,7 @@
 import * as fs from "fs"
 import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
+import { trackSyncWrite } from "./sync"
 
 export interface IntentionRecord {
   id: string
@@ -71,7 +72,9 @@ export function captureIntention(
 
   const dir = intentionsDir(agentRoot)
   fs.mkdirSync(dir, { recursive: true })
-  fs.writeFileSync(intentionFilePath(agentRoot, id), JSON.stringify(intention, null, 2), "utf-8")
+  const filePath = intentionFilePath(agentRoot, id)
+  fs.writeFileSync(filePath, JSON.stringify(intention, null, 2), "utf-8")
+  trackSyncWrite(filePath)
 
   emitNervesEvent({
     component: "heart",
@@ -142,11 +145,9 @@ function readIntentionFile(agentRoot: string, id: string): IntentionRecord {
 }
 
 function writeIntentionFile(agentRoot: string, intention: IntentionRecord): void {
-  fs.writeFileSync(
-    intentionFilePath(agentRoot, intention.id),
-    JSON.stringify(intention, null, 2),
-    "utf-8",
-  )
+  const filePath = intentionFilePath(agentRoot, intention.id)
+  fs.writeFileSync(filePath, JSON.stringify(intention, null, 2), "utf-8")
+  trackSyncWrite(filePath)
 }
 
 export function resolveIntention(agentRoot: string, id: string): IntentionRecord {

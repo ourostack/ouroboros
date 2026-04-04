@@ -4,6 +4,7 @@ import { randomUUID } from "crypto";
 import { getOpenAIEmbeddingsApiKey } from "../heart/config";
 import { getAgentRoot } from "../heart/identity";
 import { emitNervesEvent } from "../nerves/runtime";
+import { trackSyncWrite } from "../heart/sync";
 import { cosineSimilarity } from "./associative-recall";
 
 export interface DiaryStorePaths {
@@ -217,8 +218,11 @@ export function appendEntriesWithDedup(stores: DiaryStorePaths, incoming: DiaryE
     all.push(fact);
     added++;
     fs.appendFileSync(stores.factsPath, `${JSON.stringify(fact)}\n`, "utf8");
+    trackSyncWrite(stores.factsPath);
     updateEntityIndex(stores.entitiesPath, fact);
+    trackSyncWrite(stores.entitiesPath);
     appendDailyFact(stores.dailyDir, fact);
+    trackSyncWrite(path.join(stores.dailyDir, `${(fact.createdAt.slice(0, 10) || "unknown")}.jsonl`));
   }
 
   emitNervesEvent({
@@ -357,6 +361,7 @@ export async function backfillEmbeddings(options?: {
   // Rewrite facts file with updated embeddings
   const lines = facts.map((f) => JSON.stringify(f)).join("\n") + "\n";
   fs.writeFileSync(factsPath, lines, "utf8");
+  trackSyncWrite(factsPath);
 
   emitNervesEvent({
     component: "mind",
