@@ -89,25 +89,25 @@ vi.mock("../../mind/friends/store", () => ({
   makeFriendStore: vi.fn(),
 }))
 
-describe("wake packet prompt section", () => {
+describe("start-of-turn packet prompt section", () => {
   beforeEach(() => {
     vi.resetModules()
     mockGetBoard.mockReturnValue({ items: [] })
   })
 
-  it("wakePacketSection returns rendered wake packet from options", async () => {
-    const { wakePacketSection } = await import("../../mind/prompt")
-    const result = wakePacketSection({ wakePacket: "**Next:** review PR #42" })
+  it("startOfTurnPacketSection returns rendered start-of-turn packet from options", async () => {
+    const { startOfTurnPacketSection } = await import("../../mind/prompt")
+    const result = startOfTurnPacketSection({ startOfTurnPacket: "**Next:** review PR #42" })
     expect(result).toBe("**Next:** review PR #42")
   })
 
-  it("wakePacketSection returns empty string when no wake packet provided", async () => {
-    const { wakePacketSection } = await import("../../mind/prompt")
-    expect(wakePacketSection()).toBe("")
-    expect(wakePacketSection({})).toBe("")
+  it("startOfTurnPacketSection returns empty string when no start-of-turn packet provided", async () => {
+    const { startOfTurnPacketSection } = await import("../../mind/prompt")
+    expect(startOfTurnPacketSection()).toBe("")
+    expect(startOfTurnPacketSection({})).toBe("")
   })
 
-  it("wake packet section appears before liveWorldStateSection in buildSystem output", async () => {
+  it("start-of-turn packet section appears before liveWorldStateSection in buildSystem output", async () => {
     const fs = await import("fs")
     const fsMock = vi.mocked(fs)
     fsMock.existsSync.mockReturnValue(false)
@@ -119,18 +119,18 @@ describe("wake packet prompt section", () => {
     fsMock.readdirSync.mockReturnValue([])
 
     const { buildSystem } = await import("../../mind/prompt")
-    const system = await buildSystem("cli", { wakePacket: "**Next:** check inbox" })
+    const system = await buildSystem("cli", { startOfTurnPacket: "**Next:** check inbox" })
 
-    const wakePacketIdx = system.indexOf("**Next:** check inbox")
+    const startOfTurnPacketIdx = system.indexOf("**Next:** check inbox")
     const liveWorldIdx = system.indexOf("# dynamic state for this turn")
 
-    expect(wakePacketIdx).toBeGreaterThan(-1)
+    expect(startOfTurnPacketIdx).toBeGreaterThan(-1)
     expect(liveWorldIdx).toBeGreaterThan(-1)
-    // Wake packet appears after the group header but as part of the dynamic state section
-    expect(wakePacketIdx).toBeGreaterThan(liveWorldIdx)
+    // Start-of-turn packet appears after the group header but as part of the dynamic state section
+    expect(startOfTurnPacketIdx).toBeGreaterThan(liveWorldIdx)
   })
 
-  it("buildSystem includes wake packet when provided", async () => {
+  it("buildSystem includes start-of-turn packet when provided", async () => {
     const fs = await import("fs")
     const fsMock = vi.mocked(fs)
     fsMock.existsSync.mockReturnValue(false)
@@ -142,11 +142,11 @@ describe("wake packet prompt section", () => {
     fsMock.readdirSync.mockReturnValue([])
 
     const { buildSystem } = await import("../../mind/prompt")
-    const system = await buildSystem("cli", { wakePacket: "**Owed:** deploy fix" })
+    const system = await buildSystem("cli", { startOfTurnPacket: "**Owed:** deploy fix" })
     expect(system).toContain("**Owed:** deploy fix")
   })
 
-  it("buildSystem omits wake packet section when none provided", async () => {
+  it("buildSystem omits start-of-turn packet section when none provided", async () => {
     const fs = await import("fs")
     const fsMock = vi.mocked(fs)
     fsMock.existsSync.mockReturnValue(false)
@@ -159,7 +159,7 @@ describe("wake packet prompt section", () => {
 
     const { buildSystem } = await import("../../mind/prompt")
     const system = await buildSystem("cli")
-    // No wake packet content should appear
+    // No start-of-turn packet content should appear
     expect(system).not.toContain("**Next:**")
     expect(system).not.toContain("**Owed:**")
   })

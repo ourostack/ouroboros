@@ -6,7 +6,7 @@ import { type Obligation } from "./obligations"
 import { type CareRecord } from "./cares"
 import { type AgentPresence } from "./presence"
 
-export interface WakePacket {
+export interface StartOfTurnPacket {
   plotLine: string
   obligations: string
   cares: string
@@ -114,12 +114,12 @@ function buildResumeHint(view: TemporalView, obligations?: Obligation[]): string
   return hints.join("; ")
 }
 
-export function buildWakePacket(view: TemporalView, opts?: { canonicalObligations?: { primary: Obligation | null; all: Obligation[] } }): WakePacket {
+export function buildStartOfTurnPacket(view: TemporalView, opts?: { canonicalObligations?: { primary: Obligation | null; all: Obligation[] } }): StartOfTurnPacket {
   const tempo = view.tempo
   const tokenBudget = TEMPO_BUDGETS[tempo]
   const effectiveObligations = opts?.canonicalObligations ? opts.canonicalObligations.all : view.activeObligations
 
-  const packet: WakePacket = {
+  const packet: StartOfTurnPacket = {
     plotLine: buildPlotLine(view.recentEpisodes, tempo),
     obligations: buildObligationsSection(effectiveObligations),
     cares: buildCaresSection(view.activeCares),
@@ -132,8 +132,8 @@ export function buildWakePacket(view: TemporalView, opts?: { canonicalObligation
 
   emitNervesEvent({
     component: "heart",
-    event: "heart.wake_packet_built",
-    message: `wake packet built: tempo=${tempo}`,
+    event: "heart.start_of_turn_packet_built",
+    message: `start-of-turn packet built: tempo=${tempo}`,
     meta: {
       tempo,
       plotLineTokens: estimateTokens(packet.plotLine),
@@ -148,13 +148,13 @@ export function buildWakePacket(view: TemporalView, opts?: { canonicalObligation
 }
 
 /**
- * Renders a wake packet to prompt text, respecting token budget.
+ * Renders a start-of-turn packet to prompt text, respecting token budget.
  * Truncation priority (last truncated first):
  *   resumeHint (PROTECTED) > obligations > cares > plotLine > presence
  * So presence is truncated first, then plotLine, then cares, then obligations.
  * resumeHint is never truncated.
  */
-export function renderWakePacket(packet: WakePacket): string {
+export function renderStartOfTurnPacket(packet: StartOfTurnPacket): string {
   const budget = packet.tokenBudget
 
   // Assemble sections in priority order (highest priority first for budget allocation)
@@ -170,8 +170,8 @@ export function renderWakePacket(packet: WakePacket): string {
   if (sections.length === 0) {
     emitNervesEvent({
       component: "heart",
-      event: "heart.wake_packet_rendered",
-      message: "wake packet rendered: empty",
+      event: "heart.start_of_turn_packet_rendered",
+      message: "start-of-turn packet rendered: empty",
       meta: { tokens: 0, tempo: packet.tempo },
     })
     return ""
@@ -204,8 +204,8 @@ export function renderWakePacket(packet: WakePacket): string {
 
   emitNervesEvent({
     component: "heart",
-    event: "heart.wake_packet_rendered",
-    message: `wake packet rendered: ${tokens} tokens`,
+    event: "heart.start_of_turn_packet_rendered",
+    message: `start-of-turn packet rendered: ${tokens} tokens`,
     meta: { tokens, tempo: packet.tempo, sectionCount: sections.length },
   })
 
@@ -242,7 +242,7 @@ function formatSections(sections: Array<{ label: string; content: string }>): st
  * Ultra-compact version for coding context (max 200 tokens).
  * Just resumeHint + top obligation + top care, single-line bullets.
  */
-export function renderCompactWakePacket(packet: WakePacket): string {
+export function renderCompactStartOfTurnPacket(packet: StartOfTurnPacket): string {
   const parts: string[] = []
 
   if (packet.resumeHint) {
@@ -266,8 +266,8 @@ export function renderCompactWakePacket(packet: WakePacket): string {
 
   emitNervesEvent({
     component: "heart",
-    event: "heart.wake_packet_compact_rendered",
-    message: `compact wake packet: ${estimateTokens(result)} tokens`,
+    event: "heart.start_of_turn_packet_compact_rendered",
+    message: `compact start-of-turn packet: ${estimateTokens(result)} tokens`,
     meta: { tokens: estimateTokens(result) },
   })
 
