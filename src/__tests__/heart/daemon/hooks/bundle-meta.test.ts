@@ -368,6 +368,73 @@ describe("bundleMetaHook", () => {
     }
   })
 
+  it("migration updates .gitignore to ignore state/ and not ignore arc/, diary/, journal/", async () => {
+    const agentRoot = createTempDir("bundle-meta-hook-gitignore-")
+    const metaPath = path.join(agentRoot, "bundle-meta.json")
+    fs.writeFileSync(metaPath, JSON.stringify({
+      runtimeVersion: "0.0.1",
+      bundleSchemaVersion: 1,
+      lastUpdated: "2025-01-01T00:00:00Z",
+    }))
+
+    // Existing .gitignore that incorrectly ignores arc/ and diary/
+    const gitignorePath = path.join(agentRoot, ".gitignore")
+    fs.writeFileSync(gitignorePath, "arc/\ndiary/\njournal/\nnode_modules/\n")
+
+    const ctx: UpdateHookContext = { agentRoot, currentVersion: "0.1.0", previousVersion: "0.0.1" }
+    await bundleMetaHook(ctx)
+
+    const content = fs.readFileSync(gitignorePath, "utf-8")
+    const lines = content.split("\n").map((l) => l.trim()).filter(Boolean)
+
+    // state/ should be added
+    expect(lines).toContain("state/")
+    // arc/, diary/, journal/ should be removed
+    expect(lines).not.toContain("arc/")
+    expect(lines).not.toContain("diary/")
+    expect(lines).not.toContain("journal/")
+    // node_modules/ preserved
+    expect(lines).toContain("node_modules/")
+  })
+
+  it("migration creates .gitignore if it doesn't exist", async () => {
+    const agentRoot = createTempDir("bundle-meta-hook-gitignore-new-")
+    const metaPath = path.join(agentRoot, "bundle-meta.json")
+    fs.writeFileSync(metaPath, JSON.stringify({
+      runtimeVersion: "0.0.1",
+      bundleSchemaVersion: 1,
+      lastUpdated: "2025-01-01T00:00:00Z",
+    }))
+
+    const ctx: UpdateHookContext = { agentRoot, currentVersion: "0.1.0", previousVersion: "0.0.1" }
+    await bundleMetaHook(ctx)
+
+    const gitignorePath = path.join(agentRoot, ".gitignore")
+    expect(fs.existsSync(gitignorePath)).toBe(true)
+    const content = fs.readFileSync(gitignorePath, "utf-8")
+    expect(content).toContain("state/")
+  })
+
+  it("migration does not duplicate state/ if already in .gitignore", async () => {
+    const agentRoot = createTempDir("bundle-meta-hook-gitignore-dedup-")
+    const metaPath = path.join(agentRoot, "bundle-meta.json")
+    fs.writeFileSync(metaPath, JSON.stringify({
+      runtimeVersion: "0.0.1",
+      bundleSchemaVersion: 1,
+      lastUpdated: "2025-01-01T00:00:00Z",
+    }))
+
+    const gitignorePath = path.join(agentRoot, ".gitignore")
+    fs.writeFileSync(gitignorePath, "state/\nnode_modules/\n")
+
+    const ctx: UpdateHookContext = { agentRoot, currentVersion: "0.1.0", previousVersion: "0.0.1" }
+    await bundleMetaHook(ctx)
+
+    const content = fs.readFileSync(gitignorePath, "utf-8")
+    const stateCount = content.split("\n").filter((l) => l.trim() === "state/").length
+    expect(stateCount).toBe(1)
+  })
+
   it("preserves existing previousRuntimeVersion chain (overwrites with current old version)", async () => {
     const agentRoot = createTempDir("bundle-meta-hook-chain-")
     const metaPath = path.join(agentRoot, "bundle-meta.json")
