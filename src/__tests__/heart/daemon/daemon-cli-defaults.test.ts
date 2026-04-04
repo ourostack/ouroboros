@@ -406,7 +406,7 @@ describe("daemon CLI default dependency branches", () => {
 
     const result = await runOuroCli(["up"], {
       ...deps,
-      checkSocketAlive: vi.fn(async () => false),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       getCurrentCliVersion: () => null,
       detectMode: () => "production" as const,
@@ -816,7 +816,7 @@ describe("daemon CLI default dependency branches", () => {
       }),
       writeStdout: vi.fn(),
       startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
-      checkSocketAlive: vi.fn(async () => false),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
@@ -853,7 +853,7 @@ describe("daemon CLI default dependency branches", () => {
       }),
       writeStdout: vi.fn(),
       startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
-      checkSocketAlive: vi.fn(async () => false),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
