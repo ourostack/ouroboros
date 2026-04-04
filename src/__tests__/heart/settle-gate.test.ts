@@ -82,7 +82,7 @@ vi.mock("../../mind/associative-recall", () => ({
 import * as fs from "fs"
 import * as identity from "../../heart/identity"
 import type { ChannelCallbacks, RunAgentOutcome } from "../../heart/core"
-import type { AttentionItem } from "../../senses/attention-queue"
+import type { AttentionItem } from "../../heart/attention-types"
 
 async function setupMinimax() {
   vi.mocked(identity.loadAgentConfig).mockReturnValue({
