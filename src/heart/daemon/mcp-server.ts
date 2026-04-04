@@ -292,11 +292,15 @@ export function createMcpServer(options: McpServerOptions): McpServer {
         /* v8 ignore start — instanceof guard defensive; thrown errors are always Error */
         const errorMessage = error instanceof Error ? error.message : String(error)
         /* v8 ignore stop */
+        const isDaemonDown = errorMessage.includes("ECONNREFUSED") || errorMessage.includes("ENOENT")
+        const userMessage = isDaemonDown
+          ? "The daemon is not running. Start it with `ouro up` (production) or `ouro dev` (development), then retry."
+          : `Error: ${errorMessage}`
         writeResponse({
           jsonrpc: "2.0",
           id: request.id!,
           result: {
-            content: [{ type: "text", text: `Error: ${errorMessage}` }],
+            content: [{ type: "text", text: userMessage }],
             isError: true,
           },
         })
@@ -359,11 +363,15 @@ export function createMcpServer(options: McpServerOptions): McpServer {
         /* v8 ignore start — instanceof guard defensive; thrown errors are always Error */
         const errorMessage = error instanceof Error ? error.message : String(error)
         /* v8 ignore stop */
+        const isDaemonDown = errorMessage.includes("ECONNREFUSED") || errorMessage.includes("ENOENT")
+        const userMessage = isDaemonDown
+          ? "The daemon is not running. Start it with `ouro up` (production) or `ouro dev` (development), then retry."
+          : `Error: ${errorMessage}`
         writeResponse({
           jsonrpc: "2.0",
           id: request.id!,
           result: {
-            content: [{ type: "text", text: `Error: ${errorMessage}` }],
+            content: [{ type: "text", text: userMessage }],
             isError: true,
           },
         })

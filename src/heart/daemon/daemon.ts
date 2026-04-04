@@ -835,6 +835,9 @@ export class OuroDaemon {
       case "agent.reportComplete":
         return handleAgentReportComplete(command)
       case "agent.senseTurn": {
+        // Dynamic import: lazy-loads shared-turn on first use. Hot-reload works
+        // because ouro dev restarts the daemon process (fresh module cache),
+        // NOT because dynamic import bypasses caching.
         try {
           const { runSenseTurn } = await import("../../senses/shared-turn")
           const result = await runSenseTurn({
