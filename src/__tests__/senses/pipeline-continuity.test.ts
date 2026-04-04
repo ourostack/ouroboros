@@ -309,7 +309,7 @@ describe("pipeline continuity integration", () => {
     mockListSessionActivity.mockReset()
   })
 
-  describe("wake packet threading", () => {
+  describe("start-of-turn packet threading", () => {
     it("calls deriveTempo during pipeline execution", async () => {
       const input = makeInput()
       await import("../../senses/pipeline").then((m) => m.handleInboundTurn(input))
@@ -361,7 +361,7 @@ describe("pipeline continuity integration", () => {
       )
     })
 
-    it("passes rendered wake packet to runAgent options", async () => {
+    it("passes rendered start-of-turn packet to runAgent options", async () => {
       mockRenderStartOfTurnPacket.mockReturnValue("**Next:** review PR #42")
 
       const runAgentSpy = vi.fn().mockResolvedValue({ usage: usageData, outcome: "settled" })

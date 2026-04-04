@@ -873,7 +873,7 @@ export function formatActiveWorkFrame(frame: ActiveWorkFrame, options?: { obliga
       // Enriched obligation data (with resumeHint, stalenessClass, waitingOn) is rendered elsewhere.
       // Avoid duplicating the full list — just anchor the count here.
       lines.push("")
-      lines.push(`return obligations: ${openCount} active (canonical details in **Owed** section of wake packet)`)
+      lines.push(`return obligations: ${openCount} active (canonical details in **Owed** section of start-of-turn packet)`)
     } else if (openCount > 0) {
       lines.push("")
       lines.push("## return obligations")

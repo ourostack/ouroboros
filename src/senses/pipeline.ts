@@ -563,7 +563,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     sessionMessages.push(msg)
   }
 
-  // Step 4b: Continuity pipeline — derive tempo, build wake packet, snapshot obligations
+  // Step 4b: Continuity pipeline — derive tempo, build start-of-turn packet, snapshot obligations
   let renderedStartOfTurnPacket: string | undefined
   const preTurnObligationIds = new Set(pendingObligations.map((ob) => `${ob.id}:${ob.status}`))
   try {
@@ -614,7 +614,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
       level: "warn",
       component: "senses",
       event: "senses.continuity_error",
-      message: "continuity pipeline failed, continuing without wake packet",
+      message: "continuity pipeline failed, continuing without start-of-turn packet",
       meta: { error: continuityError instanceof Error ? continuityError.message : String(continuityError) },
     })
   }

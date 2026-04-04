@@ -391,7 +391,7 @@ export function prepareCodingContextPack(
 
 /**
  * Emit a coding milestone episode when a session completes or blocks.
- * This is the outbound leg of the coding round-trip: compact wake packet goes IN,
+ * This is the outbound leg of the coding round-trip: compact start-of-turn packet goes IN,
  * episodes come BACK OUT.
  */
 export function emitCodingEpisode(
