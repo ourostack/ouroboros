@@ -457,28 +457,27 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   // error or early-return failover paths. This prevents writes from leaking into
   // the next turn's accumulator.
   try {
+  /* v8 ignore start -- sync-enabled branches tested in sync.test.ts, pipeline tests mock at module boundary @preserve */
   if (syncConfig.enabled) {
     const pullResult = preTurnPull(getAgentRoot(), syncConfig)
     if (!pullResult.ok) {
-      /* v8 ignore next -- pull failure path tested in sync.test.ts @preserve */
       syncFailure = pullResult.error
     }
     // Check for pending-sync from a prior failed push
     if (!syncFailure) {
       const pendingSyncPath = path.join(getAgentRoot(), "state", "pending-sync.json")
       try {
-        /* v8 ignore start -- pending-sync read/surface/cleanup tested in sync.test.ts @preserve */
         if (fs.existsSync(pendingSyncPath)) {
           const pendingSync = JSON.parse(fs.readFileSync(pendingSyncPath, "utf-8"))
           syncFailure = `prior sync push failed: ${pendingSync.error ?? "unknown"}`
           fs.unlinkSync(pendingSyncPath)
         }
-      /* v8 ignore stop */
       } catch {
         // Ignore read errors for pending-sync
       }
     }
   }
+  /* v8 ignore stop */
 
   const activeBridges = createBridgeManager().findBridgesForSession({
     friendId: currentSession.friendId,
@@ -636,8 +635,8 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
         all: activeWorkFrame.pendingObligations,
       },
     })
+    /* v8 ignore next 3 -- syncFailure propagation tested in sync.test.ts @preserve */
     if (syncFailure) {
-      /* v8 ignore next -- syncFailure propagation tested in sync.test.ts @preserve */
       startOfTurnPacket.syncFailure = syncFailure
     }
     renderedStartOfTurnPacket = renderStartOfTurnPacket(startOfTurnPacket)
@@ -806,8 +805,8 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     // In a finally block so writes are always drained — even on error or early-return
     // failover paths. This prevents writes from leaking into the next turn.
     const writtenPaths = drainSyncWrites()
+    /* v8 ignore next 3 -- postTurnPush integration tested in sync.test.ts @preserve */
     if (syncConfig.enabled && writtenPaths.length > 0) {
-      /* v8 ignore next -- postTurnPush integration tested in sync.test.ts @preserve */
       postTurnPush(getAgentRoot(), syncConfig, writtenPaths)
     }
   }
