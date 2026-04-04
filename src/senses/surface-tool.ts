@@ -1,35 +1,5 @@
-import type OpenAI from "openai"
 import { dequeueAttentionItem, type AttentionItem } from "./attention-queue"
 import { emitNervesEvent } from "../nerves/runtime"
-
-// ── Tool definition ──────────────────────────────────────────────
-
-export const surfaceToolDef: OpenAI.ChatCompletionFunctionTool = {
-  type: "function",
-  function: {
-    name: "surface",
-    description:
-      "share a thought outward — deliver an answer, ask a follow-up, or surface progress to whoever needs to hear it. pass delegationId to address a held thought (see your attention queue above), or friendId for spontaneous outreach. does not end your turn.",
-    parameters: {
-      type: "object",
-      properties: {
-        content: {
-          type: "string",
-          description: "the message to deliver",
-        },
-        delegationId: {
-          type: "string",
-          description: "ID from your attention queue — addresses a specific held thought",
-        },
-        friendId: {
-          type: "string",
-          description: "friend to reach out to spontaneously (when not addressing a held thought)",
-        },
-      },
-      required: ["content"],
-    },
-  },
-}
 
 // ── Routing result ───────────────────────────────────────────────
 

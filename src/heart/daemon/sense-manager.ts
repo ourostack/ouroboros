@@ -2,7 +2,6 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { readBlueBubblesRuntimeState } from "../../senses/bluebubbles-runtime-state"
 import { DEFAULT_AGENT_SENSES, type AgentSensesConfig, type SenseName } from "../identity"
 import { getSenseInventory, type SenseRuntimeInfo, type SenseStatus } from "../sense-truth"
 import { DaemonProcessManager } from "./process-manager"
@@ -212,6 +211,32 @@ function blueBubblesRuntimeStateIsFresh(lastCheckedAt?: string, now = Date.now()
   return checkedAt >= now - BLUEBUBBLES_RUNTIME_FRESHNESS_WINDOW_MS
 }
 
+// Minimal BlueBubbles runtime state shape — read directly from JSON to avoid
+// importing from senses/ (heart must not depend on senses).
+interface BlueBubblesRuntimeStateSlice {
+  upstreamStatus: "unknown" | "ok" | "error"
+  detail: string
+  lastCheckedAt?: string
+}
+
+function readBlueBubblesRuntimeJson(runtimePath: string): BlueBubblesRuntimeStateSlice {
+  try {
+    const raw = fs.readFileSync(runtimePath, "utf-8")
+    const parsed = JSON.parse(raw) as Partial<BlueBubblesRuntimeStateSlice>
+    return {
+      upstreamStatus: parsed.upstreamStatus === "ok" || parsed.upstreamStatus === "error"
+        ? parsed.upstreamStatus
+        : "unknown",
+      detail: typeof parsed.detail === "string" && parsed.detail.trim()
+        ? parsed.detail
+        : "startup health probe pending",
+      lastCheckedAt: typeof parsed.lastCheckedAt === "string" ? parsed.lastCheckedAt : undefined,
+    }
+  } catch {
+    return { upstreamStatus: "unknown", detail: "startup health probe pending" }
+  }
+}
+
 function readBlueBubblesRuntimeFacts(
   agent: string,
   bundlesRoot: string,
@@ -223,7 +248,7 @@ function readBlueBubblesRuntimeFacts(
     return { runtime: snapshot?.runtime }
   }
 
-  const state = readBlueBubblesRuntimeState(agent, agentRoot)
+  const state = readBlueBubblesRuntimeJson(runtimePath)
   if (!blueBubblesRuntimeStateIsFresh(state.lastCheckedAt)) {
     return { runtime: snapshot?.runtime }
   }
