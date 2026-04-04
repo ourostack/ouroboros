@@ -100,9 +100,10 @@ vi.mock("../../senses/bluebubbles", () => ({
     mockSendProactiveBlueBubblesMessageToSession(...args),
 }))
 
-vi.mock("../../mind/obligations", () => ({
-  advanceObligation: (...args: any[]) => mockAdvanceObligation(...args),
-  listActiveObligations: (...args: any[]) => mockListActiveObligations(...args),
+vi.mock("../../heart/obligations", async (importOriginal) => ({
+  ...await importOriginal() as any,
+  advanceReturnObligation: (...args: any[]) => mockAdvanceObligation(...args),
+  listActiveReturnObligations: (...args: any[]) => mockListActiveObligations(...args),
 }))
 
 vi.mock("../../senses/habit-turn-message", () => ({
