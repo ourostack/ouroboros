@@ -772,9 +772,7 @@ export class OuroDaemon {
   }
 
   private async handleCommandInner(command: DaemonCommand): Promise<DaemonResponse> {
-    /* v8 ignore start -- branch: not all switch cases are reached in every test suite run; agent.senseTurn tested via MCP integration @preserve */
     switch (command.kind) {
-    /* v8 ignore stop */
       case "daemon.start":
         await this.start()
         return { ok: true, message: "daemon started" }
@@ -836,7 +834,6 @@ export class OuroDaemon {
         return handleAgentReportBlocker(command)
       case "agent.reportComplete":
         return handleAgentReportComplete(command)
-      /* v8 ignore start -- agent.senseTurn: end-to-end path tested via MCP send_message tests; daemon handler delegates to runSenseTurn which is covered at pipeline level @preserve */
       case "agent.senseTurn": {
         // Dynamic import: lazy-loads shared-turn on first use. Hot-reload works
         // because ouro dev restarts the daemon process (fresh module cache),
