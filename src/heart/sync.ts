@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks"
 import { execFileSync } from "child_process"
 import * as fs from "fs"
 import * as path from "path"
@@ -10,27 +11,37 @@ export interface SyncResult {
 }
 
 /**
- * Turn-scoped write tracker.
- * Continuity writers (episodes, obligations, cares, intentions, diary, presence)
- * call trackSyncWrite() after every fs write. drainSyncWrites() returns the
- * accumulated set and resets it for the next turn.
+ * Turn-scoped write tracker using AsyncLocalStorage.
+ * Each turn runs inside its own async context (via runWithSyncContext),
+ * so concurrent turns from different senses never share or clobber each
+ * other's tracked writes.
+ *
+ * Continuity writers (episodes, obligations, cares, intentions, diary)
+ * call trackSyncWrite() after every fs write. drainSyncWrites() returns
+ * the current turn's accumulated set and clears it.
  */
-const turnWrites = new Set<string>()
+const syncContext = new AsyncLocalStorage<Set<string>>()
 
-/** Clear all tracked writes. Called at turn start to guarantee a clean slate. */
-export function resetSyncWrites(): void {
-  turnWrites.clear()
+/**
+ * Run a function inside its own sync-write tracking context.
+ * All trackSyncWrite / drainSyncWrites calls within `fn` (including
+ * across awaits) operate on a private Set scoped to this invocation.
+ */
+export function runWithSyncContext<T>(fn: () => T): T {
+  return syncContext.run(new Set<string>(), fn)
 }
 
-/** Register an absolute file path written during this turn. */
+/** Register an absolute file path written during this turn. No-op if called outside a sync context. */
 export function trackSyncWrite(absolutePath: string): void {
-  turnWrites.add(absolutePath)
+  syncContext.getStore()?.add(absolutePath)
 }
 
-/** Return all paths written this turn and clear the set. */
+/** Return all paths written this turn and clear the set. Returns [] if called outside a sync context. */
 export function drainSyncWrites(): string[] {
-  const paths = [...turnWrites]
-  turnWrites.clear()
+  const store = syncContext.getStore()
+  if (!store) return []
+  const paths = [...store]
+  store.clear()
   return paths
 }
 

@@ -96,121 +96,157 @@ describe("preTurnPull", () => {
   })
 })
 
-describe("resetSyncWrites / trackSyncWrite / drainSyncWrites", () => {
-  beforeEach(async () => {
-    const { drainSyncWrites } = await import("../../heart/sync")
-    drainSyncWrites() // clear any stale state
+describe("runWithSyncContext / trackSyncWrite / drainSyncWrites", () => {
+  it("collects written paths and drains them inside a context", async () => {
+    const { runWithSyncContext, trackSyncWrite, drainSyncWrites } = await import("../../heart/sync")
+
+    runWithSyncContext(() => {
+      trackSyncWrite("/agent/arc/episodes/ep-1.json")
+      trackSyncWrite("/agent/arc/obligations/ob-1.json")
+
+      const paths = drainSyncWrites()
+      expect(paths).toHaveLength(2)
+      expect(paths).toContain("/agent/arc/episodes/ep-1.json")
+      expect(paths).toContain("/agent/arc/obligations/ob-1.json")
+    })
   })
 
-  it("collects written paths and drains them", async () => {
+  it("returns empty array when no writes tracked inside a context", async () => {
+    const { runWithSyncContext, drainSyncWrites } = await import("../../heart/sync")
+
+    runWithSyncContext(() => {
+      expect(drainSyncWrites()).toEqual([])
+    })
+  })
+
+  it("returns empty array when called outside any context", async () => {
+    const { drainSyncWrites } = await import("../../heart/sync")
+    expect(drainSyncWrites()).toEqual([])
+  })
+
+  it("trackSyncWrite is a silent no-op outside any context", async () => {
     const { trackSyncWrite, drainSyncWrites } = await import("../../heart/sync")
 
-    trackSyncWrite("/agent/arc/episodes/ep-1.json")
-    trackSyncWrite("/agent/arc/obligations/ob-1.json")
-
-    const paths = drainSyncWrites()
-    expect(paths).toHaveLength(2)
-    expect(paths).toContain("/agent/arc/episodes/ep-1.json")
-    expect(paths).toContain("/agent/arc/obligations/ob-1.json")
-  })
-
-  it("returns empty array when no writes tracked", async () => {
-    const { drainSyncWrites } = await import("../../heart/sync")
+    // Should not throw
+    trackSyncWrite("/agent/arc/episodes/stray.json")
+    // And nothing is tracked globally
     expect(drainSyncWrites()).toEqual([])
   })
 
   it("clears the set after drain", async () => {
-    const { trackSyncWrite, drainSyncWrites } = await import("../../heart/sync")
+    const { runWithSyncContext, trackSyncWrite, drainSyncWrites } = await import("../../heart/sync")
 
-    trackSyncWrite("/agent/arc/cares/care-1.json")
-    drainSyncWrites()
-
-    expect(drainSyncWrites()).toEqual([])
+    runWithSyncContext(() => {
+      trackSyncWrite("/agent/arc/cares/care-1.json")
+      drainSyncWrites()
+      expect(drainSyncWrites()).toEqual([])
+    })
   })
 
   it("deduplicates paths", async () => {
-    const { trackSyncWrite, drainSyncWrites } = await import("../../heart/sync")
+    const { runWithSyncContext, trackSyncWrite, drainSyncWrites } = await import("../../heart/sync")
 
-    trackSyncWrite("/agent/diary/facts.jsonl")
-    trackSyncWrite("/agent/diary/facts.jsonl")
-
-    expect(drainSyncWrites()).toHaveLength(1)
+    runWithSyncContext(() => {
+      trackSyncWrite("/agent/diary/facts.jsonl")
+      trackSyncWrite("/agent/diary/facts.jsonl")
+      expect(drainSyncWrites()).toHaveLength(1)
+    })
   })
 
-  it("resetSyncWrites clears accumulated writes before drain", async () => {
-    const { trackSyncWrite, resetSyncWrites, drainSyncWrites } = await import("../../heart/sync")
+  it("two sequential contexts do not cross-contaminate", async () => {
+    const { runWithSyncContext, trackSyncWrite, drainSyncWrites } = await import("../../heart/sync")
 
-    trackSyncWrite("/agent/arc/episodes/ep-1.json")
-    trackSyncWrite("/agent/arc/obligations/ob-1.json")
+    // Context 1
+    runWithSyncContext(() => {
+      trackSyncWrite("/agent/arc/cares/care-a.json")
+      trackSyncWrite("/agent/diary/facts.jsonl")
+      const turn1 = drainSyncWrites()
+      expect(turn1).toHaveLength(2)
+    })
 
-    resetSyncWrites()
-
-    const paths = drainSyncWrites()
-    expect(paths).toEqual([])
+    // Context 2: completely isolated
+    runWithSyncContext(() => {
+      trackSyncWrite("/agent/arc/obligations/ob-b.json")
+      const turn2 = drainSyncWrites()
+      expect(turn2).toHaveLength(1)
+      expect(turn2).toEqual(["/agent/arc/obligations/ob-b.json"])
+    })
   })
 
-  it("resetSyncWrites at turn start means a fresh accumulator each turn", async () => {
-    const { trackSyncWrite, resetSyncWrites, drainSyncWrites } = await import("../../heart/sync")
+  it("two concurrent async contexts do not share writes", async () => {
+    const { runWithSyncContext, trackSyncWrite, drainSyncWrites } = await import("../../heart/sync")
 
-    // Simulate turn 1
-    resetSyncWrites()
-    trackSyncWrite("/agent/arc/episodes/turn1.json")
-    const turn1Paths = drainSyncWrites()
-    expect(turn1Paths).toEqual(["/agent/arc/episodes/turn1.json"])
+    const results: { turn1: string[]; turn2: string[] } = { turn1: [], turn2: [] }
 
-    // Simulate turn 2: reset guarantees clean slate
-    resetSyncWrites()
-    trackSyncWrite("/agent/arc/episodes/turn2.json")
-    const turn2Paths = drainSyncWrites()
-    expect(turn2Paths).toEqual(["/agent/arc/episodes/turn2.json"])
-    // turn1's path must not appear in turn2
-    expect(turn2Paths).not.toContain("/agent/arc/episodes/turn1.json")
+    // Simulate two overlapping async turns
+    const turn1 = runWithSyncContext(async () => {
+      trackSyncWrite("/agent/arc/episodes/turn1-a.json")
+      // Yield to allow turn2 to interleave
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      trackSyncWrite("/agent/arc/episodes/turn1-b.json")
+      results.turn1 = drainSyncWrites()
+    })
+
+    const turn2 = runWithSyncContext(async () => {
+      trackSyncWrite("/agent/arc/obligations/turn2-a.json")
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      trackSyncWrite("/agent/arc/obligations/turn2-b.json")
+      results.turn2 = drainSyncWrites()
+    })
+
+    await Promise.all([turn1, turn2])
+
+    // Each turn sees only its own writes
+    expect(results.turn1).toHaveLength(2)
+    expect(results.turn1).toContain("/agent/arc/episodes/turn1-a.json")
+    expect(results.turn1).toContain("/agent/arc/episodes/turn1-b.json")
+
+    expect(results.turn2).toHaveLength(2)
+    expect(results.turn2).toContain("/agent/arc/obligations/turn2-a.json")
+    expect(results.turn2).toContain("/agent/arc/obligations/turn2-b.json")
+
+    // No cross-contamination
+    expect(results.turn1).not.toContain("/agent/arc/obligations/turn2-a.json")
+    expect(results.turn2).not.toContain("/agent/arc/episodes/turn1-a.json")
   })
 
-  it("two sequential turns do not cross-contaminate", async () => {
-    const { trackSyncWrite, resetSyncWrites, drainSyncWrites } = await import("../../heart/sync")
+  it("errored context still allows drain in finally", async () => {
+    const { runWithSyncContext, trackSyncWrite, drainSyncWrites } = await import("../../heart/sync")
 
-    // Turn 1
-    resetSyncWrites()
-    trackSyncWrite("/agent/arc/cares/care-a.json")
-    trackSyncWrite("/agent/diary/facts.jsonl")
-    const turn1 = drainSyncWrites()
-
-    // Turn 2: even without drain of turn1 leaking, reset ensures isolation
-    resetSyncWrites()
-    trackSyncWrite("/agent/arc/obligations/ob-b.json")
-    const turn2 = drainSyncWrites()
-
-    expect(turn1).toHaveLength(2)
-    expect(turn2).toHaveLength(1)
-    expect(turn2).toEqual(["/agent/arc/obligations/ob-b.json"])
+    let drained: string[] = []
+    try {
+      runWithSyncContext(() => {
+        trackSyncWrite("/agent/arc/episodes/errored.json")
+        try {
+          throw new Error("simulated error")
+        } finally {
+          drained = drainSyncWrites()
+        }
+      })
+    } catch {
+      // expected
+    }
+    expect(drained).toEqual(["/agent/arc/episodes/errored.json"])
   })
 
-  it("errored turns still drain via reset+drain pattern (no leaked writes)", async () => {
-    const { trackSyncWrite, resetSyncWrites, drainSyncWrites } = await import("../../heart/sync")
+  it("nested runWithSyncContext creates independent scopes", async () => {
+    const { runWithSyncContext, trackSyncWrite, drainSyncWrites } = await import("../../heart/sync")
 
-    // Simulate an errored turn that writes but doesn't drain
-    resetSyncWrites()
-    trackSyncWrite("/agent/arc/episodes/errored.json")
-    // Simulate error: the turn throws before reaching drain.
-    // In the pipeline, the finally block would call drainSyncWrites().
-    // Here we simulate the finally:
-    const erroredTurnWrites = drainSyncWrites()
-    expect(erroredTurnWrites).toEqual(["/agent/arc/episodes/errored.json"])
+    let innerDrained: string[] = []
 
-    // Next turn: must start clean
-    resetSyncWrites()
-    const nextTurnWrites = drainSyncWrites()
-    expect(nextTurnWrites).toEqual([])
-  })
+    runWithSyncContext(() => {
+      trackSyncWrite("/agent/outer.json")
 
-  it("reset is idempotent on empty set", async () => {
-    const { resetSyncWrites, drainSyncWrites } = await import("../../heart/sync")
+      runWithSyncContext(() => {
+        trackSyncWrite("/agent/inner.json")
+        innerDrained = drainSyncWrites()
+      })
 
-    resetSyncWrites()
-    resetSyncWrites()
+      const outerDrained = drainSyncWrites()
+      expect(outerDrained).toEqual(["/agent/outer.json"])
+    })
 
-    expect(drainSyncWrites()).toEqual([])
+    expect(innerDrained).toEqual(["/agent/inner.json"])
   })
 })
 
