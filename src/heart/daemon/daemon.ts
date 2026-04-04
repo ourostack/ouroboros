@@ -772,8 +772,9 @@ export class OuroDaemon {
   }
 
   private async handleCommandInner(command: DaemonCommand): Promise<DaemonResponse> {
-    /* v8 ignore next -- branch: agent.senseTurn case tested via MCP integration; switch branch count is a v8 quirk @preserve */
+    /* v8 ignore start -- branch: not all switch cases are reached in every test suite run; agent.senseTurn tested via MCP integration @preserve */
     switch (command.kind) {
+    /* v8 ignore stop */
       case "daemon.start":
         await this.start()
         return { ok: true, message: "daemon started" }
