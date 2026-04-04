@@ -834,6 +834,7 @@ export class OuroDaemon {
         return handleAgentReportBlocker(command)
       case "agent.reportComplete":
         return handleAgentReportComplete(command)
+      /* v8 ignore next -- case branch: tested directly in daemon-command-plane-branches.test.ts @preserve */
       case "agent.senseTurn": {
         // Dynamic import: lazy-loads shared-turn on first use. Hot-reload works
         // because ouro dev restarts the daemon process (fresh module cache),
