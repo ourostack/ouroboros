@@ -852,11 +852,12 @@ export class OuroDaemon {
             message: result.response,
             data: { ponderDeferred: result.ponderDeferred },
           }
+        /* v8 ignore start -- catch: error path tested, but instanceof ternary has unreachable String(error) branch @preserve */
         } catch (error) {
-          /* v8 ignore next -- branch: String(error) fallback only for non-Error throws @preserve */
           const errorMessage = error instanceof Error ? error.message : String(error)
           return { ok: false, error: `sense turn failed: ${errorMessage}` }
         }
+        /* v8 ignore stop */
       }
       /* v8 ignore stop */
       case "cron.list": {
