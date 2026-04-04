@@ -20,6 +20,7 @@ exports[`tool registry contract > tool surface area snapshot 1`] = `
   "intention_manage",
   "list_skills",
   "load_skill",
+  "propose_config",
   "query_active_work",
   "query_cares",
   "query_episodes",
