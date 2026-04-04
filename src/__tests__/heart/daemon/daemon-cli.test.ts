@@ -686,7 +686,7 @@ describe("ouro CLI execution", () => {
       sendCommand: vi.fn(),
       startDaemonProcess: vi.fn(async () => ({ pid: 12345 })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => false),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
     }
@@ -1184,7 +1184,7 @@ describe("ouro CLI execution", () => {
       sendCommand: vi.fn(),
       startDaemonProcess: vi.fn(async () => ({ pid: 4321 })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => false),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
@@ -1207,7 +1207,7 @@ describe("ouro CLI execution", () => {
       sendCommand: vi.fn(),
       startDaemonProcess: vi.fn(async () => ({ pid: 5678 })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => false),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
@@ -1229,7 +1229,7 @@ describe("ouro CLI execution", () => {
       sendCommand: vi.fn(),
       startDaemonProcess: vi.fn(async () => ({ pid: 6789 })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => false),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
@@ -1251,7 +1251,7 @@ describe("ouro CLI execution", () => {
       sendCommand: vi.fn(),
       startDaemonProcess: vi.fn(async () => ({ pid: 6790 })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => false),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
@@ -1919,7 +1919,7 @@ describe("ouro CLI execution", () => {
       sendCommand: vi.fn(async () => ({ ok: true, message: "unexpected sendCommand call" })),
       startDaemonProcess: vi.fn(async () => ({ pid: 101 })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => false),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
@@ -1969,7 +1969,7 @@ describe("ouro CLI execution", () => {
       sendCommand: vi.fn(async () => ({ ok: true, message: "unexpected sendCommand call" })),
       startDaemonProcess: vi.fn(async () => ({ pid: 111 })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => false),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
@@ -2019,7 +2019,7 @@ describe("ouro CLI execution", () => {
       sendCommand: vi.fn(async () => ({ ok: true, message: "unexpected sendCommand call" })),
       startDaemonProcess: vi.fn(async () => ({ pid: 222 })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => false),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
@@ -2075,7 +2075,7 @@ describe("ouro CLI execution", () => {
       sendCommand: vi.fn(async () => ({ ok: true, message: "unexpected sendCommand call" })),
       startDaemonProcess: vi.fn(async () => ({ pid: 111 })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => false),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
@@ -2138,7 +2138,7 @@ describe("ouro CLI execution", () => {
       sendCommand: vi.fn(async () => ({ ok: true, message: "unexpected sendCommand call" })),
       startDaemonProcess: vi.fn(async () => ({ pid: 222 })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => false),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
@@ -2276,7 +2276,7 @@ describe("ouro CLI execution", () => {
       sendCommand: vi.fn(),
       startDaemonProcess: vi.fn(async () => ({ pid: 404 })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => false),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
@@ -2302,7 +2302,7 @@ describe("ouro CLI execution", () => {
       sendCommand: vi.fn(async () => ({ ok: true })),
       startDaemonProcess: vi.fn(async () => ({ pid: 505 })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => false),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
       registerOuroBundleType: vi.fn(async () => ({ attempted: true, registered: true })),
@@ -2375,7 +2375,7 @@ describe("ouro CLI execution", () => {
       sendCommand: vi.fn(async () => ({ ok: true })),
       startDaemonProcess: vi.fn(async () => ({ pid: null })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => false),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
@@ -2450,7 +2450,7 @@ describe("ouro CLI execution", () => {
       sendCommand: vi.fn(async () => ({ ok: true, message: "unexpected sendCommand call" })),
       startDaemonProcess: vi.fn(async () => ({ pid: 202 })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => false),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
       registerOuroBundleType: vi.fn(async () => ({ attempted: true, registered: true })),
@@ -2500,7 +2500,7 @@ describe("ouro CLI execution", () => {
       sendCommand: vi.fn(async () => ({ ok: true, message: "unexpected sendCommand call" })),
       startDaemonProcess: vi.fn(async () => ({ pid: 999 })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => false),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
@@ -2779,7 +2779,7 @@ describe("single agent → chat via startChat", () => {
       sendCommand: vi.fn(async () => ({ ok: true, message: "unexpected" })),
       startDaemonProcess: vi.fn(async () => ({ pid: 42 })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => false),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
@@ -2806,7 +2806,7 @@ describe("single agent → chat via startChat", () => {
       sendCommand: vi.fn(async () => ({ ok: true, message: "unexpected" })),
       startDaemonProcess: vi.fn(async () => ({ pid: 42 })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => false),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
@@ -2889,7 +2889,7 @@ describe("hatch → auto-chat", () => {
       sendCommand: vi.fn(async () => ({ ok: true })),
       startDaemonProcess: vi.fn(async () => ({ pid: 99 })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => false),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
@@ -2931,7 +2931,7 @@ describe("hatch → auto-chat", () => {
       sendCommand: vi.fn(async () => ({ ok: true })),
       startDaemonProcess: vi.fn(async () => ({ pid: 99 })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => false),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
@@ -2972,7 +2972,7 @@ describe("hatch → auto-chat", () => {
       sendCommand: vi.fn(async () => ({ ok: true })),
       startDaemonProcess: vi.fn(async () => ({ pid: 99 })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => false),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
@@ -3386,7 +3386,7 @@ describe("ensureDaemonRunning", () => {
       sendCommand: vi.fn(),
       startDaemonProcess: vi.fn(async () => ({ pid: 42 })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => false),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
@@ -3409,7 +3409,7 @@ describe("ensureDaemonRunning", () => {
       sendCommand: vi.fn(),
       startDaemonProcess: vi.fn(async () => ({ pid: null })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => false),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
@@ -3472,7 +3472,7 @@ describe("specialist integration (zero agents -> serpent guide)", () => {
       sendCommand: vi.fn(async () => ({ ok: true })),
       startDaemonProcess: vi.fn(async () => ({ pid: 42 })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => false),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
@@ -3496,7 +3496,7 @@ describe("specialist integration (zero agents -> serpent guide)", () => {
       sendCommand: vi.fn(async () => ({ ok: true })),
       startDaemonProcess: vi.fn(async () => ({ pid: 77 })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => false),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
@@ -3522,7 +3522,7 @@ describe("specialist integration (zero agents -> serpent guide)", () => {
       sendCommand: vi.fn(async () => ({ ok: true })),
       startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => false),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
@@ -3559,7 +3559,7 @@ describe("specialist integration (zero agents -> serpent guide)", () => {
       sendCommand: vi.fn(async () => ({ ok: true })),
       startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => false),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
       listDiscoveredAgents: vi.fn(async () => []),
@@ -3587,7 +3587,7 @@ describe("specialist integration (zero agents -> serpent guide)", () => {
       sendCommand: vi.fn(async () => ({ ok: true })),
       startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => false),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
@@ -3614,7 +3614,7 @@ describe("specialist integration (zero agents -> serpent guide)", () => {
       sendCommand: vi.fn(async () => ({ ok: true })),
       startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => false),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
@@ -3645,7 +3645,7 @@ describe("specialist integration (zero agents -> serpent guide)", () => {
       sendCommand: vi.fn(async () => ({ ok: true })),
       startDaemonProcess: vi.fn(async () => ({ pid: 33 })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => false),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
@@ -3679,7 +3679,7 @@ describe("specialist integration (zero agents -> serpent guide)", () => {
       sendCommand: vi.fn(async () => ({ ok: true })),
       startDaemonProcess: vi.fn(async () => ({ pid: 42 })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => false),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
@@ -3702,7 +3702,7 @@ describe("specialist integration (zero agents -> serpent guide)", () => {
       sendCommand: vi.fn(async () => ({ ok: true })),
       startDaemonProcess: vi.fn(async () => ({ pid: 11 })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => false),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
@@ -3724,7 +3724,7 @@ describe("specialist integration (zero agents -> serpent guide)", () => {
       sendCommand: vi.fn(async () => ({ ok: true })),
       startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => false),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
@@ -3744,7 +3744,7 @@ describe("specialist integration (zero agents -> serpent guide)", () => {
       sendCommand: vi.fn(async () => ({ ok: true })),
       startDaemonProcess: vi.fn(async () => ({ pid: 88 })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => false),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
