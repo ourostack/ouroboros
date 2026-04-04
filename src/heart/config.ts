@@ -420,10 +420,15 @@ export interface SyncConfig {
 }
 
 export function getSyncConfig(): SyncConfig {
-  const agentConfig = loadAgentConfig()
-  return {
-    enabled: agentConfig.sync?.enabled ?? false,
-    remote: agentConfig.sync?.remote ?? "origin",
+  try {
+    const agentConfig = loadAgentConfig()
+    return {
+      enabled: agentConfig.sync?.enabled ?? false,
+      remote: agentConfig.sync?.remote ?? "origin",
+    }
+  } catch {
+    /* v8 ignore next -- defensive: loadAgentConfig failure in test/bootstrap @preserve */
+    return { enabled: false, remote: "origin" }
   }
 }
 

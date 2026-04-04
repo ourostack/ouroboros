@@ -569,7 +569,8 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
 
   // Step 4b-pre: Pre-turn sync pull (opt-in)
   let syncFailure: string | undefined
-  const syncConfig = getSyncConfig()
+  let syncConfig: import("../heart/config").SyncConfig = { enabled: false, remote: "origin" }
+  try { syncConfig = getSyncConfig() } catch { /* config not available */ }
   if (syncConfig.enabled) {
     const pullResult = preTurnPull(getAgentRoot(), syncConfig)
     if (!pullResult.ok) {
