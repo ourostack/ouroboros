@@ -486,6 +486,30 @@ describe("daemon command plane branches", () => {
     fs.rmSync(unreadableRoot, { force: true })
   })
 
+  it("daemon routes agent.senseTurn to handleAgentSenseTurn", async () => {
+    const socketPath = tmpSocketPath("daemon-sense-turn-route")
+    const { daemon } = make(socketPath)
+
+    vi.doMock("../../../senses/shared-turn", () => ({
+      runSenseTurn: vi.fn().mockResolvedValue({
+        response: "routed correctly",
+        ponderDeferred: false,
+      }),
+    }))
+
+    const result = await daemon.handleCommand({
+      kind: "agent.senseTurn",
+      agent: "test-agent",
+      friendId: "friend-1",
+      channel: "mcp",
+      sessionKey: "session-abc",
+      message: "hello",
+    })
+
+    expect(result.ok).toBe(true)
+    expect(result.message).toBe("routed correctly")
+  })
+
   it("handleAgentSenseTurn runs a full turn and returns response", async () => {
     vi.doMock("../../../senses/shared-turn", () => ({
       runSenseTurn: vi.fn().mockResolvedValue({
