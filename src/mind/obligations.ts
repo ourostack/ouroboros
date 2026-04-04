@@ -2,6 +2,7 @@ import * as fs from "fs"
 import * as path from "path"
 import { getAgentRoot } from "../heart/identity"
 import { emitNervesEvent } from "../nerves/runtime"
+import { trackSyncWrite } from "../heart/sync"
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -43,6 +44,7 @@ export function createObligation(agentName: string, obligation: ReturnObligation
   fs.mkdirSync(dir, { recursive: true })
   const filePath = path.join(dir, `${obligation.id}.json`)
   fs.writeFileSync(filePath, JSON.stringify(obligation, null, 2), "utf8")
+  trackSyncWrite(filePath)
 
   emitNervesEvent({
     event: "mind.obligation_created",
@@ -90,7 +92,9 @@ export function advanceObligation(
   }
 
   const dir = getObligationsDir(agentName)
-  fs.writeFileSync(path.join(dir, `${obligationId}.json`), JSON.stringify(updated, null, 2), "utf8")
+  const advancedFilePath = path.join(dir, `${obligationId}.json`)
+  fs.writeFileSync(advancedFilePath, JSON.stringify(updated, null, 2), "utf8")
+  trackSyncWrite(advancedFilePath)
 
   emitNervesEvent({
     event: "mind.obligation_advanced",

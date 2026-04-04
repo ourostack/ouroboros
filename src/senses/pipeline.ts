@@ -37,7 +37,7 @@ import { writeAgentProviderSelection, loadAgentSecrets } from "../heart/daemon/a
 import { deriveTempo } from "../heart/tempo"
 import { buildTemporalView } from "../heart/temporal-view"
 import { buildWakePacket, renderWakePacket } from "../heart/wake-packet"
-import { preTurnPull, postTurnPush, drainSyncWrites } from "../heart/sync"
+import { preTurnPull, postTurnPush, drainSyncWrites, resetSyncWrites } from "../heart/sync"
 import { getSyncConfig } from "../heart/config"
 import { derivePresence, writePresence } from "../heart/presence"
 import { readRecentEpisodes, emitEpisode } from "../mind/episodes"
@@ -446,11 +446,20 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     sessionPath: session.sessionPath,
   }
 
+  // Reset turn-scoped sync write tracker before any writes can happen.
+  // Paired with drainSyncWrites() in the finally block below.
+  resetSyncWrites()
+
   // Step 3b: Pre-turn sync pull (opt-in) — MUST happen before any continuity state reads
   // so that obligations, episodes, cares, etc. reflect the latest remote state.
   let syncFailure: string | undefined
   let syncConfig: import("../heart/config").SyncConfig = { enabled: false, remote: "origin" }
   try { syncConfig = getSyncConfig() } catch { /* config not available */ }
+
+  // Wrap the turn body in try/finally so drainSyncWrites always runs — even on
+  // error or early-return failover paths. This prevents writes from leaking into
+  // the next turn's accumulator.
+  try {
   if (syncConfig.enabled) {
     const pullResult = preTurnPull(getAgentRoot(), syncConfig)
     if (!pullResult.ok) {
@@ -760,13 +769,6 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     : (Object.keys(continuingState).length > 0 ? continuingState : undefined)
   input.postTurn(sessionMessages, session.sessionPath, result.usage, undefined, nextState)
 
-  // Step 6b: Post-turn sync push (opt-in, turn-scoped writes only)
-  // Always drain to prevent unbounded accumulation when sync is disabled
-  const writtenPaths = drainSyncWrites()
-  if (syncConfig.enabled) {
-    postTurnPush(getAgentRoot(), syncConfig, writtenPaths)
-  }
-
   // Step 7: Token accumulation
   await input.accumulateFriendTokens(input.friendStore, resolvedContext.friend.id, result.usage)
 
@@ -798,5 +800,14 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     messages: sessionMessages,
     drainedPending: pending,
     ...(input.switchedProvider ? { switchedProvider: input.switchedProvider } : {}),
+  }
+  } finally {
+    // Step 6b: Post-turn sync push (opt-in, turn-scoped writes only).
+    // In a finally block so writes are always drained — even on error or early-return
+    // failover paths. This prevents writes from leaking into the next turn.
+    const writtenPaths = drainSyncWrites()
+    if (syncConfig.enabled && writtenPaths.length > 0) {
+      postTurnPush(getAgentRoot(), syncConfig, writtenPaths)
+    }
   }
 }
