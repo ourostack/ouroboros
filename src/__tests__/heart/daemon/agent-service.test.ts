@@ -5,7 +5,7 @@ import { emitNervesEvent } from "../../../nerves/runtime"
 vi.mock("../../../mind/diary", () => ({
   readDiaryEntries: vi.fn(() => []),
   searchDiaryEntries: vi.fn(async () => []),
-  resolveDiaryRoot: vi.fn((p: string) => p),
+  resolveDiaryRoot: vi.fn((p?: string) => p ?? "/mock/diary"),
 }))
 
 vi.mock("../../../heart/identity", () => ({
@@ -22,7 +22,7 @@ vi.mock("fs", () => ({
 }))
 
 import * as fs from "fs"
-import { readDiaryEntries, searchDiaryEntries } from "../../../mind/diary"
+import { readDiaryEntries, searchDiaryEntries, resolveDiaryRoot } from "../../../mind/diary"
 
 describe("agent-service handlers", () => {
   beforeEach(() => {
@@ -40,6 +40,18 @@ describe("agent-service handlers", () => {
       const r = await handleAgentStatus({ agent: "test", friendId: "f1" })
       expect(r.ok).toBe(true)
       expect(r.data).toMatchObject({ agent: "test", hasMemory: false, sessionCount: 0 })
+    })
+
+    it("resolves diary root via diary/ path, not psyche/memory/", async () => {
+      const { handleAgentStatus } = await import("../../../heart/daemon/agent-service")
+      await handleAgentStatus({ agent: "test", friendId: "f1" })
+      // agentDiaryRoot should pass diary/ path, not psyche/memory/
+      expect(vi.mocked(resolveDiaryRoot)).toHaveBeenCalledWith(
+        expect.stringContaining("/diary"),
+      )
+      expect(vi.mocked(resolveDiaryRoot)).not.toHaveBeenCalledWith(
+        expect.stringContaining("psyche/memory"),
+      )
     })
 
     it("reports memory when diary entries exist", async () => {
