@@ -78,11 +78,11 @@ describe("diary default path", () => {
     expect(facts[0].text).toBe("test fact")
   })
 
-  it("readDiaryEntries falls back to psyche/memory/ when diary/ does not exist", async () => {
-    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "diary-fallback-"))
+  it("readDiaryEntries does NOT fall back to psyche/memory/ -- always uses diary/", async () => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "diary-no-fallback-"))
     mockGetAgentRoot.mockReturnValue(agentRoot)
 
-    // Create psyche/memory/ with a facts file (legacy path)
+    // Create psyche/memory/ with a facts file (legacy path) but NOT diary/
     const legacyDir = path.join(agentRoot, "psyche", "memory")
     fs.mkdirSync(legacyDir, { recursive: true })
     const fact = { id: "f1", text: "legacy fact", source: "test", createdAt: "2026-03-25T00:00:00Z", embedding: [] }
@@ -90,8 +90,8 @@ describe("diary default path", () => {
 
     const { readDiaryEntries } = await import("../../mind/diary")
     const facts = readDiaryEntries()
-    expect(facts).toHaveLength(1)
-    expect(facts[0].text).toBe("legacy fact")
+    // Should return empty -- diary/ doesn't exist, and we no longer fall back to psyche/memory/
+    expect(facts).toHaveLength(0)
   })
 
   it("saveDiaryEntry writes to diary/ by default", async () => {
@@ -182,11 +182,11 @@ describe("injectAssociativeRecall diary path", () => {
     expect(messages[0].content).toContain("auth uses oauth2")
   })
 
-  it("falls back to psyche/memory/ when diary/ does not exist", async () => {
-    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "recall-fallback-"))
+  it("does NOT fall back to psyche/memory/ when diary/ does not exist", async () => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "recall-no-fallback-"))
     mockGetAgentRoot.mockReturnValue(agentRoot)
 
-    // Create psyche/memory/ with facts (legacy path)
+    // Create psyche/memory/ with facts (legacy path) but NOT diary/
     const legacyDir = path.join(agentRoot, "psyche", "memory")
     fs.mkdirSync(legacyDir, { recursive: true })
     const fact = { id: "f1", text: "legacy auth fact", source: "test", createdAt: "2026-03-25T00:00:00Z", embedding: [0.1, 0.2, 0.3] }
@@ -204,7 +204,8 @@ describe("injectAssociativeRecall diary path", () => {
     ]
 
     await injectAssociativeRecall(messages)
-    expect(messages[0].content).toContain("legacy auth fact")
+    // Should NOT contain legacy fact since we no longer fall back to psyche/memory/
+    expect(messages[0].content).not.toContain("legacy auth fact")
   })
 })
 
