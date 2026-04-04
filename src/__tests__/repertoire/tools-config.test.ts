@@ -164,6 +164,26 @@ describe("read_config tool", () => {
     expect(parsed.entries).toEqual([])
   })
 
+  it("handles dot-path traversal when intermediate value is not an object", async () => {
+    emitTestEvent("read_config handles non-object intermediate")
+    // Mock config where 'shell' is a string instead of an object
+    vi.mocked(fs.readFileSync).mockImplementation((filePath: unknown) => {
+      const p = String(filePath)
+      if (p.endsWith("agent.json")) {
+        return JSON.stringify({ ...SAMPLE_AGENT_JSON, shell: "broken" })
+      }
+      return ""
+    })
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const def = baseToolDefinitions.find(d => d.tool.function.name === "read_config")
+    const result = await def!.handler({ related_to: "shell" })
+    const parsed = JSON.parse(result)
+    const shellEntry = parsed.entries.find((e: Record<string, unknown>) => e.path === "shell.defaultTimeout")
+    expect(shellEntry).toBeDefined()
+    // Should fall back to default since the path couldn't be traversed
+    expect(shellEntry.currentValue).toBeNull()
+  })
+
   it("includes available-but-disabled features", async () => {
     emitTestEvent("read_config includes disabled features")
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
@@ -318,5 +338,41 @@ describe("update_config tool", () => {
     const parsed = JSON.parse(result)
     const marginEntry = parsed.entries.find((e: Record<string, unknown>) => e.path === "context.contextMargin")
     expect(marginEntry.currentValue).toBe(30)
+  })
+
+  it("T2 proposal handles path that does not resolve in current config", async () => {
+    emitTestEvent("update_config T2 proposal unresolvable path")
+    // Mock config with no sync section at all
+    vi.mocked(fs.readFileSync).mockImplementation((filePath: unknown) => {
+      const p = String(filePath)
+      if (p.endsWith("agent.json")) {
+        return JSON.stringify({ version: 2, enabled: true, humanFacing: { provider: "anthropic", model: "x" }, agentFacing: { provider: "anthropic", model: "x" }, phrases: { thinking: [], tool: [], followup: [] } })
+      }
+      return ""
+    })
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const def = baseToolDefinitions.find(d => d.tool.function.name === "update_config")
+    const result = await def!.handler({ path: "sync.enabled", value: "true" })
+    expect(result.toLowerCase()).toContain("proposal")
+    expect(result).toContain("undefined")
+  })
+
+  it("T1 creates nested parent objects when they do not exist", async () => {
+    emitTestEvent("update_config T1 creates nested parent")
+    // Mock config without shell section
+    vi.mocked(fs.readFileSync).mockImplementation((filePath: unknown) => {
+      const p = String(filePath)
+      if (p.endsWith("agent.json")) {
+        return JSON.stringify({ version: 2, enabled: true, humanFacing: { provider: "anthropic", model: "x" }, agentFacing: { provider: "anthropic", model: "x" }, phrases: { thinking: [], tool: [], followup: [] } })
+      }
+      return ""
+    })
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const def = baseToolDefinitions.find(d => d.tool.function.name === "update_config")
+    const result = await def!.handler({ path: "shell.defaultTimeout", value: "60000" })
+    expect(result.toLowerCase()).toContain("success")
+    const writeCall = vi.mocked(fs.writeFileSync).mock.calls[0]
+    const written = JSON.parse(writeCall[1] as string)
+    expect(written.shell.defaultTimeout).toBe(60000)
   })
 })
