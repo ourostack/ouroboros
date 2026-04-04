@@ -313,8 +313,8 @@ describe("bundleMetaHook", () => {
     expect(updated.bundleSchemaVersion).toBe(2)
   })
 
-  it("migration skips entities that already exist at target", async () => {
-    const agentRoot = createTempDir("bundle-meta-hook-skip-existing-")
+  it("migration keeps newer destination when destination is newer than source", async () => {
+    const agentRoot = createTempDir("bundle-meta-hook-dest-newer-")
     const metaPath = path.join(agentRoot, "bundle-meta.json")
     fs.writeFileSync(metaPath, JSON.stringify({
       runtimeVersion: "0.0.1",
@@ -322,19 +322,51 @@ describe("bundleMetaHook", () => {
       lastUpdated: "2025-01-01T00:00:00Z",
     }))
 
-    // Set up source and target with same file
+    // Set up source (older) and target (newer) with same file
     fs.mkdirSync(path.join(agentRoot, "state", "episodes"), { recursive: true })
-    fs.writeFileSync(path.join(agentRoot, "state", "episodes", "ep-1.json"), '{"id":"old"}')
+    fs.writeFileSync(path.join(agentRoot, "state", "episodes", "ep-1.json"), '{"id":"old-source"}')
+    // Set source mtime to the past
+    const pastTime = new Date("2025-01-01T00:00:00Z")
+    fs.utimesSync(path.join(agentRoot, "state", "episodes", "ep-1.json"), pastTime, pastTime)
+
     fs.mkdirSync(path.join(agentRoot, "arc", "episodes"), { recursive: true })
-    fs.writeFileSync(path.join(agentRoot, "arc", "episodes", "ep-1.json"), '{"id":"existing"}')
+    fs.writeFileSync(path.join(agentRoot, "arc", "episodes", "ep-1.json"), '{"id":"newer-dest"}')
 
     const ctx: UpdateHookContext = { agentRoot, currentVersion: "0.1.0", previousVersion: "0.0.1" }
     const result = await bundleMetaHook(ctx)
 
     expect(result.ok).toBe(true)
-    // Existing target file should not be overwritten
+    // Newer destination file should be kept
     const content = JSON.parse(fs.readFileSync(path.join(agentRoot, "arc", "episodes", "ep-1.json"), "utf-8"))
-    expect(content.id).toBe("existing")
+    expect(content.id).toBe("newer-dest")
+  })
+
+  it("migration overwrites destination when source is newer", async () => {
+    const agentRoot = createTempDir("bundle-meta-hook-src-newer-")
+    const metaPath = path.join(agentRoot, "bundle-meta.json")
+    fs.writeFileSync(metaPath, JSON.stringify({
+      runtimeVersion: "0.0.1",
+      bundleSchemaVersion: 1,
+      lastUpdated: "2025-01-01T00:00:00Z",
+    }))
+
+    // Set up destination (older) and source (newer) with same file
+    fs.mkdirSync(path.join(agentRoot, "arc", "episodes"), { recursive: true })
+    fs.writeFileSync(path.join(agentRoot, "arc", "episodes", "ep-1.json"), '{"id":"old-dest"}')
+    // Set dest mtime to the past
+    const pastTime = new Date("2025-01-01T00:00:00Z")
+    fs.utimesSync(path.join(agentRoot, "arc", "episodes", "ep-1.json"), pastTime, pastTime)
+
+    fs.mkdirSync(path.join(agentRoot, "state", "episodes"), { recursive: true })
+    fs.writeFileSync(path.join(agentRoot, "state", "episodes", "ep-1.json"), '{"id":"newer-source"}')
+
+    const ctx: UpdateHookContext = { agentRoot, currentVersion: "0.1.0", previousVersion: "0.0.1" }
+    const result = await bundleMetaHook(ctx)
+
+    expect(result.ok).toBe(true)
+    // Newer source file should overwrite destination
+    const content = JSON.parse(fs.readFileSync(path.join(agentRoot, "arc", "episodes", "ep-1.json"), "utf-8"))
+    expect(content.id).toBe("newer-source")
   })
 
   it("migration is lossless -- all source files arrive at destination", async () => {

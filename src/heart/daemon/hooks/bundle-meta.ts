@@ -76,8 +76,10 @@ function updateBundleGitignore(agentRoot: string): void {
 }
 
 /**
- * Recursively copy files from src to dest, skipping files that already exist at the destination.
+ * Recursively copy files from src to dest.
  * Creates destination directories as needed. Skips if source doesn't exist.
+ * When both source and destination exist, compares mtimes: newer file wins.
+ * Logs a warning either way when a collision is detected.
  */
 function migrateDirectory(src: string, dest: string): void {
   if (!fs.existsSync(src)) return
@@ -91,9 +93,29 @@ function migrateDirectory(src: string, dest: string): void {
 
     if (entry.isDirectory()) {
       migrateDirectory(srcPath, destPath)
+    } else if (!fs.existsSync(destPath)) {
+      fs.copyFileSync(srcPath, destPath)
     } else {
-      if (!fs.existsSync(destPath)) {
+      // Collision: both source and destination exist — compare mtimes
+      const srcMtime = fs.statSync(srcPath).mtimeMs
+      const destMtime = fs.statSync(destPath).mtimeMs
+      if (srcMtime > destMtime) {
         fs.copyFileSync(srcPath, destPath)
+        emitNervesEvent({
+          level: "warn",
+          component: "daemon",
+          event: "daemon.bundle_migration_collision",
+          message: `migration collision: source newer, overwriting destination`,
+          meta: { srcPath, destPath, srcMtime, destMtime },
+        })
+      } else {
+        emitNervesEvent({
+          level: "warn",
+          component: "daemon",
+          event: "daemon.bundle_migration_collision",
+          message: `migration collision: destination newer or equal, keeping destination`,
+          meta: { srcPath, destPath, srcMtime, destMtime },
+        })
       }
     }
   }
