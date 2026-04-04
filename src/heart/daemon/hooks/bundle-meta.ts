@@ -30,12 +30,49 @@ function migrateToSchema2(agentRoot: string): void {
   const diaryDest = path.join(agentRoot, "diary")
   migrateDirectory(memorySrc, diaryDest)
 
+  // Update bundle .gitignore
+  updateBundleGitignore(agentRoot)
+
   emitNervesEvent({
     component: "daemon",
     event: "daemon.bundle_migration_end",
     message: "bundle migration to schema 2 complete",
     meta: { agentRoot },
   })
+}
+
+/**
+ * Ensure bundle .gitignore has state/ ignored and does NOT ignore arc/, diary/, journal/.
+ */
+function updateBundleGitignore(agentRoot: string): void {
+  const gitignorePath = path.join(agentRoot, ".gitignore")
+  let lines: string[] = []
+
+  try {
+    if (fs.existsSync(gitignorePath)) {
+      lines = fs.readFileSync(gitignorePath, "utf-8").split("\n")
+    }
+  } catch {
+    // If we can't read, start fresh
+  }
+
+  // Remove arc/, diary/, journal/ from ignore (they should be tracked)
+  const toRemove = new Set(["arc/", "diary/", "journal/"])
+  lines = lines.filter((line) => !toRemove.has(line.trim()))
+
+  // Ensure state/ is in the ignore list
+  const hasState = lines.some((line) => line.trim() === "state/")
+  if (!hasState) {
+    lines.push("state/")
+  }
+
+  // Write back, trimming trailing empty lines and ensuring trailing newline
+  const content = lines.join("\n").replace(/\n+$/, "") + "\n"
+  try {
+    fs.writeFileSync(gitignorePath, content, "utf-8")
+  } catch {
+    // Non-blocking: if we can't write .gitignore, migration still succeeds
+  }
 }
 
 /**
