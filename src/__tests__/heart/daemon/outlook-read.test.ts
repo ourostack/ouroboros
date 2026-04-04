@@ -1335,7 +1335,7 @@ describe("outlook deep readers", () => {
       agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "orient-full-"))
       agentName = "test-agent"
       // Write obligation
-      writeJson(path.join(agentRoot, "state", "obligations", "ob-1.json"), {
+      writeJson(path.join(agentRoot, "arc", "obligations", "ob-1.json"), {
         id: "ob-1",
         status: "pending",
         content: "Deploy the new version",
@@ -1385,7 +1385,7 @@ describe("outlook deep readers", () => {
       }), "utf-8")
 
       // Write current obligation with different status
-      writeJson(path.join(agentRoot, "state", "obligations", "ob-1.json"), {
+      writeJson(path.join(agentRoot, "arc", "obligations", "ob-1.json"), {
         id: "ob-1",
         status: "in_progress",
         content: "Deploy v2",
@@ -1431,7 +1431,7 @@ describe("outlook deep readers", () => {
 
     it("returns obligations with primary selection", async () => {
       agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "oblig-full-"))
-      writeJson(path.join(agentRoot, "state", "obligations", "ob-1.json"), {
+      writeJson(path.join(agentRoot, "arc", "obligations", "ob-1.json"), {
         id: "ob-1",
         status: "pending",
         content: "Primary task",
@@ -1441,7 +1441,7 @@ describe("outlook deep readers", () => {
         meaning: { waitingOn: { detail: "nothing" } },
         updatedAt: "2026-04-03T10:00:00Z",
       })
-      writeJson(path.join(agentRoot, "state", "obligations", "ob-2.json"), {
+      writeJson(path.join(agentRoot, "arc", "obligations", "ob-2.json"), {
         id: "ob-2",
         status: "pending",
         content: "Secondary task",
@@ -1452,7 +1452,7 @@ describe("outlook deep readers", () => {
         updatedAt: "2026-04-03T09:00:00Z",
       })
       // Fulfilled obligations should be excluded
-      writeJson(path.join(agentRoot, "state", "obligations", "ob-3.json"), {
+      writeJson(path.join(agentRoot, "arc", "obligations", "ob-3.json"), {
         id: "ob-3",
         status: "fulfilled",
         content: "Done task",
