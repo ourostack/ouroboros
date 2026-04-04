@@ -526,6 +526,12 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     setMustResolveBeforeHandoff: (value) => {
       mustResolveBeforeHandoff = value
     },
+    // Pre-read state from TurnContext for prompt assembly
+    daemonRunning: ctx.daemonRunning,
+    senseStatusLines: ctx.senseStatusLines,
+    bundleMeta: ctx.bundleMeta,
+    daemonHealth: ctx.daemonHealth,
+    journalFiles: ctx.journalFiles,
     toolContext: {
       /* v8 ignore next -- default no-op signin satisfies interface; real signin injected by sense adapter @preserve */
       signin: async () => undefined,
