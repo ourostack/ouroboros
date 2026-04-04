@@ -96,7 +96,7 @@ describe("preTurnPull", () => {
   })
 })
 
-describe("trackSyncWrite / drainSyncWrites", () => {
+describe("resetSyncWrites / trackSyncWrite / drainSyncWrites", () => {
   beforeEach(async () => {
     const { drainSyncWrites } = await import("../../heart/sync")
     drainSyncWrites() // clear any stale state
@@ -135,6 +135,82 @@ describe("trackSyncWrite / drainSyncWrites", () => {
     trackSyncWrite("/agent/diary/facts.jsonl")
 
     expect(drainSyncWrites()).toHaveLength(1)
+  })
+
+  it("resetSyncWrites clears accumulated writes before drain", async () => {
+    const { trackSyncWrite, resetSyncWrites, drainSyncWrites } = await import("../../heart/sync")
+
+    trackSyncWrite("/agent/arc/episodes/ep-1.json")
+    trackSyncWrite("/agent/arc/obligations/ob-1.json")
+
+    resetSyncWrites()
+
+    const paths = drainSyncWrites()
+    expect(paths).toEqual([])
+  })
+
+  it("resetSyncWrites at turn start means a fresh accumulator each turn", async () => {
+    const { trackSyncWrite, resetSyncWrites, drainSyncWrites } = await import("../../heart/sync")
+
+    // Simulate turn 1
+    resetSyncWrites()
+    trackSyncWrite("/agent/arc/episodes/turn1.json")
+    const turn1Paths = drainSyncWrites()
+    expect(turn1Paths).toEqual(["/agent/arc/episodes/turn1.json"])
+
+    // Simulate turn 2: reset guarantees clean slate
+    resetSyncWrites()
+    trackSyncWrite("/agent/arc/episodes/turn2.json")
+    const turn2Paths = drainSyncWrites()
+    expect(turn2Paths).toEqual(["/agent/arc/episodes/turn2.json"])
+    // turn1's path must not appear in turn2
+    expect(turn2Paths).not.toContain("/agent/arc/episodes/turn1.json")
+  })
+
+  it("two sequential turns do not cross-contaminate", async () => {
+    const { trackSyncWrite, resetSyncWrites, drainSyncWrites } = await import("../../heart/sync")
+
+    // Turn 1
+    resetSyncWrites()
+    trackSyncWrite("/agent/arc/cares/care-a.json")
+    trackSyncWrite("/agent/diary/facts.jsonl")
+    const turn1 = drainSyncWrites()
+
+    // Turn 2: even without drain of turn1 leaking, reset ensures isolation
+    resetSyncWrites()
+    trackSyncWrite("/agent/arc/obligations/ob-b.json")
+    const turn2 = drainSyncWrites()
+
+    expect(turn1).toHaveLength(2)
+    expect(turn2).toHaveLength(1)
+    expect(turn2).toEqual(["/agent/arc/obligations/ob-b.json"])
+  })
+
+  it("errored turns still drain via reset+drain pattern (no leaked writes)", async () => {
+    const { trackSyncWrite, resetSyncWrites, drainSyncWrites } = await import("../../heart/sync")
+
+    // Simulate an errored turn that writes but doesn't drain
+    resetSyncWrites()
+    trackSyncWrite("/agent/arc/episodes/errored.json")
+    // Simulate error: the turn throws before reaching drain.
+    // In the pipeline, the finally block would call drainSyncWrites().
+    // Here we simulate the finally:
+    const erroredTurnWrites = drainSyncWrites()
+    expect(erroredTurnWrites).toEqual(["/agent/arc/episodes/errored.json"])
+
+    // Next turn: must start clean
+    resetSyncWrites()
+    const nextTurnWrites = drainSyncWrites()
+    expect(nextTurnWrites).toEqual([])
+  })
+
+  it("reset is idempotent on empty set", async () => {
+    const { resetSyncWrites, drainSyncWrites } = await import("../../heart/sync")
+
+    resetSyncWrites()
+    resetSyncWrites()
+
+    expect(drainSyncWrites()).toEqual([])
   })
 })
 

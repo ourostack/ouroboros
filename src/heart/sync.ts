@@ -17,6 +17,11 @@ export interface SyncResult {
  */
 const turnWrites = new Set<string>()
 
+/** Clear all tracked writes. Called at turn start to guarantee a clean slate. */
+export function resetSyncWrites(): void {
+  turnWrites.clear()
+}
+
 /** Register an absolute file path written during this turn. */
 export function trackSyncWrite(absolutePath: string): void {
   turnWrites.add(absolutePath)
