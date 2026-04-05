@@ -89,3 +89,8 @@ export const baseToolDefinitions: ToolDefinition[] = [
 // Convenience array of just the tool schemas (no handler/integration metadata).
 // Used by consumers that need the OpenAI function-tool format.
 export const tools: OpenAI.ChatCompletionFunctionTool[] = baseToolDefinitions.map((d) => d.tool);
+
+/* v8 ignore start -- module-level nerves file-completeness event @preserve */
+import { emitNervesEvent } from "../nerves/runtime"
+emitNervesEvent({ component: "repertoire", event: "repertoire.module_loaded", message: "tools-base loaded", meta: {} })
+/* v8 ignore stop */
