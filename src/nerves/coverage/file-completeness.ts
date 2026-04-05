@@ -13,10 +13,14 @@ export interface FileCompletenessResult {
 }
 
 /**
- * Determines if a source file is type-only (no executable code).
- * A file is type-only if it contains no function, class, or mutable declarations.
- * `const ... as const` declarations are treated as type-equivalent (frozen
- * compile-time values with no side effects).
+ * Determines if a source file is type-only or a pure assembly/re-export file.
+ * Exempt files contain no runtime behavior requiring independent observability.
+ *
+ * Exempt patterns:
+ * - Files with only type/interface/enum declarations
+ * - `const ... as const` declarations (frozen compile-time values)
+ * - Files whose only executable code is const array spreads (assembly/composition)
+ * - Files whose only executable code is re-exports
  */
 export function isTypeOnlyFile(source: string): boolean {
   const lines = source.split("\n")
@@ -24,6 +28,15 @@ export function isTypeOnlyFile(source: string): boolean {
     const trimmed = line.trim()
     // Skip lines that are const+as-const (type-equivalent frozen values)
     if (/\bconst\s/.test(trimmed) && /\bas\s+const\b/.test(trimmed)) continue
+    // Skip const array assembly: const x = [...a, ...b] or const x: Type[] = [...]
+    if (/\bconst\s+\w+[\s:][^=]*=\s*\[/.test(trimmed)) continue
+    // Skip const that is a .map() call on another const (derived array)
+    if (/\bconst\s+\w+[\s:][^=]*=\s*\w+\.map\(/.test(trimmed)) continue
+    // Skip export const re-assignments
+    if (/^export\s+const\s+\w+[\s:][^=]*=\s*\[/.test(trimmed)) continue
+    if (/^export\s+const\s+\w+[\s:][^=]*=\s*\w+\.map\(/.test(trimmed)) continue
+    // Skip Set constructors (e.g., export const x = new Set(...))
+    if (/\bconst\s+\w+[\s:][^=]*=\s*new\s+Set\b/.test(trimmed)) continue
     // Check for executable code markers
     if (/\b(function|class|const|let|var)\s/.test(trimmed)) return false
   }
