@@ -1,7 +1,7 @@
 import { emitNervesEvent } from "../../nerves/runtime"
 import { bundleMetaHook } from "./hooks/bundle-meta"
 import { agentConfigV2Hook } from "./hooks/agent-config-v2"
-import type { UpdateHook } from "./update-hooks"
+import type { UpdateHook } from "../versioning/update-hooks"
 
 export interface RunHooksDeps {
   bundlesRoot: string

@@ -9,7 +9,7 @@ import type { AgentProvider } from "../identity"
 import { isIdentityProvider } from "../../mind/friends/types"
 import type { Facing } from "../../mind/friends/channel"
 import type { TrustLevel } from "../../mind/friends/types"
-import type { HatchCredentialsInput } from "./hatch-flow"
+import type { HatchCredentialsInput } from "../hatch/hatch-flow"
 import type { OuroCliCommand } from "./cli-types"
 
 // ── Shared helpers ──

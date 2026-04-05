@@ -817,8 +817,8 @@ describe("ouro CLI execution", () => {
     }))
     const writeAgentProviderSelection = vi.fn()
 
-    vi.doMock("../../../heart/daemon/auth-flow", async () => {
-      const actual = await vi.importActual<typeof import("../../../heart/daemon/auth-flow")>("../../../heart/daemon/auth-flow")
+    vi.doMock("../../../heart/auth/auth-flow", async () => {
+      const actual = await vi.importActual<typeof import("../../../heart/auth/auth-flow")>("../../../heart/auth/auth-flow")
       return {
         ...actual,
         runRuntimeAuthFlow: defaultRunRuntimeAuthFlow,
@@ -852,7 +852,7 @@ describe("ouro CLI execution", () => {
       })
       expect(writeAgentProviderSelection).not.toHaveBeenCalled()
     } finally {
-      vi.doUnmock("../../../heart/daemon/auth-flow")
+      vi.doUnmock("../../../heart/auth/auth-flow")
       vi.resetModules()
     }
   })

@@ -20,7 +20,7 @@ import type { DaemonCommand, DaemonResponse } from "./daemon"
 import { getRuntimeMetadata } from "./runtime-metadata"
 import { detectRuntimeMode } from "./runtime-mode"
 import { ensureCurrentDaemonRuntime } from "./daemon-runtime-sync"
-import { applyPendingUpdates, registerUpdateHook } from "./update-hooks"
+import { applyPendingUpdates, registerUpdateHook } from "../versioning/update-hooks"
 import { bundleMetaHook } from "./hooks/bundle-meta"
 import { agentConfigV2Hook } from "./hooks/agent-config-v2"
 import { getChangelogPath, getPackageVersion } from "../../mind/bundle-manifest"
@@ -34,8 +34,8 @@ import {
   readAgentConfigForAgent,
   writeAgentProviderSelection,
   writeAgentModel,
-} from "./auth-flow"
-import { getOuroCliHome, buildChangelogCommand } from "./ouro-version-manager"
+} from "../auth/auth-flow"
+import { getOuroCliHome, buildChangelogCommand } from "../versioning/ouro-version-manager"
 
 import type {
   OuroCliCommand,
@@ -263,7 +263,7 @@ function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } 
 
 // ── Hatch input resolution ──
 
-async function resolveHatchInput(command: Extract<OuroCliCommand, { kind: "hatch.start" }>, deps: OuroCliDeps): Promise<import("./hatch-flow").HatchFlowInput> {
+async function resolveHatchInput(command: Extract<OuroCliCommand, { kind: "hatch.start" }>, deps: OuroCliDeps): Promise<import("../hatch/hatch-flow").HatchFlowInput> {
   const prompt = deps.promptInput
   const agentName = command.agentName ?? (prompt ? await prompt("Hatchling name: ") : "")
   const humanName = command.humanName ?? (prompt ? await prompt("Your name: ") : os.userInfo().username)
@@ -1301,7 +1301,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   /* v8 ignore start — mcp-serve block binds to process.stdin/stdout; tested via mcp-server unit tests */
   // ── mcp-serve: start MCP server in-process on stdin/stdout ──
   if (command.kind === "mcp-serve") {
-    const { createMcpServer } = await import("./mcp-server")
+    const { createMcpServer } = await import("../mcp/mcp-server")
     const friendId = command.friendId ?? `local-${os.userInfo().username}`
     const mcpSocketPath = (command as { socketOverride?: string }).socketOverride ?? deps.socketPath
     const server = createMcpServer({
@@ -1373,7 +1373,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
   // ── habit subcommands (local, no daemon socket needed) ──
   if (command.kind === "habit.list" || command.kind === "habit.create") {
-    const { parseHabitFile, renderHabitFile } = await import("./habit-parser")
+    const { parseHabitFile, renderHabitFile } = await import("../habits/habit-parser")
     /* v8 ignore start -- production default: uses real bundle root @preserve */
     const agentName = command.agent ?? getAgentName()
     const bundleRoot = deps.agentBundleRoot ?? path.join(getAgentBundlesRoot(), `${agentName}.ouro`)
@@ -1454,7 +1454,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   if (command.kind === "auth.run") {
     const provider = command.provider ?? readAgentConfigForAgent(command.agent).config.humanFacing.provider
     /* v8 ignore next -- tests always inject runAuthFlow; default is for production @preserve */
-    const authRunner = deps.runAuthFlow ?? (await import("./auth-flow")).runRuntimeAuthFlow
+    const authRunner = deps.runAuthFlow ?? (await import("../auth/auth-flow")).runRuntimeAuthFlow
     const result = await authRunner({
       agentName: command.agent,
       provider,

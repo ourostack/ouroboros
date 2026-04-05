@@ -4,7 +4,7 @@ import * as path from "path"
 import { afterEach, describe, expect, it } from "vitest"
 
 import { bundleMetaHook } from "../../../../heart/daemon/hooks/bundle-meta"
-import type { UpdateHookContext } from "../../../../heart/daemon/update-hooks"
+import type { UpdateHookContext } from "../../../../heart/versioning/update-hooks"
 
 const createdDirs: string[] = []
 

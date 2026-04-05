@@ -5,7 +5,7 @@ vi.mock("../../nerves/runtime", () => ({
 }))
 
 const mockLoadAgentSecrets = vi.fn()
-vi.mock("../../heart/daemon/auth-flow", () => ({
+vi.mock("../../heart/auth/auth-flow", () => ({
   loadAgentSecrets: (...args: any[]) => mockLoadAgentSecrets(...args),
 }))
 
