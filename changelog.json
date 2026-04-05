@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.213",
+      "changes": [
+        "cleanup: remove vestigial subagents/ directory and package.json files entry (content already in ouroboros-skills repo). Remove backward-compat re-exports from heart/core.ts (tools, execTool, summarizeArgs, getToolsForChannel, streamChatCompletion, streamResponsesApi, toResponsesInput, toResponsesTools, buildSystem, Channel, hasToolIntent — no consumers used them). Update ARCHITECTURE.md, README.md, and CONTRIBUTING.md to reflect the full audit restructuring: new arc/ subsystem, heart/ topic subdirectories, split tool modules, BlueBubbles directory, scopes list."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.212",
       "changes": [
         "refactor: consolidate BlueBubbles sense into senses/bluebubbles/ directory — move 9 flat files (bluebubbles.ts, bluebubbles-client.ts, bluebubbles-model.ts, bluebubbles-media.ts, bluebubbles-inbound-log.ts, bluebubbles-mutation-log.ts, bluebubbles-runtime-state.ts, bluebubbles-session-cleanup.ts, bluebubbles-entry.ts) into senses/bluebubbles/ with shorter names (index.ts, client.ts, model.ts, etc.). All imports updated across 20+ files including test files, sense-manager, daemon, and package.json."

@@ -136,14 +136,25 @@ Threads are treated as routing/context metadata, not as separate long-lived memo
 
 ## Subsystems
 
+- `src/arc/`
+  Durable continuity state — obligations, cares, episodes, intentions, presence, and attention types. This is the agent's sense of ongoing story: what they owe, what they care about, what happened, and what they intend to do next. Dependency rules: arc/ may import nerves/ (events) and heart/identity (paths) and heart/sync (write tracking); arc/ must not import mind/, senses/, or repertoire/.
 - `src/heart/`
-  Core engine, provider runtimes, identity/config loading, daemon, bootstrap, and entrypoints.
+  Core engine, provider runtimes, identity/config loading, daemon, bootstrap, and entrypoints. Organized into topic subdirectories:
+  - `heart/daemon/` — daemon lifecycle, CLI routing, process management, health, sockets (~37 files)
+  - `heart/outlook/` — Outlook/calendar integration (HTTP, read, render, types, view)
+  - `heart/habits/` — habit parsing, scheduling, and migration
+  - `heart/hatch/` — agent creation flow, specialist orchestration, animation
+  - `heart/versioning/` — version management, update checking, staged restart, wrapper publishing
+  - `heart/auth/` — OAuth/auth flow
+  - `heart/mcp/` — MCP server implementation
+  - `heart/providers/` — provider runtime adapters
+  - `heart/bridges/` — bridge state management
 - `src/mind/`
-  Prompt assembly, sessions, bundle manifest, diary (memory), journal indexing, phrases, formatting, and friend identity.
+  Prompt assembly, sessions, bundle manifest, diary (memory), associative recall, journal indexing, embedding providers, phrases, formatting, obligation steering, and friend identity.
 - `src/repertoire/`
-  Tool registry, coding orchestration, task tooling, skills (agent-level and harness-level), and integration clients.
+  Tool registry (split into category modules: tools-files, tools-shell, tools-memory, tools-bridge, tools-session, tools-continuity, tools-flow, tools-surface, tools-config, tools-bluebubbles, tools-teams, tools-github), coding orchestration, task tooling, skills, shared API client, and integration clients (Graph, ADO, GitHub).
 - `src/senses/`
-  CLI, Teams, BlueBubbles, MCP bridge, activity transport, trust gating, inner-dialog worker logic, and contextual heartbeat.
+  CLI (with TUI in senses/cli/), Teams, BlueBubbles (in senses/bluebubbles/), MCP bridge, activity transport, trust gating, inner-dialog worker logic, and contextual heartbeat.
 - `src/nerves/`
   Structured runtime events, log rotation, and deterministic audit coverage.
 
@@ -336,12 +347,12 @@ The serpent guide:
 
 Top-level repo layout:
 
-- `src/`
-- `subagents/`
-- `SerpentGuide.ouro/`
-- `docs/`
-- `scripts/teams-sense/`
-- `packages/ouro.bot/`
+- `src/` — the shared harness code (arc, heart, mind, repertoire, senses, nerves)
+- `SerpentGuide.ouro/` — packaged specialist bundle used by `ouro hatch`
+- `skills/` — harness-level skills shipped with the repo
+- `docs/` — shared repo documentation
+- `scripts/teams-sense/` — operator scripts for the Teams deployment path
+- `packages/ouro.bot/` — bootstrap wrapper package
 
 Task docs are intentionally not part of this repo’s long-lived architecture. They live with the owning agent bundle.
 

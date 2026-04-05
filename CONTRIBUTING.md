@@ -50,13 +50,14 @@ Common shapes:
 
 Useful scopes in the current codebase include:
 
-- `daemon`
-- `heart`
-- `mind`
-- `repertoire`
-- `senses`
-- `nerves`
-- `docs`
+- `arc` — continuity state (obligations, cares, episodes, intentions, presence)
+- `daemon` — daemon lifecycle, CLI, process management
+- `heart` — core engine, providers, identity, config
+- `mind` — prompt, sessions, diary, journal, phrases, friends
+- `repertoire` — tools, coding, tasks, skills, integration clients
+- `senses` — CLI, Teams, BlueBubbles, MCP, inner dialog
+- `nerves` — events, logging, audit coverage
+- `docs` — documentation
 
 Avoid stale scopes from removed layouts like `wardrobe`.
 
