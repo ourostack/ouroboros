@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { emitNervesEvent } from "../../nerves/runtime"
 import { configureDaemonRuntimeLogger } from "./runtime-logging"
-import { runOuroBotWrapper } from "./ouro-bot-wrapper"
+import { runOuroBotWrapper } from "../versioning/ouro-bot-wrapper"
 
 configureDaemonRuntimeLogger("ouro-bot")
 

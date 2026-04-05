@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { assessWrapperPublishSync } from "../../../heart/daemon/wrapper-publish-guard"
+import { assessWrapperPublishSync } from "../../../heart/versioning/wrapper-publish-guard"
 
 describe("assessWrapperPublishSync", () => {
   it("passes when the wrapper package did not change", () => {

@@ -13,7 +13,7 @@ describe("ouro.bot entrypoint", () => {
     const emitNervesEvent = vi.fn()
     const configureDaemonRuntimeLogger = vi.fn()
 
-    vi.doMock("../../../heart/daemon/ouro-bot-wrapper", () => ({ runOuroBotWrapper }))
+    vi.doMock("../../../heart/versioning/ouro-bot-wrapper", () => ({ runOuroBotWrapper }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
     vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
 
@@ -47,7 +47,7 @@ describe("ouro.bot entrypoint", () => {
     const configureDaemonRuntimeLogger = vi.fn()
     const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => code as never) as any)
 
-    vi.doMock("../../../heart/daemon/ouro-bot-wrapper", () => ({ runOuroBotWrapper }))
+    vi.doMock("../../../heart/versioning/ouro-bot-wrapper", () => ({ runOuroBotWrapper }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
     vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
 
@@ -79,7 +79,7 @@ describe("ouro.bot entrypoint", () => {
     const configureDaemonRuntimeLogger = vi.fn()
     const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => code as never) as any)
 
-    vi.doMock("../../../heart/daemon/ouro-bot-wrapper", () => ({ runOuroBotWrapper }))
+    vi.doMock("../../../heart/versioning/ouro-bot-wrapper", () => ({ runOuroBotWrapper }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
     vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
 

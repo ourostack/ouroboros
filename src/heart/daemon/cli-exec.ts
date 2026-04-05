@@ -20,7 +20,7 @@ import type { DaemonCommand, DaemonResponse } from "./daemon"
 import { getRuntimeMetadata } from "./runtime-metadata"
 import { detectRuntimeMode } from "./runtime-mode"
 import { ensureCurrentDaemonRuntime } from "./daemon-runtime-sync"
-import { applyPendingUpdates, registerUpdateHook } from "./update-hooks"
+import { applyPendingUpdates, registerUpdateHook } from "../versioning/update-hooks"
 import { bundleMetaHook } from "./hooks/bundle-meta"
 import { agentConfigV2Hook } from "./hooks/agent-config-v2"
 import { getChangelogPath, getPackageVersion } from "../../mind/bundle-manifest"
@@ -35,7 +35,7 @@ import {
   writeAgentProviderSelection,
   writeAgentModel,
 } from "./auth-flow"
-import { getOuroCliHome, buildChangelogCommand } from "./ouro-version-manager"
+import { getOuroCliHome, buildChangelogCommand } from "../versioning/ouro-version-manager"
 
 import type {
   OuroCliCommand,

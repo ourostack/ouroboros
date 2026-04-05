@@ -1,5 +1,5 @@
 import { emitNervesEvent } from "../../nerves/runtime"
-import { runOuroCli } from "./daemon-cli"
+import { runOuroCli } from "../daemon/daemon-cli"
 
 export type OuroCliRunner = (args: string[]) => Promise<string>
 

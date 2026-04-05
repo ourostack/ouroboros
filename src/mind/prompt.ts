@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { getProviderDisplayLabel } from "../heart/core";
-import { buildChangelogCommand } from "../heart/daemon/ouro-version-manager";
+import { buildChangelogCommand } from "../heart/versioning/ouro-version-manager";
 import { settleTool, getToolsForChannel } from "../repertoire/tools";
 import { listSkills } from "../repertoire/skills";
 import { getAgentRoot, getAgentName, getAgentSecretsPath, getRepoRoot, loadAgentConfig, type SenseName } from "../heart/identity";

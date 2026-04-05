@@ -11,9 +11,9 @@ import * as os from "os"
 import * as path from "path"
 import { getAgentBundlesRoot, getAgentDaemonLogsDir, getAgentName, getAgentRoot, getRepoRoot, PROVIDER_CREDENTIALS, type AgentProvider } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { installOuroCommand as defaultInstallOuroCommand } from "./ouro-path-installer"
-import { registerOuroBundleUti as defaultRegisterOuroBundleUti } from "./ouro-uti"
-import { getCurrentVersion, getPreviousVersion, listInstalledVersions, installVersion, activateVersion, ensureLayout, getOuroCliHome } from "./ouro-version-manager"
+import { installOuroCommand as defaultInstallOuroCommand } from "../versioning/ouro-path-installer"
+import { registerOuroBundleUti as defaultRegisterOuroBundleUti } from "../versioning/ouro-uti"
+import { getCurrentVersion, getPreviousVersion, listInstalledVersions, installVersion, activateVersion, ensureLayout, getOuroCliHome } from "../versioning/ouro-version-manager"
 import { ensureSkillManagement as defaultEnsureSkillManagement } from "./skill-management-installer"
 import {
   runHatchFlow as defaultRunHatchFlow,
@@ -29,7 +29,7 @@ import { getSpecialistTools, createSpecialistExecTool } from "../hatch/specialis
 import { detectRuntimeMode } from "./runtime-mode"
 import { listEnabledBundleAgents } from "./agent-discovery"
 import { getPackageVersion } from "../../mind/bundle-manifest"
-import { syncGlobalOuroBotWrapper as defaultSyncGlobalOuroBotWrapper } from "./ouro-bot-global-installer"
+import { syncGlobalOuroBotWrapper as defaultSyncGlobalOuroBotWrapper } from "../versioning/ouro-bot-global-installer"
 import { writeLaunchAgentPlist } from "./launchd"
 import { DEFAULT_DAEMON_SOCKET_PATH, sendDaemonCommand, checkDaemonSocketAlive } from "./socket-client"
 import { listSessionActivity } from "../session-activity"
@@ -499,7 +499,7 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     /* v8 ignore stop */
     /* v8 ignore start -- CLI version management defaults: integration code @preserve */
     checkForCliUpdate: async () => {
-      const { checkForUpdate } = await import("./update-checker")
+      const { checkForUpdate } = await import("../versioning/update-checker")
       return checkForUpdate(getPackageVersion(), {
         fetchRegistryJson: async () => {
           const res = await fetch("https://registry.npmjs.org/@ouro.bot/cli")

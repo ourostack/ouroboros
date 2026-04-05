@@ -3,7 +3,7 @@ import * as os from "os"
 import * as path from "path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { registerOuroBundleUti } from "../../../heart/daemon/ouro-uti"
+import { registerOuroBundleUti } from "../../../heart/versioning/ouro-uti"
 
 describe(".ouro UTI registration", () => {
   afterEach(() => {
@@ -196,7 +196,7 @@ describe(".ouro UTI registration", () => {
       const actual = await vi.importActual<typeof import("../../../heart/identity")>("../../../heart/identity")
       return { ...actual, getRepoRoot: () => tempRepo }
     })
-    const { registerOuroBundleUti: registerWithDefaultDeps } = await import("../../../heart/daemon/ouro-uti")
+    const { registerOuroBundleUti: registerWithDefaultDeps } = await import("../../../heart/versioning/ouro-uti")
     const execFileSync = vi.fn()
 
     const result = registerWithDefaultDeps({
@@ -324,7 +324,7 @@ describe(".ouro UTI registration", () => {
     const execFileSync = vi.fn()
     vi.doMock("child_process", () => ({ execFileSync }))
 
-    const { registerOuroBundleUti: registerWithDefaultExec } = await import("../../../heart/daemon/ouro-uti")
+    const { registerOuroBundleUti: registerWithDefaultExec } = await import("../../../heart/versioning/ouro-uti")
     const result = registerWithDefaultExec({
       platform: "darwin",
       homeDir: "/tmp/home",
