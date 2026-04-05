@@ -5,7 +5,7 @@ vi.mock("../../../heart/identity", () => ({
   getAgentRoot: vi.fn(() => "/Users/test/AgentBundles/slugger.ouro"),
 }))
 
-vi.mock("../../../heart/obligations", () => ({
+vi.mock("../../../arc/obligations", () => ({
   advanceObligation: vi.fn(),
 }))
 
@@ -14,7 +14,7 @@ vi.mock("../../../heart/daemon/socket-client", () => ({
 }))
 
 import { attachCodingSessionFeedback, formatCodingTail } from "../../../repertoire/coding/feedback"
-import { advanceObligation } from "../../../heart/obligations"
+import { advanceObligation } from "../../../arc/obligations"
 import { requestInnerWake } from "../../../heart/daemon/socket-client"
 import type { CodingSession, CodingSessionUpdate } from "../../../repertoire/coding/types"
 

@@ -21,7 +21,7 @@ import { getAgentName, getAgentRoot, loadAgentConfig } from "../heart/identity"
 import { requestInnerWake } from "../heart/daemon/socket-client"
 import { buildActiveWorkFrame } from "../heart/active-work"
 import { decideDelegation } from "../heart/delegation"
-import { readPendingObligations } from "../heart/obligations"
+import { readPendingObligations } from "../arc/obligations"
 import { buildFailoverContext, handleFailoverReply, type FailoverContext } from "../heart/provider-failover"
 import { runHealthInventory } from "../heart/provider-ping"
 import { writeAgentProviderSelection, loadAgentSecrets } from "../heart/auth/auth-flow"
@@ -30,8 +30,8 @@ import { buildTemporalView } from "../heart/temporal-view"
 import { buildStartOfTurnPacket, renderStartOfTurnPacket, buildCapabilitiesSection } from "../heart/start-of-turn-packet"
 import { preTurnPull, postTurnPush, drainSyncWrites, runWithSyncContext } from "../heart/sync"
 import { getSyncConfig } from "../heart/config"
-import { derivePresence, writePresence } from "../heart/presence"
-import { emitEpisode } from "../mind/episodes"
+import { derivePresence, writePresence } from "../arc/presence"
+import { emitEpisode } from "../arc/episodes"
 import { buildTurnContext } from "../heart/turn-context"
 
 export interface FailoverState {
@@ -45,8 +45,8 @@ export interface FailoverState {
 export function emitObligationTransitionEpisodes(
   agentRoot: string,
   preTurnObligationIds: Set<string>,
-  postTurnObligations: import("../heart/obligations").Obligation[],
-  preTurnObligations: import("../heart/obligations").Obligation[],
+  postTurnObligations: import("../arc/obligations").Obligation[],
+  preTurnObligations: import("../arc/obligations").Obligation[],
 ): void {
   const postTurnObligationIds = new Set(postTurnObligations.map((ob) => `${ob.id}:${ob.status}`))
   for (const key of preTurnObligationIds) {

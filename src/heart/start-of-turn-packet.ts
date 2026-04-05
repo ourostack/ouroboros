@@ -3,10 +3,10 @@ import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
 import { type TemporalView } from "./temporal-view"
 import { type TempoMode, TEMPO_BUDGETS, type TempoTokenBudget } from "./tempo"
-import { type EpisodeRecord } from "../mind/episodes"
-import { type Obligation } from "./obligations"
-import { type CareRecord } from "./cares"
-import { type AgentPresence } from "./presence"
+import { type EpisodeRecord } from "../arc/episodes"
+import { type Obligation } from "../arc/obligations"
+import { type CareRecord } from "../arc/cares"
+import { type AgentPresence } from "../arc/presence"
 
 export interface StartOfTurnPacket {
   plotLine: string

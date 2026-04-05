@@ -17,7 +17,7 @@ import {
   type PendingMessage,
   type DelegatedFrom,
 } from "../mind/pending"
-import { advanceReturnObligation, listActiveReturnObligations, findPendingObligationForOrigin, fulfillObligation } from "../heart/obligations"
+import { advanceReturnObligation, listActiveReturnObligations, findPendingObligationForOrigin, fulfillObligation } from "../arc/obligations"
 import { buildAttentionQueue, buildAttentionQueueSummary, type AttentionItem } from "./attention-queue"
 import { getChannelCapabilities } from "../mind/friends/channel"
 import { enforceTrustGate } from "./trust-gate"

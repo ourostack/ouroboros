@@ -95,7 +95,7 @@ vi.mock("../../heart/daemon/socket-client", () => ({
   requestInnerWake: (...args: any[]) => mockRequestInnerWake(...args),
 }))
 
-vi.mock("../../heart/obligations", () => ({
+vi.mock("../../arc/obligations", () => ({
   createObligation: vi.fn(() => ({ id: "obl-test-123" })),
   readObligations: vi.fn(() => []),
   readPendingObligations: vi.fn(() => []),

@@ -1725,7 +1725,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   if (command.kind === "attention.list" || command.kind === "attention.show" || command.kind === "attention.history") {
     try {
       const agentName = command.agent ?? getAgentName()
-      const { listActiveReturnObligations, readReturnObligation } = await import("../obligations")
+      const { listActiveReturnObligations, readReturnObligation } = await import("../../arc/obligations")
 
       if (command.kind === "attention.list") {
         const obligations = listActiveReturnObligations(agentName)
@@ -1754,7 +1754,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       }
 
       // attention.history: show returned obligations
-      const { getReturnObligationsDir } = await import("../obligations")
+      const { getReturnObligationsDir } = await import("../../arc/obligations")
       const obligationsDir = getReturnObligationsDir(agentName)
       let attEntries: string[] = []
       try { attEntries = fs.readdirSync(obligationsDir) } catch { /* empty */ }
@@ -1795,7 +1795,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       const { sessionPath: getSessionPath } = await import("../config")
       const { parseCadenceToMs: parseCadenceMs, DEFAULT_CADENCE_MS } = await import("./cadence")
       const { parseFrontmatter } = await import("../../repertoire/tasks/parser")
-      const { listActiveReturnObligations } = await import("../obligations")
+      const { listActiveReturnObligations } = await import("../../arc/obligations")
 
       // Read runtime state
       const innerSessionPath = getSessionPath("inner-dialog", "inner", "session")

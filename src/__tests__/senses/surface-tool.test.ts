@@ -20,7 +20,7 @@ vi.mock("../../heart/identity", () => ({
 describe("surface tool", () => {
   let surfaceToolDef: typeof import("../../repertoire/tools").surfaceToolDef
   let handleSurface: typeof import("../../senses/surface-tool").handleSurface
-  type AttentionItem = import("../../heart/attention-types").AttentionItem
+  type AttentionItem = import("../../arc/attention-types").AttentionItem
 
   beforeEach(async () => {
     vi.resetModules()

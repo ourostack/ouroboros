@@ -1,7 +1,7 @@
 import type { PendingMessage } from "../mind/pending"
-import type { ReturnObligation } from "../heart/obligations"
+import type { ReturnObligation } from "../arc/obligations"
 import { emitNervesEvent } from "../nerves/runtime"
-import type { AttentionItem } from "../heart/attention-types"
+import type { AttentionItem } from "../arc/attention-types"
 
 // Re-export for consumers that import from here
 export type { AttentionItem }

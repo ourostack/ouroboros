@@ -8,10 +8,10 @@ import {
 } from "../../heart/start-of-turn-packet"
 import { type TemporalView } from "../../heart/temporal-view"
 import { type TempoMode } from "../../heart/tempo"
-import { type EpisodeRecord } from "../../mind/episodes"
-import { type Obligation } from "../../heart/obligations"
-import { type CareRecord } from "../../heart/cares"
-import { type IntentionRecord } from "../../heart/intentions"
+import { type EpisodeRecord } from "../../arc/episodes"
+import { type Obligation } from "../../arc/obligations"
+import { type CareRecord } from "../../arc/cares"
+import { type IntentionRecord } from "../../arc/intentions"
 import { TEMPO_BUDGETS } from "../../heart/tempo"
 
 function estimateTokens(text: string): number {

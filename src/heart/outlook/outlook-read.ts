@@ -2,7 +2,7 @@ import * as fs from "fs"
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { getAgentBundlesRoot } from "../identity"
-import { isOpenObligation, readPendingObligations, readObligations } from "../obligations"
+import { isOpenObligation, readPendingObligations, readObligations } from "../../arc/obligations"
 import { listSessionActivity } from "../session-activity"
 import { buildTaskBoard } from "../../repertoire/tasks/board"
 import { scanTasks } from "../../repertoire/tasks/scanner"
@@ -57,9 +57,9 @@ import {
   type OutlookMemoryDecisionView,
   type OutlookMemoryDecision,
 } from "./outlook-types"
-import { readPresence, readPeerPresence } from "../presence"
-import { readActiveCares } from "../cares"
-import { readRecentEpisodes } from "../../mind/episodes"
+import { readPresence, readPeerPresence } from "../../arc/presence"
+import { readActiveCares } from "../../arc/cares"
+import { readRecentEpisodes } from "../../arc/episodes"
 
 interface OutlookReadOptions {
   bundlesRoot?: string

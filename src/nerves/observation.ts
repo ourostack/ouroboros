@@ -15,7 +15,7 @@ export type { BridgeRecord, BridgeSessionRef, BridgeTaskLink } from "../heart/br
 export type { DaemonHealthState, DegradedComponent, AgentHealth, HabitHealth, SafeModeState } from "../heart/daemon/daemon-health"
 export type { LogEvent, LogLevel } from "./index"
 export type { HabitFile, HabitStatus } from "../heart/habits/habit-parser"
-export type { AttentionItem } from "../heart/attention-types"
+export type { AttentionItem } from "../arc/attention-types"
 export type { PendingMessage } from "../mind/pending"
 export type { TaskStatus } from "../repertoire/tasks/types"
 export type { RuntimeMetadata } from "../heart/daemon/runtime-metadata"

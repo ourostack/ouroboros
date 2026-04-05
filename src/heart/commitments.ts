@@ -1,6 +1,6 @@
 import type { ActiveWorkFrame } from "./active-work"
 import type { InnerJob } from "./daemon/thoughts"
-import { isOpenObligationStatus, type Obligation } from "./obligations"
+import { isOpenObligationStatus, type Obligation } from "../arc/obligations"
 import { emitNervesEvent } from "../nerves/runtime"
 
 export interface CommitmentsFrame {

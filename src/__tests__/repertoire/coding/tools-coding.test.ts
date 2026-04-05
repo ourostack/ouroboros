@@ -12,7 +12,7 @@ vi.mock("../../../heart/identity", () => ({
   getAgentRoot: vi.fn(() => "/Users/test/AgentBundles/slugger.ouro"),
 }))
 
-vi.mock("../../../heart/obligations", () => ({
+vi.mock("../../../arc/obligations", () => ({
   createObligation: vi.fn(),
   findPendingObligationForOrigin: vi.fn(),
   advanceObligation: vi.fn(),
@@ -24,7 +24,7 @@ vi.mock("../../../repertoire/coding/context-pack", () => ({
 
 import { attachCodingSessionFeedback, formatCodingTail, getCodingSessionManager } from "../../../repertoire/coding"
 import { prepareCodingContextPack } from "../../../repertoire/coding/context-pack"
-import { advanceObligation, createObligation, findPendingObligationForOrigin } from "../../../heart/obligations"
+import { advanceObligation, createObligation, findPendingObligationForOrigin } from "../../../arc/obligations"
 
 describe("coding tool contracts", () => {
   const manager = {
