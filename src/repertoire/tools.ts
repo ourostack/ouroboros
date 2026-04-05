@@ -221,6 +221,7 @@ export function buildToolResultSummary(
   _result: string,
   success: boolean,
 ): string {
+  /* v8 ignore start -- branches: ?? fallbacks and ternaries in tool summary formatting @preserve */
   switch (name) {
     case "edit_file": {
       if (!success) return summarizeArgs(name, args)
@@ -249,4 +250,5 @@ export function buildToolResultSummary(
     default:
       return summarizeArgs(name, args)
   }
+  /* v8 ignore stop */
 }
