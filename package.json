@@ -1,6 +1,6 @@
 {
   "name": "@ouro.bot/cli",
-  "version": "0.1.0-alpha.212",
+  "version": "0.1.0-alpha.213",
   "main": "dist/heart/daemon/ouro-entry.js",
   "bin": {
     "cli": "dist/heart/daemon/ouro-bot-entry.js",
@@ -10,7 +10,6 @@
   "files": [
     "dist/",
     "SerpentGuide.ouro/",
-    "subagents/",
     "skills/",
     "assets/",
     "changelog.json"

@@ -33,14 +33,16 @@ Current provider ids:
 
 The shared harness lives in `src/`:
 
+- `src/arc/`
+  Durable continuity state — obligations, cares, episodes, intentions, presence, and attention types. The agent's sense of ongoing story.
 - `src/heart/`
-  Core runtime, provider adapters, daemon, bootstrap, identity, and entrypoints.
+  Core runtime, provider adapters, daemon, bootstrap, identity, and entrypoints. Organized into topic subdirectories: daemon/ (lifecycle), outlook/ (calendar), habits/ (scheduling), hatch/ (agent creation), versioning/ (updates), auth/, mcp/, providers/, bridges/.
 - `src/mind/`
-  Prompt assembly, session persistence, bundle manifest enforcement, phrases, formatting, diary (memory), journal, and friend resolution.
+  Prompt assembly, session persistence, bundle manifest enforcement, phrases, formatting, diary (memory), associative recall, embedding providers, journal, obligation steering, and friend resolution.
 - `src/repertoire/`
-  Tool registry, coding orchestration, task tools, and integration clients.
+  Tool registry (split into category modules: files, shell, memory, bridge, session, continuity, flow, surface, config, and sense-specific tools), coding orchestration, task tools, shared API client, and integration clients (Graph, ADO, GitHub).
 - `src/senses/`
-  CLI, Teams, BlueBubbles, MCP, activity transport, inner-dialog orchestration, and contextual heartbeat.
+  CLI (with TUI in senses/cli/), Teams, BlueBubbles (in senses/bluebubbles/), MCP, activity transport, inner-dialog orchestration, and contextual heartbeat.
 - `src/nerves/`
   Structured runtime logging and coverage-audit infrastructure.
 - `src/__tests__/`
@@ -52,8 +54,6 @@ Other important top-level paths:
   Packaged specialist bundle used by `ouro hatch`.
 - `skills/`
   Harness-level skills shipped with the repo (e.g., `configure-dev-tools.md`). These are available to every agent and serve as fallbacks when an agent doesn't have its own version. Agent-specific skills live in the bundle at `~/AgentBundles/<agent>.ouro/skills/`.
-- `subagents/`
-  Workflow skills have moved to [github.com/ouroborosbot/ouroboros-skills](https://github.com/ouroborosbot/ouroboros-skills). Use the skill-management skill for installation and updates.
 - `scripts/teams-sense/`
   Operator scripts for the Teams deployment path.
 - `docs/`
