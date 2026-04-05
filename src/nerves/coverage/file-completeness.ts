@@ -28,19 +28,35 @@ export function isTypeOnlyFile(source: string): boolean {
     const trimmed = line.trim()
     // Skip lines that are const+as-const (type-equivalent frozen values)
     if (/\bconst\s/.test(trimmed) && /\bas\s+const\b/.test(trimmed)) continue
-    // Skip const array assembly: const x = [...a, ...b] or const x: Type[] = [...]
-    if (/\bconst\s+\w+[\s:][^=]*=\s*\[/.test(trimmed)) continue
-    // Skip const that is a .map() call on another const (derived array)
+    // Skip const declarations that are pure data (arrays, objects, maps, sets)
+    // These are composition/schema definitions with no side effects
+    if (/\bconst\s+\w+[\s:][^=]*=\s*[\[{]/.test(trimmed)) continue
     if (/\bconst\s+\w+[\s:][^=]*=\s*\w+\.map\(/.test(trimmed)) continue
-    // Skip export const re-assignments
-    if (/^export\s+const\s+\w+[\s:][^=]*=\s*\[/.test(trimmed)) continue
+    if (/^export\s+const\s+\w+[\s:][^=]*=\s*[\[{]/.test(trimmed)) continue
     if (/^export\s+const\s+\w+[\s:][^=]*=\s*\w+\.map\(/.test(trimmed)) continue
-    // Skip Set constructors (e.g., export const x = new Set(...))
-    if (/\bconst\s+\w+[\s:][^=]*=\s*new\s+Set\b/.test(trimmed)) continue
+    if (/\bconst\s+\w+[\s:][^=]*=\s*new\s+(Set|Map)\b/.test(trimmed)) continue
     // Check for executable code markers
     if (/\b(function|class|const|let|var)\s/.test(trimmed)) return false
   }
   return true
+}
+
+// Tool handler sub-modules that are dispatched through a centralized
+// execTool pattern (tools.ts handles all tool.start/end/error events).
+// These files don't need independent observability.
+const DISPATCH_EXEMPT_PATTERNS = [
+  "repertoire/tools-files",
+  "repertoire/tools-shell",
+  "repertoire/tools-memory",
+  "repertoire/tools-bridge",
+  "repertoire/tools-session",
+  "repertoire/tools-continuity",
+  "repertoire/tools-surface",
+  "repertoire/tools-config",
+]
+
+function isDispatchExempt(filePath: string): boolean {
+  return DISPATCH_EXEMPT_PATTERNS.some((pattern) => filePath.includes(pattern))
 }
 
 /**
@@ -60,7 +76,7 @@ export function checkFileCompleteness(
     const hasKeys = filesWithKeys.has(filePath) && filesWithKeys.get(filePath)!.length > 0
     if (hasKeys) continue
 
-    if (isTypeOnlyFile(source)) {
+    if (isTypeOnlyFile(source) || isDispatchExempt(filePath)) {
       exempt.push(filePath)
     } else {
       missing.push(filePath)
