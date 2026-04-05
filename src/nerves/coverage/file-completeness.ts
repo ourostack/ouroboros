@@ -61,6 +61,7 @@ const DISPATCH_EXEMPT_PATTERNS = [
   // Shared utility modules: pure helpers consumed by modules that own observability.
   "arc/json-store",
   "repertoire/api-client",
+  "repertoire/github-client",
   "mind/embedding-provider",
 ]
 
