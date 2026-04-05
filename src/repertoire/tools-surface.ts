@@ -2,7 +2,7 @@ import type OpenAI from "openai";
 import { getAgentRoot, getAgentName } from "../heart/identity";
 import { handleSurface, type SurfaceRouteResult } from "../senses/surface-tool";
 import { advanceReturnObligation, findPendingObligationForOrigin, fulfillObligation } from "../arc/obligations";
-import { findFreshestFriendSession, listSessionActivity } from "../heart/session-activity";
+import { listSessionActivity } from "../heart/session-activity";
 import * as path from "path";
 import type { AttentionItem } from "../arc/attention-types";
 import type { ToolDefinition } from "./tools-base";
@@ -96,31 +96,30 @@ export const surfaceToolDefinition: ToolDefinition = {
           }
         }
 
-        // Priority 2: Freshest friend session (no active threshold — proactive outreach shouldn't be gated by session age)
-        const freshest = findFreshestFriendSession({
-          sessionsDir,
-          friendsDir,
-          agentName,
-          friendId,
-        })
-        if (freshest && freshest.channel !== "inner") {
-          // Attempt proactive BB delivery
-          if (freshest.channel === "bluebubbles") {
-            const { sendProactiveBlueBubblesMessageToSession } = await import("../senses/bluebubbles")
-            const proactiveResult = await sendProactiveBlueBubblesMessageToSession({
-              friendId: freshest.friendId,
-              sessionKey: freshest.key,
-              text: content,
-            })
-            if (proactiveResult.delivered) {
-              // Inject surfaced content into the target session so it knows what was delivered
-              const { appendSyntheticAssistantMessage } = await import("../mind/context")
-              const sessionFilePath = path.join(sessionsDir, freshest.friendId, freshest.channel, `${freshest.key}.json`)
-              appendSyntheticAssistantMessage(sessionFilePath, `[surfaced from inner dialog] ${content}`)
-              return { status: "delivered", detail: "via iMessage" }
-            }
+        // Priority 2: Try proactive delivery first, then queue to freshest session
+        const allFriendSessions = listSessionActivity({ sessionsDir, friendsDir, agentName, activeThresholdMs: Number.MAX_SAFE_INTEGER })
+          .filter((s) => s.friendId === friendId && s.channel !== "inner")
+
+        // 2a: Attempt proactive BB delivery on any BB session (prefer freshest)
+        const bbSession = allFriendSessions.find((s) => s.channel === "bluebubbles")
+        if (bbSession) {
+          const { sendProactiveBlueBubblesMessageToSession } = await import("../senses/bluebubbles")
+          const proactiveResult = await sendProactiveBlueBubblesMessageToSession({
+            friendId: bbSession.friendId,
+            sessionKey: bbSession.key,
+            text: content,
+          })
+          if (proactiveResult.delivered) {
+            const { appendSyntheticAssistantMessage } = await import("../mind/context")
+            const sessionFilePath = path.join(sessionsDir, bbSession.friendId, bbSession.channel, `${bbSession.key}.json`)
+            appendSyntheticAssistantMessage(sessionFilePath, `[surfaced from inner dialog] ${content}`)
+            return { status: "delivered", detail: "via iMessage" }
           }
-          // Queue as pending for next interaction
+        }
+
+        // 2b: No proactive delivery — queue to freshest non-inner session
+        const freshest = allFriendSessions[0]
+        if (freshest) {
           const { queuePendingMessage, getPendingDir } = await import("../mind/pending")
           const pendingDir = getPendingDir(agentName, freshest.friendId, freshest.channel, freshest.key)
           queuePendingMessage(pendingDir, {
