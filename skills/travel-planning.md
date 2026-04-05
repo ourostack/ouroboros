@@ -112,7 +112,28 @@ Track and reference these travel preferences:
 - Browser tools via `@playwright/mcp` - see `browser-navigation` skill
 - Duffel flight search (when MCP server available)
 - Expedia hotel search (when MCP server available)
-- Bitwarden vault management via `@bitwarden/mcp-server`
+- Bitwarden vault management via `@bitwarden/mcp-server` (agent-facing interactive vault access)
+
+### Bitwarden MCP Server
+
+For agent-facing vault interaction (browsing items, searching, reading fields), configure
+`@bitwarden/mcp-server` as an MCP server in agent.json:
+
+```json
+{
+  "mcpServers": {
+    "bitwarden": {
+      "command": "npx",
+      "args": ["@bitwarden/mcp-server"]
+    }
+  }
+}
+```
+
+This is distinct from the built-in `bw` CLI-based credential gateway, which handles
+harness-internal secret injection (e.g., API keys injected into tool requests via
+`getRawSecret()`). The MCP server is for the agent to interactively browse and manage
+vault items on behalf of the user.
 
 ### Human Confirmation Required For
 - Any booking or payment
