@@ -1,6 +1,6 @@
 {
   "name": "@ouro.bot/cli",
-  "version": "0.1.0-alpha.211",
+  "version": "0.1.0-alpha.212",
   "main": "dist/heart/daemon/ouro-entry.js",
   "bin": {
     "cli": "dist/heart/daemon/ouro-bot-entry.js",
@@ -25,7 +25,7 @@
     "daemon": "tsc && node dist/heart/daemon/daemon-entry.js",
     "ouro": "tsc && node dist/heart/daemon/ouro-entry.js",
     "teams": "tsc && node dist/senses/teams-entry.js --agent ouroboros",
-    "bluebubbles": "tsc && node dist/senses/bluebubbles-entry.js --agent ouroboros",
+    "bluebubbles": "tsc && node dist/senses/bluebubbles/entry.js --agent ouroboros",
     "test": "vitest run",
     "test:coverage:vitest": "vitest run --coverage",
     "test:coverage": "node scripts/run-coverage-gate.cjs",

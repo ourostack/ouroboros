@@ -304,7 +304,7 @@ describe("daemon process manager", () => {
         {
           name: "slugger:bluebubbles",
           agentArg: "slugger",
-          entry: "senses/bluebubbles-entry.js",
+          entry: "senses/bluebubbles/entry.js",
           channel: "bluebubbles",
           autoStart: true,
         },
@@ -321,7 +321,7 @@ describe("daemon process manager", () => {
 
     expect(spawn).toHaveBeenCalledWith(
       "node",
-      [expect.stringContaining("senses/bluebubbles-entry.js"), "--agent", "slugger"],
+      [expect.stringContaining("senses/bluebubbles/entry.js"), "--agent", "slugger"],
       expect.objectContaining({ stdio: ["ignore", "ignore", "ignore", "ipc"] }),
     )
     expect(now).toHaveBeenCalled()

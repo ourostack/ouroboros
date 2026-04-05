@@ -1,7 +1,7 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
-import { getAgentRoot } from "../heart/identity"
-import { emitNervesEvent } from "../nerves/runtime"
+import { getAgentRoot } from "../../heart/identity"
+import { emitNervesEvent } from "../../nerves/runtime"
 
 export interface BlueBubblesRuntimeState {
   upstreamStatus: "unknown" | "ok" | "error"

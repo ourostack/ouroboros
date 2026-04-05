@@ -294,7 +294,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
         .map((sense) => ({
           name: `${agent}:${sense}`,
           agentArg: agent,
-          entry: sense === "teams" ? "senses/teams-entry.js" : "senses/bluebubbles-entry.js",
+          entry: sense === "teams" ? "senses/teams-entry.js" : "senses/bluebubbles/entry.js",
           channel: sense,
           autoStart: true,
         }))

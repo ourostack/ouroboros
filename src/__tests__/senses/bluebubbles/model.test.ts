@@ -472,7 +472,7 @@ const blankHandlePayload = {
 
 describe("normalizeBlueBubblesEvent", () => {
   it("normalizes a DM OG-card message with explicit fallback context", async () => {
-    const { normalizeBlueBubblesEvent } = await import("../../senses/bluebubbles-model")
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
     const result = normalizeBlueBubblesEvent(dmOgPayload)
 
     expect(result.kind).toBe("message")
@@ -486,7 +486,7 @@ describe("normalizeBlueBubblesEvent", () => {
   })
 
   it("normalizes image attachments into explicit fallback text", async () => {
-    const { normalizeBlueBubblesEvent } = await import("../../senses/bluebubbles-model")
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
     const result = normalizeBlueBubblesEvent(dmImagePayload)
 
     expect(result.kind).toBe("message")
@@ -495,7 +495,7 @@ describe("normalizeBlueBubblesEvent", () => {
   })
 
   it("normalizes audio attachments into explicit fallback text", async () => {
-    const { normalizeBlueBubblesEvent } = await import("../../senses/bluebubbles-model")
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
     const result = normalizeBlueBubblesEvent(dmAudioPayload)
 
     expect(result.kind).toBe("message")
@@ -504,7 +504,7 @@ describe("normalizeBlueBubblesEvent", () => {
   })
 
   it("keeps DM threaded replies on the chat trunk session", async () => {
-    const { normalizeBlueBubblesEvent } = await import("../../senses/bluebubbles-model")
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
     const result = normalizeBlueBubblesEvent(dmThreadPayload)
 
     expect(result.kind).toBe("message")
@@ -513,7 +513,7 @@ describe("normalizeBlueBubblesEvent", () => {
   })
 
   it("keeps group threaded replies on the group chat trunk session", async () => {
-    const { normalizeBlueBubblesEvent } = await import("../../senses/bluebubbles-model")
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
     const result = normalizeBlueBubblesEvent(groupThreadPayload)
 
     expect(result.kind).toBe("message")
@@ -523,7 +523,7 @@ describe("normalizeBlueBubblesEvent", () => {
   })
 
   it("extracts participantHandles from group chat participants", async () => {
-    const { normalizeBlueBubblesEvent } = await import("../../senses/bluebubbles-model")
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
     const payload = {
       type: "new-message",
       data: {
@@ -558,7 +558,7 @@ describe("normalizeBlueBubblesEvent", () => {
   })
 
   it("falls back to id field when participant has no address and skips empty entries", async () => {
-    const { normalizeBlueBubblesEvent } = await import("../../senses/bluebubbles-model")
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
     const payload = {
       type: "new-message",
       data: {
@@ -582,13 +582,13 @@ describe("normalizeBlueBubblesEvent", () => {
   })
 
   it("returns empty participantHandles when chat has no participants", async () => {
-    const { normalizeBlueBubblesEvent } = await import("../../senses/bluebubbles-model")
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
     const result = normalizeBlueBubblesEvent(dmOgPayload)
     expect(result.chat.participantHandles).toEqual([])
   })
 
   it("uses the same DM chat trunk for top-level and threaded replies", async () => {
-    const { normalizeBlueBubblesEvent } = await import("../../senses/bluebubbles-model")
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
     const topLevel = normalizeBlueBubblesEvent(dmTopLevelPayload)
     const threaded = normalizeBlueBubblesEvent(dmThreadPayload)
 
@@ -599,7 +599,7 @@ describe("normalizeBlueBubblesEvent", () => {
   })
 
   it("normalizes associated-message reactions as first-class mutations", async () => {
-    const { normalizeBlueBubblesEvent } = await import("../../senses/bluebubbles-model")
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
     const result = normalizeBlueBubblesEvent(reactionPayload)
 
     expect(result.kind).toBe("mutation")
@@ -610,7 +610,7 @@ describe("normalizeBlueBubblesEvent", () => {
   })
 
   it("normalizes edited-message updates as notifyable mutations", async () => {
-    const { normalizeBlueBubblesEvent } = await import("../../senses/bluebubbles-model")
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
     const result = normalizeBlueBubblesEvent(editedPayload)
 
     expect(result.kind).toBe("mutation")
@@ -621,7 +621,7 @@ describe("normalizeBlueBubblesEvent", () => {
   })
 
   it("normalizes unsent-message updates as notifyable mutations", async () => {
-    const { normalizeBlueBubblesEvent } = await import("../../senses/bluebubbles-model")
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
     const result = normalizeBlueBubblesEvent(unsentPayload)
 
     expect(result.kind).toBe("mutation")
@@ -631,7 +631,7 @@ describe("normalizeBlueBubblesEvent", () => {
   })
 
   it("normalizes read/delivery state changes without dropping them silently", async () => {
-    const { normalizeBlueBubblesEvent } = await import("../../senses/bluebubbles-model")
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
     const result = normalizeBlueBubblesEvent(readPayload)
 
     expect(result.kind).toBe("mutation")
@@ -641,7 +641,7 @@ describe("normalizeBlueBubblesEvent", () => {
   })
 
   it("falls back to chat identifier routing and normalizes phone handles", async () => {
-    const { normalizeBlueBubblesEvent } = await import("../../senses/bluebubbles-model")
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
     const result = normalizeBlueBubblesEvent(phoneIdentifierPayload)
 
     expect(result.kind).toBe("message")
@@ -654,7 +654,7 @@ describe("normalizeBlueBubblesEvent", () => {
   })
 
   it("emits explicit generic attachment fallback text and unknown sender identity", async () => {
-    const { normalizeBlueBubblesEvent } = await import("../../senses/bluebubbles-model")
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
     const now = vi.spyOn(Date, "now").mockReturnValue(1772949500000)
 
     try {
@@ -675,7 +675,7 @@ describe("normalizeBlueBubblesEvent", () => {
   })
 
   it("normalizes delivery updates as silent mutations with repair required", async () => {
-    const { normalizeBlueBubblesEvent } = await import("../../senses/bluebubbles-model")
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
     const result = normalizeBlueBubblesEvent(deliveryPayload)
 
     expect(result.kind).toBe("mutation")
@@ -686,7 +686,7 @@ describe("normalizeBlueBubblesEvent", () => {
   })
 
   it("falls back to a generic edit mutation when edited text is blank", async () => {
-    const { normalizeBlueBubblesEvent } = await import("../../senses/bluebubbles-model")
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
     const result = normalizeBlueBubblesEvent(blankEditPayload)
 
     expect(result.kind).toBe("mutation")
@@ -695,7 +695,7 @@ describe("normalizeBlueBubblesEvent", () => {
   })
 
   it("falls back to a generic edit mutation when edited text is absent", async () => {
-    const { normalizeBlueBubblesEvent } = await import("../../senses/bluebubbles-model")
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
     const result = normalizeBlueBubblesEvent(editWithoutTextFieldPayload)
 
     expect(result.kind).toBe("mutation")
@@ -704,7 +704,7 @@ describe("normalizeBlueBubblesEvent", () => {
   })
 
   it("preserves non-mutation updated-message payloads as explicit message events", async () => {
-    const { normalizeBlueBubblesEvent } = await import("../../senses/bluebubbles-model")
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
     const result = normalizeBlueBubblesEvent(updatedMessageWithoutMutationPayload)
 
     expect(result.kind).toBe("message")
@@ -715,7 +715,7 @@ describe("normalizeBlueBubblesEvent", () => {
   })
 
   it("normalizes missing message text to an empty string", async () => {
-    const { normalizeBlueBubblesEvent } = await import("../../senses/bluebubbles-model")
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
     const result = normalizeBlueBubblesEvent(missingTextPayload)
 
     expect(result.kind).toBe("message")
@@ -725,7 +725,7 @@ describe("normalizeBlueBubblesEvent", () => {
   })
 
   it("normalizes reactions whether the target guid is bare or absent", async () => {
-    const { normalizeBlueBubblesEvent } = await import("../../senses/bluebubbles-model")
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
     const bareResult = normalizeBlueBubblesEvent(bareReactionGuidPayload)
     const missingResult = normalizeBlueBubblesEvent(reactionWithoutTargetGuidPayload)
 
@@ -736,7 +736,7 @@ describe("normalizeBlueBubblesEvent", () => {
   })
 
   it("falls back through guid-only and unknown chat identity without losing routing", async () => {
-    const { normalizeBlueBubblesEvent } = await import("../../senses/bluebubbles-model")
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
     const guidOnlyResult = normalizeBlueBubblesEvent(chatGuidOnlyPayload)
     const unknownResult = normalizeBlueBubblesEvent(unknownRoutingPayload)
 
@@ -753,7 +753,7 @@ describe("normalizeBlueBubblesEvent", () => {
   })
 
   it("treats blank handles and blank extracted identifiers as explicit unknown sender state", async () => {
-    const { normalizeBlueBubblesEvent } = await import("../../senses/bluebubbles-model")
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
     const result = normalizeBlueBubblesEvent(blankHandlePayload)
 
     expect(result.kind).toBe("message")
@@ -765,7 +765,7 @@ describe("normalizeBlueBubblesEvent", () => {
   })
 
   it("rejects invalid envelopes and payloads without a guid", async () => {
-    const { normalizeBlueBubblesEvent } = await import("../../senses/bluebubbles-model")
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
 
     expect(() => normalizeBlueBubblesEvent(null)).toThrow("Invalid BlueBubbles payload")
     expect(() =>

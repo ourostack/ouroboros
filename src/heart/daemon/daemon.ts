@@ -60,7 +60,7 @@ export function killOrphanProcesses(): void {
         for (const line of result.split("\n")) {
           // Only match daemon-owned entry points, NOT mcp-serve or other external processes
           if (line.includes("mcp-serve") || line.includes("mcp serve")) continue
-          if (!line.includes("agent-entry.js") && !line.includes("daemon-entry.js") && !line.includes("bluebubbles-entry.js") && !line.includes("teams-entry.js")) continue
+          if (!line.includes("agent-entry.js") && !line.includes("daemon-entry.js") && !line.includes("bluebubbles/entry.js") && !line.includes("teams-entry.js")) continue
           const pid = parseInt(line.trim(), 10)
           if (!isNaN(pid) && pid !== process.pid) pidsToKill.push(pid)
         }

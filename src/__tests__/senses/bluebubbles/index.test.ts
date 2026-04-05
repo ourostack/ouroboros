@@ -101,33 +101,33 @@ function writeFile(filePath: string): void {
   fs.writeFileSync(filePath, "{}")
 }
 
-vi.mock("../../heart/core", () => ({
+vi.mock("../../../heart/core", () => ({
   runAgent: (...args: any[]) => mocks.runAgent(...args),
   createSummarize: () => mocks.createSummarize(),
 }))
 
-vi.mock("../../mind/prompt", () => ({
+vi.mock("../../../mind/prompt", () => ({
   buildSystem: (...args: any[]) => mocks.buildSystem(...args),
 }))
 
-vi.mock("../../heart/config", () => ({
+vi.mock("../../../heart/config", () => ({
   sessionPath: (...args: any[]) => mocks.sessionPath(...args),
   getBlueBubblesConfig: (...args: any[]) => mocks.getBlueBubblesConfig(...args),
   getBlueBubblesChannelConfig: (...args: any[]) => mocks.getBlueBubblesChannelConfig(...args),
   sanitizeKey: (value: string) => value.replace(/[^a-zA-Z0-9;+.-]+/g, "_"),
 }))
 
-vi.mock("../../mind/context", () => ({
+vi.mock("../../../mind/context", () => ({
   loadSession: (...args: any[]) => mocks.loadSession(...args),
   postTurn: (...args: any[]) => mocks.postTurn(...args),
   deleteSession: vi.fn(),
 }))
 
-vi.mock("../../mind/friends/tokens", () => ({
+vi.mock("../../../mind/friends/tokens", () => ({
   accumulateFriendTokens: (...args: any[]) => mocks.accumulateFriendTokens(...args),
 }))
 
-vi.mock("../../mind/friends/store-file", () => ({
+vi.mock("../../../mind/friends/store-file", () => ({
   FileFriendStore: vi.fn(function (this: any, root: string) {
     mocks.storeCtor(root)
     mocks.lastStoreInstance = this
@@ -143,14 +143,14 @@ vi.mock("../../mind/friends/store-file", () => ({
   }),
 }))
 
-vi.mock("../../mind/friends/resolver", () => ({
+vi.mock("../../../mind/friends/resolver", () => ({
   FriendResolver: vi.fn(function (this: any, store: unknown, params: unknown) {
     mocks.resolverCtor(store, params)
     this.resolve = (...args: any[]) => mocks.resolveContext(...args)
   }),
 }))
 
-vi.mock("../../heart/identity", () => ({
+vi.mock("../../../heart/identity", () => ({
   getAgentName: mocks.getAgentName,
   getAgentRoot: mocks.getAgentRoot,
   getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/testagent/secrets.json"),
@@ -167,11 +167,11 @@ vi.mock("../../heart/identity", () => ({
   })),
 }))
 
-vi.mock("../../nerves/runtime", () => ({
+vi.mock("../../../nerves/runtime", () => ({
   emitNervesEvent: (...args: any[]) => mocks.emitNervesEvent(...args),
 }))
 
-vi.mock("../../senses/bluebubbles-client", () => ({
+vi.mock("../../../senses/bluebubbles/client", () => ({
   createBlueBubblesClient: vi.fn(() => ({
     sendText: (...args: any[]) => mocks.sendText(...args),
     editMessage: (...args: any[]) => mocks.editMessage(...args),
@@ -187,21 +187,21 @@ vi.mock("node:http", () => ({
   createServer: (...args: any[]) => mocks.createServer(...args),
 }))
 
-vi.mock("../../senses/pipeline", () => ({
+vi.mock("../../../senses/pipeline", () => ({
   handleInboundTurn: (...args: any[]) => mocks.handleInboundTurn(...args),
 }))
 
-vi.mock("../../mind/friends/channel", () => ({
+vi.mock("../../../mind/friends/channel", () => ({
   getChannelCapabilities: (...args: any[]) => mocks.getChannelCapabilities(...args),
 }))
 
-vi.mock("../../mind/pending", () => ({
+vi.mock("../../../mind/pending", () => ({
   getPendingDir: (...args: any[]) => mocks.getPendingDir(...args),
   drainPending: (...args: any[]) => mocks.drainPending(...args),
   drainDeferredReturns: (...args: any[]) => mocks.drainDeferredReturns(...args),
 }))
 
-vi.mock("../../senses/trust-gate", () => ({
+vi.mock("../../../senses/trust-gate", () => ({
   enforceTrustGate: (...args: any[]) => mocks.enforceTrustGate(...args),
 }))
 
@@ -661,7 +661,7 @@ describe("BlueBubbles sense runtime", () => {
   })
 
   it("handles DM threaded messages on the shared chat trunk and preserves the threaded send target", async () => {
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
 
     expect(mocks.sessionPath).toHaveBeenCalledWith(
@@ -715,7 +715,7 @@ describe("BlueBubbles sense runtime", () => {
   it("includes replied-to text in inbound content when getMessageText returns text", async () => {
     mocks.getMessageText.mockResolvedValueOnce("This is the original message being replied to")
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
 
     // The inbound message should contain the replied-to text
@@ -739,7 +739,7 @@ describe("BlueBubbles sense runtime", () => {
       }
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.handleBlueBubblesEvent(groupThreadPayload)
 
     expect(result).toEqual(
@@ -758,7 +758,7 @@ describe("BlueBubbles sense runtime", () => {
   })
 
   it("routes top-level and threaded DM turns into the same persisted chat trunk", async () => {
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
 
     await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
@@ -778,7 +778,7 @@ describe("BlueBubbles sense runtime", () => {
   })
 
   it("prefixes threaded inbound turns with chat-trunk metadata", async () => {
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
 
     expect(mocks.runAgent).toHaveBeenCalledWith(
@@ -797,7 +797,7 @@ describe("BlueBubbles sense runtime", () => {
   })
 
   it("prefixes top-level inbound turns with chat-trunk metadata", async () => {
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
 
     expect(mocks.runAgent).toHaveBeenCalledWith(
@@ -825,7 +825,7 @@ describe("BlueBubbles sense runtime", () => {
     writeFile(unrelatedThread)
     mocks.sessionPath.mockReturnValueOnce(trunk)
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
 
     expect(mocks.loadSession).toHaveBeenCalledWith(trunk)
@@ -845,7 +845,7 @@ describe("BlueBubbles sense runtime", () => {
   })
 
   it("defaults top-level inbound turns to top-level outbound replies", async () => {
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
 
     expect(mocks.sendText).toHaveBeenCalledWith(
@@ -868,7 +868,7 @@ describe("BlueBubbles sense runtime", () => {
       }
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
 
     expect(mocks.sendText).toHaveBeenCalledWith(
@@ -898,7 +898,7 @@ describe("BlueBubbles sense runtime", () => {
       ],
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
 
     expect(mocks.runAgent).toHaveBeenCalledWith(
@@ -937,7 +937,7 @@ describe("BlueBubbles sense runtime", () => {
       ],
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
 
     expect(mocks.runAgent).toHaveBeenCalledWith(
@@ -967,7 +967,7 @@ describe("BlueBubbles sense runtime", () => {
       ],
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
 
     expect(mocks.runAgent).toHaveBeenCalledWith(
@@ -997,7 +997,7 @@ describe("BlueBubbles sense runtime", () => {
       ],
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
 
     expect(mocks.runAgent).toHaveBeenCalledWith(
@@ -1037,7 +1037,7 @@ describe("BlueBubbles sense runtime", () => {
       ],
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
 
     expect(mocks.runAgent).toHaveBeenCalledWith(
@@ -1069,7 +1069,7 @@ describe("BlueBubbles sense runtime", () => {
       ],
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
 
     expect(mocks.runAgent).toHaveBeenCalledWith(
@@ -1098,7 +1098,7 @@ describe("BlueBubbles sense runtime", () => {
       }
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
 
     expect(mocks.sendText).toHaveBeenCalledWith(
@@ -1120,7 +1120,7 @@ describe("BlueBubbles sense runtime", () => {
       }
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
 
     expect(mocks.sendText).toHaveBeenCalledWith(
@@ -1174,7 +1174,7 @@ describe("BlueBubbles sense runtime", () => {
       ],
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
 
     expect(mocks.runAgent).toHaveBeenCalledWith(
@@ -1217,7 +1217,7 @@ describe("BlueBubbles sense runtime", () => {
       }
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
 
     expect(mocks.sendText).toHaveBeenNthCalledWith(
@@ -1241,12 +1241,12 @@ describe("BlueBubbles sense runtime", () => {
     const trunk = path.join(dir, "chat_any;-;ari@mendelow.me.json")
     writeFile(trunk)
     mocks.sessionPath.mockReturnValueOnce(trunk)
-    const cleanupModule = await import("../../senses/bluebubbles-session-cleanup")
+    const cleanupModule = await import("../../../senses/bluebubbles/session-cleanup")
     vi.spyOn(cleanupModule, "findObsoleteBlueBubblesThreadSessions").mockImplementation(() => {
       throw new Error("cleanup boom")
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
 
     expect(mocks.loadSession).toHaveBeenCalledWith(trunk)
@@ -1268,12 +1268,12 @@ describe("BlueBubbles sense runtime", () => {
     const trunk = path.join(dir, "chat_any;-;ari@mendelow.me.json")
     writeFile(trunk)
     mocks.sessionPath.mockReturnValueOnce(trunk)
-    const cleanupModule = await import("../../senses/bluebubbles-session-cleanup")
+    const cleanupModule = await import("../../../senses/bluebubbles/session-cleanup")
     vi.spyOn(cleanupModule, "findObsoleteBlueBubblesThreadSessions").mockImplementation(() => {
       throw "cleanup string"
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
 
     expect(mocks.loadSession).toHaveBeenCalledWith(trunk)
@@ -1308,7 +1308,7 @@ describe("BlueBubbles sense runtime", () => {
       }
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
 
     expect(mocks.markChatRead).toHaveBeenCalledTimes(1)
@@ -1340,7 +1340,7 @@ describe("BlueBubbles sense runtime", () => {
   })
 
   it("uses typing only for the first phase of a short turn and sends only the final reply visibly", async () => {
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
 
     expect(mocks.markChatRead).toHaveBeenCalledTimes(1)
@@ -1371,7 +1371,7 @@ describe("BlueBubbles sense runtime", () => {
       }
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
 
     expect(mocks.sendText).toHaveBeenCalledWith(
@@ -1394,7 +1394,7 @@ describe("BlueBubbles sense runtime", () => {
       }
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(reactionPayload)
 
     expect(mocks.sendText).toHaveBeenCalledWith(
@@ -1420,7 +1420,7 @@ describe("BlueBubbles sense runtime", () => {
       }
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
 
     expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
@@ -1449,7 +1449,7 @@ describe("BlueBubbles sense runtime", () => {
       }
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
 
     expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
@@ -1467,7 +1467,7 @@ describe("BlueBubbles sense runtime", () => {
   it("still attempts mark-read when typing-start transport fails and surfaces the activity warning", async () => {
     mocks.setTyping.mockRejectedValueOnce(new Error("typing transport down"))
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
 
     expect(mocks.markChatRead).toHaveBeenCalledTimes(1)
@@ -1509,7 +1509,7 @@ describe("BlueBubbles sense runtime", () => {
       }
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(groupThreadPayload)
 
     expect(mocks.markChatRead).toHaveBeenCalledTimes(1)
@@ -1561,7 +1561,7 @@ describe("BlueBubbles sense runtime", () => {
       }
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(groupThreadPayload)
 
     const toolStatusCall = mocks.sendText.mock.calls.find((call: any[]) => call[0]?.text === "checking session history...")
@@ -1611,7 +1611,7 @@ describe("BlueBubbles sense runtime", () => {
       }
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(groupThreadPayload)
     vi.useRealTimers()
   })
@@ -1639,7 +1639,7 @@ describe("BlueBubbles sense runtime", () => {
       },
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(groupThreadPayload)
 
     expect(mocks.resolverCtor).toHaveBeenCalledWith(
@@ -1676,7 +1676,7 @@ describe("BlueBubbles sense runtime", () => {
   })
 
   it("runs notifyable mutations but returns explicit non-agent handling for read-only state changes", async () => {
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
 
     const runtimeDeps = {
       getAgentName: () => "testagent",
@@ -1726,7 +1726,7 @@ describe("BlueBubbles sense runtime", () => {
   })
 
   it("keeps edit and unsend mutations notifyable while treating delivery as state-only", async () => {
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
 
     const runtimeDeps = {
       getAgentName: () => "testagent",
@@ -1789,7 +1789,7 @@ describe("BlueBubbles sense runtime", () => {
   })
 
   it("returns explicit from-me handling without invoking the agent loop", async () => {
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.handleBlueBubblesEvent(fromMePayload)
 
     expect(result).toEqual(
@@ -1813,7 +1813,7 @@ describe("BlueBubbles sense runtime", () => {
       throw new Error("turn blew up")
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await expect(bluebubbles.handleBlueBubblesEvent(dmThreadPayload)).rejects.toThrow("turn blew up")
 
     expect(mocks.setTyping).toHaveBeenNthCalledWith(1, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), true)
@@ -1834,7 +1834,7 @@ describe("BlueBubbles sense runtime", () => {
   })
 
   it("can still run a turn when only chat identifier routing is present", async () => {
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(identifierOnlyPayload)
 
     expect(mocks.sendText).toHaveBeenCalledWith(
@@ -1872,7 +1872,7 @@ describe("BlueBubbles sense runtime", () => {
       }
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
 
     expect(mocks.buildSystem).not.toHaveBeenCalled()
@@ -1918,7 +1918,7 @@ describe("BlueBubbles sense runtime", () => {
       },
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(groupReactionPayload)
 
     expect(mocks.runAgent.mock.calls[0]?.[0]).toEqual(
@@ -1956,7 +1956,7 @@ describe("BlueBubbles sense runtime", () => {
       repairNotice: "BlueBubbles repair failed: network down",
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload, {
       recordMutation: mocks.recordMutation,
     } as any)
@@ -2011,7 +2011,7 @@ describe("BlueBubbles sense runtime", () => {
       ],
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
 
     expect(mocks.runAgent).toHaveBeenCalledWith(
@@ -2042,7 +2042,7 @@ describe("BlueBubbles sense runtime", () => {
   })
 
   it("marks handled inbound chats as read when typing starts for a successful turn", async () => {
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
 
     expect(mocks.markChatRead).toHaveBeenCalledTimes(1)
@@ -2055,7 +2055,7 @@ describe("BlueBubbles sense runtime", () => {
   })
 
   it("emits a warning instead of failing the turn when mark-read transport throws", async () => {
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     mocks.markChatRead.mockRejectedValueOnce(new Error("read transport down"))
 
     await expect(bluebubbles.handleBlueBubblesEvent(dmThreadPayload)).resolves.toEqual(
@@ -2080,7 +2080,7 @@ describe("BlueBubbles sense runtime", () => {
   })
 
   it("captures string-thrown mark-read failures explicitly too", async () => {
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     mocks.markChatRead.mockRejectedValueOnce("read transport string failure")
 
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
@@ -2097,7 +2097,7 @@ describe("BlueBubbles sense runtime", () => {
   })
 
   it("uses null chatGuid in mark-read warnings when only identifier routing is available", async () => {
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     mocks.markChatRead.mockRejectedValueOnce(new Error("identifier read failure"))
 
     await bluebubbles.handleBlueBubblesEvent(identifierOnlyPayload)
@@ -2115,7 +2115,7 @@ describe("BlueBubbles sense runtime", () => {
   })
 
   it("emits an explicit nerves error when mutation sidecar recording fails", async () => {
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     mocks.recordMutation.mockImplementationOnce(() => {
       throw new Error("disk full")
     })
@@ -2139,7 +2139,7 @@ describe("BlueBubbles sense runtime", () => {
   })
 
   it("captures string-throw mutation log failures explicitly too", async () => {
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     mocks.recordMutation.mockImplementationOnce(() => {
       throw "disk offline"
     })
@@ -2161,7 +2161,7 @@ describe("BlueBubbles sense runtime", () => {
   })
 
   it("covers friend-identity fallbacks for group identifiers, sender fallback, and unknown DM names", async () => {
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
 
     mocks.repairEvent.mockResolvedValueOnce({
       kind: "message",
@@ -2267,7 +2267,7 @@ describe("BlueBubbles sense runtime", () => {
   })
 
   it("accepts valid webhook posts and rejects incorrect webhook passwords", async () => {
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const handler = bluebubbles.createBlueBubblesWebhookHandler()
 
     const unauthorizedReq = createMockRequest(
@@ -2298,7 +2298,7 @@ describe("BlueBubbles sense runtime", () => {
   })
 
   it("returns explicit webhook errors for missing routes, methods, bad json, and runtime failures", async () => {
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const handler = bluebubbles.createBlueBubblesWebhookHandler()
 
     const notFoundReq = createMockRequest("POST", "/wrong-path", dmThreadPayload)
@@ -2356,7 +2356,7 @@ describe("BlueBubbles sense runtime", () => {
   })
 
   it("starts an HTTP server on the configured BlueBubbles port", async () => {
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     bluebubbles.startBlueBubblesApp()
 
     expect(mocks.createServer).toHaveBeenCalledTimes(1)
@@ -2365,10 +2365,10 @@ describe("BlueBubbles sense runtime", () => {
 
   it("replays unrecovered state-only mutations through the agent once the full message can be repaired", async () => {
     const tempAgentRoot = makeTempDir()
-    const { getAgentRoot } = await import("../../heart/identity")
+    const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
-    const { recordBlueBubblesMutation } = await import("../../senses/bluebubbles-mutation-log")
+    const { recordBlueBubblesMutation } = await import("../../../senses/bluebubbles/mutation-log")
     recordBlueBubblesMutation("testagent", {
       kind: "mutation",
       eventType: "updated-message",
@@ -2421,7 +2421,7 @@ describe("BlueBubbles sense runtime", () => {
       requiresRepair: false,
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const first = await bluebubbles.recoverMissedBlueBubblesMessages()
     const second = await bluebubbles.recoverMissedBlueBubblesMessages()
 
@@ -2444,10 +2444,10 @@ describe("BlueBubbles sense runtime", () => {
 
   it("keeps unrepaired backlog mutations pending until BlueBubbles can hydrate a real message", async () => {
     const tempAgentRoot = makeTempDir()
-    const { getAgentRoot } = await import("../../heart/identity")
+    const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
-    const { recordBlueBubblesMutation } = await import("../../senses/bluebubbles-mutation-log")
+    const { recordBlueBubblesMutation } = await import("../../../senses/bluebubbles/mutation-log")
     recordBlueBubblesMutation("testagent", {
       kind: "mutation",
       eventType: "updated-message",
@@ -2499,7 +2499,7 @@ describe("BlueBubbles sense runtime", () => {
       requiresRepair: false,
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.recoverMissedBlueBubblesMessages()
 
     expect(result).toEqual(expect.objectContaining({ recovered: 0, skipped: 0, pending: 1, failed: 0 }))
@@ -2514,10 +2514,10 @@ describe("BlueBubbles sense runtime", () => {
 
   it("records backlog recovery failures without crashing the recovery pass", async () => {
     const tempAgentRoot = makeTempDir()
-    const { getAgentRoot } = await import("../../heart/identity")
+    const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
-    const { recordBlueBubblesMutation } = await import("../../senses/bluebubbles-mutation-log")
+    const { recordBlueBubblesMutation } = await import("../../../senses/bluebubbles/mutation-log")
     recordBlueBubblesMutation("testagent", {
       kind: "mutation",
       eventType: "updated-message",
@@ -2545,7 +2545,7 @@ describe("BlueBubbles sense runtime", () => {
     })
     mocks.repairEvent.mockRejectedValueOnce(new Error("repair exploded"))
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.recoverMissedBlueBubblesMessages()
 
     expect(result).toEqual(expect.objectContaining({ recovered: 0, skipped: 0, pending: 0, failed: 1 }))
@@ -2562,10 +2562,10 @@ describe("BlueBubbles sense runtime", () => {
 
   it("recovers identifier-only backlog candidates by falling back to unknown routing metadata", async () => {
     const tempAgentRoot = makeTempDir()
-    const { getAgentRoot } = await import("../../heart/identity")
+    const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
-    const { getBlueBubblesMutationLogPath } = await import("../../senses/bluebubbles-mutation-log")
+    const { getBlueBubblesMutationLogPath } = await import("../../../senses/bluebubbles/mutation-log")
     const mutationLogPath = getBlueBubblesMutationLogPath("testagent", "chat_identifier:missing-target")
     fs.mkdirSync(path.dirname(mutationLogPath), { recursive: true })
     fs.writeFileSync(
@@ -2587,7 +2587,7 @@ describe("BlueBubbles sense runtime", () => {
     )
 
     const beforeRecovery = Date.now()
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.recoverMissedBlueBubblesMessages()
     const repairedEvent = mocks.repairEvent.mock.calls[0]?.[0]
 
@@ -2615,10 +2615,10 @@ describe("BlueBubbles sense runtime", () => {
 
   it("still recovers messages when the repaired agent text is empty and the session cannot dedupe by content", async () => {
     const tempAgentRoot = makeTempDir()
-    const { getAgentRoot } = await import("../../heart/identity")
+    const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
-    const { recordBlueBubblesMutation } = await import("../../senses/bluebubbles-mutation-log")
+    const { recordBlueBubblesMutation } = await import("../../../senses/bluebubbles/mutation-log")
     recordBlueBubblesMutation("testagent", {
       kind: "mutation",
       eventType: "updated-message",
@@ -2671,7 +2671,7 @@ describe("BlueBubbles sense runtime", () => {
       requiresRepair: false,
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.recoverMissedBlueBubblesMessages()
 
     expect(result).toEqual(expect.objectContaining({ recovered: 1, skipped: 0, pending: 0, failed: 0 }))
@@ -2681,13 +2681,13 @@ describe("BlueBubbles sense runtime", () => {
   it("syncs BlueBubbles runtime state immediately, repeats on the interval, and stops after server close", async () => {
     vi.useFakeTimers()
     const tempAgentRoot = makeTempDir()
-    const { getAgentRoot } = await import("../../heart/identity")
+    const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
     const closableServer = createClosableServer()
     mocks.createServer.mockReturnValue(closableServer.server as any)
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     bluebubbles.startBlueBubblesApp()
     await flushAsyncWork()
 
@@ -2711,10 +2711,10 @@ describe("BlueBubbles sense runtime", () => {
 
   it("writes runtime error state when the BlueBubbles upstream health probe fails before backlog recovery", async () => {
     const tempAgentRoot = makeTempDir()
-    const { getAgentRoot } = await import("../../heart/identity")
+    const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
-    const { recordBlueBubblesMutation } = await import("../../senses/bluebubbles-mutation-log")
+    const { recordBlueBubblesMutation } = await import("../../../senses/bluebubbles/mutation-log")
     recordBlueBubblesMutation("testagent", {
       kind: "mutation",
       eventType: "updated-message",
@@ -2745,7 +2745,7 @@ describe("BlueBubbles sense runtime", () => {
     const closableServer = createClosableServer()
     mocks.createServer.mockReturnValue(closableServer.server as any)
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     bluebubbles.startBlueBubblesApp()
     await flushAsyncWork()
     closableServer.close()
@@ -2763,7 +2763,7 @@ describe("BlueBubbles sense runtime", () => {
 
   it("records inbound sidecars when trust-gated message events are auto-replied instead of reaching the agent", async () => {
     const tempAgentRoot = makeTempDir()
-    const { getAgentRoot } = await import("../../heart/identity")
+    const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
     mocks.handleInboundTurn.mockResolvedValueOnce({
@@ -2773,7 +2773,7 @@ describe("BlueBubbles sense runtime", () => {
       },
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
 
     expect(result).toEqual({
@@ -2782,13 +2782,13 @@ describe("BlueBubbles sense runtime", () => {
       kind: "message",
     })
 
-    const { hasRecordedBlueBubblesInbound } = await import("../../senses/bluebubbles-inbound-log")
+    const { hasRecordedBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
     expect(hasRecordedBlueBubblesInbound("testagent", "chat:any;-;ari@mendelow.me", "B20D4E2B-2E6E-48B5-95CD-6E24A368E4A7")).toBe(true)
   })
 
   it("handles trust-gated mutation events without trying to record a message inbound sidecar", async () => {
     const tempAgentRoot = makeTempDir()
-    const { getAgentRoot } = await import("../../heart/identity")
+    const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
     mocks.handleInboundTurn.mockResolvedValueOnce({
@@ -2797,7 +2797,7 @@ describe("BlueBubbles sense runtime", () => {
       },
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.handleBlueBubblesEvent(editPayload)
 
     expect(result).toEqual({
@@ -2806,16 +2806,16 @@ describe("BlueBubbles sense runtime", () => {
       kind: "mutation",
     })
 
-    const { hasRecordedBlueBubblesInbound } = await import("../../senses/bluebubbles-inbound-log")
+    const { hasRecordedBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
     expect(hasRecordedBlueBubblesInbound("testagent", "chat:any;-;ari@mendelow.me", "4A4F2A85-21AD-4AC6-98A8-34B8F4D07AA9")).toBe(false)
   })
 
   it("skips webhook delivery when the inbound sidecar already recorded the message guid", async () => {
     const tempAgentRoot = makeTempDir()
-    const { getAgentRoot } = await import("../../heart/identity")
+    const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
-    const { recordBlueBubblesInbound } = await import("../../senses/bluebubbles-inbound-log")
+    const { recordBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
     recordBlueBubblesInbound("testagent", {
       kind: "message",
       eventType: "new-message",
@@ -2843,7 +2843,7 @@ describe("BlueBubbles sense runtime", () => {
       requiresRepair: false,
     }, "webhook")
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
 
     expect(result).toEqual({
@@ -2857,7 +2857,7 @@ describe("BlueBubbles sense runtime", () => {
 
   it("does not run the same webhook message guid through the pipeline twice when deliveries race", async () => {
     const tempAgentRoot = makeTempDir()
-    const { getAgentRoot } = await import("../../heart/identity")
+    const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
     const releaseFirst = createDeferred<void>()
@@ -2873,7 +2873,7 @@ describe("BlueBubbles sense runtime", () => {
       }
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const first = bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
     await waitFor(() => invocationCount === 1)
 
@@ -2891,7 +2891,7 @@ describe("BlueBubbles sense runtime", () => {
 
   it("serializes distinct same-chat webhook turns instead of running them in parallel", async () => {
     const tempAgentRoot = makeTempDir()
-    const { getAgentRoot } = await import("../../heart/identity")
+    const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
     const secondPayload = {
@@ -2925,7 +2925,7 @@ describe("BlueBubbles sense runtime", () => {
       }
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const first = bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
     await waitFor(() => started === 1)
 
@@ -2943,7 +2943,7 @@ describe("BlueBubbles sense runtime", () => {
 
   it("bootstraps skipped recovery candidates into the inbound sidecar when the session already has the message text", async () => {
     const tempAgentRoot = makeTempDir()
-    const { getAgentRoot } = await import("../../heart/identity")
+    const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
     mocks.loadSession.mockReturnValue({
@@ -2953,7 +2953,7 @@ describe("BlueBubbles sense runtime", () => {
       ],
     })
 
-    const { recordBlueBubblesMutation } = await import("../../senses/bluebubbles-mutation-log")
+    const { recordBlueBubblesMutation } = await import("../../../senses/bluebubbles/mutation-log")
     recordBlueBubblesMutation("testagent", {
       kind: "mutation",
       eventType: "updated-message",
@@ -3006,22 +3006,22 @@ describe("BlueBubbles sense runtime", () => {
       requiresRepair: false,
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.recoverMissedBlueBubblesMessages()
 
     expect(result).toEqual(expect.objectContaining({ recovered: 0, skipped: 1, pending: 0, failed: 0 }))
     expect(mocks.runAgent).not.toHaveBeenCalled()
 
-    const { hasRecordedBlueBubblesInbound } = await import("../../senses/bluebubbles-inbound-log")
+    const { hasRecordedBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
     expect(hasRecordedBlueBubblesInbound("testagent", "chat:any;-;ari@mendelow.me", "session-already-has-message")).toBe(true)
   })
 
   it("marks runtime state as error when recovery still has pending backlog after a healthy probe", async () => {
     const tempAgentRoot = makeTempDir()
-    const { getAgentRoot } = await import("../../heart/identity")
+    const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
-    const { recordBlueBubblesMutation } = await import("../../senses/bluebubbles-mutation-log")
+    const { recordBlueBubblesMutation } = await import("../../../senses/bluebubbles/mutation-log")
     recordBlueBubblesMutation("testagent", {
       kind: "mutation",
       eventType: "updated-message",
@@ -3076,7 +3076,7 @@ describe("BlueBubbles sense runtime", () => {
     const closableServer = createClosableServer()
     mocks.createServer.mockReturnValue(closableServer.server as any)
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     bluebubbles.startBlueBubblesApp()
     await flushAsyncWork()
     closableServer.close()
@@ -3094,10 +3094,10 @@ describe("BlueBubbles sense runtime", () => {
 
   it("records recovery failures in runtime state when a healthy upstream still cannot hydrate backlog messages", async () => {
     const tempAgentRoot = makeTempDir()
-    const { getAgentRoot } = await import("../../heart/identity")
+    const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
-    const { recordBlueBubblesMutation } = await import("../../senses/bluebubbles-mutation-log")
+    const { recordBlueBubblesMutation } = await import("../../../senses/bluebubbles/mutation-log")
     recordBlueBubblesMutation("testagent", {
       kind: "mutation",
       eventType: "updated-message",
@@ -3128,7 +3128,7 @@ describe("BlueBubbles sense runtime", () => {
     const closableServer = createClosableServer()
     mocks.createServer.mockReturnValue(closableServer.server as any)
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     bluebubbles.startBlueBubblesApp()
     await flushAsyncWork()
     closableServer.close()
@@ -3146,10 +3146,10 @@ describe("BlueBubbles sense runtime", () => {
 
   it("records recovered backlog progress in runtime state after a healthy repair pass", async () => {
     const tempAgentRoot = makeTempDir()
-    const { getAgentRoot } = await import("../../heart/identity")
+    const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
-    const { recordBlueBubblesMutation } = await import("../../senses/bluebubbles-mutation-log")
+    const { recordBlueBubblesMutation } = await import("../../../senses/bluebubbles/mutation-log")
     recordBlueBubblesMutation("testagent", {
       kind: "mutation",
       eventType: "updated-message",
@@ -3205,7 +3205,7 @@ describe("BlueBubbles sense runtime", () => {
     const closableServer = createClosableServer()
     mocks.createServer.mockReturnValue(closableServer.server as any)
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     bluebubbles.startBlueBubblesApp()
     await flushAsyncWork()
     closableServer.close()
@@ -3224,14 +3224,14 @@ describe("BlueBubbles sense runtime", () => {
 
   it("stringifies non-Error runtime sync failures when the upstream health probe rejects with a bare value", async () => {
     const tempAgentRoot = makeTempDir()
-    const { getAgentRoot } = await import("../../heart/identity")
+    const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
     mocks.checkHealth.mockRejectedValueOnce("bare upstream failure")
 
     const closableServer = createClosableServer()
     mocks.createServer.mockReturnValue(closableServer.server as any)
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     bluebubbles.startBlueBubblesApp()
     await flushAsyncWork()
     closableServer.close()
@@ -3248,10 +3248,10 @@ describe("BlueBubbles sense runtime", () => {
 
   it("stringifies non-Error backlog recovery failures in nerves metadata", async () => {
     const tempAgentRoot = makeTempDir()
-    const { getAgentRoot } = await import("../../heart/identity")
+    const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
-    const { recordBlueBubblesMutation } = await import("../../senses/bluebubbles-mutation-log")
+    const { recordBlueBubblesMutation } = await import("../../../senses/bluebubbles/mutation-log")
     recordBlueBubblesMutation("testagent", {
       kind: "mutation",
       eventType: "updated-message",
@@ -3279,7 +3279,7 @@ describe("BlueBubbles sense runtime", () => {
     })
     mocks.repairEvent.mockRejectedValueOnce("string repair failure")
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.recoverMissedBlueBubblesMessages()
 
     expect(result).toEqual(expect.objectContaining({ failed: 1 }))
@@ -3297,7 +3297,7 @@ describe("BlueBubbles sense runtime", () => {
   // ── Pipeline integration tests ───────────────────────────────────
 
   it("calls handleInboundTurn instead of inline lifecycle for DM messages", async () => {
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
 
     expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
@@ -3355,7 +3355,7 @@ describe("BlueBubbles sense runtime", () => {
       ],
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
 
     const input = mocks.handleInboundTurn.mock.calls.at(-1)?.[0]
@@ -3392,7 +3392,7 @@ describe("BlueBubbles sense runtime", () => {
       ],
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
 
     const input = mocks.handleInboundTurn.mock.calls.at(-1)?.[0]
@@ -3426,7 +3426,7 @@ describe("BlueBubbles sense runtime", () => {
       requiresRepair: false,
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
 
     const input = mocks.handleInboundTurn.mock.calls.at(-1)?.[0]
@@ -3449,7 +3449,7 @@ describe("BlueBubbles sense runtime", () => {
       channel: defaultFriendContext.channel,
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(groupThreadPayload)
 
     expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
@@ -3495,7 +3495,7 @@ describe("BlueBubbles sense runtime", () => {
       channel: defaultFriendContext.channel,
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(groupWithParticipantsPayload)
 
     expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
@@ -3523,7 +3523,7 @@ describe("BlueBubbles sense runtime", () => {
       channel: defaultFriendContext.channel,
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(groupWithParticipantsPayload)
 
     expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
@@ -3566,7 +3566,7 @@ describe("BlueBubbles sense runtime", () => {
       },
     }
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(liveGroupPayload)
 
     const store = mocks.lastStoreInstance
@@ -3627,7 +3627,7 @@ describe("BlueBubbles sense runtime", () => {
       },
     ])
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
 
     expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
@@ -3680,7 +3680,7 @@ describe("BlueBubbles sense runtime", () => {
       },
     ])
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
 
     expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
@@ -3711,7 +3711,7 @@ describe("BlueBubbles sense runtime", () => {
       channel: defaultFriendContext.channel,
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
 
     expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
@@ -3741,7 +3741,7 @@ describe("BlueBubbles sense runtime", () => {
       channel: defaultFriendContext.channel,
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
 
     expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
@@ -3790,7 +3790,7 @@ describe("BlueBubbles sense runtime", () => {
       },
     ])
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
 
     expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
@@ -3825,7 +3825,7 @@ describe("BlueBubbles sense runtime", () => {
     const originalListAll = mocks.listAll
     mocks.listAll = undefined as any
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
 
     mocks.listAll = originalListAll
@@ -3837,7 +3837,7 @@ describe("BlueBubbles sense runtime", () => {
 
   it("sets hasExistingGroupWithFamily=false for non-acquaintance (friend trust level)", async () => {
     // Friend trust level should skip the check entirely
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
 
     expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
@@ -3848,7 +3848,7 @@ describe("BlueBubbles sense runtime", () => {
   })
 
   it("sets groupHasFamilyMember=false for DM (not a group chat)", async () => {
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
 
     expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
@@ -3869,7 +3869,7 @@ describe("BlueBubbles sense runtime", () => {
       },
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
 
     expect(result.handled).toBe(true)
@@ -3890,7 +3890,7 @@ describe("BlueBubbles sense runtime", () => {
       },
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
 
     expect(result.handled).toBe(true)
@@ -3908,7 +3908,7 @@ describe("BlueBubbles sense runtime", () => {
       },
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
 
     expect(result.handled).toBe(true)
@@ -3930,7 +3930,7 @@ describe("BlueBubbles sense runtime", () => {
       },
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
 
     expect(result.handled).toBe(true)
@@ -3951,7 +3951,7 @@ describe("BlueBubbles sense runtime", () => {
       },
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.handleBlueBubblesEvent(groupThreadPayload)
 
     expect(result.handled).toBe(true)
@@ -3968,7 +3968,7 @@ describe("BlueBubbles sense runtime", () => {
       },
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
 
     // runAgent should NOT have been called since handleInboundTurn mock returns rejection
@@ -3977,7 +3977,7 @@ describe("BlueBubbles sense runtime", () => {
   })
 
   it("passes pendingDir to pipeline for per-turn pending drain", async () => {
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
 
     const input = mocks.handleInboundTurn.mock.calls[0][0]
@@ -3986,7 +3986,7 @@ describe("BlueBubbles sense runtime", () => {
   })
 
   it("passes deferred-return drain to pipeline for friend-level completion routing", async () => {
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
 
     const input = mocks.handleInboundTurn.mock.calls[0][0]
@@ -4006,7 +4006,7 @@ describe("BlueBubbles sense runtime", () => {
       }
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
 
     expect(capturedOptions).not.toBeNull()
@@ -4018,7 +4018,7 @@ describe("BlueBubbles sense runtime", () => {
   })
 
   it("flushes callbacks after successful pipeline run and calls finish in finally block", async () => {
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
 
     // Verify flush sent the reply text
@@ -4041,7 +4041,7 @@ describe("BlueBubbles sense runtime", () => {
       },
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
 
     // No sendText for agent reply (gate rejected, no agent turn)
@@ -4114,7 +4114,7 @@ describe("drainAndSendPendingBlueBubbles", () => {
       timestamp: Date.now(),
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.drainAndSendPendingBlueBubbles({
       createClient: () => ({
         sendText: mocks.sendText,
@@ -4155,7 +4155,7 @@ describe("drainAndSendPendingBlueBubbles", () => {
       timestamp: Date.now(),
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.drainAndSendPendingBlueBubbles({
       createClient: () => ({
         sendText: mocks.sendText,
@@ -4190,7 +4190,7 @@ describe("drainAndSendPendingBlueBubbles", () => {
       timestamp: Date.now(),
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.drainAndSendPendingBlueBubbles({
       createClient: () => ({
         sendText: mocks.sendText,
@@ -4229,7 +4229,7 @@ describe("drainAndSendPendingBlueBubbles", () => {
       timestamp: Date.now(),
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.drainAndSendPendingBlueBubbles({
       createClient: () => ({
         sendText: mocks.sendText,
@@ -4265,7 +4265,7 @@ describe("drainAndSendPendingBlueBubbles", () => {
       timestamp: Date.now(),
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.drainAndSendPendingBlueBubbles({
       createClient: () => ({
         sendText: mocks.sendText,
@@ -4305,7 +4305,7 @@ describe("drainAndSendPendingBlueBubbles", () => {
       timestamp: Date.now(),
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.drainAndSendPendingBlueBubbles({
       createClient: () => ({
         sendText: mocks.sendText,
@@ -4345,7 +4345,7 @@ describe("drainAndSendPendingBlueBubbles", () => {
       timestamp: Date.now(),
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.drainAndSendPendingBlueBubbles({
       createClient: () => ({
         sendText: mocks.sendText,
@@ -4386,7 +4386,7 @@ describe("drainAndSendPendingBlueBubbles", () => {
       timestamp: Date.now(),
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.drainAndSendPendingBlueBubbles({
       createClient: () => ({
         sendText: mocks.sendText,
@@ -4424,7 +4424,7 @@ describe("drainAndSendPendingBlueBubbles", () => {
       timestamp: Date.now(),
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.drainAndSendPendingBlueBubbles({
       createClient: () => ({
         sendText: mocks.sendText,
@@ -4454,7 +4454,7 @@ describe("drainAndSendPendingBlueBubbles", () => {
     const emptyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bb-pending-empty-"))
     tempDirs.push(emptyRoot)
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.drainAndSendPendingBlueBubbles({
       createClient: () => ({
         sendText: mocks.sendText,
@@ -4510,7 +4510,7 @@ describe("drainAndSendPendingBlueBubbles", () => {
       timestamp: Date.now(),
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.drainAndSendPendingBlueBubbles({
       createClient: () => ({
         sendText: mocks.sendText,
@@ -4537,7 +4537,7 @@ describe("drainAndSendPendingBlueBubbles", () => {
       listAll: vi.fn(),
     }
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.drainAndSendPendingBlueBubbles({
       createClient: () => ({
         sendText: mocks.sendText,
@@ -4573,7 +4573,7 @@ describe("drainAndSendPendingBlueBubbles", () => {
       listAll: vi.fn(),
     }
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.drainAndSendPendingBlueBubbles({
       createClient: () => ({
         sendText: mocks.sendText,
@@ -4600,7 +4600,7 @@ describe("drainAndSendPendingBlueBubbles", () => {
       listAll: vi.fn(),
     }
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     // Call without pendingRoot -- should use default from getAgentRoot (which is mocked to /mock/agent/root)
     // The default path /mock/agent/root/state/pending won't exist, so should return zeros
     const result = await bluebubbles.drainAndSendPendingBlueBubbles({
@@ -4635,7 +4635,7 @@ describe("drainAndSendPendingBlueBubbles", () => {
     fs.mkdirSync(bbDir, { recursive: true })
     fs.writeFileSync(path.join(bbDir, "not-a-directory"), "oops")
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.drainAndSendPendingBlueBubbles({
       createClient: () => ({
         sendText: mocks.sendText,
@@ -4668,7 +4668,7 @@ describe("drainAndSendPendingBlueBubbles", () => {
     const filePath = path.join(dir, `${Date.now()}-bad.json`)
     fs.writeFileSync(filePath, "not valid json {{{")
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.drainAndSendPendingBlueBubbles({
       createClient: () => ({
         sendText: mocks.sendText,
@@ -4704,7 +4704,7 @@ describe("drainAndSendPendingBlueBubbles", () => {
       timestamp: Date.now(),
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.drainAndSendPendingBlueBubbles({
       createClient: () => ({
         sendText: mocks.sendText,
@@ -4742,7 +4742,7 @@ describe("drainAndSendPendingBlueBubbles", () => {
       timestamp: Date.now(),
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.drainAndSendPendingBlueBubbles({
       createClient: () => ({
         sendText: mocks.sendText,
@@ -4780,7 +4780,7 @@ describe("drainAndSendPendingBlueBubbles", () => {
       timestamp: Date.now(),
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.drainAndSendPendingBlueBubbles({
       createClient: () => ({
         sendText: mocks.sendText,
@@ -4823,7 +4823,7 @@ describe("drainAndSendPendingBlueBubbles", () => {
       timestamp: Date.now(),
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.drainAndSendPendingBlueBubbles({
       createClient: () => ({
         sendText: mocks.sendText,
@@ -4859,7 +4859,7 @@ describe("drainAndSendPendingBlueBubbles", () => {
       timestamp: Date.now(),
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.drainAndSendPendingBlueBubbles({
       createClient: () => ({
         sendText: mocks.sendText,
@@ -4901,7 +4901,7 @@ describe("drainAndSendPendingBlueBubbles", () => {
       timestamp: Date.now(),
     })
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.drainAndSendPendingBlueBubbles({
       createClient: () => ({
         sendText: mocks.sendText,
@@ -4962,7 +4962,7 @@ describe("sendProactiveBlueBubblesMessageToSession", () => {
       listAll: vi.fn(),
     }
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
       friendId: "friend-uuid-1",
       sessionKey: "chat:any;-;alice@icloud.com",
@@ -5001,7 +5001,7 @@ describe("sendProactiveBlueBubblesMessageToSession", () => {
       listAll: vi.fn(),
     }
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
       friendId: "friend-uuid-1",
       sessionKey: "chat_identifier:alice@icloud.com",
@@ -5039,7 +5039,7 @@ describe("sendProactiveBlueBubblesMessageToSession", () => {
       listAll: vi.fn(),
     }
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
       friendId: "friend-uuid-1",
       sessionKey: "chat_identifier:   ",
@@ -5075,7 +5075,7 @@ describe("sendProactiveBlueBubblesMessageToSession", () => {
       listAll: vi.fn(),
     }
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
       friendId: "friend-uuid-1",
       sessionKey: "chat:opaque-guid",
@@ -5112,7 +5112,7 @@ describe("sendProactiveBlueBubblesMessageToSession", () => {
       listAll: vi.fn(),
     }
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
       friendId: "friend-uuid-1",
       sessionKey: "chat:any;-;   ",
@@ -5149,7 +5149,7 @@ describe("sendProactiveBlueBubblesMessageToSession", () => {
       listAll: vi.fn(),
     }
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
       friendId: "friend-uuid-1",
       sessionKey: "session",
@@ -5181,7 +5181,7 @@ describe("sendProactiveBlueBubblesMessageToSession", () => {
       listAll: vi.fn(),
     }
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
       friendId: "friend-uuid-1",
       sessionKey: "chat:   ",
@@ -5213,7 +5213,7 @@ describe("sendProactiveBlueBubblesMessageToSession", () => {
       listAll: vi.fn(),
     }
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
       friendId: "missing-friend",
       sessionKey: "chat:any;-;alice@icloud.com",
@@ -5245,7 +5245,7 @@ describe("sendProactiveBlueBubblesMessageToSession", () => {
       listAll: vi.fn(),
     }
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
       friendId: "missing-friend",
       sessionKey: "chat:any;-;alice@icloud.com",
@@ -5277,7 +5277,7 @@ describe("sendProactiveBlueBubblesMessageToSession", () => {
       listAll: vi.fn(),
     }
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
       friendId: "friend-uuid-1",
       sessionKey: "chat:any;-;alice@icloud.com",
@@ -5316,7 +5316,7 @@ describe("sendProactiveBlueBubblesMessageToSession", () => {
       listAll: vi.fn(),
     }
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
       friendId: "group-uuid",
       sessionKey: "chat:any;+;project-group-123",
@@ -5369,7 +5369,7 @@ describe("sendProactiveBlueBubblesMessageToSession", () => {
       listAll: vi.fn(),
     }
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
       friendId: "group-uuid",
       sessionKey: "chat_any;+;project-group-123",
@@ -5423,7 +5423,7 @@ describe("sendProactiveBlueBubblesMessageToSession", () => {
       listAll: vi.fn(),
     }
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
       friendId: "friend-uuid-2",
       sessionKey: "chat_identifier_jordan@icloud.com",
@@ -5469,7 +5469,7 @@ describe("sendProactiveBlueBubblesMessageToSession", () => {
       listAll: vi.fn(),
     }
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
       friendId: "friend-uuid-1",
       sessionKey: "chat_identifier_   ",
@@ -5514,7 +5514,7 @@ describe("sendProactiveBlueBubblesMessageToSession", () => {
       listAll: vi.fn(),
     }
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
       friendId: "group-uuid",
       sessionKey: "chat:any;+;project-group-123",
@@ -5549,7 +5549,7 @@ describe("sendProactiveBlueBubblesMessageToSession", () => {
       listAll: vi.fn(),
     }
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
       friendId: "friend-uuid-1",
       sessionKey: "chat:any;-;alice@icloud.com",
@@ -5582,7 +5582,7 @@ describe("sendProactiveBlueBubblesMessageToSession", () => {
     }
     mocks.sendText.mockReset().mockRejectedValue(new Error("bb down"))
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
       friendId: "friend-uuid-1",
       sessionKey: "chat:any;-;alice@icloud.com",
@@ -5614,7 +5614,7 @@ describe("sendProactiveBlueBubblesMessageToSession", () => {
     }
     mocks.sendText.mockReset().mockRejectedValue("bb string fail")
 
-    const bluebubbles = await import("../../senses/bluebubbles")
+    const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
       friendId: "friend-uuid-1",
       sessionKey: "chat:any;-;alice@icloud.com",
@@ -5640,14 +5640,14 @@ describe("sendProactiveBlueBubblesMessageToSession", () => {
 describe("BlueBubbles adapter - reaction enrichment", () => {
   it("enrichReactionText: enriches with original message text (under 80 chars)", async () => {
     vi.resetModules()
-    const bb = await import("../../senses/bluebubbles")
+    const bb = await import("../../../senses/bluebubbles")
     const result = bb.enrichReactionText("reacted with love", "great idea!", 80)
     expect(result).toBe('reacted with love to: "great idea!"')
   })
 
   it("enrichReactionText: truncates text over 80 chars", async () => {
     vi.resetModules()
-    const bb = await import("../../senses/bluebubbles")
+    const bb = await import("../../../senses/bluebubbles")
     const longText = "a".repeat(81)
     const result = bb.enrichReactionText("reacted with love", longText, 80)
     expect(result).toBe(`reacted with love to: "${"a".repeat(77)}..."`)
@@ -5655,7 +5655,7 @@ describe("BlueBubbles adapter - reaction enrichment", () => {
 
   it("enrichReactionText: 80 chars passes through untouched", async () => {
     vi.resetModules()
-    const bb = await import("../../senses/bluebubbles")
+    const bb = await import("../../../senses/bluebubbles")
     const exact = "a".repeat(80)
     const result = bb.enrichReactionText("reacted with love", exact, 80)
     expect(result).toBe(`reacted with love to: "${exact}"`)
@@ -5663,14 +5663,14 @@ describe("BlueBubbles adapter - reaction enrichment", () => {
 
   it("enrichReactionText: null text returns bare text", async () => {
     vi.resetModules()
-    const bb = await import("../../senses/bluebubbles")
+    const bb = await import("../../../senses/bluebubbles")
     const result = bb.enrichReactionText("reacted with love", null, 80)
     expect(result).toBe("reacted with love")
   })
 
   it("enrichReactionText: empty string returns bare text", async () => {
     vi.resetModules()
-    const bb = await import("../../senses/bluebubbles")
+    const bb = await import("../../../senses/bluebubbles")
     const result = bb.enrichReactionText("reacted with love", "", 80)
     expect(result).toBe("reacted with love")
   })
