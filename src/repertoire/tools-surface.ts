@@ -55,7 +55,7 @@ export const surfaceToolDefinition: ToolDefinition = {
           const { createBridgeManager } = await import("../heart/bridges/manager")
           const bridge = createBridgeManager().getBridge(queueItem.bridgeId)
           if (bridge && bridge.lifecycle !== "completed" && bridge.lifecycle !== "cancelled") {
-            const allSessions = listSessionActivity({ sessionsDir, friendsDir, agentName })
+            const allSessions = listSessionActivity({ sessionsDir, friendsDir, agentName, activeThresholdMs: Number.MAX_SAFE_INTEGER })
             const bridgeTarget = allSessions.find((activity) =>
               activity.friendId === friendId
               && activity.channel !== "inner"
@@ -96,13 +96,12 @@ export const surfaceToolDefinition: ToolDefinition = {
           }
         }
 
-        // Priority 2: Freshest active friend session
+        // Priority 2: Freshest friend session (no active threshold — proactive outreach shouldn't be gated by session age)
         const freshest = findFreshestFriendSession({
           sessionsDir,
           friendsDir,
           agentName,
           friendId,
-          activeOnly: true,
         })
         if (freshest && freshest.channel !== "inner") {
           // Attempt proactive BB delivery
