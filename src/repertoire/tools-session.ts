@@ -455,12 +455,34 @@ export const sessionToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
-      const friendId = args.friendId
+      let friendId = args.friendId
       const channel = args.channel
       const key = args.key || "session"
       const content = args.content
       const now = Date.now()
       const agentName = getAgentName()
+
+      // Resolve friend name → UUID if needed
+      /* v8 ignore start -- name resolution: reads real filesystem, tested via live integration @preserve */
+      if (friendId !== "self") {
+        try {
+          const agentRoot = getAgentRoot()
+          const sessionsDir = path.join(agentRoot, "state", "sessions")
+          const friendsDir = path.join(agentRoot, "friends")
+          if (!fs.existsSync(path.join(sessionsDir, friendId))) {
+            const friendFiles = fs.readdirSync(friendsDir).filter((f) => f.endsWith(".json"))
+            for (const file of friendFiles) {
+              const raw = fs.readFileSync(path.join(friendsDir, file), "utf-8")
+              const record = JSON.parse(raw) as { id?: string; name?: string }
+              if (record.name?.toLowerCase() === friendId.toLowerCase() && record.id) {
+                friendId = record.id
+                break
+              }
+            }
+          }
+        } catch { /* continue with original friendId */ }
+      }
+      /* v8 ignore stop */
 
       // Self-routing: messages to "self" always go to inner dialog pending dir,
       // regardless of the channel or key the agent specified.

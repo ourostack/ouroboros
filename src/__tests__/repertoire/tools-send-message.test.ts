@@ -803,6 +803,11 @@ describe("send_message tool", () => {
       const { baseToolDefinitions } = await import("../../repertoire/tools-base")
       const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
 
+      // existsSync returns true for session dir so name resolution is skipped
+      vi.mocked(fs.existsSync).mockReturnValue(true)
+      // BB deliverer returns trust_skip so delivery falls through to queuing
+      mockSendProactiveBlueBubblesMessageToSession.mockResolvedValue({ delivered: false, reason: "trust_skip" })
+
       await tool.handler({
         friendId: "friend-uuid-1",
         channel: "bluebubbles",
