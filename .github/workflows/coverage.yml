@@ -58,7 +58,7 @@ jobs:
         run: |
           node - <<'NODE'
           const { execSync } = require('child_process')
-          const { assessWrapperPublishSync } = require('./dist/heart/daemon/wrapper-publish-guard.js')
+          const { assessWrapperPublishSync } = require('./dist/heart/versioning/wrapper-publish-guard.js')
 
           const changedFiles = execSync(
             'git diff --name-only "origin/${{ github.base_ref }}...HEAD" -- packages/ouro.bot/',
@@ -136,7 +136,7 @@ jobs:
           node - <<'NODE'
           const fs = require('fs')
           const { execSync } = require('child_process')
-          const { assessWrapperPublishSync } = require('./dist/heart/daemon/wrapper-publish-guard.js')
+          const { assessWrapperPublishSync } = require('./dist/heart/versioning/wrapper-publish-guard.js')
 
           const changedFiles = execSync(
             'git diff-tree --no-commit-id --name-only -r HEAD -- packages/ouro.bot/',
