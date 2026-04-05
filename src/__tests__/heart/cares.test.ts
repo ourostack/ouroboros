@@ -9,7 +9,7 @@ import {
   updateCare,
   resolveCare,
   type CareRecord,
-} from "../../heart/cares"
+} from "../../arc/cares"
 
 describe("care store", () => {
   let tmpDir: string

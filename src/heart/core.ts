@@ -31,7 +31,7 @@ import { getInnerDialogPendingDir, queuePendingMessage } from "../mind/pending";
 import type { PendingMessage } from "../mind/pending";
 import { getAgentName, getAgentRoot } from "./identity";
 import { requestInnerWake } from "./daemon/socket-client";
-import { createObligation } from "./obligations";
+import { createObligation } from "../arc/obligations";
 import { createToolLoopState, detectToolLoop, recordToolOutcome } from "./tool-loop";
 
 export type ProviderId = "azure" | "anthropic" | "minimax" | "openai-codex" | "github-copilot";

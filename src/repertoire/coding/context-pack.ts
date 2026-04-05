@@ -6,7 +6,7 @@ import { spawnSync } from "child_process"
 import { formatLiveWorldStateCheckpoint, type ActiveWorkFrame } from "../../heart/active-work"
 import { getAgentName, getAgentRoot } from "../../heart/identity"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { emitEpisode } from "../../mind/episodes"
+import { emitEpisode } from "../../arc/episodes"
 import { listSkills } from "../skills"
 import type { CodingSession, CodingSessionRequest, CodingIdentityPacket } from "./types"
 

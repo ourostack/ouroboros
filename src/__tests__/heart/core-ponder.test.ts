@@ -96,7 +96,7 @@ vi.mock("../../heart/daemon/socket-client", () => ({
 }))
 
 const mockCreateObligation = vi.fn(() => ({ id: "obl-test-123" }))
-vi.mock("../../heart/obligations", () => ({
+vi.mock("../../arc/obligations", () => ({
   createObligation: (...args: any[]) => mockCreateObligation(...args),
   readObligations: vi.fn(() => []),
   readPendingObligations: vi.fn(() => []),

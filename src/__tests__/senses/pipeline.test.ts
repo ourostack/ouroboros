@@ -12,7 +12,7 @@ import * as pending from "../../mind/pending"
 import * as startOfTurnPacketModule from "../../heart/start-of-turn-packet"
 import * as tempoModule from "../../heart/tempo"
 import * as temporalViewModule from "../../heart/temporal-view"
-import * as presenceModule from "../../heart/presence"
+import * as presenceModule from "../../arc/presence"
 import { handleInboundTurn } from "../../senses/pipeline"
 import type { InboundTurnInput, InboundTurnResult } from "../../senses/pipeline"
 

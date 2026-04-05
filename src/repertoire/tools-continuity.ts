@@ -1,9 +1,9 @@
 import { getAgentRoot, getAgentName } from "../heart/identity";
 import { emitNervesEvent } from "../nerves/runtime";
-import { readRecentEpisodes, emitEpisode } from "../mind/episodes";
-import { readActiveCares, readCares, createCare, updateCare, resolveCare } from "../heart/cares";
-import { readPresence, readPeerPresence } from "../heart/presence";
-import { captureIntention, resolveIntention, dismissIntention } from "../heart/intentions";
+import { readRecentEpisodes, emitEpisode } from "../arc/episodes";
+import { readActiveCares, readCares, createCare, updateCare, resolveCare } from "../arc/cares";
+import { readPresence, readPeerPresence } from "../arc/presence";
+import { captureIntention, resolveIntention, dismissIntention } from "../arc/intentions";
 import type { ToolDefinition } from "./tools-base";
 
 export const continuityToolDefinitions: ToolDefinition[] = [
@@ -26,9 +26,9 @@ export const continuityToolDefinitions: ToolDefinition[] = [
     },
     handler: (a) => {
       const agentRoot = getAgentRoot();
-      const options: { limit?: number; kinds?: import("../mind/episodes").EpisodeKind[]; since?: string } = {};
+      const options: { limit?: number; kinds?: import("../arc/episodes").EpisodeKind[]; since?: string } = {};
       if (a.limit) options.limit = parseInt(a.limit, 10);
-      if (a.kind) options.kinds = [a.kind as import("../mind/episodes").EpisodeKind];
+      if (a.kind) options.kinds = [a.kind as import("../arc/episodes").EpisodeKind];
       if (a.since) options.since = a.since;
       const episodes = readRecentEpisodes(agentRoot, options);
       emitNervesEvent({ component: "repertoire", event: "repertoire.query_episodes", message: `queried ${episodes.length} episodes`, meta: { count: episodes.length } });

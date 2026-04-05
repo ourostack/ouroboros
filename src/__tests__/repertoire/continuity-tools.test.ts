@@ -15,12 +15,12 @@ const mockCaptureIntention = vi.fn()
 const mockResolveIntention = vi.fn()
 const mockDismissIntention = vi.fn()
 
-vi.mock("../../mind/episodes", () => ({
+vi.mock("../../arc/episodes", () => ({
   readRecentEpisodes: (...args: any[]) => mockReadRecentEpisodes(...args),
   emitEpisode: (...args: any[]) => mockEmitEpisode(...args),
 }))
 
-vi.mock("../../heart/cares", () => ({
+vi.mock("../../arc/cares", () => ({
   readActiveCares: (...args: any[]) => mockReadActiveCares(...args),
   readCares: (...args: any[]) => mockReadCares(...args),
   createCare: (...args: any[]) => mockCreateCare(...args),
@@ -28,12 +28,12 @@ vi.mock("../../heart/cares", () => ({
   resolveCare: (...args: any[]) => mockResolveCare(...args),
 }))
 
-vi.mock("../../heart/presence", () => ({
+vi.mock("../../arc/presence", () => ({
   readPresence: (...args: any[]) => mockReadPresence(...args),
   readPeerPresence: (...args: any[]) => mockReadPeerPresence(...args),
 }))
 
-vi.mock("../../heart/intentions", () => ({
+vi.mock("../../arc/intentions", () => ({
   captureIntention: (...args: any[]) => mockCaptureIntention(...args),
   resolveIntention: (...args: any[]) => mockResolveIntention(...args),
   dismissIntention: (...args: any[]) => mockDismissIntention(...args),

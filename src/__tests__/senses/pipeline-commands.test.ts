@@ -56,16 +56,16 @@ vi.mock("../../heart/provider-ping", async () => ({
 const mockReadPendingObligations = vi.fn().mockReturnValue([])
 const mockEmitEpisode = vi.fn()
 
-vi.mock("../../heart/obligations", async () => {
-  const actual = await vi.importActual<typeof import("../../heart/obligations")>("../../heart/obligations")
+vi.mock("../../arc/obligations", async () => {
+  const actual = await vi.importActual<typeof import("../../arc/obligations")>("../../arc/obligations")
   return {
     ...actual,
     readPendingObligations: (...args: any[]) => mockReadPendingObligations(...args),
   }
 })
 
-vi.mock("../../mind/episodes", async () => {
-  const actual = await vi.importActual<typeof import("../../mind/episodes")>("../../mind/episodes")
+vi.mock("../../arc/episodes", async () => {
+  const actual = await vi.importActual<typeof import("../../arc/episodes")>("../../arc/episodes")
   return {
     ...actual,
     emitEpisode: (...args: any[]) => mockEmitEpisode(...args),
@@ -73,8 +73,8 @@ vi.mock("../../mind/episodes", async () => {
   }
 })
 
-vi.mock("../../heart/cares", async () => {
-  const actual = await vi.importActual<typeof import("../../heart/cares")>("../../heart/cares")
+vi.mock("../../arc/cares", async () => {
+  const actual = await vi.importActual<typeof import("../../arc/cares")>("../../arc/cares")
   return { ...actual, readActiveCares: vi.fn().mockReturnValue([]) }
 })
 
@@ -103,8 +103,8 @@ vi.mock("../../heart/start-of-turn-packet", async () => {
   }
 })
 
-vi.mock("../../heart/presence", async () => {
-  const actual = await vi.importActual<typeof import("../../heart/presence")>("../../heart/presence")
+vi.mock("../../arc/presence", async () => {
+  const actual = await vi.importActual<typeof import("../../arc/presence")>("../../arc/presence")
   return { ...actual, derivePresence: vi.fn().mockReturnValue({}), writePresence: vi.fn() }
 })
 
