@@ -89,6 +89,7 @@ export class BitwardenClient {
         event: "client.vault_connect_error",
         component: "clients",
         message: "failed to connect to Bitwarden vault",
+        /* v8 ignore next -- defensive: execCli always wraps in Error @preserve */
         meta: { reason: err instanceof Error ? err.message : String(err) },
       })
       throw err
@@ -223,6 +224,7 @@ export class BitwardenClient {
         event: "client.error",
         component: "clients",
         message: `vault ${operation} failed`,
+        /* v8 ignore next -- defensive: callers always throw Error instances @preserve */
         meta: { operation, reason: err instanceof Error ? err.message : String(err), ...meta },
       })
       throw err
@@ -233,6 +235,7 @@ export class BitwardenClient {
     // Attempt dynamic import of SDK
     // This will throw if the package is not installed
     const sdk = await import("@bitwarden/sdk-napi" as string)
+    /* v8 ignore start -- SDK not yet published; path tested when package becomes available @preserve */
     const client = new sdk.BitwardenClient(
       { apiUrl: _config.serverUrl ?? "https://api.bitwarden.com" },
       0, // LogLevel.Info
@@ -240,6 +243,7 @@ export class BitwardenClient {
     await client.auth().loginAccessToken(_config.accessToken, "")
     this.connected = true
     this.clientMode = "sdk"
+    /* v8 ignore stop */
   }
 
   private async connectCli(config: VaultConfig): Promise<void> {

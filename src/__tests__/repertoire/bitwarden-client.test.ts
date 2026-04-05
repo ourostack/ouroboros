@@ -114,6 +114,19 @@ describe("BitwardenClient", () => {
       expect(errorEvents[0].meta).toBeDefined()
     })
 
+    it("handles non-Error thrown during connect", async () => {
+      vi.mocked(execFile).mockImplementation((_cmd: any, _args: any, _opts: any, callback: any) => {
+        const cb = typeof _opts === "function" ? _opts : callback
+        cb("string-error", "", "")
+        return {} as any
+      })
+
+      await expect(client.connect({ accessToken: "key", mode: "cli" })).rejects.toThrow()
+
+      const errorEvents = nervesEvents.filter((e) => e.event === "client.vault_connect_error")
+      expect(errorEvents.length).toBeGreaterThanOrEqual(1)
+    })
+
     it("falls back to CLI when SDK dynamic import fails", async () => {
       mockExecFileSuccess(JSON.stringify({ success: true }))
 
@@ -161,6 +174,41 @@ describe("BitwardenClient", () => {
       expect((item.login as any)?.password).toBeUndefined()
     })
 
+    it("strips secrets from item with login that has no username or uris", async () => {
+      mockExecFileSuccess(JSON.stringify({
+        success: true,
+        data: {
+          id: "item-minimal",
+          name: "Minimal Login",
+          type: 1,
+          login: { password: "secret" },
+        },
+      }))
+
+      const item = await client.getItem("item-minimal")
+      expect(item.login).toBeDefined()
+      expect(item.login?.username).toBeUndefined()
+      expect(item.login?.uris).toBeUndefined()
+      expect((item.login as any)?.password).toBeUndefined()
+    })
+
+    it("handles item with no login, no notes, no fields", async () => {
+      mockExecFileSuccess(JSON.stringify({
+        success: true,
+        data: {
+          id: "bare-item",
+          name: "Bare",
+          type: 2,
+        },
+      }))
+
+      const item = await client.getItem("bare-item")
+      expect(item.id).toBe("bare-item")
+      expect(item.notes).toBeUndefined()
+      expect(item.fields).toBeUndefined()
+      expect(item.login).toBeUndefined()
+    })
+
     it("throws 'vault not connected' when not connected", async () => {
       const disconnectedClient = new BitwardenClient()
       await expect(disconnectedClient.getItem("id")).rejects.toThrow(/vault not connected/)
@@ -184,6 +232,19 @@ describe("BitwardenClient", () => {
       mockExecFileError("Item not found")
 
       await expect(client.getItem("missing")).rejects.toThrow()
+
+      const errors = nervesEvents.filter((e) => e.event === "client.error")
+      expect(errors.length).toBeGreaterThanOrEqual(1)
+    })
+
+    it("handles non-Error thrown during getItem for error meta", async () => {
+      vi.mocked(execFile).mockImplementation((_cmd: any, _args: any, _opts: any, callback: any) => {
+        const cb = typeof _opts === "function" ? _opts : callback
+        cb("string-error", "", "")
+        return {} as any
+      })
+
+      await expect(client.getItem("x")).rejects.toThrow()
 
       const errors = nervesEvents.filter((e) => e.event === "client.error")
       expect(errors.length).toBeGreaterThanOrEqual(1)
@@ -263,6 +324,28 @@ describe("BitwardenClient", () => {
       const items = await client.listItems()
 
       expect(items).toHaveLength(1)
+    })
+
+    it("handles direct array response from CLI", async () => {
+      // Some bw list commands return arrays directly
+      mockExecFileSuccess(JSON.stringify([
+        { id: "1", name: "Direct Array Item", type: 1 },
+      ]))
+
+      const items = await client.listItems()
+      expect(items).toHaveLength(1)
+      expect(items[0].name).toBe("Direct Array Item")
+    })
+
+    it("returns empty array for non-array response", async () => {
+      // Edge case: neither data.data nor direct array
+      mockExecFileSuccess(JSON.stringify({
+        success: true,
+        data: { count: 0 },
+      }))
+
+      const items = await client.listItems()
+      expect(items).toHaveLength(0)
     })
 
     it("emits nerves events for list", async () => {
@@ -397,6 +480,20 @@ describe("BitwardenClient", () => {
       expect(secret).toBe("my-password")
     })
 
+    it("throws when item has no fields array and field is not password", async () => {
+      mockExecFileSuccess(JSON.stringify({
+        success: true,
+        data: {
+          id: "item-no-fields",
+          name: "No Fields",
+          type: 2,
+          login: {},
+        },
+      }))
+
+      await expect(client.getRawSecret("item-no-fields", "apiKey")).rejects.toThrow(/field "apiKey" not found/)
+    })
+
     it("throws when field not found", async () => {
       mockExecFileSuccess(JSON.stringify({
         success: true,
@@ -431,6 +528,41 @@ describe("BitwardenClient", () => {
         (e) => e.event === "client.vault_sdk_fallback",
       )
       expect(fallbackEvents.length).toBeGreaterThanOrEqual(1)
+    })
+
+    it("uses CLI mode when explicitly set to cli", async () => {
+      mockExecFileSuccess(JSON.stringify({ success: true }))
+      await client.connect({ accessToken: "key", mode: "cli" })
+      expect(client.isConnected()).toBe(true)
+      // No SDK fallback event since we went straight to CLI
+      const fallbackEvents = nervesEvents.filter(
+        (e) => e.event === "client.vault_sdk_fallback",
+      )
+      expect(fallbackEvents.length).toBe(0)
+    })
+  })
+
+  describe("parseCliResponse edge cases", () => {
+    beforeEach(async () => {
+      mockExecFileSuccess(JSON.stringify({ success: true }))
+      await client.connect({ accessToken: "key", mode: "cli" })
+      vi.clearAllMocks()
+      nervesEvents.length = 0
+    })
+
+    it("handles CLI response without success/data wrapper", async () => {
+      // Some bw commands return raw JSON without the success/data wrapper
+      const rawResponse = JSON.stringify({
+        id: "raw-item",
+        name: "Raw Response",
+        type: 1,
+        login: { username: "user" },
+      })
+      mockExecFileSuccess(rawResponse)
+
+      const item = await client.getItem("raw-item")
+      expect(item.id).toBe("raw-item")
+      expect(item.name).toBe("Raw Response")
     })
   })
 
