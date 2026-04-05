@@ -42,9 +42,9 @@ export function isTypeOnlyFile(source: string): boolean {
   return true
 }
 
-// Tool handler sub-modules that are dispatched through a centralized
-// execTool pattern (tools.ts handles all tool.start/end/error events).
-// These files don't need independent observability.
+// Sub-modules dispatched through a centralized pattern where the router
+// handles all observability events. These files don't need independent
+// emitNervesEvent calls.
 const DISPATCH_EXEMPT_PATTERNS = [
   "repertoire/tools-files",
   "repertoire/tools-shell",
@@ -54,6 +54,10 @@ const DISPATCH_EXEMPT_PATTERNS = [
   "repertoire/tools-continuity",
   "repertoire/tools-surface",
   "repertoire/tools-config",
+  // CLI sub-modules: cli-exec.ts is the router with emitNervesEvent calls;
+  // cli-parse and cli-render are pure functions with no side effects.
+  "daemon/cli-parse",
+  "daemon/cli-render",
 ]
 
 function isDispatchExempt(filePath: string): boolean {

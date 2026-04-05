@@ -170,6 +170,22 @@ const cache = new Map()
       expect(result.exempt).toContain("src/repertoire/tools-config.ts")
     })
 
+    it("exempts CLI sub-modules dispatched through cli-exec.ts router", () => {
+      const files = new Map<string, string[]>([
+        ["src/heart/daemon/cli-exec.ts", ["daemon:daemon.cli_command"]],
+      ])
+      const fileContents = new Map<string, string>([
+        ["src/heart/daemon/cli-exec.ts", 'emitNervesEvent({ component: "daemon", event: "daemon.cli_command" })'],
+        ["src/heart/daemon/cli-parse.ts", "export function parseOuroCommand() {}"],
+        ["src/heart/daemon/cli-render.ts", "export function formatTable() {}"],
+      ])
+      const result = checkFileCompleteness(files, fileContents)
+      expect(result.status).toBe("pass")
+      expect(result.missing).toHaveLength(0)
+      expect(result.exempt).toContain("src/heart/daemon/cli-parse.ts")
+      expect(result.exempt).toContain("src/heart/daemon/cli-render.ts")
+    })
+
     it("returns pass when all files have events or are exempt", () => {
       const files = new Map<string, string[]>([
         ["src/a.ts", ["x:y"]],
