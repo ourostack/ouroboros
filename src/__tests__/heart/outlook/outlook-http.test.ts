@@ -532,6 +532,31 @@ describe("outlook http", () => {
     await server.stop()
   })
 
+  it("returns unavailable status when readDaemonHealth returns null", async () => {
+    const { startOutlookHttpServer } = await import("../../../heart/outlook/outlook-http")
+
+    const server = await startOutlookHttpServer({
+      host: "127.0.0.1",
+      port: 0,
+      readMachineState: () => ({ productName: "Ouro Outlook", agentCount: 0 }) as any,
+      readAgentState: () => null,
+      readAgentSessions: () => ({ totalCount: 0, activeCount: 0, staleCount: 0, items: [] }),
+      readAgentCoding: () => ({ totalCount: 0, activeCount: 0, blockedCount: 0, items: [] }),
+      readAgentAttention: () => ({ queueLength: 0, queueItems: [], pendingChannels: [], returnObligations: [] }),
+      readAgentBridges: () => ({ totalCount: 0, activeCount: 0, items: [] }),
+      readAgentMemory: () => ({ diaryEntryCount: 0, recentDiaryEntries: [], journalEntryCount: 0, recentJournalEntries: [] }),
+      readAgentFriends: () => ({ totalFriends: 0, friends: [] }),
+      readAgentHabits: () => ({ totalCount: 0, activeCount: 0, pausedCount: 0, degradedCount: 0, overdueCount: 0, items: [] }),
+      readDaemonHealth: () => null as any,
+      readLogs: () => ({ logPath: null, totalLines: 0, entries: [] }),
+    })
+
+    const health = await fetch(`${server.origin}/api/machine/health`).then((r) => r.json())
+    expect(health).toEqual({ status: "unavailable" })
+
+    await server.stop()
+  })
+
   it("serves /api/agents/:agent/continuity endpoint", async () => {
     const { startOutlookHttpServer } = await import("../../../heart/outlook/outlook-http")
 

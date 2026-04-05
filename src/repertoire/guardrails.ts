@@ -7,6 +7,8 @@ export interface GuardContext {
   readPaths: ReadonlySet<string>
   trustLevel?: TrustLevel
   agentRoot?: string
+  senseType?: string
+  isGroupChat?: boolean
 }
 
 export type GuardResult = { allowed: true } | { allowed: false; reason: string }
@@ -206,6 +208,31 @@ function resolveOuroSubcommand(command: string): string | null {
   return null
 }
 
+// --- MCP server-specific trust rules ---
+
+const MCP_SERVER_TRUST: Record<string, {
+  minTrust: TrustLevel
+  blockGroupChat: boolean
+}> = {
+  browser: { minTrust: "friend", blockGroupChat: true },
+}
+
+function checkMcpServerTrust(command: string, context: GuardContext): GuardResult {
+  const match = command.match(/^ouro\s+mcp\s+call\s+(\S+)/)
+  if (!match) return allow
+  const serverName = match[1]
+  const rules = MCP_SERVER_TRUST[serverName]
+  if (!rules) return allow // no special rules for this server
+
+  if (!trustLevelSatisfied(rules.minTrust, context.trustLevel ?? "friend")) {
+    return deny(REASONS.needsTrust)
+  }
+  if (rules.blockGroupChat && context.isGroupChat) {
+    return deny("browser tools are only available in 1:1 conversations, not group chats.")
+  }
+  return allow
+}
+
 function checkSingleShellCommandTrust(command: string, trustLevel: TrustLevel): GuardResult {
   const trimmed = command.trim()
   const tokens = trimmed.split(/\s+/)
@@ -257,8 +284,41 @@ function checkWriteTrustGuardrails(toolName: string, args: Record<string, string
   return deny(REASONS.needsTrustForWrite)
 }
 
+// --- vault tool trust gating ---
+
+// Vault write tools: family only
+const VAULT_FAMILY_TOOLS = new Set(["vault_store", "vault_delete"])
+// Vault read tools: friend+
+const VAULT_TRUSTED_TOOLS = new Set(["vault_get", "vault_list"])
+
+// Travel tools: friend+ (weather_lookup accesses vault credentials indirectly;
+// advisory and geocode are public APIs but gated for consistency)
+const TRAVEL_TRUSTED_TOOLS = new Set(["weather_lookup", "travel_advisory", "geocode_search"])
+
+function checkVaultTrustGuardrails(toolName: string, context: GuardContext): GuardResult {
+  if (VAULT_FAMILY_TOOLS.has(toolName)) {
+    if (context.trustLevel === "family") return allow
+    return deny(REASONS.needsTrust)
+  }
+  if (VAULT_TRUSTED_TOOLS.has(toolName) || TRAVEL_TRUSTED_TOOLS.has(toolName)) {
+    if (isTrustedLevel(context.trustLevel)) return allow
+    return deny(REASONS.needsTrust)
+  }
+  return allow
+}
+
 function checkTrustLevelGuardrails(toolName: string, args: Record<string, string>, context: GuardContext): GuardResult {
-  // Trusted levels (family/friend) — no trust guardrails. Undefined defaults to friend.
+  // Vault tools have their own trust rules that apply at all levels
+  const vaultResult = checkVaultTrustGuardrails(toolName, context)
+  if (!vaultResult.allowed) return vaultResult
+
+  // MCP server-specific trust (e.g. browser blocked in group chats) — applies at all trust levels
+  if (toolName === "shell") {
+    const mcpResult = checkMcpServerTrust(args.command || "", context)
+    if (!mcpResult.allowed) return mcpResult
+  }
+
+  // Trusted levels (family/friend) — no further trust guardrails. Undefined defaults to friend.
   if (isTrustedLevel(context.trustLevel)) return allow
 
   if (toolName === "shell") {
