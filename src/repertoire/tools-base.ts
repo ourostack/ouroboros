@@ -89,3 +89,4 @@ export const tools: OpenAI.ChatCompletionFunctionTool[] = baseToolDefinitions.ma
 /* v8 ignore start -- module-level nerves file-completeness event @preserve */
 emitNervesEvent({ component: "repertoire", event: "repertoire.module_loaded", message: "tools-base loaded", meta: {} })
 /* v8 ignore stop */
+// CI trigger
