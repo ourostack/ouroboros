@@ -466,13 +466,13 @@ export async function startOutlookHttpServer(options: StartOutlookHttpServerOpti
       return
     }
 
-    /* v8 ignore start — SPA fallback for client-side routing */
+    /* v8 ignore start — SPA fallback for client-side routing @preserve */
     const spaDir = resolveSpaDistDir()
     if (spaDir) {
       if (serveStaticFile(response, path.join(spaDir, "index.html"))) return
     }
-    /* v8 ignore stop */
     writeJson(response, 404, { ok: false, error: `not found: ${pathname}` })
+    /* v8 ignore stop */
   })
 
   await new Promise<void>((resolve, reject) => {

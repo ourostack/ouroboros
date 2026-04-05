@@ -2,6 +2,17 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.217",
+      "changes": [
+        "feat: Bitwarden vault client (bw CLI wrapper) with credential gateway — BitwardenClient class with SDK-first/CLI-fallback, singleton accessor, nerves events on all operations. Raw secrets never enter model context.",
+        "feat: vault tools (vault_get, vault_store, vault_list, vault_delete) with trust gating — read ops require friend+, write/delete require family-only. Destructive operations require confirmation.",
+        "feat: stealth browser MCP configuration with trust gating — Playwright MCP auto-provisions when configured, browser tools appear in agent tool list. Trust-gated to CLI and trusted 1:1 only (group chat blocked).",
+        "feat: travel API tools (weather_lookup, travel_advisory, geocode_search) — native weather via OpenWeatherMap + vault-backed API key, State Dept RSS feed for advisories, geocoding via Nominatim. All friend+ trust-gated.",
+        "feat: credential gateway (vaultKey on apiRequest()) — automatic secret injection from vault into HTTP headers at call time, keeping credentials out of model context entirely.",
+        "feat: travel-planning and browser-navigation skills"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.216",
       "changes": [
         "fix: surface tool proactive BB delivery masked by newer MCP/CLI sessions — findFreshestFriendSession picked the single freshest session regardless of channel, so an MCP or CLI session being newer than the BB session caused the BB proactive path to be skipped entirely. Now scans all friend sessions, attempts BB delivery first on any BB session, then falls back to queuing on the freshest non-inner session."

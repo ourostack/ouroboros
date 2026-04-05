@@ -11,7 +11,9 @@ import { bridgeToolDefinitions } from "./tools-bridge";
 import { sessionToolDefinitions } from "./tools-session";
 import { continuityToolDefinitions } from "./tools-continuity";
 import { configToolDefinitions } from "./tools-config";
-import { codingToolDefinitions } from "./coding/tools";
+import { codingToolDefinitions } from "./coding/tools"
+import { vaultToolDefinitions } from "./tools-vault"
+import { travelToolDefinitions } from "./tools-travel";
 // Re-export flow tools for consumers that import them from tools-base
 export { ponderTool, observeTool, settleTool, restTool } from "./tools-flow";
 
@@ -84,6 +86,8 @@ export const baseToolDefinitions: ToolDefinition[] = [
   ...continuityToolDefinitions,
   ...configToolDefinitions,
   ...codingToolDefinitions,
+  ...vaultToolDefinitions,
+  ...travelToolDefinitions,
 ];
 
 // Convenience array of just the tool schemas (no handler/integration metadata).
