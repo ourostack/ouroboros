@@ -72,9 +72,6 @@ export interface AgentConfig {
     enabled?: boolean
     remote?: string
   }
-  vault?: {
-    enabled: boolean
-  }
 }
 
 export const DEFAULT_AGENT_CONTEXT = {
