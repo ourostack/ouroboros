@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.208",
+      "changes": [
+        "refactor: split daemon-cli.ts (3,630 lines) into 5 focused modules — cli-types (command/deps types), cli-parse (argument parsing), cli-render (output formatting), cli-exec (command execution router), cli-defaults (production dependency wiring). daemon-cli.ts reduced to 42-line re-export shim."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.207",
       "changes": [
         "refactor: split tools-base.ts (1,912 lines) into 9 category modules — tools-files, tools-shell, tools-memory, tools-bridge, tools-session, tools-continuity, tools-flow, tools-surface, tools-config. Surface tool handler extracted from tools.ts to tools-surface.ts."
