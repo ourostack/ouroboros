@@ -164,6 +164,7 @@ void daemon.start().then(() => {
 /* v8 ignore start -- startup failure + signal handlers: call process.exit, untestable in vitest @preserve */
 }).catch(async (err: unknown) => {
   const error = err instanceof Error ? err : new Error(String(err))
+  _tombstoneWritten = true
   writeDaemonTombstone("startupFailure", error)
   emitNervesEvent({
     level: "error",
@@ -178,12 +179,14 @@ void daemon.start().then(() => {
 })
 
 process.on("SIGINT", () => {
+  _gracefulShutdown = true
   for (const s of habitSchedulers) { s.stopWatching(); s.stop() }
   setTimeout(() => process.exit(1), 5_000).unref()
   void daemon.stop().then(() => process.exit(0))
 })
 
 process.on("SIGTERM", () => {
+  _gracefulShutdown = true
   for (const s of habitSchedulers) { s.stopWatching(); s.stop() }
   setTimeout(() => process.exit(1), 5_000).unref()
   void daemon.stop().then(() => process.exit(0))
@@ -198,6 +201,9 @@ process.stderr?.on?.("error", () => {})
 
 /* v8 ignore start -- global exception handlers: genuinely untestable in vitest; exercised by real daemon crashes @preserve */
 let _uncaughtCount = 0
+let _tombstoneWritten = false
+let _gracefulShutdown = false
+let _lastKnownCause: Error | null = null
 const CIRCUIT_BREAKER_WINDOW_MS = 60_000
 const CIRCUIT_BREAKER_MAX = 10
 
@@ -206,8 +212,10 @@ process.on("uncaughtException", (error) => {
   if ((error as NodeJS.ErrnoException).code === "EPIPE") return
 
   _uncaughtCount++
+  _lastKnownCause = error
   setTimeout(() => { _uncaughtCount-- }, CIRCUIT_BREAKER_WINDOW_MS).unref()
 
+  _tombstoneWritten = true
   writeDaemonTombstone("uncaughtException", error)
   emitNervesEvent({
     level: "error",
@@ -233,13 +241,25 @@ process.on("uncaughtException", (error) => {
 })
 
 process.on("unhandledRejection", (reason) => {
+  const error = reason instanceof Error ? reason : new Error(String(reason))
+  _lastKnownCause = error
+  _tombstoneWritten = true
+  writeDaemonTombstone("unhandledRejection", error)
   emitNervesEvent({
-    level: "warn",
+    level: "error",
     component: "daemon",
     event: "daemon.unhandled_rejection",
     message: "unhandled promise rejection in daemon process",
-    meta: { reason: reason instanceof Error ? reason.message : String(reason) },
+    meta: { reason: error.message, stack: error.stack ?? null },
   })
 })
+
+// Catch-all: write tombstone on any exit where we didn't already record the cause.
+// process.on('exit') is synchronous-only — writeDaemonTombstone uses writeFileSync, so it works.
+process.on("exit", (code) => {
+  if (_tombstoneWritten || _gracefulShutdown) return
+  const reason = code === 0 ? "unexpectedCleanExit" : "unexpectedExit"
+  const error = _lastKnownCause ?? new Error(`daemon exited with code ${code} (no specific cause captured)`)
+  writeDaemonTombstone(reason, error)
+})
 /* v8 ignore stop */
-// daemon stdio fix
