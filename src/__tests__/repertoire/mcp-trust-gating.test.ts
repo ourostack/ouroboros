@@ -92,6 +92,18 @@ describe("MCP server trust gating via shell guardrails", () => {
     expect(result.allowed).toBe(true)
   })
 
+  // --- edge case: undefined trust level defaults to friend ---
+
+  it("browser MCP call allowed when trustLevel is undefined (defaults to friend)", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const result = guardInvocation(
+      "shell",
+      { command: "ouro mcp call browser navigate" },
+      { readPaths: new Set() },
+    )
+    expect(result.allowed).toBe(true)
+  })
+
   // --- non-MCP ouro commands unaffected ---
 
   it("ouro whoami still works for acquaintance", async () => {
