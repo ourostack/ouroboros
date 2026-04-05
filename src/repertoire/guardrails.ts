@@ -7,6 +7,8 @@ export interface GuardContext {
   readPaths: ReadonlySet<string>
   trustLevel?: TrustLevel
   agentRoot?: string
+  senseType?: string
+  isGroupChat?: boolean
 }
 
 export type GuardResult = { allowed: true } | { allowed: false; reason: string }
@@ -206,6 +208,31 @@ function resolveOuroSubcommand(command: string): string | null {
   return null
 }
 
+// --- MCP server-specific trust rules ---
+
+const MCP_SERVER_TRUST: Record<string, {
+  minTrust: TrustLevel
+  blockGroupChat: boolean
+}> = {
+  browser: { minTrust: "friend", blockGroupChat: true },
+}
+
+function checkMcpServerTrust(command: string, context: GuardContext): GuardResult {
+  const match = command.match(/^ouro\s+mcp\s+call\s+(\S+)/)
+  if (!match) return allow
+  const serverName = match[1]
+  const rules = MCP_SERVER_TRUST[serverName]
+  if (!rules) return allow // no special rules for this server
+
+  if (!trustLevelSatisfied(rules.minTrust, context.trustLevel ?? "friend")) {
+    return deny(REASONS.needsTrust)
+  }
+  if (rules.blockGroupChat && context.isGroupChat) {
+    return deny("browser tools are only available in 1:1 conversations, not group chats.")
+  }
+  return allow
+}
+
 function checkSingleShellCommandTrust(command: string, trustLevel: TrustLevel): GuardResult {
   const trimmed = command.trim()
   const tokens = trimmed.split(/\s+/)
@@ -280,6 +307,12 @@ function checkTrustLevelGuardrails(toolName: string, args: Record<string, string
   // Vault tools have their own trust rules that apply at all levels
   const vaultResult = checkVaultTrustGuardrails(toolName, context)
   if (!vaultResult.allowed) return vaultResult
+
+  // MCP server-specific trust (e.g. browser blocked in group chats) — applies at all trust levels
+  if (toolName === "shell") {
+    const mcpResult = checkMcpServerTrust(args.command || "", context)
+    if (!mcpResult.allowed) return mcpResult
+  }
 
   // Trusted levels (family/friend) — no further trust guardrails. Undefined defaults to friend.
   if (isTrustedLevel(context.trustLevel)) return allow
