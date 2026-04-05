@@ -9,6 +9,10 @@ import type { PendingMessage } from "../../mind/pending"
 import * as daemonThoughts from "../../heart/daemon/thoughts"
 import * as identity from "../../heart/identity"
 import * as pending from "../../mind/pending"
+import * as startOfTurnPacketModule from "../../heart/start-of-turn-packet"
+import * as tempoModule from "../../heart/tempo"
+import * as temporalViewModule from "../../heart/temporal-view"
+import * as presenceModule from "../../heart/presence"
 import { handleInboundTurn } from "../../senses/pipeline"
 import type { InboundTurnInput, InboundTurnResult } from "../../senses/pipeline"
 
@@ -1704,6 +1708,101 @@ describe("handleInboundTurn", () => {
       const userMsg = msgs.find(m => m.role === "user" && typeof m.content === "string")
       expect(userMsg).toBeTruthy()
       expect((userMsg as any).content).toBe("hi there")
+    })
+  })
+
+  describe("capabilities surfacing in pipeline", () => {
+    let tempoSpy: ReturnType<typeof vi.spyOn>
+    let temporalSpy: ReturnType<typeof vi.spyOn>
+    let buildSotpSpy: ReturnType<typeof vi.spyOn>
+    let renderSotpSpy: ReturnType<typeof vi.spyOn>
+    let presenceSpy: ReturnType<typeof vi.spyOn>
+    let writePresenceSpy: ReturnType<typeof vi.spyOn>
+    let agentRootSpy: ReturnType<typeof vi.spyOn>
+    let agentNameSpy: ReturnType<typeof vi.spyOn>
+
+    beforeEach(() => {
+      // Mock the continuity pipeline functions so the try block at line 458 of pipeline.ts
+      // reaches buildCapabilitiesSection instead of throwing on getAgentRoot() or deriveTempo()
+      agentRootSpy = vi.spyOn(identity, "getAgentRoot" as any).mockReturnValue("/tmp/test-agent")
+      agentNameSpy = vi.spyOn(identity, "getAgentName").mockReturnValue("test-agent")
+      tempoSpy = vi.spyOn(tempoModule, "deriveTempo").mockReturnValue({ mode: "focused", reasoning: "" })
+      temporalSpy = vi.spyOn(temporalViewModule, "buildTemporalView").mockReturnValue({
+        episodes: [], obligations: [], cares: [], presenceSnapshot: undefined,
+      } as any)
+      buildSotpSpy = vi.spyOn(startOfTurnPacketModule, "buildStartOfTurnPacket").mockReturnValue({} as any)
+      renderSotpSpy = vi.spyOn(startOfTurnPacketModule, "renderStartOfTurnPacket").mockImplementation(
+        (packet: any) => packet?.capabilities ? `rendered-packet\n${packet.capabilities}` : "rendered-packet"
+      )
+      presenceSpy = vi.spyOn(presenceModule, "derivePresence").mockReturnValue({} as any)
+      writePresenceSpy = vi.spyOn(presenceModule, "writePresence").mockImplementation(() => {})
+    })
+
+    afterEach(() => {
+      agentRootSpy.mockRestore()
+      agentNameSpy.mockRestore()
+      tempoSpy.mockRestore()
+      temporalSpy.mockRestore()
+      buildSotpSpy.mockRestore()
+      renderSotpSpy.mockRestore()
+      presenceSpy.mockRestore()
+      writePresenceSpy.mockRestore()
+    })
+
+    it("includes capabilities section in start-of-turn packet when version changes", async () => {
+      const capSpy = vi.spyOn(startOfTurnPacketModule, "buildCapabilitiesSection")
+        .mockReturnValue("Updated from 1.0.0 to 1.1.0: new config tool")
+
+      const friend = makeFriend({ trustLevel: "family" })
+      const caps = makeCapabilities({ channel: "cli", senseType: "local" })
+      const context: ResolvedContext = { friend, channel: caps }
+      const store = makeStore(friend)
+
+      const input = makeInput({
+        channel: "cli",
+        capabilities: caps,
+        friendResolver: { resolve: vi.fn().mockResolvedValue(context) },
+        friendStore: store,
+        enforceTrustGate: vi.fn().mockReturnValue({ allowed: true }),
+      })
+
+      await handleInboundTurn(input)
+
+      expect(capSpy).toHaveBeenCalled()
+
+      // The start-of-turn packet passed to runAgent should contain capabilities text
+      // runAgent is called with (messages, callbacks, channel, signal, options)
+      const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
+      const options = runAgentCall[4] as RunAgentOptions
+      if (options?.startOfTurnPacket) {
+        expect(options.startOfTurnPacket).toContain("Updated from 1.0.0 to 1.1.0")
+      }
+
+      capSpy.mockRestore()
+    })
+
+    it("omits capabilities section when no version change detected", async () => {
+      const capSpy = vi.spyOn(startOfTurnPacketModule, "buildCapabilitiesSection")
+        .mockReturnValue(undefined)
+
+      const friend = makeFriend({ trustLevel: "family" })
+      const caps = makeCapabilities({ channel: "cli", senseType: "local" })
+      const context: ResolvedContext = { friend, channel: caps }
+      const store = makeStore(friend)
+
+      const input = makeInput({
+        channel: "cli",
+        capabilities: caps,
+        friendResolver: { resolve: vi.fn().mockResolvedValue(context) },
+        friendStore: store,
+        enforceTrustGate: vi.fn().mockReturnValue({ allowed: true }),
+      })
+
+      await handleInboundTurn(input)
+
+      expect(capSpy).toHaveBeenCalled()
+
+      capSpy.mockRestore()
     })
   })
 })
