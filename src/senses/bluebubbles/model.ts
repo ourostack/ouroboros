@@ -1,5 +1,5 @@
 import OpenAI from "openai"
-import { emitNervesEvent } from "../nerves/runtime"
+import { emitNervesEvent } from "../../nerves/runtime"
 
 type JsonRecord = Record<string, unknown>
 

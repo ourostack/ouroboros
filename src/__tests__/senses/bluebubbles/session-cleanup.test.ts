@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import { emitNervesEvent } from "../../nerves/runtime"
+import { emitNervesEvent } from "../../../nerves/runtime"
 
 const tempDirs: string[] = []
 
@@ -25,7 +25,7 @@ afterEach(() => {
 
 describe("bluebubbles thread lane cleanup", () => {
   it("finds only sibling thread lane files for a live chat trunk", async () => {
-    const { findObsoleteBlueBubblesThreadSessions } = await import("../../senses/bluebubbles-session-cleanup")
+    const { findObsoleteBlueBubblesThreadSessions } = await import("../../../senses/bluebubbles/session-cleanup")
 
     const dir = makeTempDir()
     const trunk = path.join(dir, "chat_any;-;ari@mendelow.me.json")
@@ -51,7 +51,7 @@ describe("bluebubbles thread lane cleanup", () => {
   })
 
   it("does nothing when the provided path is not a live chat trunk", async () => {
-    const { findObsoleteBlueBubblesThreadSessions } = await import("../../senses/bluebubbles-session-cleanup")
+    const { findObsoleteBlueBubblesThreadSessions } = await import("../../../senses/bluebubbles/session-cleanup")
 
     const dir = makeTempDir()
     const missingTrunk = path.join(dir, "chat_any;-;ari@mendelow.me.json")

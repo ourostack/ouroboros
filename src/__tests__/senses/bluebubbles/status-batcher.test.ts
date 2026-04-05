@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 
-vi.mock("../../nerves/runtime", () => ({
+vi.mock("../../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn(),
 }))
 
-import { createStatusBatcher } from "../../senses/bluebubbles"
+import { createStatusBatcher } from "../../../senses/bluebubbles"
 
 describe("createStatusBatcher", () => {
   beforeEach(() => {

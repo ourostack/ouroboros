@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
 
-vi.mock("../../nerves/runtime", () => ({
+vi.mock("../../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn(),
 }))
 
-vi.mock("../../heart/identity", () => ({
+vi.mock("../../../heart/identity", () => ({
   getAgentName: vi.fn(() => "testagent"),
   getAgentRoot: vi.fn(() => "/tmp/AgentBundles/testagent.ouro"),
 }))
@@ -15,7 +15,7 @@ describe("BlueBubbles tool callbacks via createToolActivityCallbacks", () => {
   })
 
   async function loadModule() {
-    const { createToolActivityCallbacks } = await import("../../heart/tool-activity-callbacks")
+    const { createToolActivityCallbacks } = await import("../../../heart/tool-activity-callbacks")
     return createToolActivityCallbacks
   }
 

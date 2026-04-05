@@ -13,7 +13,7 @@ afterEach(() => {
 
 describe("BlueBubbles media hydration", () => {
   it("hydrates image attachments into image input parts", async () => {
-    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
     const result = await hydrateBlueBubblesAttachments(
       [
         {
@@ -59,7 +59,7 @@ describe("BlueBubbles media hydration", () => {
   })
 
   it("falls back to a generic image content type when BlueBubbles does not return one", async () => {
-    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
     const result = await hydrateBlueBubblesAttachments(
       [
         {
@@ -98,7 +98,7 @@ describe("BlueBubbles media hydration", () => {
   })
 
   it("hydrates audio attachments into raw audio input when the provider can use audio", async () => {
-    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
     const transcribeAudio = vi.fn().mockResolvedValue("hey, can you check the logs?")
     const result = await hydrateBlueBubblesAttachments(
       [
@@ -147,7 +147,7 @@ describe("BlueBubbles media hydration", () => {
   })
 
   it("falls back to local transcription for audio when the provider cannot use audio directly", async () => {
-    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
     const transcribeAudio = vi.fn().mockResolvedValue("hey, can you check the logs?")
     const result = await hydrateBlueBubblesAttachments(
       [
@@ -193,7 +193,7 @@ describe("BlueBubbles media hydration", () => {
   })
 
   it("hydrates generic files into file input parts", async () => {
-    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
     const fileData = Buffer.from("report body")
     const result = await hydrateBlueBubblesAttachments(
       [
@@ -240,7 +240,7 @@ describe("BlueBubbles media hydration", () => {
   })
 
   it("treats metadata-free downloaded blobs as generic file inputs", async () => {
-    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
     const fileData = Buffer.from("blob body")
     const result = await hydrateBlueBubblesAttachments(
       [
@@ -279,7 +279,7 @@ describe("BlueBubbles media hydration", () => {
   })
 
   it("returns explicit notices when attachment hydration fails", async () => {
-    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
     const result = await hydrateBlueBubblesAttachments(
       [
         {
@@ -312,7 +312,7 @@ describe("BlueBubbles media hydration", () => {
   })
 
   it("falls back to local transcription when raw audio is preferred but the format is unsupported", async () => {
-    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
     const transcribeAudio = vi.fn().mockResolvedValue("please summarize this note")
     const result = await hydrateBlueBubblesAttachments(
       [
@@ -353,7 +353,7 @@ describe("BlueBubbles media hydration", () => {
   })
 
   it("can use audio input based on file extension even when BlueBubbles omits the content type", async () => {
-    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
     const result = await hydrateBlueBubblesAttachments(
       [
         {
@@ -394,7 +394,7 @@ describe("BlueBubbles media hydration", () => {
   })
 
   it("recognizes audio attachments by extension when BlueBubbles omits mime metadata", async () => {
-    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
     const transcribeAudio = vi.fn().mockResolvedValue("extension-based transcript")
     const result = await hydrateBlueBubblesAttachments(
       [
@@ -428,7 +428,7 @@ describe("BlueBubbles media hydration", () => {
   })
 
   it("returns an explicit notice when audio transcription comes back empty", async () => {
-    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
     const result = await hydrateBlueBubblesAttachments(
       [
         {
@@ -466,7 +466,7 @@ describe("BlueBubbles media hydration", () => {
   })
 
   it("returns an explicit notice when attachment metadata is missing or oversized", async () => {
-    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
     const result = await hydrateBlueBubblesAttachments(
       [
         {
@@ -507,7 +507,7 @@ describe("BlueBubbles media hydration", () => {
   })
 
   it("falls back to a generic attachment label when BlueBubbles provides no guid or filename", async () => {
-    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
     const result = await hydrateBlueBubblesAttachments(
       [{}],
       {
@@ -533,7 +533,7 @@ describe("BlueBubbles media hydration", () => {
   })
 
   it("returns an explicit notice when a downloaded attachment exceeds the byte limit", async () => {
-    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
     const oversized = Buffer.alloc(8 * 1024 * 1024 + 1, "a")
     const result = await hydrateBlueBubblesAttachments(
       [
@@ -603,7 +603,7 @@ describe("BlueBubbles media hydration", () => {
     )
     const modelFetchImpl = vi.fn().mockResolvedValue(new Response(Buffer.from("model-bytes"), { status: 200 })) as typeof fetch
 
-    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
     const result = await hydrateBlueBubblesAttachments(
       [
         {
@@ -691,7 +691,7 @@ describe("BlueBubbles media hydration", () => {
     vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile, rm }))
     vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
 
-    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
     const result = await hydrateBlueBubblesAttachments(
       [{ guid: "voice-guid", mimeType: "audio/mp4", transferName: "Voice Note.m4a" }],
       {
@@ -755,7 +755,7 @@ describe("BlueBubbles media hydration", () => {
     vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile, rm }))
     vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
 
-    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
     const result = await hydrateBlueBubblesAttachments(
       [{ guid: "voice-guid", mimeType: "audio/mp4", transferName: "Voice Note.m4a" }],
       {
@@ -818,7 +818,7 @@ describe("BlueBubbles media hydration", () => {
     vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile, rm }))
     vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
 
-    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
     const result = await hydrateBlueBubblesAttachments(
       [{ guid: "voice-guid", mimeType: "audio/mp4", transferName: "Voice Note.m4a" }],
       {
@@ -884,7 +884,7 @@ describe("BlueBubbles media hydration", () => {
     vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile, rm }))
     vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
 
-    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
     const result = await hydrateBlueBubblesAttachments(
       [{ guid: "voice-guid", mimeType: "audio/mp4", transferName: "Voice Note.m4a" }],
       {
@@ -934,7 +934,7 @@ describe("BlueBubbles media hydration", () => {
     vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile, rm }))
     vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
 
-    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
     const result = await hydrateBlueBubblesAttachments(
       [
         {
@@ -993,7 +993,7 @@ describe("BlueBubbles media hydration", () => {
     vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile: vi.fn(), rm }))
     vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
 
-    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
     const result = await hydrateBlueBubblesAttachments(
       [
         {
@@ -1049,7 +1049,7 @@ describe("BlueBubbles media hydration", () => {
     vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile, rm }))
     vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
 
-    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
     const result = await hydrateBlueBubblesAttachments(
       [
         {
@@ -1114,7 +1114,7 @@ describe("BlueBubbles media hydration", () => {
     vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile: vi.fn(), rm }))
     vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
 
-    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
     const result = await hydrateBlueBubblesAttachments(
       [{ guid: "voice-guid", mimeType: "audio/mp4", transferName: "Voice Note.m4a" }],
       {
@@ -1172,7 +1172,7 @@ describe("BlueBubbles media hydration", () => {
     vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile: vi.fn(), rm }))
     vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
 
-    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
     const result = await hydrateBlueBubblesAttachments(
       [{ guid: "voice-guid", mimeType: "audio/mp4", transferName: "Voice Note.m4a" }],
       {
@@ -1220,7 +1220,7 @@ describe("BlueBubbles media hydration", () => {
     vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile: vi.fn(), rm }))
     vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
 
-    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
     const result = await hydrateBlueBubblesAttachments(
       [{ guid: "voice-guid", mimeType: "audio/mp4", transferName: "Voice Note.m4a" }],
       {
@@ -1274,7 +1274,7 @@ describe("BlueBubbles media hydration", () => {
     vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile, rm }))
     vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
 
-    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
     const result = await hydrateBlueBubblesAttachments(
       [{ guid: "voice-guid", mimeType: "audio/mp4", transferName: "Voice Note.m4a" }],
       {
@@ -1336,7 +1336,7 @@ describe("BlueBubbles media hydration", () => {
     vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile: vi.fn(), rm }))
     vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
 
-    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
     const result = await hydrateBlueBubblesAttachments(
       [{ guid: "voice-guid", mimeType: "audio/mp4", transferName: "Voice Note.m4a" }],
       {
@@ -1369,7 +1369,7 @@ describe("BlueBubbles media hydration", () => {
   })
 
   it("returns an explicit notice when BlueBubbles rejects an attachment download", async () => {
-    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
     const result = await hydrateBlueBubblesAttachments(
       [
         {
@@ -1402,7 +1402,7 @@ describe("BlueBubbles media hydration", () => {
   })
 
   it("returns an explicit notice when attachment hydration throws a non-Error value", async () => {
-    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
     const result = await hydrateBlueBubblesAttachments(
       [
         {
@@ -1453,7 +1453,7 @@ describe("BlueBubbles media hydration", () => {
     vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile, rm }))
     vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
 
-    const { hydrateBlueBubblesAttachments } = await import("../../senses/bluebubbles-media")
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
     const result = await hydrateBlueBubblesAttachments(
       [
         {

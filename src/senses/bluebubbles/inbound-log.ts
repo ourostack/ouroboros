@@ -1,9 +1,9 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
-import { sanitizeKey } from "../heart/config"
-import { getAgentRoot } from "../heart/identity"
-import { emitNervesEvent } from "../nerves/runtime"
-import type { BlueBubblesNormalizedMessage } from "./bluebubbles-model"
+import { sanitizeKey } from "../../heart/config"
+import { getAgentRoot } from "../../heart/identity"
+import { emitNervesEvent } from "../../nerves/runtime"
+import type { BlueBubblesNormalizedMessage } from "./model"
 
 export type BlueBubblesInboundSource = "webhook" | "mutation-recovery" | "recovery-bootstrap"
 
