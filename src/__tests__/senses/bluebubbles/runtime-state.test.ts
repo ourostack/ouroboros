@@ -23,7 +23,7 @@ describe("BlueBubbles runtime state", () => {
       getBlueBubblesRuntimeStatePath,
       readBlueBubblesRuntimeState,
       writeBlueBubblesRuntimeState,
-    } = await import("../../senses/bluebubbles-runtime-state")
+    } = await import("../../../senses/bluebubbles/runtime-state")
 
     const state = {
       upstreamStatus: "ok" as const,
@@ -56,7 +56,7 @@ describe("BlueBubbles runtime state", () => {
       getBlueBubblesRuntimeStatePath,
       readBlueBubblesRuntimeState,
       writeBlueBubblesRuntimeState,
-    } = await import("../../senses/bluebubbles-runtime-state")
+    } = await import("../../../senses/bluebubbles/runtime-state")
 
     expect(readBlueBubblesRuntimeState("slugger")).toEqual({
       upstreamStatus: "unknown",
@@ -103,7 +103,7 @@ describe("BlueBubbles runtime state", () => {
   })
 
   it("stringifies non-Error runtime-state serialization failures without throwing", async () => {
-    const { getBlueBubblesRuntimeStatePath, writeBlueBubblesRuntimeState } = await import("../../senses/bluebubbles-runtime-state")
+    const { getBlueBubblesRuntimeStatePath, writeBlueBubblesRuntimeState } = await import("../../../senses/bluebubbles/runtime-state")
 
     const badState = {
       upstreamStatus: "error" as const,

@@ -3,9 +3,9 @@ import * as fs from "node:fs/promises"
 import * as os from "node:os"
 import * as path from "node:path"
 import OpenAI from "openai"
-import { emitNervesEvent } from "../nerves/runtime"
-import { getAgentToolsRoot } from "../heart/identity"
-import type { BlueBubblesAttachmentSummary } from "./bluebubbles-model"
+import { emitNervesEvent } from "../../nerves/runtime"
+import { getAgentToolsRoot } from "../../heart/identity"
+import type { BlueBubblesAttachmentSummary } from "./model"
 
 type BlueBubblesConfig = {
   serverUrl: string

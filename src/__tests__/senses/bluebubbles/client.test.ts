@@ -2,11 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const emitNervesEvent = vi.fn()
 
-vi.mock("../../nerves/runtime", () => ({
+vi.mock("../../../nerves/runtime", () => ({
   emitNervesEvent: (...args: any[]) => emitNervesEvent(...args),
 }))
 
-vi.mock("../../heart/identity", () => ({
+vi.mock("../../../heart/identity", () => ({
   loadAgentConfig: vi.fn(() => ({
     provider: "anthropic",
     humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
@@ -33,7 +33,7 @@ describe("BlueBubbles client", () => {
   afterEach(() => {
     global.fetch = originalFetch
     vi.restoreAllMocks()
-    vi.doUnmock("../../senses/bluebubbles-media")
+    vi.doUnmock("../../../senses/bluebubbles/media")
   })
 
   it("sends threaded replies through the BlueBubbles text endpoint", async () => {
@@ -41,7 +41,7 @@ describe("BlueBubbles client", () => {
       new Response(JSON.stringify({ data: { guid: "sent-guid" } }), { status: 200 }),
     ) as typeof fetch
 
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -93,7 +93,7 @@ describe("BlueBubbles client", () => {
       new Response(JSON.stringify({ guid: "root-guid" }), { status: 200 }),
     ) as typeof fetch
 
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local/",
@@ -128,7 +128,7 @@ describe("BlueBubbles client", () => {
   it("edits outbound messages through the BlueBubbles edit endpoint", async () => {
     global.fetch = vi.fn().mockResolvedValue(new Response("", { status: 200 })) as typeof fetch
 
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -167,7 +167,7 @@ describe("BlueBubbles client", () => {
   it("supports explicit backwards-compatibility text and part indexes for edits", async () => {
     global.fetch = vi.fn().mockResolvedValue(new Response("", { status: 200 })) as typeof fetch
 
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -198,7 +198,7 @@ describe("BlueBubbles client", () => {
   it("rejects empty edit message ids and bodies before calling fetch", async () => {
     global.fetch = vi.fn() as typeof fetch
 
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -228,7 +228,7 @@ describe("BlueBubbles client", () => {
       .mockResolvedValueOnce(new Response("", { status: 200 }))
       .mockResolvedValueOnce(new Response("", { status: 200 })) as typeof fetch
 
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -270,7 +270,7 @@ describe("BlueBubbles client", () => {
       .mockResolvedValueOnce(new Response("typing nope", { status: 502 }))
       .mockResolvedValueOnce(new Response("read nope", { status: 503 })) as typeof fetch
 
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -307,7 +307,7 @@ describe("BlueBubbles client", () => {
       .mockResolvedValueOnce(unreadable(502))
       .mockResolvedValueOnce(unreadable(503)) as typeof fetch
 
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -335,7 +335,7 @@ describe("BlueBubbles client", () => {
   it("no-ops typing and read operations when no chat guid can be resolved", async () => {
     global.fetch = vi.fn() as typeof fetch
 
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -363,7 +363,7 @@ describe("BlueBubbles client", () => {
   it("rejects empty text and missing routable chat identity before calling fetch", async () => {
     global.fetch = vi.fn() as typeof fetch
 
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -424,7 +424,7 @@ describe("BlueBubbles client", () => {
         new Response(JSON.stringify({ data: { guid: "resolved-guid" } }), { status: 200 }),
       ) as typeof fetch
 
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -491,7 +491,7 @@ describe("BlueBubbles client", () => {
         new Response(JSON.stringify({ guid: "guid-only-result" }), { status: 200 }),
       ) as typeof fetch
 
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -532,7 +532,7 @@ describe("BlueBubbles client", () => {
         ),
       ) as typeof fetch
 
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -573,7 +573,7 @@ describe("BlueBubbles client", () => {
         ),
       ) as typeof fetch
 
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -607,7 +607,7 @@ describe("BlueBubbles client", () => {
         new Response(JSON.stringify({ data: [{ identifier: "someone-else" }, {}] }), { status: 200 }),
       ) as typeof fetch
 
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -641,7 +641,7 @@ describe("BlueBubbles client", () => {
         new Response(JSON.stringify({ data: { guid: "not-an-array" } }), { status: 200 }),
       ) as typeof fetch
 
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -673,7 +673,7 @@ describe("BlueBubbles client", () => {
       .fn()
       .mockResolvedValueOnce(new Response("no query access", { status: 503 })) as typeof fetch
 
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -705,7 +705,7 @@ describe("BlueBubbles client", () => {
       new Response("private api required", { status: 403 }),
     ) as typeof fetch
 
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -741,7 +741,7 @@ describe("BlueBubbles client", () => {
     ]
     global.fetch = vi.fn().mockImplementation(async () => responses.shift()!) as typeof fetch
 
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -785,7 +785,7 @@ describe("BlueBubbles client", () => {
   it("probes upstream availability through the BlueBubbles message count endpoint", async () => {
     global.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: { total: 42 } }), { status: 200 })) as typeof fetch
 
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -814,7 +814,7 @@ describe("BlueBubbles client", () => {
       new Response("connection refused", { status: 503 }),
     ) as typeof fetch
 
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -840,7 +840,7 @@ describe("BlueBubbles client", () => {
       text: vi.fn().mockRejectedValue(new Error("socket closed")),
     }) as unknown as typeof fetch
 
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -886,7 +886,7 @@ describe("BlueBubbles client", () => {
       ),
     ) as typeof fetch
 
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -954,7 +954,7 @@ describe("BlueBubbles client", () => {
       ),
     ) as typeof fetch
 
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -1037,7 +1037,7 @@ describe("BlueBubbles client", () => {
       ),
     ) as typeof fetch
 
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -1093,7 +1093,7 @@ describe("BlueBubbles client", () => {
   it("returns an explicit fallback notice when repair fetch fails", async () => {
     global.fetch = vi.fn().mockRejectedValue(new Error("network down")) as typeof fetch
 
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -1141,7 +1141,7 @@ describe("BlueBubbles client", () => {
       new Response("missing private api helper", { status: 503 }),
     ) as typeof fetch
 
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -1187,7 +1187,7 @@ describe("BlueBubbles client", () => {
       new Response("", { status: 503 }),
     ) as typeof fetch
 
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -1234,7 +1234,7 @@ describe("BlueBubbles client", () => {
       text: vi.fn().mockRejectedValue(new Error("no body")),
     }) as typeof fetch
 
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -1279,7 +1279,7 @@ describe("BlueBubbles client", () => {
       new Response(JSON.stringify({ data: { text: "missing guid" } }), { status: 200 }),
     ) as typeof fetch
 
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -1349,7 +1349,7 @@ describe("BlueBubbles client", () => {
       ),
     ) as typeof fetch
 
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -1433,7 +1433,7 @@ describe("BlueBubbles client", () => {
         }),
       ) as typeof fetch
 
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -1491,7 +1491,7 @@ describe("BlueBubbles client", () => {
       transcriptAdditions: ["voice note transcript: hello from audio"],
       notices: [],
     })
-    vi.doMock("../../senses/bluebubbles-media", () => ({
+    vi.doMock("../../../senses/bluebubbles/media", () => ({
       hydrateBlueBubblesAttachments,
     }))
 
@@ -1535,7 +1535,7 @@ describe("BlueBubbles client", () => {
       ) as typeof fetch
 
     vi.resetModules()
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -1587,14 +1587,14 @@ describe("BlueBubbles client", () => {
   })
 
   it("keeps OpenAI Codex voice notes on the local-transcription path for the current Responses contract", async () => {
-    const { loadAgentConfig } = await import("../../heart/identity")
+    const { loadAgentConfig } = await import("../../../heart/identity")
     vi.mocked(loadAgentConfig).mockReturnValue({ humanFacing: { provider: "openai-codex", model: "gpt-5.4" }, agentFacing: { provider: "openai-codex", model: "gpt-5.4" } } as any)
     const hydrateBlueBubblesAttachments = vi.fn().mockResolvedValue({
       inputParts: [],
       transcriptAdditions: ["voice note transcript: hello from codex"],
       notices: [],
     })
-    vi.doMock("../../senses/bluebubbles-media", () => ({
+    vi.doMock("../../../senses/bluebubbles/media", () => ({
       hydrateBlueBubblesAttachments,
     }))
 
@@ -1638,7 +1638,7 @@ describe("BlueBubbles client", () => {
       ) as typeof fetch
 
     vi.resetModules()
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -1689,14 +1689,14 @@ describe("BlueBubbles client", () => {
   })
 
   it("keeps MiniMax voice notes on the local-transcription path", async () => {
-    const { loadAgentConfig } = await import("../../heart/identity")
+    const { loadAgentConfig } = await import("../../../heart/identity")
     vi.mocked(loadAgentConfig).mockReturnValue({ humanFacing: { provider: "minimax", model: "minimax-text-01" }, agentFacing: { provider: "minimax", model: "minimax-text-01" } } as any)
     const hydrateBlueBubblesAttachments = vi.fn().mockResolvedValue({
       inputParts: [],
       transcriptAdditions: ["voice note transcript: hello from minimax"],
       notices: [],
     })
-    vi.doMock("../../senses/bluebubbles-media", () => ({
+    vi.doMock("../../../senses/bluebubbles/media", () => ({
       hydrateBlueBubblesAttachments,
     }))
 
@@ -1732,7 +1732,7 @@ describe("BlueBubbles client", () => {
     ) as typeof fetch
 
     vi.resetModules()
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -1788,7 +1788,7 @@ describe("BlueBubbles client", () => {
       transcriptAdditions: [],
       notices: ["attachment hydration failed for file.pdf: socket reset"],
     })
-    vi.doMock("../../senses/bluebubbles-media", () => ({
+    vi.doMock("../../../senses/bluebubbles/media", () => ({
       hydrateBlueBubblesAttachments,
     }))
 
@@ -1824,7 +1824,7 @@ describe("BlueBubbles client", () => {
     ) as typeof fetch
 
     vi.resetModules()
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -1874,7 +1874,7 @@ describe("BlueBubbles client", () => {
       transcriptAdditions: ["voice note transcript: hello"],
       notices: [],
     })
-    vi.doMock("../../senses/bluebubbles-media", () => ({
+    vi.doMock("../../../senses/bluebubbles/media", () => ({
       hydrateBlueBubblesAttachments,
     }))
 
@@ -1910,7 +1910,7 @@ describe("BlueBubbles client", () => {
     ) as typeof fetch
 
     vi.resetModules()
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -1987,7 +1987,7 @@ describe("BlueBubbles client", () => {
       ),
     ) as typeof fetch
 
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -2054,7 +2054,7 @@ describe("BlueBubbles client", () => {
       ),
     ) as typeof fetch
 
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -2140,7 +2140,7 @@ describe("BlueBubbles client", () => {
       ),
     ) as typeof fetch
 
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -2186,7 +2186,7 @@ describe("BlueBubbles client", () => {
   it("turns non-Error repair throws into explicit fallback notices too", async () => {
     global.fetch = vi.fn().mockRejectedValue("socket reset") as typeof fetch
 
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -2234,7 +2234,7 @@ describe("BlueBubbles client", () => {
       text: vi.fn().mockRejectedValue(new Error("no body")),
     }) as typeof fetch
 
-    const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
       {
         serverUrl: "http://bluebubbles.local",
@@ -2268,7 +2268,7 @@ describe("BlueBubbles client", () => {
         new Response(JSON.stringify({ data: { text: "Hello from the thread" } }), { status: 200 }),
       ) as typeof fetch
 
-      const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+      const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
       const client = createBlueBubblesClient(
         { serverUrl: "http://bluebubbles.local", password: "secret-token", accountId: "default" },
         { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 },
@@ -2283,7 +2283,7 @@ describe("BlueBubbles client", () => {
         new Response("Not Found", { status: 404 }),
       ) as typeof fetch
 
-      const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+      const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
       const client = createBlueBubblesClient(
         { serverUrl: "http://bluebubbles.local", password: "secret-token", accountId: "default" },
         { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 },
@@ -2301,7 +2301,7 @@ describe("BlueBubbles client", () => {
         new Response(JSON.stringify({ data: { guid: "msg-guid-no-text" } }), { status: 200 }),
       ) as typeof fetch
 
-      const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+      const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
       const client = createBlueBubblesClient(
         { serverUrl: "http://bluebubbles.local", password: "secret-token", accountId: "default" },
         { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 },
@@ -2314,7 +2314,7 @@ describe("BlueBubbles client", () => {
     it("returns null when fetch throws a non-Error value", async () => {
       global.fetch = vi.fn().mockRejectedValue("string rejection") as typeof fetch
 
-      const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+      const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
       const client = createBlueBubblesClient(
         { serverUrl: "http://bluebubbles.local", password: "secret-token", accountId: "default" },
         { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 },
@@ -2331,7 +2331,7 @@ describe("BlueBubbles client", () => {
     it("returns null when fetch throws (network error)", async () => {
       global.fetch = vi.fn().mockRejectedValue(new Error("Network error")) as typeof fetch
 
-      const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+      const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
       const client = createBlueBubblesClient(
         { serverUrl: "http://bluebubbles.local", password: "secret-token", accountId: "default" },
         { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 },
@@ -2350,7 +2350,7 @@ describe("BlueBubbles client", () => {
         new Response(JSON.stringify({ data: { text: "   " } }), { status: 200 }),
       ) as typeof fetch
 
-      const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+      const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
       const client = createBlueBubblesClient(
         { serverUrl: "http://bluebubbles.local", password: "secret-token", accountId: "default" },
         { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 },
@@ -2365,7 +2365,7 @@ describe("BlueBubbles client", () => {
         new Response("null", { status: 200 }),
       ) as typeof fetch
 
-      const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+      const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
       const client = createBlueBubblesClient(
         { serverUrl: "http://bluebubbles.local", password: "secret-token", accountId: "default" },
         { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 },
@@ -2380,7 +2380,7 @@ describe("BlueBubbles client", () => {
         new Response(JSON.stringify({ data: { text: 42 } }), { status: 200 }),
       ) as typeof fetch
 
-      const { createBlueBubblesClient } = await import("../../senses/bluebubbles-client")
+      const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
       const client = createBlueBubblesClient(
         { serverUrl: "http://bluebubbles.local", password: "secret-token", accountId: "default" },
         { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 },

@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto"
-import { getBlueBubblesChannelConfig, getBlueBubblesConfig } from "../heart/config"
-import { loadAgentConfig } from "../heart/identity"
-import { emitNervesEvent } from "../nerves/runtime"
-import { normalizeBlueBubblesEvent, type BlueBubblesChatRef, type BlueBubblesNormalizedEvent } from "./bluebubbles-model"
-import { hydrateBlueBubblesAttachments } from "./bluebubbles-media"
+import { getBlueBubblesChannelConfig, getBlueBubblesConfig } from "../../heart/config"
+import { loadAgentConfig } from "../../heart/identity"
+import { emitNervesEvent } from "../../nerves/runtime"
+import { normalizeBlueBubblesEvent, type BlueBubblesChatRef, type BlueBubblesNormalizedEvent } from "./model"
+import { hydrateBlueBubblesAttachments } from "./media"
 
 export interface BlueBubblesSendTextParams {
   chat: BlueBubblesChatRef

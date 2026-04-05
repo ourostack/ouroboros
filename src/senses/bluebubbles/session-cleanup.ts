@@ -1,6 +1,6 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
-import { emitNervesEvent } from "../nerves/runtime"
+import { emitNervesEvent } from "../../nerves/runtime"
 
 export function findObsoleteBlueBubblesThreadSessions(trunkSessionPath: string): string[] {
   const normalized = trunkSessionPath.trim()

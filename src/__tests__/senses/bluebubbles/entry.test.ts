@@ -10,8 +10,8 @@ describe("bluebubbles entrypoint", () => {
 
     const startBlueBubblesApp = vi.fn()
     const configureDaemonRuntimeLogger = vi.fn()
-    vi.doMock("../../senses/bluebubbles", () => ({ startBlueBubblesApp }))
-    vi.doMock("../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
+    vi.doMock("../../../senses/bluebubbles", () => ({ startBlueBubblesApp }))
+    vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
 
     const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue([
       "node",
@@ -20,7 +20,7 @@ describe("bluebubbles entrypoint", () => {
       "slugger",
     ])
 
-    await import("../../senses/bluebubbles-entry")
+    await import("../../../senses/bluebubbles/entry")
     await Promise.resolve()
 
     expect(configureDaemonRuntimeLogger).toHaveBeenCalledWith("bluebubbles")
@@ -38,7 +38,7 @@ describe("bluebubbles entrypoint", () => {
       "bluebubbles-entry.js",
     ])
 
-    await import("../../senses/bluebubbles-entry")
+    await import("../../../senses/bluebubbles/entry")
     await Promise.resolve()
 
     expect(exitSpy).toHaveBeenCalledWith(1)

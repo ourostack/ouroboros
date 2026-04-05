@@ -50,7 +50,7 @@ describe("BlueBubbles inbound log", () => {
       getBlueBubblesInboundLogPath,
       hasRecordedBlueBubblesInbound,
       recordBlueBubblesInbound,
-    } = await import("../../senses/bluebubbles-inbound-log")
+    } = await import("../../../senses/bluebubbles/inbound-log")
 
     const logPath = recordBlueBubblesInbound("slugger", messageEvent, "webhook")
 
@@ -72,7 +72,7 @@ describe("BlueBubbles inbound log", () => {
   })
 
   it("records null chat identity fields when only the session key is available", async () => {
-    const { getBlueBubblesInboundLogPath, recordBlueBubblesInbound } = await import("../../senses/bluebubbles-inbound-log")
+    const { getBlueBubblesInboundLogPath, recordBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
 
     const eventWithoutChatIdentity = {
       ...messageEvent,
@@ -102,7 +102,7 @@ describe("BlueBubbles inbound log", () => {
       getBlueBubblesInboundLogPath,
       hasRecordedBlueBubblesInbound,
       recordBlueBubblesInbound,
-    } = await import("../../senses/bluebubbles-inbound-log")
+    } = await import("../../../senses/bluebubbles/inbound-log")
 
     const logPath = getBlueBubblesInboundLogPath("slugger", messageEvent.chat.sessionKey)
     fs.mkdirSync(path.dirname(logPath), { recursive: true })
@@ -120,7 +120,7 @@ describe("BlueBubbles inbound log", () => {
   })
 
   it("stringifies non-Error write failures when inbound sidecar serialization explodes", async () => {
-    const { getBlueBubblesInboundLogPath, recordBlueBubblesInbound } = await import("../../senses/bluebubbles-inbound-log")
+    const { getBlueBubblesInboundLogPath, recordBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
 
     const badEvent = {
       ...messageEvent,
