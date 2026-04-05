@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.223",
+      "changes": [
+        "debug: file-based trace in send_message handler to verify execution path"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.222",
       "changes": [
         "debug: add diagnostic nerves events to proactive BB delivery — name resolution in both tools-session.ts and sendProactiveBlueBubblesMessageToSession now emit events showing friend count, names, resolution success/failure, and errors. Temporary diagnostics to identify why name→UUID resolution isn't working in production."
