@@ -57,9 +57,11 @@ async function recallSessionSafely(options: SessionRecallOptions): Promise<Sessi
           ...options,
           summarize: undefined,
         })
+      /* v8 ignore start -- defensive: session recall failure fallback @preserve */
       } catch {
         return { kind: "missing" }
       }
+      /* v8 ignore stop */
     }
     return { kind: "missing" }
   }

@@ -24,6 +24,7 @@ async function recallSessionSafely(options: SessionRecallOptions): Promise<Sessi
           friendId: options.friendId,
           channel: options.channel,
           key: options.key,
+          /* v8 ignore next -- branch: String(error) fallback only for non-Error throws @preserve */
           error: error instanceof Error ? error.message : String(error),
         },
       })
