@@ -29,13 +29,13 @@ describe("generateObligationId", () => {
   beforeEach(() => { vi.resetModules() })
 
   it("produces a timestamp-prefixed ID", async () => {
-    const { generateObligationId } = await import("../../heart/obligations")
+    const { generateObligationId } = await import("../../arc/obligations")
     const id = generateObligationId(1709900001000)
     expect(id).toMatch(/^1709900001000-[a-z0-9]+$/)
   })
 
   it("produces unique IDs for the same timestamp", async () => {
-    const { generateObligationId } = await import("../../heart/obligations")
+    const { generateObligationId } = await import("../../arc/obligations")
     const id1 = generateObligationId(1709900001000)
     const id2 = generateObligationId(1709900001000)
     expect(id1).not.toBe(id2)
@@ -46,7 +46,7 @@ describe("getReturnObligationsDir", () => {
   beforeEach(() => { vi.resetModules() })
 
   it("returns correct path under agent state", async () => {
-    const { getReturnObligationsDir } = await import("../../heart/obligations")
+    const { getReturnObligationsDir } = await import("../../arc/obligations")
     const result = getReturnObligationsDir("testagent")
     expect(result).toContain(path.join("testagent.ouro", "arc", "obligations", "inner"))
   })
@@ -56,7 +56,7 @@ describe("createReturnObligation", () => {
   beforeEach(() => { vi.resetModules() })
 
   it("writes obligation JSON to the obligations directory", async () => {
-    const { createReturnObligation } = await import("../../heart/obligations")
+    const { createReturnObligation } = await import("../../arc/obligations")
     const obligation = {
       id: "1709900001000-abc12345",
       origin: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
@@ -81,7 +81,7 @@ describe("createReturnObligation", () => {
   })
 
   it("emits a nerves event on creation", async () => {
-    const { createReturnObligation } = await import("../../heart/obligations")
+    const { createReturnObligation } = await import("../../arc/obligations")
     createReturnObligation("testagent", {
       id: "1709900001000-abc12345",
       origin: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
@@ -105,7 +105,7 @@ describe("readReturnObligation", () => {
   beforeEach(() => { vi.resetModules() })
 
   it("returns the parsed obligation when found", async () => {
-    const { readReturnObligation } = await import("../../heart/obligations")
+    const { readReturnObligation } = await import("../../arc/obligations")
     const stored = {
       id: "1709900001000-abc12345",
       origin: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
@@ -120,7 +120,7 @@ describe("readReturnObligation", () => {
   })
 
   it("returns null when file does not exist", async () => {
-    const { readReturnObligation } = await import("../../heart/obligations")
+    const { readReturnObligation } = await import("../../arc/obligations")
     vi.mocked(fs.readFileSync).mockImplementation(() => { throw new Error("ENOENT") })
 
     expect(readReturnObligation("testagent", "nonexistent")).toBeNull()
@@ -131,7 +131,7 @@ describe("advanceReturnObligation", () => {
   beforeEach(() => { vi.resetModules() })
 
   it("advances obligation from queued to running", async () => {
-    const { advanceReturnObligation } = await import("../../heart/obligations")
+    const { advanceReturnObligation } = await import("../../arc/obligations")
     const stored = {
       id: "1709900001000-abc12345",
       origin: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
@@ -159,7 +159,7 @@ describe("advanceReturnObligation", () => {
   })
 
   it("advances obligation from running to returned with returnTarget", async () => {
-    const { advanceReturnObligation } = await import("../../heart/obligations")
+    const { advanceReturnObligation } = await import("../../arc/obligations")
     const stored = {
       id: "1709900001000-abc12345",
       origin: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
@@ -185,7 +185,7 @@ describe("advanceReturnObligation", () => {
   })
 
   it("advances obligation to deferred when no session available", async () => {
-    const { advanceReturnObligation } = await import("../../heart/obligations")
+    const { advanceReturnObligation } = await import("../../arc/obligations")
     const stored = {
       id: "1709900001000-abc12345",
       origin: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
@@ -207,14 +207,14 @@ describe("advanceReturnObligation", () => {
   })
 
   it("returns null when obligation does not exist", async () => {
-    const { advanceReturnObligation } = await import("../../heart/obligations")
+    const { advanceReturnObligation } = await import("../../arc/obligations")
     vi.mocked(fs.readFileSync).mockImplementation(() => { throw new Error("ENOENT") })
 
     expect(advanceReturnObligation("testagent", "nonexistent", { status: "running" })).toBeNull()
   })
 
   it("emits a nerves event on advancement", async () => {
-    const { advanceReturnObligation } = await import("../../heart/obligations")
+    const { advanceReturnObligation } = await import("../../arc/obligations")
     const stored = {
       id: "1709900001000-abc12345",
       origin: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
@@ -240,14 +240,14 @@ describe("listActiveReturnObligations", () => {
   beforeEach(() => { vi.resetModules() })
 
   it("returns empty array when directory does not exist", async () => {
-    const { listActiveReturnObligations } = await import("../../heart/obligations")
+    const { listActiveReturnObligations } = await import("../../arc/obligations")
     vi.mocked(fs.existsSync).mockReturnValue(false)
 
     expect(listActiveReturnObligations("testagent")).toEqual([])
   })
 
   it("returns only queued and running obligations sorted by createdAt", async () => {
-    const { listActiveReturnObligations } = await import("../../heart/obligations")
+    const { listActiveReturnObligations } = await import("../../arc/obligations")
     vi.mocked(fs.existsSync).mockReturnValue(true)
     vi.mocked(fs.readdirSync).mockReturnValue([
       "1709900003000-third.json",
@@ -275,7 +275,7 @@ describe("listActiveReturnObligations", () => {
   })
 
   it("skips unparseable files", async () => {
-    const { listActiveReturnObligations } = await import("../../heart/obligations")
+    const { listActiveReturnObligations } = await import("../../arc/obligations")
     vi.mocked(fs.existsSync).mockReturnValue(true)
     vi.mocked(fs.readdirSync).mockReturnValue(["bad.json", "good.json"] as any)
     vi.mocked(fs.readFileSync).mockImplementation(((p: string) => {
@@ -289,7 +289,7 @@ describe("listActiveReturnObligations", () => {
   })
 
   it("returns empty array when readdirSync throws", async () => {
-    const { listActiveReturnObligations } = await import("../../heart/obligations")
+    const { listActiveReturnObligations } = await import("../../arc/obligations")
     vi.mocked(fs.existsSync).mockReturnValue(true)
     vi.mocked(fs.readdirSync).mockImplementation(() => { throw new Error("EACCES") })
 
@@ -297,7 +297,7 @@ describe("listActiveReturnObligations", () => {
   })
 
   it("skips non-json files", async () => {
-    const { listActiveReturnObligations } = await import("../../heart/obligations")
+    const { listActiveReturnObligations } = await import("../../arc/obligations")
     vi.mocked(fs.existsSync).mockReturnValue(true)
     vi.mocked(fs.readdirSync).mockReturnValue([".DS_Store", "notes.txt"] as any)
 

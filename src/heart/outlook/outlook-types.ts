@@ -760,8 +760,8 @@ export interface OutlookLogView {
 // ---------------------------------------------------------------------------
 
 export interface OutlookPresenceView {
-  self: import("../../heart/presence").AgentPresence | null
-  peers: import("../../heart/presence").AgentPresence[]
+  self: import("../../arc/presence").AgentPresence | null
+  peers: import("../../arc/presence").AgentPresence[]
 }
 
 export interface OutlookCareSummary {

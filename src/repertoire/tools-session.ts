@@ -28,7 +28,7 @@ import { getCodingSessionManager, type CodingSessionStatus } from "./coding";
 import { getTaskModule } from "./tasks";
 import { getPendingDir, getInnerDialogPendingDir } from "../mind/pending";
 import type { PendingMessage } from "../mind/pending";
-import { createReturnObligation, generateObligationId, createObligation, readPendingObligations } from "../heart/obligations";
+import { createReturnObligation, generateObligationId, createObligation, readPendingObligations } from "../arc/obligations";
 import { buildProgressStory, renderProgressStory } from "../heart/progress-story";
 import { deliverCrossChatMessage, type CrossChatDeliveryResult } from "../heart/cross-chat-delivery";
 import type { ToolContext, ToolDefinition } from "./tools-base";

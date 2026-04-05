@@ -1,8 +1,8 @@
 import * as fs from "fs"
 import * as path from "path"
-import { getAgentRoot } from "./identity"
+import { getAgentRoot } from "../heart/identity"
 import { emitNervesEvent } from "../nerves/runtime"
-import { trackSyncWrite } from "./sync"
+import { trackSyncWrite } from "../heart/sync"
 
 export type ObligationStatus =
   | "pending"

@@ -7,7 +7,7 @@ import {
   readRecentEpisodes,
   type EpisodeRecord,
   type EpisodeKind,
-} from "../../mind/episodes"
+} from "../../arc/episodes"
 
 describe("episode store", () => {
   let tmpDir: string

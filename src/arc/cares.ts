@@ -1,7 +1,7 @@
 import * as fs from "fs"
 import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
-import { trackSyncWrite } from "./sync"
+import { trackSyncWrite } from "../heart/sync"
 
 export type CareKind = "person" | "agent" | "project" | "mission" | "system"
 export type CareStatus = "active" | "watching" | "resolved" | "dormant"

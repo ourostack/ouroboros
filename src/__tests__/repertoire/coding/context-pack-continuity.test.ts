@@ -3,7 +3,7 @@ import type { CodingSession, CodingSessionRequest } from "../../../repertoire/co
 import { prepareCodingContextPack, emitCodingEpisode } from "../../../repertoire/coding/context-pack"
 
 const mockEmitEpisode = vi.fn()
-vi.mock("../../../mind/episodes", () => ({
+vi.mock("../../../arc/episodes", () => ({
   emitEpisode: (...args: any[]) => mockEmitEpisode(...args),
 }))
 

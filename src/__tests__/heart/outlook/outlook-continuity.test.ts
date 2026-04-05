@@ -6,16 +6,16 @@ const mockReadPeerPresence = vi.fn()
 const mockReadActiveCares = vi.fn()
 const mockReadRecentEpisodes = vi.fn()
 
-vi.mock("../../../heart/presence", () => ({
+vi.mock("../../../arc/presence", () => ({
   readPresence: (...args: any[]) => mockReadPresence(...args),
   readPeerPresence: (...args: any[]) => mockReadPeerPresence(...args),
 }))
 
-vi.mock("../../../heart/cares", () => ({
+vi.mock("../../../arc/cares", () => ({
   readActiveCares: (...args: any[]) => mockReadActiveCares(...args),
 }))
 
-vi.mock("../../../mind/episodes", () => ({
+vi.mock("../../../arc/episodes", () => ({
   readRecentEpisodes: (...args: any[]) => mockReadRecentEpisodes(...args),
 }))
 
