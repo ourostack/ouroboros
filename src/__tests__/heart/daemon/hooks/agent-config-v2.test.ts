@@ -4,7 +4,7 @@ import * as path from "path"
 import { afterEach, describe, expect, it } from "vitest"
 
 import { agentConfigV2Hook } from "../../../../heart/daemon/hooks/agent-config-v2"
-import type { UpdateHookContext } from "../../../../heart/daemon/update-hooks"
+import type { UpdateHookContext } from "../../../../heart/versioning/update-hooks"
 
 const createdDirs: string[] = []
 

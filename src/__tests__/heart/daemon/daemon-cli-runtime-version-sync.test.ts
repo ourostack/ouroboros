@@ -21,7 +21,7 @@ const mocks = vi.hoisted(() => ({
   existsSync: vi.fn(() => true),
 }))
 
-vi.mock("../../../heart/daemon/update-hooks", () => ({
+vi.mock("../../../heart/versioning/update-hooks", () => ({
   applyPendingUpdates: (...a: any[]) => mocks.applyPendingUpdates(...a),
   registerUpdateHook: (...a: any[]) => mocks.registerUpdateHook(...a),
   getRegisteredHooks: vi.fn(() => []),
@@ -56,7 +56,7 @@ vi.mock("fs", async () => {
   }
 })
 
-vi.mock("../../../heart/daemon/ouro-version-manager", () => ({
+vi.mock("../../../heart/versioning/ouro-version-manager", () => ({
   getCurrentVersion: mocks.getCurrentVersion,
   getPreviousVersion: mocks.getPreviousVersion,
   listInstalledVersions: mocks.listInstalledVersions,

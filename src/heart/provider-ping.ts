@@ -14,7 +14,7 @@ import { createAzureProviderRuntime } from "./providers/azure"
 import { createMinimaxProviderRuntime } from "./providers/minimax"
 import { createOpenAICodexProviderRuntime } from "./providers/openai-codex"
 import { createGithubCopilotProviderRuntime } from "./providers/github-copilot"
-import { loadAgentSecrets } from "./daemon/auth-flow"
+import { loadAgentSecrets } from "./auth/auth-flow"
 import { emitNervesEvent } from "../nerves/runtime"
 
 export type PingResult =

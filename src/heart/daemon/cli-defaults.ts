@@ -11,32 +11,32 @@ import * as os from "os"
 import * as path from "path"
 import { getAgentBundlesRoot, getAgentDaemonLogsDir, getAgentName, getAgentRoot, getRepoRoot, PROVIDER_CREDENTIALS, type AgentProvider } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { installOuroCommand as defaultInstallOuroCommand } from "./ouro-path-installer"
-import { registerOuroBundleUti as defaultRegisterOuroBundleUti } from "./ouro-uti"
-import { getCurrentVersion, getPreviousVersion, listInstalledVersions, installVersion, activateVersion, ensureLayout, getOuroCliHome } from "./ouro-version-manager"
+import { installOuroCommand as defaultInstallOuroCommand } from "../versioning/ouro-path-installer"
+import { registerOuroBundleUti as defaultRegisterOuroBundleUti } from "../versioning/ouro-uti"
+import { getCurrentVersion, getPreviousVersion, listInstalledVersions, installVersion, activateVersion, ensureLayout, getOuroCliHome } from "../versioning/ouro-version-manager"
 import { ensureSkillManagement as defaultEnsureSkillManagement } from "./skill-management-installer"
 import {
   runHatchFlow as defaultRunHatchFlow,
   type HatchCredentialsInput,
-} from "./hatch-flow"
+} from "../hatch/hatch-flow"
 import {
   listExistingBundles,
   loadSoulText,
   pickRandomIdentity,
-} from "./specialist-orchestrator"
-import { buildSpecialistSystemPrompt } from "./specialist-prompt"
-import { getSpecialistTools, createSpecialistExecTool } from "./specialist-tools"
+} from "../hatch/specialist-orchestrator"
+import { buildSpecialistSystemPrompt } from "../hatch/specialist-prompt"
+import { getSpecialistTools, createSpecialistExecTool } from "../hatch/specialist-tools"
 import { detectRuntimeMode } from "./runtime-mode"
 import { listEnabledBundleAgents } from "./agent-discovery"
 import { getPackageVersion } from "../../mind/bundle-manifest"
-import { syncGlobalOuroBotWrapper as defaultSyncGlobalOuroBotWrapper } from "./ouro-bot-global-installer"
+import { syncGlobalOuroBotWrapper as defaultSyncGlobalOuroBotWrapper } from "../versioning/ouro-bot-global-installer"
 import { writeLaunchAgentPlist } from "./launchd"
 import { DEFAULT_DAEMON_SOCKET_PATH, sendDaemonCommand, checkDaemonSocketAlive } from "./socket-client"
 import { listSessionActivity } from "../session-activity"
 import {
   runRuntimeAuthFlow as defaultRunRuntimeAuthFlow,
   collectRuntimeAuthCredentials,
-} from "./auth-flow"
+} from "../auth/auth-flow"
 import { isAgentProvider } from "./cli-parse"
 import type { OuroCliDeps, DiscoveredCredential } from "./cli-types"
 
@@ -367,7 +367,7 @@ export async function defaultRunSerpentGuide(): Promise<string | null> {
     const identity = pickRandomIdentity(identitiesDir)
 
     // Load identity-specific spinner phrases (falls back to DEFAULT_AGENT_PHRASES)
-    const { loadIdentityPhrases } = await import("./specialist-orchestrator")
+    const { loadIdentityPhrases } = await import("../hatch/specialist-orchestrator")
     const phrases = loadIdentityPhrases(bundleSourceDir, identity.fileName)
 
     const resolvedModel = providerConfig.model || providerConfig.deployment || ""
@@ -499,7 +499,7 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     /* v8 ignore stop */
     /* v8 ignore start -- CLI version management defaults: integration code @preserve */
     checkForCliUpdate: async () => {
-      const { checkForUpdate } = await import("./update-checker")
+      const { checkForUpdate } = await import("../versioning/update-checker")
       return checkForUpdate(getPackageVersion(), {
         fetchRegistryJson: async () => {
           const res = await fetch("https://registry.npmjs.org/@ouro.bot/cli")

@@ -1,6 +1,6 @@
 import { emitNervesEvent } from "../../../nerves/runtime"
 import { migrateAgentConfigV1ToV2 } from "../../migrate-config"
-import type { UpdateHookContext, UpdateHookResult } from "../update-hooks"
+import type { UpdateHookContext, UpdateHookResult } from "../../versioning/update-hooks"
 
 export async function agentConfigV2Hook(ctx: UpdateHookContext): Promise<UpdateHookResult> {
   emitNervesEvent({

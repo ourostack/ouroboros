@@ -77,8 +77,8 @@ vi.mock("../../heart/provider-ping", async () => {
   }
 })
 
-vi.mock("../../heart/daemon/auth-flow", async () => {
-  const actual = await vi.importActual<typeof import("../../heart/daemon/auth-flow")>("../../heart/daemon/auth-flow")
+vi.mock("../../heart/auth/auth-flow", async () => {
+  const actual = await vi.importActual<typeof import("../../heart/auth/auth-flow")>("../../heart/auth/auth-flow")
   return {
     ...actual,
     writeAgentProviderSelection: (...args: any[]) => mockWriteAgentProviderSelection(...args),

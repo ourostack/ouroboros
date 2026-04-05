@@ -6,7 +6,7 @@ const mocks = vi.hoisted(() => ({
   registerUpdateHook: vi.fn(),
 }))
 
-vi.mock("../../../heart/daemon/update-hooks", () => ({
+vi.mock("../../../heart/versioning/update-hooks", () => ({
   applyPendingUpdates: (...a: any[]) => mocks.applyPendingUpdates(...a),
   registerUpdateHook: (...a: any[]) => mocks.registerUpdateHook(...a),
   getRegisteredHooks: vi.fn(() => []),

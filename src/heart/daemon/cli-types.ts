@@ -9,12 +9,12 @@ import type { AgentProvider } from "../identity"
 import type { Facing } from "../../mind/friends/channel"
 import type { TrustLevel } from "../../mind/friends/types"
 import type { DaemonCommand, DaemonResponse } from "./daemon"
-import type { HatchCredentialsInput, HatchFlowInput, HatchFlowResult } from "./hatch-flow"
-import type { RuntimeAuthInput, RuntimeAuthResult } from "./auth-flow"
-import type { OuroPathInstallResult } from "./ouro-path-installer"
+import type { HatchCredentialsInput, HatchFlowInput, HatchFlowResult } from "../hatch/hatch-flow"
+import type { RuntimeAuthInput, RuntimeAuthResult } from "../auth/auth-flow"
+import type { OuroPathInstallResult } from "../versioning/ouro-path-installer"
 import type { TaskModule } from "../../repertoire/tasks/types"
 import type { FriendStore } from "../../mind/friends/store"
-import type { CheckForUpdateResult } from "./update-checker"
+import type { CheckForUpdateResult } from "../versioning/update-checker"
 
 export type OuroCliCommand =
   | { kind: "daemon.up" }
