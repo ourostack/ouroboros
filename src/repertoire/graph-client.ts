@@ -4,6 +4,7 @@
 
 import { handleApiError } from "../heart/api-error"
 import { emitNervesEvent } from "../nerves/runtime"
+import { apiRequest } from "./api-client"
 
 const GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
@@ -22,60 +23,16 @@ export async function graphRequest(
   path: string,
   body?: string,
 ): Promise<string> {
-  try {
-    emitNervesEvent({
-      event: "client.request_start",
-      component: "clients",
-      message: "starting Graph request",
-      meta: { client: "graph", method, path },
-    })
-
-    const url = `${GRAPH_BASE}${path}`
-    const opts: RequestInit = {
-      method,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-    }
-    if (body) opts.body = body
-
-    const res = await fetch(url, opts)
-
-    if (!res.ok) {
-      emitNervesEvent({
-        level: "error",
-        event: "client.error",
-        component: "clients",
-        message: "Graph request failed",
-        meta: { client: "graph", method, path, status: res.status },
-      })
-      return handleApiError(res, "Graph", "graph")
-    }
-
-    const data = await res.json()
-    emitNervesEvent({
-      event: "client.request_end",
-      component: "clients",
-      message: "Graph request completed",
-      meta: { client: "graph", method, path, success: true },
-    })
-    return JSON.stringify(data, null, 2)
-  } catch (err) {
-    emitNervesEvent({
-      level: "error",
-      event: "client.error",
-      component: "clients",
-      message: "Graph request threw exception",
-      meta: {
-        client: "graph",
-        method,
-        path,
-        reason: err instanceof Error ? err.message : String(err),
-      },
-    })
-    return handleApiError(err, "Graph", "graph")
-  }
+  return apiRequest({
+    baseUrl: GRAPH_BASE,
+    method,
+    path,
+    token,
+    clientName: "graph",
+    serviceLabel: "Graph",
+    connectionName: "graph",
+    body,
+  })
 }
 
 // Backward-compatible thin wrapper: fetches /me and formats as human-readable text.
