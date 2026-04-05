@@ -462,6 +462,10 @@ export const sessionToolDefinitions: ToolDefinition[] = [
       const now = Date.now()
       const agentName = getAgentName()
 
+      /* v8 ignore start -- temporary debug trace @preserve */
+      try { fs.appendFileSync("/tmp/send-message-debug.log", JSON.stringify({ ts: new Date().toISOString(), friendId, channel, key, handler: "tools-session" }) + "\n") } catch {}
+      /* v8 ignore stop */
+
       // Resolve friend name → UUID if needed
       /* v8 ignore start -- name resolution: reads real filesystem, tested via live integration @preserve */
       if (friendId !== "self") {
