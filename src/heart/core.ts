@@ -202,16 +202,6 @@ export function getProviderDisplayLabel(facing: Facing = "human"): string {
   return providerLabelBuilders[provider]();
 }
 
-// Re-export tools, execTool, summarizeArgs from ./tools for backward compat
-export { tools, execTool, summarizeArgs, getToolsForChannel } from "../repertoire/tools";
-export type { ToolContext } from "../repertoire/tools";
-// Re-export streaming functions for backward compat
-export { streamChatCompletion, streamResponsesApi, toResponsesInput, toResponsesTools } from "./streaming";
-export type { TurnResult } from "./streaming";
-
-// Re-export prompt functions for backward compat
-export { buildSystem } from "../mind/prompt";
-export type { Channel } from "../mind/prompt";
 
 export interface ChannelCallbacks {
   onModelStart(): void;
@@ -405,8 +395,6 @@ export function getSettleRetryError(
   return null;
 }
 
-// Re-export kick utilities for backward compat
-export { hasToolIntent } from "./kicks";
 
 function upsertSystemPrompt(
   messages: OpenAI.ChatCompletionMessageParam[],
