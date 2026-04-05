@@ -1,4 +1,5 @@
 import type OpenAI from "openai";
+import * as fs from "fs";
 import { getAgentRoot, getAgentName } from "../heart/identity";
 import { handleSurface, type SurfaceRouteResult } from "../senses/surface-tool";
 import { advanceReturnObligation, findPendingObligationForOrigin, fulfillObligation } from "../arc/obligations";
@@ -49,6 +50,23 @@ export const surfaceToolDefinition: ToolDefinition = {
         const agentRoot = getAgentRoot()
         const sessionsDir = path.join(agentRoot, "state", "sessions")
         const friendsDir = path.join(agentRoot, "friends")
+
+        // Resolve friend name → UUID if needed (agents may pass name instead of UUID)
+        let resolvedFriendId = friendId
+        if (!fs.existsSync(path.join(sessionsDir, friendId))) {
+          try {
+            const friendFiles = fs.readdirSync(friendsDir).filter((f) => f.endsWith(".json"))
+            for (const file of friendFiles) {
+              const raw = fs.readFileSync(path.join(friendsDir, file), "utf-8")
+              const record = JSON.parse(raw) as { id?: string; name?: string }
+              if (record.name?.toLowerCase() === friendId.toLowerCase() && record.id) {
+                resolvedFriendId = record.id
+                break
+              }
+            }
+          } catch { /* friends dir unreadable — continue with original friendId */ }
+        }
+        friendId = resolvedFriendId
 
         // Priority 1: Bridge-preferred session (if queue item has a bridgeId)
         if (queueItem?.bridgeId) {
