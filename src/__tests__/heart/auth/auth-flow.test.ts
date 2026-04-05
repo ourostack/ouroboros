@@ -13,7 +13,7 @@ import {
   writeProviderCredentials,
   runRuntimeAuthFlow,
   writeAgentProviderSelection,
-} from "../../../heart/daemon/auth-flow"
+} from "../../../heart/auth/auth-flow"
 
 function emitTestEvent(testName: string): void {
   emitNervesEvent({

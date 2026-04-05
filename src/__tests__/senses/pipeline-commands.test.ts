@@ -108,7 +108,7 @@ vi.mock("../../heart/presence", async () => {
   return { ...actual, derivePresence: vi.fn().mockReturnValue({}), writePresence: vi.fn() }
 })
 
-vi.mock("../../heart/daemon/auth-flow", async () => ({
+vi.mock("../../heart/auth/auth-flow", async () => ({
   writeAgentProviderSelection: vi.fn(),
   loadAgentSecrets: vi.fn().mockReturnValue({
     secretsPath: "/mock/secrets.json",
