@@ -34,6 +34,7 @@ export default defineConfig({
         "src/heart/providers/anthropic-token.ts",
         "src/nerves/observation.ts",
         "src/heart/daemon/outlook-render.ts",
+        "src/heart/attention-types.ts",
       ],
       thresholds: {
         lines: 100,

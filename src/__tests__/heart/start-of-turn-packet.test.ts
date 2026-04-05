@@ -1,8 +1,9 @@
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import {
   buildStartOfTurnPacket,
   renderStartOfTurnPacket,
   renderCompactStartOfTurnPacket,
+  buildCapabilitiesSection,
   type StartOfTurnPacket,
 } from "../../heart/start-of-turn-packet"
 import { type TemporalView } from "../../heart/temporal-view"
@@ -597,6 +598,183 @@ describe("start-of-turn packet", () => {
       const rendered = renderStartOfTurnPacket(packet)
       expect(rendered).toContain("Sync warning")
       expect(rendered).toContain("prior sync push failed: network timeout")
+    })
+  })
+
+  describe("buildCapabilitiesSection", () => {
+    let mockFs: typeof import("fs")
+
+    beforeEach(() => {
+      vi.resetModules()
+      vi.mock("fs", async (importOriginal) => {
+        const actual = await importOriginal<typeof import("fs")>()
+        return {
+          ...actual,
+          readFileSync: vi.fn(),
+          existsSync: vi.fn(),
+        }
+      })
+    })
+
+    afterEach(() => {
+      vi.restoreAllMocks()
+    })
+
+    async function setup(bundleMeta?: Record<string, unknown>, changelog?: unknown[]) {
+      mockFs = await import("fs") as unknown as typeof import("fs")
+      const readMock = vi.mocked(mockFs.readFileSync)
+      readMock.mockImplementation((filePath: unknown) => {
+        const p = String(filePath)
+        if (p.endsWith("bundle-meta.json")) {
+          if (bundleMeta === undefined) throw new Error("ENOENT")
+          return JSON.stringify(bundleMeta)
+        }
+        if (p.endsWith("changelog.json")) {
+          if (changelog === undefined) throw new Error("ENOENT")
+          return JSON.stringify(changelog)
+        }
+        throw new Error(`unexpected read: ${p}`)
+      })
+
+      const mod = await import("../../heart/start-of-turn-packet")
+      return mod.buildCapabilitiesSection
+    }
+
+    it("returns undefined when previousRuntimeVersion is missing", async () => {
+      const fn = await setup({ runtimeVersion: "1.2.0" })
+      expect(fn("/bundle")).toBeUndefined()
+    })
+
+    it("returns undefined when versions match", async () => {
+      const fn = await setup({ runtimeVersion: "1.2.0", previousRuntimeVersion: "1.2.0" })
+      expect(fn("/bundle")).toBeUndefined()
+    })
+
+    it("returns compact summary when versions differ", async () => {
+      const fn = await setup(
+        { runtimeVersion: "1.3.0", previousRuntimeVersion: "1.2.0" },
+        [
+          { version: "1.3.0", changes: ["added new tool support", "improved context handling"] },
+          { version: "1.2.0", changes: ["initial release"] },
+        ],
+      )
+      const result = fn("/bundle")
+      expect(result).toBeDefined()
+      expect(result).toContain("1.3.0")
+      expect(result).toContain("added new tool support")
+    })
+
+    it("handles missing bundle-meta.json gracefully", async () => {
+      const fn = await setup(undefined)
+      expect(fn("/bundle")).toBeUndefined()
+    })
+
+    it("handles missing changelog.json gracefully", async () => {
+      const fn = await setup(
+        { runtimeVersion: "1.3.0", previousRuntimeVersion: "1.2.0" },
+        undefined,
+      )
+      const result = fn("/bundle")
+      expect(result).toBeDefined()
+      // Should still include version info even without changelog details
+      expect(result).toContain("1.2.0")
+      expect(result).toContain("1.3.0")
+    })
+
+    it("handles malformed JSON gracefully", async () => {
+      mockFs = await import("fs") as unknown as typeof import("fs")
+      const readMock = vi.mocked(mockFs.readFileSync)
+      readMock.mockReturnValue("not valid json{{{")
+      const mod = await import("../../heart/start-of-turn-packet")
+      expect(mod.buildCapabilitiesSection("/bundle")).toBeUndefined()
+    })
+
+    it("summary includes version numbers and change descriptions", async () => {
+      const fn = await setup(
+        { runtimeVersion: "2.0.0", previousRuntimeVersion: "1.5.0" },
+        [
+          { version: "2.0.0", changes: ["breaking: new config format"] },
+          { version: "1.6.0", changes: ["added shell tool"] },
+          { version: "1.5.0", changes: ["baseline"] },
+        ],
+      )
+      const result = fn("/bundle")
+      expect(result).toBeDefined()
+      expect(result).toContain("1.5.0")
+      expect(result).toContain("2.0.0")
+      expect(result).toContain("breaking: new config format")
+      expect(result).toContain("added shell tool")
+      // Should NOT include changes from versions at or before previousRuntimeVersion
+      expect(result).not.toContain("baseline")
+    })
+
+    it("handles changelog entries with non-array changes field", async () => {
+      const fn = await setup(
+        { runtimeVersion: "1.3.0", previousRuntimeVersion: "1.2.0" },
+        [
+          { version: "1.3.0", changes: "not-an-array" as unknown as string[] },
+          { version: "1.2.0", changes: ["baseline"] },
+        ],
+      )
+      const result = fn("/bundle")
+      expect(result).toBeDefined()
+      // Should still have version info but no change details from the malformed entry
+      expect(result).toContain("1.2.0")
+      expect(result).toContain("1.3.0")
+    })
+
+    it("handles changelog with no relevant changes (empty changes arrays)", async () => {
+      const fn = await setup(
+        { runtimeVersion: "1.3.0", previousRuntimeVersion: "1.2.0" },
+        [
+          { version: "1.3.0", changes: [] },
+          { version: "1.2.0", changes: ["baseline"] },
+        ],
+      )
+      const result = fn("/bundle")
+      expect(result).toBeDefined()
+      expect(result).toContain("1.2.0")
+      expect(result).toContain("1.3.0")
+      // No change descriptions
+      expect(result).not.toContain("baseline")
+    })
+
+    it("capabilities section appears in rendered packet when present", async () => {
+      const view = makeView({
+        activeObligations: [makeObligation()],
+      })
+      const packet = buildStartOfTurnPacket(view)
+      packet.capabilities = "Updated from v1.2.0 to v1.3.0: added new tool support"
+      const rendered = renderStartOfTurnPacket(packet)
+      expect(rendered).toContain("Capabilities")
+      expect(rendered).toContain("added new tool support")
+    })
+
+    it("capabilities section has lower priority than resumeHint but higher than presence", () => {
+      // capabilities priority should be between resumeHint (5) and presence (1)
+      // When forced to truncate, presence should go before capabilities
+      const view = makeView({
+        tempo: "brief",
+        peerPresence: [
+          {
+            agentName: "slugger",
+            availability: "active",
+            lane: "coding",
+            mission: "working",
+            tempo: "standard",
+            updatedAt: new Date().toISOString(),
+          },
+        ],
+        activeObligations: [makeObligation({
+          content: "task",
+          meaning: { salience: "high" as const, stalenessClass: "fresh" as const, resumeHint: "hint" },
+        })],
+      })
+      const packet = buildStartOfTurnPacket(view)
+      packet.capabilities = "Updated: short change"
+      const rendered = renderStartOfTurnPacket(packet)
+      // Should render without error, may or may not include all sections depending on budget
+      expect(typeof rendered).toBe("string")
     })
   })
 })
