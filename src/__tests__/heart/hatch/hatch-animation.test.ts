@@ -12,7 +12,7 @@ describe("playHatchAnimation", () => {
   }
 
   it("writes egg emoji, then snake emoji with hatchling name", async () => {
-    const { playHatchAnimation } = await import("../../../heart/daemon/hatch-animation")
+    const { playHatchAnimation } = await import("../../../heart/hatch/hatch-animation")
     const chunks: string[] = []
     const writer = (text: string) => { chunks.push(text) }
 
@@ -25,7 +25,7 @@ describe("playHatchAnimation", () => {
   })
 
   it("custom writer receives all output chunks", async () => {
-    const { playHatchAnimation } = await import("../../../heart/daemon/hatch-animation")
+    const { playHatchAnimation } = await import("../../../heart/hatch/hatch-animation")
     const writer = vi.fn()
 
     await runWithTimers(() => playHatchAnimation("TestBot", writer))
@@ -35,7 +35,7 @@ describe("playHatchAnimation", () => {
   })
 
   it("uses process.stderr.write as default writer", async () => {
-    const { playHatchAnimation } = await import("../../../heart/daemon/hatch-animation")
+    const { playHatchAnimation } = await import("../../../heart/hatch/hatch-animation")
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
 
     try {
@@ -50,7 +50,7 @@ describe("playHatchAnimation", () => {
   })
 
   it("output contains the hatchling name", async () => {
-    const { playHatchAnimation } = await import("../../../heart/daemon/hatch-animation")
+    const { playHatchAnimation } = await import("../../../heart/hatch/hatch-animation")
     const chunks: string[] = []
     const writer = (text: string) => { chunks.push(text) }
 
