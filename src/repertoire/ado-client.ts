@@ -4,6 +4,7 @@
 
 import { handleApiError } from "../heart/api-error"
 import { emitNervesEvent } from "../nerves/runtime"
+import { apiRequest } from "./api-client"
 
 const ADO_BASE = "https://dev.azure.com"
 const VSSPS_BASE = "https://app.vssps.visualstudio.com"
@@ -56,67 +57,21 @@ export async function adoRequest(
   body?: string,
   host?: string,
 ): Promise<string> {
-  try {
-    const base = host ? `https://${host}/${org}` : `${ADO_BASE}/${org}`
-    emitNervesEvent({
-      event: "client.request_start",
-      component: "clients",
-      message: "starting ADO request",
-      meta: { client: "ado", method, org, path },
-    })
+  const base = host ? `https://${host}/${org}` : `${ADO_BASE}/${org}`
+  const fullPath = ensureApiVersion(path)
 
-    const fullPath = ensureApiVersion(path)
-    const url = `${base}${fullPath}`
-
-    const contentType = resolveContentType(method, path)
-
-    const opts: RequestInit = {
-      method,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": contentType,
-      },
-    }
-
-    if (body) opts.body = body
-
-    const res = await fetch(url, opts)
-
-    if (!res.ok) {
-      emitNervesEvent({
-        level: "error",
-        event: "client.error",
-        component: "clients",
-        message: "ADO request failed",
-        meta: { client: "ado", method, org, path, status: res.status },
-      })
-      return handleApiError(res, "ADO", "ado")
-    }
-
-    const data = await res.json()
-    emitNervesEvent({
-      event: "client.request_end",
-      component: "clients",
-      message: "ADO request completed",
-      meta: { client: "ado", method, org, path, success: true },
-    })
-    return JSON.stringify(data, null, 2)
-  } catch (err) {
-    emitNervesEvent({
-      level: "error",
-      event: "client.error",
-      component: "clients",
-      message: "ADO request threw exception",
-      meta: {
-        client: "ado",
-        method,
-        org,
-        path,
-        reason: err instanceof Error ? err.message : String(err),
-      },
-    })
-    return handleApiError(err, "ADO", "ado")
-  }
+  return apiRequest({
+    baseUrl: base,
+    method,
+    path: fullPath,
+    token,
+    clientName: "ado",
+    serviceLabel: "ADO",
+    connectionName: "ado",
+    body,
+    contentType: resolveContentType(method, path),
+    eventMeta: { org },
+  })
 }
 
 // Backward-compatible thin wrapper: runs WIQL query and returns formatted work items.
