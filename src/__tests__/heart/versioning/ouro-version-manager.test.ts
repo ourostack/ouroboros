@@ -11,7 +11,7 @@ describe("ouro-version-manager", () => {
 
   describe("getOuroCliHome", () => {
     it("returns <homeDir>/.ouro-cli", async () => {
-      const { getOuroCliHome } = await import("../../../heart/daemon/ouro-version-manager")
+      const { getOuroCliHome } = await import("../../../heart/versioning/ouro-version-manager")
       const result = getOuroCliHome("/Users/test")
       expect(result).toBe("/Users/test/.ouro-cli")
     })
@@ -19,7 +19,7 @@ describe("ouro-version-manager", () => {
 
   describe("getCurrentVersion", () => {
     it("resolves CurrentVersion symlink and extracts version directory name", async () => {
-      const { getCurrentVersion } = await import("../../../heart/daemon/ouro-version-manager")
+      const { getCurrentVersion } = await import("../../../heart/versioning/ouro-version-manager")
       const deps = {
         homeDir: "/Users/test",
         readlinkSync: vi.fn().mockReturnValue("/Users/test/.ouro-cli/versions/0.1.0-alpha.80"),
@@ -30,7 +30,7 @@ describe("ouro-version-manager", () => {
     })
 
     it("returns null when symlink does not exist", async () => {
-      const { getCurrentVersion } = await import("../../../heart/daemon/ouro-version-manager")
+      const { getCurrentVersion } = await import("../../../heart/versioning/ouro-version-manager")
       const deps = {
         homeDir: "/Users/test",
         readlinkSync: vi.fn().mockImplementation(() => { throw new Error("ENOENT") }),
@@ -42,7 +42,7 @@ describe("ouro-version-manager", () => {
 
   describe("getPreviousVersion", () => {
     it("resolves previous symlink and extracts version directory name", async () => {
-      const { getPreviousVersion } = await import("../../../heart/daemon/ouro-version-manager")
+      const { getPreviousVersion } = await import("../../../heart/versioning/ouro-version-manager")
       const deps = {
         homeDir: "/Users/test",
         readlinkSync: vi.fn().mockReturnValue("/Users/test/.ouro-cli/versions/0.1.0-alpha.79"),
@@ -53,7 +53,7 @@ describe("ouro-version-manager", () => {
     })
 
     it("returns null when symlink does not exist", async () => {
-      const { getPreviousVersion } = await import("../../../heart/daemon/ouro-version-manager")
+      const { getPreviousVersion } = await import("../../../heart/versioning/ouro-version-manager")
       const deps = {
         homeDir: "/Users/test",
         readlinkSync: vi.fn().mockImplementation(() => { throw new Error("ENOENT") }),
@@ -65,12 +65,12 @@ describe("ouro-version-manager", () => {
 
   describe("buildChangelogCommand", () => {
     it("returns ouro changelog command when current and previous versions differ", async () => {
-      const { buildChangelogCommand } = await import("../../../heart/daemon/ouro-version-manager")
+      const { buildChangelogCommand } = await import("../../../heart/versioning/ouro-version-manager")
       expect(buildChangelogCommand("0.1.0-alpha.79", "0.1.0-alpha.80")).toBe("ouro changelog --from 0.1.0-alpha.79")
     })
 
     it("returns null when previous version is missing or unchanged", async () => {
-      const { buildChangelogCommand } = await import("../../../heart/daemon/ouro-version-manager")
+      const { buildChangelogCommand } = await import("../../../heart/versioning/ouro-version-manager")
       expect(buildChangelogCommand(null, "0.1.0-alpha.80")).toBeNull()
       expect(buildChangelogCommand("0.1.0-alpha.80", "0.1.0-alpha.80")).toBeNull()
     })
@@ -78,7 +78,7 @@ describe("ouro-version-manager", () => {
 
   describe("listInstalledVersions", () => {
     it("reads versions/ directory and returns entries", async () => {
-      const { listInstalledVersions } = await import("../../../heart/daemon/ouro-version-manager")
+      const { listInstalledVersions } = await import("../../../heart/versioning/ouro-version-manager")
       const deps = {
         homeDir: "/Users/test",
         readdirSync: vi.fn().mockReturnValue([
@@ -93,7 +93,7 @@ describe("ouro-version-manager", () => {
     })
 
     it("returns empty array when versions directory does not exist", async () => {
-      const { listInstalledVersions } = await import("../../../heart/daemon/ouro-version-manager")
+      const { listInstalledVersions } = await import("../../../heart/versioning/ouro-version-manager")
       const deps = {
         homeDir: "/Users/test",
         readdirSync: vi.fn().mockImplementation(() => { throw new Error("ENOENT") }),
@@ -105,7 +105,7 @@ describe("ouro-version-manager", () => {
 
   describe("installVersion", () => {
     it("runs npm install with correct prefix and package specifier", async () => {
-      const { installVersion } = await import("../../../heart/daemon/ouro-version-manager")
+      const { installVersion } = await import("../../../heart/versioning/ouro-version-manager")
       const deps = {
         homeDir: "/Users/test",
         mkdirSync: vi.fn(),
@@ -120,7 +120,7 @@ describe("ouro-version-manager", () => {
     })
 
     it("throws when npm install fails", async () => {
-      const { installVersion } = await import("../../../heart/daemon/ouro-version-manager")
+      const { installVersion } = await import("../../../heart/versioning/ouro-version-manager")
       const deps = {
         homeDir: "/Users/test",
         mkdirSync: vi.fn(),
@@ -132,7 +132,7 @@ describe("ouro-version-manager", () => {
 
   describe("activateVersion", () => {
     it("updates previous symlink to old CurrentVersion target, then updates CurrentVersion", async () => {
-      const { activateVersion } = await import("../../../heart/daemon/ouro-version-manager")
+      const { activateVersion } = await import("../../../heart/versioning/ouro-version-manager")
       const readlinkResults: Record<string, string> = {
         "/Users/test/.ouro-cli/CurrentVersion": "/Users/test/.ouro-cli/versions/0.1.0-alpha.79",
       }
@@ -164,7 +164,7 @@ describe("ouro-version-manager", () => {
     })
 
     it("handles missing CurrentVersion symlink (no previous to save)", async () => {
-      const { activateVersion } = await import("../../../heart/daemon/ouro-version-manager")
+      const { activateVersion } = await import("../../../heart/versioning/ouro-version-manager")
       const symlinkCalls: Array<{ target: string; path: string }> = []
       const deps = {
         homeDir: "/Users/test",
@@ -183,7 +183,7 @@ describe("ouro-version-manager", () => {
     })
 
     it("handles version directory not found", async () => {
-      const { activateVersion } = await import("../../../heart/daemon/ouro-version-manager")
+      const { activateVersion } = await import("../../../heart/versioning/ouro-version-manager")
       const deps = {
         homeDir: "/Users/test",
         readlinkSync: vi.fn().mockImplementation(() => { throw new Error("ENOENT") }),
@@ -199,7 +199,7 @@ describe("ouro-version-manager", () => {
 
   describe("ensureLayout", () => {
     it("creates ~/.ouro-cli/, ~/.ouro-cli/bin/, ~/.ouro-cli/versions/", async () => {
-      const { ensureLayout } = await import("../../../heart/daemon/ouro-version-manager")
+      const { ensureLayout } = await import("../../../heart/versioning/ouro-version-manager")
       const mkdirCalls: Array<{ path: string; options: unknown }> = []
       const deps = {
         homeDir: "/Users/test",
@@ -214,7 +214,7 @@ describe("ouro-version-manager", () => {
 
   describe("bootstrapCliLayout (integration)", () => {
     it("creates layout, installs version, and activates it", async () => {
-      const { ensureLayout, installVersion, activateVersion } = await import("../../../heart/daemon/ouro-version-manager")
+      const { ensureLayout, installVersion, activateVersion } = await import("../../../heart/versioning/ouro-version-manager")
       const mkdirCalls: string[] = []
       const symlinkCalls: Array<{ target: string; path: string }> = []
 

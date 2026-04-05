@@ -9,7 +9,7 @@ const mocks = vi.hoisted(() => ({
   registerUpdateHook: vi.fn(),
 }))
 
-vi.mock("../../../heart/daemon/update-hooks", () => ({
+vi.mock("../../../heart/versioning/update-hooks", () => ({
   applyPendingUpdates: mocks.applyPendingUpdates,
   registerUpdateHook: mocks.registerUpdateHook,
   clearRegisteredHooks: vi.fn(),

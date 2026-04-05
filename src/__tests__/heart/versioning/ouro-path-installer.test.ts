@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
-import { installOuroCommand, type OuroPathInstallerDeps } from "../../../heart/daemon/ouro-path-installer"
+import { installOuroCommand, type OuroPathInstallerDeps } from "../../../heart/versioning/ouro-path-installer"
 
 vi.mock("../../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn(),

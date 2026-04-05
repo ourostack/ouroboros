@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
   syncGlobalOuroBotWrapper,
   type GlobalOuroBotInstallerDeps,
-} from "../../../heart/daemon/ouro-bot-global-installer"
+} from "../../../heart/versioning/ouro-bot-global-installer"
 
 vi.mock("../../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn(),

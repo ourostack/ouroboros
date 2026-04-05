@@ -2,7 +2,7 @@ import * as fs from "fs"
 import * as path from "path"
 import { emitNervesEvent } from "../../../nerves/runtime"
 import type { BundleMeta } from "../../../mind/bundle-manifest"
-import type { UpdateHookContext, UpdateHookResult } from "../update-hooks"
+import type { UpdateHookContext, UpdateHookResult } from "../../versioning/update-hooks"
 
 /**
  * Migrate bundle from schema 1 to schema 2:

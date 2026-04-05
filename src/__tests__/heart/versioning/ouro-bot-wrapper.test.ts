@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { runOuroBotWrapper } from "../../../heart/daemon/ouro-bot-wrapper"
+import { runOuroBotWrapper } from "../../../heart/versioning/ouro-bot-wrapper"
 
 describe("ouro.bot wrapper", () => {
   afterEach(() => {
@@ -83,7 +83,7 @@ describe("ouro.bot wrapper", () => {
     vi.doMock("@ouro.bot/cli/runOuroCli", () => ({
       /* no runOuroCli export — simulates missing/incompatible package */
     }))
-    const { runOuroBotWrapper: runWithDefaults } = await import("../../../heart/daemon/ouro-bot-wrapper")
+    const { runOuroBotWrapper: runWithDefaults } = await import("../../../heart/versioning/ouro-bot-wrapper")
     const fallbackRunCli = vi.fn(async () => "fallback-default")
 
     const result = await runWithDefaults(["up"], {
@@ -99,7 +99,7 @@ describe("ouro.bot wrapper", () => {
     const runOuroCli = vi.fn(async () => "default-local-fallback")
     vi.doMock("../../../heart/daemon/daemon-cli", () => ({ runOuroCli }))
 
-    const { runOuroBotWrapper: runWithDefaults } = await import("../../../heart/daemon/ouro-bot-wrapper")
+    const { runOuroBotWrapper: runWithDefaults } = await import("../../../heart/versioning/ouro-bot-wrapper")
     const result = await runWithDefaults(["status"], {
       loadCanonicalRunner: vi.fn(async () => {
         throw new Error("canonical missing")
@@ -117,7 +117,7 @@ describe("ouro.bot wrapper", () => {
       notRunOuroCli: vi.fn(),
     }))
 
-    const { runOuroBotWrapper: runWithDefaults } = await import("../../../heart/daemon/ouro-bot-wrapper")
+    const { runOuroBotWrapper: runWithDefaults } = await import("../../../heart/versioning/ouro-bot-wrapper")
     const fallbackRunCli = vi.fn(async () => "fallback-no-export")
     const writeStdout = vi.fn()
 
@@ -138,7 +138,7 @@ describe("ouro.bot wrapper", () => {
       runOuroCli: canonicalRunCli,
     }))
 
-    const { runOuroBotWrapper: runWithDefaults } = await import("../../../heart/daemon/ouro-bot-wrapper")
+    const { runOuroBotWrapper: runWithDefaults } = await import("../../../heart/versioning/ouro-bot-wrapper")
     const fallbackRunCli = vi.fn(async () => "unused")
     const writeStdout = vi.fn()
 

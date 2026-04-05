@@ -11,7 +11,7 @@ const mocks = vi.hoisted(() => ({
 }))
 
 // Mock update-hooks module
-vi.mock("../../../heart/daemon/update-hooks", () => ({
+vi.mock("../../../heart/versioning/update-hooks", () => ({
   applyPendingUpdates: (...a: any[]) => mocks.applyPendingUpdates(...a),
   registerUpdateHook: vi.fn(),
   getRegisteredHooks: vi.fn(() => []),
@@ -24,13 +24,13 @@ vi.mock("../../../heart/daemon/hooks/bundle-meta", () => ({
 }))
 
 // Mock update-checker
-vi.mock("../../../heart/daemon/update-checker", () => ({
+vi.mock("../../../heart/versioning/update-checker", () => ({
   startUpdateChecker: (...a: any[]) => mocks.startUpdateChecker(...a),
   stopUpdateChecker: (...a: any[]) => mocks.stopUpdateChecker(...a),
 }))
 
 // Mock staged-restart (daemon imports this)
-vi.mock("../../../heart/daemon/staged-restart", () => ({
+vi.mock("../../../heart/versioning/staged-restart", () => ({
   performStagedRestart: vi.fn(),
 }))
 

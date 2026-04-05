@@ -8,8 +8,8 @@ import {
   clearRegisteredHooks,
   getRegisteredHooks,
   registerUpdateHook,
-} from "../../../heart/daemon/update-hooks"
-import type { UpdateHookContext, UpdateHookResult } from "../../../heart/daemon/update-hooks"
+} from "../../../heart/versioning/update-hooks"
+import type { UpdateHookContext, UpdateHookResult } from "../../../heart/versioning/update-hooks"
 
 const createdDirs: string[] = []
 

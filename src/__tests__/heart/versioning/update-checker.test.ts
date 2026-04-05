@@ -4,8 +4,8 @@ import {
   checkForUpdate,
   startUpdateChecker,
   stopUpdateChecker,
-} from "../../../heart/daemon/update-checker"
-import type { UpdateCheckerDeps } from "../../../heart/daemon/update-checker"
+} from "../../../heart/versioning/update-checker"
+import type { UpdateCheckerDeps } from "../../../heart/versioning/update-checker"
 
 function makeDeps(overrides?: Partial<UpdateCheckerDeps>): UpdateCheckerDeps {
   return {

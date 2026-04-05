@@ -2,7 +2,7 @@ import { execFileSync as defaultExecFileSync } from "child_process"
 import * as fs from "fs"
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { getRuntimeMetadata } from "./runtime-metadata"
+import { getRuntimeMetadata } from "../daemon/runtime-metadata"
 
 export interface GlobalOuroBotInstallResult {
   installed: boolean

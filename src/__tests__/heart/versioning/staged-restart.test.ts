@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest"
 
-import { performStagedRestart } from "../../../heart/daemon/staged-restart"
-import type { StagedRestartDeps } from "../../../heart/daemon/staged-restart"
+import { performStagedRestart } from "../../../heart/versioning/staged-restart"
+import type { StagedRestartDeps } from "../../../heart/versioning/staged-restart"
 
 function makeDeps(overrides?: Partial<StagedRestartDeps>): StagedRestartDeps {
   return {
