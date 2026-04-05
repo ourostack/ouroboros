@@ -4,7 +4,7 @@ import * as path from "path"
 
 import { afterEach, describe, expect, it } from "vitest"
 
-import { runRuntimeAuthFlow } from "../../../heart/daemon/auth-flow"
+import { runRuntimeAuthFlow } from "../../../heart/auth/auth-flow"
 import { runHatchFlow } from "../../../heart/hatch/hatch-flow"
 
 function makeTempDir(prefix: string): string {

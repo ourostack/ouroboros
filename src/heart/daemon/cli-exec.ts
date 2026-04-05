@@ -34,7 +34,7 @@ import {
   readAgentConfigForAgent,
   writeAgentProviderSelection,
   writeAgentModel,
-} from "./auth-flow"
+} from "../auth/auth-flow"
 import { getOuroCliHome, buildChangelogCommand } from "../versioning/ouro-version-manager"
 
 import type {
@@ -1454,7 +1454,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   if (command.kind === "auth.run") {
     const provider = command.provider ?? readAgentConfigForAgent(command.agent).config.humanFacing.provider
     /* v8 ignore next -- tests always inject runAuthFlow; default is for production @preserve */
-    const authRunner = deps.runAuthFlow ?? (await import("./auth-flow")).runRuntimeAuthFlow
+    const authRunner = deps.runAuthFlow ?? (await import("../auth/auth-flow")).runRuntimeAuthFlow
     const result = await authRunner({
       agentName: command.agent,
       provider,

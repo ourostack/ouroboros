@@ -4,7 +4,7 @@ import * as path from "path"
 import { buildDefaultAgentTemplate, PROVIDER_CREDENTIALS, type AgentProvider } from "../identity"
 import { slugify } from "../config"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { writeProviderCredentials } from "../daemon/auth-flow"
+import { writeProviderCredentials } from "../auth/auth-flow"
 import { renderHabitFile } from "../habits/habit-parser"
 import {
   getRepoSpecialistIdentitiesDir,

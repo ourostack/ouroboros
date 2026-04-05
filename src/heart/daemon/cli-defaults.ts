@@ -36,7 +36,7 @@ import { listSessionActivity } from "../session-activity"
 import {
   runRuntimeAuthFlow as defaultRunRuntimeAuthFlow,
   collectRuntimeAuthCredentials,
-} from "./auth-flow"
+} from "../auth/auth-flow"
 import { isAgentProvider } from "./cli-parse"
 import type { OuroCliDeps, DiscoveredCredential } from "./cli-types"
 
