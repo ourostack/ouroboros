@@ -10,7 +10,6 @@
   "files": [
     "dist/",
     "SerpentGuide.ouro/",
-    "subagents/",
     "skills/",
     "assets/",
     "changelog.json"
