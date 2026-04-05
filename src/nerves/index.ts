@@ -130,7 +130,7 @@ export function createTerminalSink(
   }
 }
 
-export function createStderrSink(write: (chunk: string) => unknown = (chunk) => process.stderr.write(chunk)): LogSink {
+export function createStderrSink(write?: (chunk: string) => unknown): LogSink {
   return createTerminalSink(write)
 }
 

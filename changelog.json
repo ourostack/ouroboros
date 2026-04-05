@@ -2,6 +2,25 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.216",
+      "changes": [
+        "fix: surface tool proactive BB delivery masked by newer MCP/CLI sessions — findFreshestFriendSession picked the single freshest session regardless of channel, so an MCP or CLI session being newer than the BB session caused the BB proactive path to be skipped entirely. Now scans all friend sessions, attempts BB delivery first on any BB session, then falls back to queuing on the freshest non-inner session."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.215",
+      "changes": [
+        "fix: surface tool proactive delivery no longer gated by 24-hour session threshold — findFreshestFriendSession was called with activeOnly:true, filtering out sessions older than 24h even when the agent explicitly wants to send a proactive message. Both the bridge path and direct path now find any session regardless of age. Proactive BB delivery and trust checks still apply."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.214",
+      "changes": [
+        "fix: daemon death diagnostics — createStderrSink() bypassed EPIPE-safe default in createTerminalSink(), causing uncaught EPIPE crashes when daemon runs detached. Removed redundant unsafe default so the existing try-catch fires.",
+        "fix: daemon tombstone now covers all exit paths — unhandledRejection writes tombstone with full error+stack (was just a warn log, but Node 15+ terminates on these). Added process.on('exit') catch-all for any unanticipated exit. SIGINT/SIGTERM marked graceful to avoid false positives. _lastKnownCause threads real error through to exit handler."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.213",
       "changes": [
         "cleanup: remove vestigial subagents/ directory and package.json files entry (content already in ouroboros-skills repo). Remove backward-compat re-exports from heart/core.ts (tools, execTool, summarizeArgs, getToolsForChannel, streamChatCompletion, streamResponsesApi, toResponsesInput, toResponsesTools, buildSystem, Channel, hasToolIntent — no consumers used them). Update ARCHITECTURE.md, README.md, and CONTRIBUTING.md to reflect the full audit restructuring: new arc/ subsystem, heart/ topic subdirectories, split tool modules, BlueBubbles directory, scopes list."
