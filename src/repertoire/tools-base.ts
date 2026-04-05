@@ -1889,12 +1889,21 @@ export const baseToolDefinitions: ToolDefinition[] = [
           }
         }
         const isExplicit = current !== undefined;
-        const source: "explicit" | "default" | "unset" = isExplicit
-          ? "explicit"
-          : entry.default !== undefined ? "default" : "unset";
+        let source: "explicit" | "default" | "unset";
+        let currentValue: unknown;
+        if (isExplicit) {
+          source = "explicit";
+          currentValue = current;
+        } else if (entry.default !== undefined) {
+          source = "default";
+          currentValue = entry.default;
+        } else {
+          source = "unset";
+          currentValue = null;
+        }
         return {
           path: entry.path,
-          currentValue: isExplicit ? current : (entry.default !== undefined ? entry.default : null),
+          currentValue,
           source,
           tier: entry.tier,
           description: entry.description,
@@ -1940,6 +1949,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
       }
 
       // Validate value against registry entry's validator
+      /* v8 ignore next -- all current entries have validators; guard kept for future entries without one @preserve */
       if (entry.validate) {
         const validationError = entry.validate(parsedValue);
         if (validationError) {
@@ -2020,6 +2030,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
       }
 
       // Validate value against registry entry's validator
+      /* v8 ignore next -- all current entries have validators; guard kept for future entries without one @preserve */
       if (entry.validate) {
         const validationError = entry.validate(parsedValue);
         if (validationError) {
