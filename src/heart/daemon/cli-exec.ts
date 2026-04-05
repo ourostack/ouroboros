@@ -263,7 +263,7 @@ function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } 
 
 // ── Hatch input resolution ──
 
-async function resolveHatchInput(command: Extract<OuroCliCommand, { kind: "hatch.start" }>, deps: OuroCliDeps): Promise<import("./hatch-flow").HatchFlowInput> {
+async function resolveHatchInput(command: Extract<OuroCliCommand, { kind: "hatch.start" }>, deps: OuroCliDeps): Promise<import("../hatch/hatch-flow").HatchFlowInput> {
   const prompt = deps.promptInput
   const agentName = command.agentName ?? (prompt ? await prompt("Hatchling name: ") : "")
   const humanName = command.humanName ?? (prompt ? await prompt("Your name: ") : os.userInfo().username)

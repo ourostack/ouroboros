@@ -5,7 +5,7 @@ import * as path from "path"
 import { afterEach, describe, expect, it } from "vitest"
 
 import { runRuntimeAuthFlow } from "../../../heart/daemon/auth-flow"
-import { runHatchFlow } from "../../../heart/daemon/hatch-flow"
+import { runHatchFlow } from "../../../heart/hatch/hatch-flow"
 
 function makeTempDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`))
@@ -283,7 +283,7 @@ describe("hatch flow", () => {
     const secretsRoot = makeTempDir("hatch-secrets-ws-anthropic")
     cleanup.push(secretsRoot)
 
-    const { writeSecretsFile } = await import("../../../heart/daemon/hatch-flow")
+    const { writeSecretsFile } = await import("../../../heart/hatch/hatch-flow")
     const resultPath = writeSecretsFile("TestAgent", "anthropic", { setupToken: "sk-test-token" }, secretsRoot)
 
     expect(resultPath).toBe(path.join(secretsRoot, "TestAgent", "secrets.json"))
@@ -297,7 +297,7 @@ describe("hatch flow", () => {
     const secretsRoot = makeTempDir("hatch-secrets-ws-azure")
     cleanup.push(secretsRoot)
 
-    const { writeSecretsFile } = await import("../../../heart/daemon/hatch-flow")
+    const { writeSecretsFile } = await import("../../../heart/hatch/hatch-flow")
     const resultPath = writeSecretsFile(
       "TestAgent",
       "azure",
@@ -318,7 +318,7 @@ describe("hatch flow", () => {
     const secretsRoot = makeTempDir("hatch-secrets-ws-return")
     cleanup.push(secretsRoot)
 
-    const { writeSecretsFile } = await import("../../../heart/daemon/hatch-flow")
+    const { writeSecretsFile } = await import("../../../heart/hatch/hatch-flow")
     const resultPath = writeSecretsFile("ReturnTest", "minimax", { apiKey: "mm-key" }, secretsRoot)
 
     expect(resultPath).toBe(path.join(secretsRoot, "ReturnTest", "secrets.json"))
@@ -330,7 +330,7 @@ describe("hatch flow", () => {
     const hatchSecretsRoot = makeTempDir("hatch-runtime-auth-secrets")
     cleanup.push(homeDir, hatchSecretsRoot)
 
-    const { writeSecretsFile } = await import("../../../heart/daemon/hatch-flow")
+    const { writeSecretsFile } = await import("../../../heart/hatch/hatch-flow")
 
     fs.mkdirSync(path.join(homeDir, ".codex"), { recursive: true })
     fs.writeFileSync(

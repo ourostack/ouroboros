@@ -10,7 +10,7 @@ const mockPlayHatchAnimation = vi.fn(async (
   writer?.(`\nmock hatch ${hatchlingName}\n`)
 })
 
-vi.mock("../../../heart/daemon/hatch-animation", () => ({
+vi.mock("../../../heart/hatch/hatch-animation", () => ({
   playHatchAnimation: mockPlayHatchAnimation,
 }))
 
@@ -20,13 +20,13 @@ function makeTempDir(prefix: string): string {
 
 describe("getSpecialistTools", () => {
   it("returns exactly 5 tool schemas", async () => {
-    const { getSpecialistTools } = await import("../../../heart/daemon/specialist-tools")
+    const { getSpecialistTools } = await import("../../../heart/hatch/specialist-tools")
     const tools = getSpecialistTools()
     expect(tools).toHaveLength(5)
   })
 
   it("includes complete_adoption with name, handoff_message, and optional contact params", async () => {
-    const { getSpecialistTools } = await import("../../../heart/daemon/specialist-tools")
+    const { getSpecialistTools } = await import("../../../heart/hatch/specialist-tools")
     const tools = getSpecialistTools()
     const adoptTool = tools.find((t) => t.function.name === "complete_adoption")
     expect(adoptTool).toBeDefined()
@@ -39,14 +39,14 @@ describe("getSpecialistTools", () => {
   })
 
   it("includes settle tool", async () => {
-    const { getSpecialistTools } = await import("../../../heart/daemon/specialist-tools")
+    const { getSpecialistTools } = await import("../../../heart/hatch/specialist-tools")
     const tools = getSpecialistTools()
     const faTool = tools.find((t) => t.function.name === "settle")
     expect(faTool).toBeDefined()
   })
 
   it("includes read_file, write_file, and list_directory tools", async () => {
-    const { getSpecialistTools } = await import("../../../heart/daemon/specialist-tools")
+    const { getSpecialistTools } = await import("../../../heart/hatch/specialist-tools")
     const tools = getSpecialistTools()
     const names = tools.map((t) => t.function.name).sort()
     expect(names).toEqual(["complete_adoption", "list_directory", "read_file", "settle", "write_file"])
@@ -71,7 +71,7 @@ describe("createSpecialistExecTool", () => {
     const filePath = path.join(tmpDir, "test.txt")
     fs.writeFileSync(filePath, "hello world", "utf-8")
 
-    const { createSpecialistExecTool } = await import("../../../heart/daemon/specialist-tools")
+    const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
     const execTool = createSpecialistExecTool({
       tempDir: tmpDir,
       credentials: { setupToken: "test" },
@@ -89,7 +89,7 @@ describe("createSpecialistExecTool", () => {
     const tmpDir = makeTempDir("spec-tools-rf-err")
     cleanup.push(tmpDir)
 
-    const { createSpecialistExecTool } = await import("../../../heart/daemon/specialist-tools")
+    const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
     const execTool = createSpecialistExecTool({
       tempDir: tmpDir,
       credentials: { setupToken: "test" },
@@ -108,7 +108,7 @@ describe("createSpecialistExecTool", () => {
     cleanup.push(tmpDir)
     const filePath = path.join(tmpDir, "output.txt")
 
-    const { createSpecialistExecTool } = await import("../../../heart/daemon/specialist-tools")
+    const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
     const execTool = createSpecialistExecTool({
       tempDir: tmpDir,
       credentials: { setupToken: "test" },
@@ -128,7 +128,7 @@ describe("createSpecialistExecTool", () => {
     cleanup.push(tmpDir)
     const filePath = path.join(tmpDir, "agent.json")
 
-    const { createSpecialistExecTool } = await import("../../../heart/daemon/specialist-tools")
+    const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
     const execTool = createSpecialistExecTool({
       tempDir: tmpDir,
       credentials: { setupToken: "test" },
@@ -153,7 +153,7 @@ describe("createSpecialistExecTool", () => {
     cleanup.push(tmpDir)
     const filePath = path.join(tmpDir, "a", "b", "c.txt")
 
-    const { createSpecialistExecTool } = await import("../../../heart/daemon/specialist-tools")
+    const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
     const execTool = createSpecialistExecTool({
       tempDir: tmpDir,
       credentials: { setupToken: "test" },
@@ -174,7 +174,7 @@ describe("createSpecialistExecTool", () => {
     fs.writeFileSync(path.join(tmpDir, "file1.txt"), "a", "utf-8")
     fs.mkdirSync(path.join(tmpDir, "subdir"))
 
-    const { createSpecialistExecTool } = await import("../../../heart/daemon/specialist-tools")
+    const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
     const execTool = createSpecialistExecTool({
       tempDir: tmpDir,
       credentials: { setupToken: "test" },
@@ -193,7 +193,7 @@ describe("createSpecialistExecTool", () => {
     const tmpDir = makeTempDir("spec-tools-ld-err")
     cleanup.push(tmpDir)
 
-    const { createSpecialistExecTool } = await import("../../../heart/daemon/specialist-tools")
+    const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
     const execTool = createSpecialistExecTool({
       tempDir: tmpDir,
       credentials: { setupToken: "test" },
@@ -211,7 +211,7 @@ describe("createSpecialistExecTool", () => {
     const tmpDir = makeTempDir("spec-tools-wf-err")
     cleanup.push(tmpDir)
 
-    const { createSpecialistExecTool } = await import("../../../heart/daemon/specialist-tools")
+    const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
     const execTool = createSpecialistExecTool({
       tempDir: tmpDir,
       credentials: { setupToken: "test" },
@@ -230,7 +230,7 @@ describe("createSpecialistExecTool", () => {
     const tmpDir = makeTempDir("spec-tools-unk")
     cleanup.push(tmpDir)
 
-    const { createSpecialistExecTool } = await import("../../../heart/daemon/specialist-tools")
+    const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
     const execTool = createSpecialistExecTool({
       tempDir: tmpDir,
       credentials: { setupToken: "test" },
@@ -285,7 +285,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
     cleanup.push(bundlesRoot, secretsRoot)
 
     const animChunks: string[] = []
-    const { createSpecialistExecTool } = await import("../../../heart/daemon/specialist-tools")
+    const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
     const execTool = createSpecialistExecTool({
       tempDir: tmpDir,
       credentials: { setupToken: `sk-ant-oat01-${"a".repeat(80)}` },
@@ -346,7 +346,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
     const secretsRoot = makeTempDir("spec-tools-adopt-secrets2")
     cleanup.push(bundlesRoot, secretsRoot)
 
-    const { createSpecialistExecTool } = await import("../../../heart/daemon/specialist-tools")
+    const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
     const execTool = createSpecialistExecTool({
       tempDir: tmpDir,
       credentials: { setupToken: "test" },
@@ -371,7 +371,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
     const secretsRoot = makeTempDir("spec-tools-adopt-secrets3")
     cleanup.push(bundlesRoot, secretsRoot)
 
-    const { createSpecialistExecTool } = await import("../../../heart/daemon/specialist-tools")
+    const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
     const execTool = createSpecialistExecTool({
       tempDir: tmpDir,
       credentials: { setupToken: "test" },
@@ -399,7 +399,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
     // Pre-create the target bundle
     fs.mkdirSync(path.join(bundlesRoot, "TestAgent.ouro"), { recursive: true })
 
-    const { createSpecialistExecTool } = await import("../../../heart/daemon/specialist-tools")
+    const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
     const execTool = createSpecialistExecTool({
       tempDir: tmpDir,
       credentials: { setupToken: "test" },
@@ -432,7 +432,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
     const secretsRoot = makeTempDir("spec-tools-adopt-secrets5")
     cleanup.push(bundlesRoot, secretsRoot)
 
-    const { createSpecialistExecTool } = await import("../../../heart/daemon/specialist-tools")
+    const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
     const execTool = createSpecialistExecTool({
       tempDir: tmpDir,
       credentials: { setupToken: "test" },
@@ -459,7 +459,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
     // Use a non-writable path for secrets to trigger failure
     const secretsRoot = "/nonexistent/readonly/secrets"
 
-    const { createSpecialistExecTool } = await import("../../../heart/daemon/specialist-tools")
+    const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
     const execTool = createSpecialistExecTool({
       tempDir: tmpDir,
       credentials: { setupToken: `sk-ant-oat01-${"a".repeat(80)}` },
@@ -484,7 +484,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
     const tmpDir = makeTempDir("spec-tools-adopt-noname")
     cleanup.push(tmpDir)
 
-    const { createSpecialistExecTool } = await import("../../../heart/daemon/specialist-tools")
+    const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
     const execTool = createSpecialistExecTool({
       tempDir: tmpDir,
       credentials: { setupToken: "test" },
@@ -508,7 +508,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
     const secretsRoot = makeTempDir("spec-tools-phone-secrets")
     cleanup.push(bundlesRoot, secretsRoot)
 
-    const { createSpecialistExecTool } = await import("../../../heart/daemon/specialist-tools")
+    const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
     const execTool = createSpecialistExecTool({
       tempDir: tmpDir,
       credentials: { setupToken: `sk-ant-oat01-${"a".repeat(80)}` },
@@ -543,7 +543,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
     const secretsRoot = makeTempDir("spec-tools-teams-secrets")
     cleanup.push(bundlesRoot, secretsRoot)
 
-    const { createSpecialistExecTool } = await import("../../../heart/daemon/specialist-tools")
+    const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
     const execTool = createSpecialistExecTool({
       tempDir: tmpDir,
       credentials: { setupToken: `sk-ant-oat01-${"a".repeat(80)}` },
@@ -577,7 +577,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
     const secretsRoot = makeTempDir("spec-tools-noname-secrets")
     cleanup.push(bundlesRoot, secretsRoot)
 
-    const { createSpecialistExecTool } = await import("../../../heart/daemon/specialist-tools")
+    const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
     const execTool = createSpecialistExecTool({
       tempDir: tmpDir,
       credentials: { setupToken: `sk-ant-oat01-${"a".repeat(80)}` },
@@ -609,7 +609,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
     const secretsRoot = makeTempDir("spec-tools-nocontact-secrets")
     cleanup.push(bundlesRoot, secretsRoot)
 
-    const { createSpecialistExecTool } = await import("../../../heart/daemon/specialist-tools")
+    const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
     const execTool = createSpecialistExecTool({
       tempDir: tmpDir,
       credentials: { setupToken: `sk-ant-oat01-${"a".repeat(80)}` },

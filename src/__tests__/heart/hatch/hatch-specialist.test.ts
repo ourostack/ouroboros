@@ -9,7 +9,7 @@ import {
   getSpecialistIdentitySourceDir,
   pickRandomSpecialistIdentity,
   syncSpecialistIdentities,
-} from "../../../heart/daemon/hatch-specialist"
+} from "../../../heart/hatch/hatch-specialist"
 
 function makeTempDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`))

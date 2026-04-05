@@ -18,14 +18,14 @@ import { ensureSkillManagement as defaultEnsureSkillManagement } from "./skill-m
 import {
   runHatchFlow as defaultRunHatchFlow,
   type HatchCredentialsInput,
-} from "./hatch-flow"
+} from "../hatch/hatch-flow"
 import {
   listExistingBundles,
   loadSoulText,
   pickRandomIdentity,
-} from "./specialist-orchestrator"
-import { buildSpecialistSystemPrompt } from "./specialist-prompt"
-import { getSpecialistTools, createSpecialistExecTool } from "./specialist-tools"
+} from "../hatch/specialist-orchestrator"
+import { buildSpecialistSystemPrompt } from "../hatch/specialist-prompt"
+import { getSpecialistTools, createSpecialistExecTool } from "../hatch/specialist-tools"
 import { detectRuntimeMode } from "./runtime-mode"
 import { listEnabledBundleAgents } from "./agent-discovery"
 import { getPackageVersion } from "../../mind/bundle-manifest"
@@ -367,7 +367,7 @@ export async function defaultRunSerpentGuide(): Promise<string | null> {
     const identity = pickRandomIdentity(identitiesDir)
 
     // Load identity-specific spinner phrases (falls back to DEFAULT_AGENT_PHRASES)
-    const { loadIdentityPhrases } = await import("./specialist-orchestrator")
+    const { loadIdentityPhrases } = await import("../hatch/specialist-orchestrator")
     const phrases = loadIdentityPhrases(bundleSourceDir, identity.fileName)
 
     const resolvedModel = providerConfig.model || providerConfig.deployment || ""

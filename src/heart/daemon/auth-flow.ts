@@ -6,7 +6,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { getAgentBundlesRoot, getAgentSecretsPath, PROVIDER_CREDENTIALS, type AgentConfig, type AgentProvider } from "../identity"
 import { migrateAgentConfigV1ToV2 } from "../migrate-config"
 import type { Facing } from "../../mind/friends/channel"
-import type { HatchCredentialsInput } from "./hatch-flow"
+import type { HatchCredentialsInput } from "../hatch/hatch-flow"
 
 const ANTHROPIC_SETUP_TOKEN_PREFIX = "sk-ant-oat01-"
 const ANTHROPIC_SETUP_TOKEN_MIN_LENGTH = 80

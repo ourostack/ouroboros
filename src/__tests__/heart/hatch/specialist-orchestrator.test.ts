@@ -23,7 +23,7 @@ describe("listExistingBundles", () => {
   })
 
   it("returns sorted list of .ouro directories", async () => {
-    const { listExistingBundles } = await import("../../../heart/daemon/specialist-orchestrator")
+    const { listExistingBundles } = await import("../../../heart/hatch/specialist-orchestrator")
     const bundlesRoot = makeTempDir("bundles")
     cleanup.push(bundlesRoot)
 
@@ -36,7 +36,7 @@ describe("listExistingBundles", () => {
   })
 
   it("filters out non-.ouro directories and non-directory .ouro entries", async () => {
-    const { listExistingBundles } = await import("../../../heart/daemon/specialist-orchestrator")
+    const { listExistingBundles } = await import("../../../heart/hatch/specialist-orchestrator")
     const bundlesRoot = makeTempDir("bundles")
     cleanup.push(bundlesRoot)
 
@@ -49,13 +49,13 @@ describe("listExistingBundles", () => {
   })
 
   it("returns empty array for non-existent directory", async () => {
-    const { listExistingBundles } = await import("../../../heart/daemon/specialist-orchestrator")
+    const { listExistingBundles } = await import("../../../heart/hatch/specialist-orchestrator")
     const result = listExistingBundles("/nonexistent/path/to/bundles")
     expect(result).toEqual([])
   })
 
   it("returns empty array for empty directory", async () => {
-    const { listExistingBundles } = await import("../../../heart/daemon/specialist-orchestrator")
+    const { listExistingBundles } = await import("../../../heart/hatch/specialist-orchestrator")
     const bundlesRoot = makeTempDir("empty-bundles")
     cleanup.push(bundlesRoot)
 
@@ -76,7 +76,7 @@ describe("loadIdentityPhrases", () => {
   })
 
   it("loads identity-specific phrases from agent.json", async () => {
-    const { loadIdentityPhrases } = await import("../../../heart/daemon/specialist-orchestrator")
+    const { loadIdentityPhrases } = await import("../../../heart/hatch/specialist-orchestrator")
     const dir = makeTempDir("identity-phrases")
     cleanup.push(dir)
 
@@ -101,7 +101,7 @@ describe("loadIdentityPhrases", () => {
   })
 
   it("falls back to base phrases when identity not found", async () => {
-    const { loadIdentityPhrases } = await import("../../../heart/daemon/specialist-orchestrator")
+    const { loadIdentityPhrases } = await import("../../../heart/hatch/specialist-orchestrator")
     const dir = makeTempDir("identity-phrases")
     cleanup.push(dir)
 
@@ -120,7 +120,7 @@ describe("loadIdentityPhrases", () => {
   })
 
   it("falls back to DEFAULT_AGENT_PHRASES when agent.json missing", async () => {
-    const { loadIdentityPhrases } = await import("../../../heart/daemon/specialist-orchestrator")
+    const { loadIdentityPhrases } = await import("../../../heart/hatch/specialist-orchestrator")
     const dir = makeTempDir("identity-phrases")
     cleanup.push(dir)
     // No agent.json
@@ -130,7 +130,7 @@ describe("loadIdentityPhrases", () => {
   })
 
   it("falls back to DEFAULT_AGENT_PHRASES when agent.json is malformed", async () => {
-    const { loadIdentityPhrases } = await import("../../../heart/daemon/specialist-orchestrator")
+    const { loadIdentityPhrases } = await import("../../../heart/hatch/specialist-orchestrator")
     const dir = makeTempDir("identity-phrases")
     cleanup.push(dir)
 
@@ -141,7 +141,7 @@ describe("loadIdentityPhrases", () => {
   })
 
   it("falls back to DEFAULT_AGENT_PHRASES when base phrases are incomplete", async () => {
-    const { loadIdentityPhrases } = await import("../../../heart/daemon/specialist-orchestrator")
+    const { loadIdentityPhrases } = await import("../../../heart/hatch/specialist-orchestrator")
     const dir = makeTempDir("identity-phrases")
     cleanup.push(dir)
 
@@ -158,7 +158,7 @@ describe("loadIdentityPhrases", () => {
   })
 
   it("falls back to DEFAULT_AGENT_PHRASES when identity phrases are incomplete", async () => {
-    const { loadIdentityPhrases } = await import("../../../heart/daemon/specialist-orchestrator")
+    const { loadIdentityPhrases } = await import("../../../heart/hatch/specialist-orchestrator")
     const dir = makeTempDir("identity-phrases")
     cleanup.push(dir)
 
@@ -188,7 +188,7 @@ describe("pickRandomIdentity", () => {
   })
 
   it("picks a random identity from the identities directory", async () => {
-    const { pickRandomIdentity } = await import("../../../heart/daemon/specialist-orchestrator")
+    const { pickRandomIdentity } = await import("../../../heart/hatch/specialist-orchestrator")
     const identitiesDir = makeTempDir("identities")
     cleanup.push(identitiesDir)
 
@@ -202,7 +202,7 @@ describe("pickRandomIdentity", () => {
   })
 
   it("picks second file with high random value", async () => {
-    const { pickRandomIdentity } = await import("../../../heart/daemon/specialist-orchestrator")
+    const { pickRandomIdentity } = await import("../../../heart/hatch/specialist-orchestrator")
     const identitiesDir = makeTempDir("identities")
     cleanup.push(identitiesDir)
 
@@ -216,14 +216,14 @@ describe("pickRandomIdentity", () => {
   })
 
   it("returns default identity for non-existent directory", async () => {
-    const { pickRandomIdentity } = await import("../../../heart/daemon/specialist-orchestrator")
+    const { pickRandomIdentity } = await import("../../../heart/hatch/specialist-orchestrator")
     const result = pickRandomIdentity("/nonexistent/identities/dir")
     expect(result.fileName).toBe("default")
     expect(result.content).toContain("serpent guide")
   })
 
   it("returns default identity for empty identities directory", async () => {
-    const { pickRandomIdentity } = await import("../../../heart/daemon/specialist-orchestrator")
+    const { pickRandomIdentity } = await import("../../../heart/hatch/specialist-orchestrator")
     const identitiesDir = makeTempDir("empty-identities")
     cleanup.push(identitiesDir)
 
@@ -233,7 +233,7 @@ describe("pickRandomIdentity", () => {
   })
 
   it("filters out non-.md files", async () => {
-    const { pickRandomIdentity } = await import("../../../heart/daemon/specialist-orchestrator")
+    const { pickRandomIdentity } = await import("../../../heart/hatch/specialist-orchestrator")
     const identitiesDir = makeTempDir("identities")
     cleanup.push(identitiesDir)
 
@@ -246,7 +246,7 @@ describe("pickRandomIdentity", () => {
   })
 
   it("uses Math.random when no random function provided", async () => {
-    const { pickRandomIdentity } = await import("../../../heart/daemon/specialist-orchestrator")
+    const { pickRandomIdentity } = await import("../../../heart/hatch/specialist-orchestrator")
     const identitiesDir = makeTempDir("identities")
     cleanup.push(identitiesDir)
 
@@ -270,7 +270,7 @@ describe("loadSoulText", () => {
   })
 
   it("reads SOUL.md from psyche directory", async () => {
-    const { loadSoulText } = await import("../../../heart/daemon/specialist-orchestrator")
+    const { loadSoulText } = await import("../../../heart/hatch/specialist-orchestrator")
     const dir = makeTempDir("soul")
     cleanup.push(dir)
 
@@ -283,7 +283,7 @@ describe("loadSoulText", () => {
   })
 
   it("returns empty string when SOUL.md is missing", async () => {
-    const { loadSoulText } = await import("../../../heart/daemon/specialist-orchestrator")
+    const { loadSoulText } = await import("../../../heart/hatch/specialist-orchestrator")
     const dir = makeTempDir("no-soul")
     cleanup.push(dir)
 
@@ -292,7 +292,7 @@ describe("loadSoulText", () => {
   })
 
   it("returns empty string for non-existent directory", async () => {
-    const { loadSoulText } = await import("../../../heart/daemon/specialist-orchestrator")
+    const { loadSoulText } = await import("../../../heart/hatch/specialist-orchestrator")
     const result = loadSoulText("/nonexistent/bundle/dir")
     expect(result).toBe("")
   })

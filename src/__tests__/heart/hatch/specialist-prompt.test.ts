@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest"
 
 describe("buildSpecialistSystemPrompt", () => {
   it("includes SOUL.md text", async () => {
-    const { buildSpecialistSystemPrompt } = await import("../../../heart/daemon/specialist-prompt")
+    const { buildSpecialistSystemPrompt } = await import("../../../heart/hatch/specialist-prompt")
     const prompt = buildSpecialistSystemPrompt("I am the soul.", "I am the identity.", [], {
       tempDir: "/tmp/ouro-hatch-test",
       provider: "anthropic",
@@ -12,7 +12,7 @@ describe("buildSpecialistSystemPrompt", () => {
   })
 
   it("includes identity text", async () => {
-    const { buildSpecialistSystemPrompt } = await import("../../../heart/daemon/specialist-prompt")
+    const { buildSpecialistSystemPrompt } = await import("../../../heart/hatch/specialist-prompt")
     const prompt = buildSpecialistSystemPrompt("soul text", "I am Medusa, a serpentine specialist.", ["Agent1"], {
       tempDir: "/tmp/ouro-hatch-test",
       provider: "anthropic",
@@ -22,7 +22,7 @@ describe("buildSpecialistSystemPrompt", () => {
   })
 
   it("includes existing bundle names when provided", async () => {
-    const { buildSpecialistSystemPrompt } = await import("../../../heart/daemon/specialist-prompt")
+    const { buildSpecialistSystemPrompt } = await import("../../../heart/hatch/specialist-prompt")
     const prompt = buildSpecialistSystemPrompt("soul", "identity", ["Slugger", "Ouroboros"], {
       tempDir: "/tmp/ouro-hatch-test",
       provider: "anthropic",
@@ -33,7 +33,7 @@ describe("buildSpecialistSystemPrompt", () => {
   })
 
   it("handles no bundles gracefully", async () => {
-    const { buildSpecialistSystemPrompt } = await import("../../../heart/daemon/specialist-prompt")
+    const { buildSpecialistSystemPrompt } = await import("../../../heart/hatch/specialist-prompt")
     const prompt = buildSpecialistSystemPrompt("soul", "identity", [], {
       tempDir: "/tmp/ouro-hatch-test",
       provider: "anthropic",
@@ -45,7 +45,7 @@ describe("buildSpecialistSystemPrompt", () => {
   })
 
   it("handles empty SOUL and identity gracefully", async () => {
-    const { buildSpecialistSystemPrompt } = await import("../../../heart/daemon/specialist-prompt")
+    const { buildSpecialistSystemPrompt } = await import("../../../heart/hatch/specialist-prompt")
     const prompt = buildSpecialistSystemPrompt("", "", [], {
       tempDir: "/tmp/ouro-hatch-test",
       provider: "anthropic",
@@ -56,7 +56,7 @@ describe("buildSpecialistSystemPrompt", () => {
   })
 
   it("includes tool guidance for complete_adoption and the broader local tool surface", async () => {
-    const { buildSpecialistSystemPrompt } = await import("../../../heart/daemon/specialist-prompt")
+    const { buildSpecialistSystemPrompt } = await import("../../../heart/hatch/specialist-prompt")
     const prompt = buildSpecialistSystemPrompt("soul", "identity", [], {
       tempDir: "/tmp/ouro-hatch-test",
       provider: "anthropic",
@@ -72,7 +72,7 @@ describe("buildSpecialistSystemPrompt", () => {
   })
 
   it("includes tempDir path in the prompt", async () => {
-    const { buildSpecialistSystemPrompt } = await import("../../../heart/daemon/specialist-prompt")
+    const { buildSpecialistSystemPrompt } = await import("../../../heart/hatch/specialist-prompt")
     const prompt = buildSpecialistSystemPrompt("soul", "identity", [], {
       tempDir: "/tmp/ouro-hatch-abc123",
       provider: "anthropic",
@@ -82,7 +82,7 @@ describe("buildSpecialistSystemPrompt", () => {
   })
 
   it("includes provider info in the prompt", async () => {
-    const { buildSpecialistSystemPrompt } = await import("../../../heart/daemon/specialist-prompt")
+    const { buildSpecialistSystemPrompt } = await import("../../../heart/hatch/specialist-prompt")
     const prompt = buildSpecialistSystemPrompt("soul", "identity", [], {
       tempDir: "/tmp/ouro-hatch-test",
       provider: "minimax",
@@ -92,7 +92,7 @@ describe("buildSpecialistSystemPrompt", () => {
   })
 
   it("includes bundle creation guidelines (psyche files)", async () => {
-    const { buildSpecialistSystemPrompt } = await import("../../../heart/daemon/specialist-prompt")
+    const { buildSpecialistSystemPrompt } = await import("../../../heart/hatch/specialist-prompt")
     const prompt = buildSpecialistSystemPrompt("soul", "identity", [], {
       tempDir: "/tmp/ouro-hatch-test",
       provider: "anthropic",
@@ -107,7 +107,7 @@ describe("buildSpecialistSystemPrompt", () => {
   })
 
   it("includes voice rules for brevity", async () => {
-    const { buildSpecialistSystemPrompt } = await import("../../../heart/daemon/specialist-prompt")
+    const { buildSpecialistSystemPrompt } = await import("../../../heart/hatch/specialist-prompt")
     const prompt = buildSpecialistSystemPrompt("soul", "identity", [], {
       tempDir: "/tmp/ouro-hatch-test",
       provider: "anthropic",
@@ -118,7 +118,7 @@ describe("buildSpecialistSystemPrompt", () => {
   })
 
   it("includes guidance about collecting phone and Teams handle", async () => {
-    const { buildSpecialistSystemPrompt } = await import("../../../heart/daemon/specialist-prompt")
+    const { buildSpecialistSystemPrompt } = await import("../../../heart/hatch/specialist-prompt")
     const prompt = buildSpecialistSystemPrompt("soul", "identity", [], {
       tempDir: "/tmp/ouro-hatch-test",
       provider: "anthropic",
