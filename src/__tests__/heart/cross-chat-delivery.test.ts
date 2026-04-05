@@ -79,7 +79,7 @@ describe("deliverCrossChatMessage", () => {
 
     expect(result).toEqual({
       status: "blocked",
-      detail: "explicit cross-chat delivery requires a trusted asking session",
+      detail: "cross-chat delivery requires a trusted asking session or generic outreach intent",
     })
     expect(queuePending).not.toHaveBeenCalled()
     expect(bluebubblesDeliver).not.toHaveBeenCalled()
@@ -120,10 +120,10 @@ describe("deliverCrossChatMessage", () => {
     }))
   })
 
-  it("keeps generic outreach on queued semantics instead of granting explicit cross-chat power", async () => {
+  it("attempts delivery for generic outreach when a deliverer is available", async () => {
     const { deliverCrossChatMessage } = await loadCrossChatDeliveryModule()
     const queuePending = vi.fn()
-    const bluebubblesDeliver = vi.fn()
+    const bluebubblesDeliver = vi.fn().mockResolvedValue({ status: "delivered_now", detail: "sent" })
 
     const result = await deliverCrossChatMessage({
       friendId: "friend-uuid-3",
@@ -146,14 +146,14 @@ describe("deliverCrossChatMessage", () => {
     })
 
     expect(result).toEqual({
-      status: "queued_for_later",
-      detail: "generic outreach stays queued until the target session is next active",
+      status: "delivered_now",
+      detail: "sent",
     })
-    expect(queuePending).toHaveBeenCalledTimes(1)
-    expect(bluebubblesDeliver).not.toHaveBeenCalled()
+    expect(bluebubblesDeliver).toHaveBeenCalledTimes(1)
+    expect(queuePending).not.toHaveBeenCalled()
   })
 
-  it("queues generic outreach even when there is no authorizing session context at all", async () => {
+  it("queues generic outreach when no deliverer is available for the channel", async () => {
     const { deliverCrossChatMessage } = await loadCrossChatDeliveryModule()
     const queuePending = vi.fn()
 
@@ -171,7 +171,7 @@ describe("deliverCrossChatMessage", () => {
 
     expect(result).toEqual({
       status: "queued_for_later",
-      detail: "generic outreach stays queued until the target session is next active",
+      detail: "live delivery unavailable right now; queued for the next active turn",
     })
     expect(queuePending).toHaveBeenCalledTimes(1)
   })

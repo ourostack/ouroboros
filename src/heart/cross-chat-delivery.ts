@@ -81,36 +81,16 @@ export async function deliverCrossChatMessage(
     },
   })
 
-  if (request.intent === "generic_outreach") {
-    const result = queueForLater(
-      request,
-      deps,
-      "generic outreach stays queued until the target session is next active",
-    )
-    emitNervesEvent({
-      component: "engine",
-      event: "engine.cross_chat_delivery_end",
-      message: "queued generic outreach for later delivery",
-      meta: {
-        friendId: request.friendId,
-        channel: request.channel,
-        key: request.key,
-        status: result.status,
-      },
-    })
-    return result
-  }
-
-  if (!isExplicitlyAuthorized(request)) {
+  if (!isExplicitlyAuthorized(request) && request.intent !== "generic_outreach") {
     const result = {
       status: "blocked",
-      detail: "explicit cross-chat delivery requires a trusted asking session",
+      detail: "cross-chat delivery requires a trusted asking session or generic outreach intent",
     } satisfies CrossChatDeliveryResult
     emitNervesEvent({
       level: "warn",
       component: "engine",
       event: "engine.cross_chat_delivery_end",
-      message: "blocked explicit cross-chat delivery",
+      message: "blocked cross-chat delivery",
       meta: {
         friendId: request.friendId,
         channel: request.channel,

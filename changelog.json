@@ -2,9 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.219",
+      "changes": [
+        "fix: proactive message delivery — three bugs fixed. (1) surface tool now resolves friend names to UUIDs by scanning friends directory. (2) send_message tool also resolves friend names to UUIDs. (3) deliverCrossChatMessage no longer immediately queues generic_outreach — it now attempts delivery when a deliverer is available, with the deliverer's own trust checks still gating actual sends. Previously, any proactive send from inner dialog was silently queued without attempting delivery."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.218",
       "changes": [
-        "fix: surface tool now resolves friend names to UUIDs — agents pass friend names (e.g. 'arimendelow') but sessions are stored under UUID directories. Added name-to-UUID resolution by scanning the friends directory when the friendId doesn't match a session directory."
+        "fix: surface tool now resolves friend names to UUIDs — agents pass friend names but sessions are stored under UUID directories. Added name-to-UUID resolution by scanning the friends directory when the friendId doesn't match a session directory."
       ]
     },
     {
