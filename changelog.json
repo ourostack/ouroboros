@@ -2,6 +2,10 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.225",
+      "changes": ["debug: emit event at top of FileFriendStore.get() to verify it's called"]
+    },
+    {
       "version": "0.1.0-alpha.224",
       "changes": [
         "fix: FileFriendStore.get() now resolves friend names — when UUID lookup fails, scans the friends directory for a name match. This is the deepest possible layer for name resolution, ensuring it works regardless of which tool or code path calls store.get()."

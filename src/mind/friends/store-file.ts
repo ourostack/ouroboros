@@ -26,6 +26,9 @@ export class FileFriendStore implements FriendStore {
   }
 
   async get(id: string): Promise<FriendRecord | null> {
+    /* v8 ignore start -- temporary debug @preserve */
+    emitNervesEvent({ component: "friends", event: "friends.get_called", message: `store.get called`, meta: { id, friendsPath: this.friendsPath } })
+    /* v8 ignore stop */
     // Direct UUID lookup
     const record = await this.readJson(path.join(this.friendsPath, `${id}.json`))
     if (record) return this.normalize(record)
