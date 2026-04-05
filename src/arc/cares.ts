@@ -1,7 +1,6 @@
-import * as fs from "fs"
 import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
-import { trackSyncWrite } from "../heart/sync"
+import { generateTimestampId, readJsonDir, readJsonFileOrThrow, writeJsonFile } from "./json-store"
 
 export type CareKind = "person" | "agent" | "project" | "mission" | "system"
 export type CareStatus = "active" | "watching" | "resolved" | "dormant"
@@ -30,22 +29,12 @@ function caresDir(agentRoot: string): string {
   return path.join(agentRoot, "arc", "cares")
 }
 
-function careFilePath(agentRoot: string, id: string): string {
-  return path.join(caresDir(agentRoot), `${id}.json`)
-}
-
-function generateId(): string {
-  const timestamp = Date.now()
-  const random = Math.random().toString(36).slice(2, 10)
-  return `care-${timestamp}-${random}`
-}
-
 export function createCare(
   agentRoot: string,
   input: Omit<CareRecord, "id" | "createdAt" | "updatedAt">,
 ): CareRecord {
   const now = new Date().toISOString()
-  const id = generateId()
+  const id = generateTimestampId("care")
   const care: CareRecord = {
     id,
     label: input.label,
@@ -64,11 +53,7 @@ export function createCare(
     updatedAt: now,
   }
 
-  const dir = caresDir(agentRoot)
-  fs.mkdirSync(dir, { recursive: true })
-  const filePath = careFilePath(agentRoot, id)
-  fs.writeFileSync(filePath, JSON.stringify(care, null, 2), "utf-8")
-  trackSyncWrite(filePath)
+  writeJsonFile(caresDir(agentRoot), id, care)
 
   emitNervesEvent({
     component: "heart",
@@ -82,33 +67,12 @@ export function createCare(
 
 export function readCares(agentRoot: string): CareRecord[] {
   const dir = caresDir(agentRoot)
-  if (!fs.existsSync(dir)) {
-    emitNervesEvent({
-      component: "heart",
-      event: "heart.cares_read",
-      message: "read cares: directory missing, returning empty",
-      meta: { count: 0 },
-    })
-    return []
-  }
-
-  const files = fs.readdirSync(dir).filter((f) => f.endsWith(".json"))
-  const cares: CareRecord[] = []
-
-  for (const file of files) {
-    try {
-      const content = fs.readFileSync(path.join(dir, file), "utf-8")
-      const care = JSON.parse(content) as CareRecord
-      cares.push(care)
-    } catch {
-      // Skip malformed JSON files gracefully
-    }
-  }
+  const cares = readJsonDir<CareRecord>(dir)
 
   emitNervesEvent({
     component: "heart",
     event: "heart.cares_read",
-    message: `read ${cares.length} cares`,
+    message: cares.length === 0 ? "read cares: directory missing, returning empty" : `read ${cares.length} cares`,
     meta: { count: cares.length },
   })
 
@@ -130,17 +94,11 @@ export function readActiveCares(agentRoot: string): CareRecord[] {
 }
 
 function readCareFile(agentRoot: string, id: string): CareRecord {
-  const filePath = careFilePath(agentRoot, id)
-  if (!fs.existsSync(filePath)) {
-    throw new Error(`Care not found: ${id}`)
-  }
-  return JSON.parse(fs.readFileSync(filePath, "utf-8")) as CareRecord
+  return readJsonFileOrThrow<CareRecord>(caresDir(agentRoot), id, "Care")
 }
 
 function writeCareFile(agentRoot: string, care: CareRecord): void {
-  const filePath = careFilePath(agentRoot, care.id)
-  fs.writeFileSync(filePath, JSON.stringify(care, null, 2), "utf-8")
-  trackSyncWrite(filePath)
+  writeJsonFile(caresDir(agentRoot), care.id, care)
 }
 
 export function updateCare(

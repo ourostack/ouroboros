@@ -1,7 +1,6 @@
-import * as fs from "fs"
 import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
-import { trackSyncWrite } from "../heart/sync"
+import { generateTimestampId, readJsonDir, readJsonFileOrThrow, writeJsonFile } from "./json-store"
 
 export interface IntentionRecord {
   id: string
@@ -19,16 +18,6 @@ export interface IntentionRecord {
 
 function intentionsDir(agentRoot: string): string {
   return path.join(agentRoot, "arc", "intentions")
-}
-
-function intentionFilePath(agentRoot: string, id: string): string {
-  return path.join(intentionsDir(agentRoot), `${id}.json`)
-}
-
-function generateId(): string {
-  const timestamp = Date.now()
-  const random = Math.random().toString(36).slice(2, 10)
-  return `int-${timestamp}-${random}`
 }
 
 const SALIENCE_ORDER: Record<string, number> = {
@@ -55,7 +44,7 @@ export function captureIntention(
   },
 ): IntentionRecord {
   const now = new Date().toISOString()
-  const id = generateId()
+  const id = generateTimestampId("int")
   const intention: IntentionRecord = {
     id,
     content: input.content,
@@ -70,11 +59,7 @@ export function captureIntention(
     ...(input.nudgeAfter ? { nudgeAfter: input.nudgeAfter } : {}),
   }
 
-  const dir = intentionsDir(agentRoot)
-  fs.mkdirSync(dir, { recursive: true })
-  const filePath = intentionFilePath(agentRoot, id)
-  fs.writeFileSync(filePath, JSON.stringify(intention, null, 2), "utf-8")
-  trackSyncWrite(filePath)
+  writeJsonFile(intentionsDir(agentRoot), id, intention)
 
   emitNervesEvent({
     component: "heart",
@@ -91,31 +76,9 @@ export function readOpenIntentions(
   options?: { limit?: number },
 ): IntentionRecord[] {
   const dir = intentionsDir(agentRoot)
-  if (!fs.existsSync(dir)) {
-    emitNervesEvent({
-      component: "heart",
-      event: "heart.intentions_read",
-      message: "read intentions: directory missing, returning empty",
-      meta: { count: 0 },
-    })
-    return []
-  }
-
+  const all = readJsonDir<IntentionRecord>(dir)
   const limit = options?.limit ?? 20
-  const files = fs.readdirSync(dir).filter((f) => f.endsWith(".json"))
-  const intentions: IntentionRecord[] = []
-
-  for (const file of files) {
-    try {
-      const content = fs.readFileSync(path.join(dir, file), "utf-8")
-      const intention = JSON.parse(content) as IntentionRecord
-      if (intention.status === "open") {
-        intentions.push(intention)
-      }
-    } catch {
-      // Skip malformed JSON files
-    }
-  }
+  const intentions = all.filter((i) => i.status === "open")
 
   // Sort by salience descending, then createdAt descending
   intentions.sort((a, b) => {
@@ -137,17 +100,11 @@ export function readOpenIntentions(
 }
 
 function readIntentionFile(agentRoot: string, id: string): IntentionRecord {
-  const filePath = intentionFilePath(agentRoot, id)
-  if (!fs.existsSync(filePath)) {
-    throw new Error(`Intention not found: ${id}`)
-  }
-  return JSON.parse(fs.readFileSync(filePath, "utf-8")) as IntentionRecord
+  return readJsonFileOrThrow<IntentionRecord>(intentionsDir(agentRoot), id, "Intention")
 }
 
 function writeIntentionFile(agentRoot: string, intention: IntentionRecord): void {
-  const filePath = intentionFilePath(agentRoot, intention.id)
-  fs.writeFileSync(filePath, JSON.stringify(intention, null, 2), "utf-8")
-  trackSyncWrite(filePath)
+  writeJsonFile(intentionsDir(agentRoot), intention.id, intention)
 }
 
 export function resolveIntention(agentRoot: string, id: string): IntentionRecord {

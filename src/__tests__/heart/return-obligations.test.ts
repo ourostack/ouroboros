@@ -74,7 +74,7 @@ describe("createReturnObligation", () => {
     expect(fs.writeFileSync).toHaveBeenCalledWith(
       expect.stringContaining("1709900001000-abc12345.json"),
       expect.any(String),
-      "utf8",
+      "utf-8",
     )
     const written = JSON.parse(vi.mocked(fs.writeFileSync).mock.calls[0][1] as string)
     expect(written).toEqual(obligation)
@@ -154,7 +154,7 @@ describe("advanceReturnObligation", () => {
     expect(fs.writeFileSync).toHaveBeenCalledWith(
       expect.stringContaining("1709900001000-abc12345.json"),
       expect.any(String),
-      "utf8",
+      "utf-8",
     )
   })
 

@@ -1,8 +1,7 @@
-import * as fs from "fs"
 import * as path from "path"
 import { getAgentRoot } from "../heart/identity"
 import { emitNervesEvent } from "../nerves/runtime"
-import { trackSyncWrite } from "../heart/sync"
+import { generateTimestampId, readJsonDir, readJsonFile, writeJsonFile } from "./json-store"
 
 export type ObligationStatus =
   | "pending"
@@ -51,15 +50,7 @@ function obligationsDir(agentRoot: string): string {
   return path.join(agentRoot, "arc", "obligations")
 }
 
-function obligationFilePath(agentRoot: string, id: string): string {
-  return path.join(obligationsDir(agentRoot), `${id}.json`)
-}
 
-function generateId(): string {
-  const timestamp = Date.now()
-  const random = Math.random().toString(36).slice(2, 10)
-  return `${timestamp}-${random}`
-}
 
 export function isOpenObligationStatus(status: ObligationStatus): boolean {
   return status !== "fulfilled"
@@ -74,7 +65,7 @@ export function createObligation(
   input: Omit<Obligation, "id" | "createdAt" | "status">,
 ): Obligation {
   const now = new Date().toISOString()
-  const id = generateId()
+  const id = generateTimestampId()
   const obligation: Obligation = {
     id,
     origin: input.origin,
@@ -85,11 +76,7 @@ export function createObligation(
     updatedAt: now,
   }
 
-  const dir = obligationsDir(agentRoot)
-  fs.mkdirSync(dir, { recursive: true })
-  const filePath = obligationFilePath(agentRoot, id)
-  fs.writeFileSync(filePath, JSON.stringify(obligation, null, 2), "utf-8")
-  trackSyncWrite(filePath)
+  writeJsonFile(obligationsDir(agentRoot), id, obligation)
 
   emitNervesEvent({
     component: "engine",
@@ -107,33 +94,8 @@ export function createObligation(
 }
 
 export function readObligations(agentRoot: string): Obligation[] {
-  const dir = obligationsDir(agentRoot)
-  if (!fs.existsSync(dir)) return []
-
-  let entries: string[]
-  try {
-    entries = fs.readdirSync(dir)
-  } catch {
-    /* v8 ignore next -- defensive: readdirSync race after existsSync @preserve */
-    return []
-  }
-
-  const jsonFiles = entries.filter((entry) => entry.endsWith(".json")).sort()
-  const obligations: Obligation[] = []
-
-  for (const file of jsonFiles) {
-    try {
-      const raw = fs.readFileSync(path.join(dir, file), "utf-8")
-      const parsed = JSON.parse(raw) as Obligation
-      if (typeof parsed.id === "string" && typeof parsed.content === "string") {
-        obligations.push(parsed)
-      }
-    } catch {
-      // skip malformed files
-    }
-  }
-
-  return obligations
+  const all = readJsonDir<Obligation>(obligationsDir(agentRoot))
+  return all.filter((parsed) => typeof parsed.id === "string" && typeof parsed.content === "string")
 }
 
 export function readPendingObligations(agentRoot: string): Obligation[] {
@@ -151,14 +113,9 @@ export function advanceObligation(
     latestNote?: string
   },
 ): void {
-  const filePath = obligationFilePath(agentRoot, obligationId)
-  let obligation: Obligation
-  try {
-    const raw = fs.readFileSync(filePath, "utf-8")
-    obligation = JSON.parse(raw) as Obligation
-  } catch {
-    return
-  }
+  const dir = obligationsDir(agentRoot)
+  const obligation = readJsonFile<Obligation>(dir, obligationId)
+  if (!obligation) return
 
   const previousStatus = obligation.status
   if (update.status) {
@@ -180,8 +137,7 @@ export function advanceObligation(
     obligation.latestNote = update.latestNote
   }
   obligation.updatedAt = new Date().toISOString()
-  fs.writeFileSync(filePath, JSON.stringify(obligation, null, 2), "utf-8")
-  trackSyncWrite(filePath)
+  writeJsonFile(dir, obligationId, obligation)
 
   emitNervesEvent({
     component: "engine",
@@ -203,14 +159,8 @@ export function advanceObligation(
 export function fulfillObligation(agentRoot: string, obligationId: string): void {
   advanceObligation(agentRoot, obligationId, { status: "fulfilled" })
 
-  const filePath = obligationFilePath(agentRoot, obligationId)
-  let obligation: Obligation
-  try {
-    const raw = fs.readFileSync(filePath, "utf-8")
-    obligation = JSON.parse(raw) as Obligation
-  } catch {
-    return
-  }
+  const obligation = readJsonFile<Obligation>(obligationsDir(agentRoot), obligationId)
+  if (!obligation) return
 
   emitNervesEvent({
     component: "engine",
@@ -242,18 +192,16 @@ export function enrichObligation(
   id: string,
   meaning: ObligationMeaning,
 ): Obligation {
-  const filePath = obligationFilePath(agentRoot, id)
-  if (!fs.existsSync(filePath)) {
+  const dir = obligationsDir(agentRoot)
+  const existing = readJsonFile<Obligation>(dir, id)
+  if (!existing) {
     throw new Error(`Obligation not found: ${id}`)
   }
 
-  const raw = fs.readFileSync(filePath, "utf-8")
-  const obligation = JSON.parse(raw) as Obligation
-
+  const obligation = existing
   obligation.meaning = meaning
   obligation.updatedAt = new Date().toISOString()
-  fs.writeFileSync(filePath, JSON.stringify(obligation, null, 2), "utf-8")
-  trackSyncWrite(filePath)
+  writeJsonFile(dir, id, obligation)
 
   emitNervesEvent({
     component: "engine",
@@ -315,10 +263,8 @@ export function getReturnObligationsDir(agentName: string): string {
 
 export function createReturnObligation(agentName: string, obligation: ReturnObligation): string {
   const dir = getReturnObligationsDir(agentName)
-  fs.mkdirSync(dir, { recursive: true })
+  writeJsonFile(dir, obligation.id, obligation)
   const filePath = path.join(dir, `${obligation.id}.json`)
-  fs.writeFileSync(filePath, JSON.stringify(obligation, null, 2), "utf8")
-  trackSyncWrite(filePath)
 
   emitNervesEvent({
     event: "mind.obligation_created",
@@ -335,13 +281,7 @@ export function createReturnObligation(agentName: string, obligation: ReturnObli
 }
 
 export function readReturnObligation(agentName: string, obligationId: string): ReturnObligation | null {
-  const dir = getReturnObligationsDir(agentName)
-  try {
-    const raw = fs.readFileSync(path.join(dir, `${obligationId}.json`), "utf-8")
-    return JSON.parse(raw) as ReturnObligation
-  } catch {
-    return null
-  }
+  return readJsonFile<ReturnObligation>(getReturnObligationsDir(agentName), obligationId)
 }
 
 export function advanceReturnObligation(
@@ -365,10 +305,7 @@ export function advanceReturnObligation(
     ...(update.returnTarget !== undefined ? { returnTarget: update.returnTarget } : {}),
   }
 
-  const dir = getReturnObligationsDir(agentName)
-  const advancedFilePath = path.join(dir, `${obligationId}.json`)
-  fs.writeFileSync(advancedFilePath, JSON.stringify(updated, null, 2), "utf8")
-  trackSyncWrite(advancedFilePath)
+  writeJsonFile(getReturnObligationsDir(agentName), obligationId, updated)
 
   emitNervesEvent({
     event: "mind.obligation_advanced",
@@ -385,29 +322,8 @@ export function advanceReturnObligation(
 }
 
 export function listActiveReturnObligations(agentName: string): ReturnObligation[] {
-  const dir = getReturnObligationsDir(agentName)
-  if (!fs.existsSync(dir)) return []
-
-  let entries: string[]
-  try {
-    entries = fs.readdirSync(dir)
-  } catch {
-    return []
-  }
-
-  const obligations: ReturnObligation[] = []
-  for (const file of entries) {
-    if (!file.endsWith(".json")) continue
-    try {
-      const raw = fs.readFileSync(path.join(dir, file), "utf-8")
-      const parsed = JSON.parse(raw) as ReturnObligation
-      if (parsed.status === "queued" || parsed.status === "running") {
-        obligations.push(parsed)
-      }
-    } catch {
-      // skip unparseable
-    }
-  }
-
-  return obligations.sort((a, b) => a.createdAt - b.createdAt)
+  const all = readJsonDir<ReturnObligation>(getReturnObligationsDir(agentName))
+  return all
+    .filter((parsed) => parsed.status === "queued" || parsed.status === "running")
+    .sort((a, b) => a.createdAt - b.createdAt)
 }
