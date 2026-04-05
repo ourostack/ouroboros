@@ -105,7 +105,7 @@ describe("MCP check_response tool", () => {
   })
 
   it("returns 'no pending messages' when queue is empty", async () => {
-    const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     const server = createMcpServer({
       agent: "test-agent",
       friendId: "friend-1",
@@ -139,7 +139,7 @@ describe("MCP check_response tool", () => {
       { from: "agent", content: "Also this", timestamp: Date.now() },
     ])
 
-    const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     const server = createMcpServer({
       agent: "test-agent",
       friendId: "friend-1",
@@ -169,7 +169,7 @@ describe("MCP check_response tool", () => {
   })
 
   it("uses correct pending dir path for mcp channel", async () => {
-    const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     const server = createMcpServer({
       agent: "test-agent",
       friendId: "friend-1",
@@ -197,7 +197,7 @@ describe("MCP check_response tool", () => {
   })
 
   it("check_response is non-blocking (returns immediately)", async () => {
-    const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     const server = createMcpServer({
       agent: "test-agent",
       friendId: "friend-1",

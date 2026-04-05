@@ -1,9 +1,9 @@
 import type { Readable, Writable } from "stream"
-import { sendDaemonCommand } from "./socket-client"
-import type { DaemonCommand, DaemonResponse } from "./daemon"
-import * as agentService from "./agent-service"
+import { sendDaemonCommand } from "../daemon/socket-client"
+import type { DaemonCommand, DaemonResponse } from "../daemon/daemon"
+import * as agentService from "../daemon/agent-service"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { resolveSessionId } from "./session-id-resolver"
+import { resolveSessionId } from "../daemon/session-id-resolver"
 import { drainPending, getPendingDir } from "../../mind/pending"
 
 /**

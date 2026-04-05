@@ -109,7 +109,7 @@ describe("MCP write tools routing", () => {
 
   describe("delegate", () => {
     it("delegate routes through daemon socket for a full conversation turn", async () => {
-      const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+      const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
       const server = createMcpServer({
         agent: "test-agent",
         friendId: "friend-1",
@@ -150,7 +150,7 @@ describe("MCP write tools routing", () => {
     })
 
     it("delegate returns agent response", async () => {
-      const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+      const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
       const server = createMcpServer({
         agent: "test-agent",
         friendId: "friend-1",
@@ -183,7 +183,7 @@ describe("MCP write tools routing", () => {
 
   describe("report_progress", () => {
     it("report_progress sends daemon command and returns immediately", async () => {
-      const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+      const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
       const server = createMcpServer({
         agent: "test-agent",
         friendId: "friend-1",
@@ -219,7 +219,7 @@ describe("MCP write tools routing", () => {
 
   describe("report_blocker", () => {
     it("report_blocker returns without routing through daemon", async () => {
-      const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+      const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
       const server = createMcpServer({
         agent: "test-agent",
         friendId: "friend-1",
@@ -253,7 +253,7 @@ describe("MCP write tools routing", () => {
 
   describe("report_complete", () => {
     it("report_complete returns without routing through daemon", async () => {
-      const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+      const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
       const server = createMcpServer({
         agent: "test-agent",
         friendId: "friend-1",

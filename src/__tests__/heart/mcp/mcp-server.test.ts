@@ -94,12 +94,12 @@ describe("MCP server protocol layer", () => {
   }
 
   it("exports createMcpServer function", async () => {
-    const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     expect(typeof createMcpServer).toBe("function")
   })
 
   it("responds to initialize with protocol version and capabilities", async () => {
-    const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     const server = createMcpServer({
       agent: "test-agent",
       friendId: "test-friend",
@@ -147,7 +147,7 @@ describe("MCP server protocol layer", () => {
   })
 
   it("handles initialized notification without error", async () => {
-    const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     const server = createMcpServer({
       agent: "test-agent",
       friendId: "test-friend",
@@ -178,7 +178,7 @@ describe("MCP server protocol layer", () => {
   })
 
   it("responds to tools/list with tool schemas", async () => {
-    const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     const server = createMcpServer({
       agent: "test-agent",
       friendId: "test-friend",
@@ -218,7 +218,7 @@ describe("MCP server protocol layer", () => {
 
   it("responds to tools/call by forwarding to daemon", async () => {
 
-    const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     const server = createMcpServer({
       agent: "test-agent",
       friendId: "test-friend",
@@ -266,7 +266,7 @@ describe("MCP server protocol layer", () => {
   })
 
   it("returns error for unknown tool name during tools/call", async () => {
-    const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     const server = createMcpServer({
       agent: "test-agent",
       friendId: "test-friend",
@@ -309,7 +309,7 @@ describe("MCP server protocol layer", () => {
   })
 
   it("stores agent name and friend id from options", async () => {
-    const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     const server = createMcpServer({
       agent: "my-agent",
       friendId: "friend-123",
@@ -330,7 +330,7 @@ describe("MCP server protocol layer", () => {
   })
 
   it("returns JSON-RPC error for unknown methods", async () => {
-    const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     const server = createMcpServer({
       agent: "test-agent",
       friendId: "test-friend",
@@ -371,7 +371,7 @@ describe("MCP server protocol layer", () => {
   it("initializes successfully even without daemon socket (standalone mode)", async () => {
     vi.mocked(fs.existsSync).mockReturnValue(false)
 
-    const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     const server = createMcpServer({
       agent: "test-agent",
       friendId: "test-friend",
@@ -415,7 +415,7 @@ describe("MCP server protocol layer", () => {
   })
 
   it("skips invalid Content-Length headers gracefully", async () => {
-    const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     const localStdin = new PassThrough()
     const localStdout = new PassThrough()
     const server = createMcpServer({
@@ -471,7 +471,7 @@ describe("MCP server protocol layer", () => {
   })
 
   it("returns JSON-RPC parse error for malformed JSON body", async () => {
-    const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     const server = createMcpServer({
       agent: "test-agent",
       friendId: "test-friend",
@@ -512,7 +512,7 @@ describe("MCP server protocol layer", () => {
     // Make handleAgentStatus throw for the next call
     vi.mocked(handleAgentStatus).mockRejectedValueOnce(new Error("disk read failed"))
 
-    const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     const localStdin = new PassThrough()
     const localStdout = new PassThrough()
     const server = createMcpServer({
@@ -562,7 +562,7 @@ describe("MCP server protocol layer", () => {
   })
 
   it("ignores duplicate start() calls", async () => {
-    const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     const server = createMcpServer({
       agent: "test-agent",
       friendId: "test-friend",
@@ -584,7 +584,7 @@ describe("MCP server protocol layer", () => {
   })
 
   it("ignores duplicate stop() calls", async () => {
-    const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     const server = createMcpServer({
       agent: "test-agent",
       friendId: "test-friend",
@@ -606,7 +606,7 @@ describe("MCP server protocol layer", () => {
   })
 
   it("ignores stop() when never started", async () => {
-    const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     const server = createMcpServer({
       agent: "test-agent",
       friendId: "test-friend",
@@ -626,7 +626,7 @@ describe("MCP server protocol layer", () => {
   })
 
   it("skips blank lines in newline-delimited mode", async () => {
-    const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     const localStdin = new PassThrough()
     const localStdout = new PassThrough()
     const server = createMcpServer({
@@ -676,7 +676,7 @@ describe("MCP server protocol layer", () => {
   })
 
   it("handles newline-delimited JSON (Codex compatibility)", async () => {
-    const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     const server = createMcpServer({
       agent: "test-agent",
       friendId: "test-friend",
@@ -724,7 +724,7 @@ describe("MCP server protocol layer", () => {
   it("returns error when delegate tool throws", async () => {
     mockSendDaemonCommand.mockRejectedValueOnce(new Error("delegate pipeline failed"))
 
-    const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     const localStdin = new PassThrough()
     const localStdout = new PassThrough()
     const server = createMcpServer({
@@ -774,7 +774,7 @@ describe("MCP server protocol layer", () => {
   it("returns response from send_message tool", async () => {
     mockSendDaemonCommand.mockResolvedValueOnce({ ok: true, message: "hello from agent", data: { ponderDeferred: false } })
 
-    const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     const localStdin = new PassThrough()
     const localStdout = new PassThrough()
     const server = createMcpServer({
@@ -824,7 +824,7 @@ describe("MCP server protocol layer", () => {
   it("returns error when send_message throws", async () => {
     mockSendDaemonCommand.mockRejectedValueOnce(new Error("pipeline broke"))
 
-    const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     const localStdin = new PassThrough()
     const localStdout = new PassThrough()
     const server = createMcpServer({
@@ -878,7 +878,7 @@ describe("MCP server protocol layer", () => {
       { content: "pending message 2", source: "inner-dialog", timestamp: "2026-03-27T00:01:00Z" },
     ] as any)
 
-    const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     const localStdin = new PassThrough()
     const localStdout = new PassThrough()
     const server = createMcpServer({

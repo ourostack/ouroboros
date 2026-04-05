@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest"
 import { emitNervesEvent } from "../../../nerves/runtime"
-import { getToolSchemas } from "../../../heart/daemon/mcp-server"
+import { getToolSchemas } from "../../../heart/mcp/mcp-server"
 
 describe("MCP tool schemas", () => {
   it("returns exactly 15 tool schemas", () => {

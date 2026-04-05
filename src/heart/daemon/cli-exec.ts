@@ -1301,7 +1301,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   /* v8 ignore start — mcp-serve block binds to process.stdin/stdout; tested via mcp-server unit tests */
   // ── mcp-serve: start MCP server in-process on stdin/stdout ──
   if (command.kind === "mcp-serve") {
-    const { createMcpServer } = await import("./mcp-server")
+    const { createMcpServer } = await import("../mcp/mcp-server")
     const friendId = command.friendId ?? `local-${os.userInfo().username}`
     const mcpSocketPath = (command as { socketOverride?: string }).socketOverride ?? deps.socketPath
     const server = createMcpServer({
