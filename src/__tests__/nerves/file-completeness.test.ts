@@ -66,6 +66,47 @@ export const VALUE = 42
     it("returns true for empty file", () => {
       expect(isTypeOnlyFile("")).toBe(true)
     })
+
+    it("returns true for file with only const object declarations (schemas)", () => {
+      const source = `
+export const myTool: OpenAI.ChatCompletionFunctionTool = {
+  type: "function",
+  function: { name: "my_tool" },
+}
+`
+      expect(isTypeOnlyFile(source)).toBe(true)
+    })
+
+    it("returns true for file with only const array assembly", () => {
+      const source = `
+export const allDefs: ToolDef[] = [
+  ...fileTools,
+  ...shellTools,
+]
+`
+      expect(isTypeOnlyFile(source)).toBe(true)
+    })
+
+    it("returns true for file with const .map() derivation", () => {
+      const source = `
+export const tools = baseToolDefinitions.map((d) => d.tool)
+`
+      expect(isTypeOnlyFile(source)).toBe(true)
+    })
+
+    it("returns true for file with const Set construction", () => {
+      const source = `
+export const LEVELS = new Set(["a", "b"])
+`
+      expect(isTypeOnlyFile(source)).toBe(true)
+    })
+
+    it("returns true for file with const Map construction", () => {
+      const source = `
+const cache = new Map()
+`
+      expect(isTypeOnlyFile(source)).toBe(true)
+    })
   })
 
   describe("checkFileCompleteness", () => {
@@ -105,6 +146,28 @@ export const VALUE = 42
       const result = checkFileCompleteness(files, fileContents)
       expect(result.status).toBe("pass")
       expect(result.missing).toHaveLength(0)
+    })
+
+    it("exempts dispatch-pattern tool handler sub-modules", () => {
+      const files = new Map<string, string[]>([
+        ["src/repertoire/tools.ts", ["tools:tool.start"]],
+      ])
+      const fileContents = new Map<string, string>([
+        ["src/repertoire/tools.ts", 'emitNervesEvent({ component: "tools", event: "tool.start" })'],
+        ["src/repertoire/tools-files.ts", "export function readFile() {}"],
+        ["src/repertoire/tools-shell.ts", "export function runShell() {}"],
+        ["src/repertoire/tools-memory.ts", "export function saveNote() {}"],
+        ["src/repertoire/tools-bridge.ts", "export function manageBridge() {}"],
+        ["src/repertoire/tools-session.ts", "export function querySession() {}"],
+        ["src/repertoire/tools-continuity.ts", "export function queryEpisodes() {}"],
+        ["src/repertoire/tools-surface.ts", "export function handleSurface() {}"],
+        ["src/repertoire/tools-config.ts", "export function readConfig() {}"],
+      ])
+      const result = checkFileCompleteness(files, fileContents)
+      expect(result.status).toBe("pass")
+      expect(result.missing).toHaveLength(0)
+      expect(result.exempt).toContain("src/repertoire/tools-files.ts")
+      expect(result.exempt).toContain("src/repertoire/tools-config.ts")
     })
 
     it("returns pass when all files have events or are exempt", () => {
