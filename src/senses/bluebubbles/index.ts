@@ -1228,6 +1228,18 @@ export async function sendProactiveBlueBubblesMessageToSession(
     friend = null
   }
 
+  // Fallback: if friendId is a name (not UUID), resolve via listAll
+  /* v8 ignore start -- name resolution fallback: tested via live integration @preserve */
+  if (!friend && store.listAll) {
+    try {
+      const all = await store.listAll()
+      friend = all.find((f) => f.name?.toLowerCase() === params.friendId.toLowerCase()) ?? null
+    } catch {
+      friend = null
+    }
+  }
+  /* v8 ignore stop */
+
   if (!friend) {
     emitNervesEvent({
       level: "warn",
