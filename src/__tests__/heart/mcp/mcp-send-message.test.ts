@@ -117,7 +117,7 @@ describe("MCP send_message tool", () => {
   })
 
   it("send_message tool is listed in tools/list", async () => {
-    const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     const server = createMcpServer({
       agent: "test-agent",
       friendId: "friend-1",
@@ -144,7 +144,7 @@ describe("MCP send_message tool", () => {
   })
 
   it("send_message routes through daemon socket and returns response text", async () => {
-    const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     const server = createMcpServer({
       agent: "test-agent",
       friendId: "friend-1",
@@ -193,7 +193,7 @@ describe("MCP send_message tool", () => {
       data: { ponderDeferred: true },
     })
 
-    const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     const server = createMcpServer({
       agent: "test-agent",
       friendId: "friend-1",
@@ -226,7 +226,7 @@ describe("MCP send_message tool", () => {
   it("send_message uses resolved session ID", async () => {
     mockResolveSessionId.mockReturnValue("claude-session-456")
 
-    const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     const server = createMcpServer({
       agent: "test-agent",
       friendId: "friend-1",
@@ -264,7 +264,7 @@ describe("MCP send_message tool", () => {
   it("send_message handles daemon command errors gracefully", async () => {
     mockSendDaemonCommand.mockRejectedValue(new Error("agent exploded"))
 
-    const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     const server = createMcpServer({
       agent: "test-agent",
       friendId: "friend-1",
@@ -298,7 +298,7 @@ describe("MCP send_message tool", () => {
   it("multi-turn: session key is consistent across calls", async () => {
     mockResolveSessionId.mockReturnValue("persistent-session")
 
-    const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     const server = createMcpServer({
       agent: "test-agent",
       friendId: "friend-1",
@@ -338,7 +338,7 @@ describe("MCP send_message tool", () => {
   })
 
   it("check_response tool is listed in tools/list", async () => {
-    const { createMcpServer } = await import("../../../heart/daemon/mcp-server")
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     const server = createMcpServer({
       agent: "test-agent",
       friendId: "friend-1",
