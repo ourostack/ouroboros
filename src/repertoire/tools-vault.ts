@@ -49,6 +49,7 @@ export const vaultToolDefinitions: ToolDefinition[] = [
 
         return "Please provide either an id or name to look up a vault item."
       } catch (err) {
+        /* v8 ignore next -- defensive: callers throw Error instances @preserve */
         return `Vault error: ${err instanceof Error ? err.message : String(err)}`
       }
     },
@@ -104,6 +105,7 @@ export const vaultToolDefinitions: ToolDefinition[] = [
         const handle = await client.createItem(args.name, fields)
         return JSON.stringify(handle, null, 2)
       } catch (err) {
+        /* v8 ignore next -- defensive: callers throw Error instances @preserve */
         return `Vault error: ${err instanceof Error ? err.message : String(err)}`
       }
     },
@@ -142,6 +144,7 @@ export const vaultToolDefinitions: ToolDefinition[] = [
         const items = await client.listItems(args.search)
         return JSON.stringify(items, null, 2)
       } catch (err) {
+        /* v8 ignore next -- defensive: callers throw Error instances @preserve */
         return `Vault error: ${err instanceof Error ? err.message : String(err)}`
       }
     },
@@ -179,6 +182,7 @@ export const vaultToolDefinitions: ToolDefinition[] = [
         await client.deleteItem(args.id)
         return `Vault item ${args.id} deleted successfully.`
       } catch (err) {
+        /* v8 ignore next -- defensive: callers throw Error instances @preserve */
         return `Vault delete failed: ${err instanceof Error ? err.message : String(err)}`
       }
     },

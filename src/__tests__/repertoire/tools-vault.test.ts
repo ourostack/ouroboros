@@ -186,6 +186,15 @@ describe("vault_store handler", () => {
 
     expect(nervesEvents.some((e) => e.event === "repertoire.vault_tool_call")).toBe(true)
   })
+
+  it("returns error when create fails", async () => {
+    mockCreateItem.mockRejectedValue(new Error("Create failed"))
+
+    const result = await handler({ name: "Bad Cred" })
+
+    expect(result).toContain("Vault error")
+    expect(result).toContain("Create failed")
+  })
 })
 
 describe("vault_list handler", () => {
@@ -221,6 +230,15 @@ describe("vault_list handler", () => {
     await handler({})
 
     expect(nervesEvents.some((e) => e.event === "repertoire.vault_tool_call")).toBe(true)
+  })
+
+  it("returns error when list fails", async () => {
+    mockListItems.mockRejectedValue(new Error("List failed"))
+
+    const result = await handler({})
+
+    expect(result).toContain("Vault error")
+    expect(result).toContain("List failed")
   })
 })
 
