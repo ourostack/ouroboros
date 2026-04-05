@@ -5,7 +5,7 @@ import {
   renderHabitFile,
   type HabitFile,
   type HabitStatus,
-} from "../../../heart/daemon/habit-parser"
+} from "../../../heart/habits/habit-parser"
 
 describe("parseHabitFile", () => {
   it("parses a valid habit file with all fields", () => {

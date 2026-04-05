@@ -51,7 +51,7 @@ describe("migrateHabitsFromTaskSystem", () => {
       "",
     ].join("\n"), "utf-8")
 
-    const { migrateHabitsFromTaskSystem } = await import("../../../heart/daemon/habit-migration")
+    const { migrateHabitsFromTaskSystem } = await import("../../../heart/habits/habit-migration")
     migrateHabitsFromTaskSystem(bundleRoot)
 
     const newPath = path.join(bundleRoot, "habits", "heartbeat.md")
@@ -101,7 +101,7 @@ describe("migrateHabitsFromTaskSystem", () => {
       "",
     ].join("\n"), "utf-8")
 
-    const { migrateHabitsFromTaskSystem } = await import("../../../heart/daemon/habit-migration")
+    const { migrateHabitsFromTaskSystem } = await import("../../../heart/habits/habit-migration")
     migrateHabitsFromTaskSystem(bundleRoot)
 
     // Should be just daily-reflection.md, no timestamp
@@ -147,7 +147,7 @@ describe("migrateHabitsFromTaskSystem", () => {
       "",
     ].join("\n"), "utf-8")
 
-    const { migrateHabitsFromTaskSystem } = await import("../../../heart/daemon/habit-migration")
+    const { migrateHabitsFromTaskSystem } = await import("../../../heart/habits/habit-migration")
     migrateHabitsFromTaskSystem(bundleRoot)
 
     const activeContent = fs.readFileSync(path.join(bundleRoot, "habits", "active-habit.md"), "utf-8")
@@ -183,7 +183,7 @@ describe("migrateHabitsFromTaskSystem", () => {
       "",
     ].join("\n"), "utf-8")
 
-    const { migrateHabitsFromTaskSystem } = await import("../../../heart/daemon/habit-migration")
+    const { migrateHabitsFromTaskSystem } = await import("../../../heart/habits/habit-migration")
     migrateHabitsFromTaskSystem(bundleRoot)
 
     // Done habit should NOT be migrated
@@ -226,7 +226,7 @@ describe("migrateHabitsFromTaskSystem", () => {
       "",
     ].join("\n"), "utf-8")
 
-    const { migrateHabitsFromTaskSystem } = await import("../../../heart/daemon/habit-migration")
+    const { migrateHabitsFromTaskSystem } = await import("../../../heart/habits/habit-migration")
     migrateHabitsFromTaskSystem(bundleRoot)
 
     const content = fs.readFileSync(path.join(bundleRoot, "habits", "full-task.md"), "utf-8")
@@ -277,7 +277,7 @@ describe("migrateHabitsFromTaskSystem", () => {
       "",
     ].join("\n"), "utf-8")
 
-    const { migrateHabitsFromTaskSystem } = await import("../../../heart/daemon/habit-migration")
+    const { migrateHabitsFromTaskSystem } = await import("../../../heart/habits/habit-migration")
     migrateHabitsFromTaskSystem(bundleRoot)
 
     const content = fs.readFileSync(path.join(bundleRoot, "habits", "multi-line.md"), "utf-8")
@@ -314,7 +314,7 @@ describe("migrateHabitsFromTaskSystem", () => {
       ].join("\n"), "utf-8")
     }
 
-    const { migrateHabitsFromTaskSystem } = await import("../../../heart/daemon/habit-migration")
+    const { migrateHabitsFromTaskSystem } = await import("../../../heart/habits/habit-migration")
     migrateHabitsFromTaskSystem(bundleRoot)
 
     for (const name of ["heartbeat", "journal", "check-inbox"]) {
@@ -351,7 +351,7 @@ describe("migrateHabitsFromTaskSystem", () => {
     // habits/ should not exist yet
     expect(fs.existsSync(path.join(bundleRoot, "habits"))).toBe(false)
 
-    const { migrateHabitsFromTaskSystem } = await import("../../../heart/daemon/habit-migration")
+    const { migrateHabitsFromTaskSystem } = await import("../../../heart/habits/habit-migration")
     migrateHabitsFromTaskSystem(bundleRoot)
 
     expect(fs.existsSync(path.join(bundleRoot, "habits"))).toBe(true)
@@ -401,7 +401,7 @@ describe("migrateHabitsFromTaskSystem", () => {
       "",
     ].join("\n"), "utf-8")
 
-    const { migrateHabitsFromTaskSystem } = await import("../../../heart/daemon/habit-migration")
+    const { migrateHabitsFromTaskSystem } = await import("../../../heart/habits/habit-migration")
     migrateHabitsFromTaskSystem(bundleRoot)
 
     // Should keep the existing new file, not overwrite
@@ -422,7 +422,7 @@ describe("migrateHabitsFromTaskSystem", () => {
     cleanup.push(bundleRoot)
 
     // No tasks/habits/ dir
-    const { migrateHabitsFromTaskSystem } = await import("../../../heart/daemon/habit-migration")
+    const { migrateHabitsFromTaskSystem } = await import("../../../heart/habits/habit-migration")
     migrateHabitsFromTaskSystem(bundleRoot)
 
     // Should not create habits/ dir
@@ -456,7 +456,7 @@ describe("migrateHabitsFromTaskSystem", () => {
       "",
     ].join("\n"), "utf-8")
 
-    const { migrateHabitsFromTaskSystem } = await import("../../../heart/daemon/habit-migration")
+    const { migrateHabitsFromTaskSystem } = await import("../../../heart/habits/habit-migration")
     migrateHabitsFromTaskSystem(bundleRoot)
 
     // heartbeat should be migrated
@@ -491,7 +491,7 @@ describe("migrateHabitsFromTaskSystem", () => {
       "Unknown status body.",
     ].join("\n"), "utf-8")
 
-    const { migrateHabitsFromTaskSystem } = await import("../../../heart/daemon/habit-migration")
+    const { migrateHabitsFromTaskSystem } = await import("../../../heart/habits/habit-migration")
     migrateHabitsFromTaskSystem(bundleRoot)
 
     const content = fs.readFileSync(path.join(bundleRoot, "habits", "weird-status.md"), "utf-8")
@@ -528,7 +528,7 @@ describe("migrateHabitsFromTaskSystem", () => {
       "Valid body.",
     ].join("\n"), "utf-8")
 
-    const { migrateHabitsFromTaskSystem } = await import("../../../heart/daemon/habit-migration")
+    const { migrateHabitsFromTaskSystem } = await import("../../../heart/habits/habit-migration")
     migrateHabitsFromTaskSystem(bundleRoot)
 
     // Valid file should still be migrated
@@ -562,7 +562,7 @@ describe("migrateHabitsFromTaskSystem", () => {
       "Custom body.",
     ].join("\n"), "utf-8")
 
-    const { migrateHabitsFromTaskSystem } = await import("../../../heart/daemon/habit-migration")
+    const { migrateHabitsFromTaskSystem } = await import("../../../heart/habits/habit-migration")
     migrateHabitsFromTaskSystem(bundleRoot)
 
     const content = fs.readFileSync(path.join(bundleRoot, "habits", "custom.md"), "utf-8")
@@ -586,7 +586,7 @@ describe("migrateHabitsFromTaskSystem", () => {
     fs.writeFileSync(path.join(oldHabitsDir, "README.md"), "# Habits", "utf-8")
     fs.writeFileSync(path.join(oldHabitsDir, ".gitkeep"), "", "utf-8")
 
-    const { migrateHabitsFromTaskSystem } = await import("../../../heart/daemon/habit-migration")
+    const { migrateHabitsFromTaskSystem } = await import("../../../heart/habits/habit-migration")
     migrateHabitsFromTaskSystem(bundleRoot)
 
     expect(fs.existsSync(path.join(bundleRoot, "habits"))).toBe(false)
@@ -617,7 +617,7 @@ describe("migrateHabitsFromTaskSystem", () => {
       "Body.",
     ].join("\n"), "utf-8")
 
-    const { migrateHabitsFromTaskSystem } = await import("../../../heart/daemon/habit-migration")
+    const { migrateHabitsFromTaskSystem } = await import("../../../heart/habits/habit-migration")
     migrateHabitsFromTaskSystem(bundleRoot)
 
     expect(fs.existsSync(path.join(bundleRoot, "habits", "valid.md"))).toBe(true)
@@ -639,7 +639,7 @@ describe("migrateHabitsFromTaskSystem", () => {
     fs.mkdirSync(oldHabitsDir, { recursive: true })
     fs.writeFileSync(path.join(oldHabitsDir, "broken.md"), "---\ntitle: Broken\nstatus: processing\n", "utf-8")
 
-    const { migrateHabitsFromTaskSystem } = await import("../../../heart/daemon/habit-migration")
+    const { migrateHabitsFromTaskSystem } = await import("../../../heart/habits/habit-migration")
     migrateHabitsFromTaskSystem(bundleRoot)
 
     expect(fs.existsSync(path.join(bundleRoot, "habits", "broken.md"))).toBe(false)
@@ -668,7 +668,7 @@ describe("migrateHabitsFromTaskSystem", () => {
       "Body.",
     ].join("\n"), "utf-8")
 
-    const { migrateHabitsFromTaskSystem } = await import("../../../heart/daemon/habit-migration")
+    const { migrateHabitsFromTaskSystem } = await import("../../../heart/habits/habit-migration")
     migrateHabitsFromTaskSystem(bundleRoot)
 
     const content = fs.readFileSync(path.join(bundleRoot, "habits", "no-status.md"), "utf-8")
@@ -697,7 +697,7 @@ describe("migrateHabitsFromTaskSystem", () => {
       "Minimal body.",
     ].join("\n"), "utf-8")
 
-    const { migrateHabitsFromTaskSystem } = await import("../../../heart/daemon/habit-migration")
+    const { migrateHabitsFromTaskSystem } = await import("../../../heart/habits/habit-migration")
     migrateHabitsFromTaskSystem(bundleRoot)
 
     // Should still migrate, just without title/cadence in frontmatter
@@ -731,7 +731,7 @@ describe("migrateHabitsFromTaskSystem", () => {
       "",
     ].join("\n"), "utf-8")
 
-    const { migrateHabitsFromTaskSystem } = await import("../../../heart/daemon/habit-migration")
+    const { migrateHabitsFromTaskSystem } = await import("../../../heart/habits/habit-migration")
     migrateHabitsFromTaskSystem(bundleRoot)
 
     // Should be migrated as-is (filename already a slug)

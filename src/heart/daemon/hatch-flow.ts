@@ -5,7 +5,7 @@ import { buildDefaultAgentTemplate, PROVIDER_CREDENTIALS, type AgentProvider } f
 import { slugify } from "../config"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { writeProviderCredentials } from "./auth-flow"
-import { renderHabitFile } from "./habit-parser"
+import { renderHabitFile } from "../habits/habit-parser"
 import {
   getRepoSpecialistIdentitiesDir,
   getSpecialistIdentitySourceDir,

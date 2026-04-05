@@ -1373,7 +1373,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
   // ── habit subcommands (local, no daemon socket needed) ──
   if (command.kind === "habit.list" || command.kind === "habit.create") {
-    const { parseHabitFile, renderHabitFile } = await import("./habit-parser")
+    const { parseHabitFile, renderHabitFile } = await import("../habits/habit-parser")
     /* v8 ignore start -- production default: uses real bundle root @preserve */
     const agentName = command.agent ?? getAgentName()
     const bundleRoot = deps.agentBundleRoot ?? path.join(getAgentBundlesRoot(), `${agentName}.ouro`)
