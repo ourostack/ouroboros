@@ -291,12 +291,16 @@ const VAULT_FAMILY_TOOLS = new Set(["vault_store", "vault_delete"])
 // Vault read tools: friend+
 const VAULT_TRUSTED_TOOLS = new Set(["vault_get", "vault_list"])
 
+// Travel tools: friend+ (weather_lookup accesses vault credentials indirectly;
+// advisory and geocode are public APIs but gated for consistency)
+const TRAVEL_TRUSTED_TOOLS = new Set(["weather_lookup", "travel_advisory", "geocode_search"])
+
 function checkVaultTrustGuardrails(toolName: string, context: GuardContext): GuardResult {
   if (VAULT_FAMILY_TOOLS.has(toolName)) {
     if (context.trustLevel === "family") return allow
     return deny(REASONS.needsTrust)
   }
-  if (VAULT_TRUSTED_TOOLS.has(toolName)) {
+  if (VAULT_TRUSTED_TOOLS.has(toolName) || TRAVEL_TRUSTED_TOOLS.has(toolName)) {
     if (isTrustedLevel(context.trustLevel)) return allow
     return deny(REASONS.needsTrust)
   }
