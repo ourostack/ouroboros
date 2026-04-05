@@ -293,4 +293,30 @@ describe("config-registry", () => {
       expect(entry).toBeUndefined()
     })
   })
+
+  describe("entry validators", () => {
+    it("validates all entries with valid default values", async () => {
+      emitTestEvent("validators accept valid defaults")
+      const { getRegistryEntries } = await import("../../heart/config-registry")
+      for (const entry of getRegistryEntries()) {
+        if (entry.validate && entry.default !== undefined) {
+          const result = entry.validate(entry.default)
+          expect(result, `validator for ${entry.path} should accept its own default`).toBeUndefined()
+        }
+      }
+    })
+
+    it("validators reject wrong types", async () => {
+      emitTestEvent("validators reject wrong types")
+      const { getRegistryEntry } = await import("../../heart/config-registry")
+      // version uses validateNumber — pass a string to trigger rejection
+      const versionEntry = getRegistryEntry("version")
+      expect(versionEntry?.validate).toBeDefined()
+      expect(versionEntry!.validate!("not-a-number")).toContain("expected number")
+      // enabled uses validateBoolean — pass a number to trigger rejection
+      const enabledEntry = getRegistryEntry("enabled")
+      expect(enabledEntry?.validate).toBeDefined()
+      expect(enabledEntry!.validate!(42)).toContain("expected boolean")
+    })
+  })
 })
