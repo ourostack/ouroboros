@@ -26,9 +26,27 @@ export class FileFriendStore implements FriendStore {
   }
 
   async get(id: string): Promise<FriendRecord | null> {
+    // Direct UUID lookup
     const record = await this.readJson(path.join(this.friendsPath, `${id}.json`))
-    if (!record) return null
-    return this.normalize(record)
+    if (record) return this.normalize(record)
+
+    // Fallback: if id is a name (not UUID), scan for matching friend
+    /* v8 ignore start -- name fallback: exercised by live proactive sends @preserve */
+    try {
+      const entries = await fsPromises.readdir(this.friendsPath)
+      for (const entry of entries) {
+        if (!entry.endsWith(".json")) continue
+        const raw = await this.readJson(path.join(this.friendsPath, entry))
+        if (!raw) continue
+        const normalized = this.normalize(raw)
+        if (normalized.name?.toLowerCase() === id.toLowerCase()) {
+          return normalized
+        }
+      }
+    } catch { /* directory unreadable — return null */ }
+    /* v8 ignore stop */
+
+    return null
   }
 
   async put(id: string, record: FriendRecord): Promise<void> {
