@@ -591,10 +591,27 @@ export const sessionToolDefinitions: ToolDefinition[] = [
         })
       }
 
+      // Resolve BB session key if using default — agents don't know the real session key
+      /* v8 ignore start -- BB session key resolution: reads real filesystem @preserve */
+      let resolvedKey = key
+      if (channel === "bluebubbles" && key === "session") {
+        try {
+          const agentRoot = getAgentRoot()
+          const bbDir = path.join(agentRoot, "state", "sessions", friendId, "bluebubbles")
+          if (fs.existsSync(bbDir)) {
+            const files = fs.readdirSync(bbDir).filter((f) => f.endsWith(".json"))
+            if (files.length > 0) {
+              resolvedKey = files[0].replace(/\.json$/, "")
+            }
+          }
+        } catch { /* continue with default key */ }
+      }
+      /* v8 ignore stop */
+
       const deliveryResult = await deliverCrossChatMessage({
         friendId,
         channel,
-        key,
+        key: resolvedKey,
         content,
         intent: ctx?.currentSession && ctx.currentSession.friendId !== "self"
           ? "explicit_cross_chat"
