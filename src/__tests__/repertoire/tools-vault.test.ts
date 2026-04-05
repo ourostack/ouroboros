@@ -123,7 +123,7 @@ describe("vault_get handler", () => {
 
     const result = await handler({ name: "nonexistent" })
 
-    expect(result).toContain("not found")
+    expect(result).toContain("No vault item found")
   })
 
   it("emits nerves events", async () => {
