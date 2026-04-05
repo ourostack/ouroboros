@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.206",
       "changes": [
-        "refactor: split tools-base.ts (1,912 lines) into 8 category modules — tools-files, tools-shell, tools-memory, tools-bridge, tools-session, tools-continuity, tools-flow, tools-surface. tools-base.ts reduced to 86 lines (types + combined array). Surface tool handler extracted from tools.ts to tools-surface.ts."
+        "refactor: split tools-base.ts (1,912 lines) into 8 category modules — tools-files, tools-shell, tools-memory, tools-bridge, tools-session, tools-continuity, tools-flow, tools-surface. tools-base.ts reduced to 86 lines (types + combined array). Surface tool handler extracted from tools.ts to tools-surface.ts.",
+        "feat: capability discovery and tiered self-configuration — config registry with tier-aware metadata (T1 self-service, T2 proposal, T3 operator-only), read_config tool with topic-filtered discovery, update_config tool for T1 immediate changes, propose_config tool for T2 operator-approval flow, version-change surfacing in start-of-turn packet via buildCapabilitiesSection"
       ]
     },
     {

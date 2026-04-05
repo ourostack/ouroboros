@@ -118,6 +118,13 @@ export function isConfirmationRequired(toolName: string): boolean {
   return def?.confirmationRequired === true;
 }
 
+// Check whether a tool's confirmation is non-bypassable (cannot be skipped by skipConfirmation).
+// Used for T2 config proposals that must always require operator approval.
+export function isConfirmationAlwaysRequired(toolName: string): boolean {
+  const def = allDefinitions.find((d) => d.tool.function.name === toolName);
+  return def?.confirmationAlwaysRequired === true;
+}
+
 function normalizeGuardArgs(_name: string, args: Record<string, string>): Record<string, string> {
   return args
 }

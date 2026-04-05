@@ -1,4 +1,3 @@
-import { emitNervesEvent } from "../nerves/runtime"
 import type OpenAI from "openai";
 import type { Integration, ResolvedContext } from "../mind/friends/types";
 import type { FriendStore } from "../mind/friends/store";
@@ -11,6 +10,7 @@ import { memoryToolDefinitions } from "./tools-memory";
 import { bridgeToolDefinitions } from "./tools-bridge";
 import { sessionToolDefinitions } from "./tools-session";
 import { continuityToolDefinitions } from "./tools-continuity";
+import { configToolDefinitions } from "./tools-config";
 import { codingToolDefinitions } from "./coding/tools";
 // Re-export flow tools for consumers that import them from tools-base
 export { ponderTool, observeTool, settleTool, restTool } from "./tools-flow";
@@ -64,6 +64,7 @@ export interface ToolDefinition {
   handler: ToolHandler;
   integration?: Integration;
   confirmationRequired?: boolean;
+  confirmationAlwaysRequired?: boolean;
   requiredCapability?: import("../heart/core").ProviderCapability;
   summaryKeys?: string[];
 }
@@ -73,7 +74,7 @@ export interface ToolDefinition {
 export const editFileReadTracker = new Set<string>();
 
 // Combined base tool definitions — assembled from category modules.
-// Order preserved: files, shell, memory, bridge, session, continuity, coding.
+// Order preserved: files, shell, memory, bridge, session, continuity, config, coding.
 export const baseToolDefinitions: ToolDefinition[] = [
   ...fileToolDefinitions,
   ...shellToolDefinitions,
@@ -81,12 +82,10 @@ export const baseToolDefinitions: ToolDefinition[] = [
   ...bridgeToolDefinitions,
   ...sessionToolDefinitions,
   ...continuityToolDefinitions,
+  ...configToolDefinitions,
   ...codingToolDefinitions,
 ];
 
+// Convenience array of just the tool schemas (no handler/integration metadata).
+// Used by consumers that need the OpenAI function-tool format.
 export const tools: OpenAI.ChatCompletionFunctionTool[] = baseToolDefinitions.map((d) => d.tool);
-
-/* v8 ignore start -- module-level nerves file-completeness event @preserve */
-emitNervesEvent({ component: "repertoire", event: "repertoire.module_loaded", message: "tools-base loaded", meta: {} })
-/* v8 ignore stop */
-// CI trigger

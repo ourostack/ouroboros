@@ -5,7 +5,7 @@ import {
   getProviderConfig,
 } from "./config";
 import { loadAgentConfig } from "./identity";
-import { execTool, summarizeArgs, buildToolResultSummary, settleTool, observeTool, ponderTool, restTool, getToolsForChannel, isConfirmationRequired } from "../repertoire/tools";
+import { execTool, summarizeArgs, buildToolResultSummary, settleTool, observeTool, ponderTool, restTool, getToolsForChannel, isConfirmationRequired, isConfirmationAlwaysRequired } from "../repertoire/tools";
 import type { ToolContext } from "../repertoire/tools";
 import { getChannelCapabilities, channelToFacing, type Facing } from "../mind/friends/channel";
 import { surfaceToolDef } from "../repertoire/tools";
@@ -1086,8 +1086,10 @@ export async function runAgent(
             providerRuntime.appendToolOutput(tc.id, rejection);
             continue;
           }
-          // Confirmation check for mutate tools
-          if (isConfirmationRequired(tc.name) && !options?.skipConfirmation) {
+          // Confirmation check for mutate tools.
+          // confirmationAlwaysRequired tools cannot be bypassed by skipConfirmation.
+          const needsConfirmation = isConfirmationRequired(tc.name) && (!options?.skipConfirmation || isConfirmationAlwaysRequired(tc.name));
+          if (needsConfirmation) {
             let decision: "confirmed" | "denied" = "denied";
             if (callbacks.onConfirmAction) {
               decision = await callbacks.onConfirmAction(tc.name, args);
