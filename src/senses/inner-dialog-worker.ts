@@ -4,7 +4,7 @@ import { runInnerDialogTurn } from "./inner-dialog"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getAgentName, getAgentRoot } from "../heart/identity"
 import { getInnerDialogPendingDir, hasPendingMessages } from "../mind/pending"
-import { parseHabitFile, renderHabitFile } from "../heart/daemon/habit-parser"
+import { parseHabitFile, renderHabitFile } from "../heart/habits/habit-parser"
 
 export type InnerDialogWorkerReason = "boot" | "habit" | "instinct"
 

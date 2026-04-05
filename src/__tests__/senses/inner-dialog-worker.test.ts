@@ -29,7 +29,7 @@ vi.mock("../../mind/pending", () => ({
   hasPendingMessages: (...args: any[]) => mockHasPendingMessages(...args),
 }))
 
-vi.mock("../../heart/daemon/habit-parser", () => ({
+vi.mock("../../heart/habits/habit-parser", () => ({
   parseHabitFile: (...args: any[]) => mockParseHabitFile(...args),
   renderHabitFile: (...args: any[]) => mockRenderHabitFile(...args),
 }))

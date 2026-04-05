@@ -9,7 +9,7 @@ vi.mock("../../../nerves/runtime", () => ({
 
 // We need to mock the parseHabitFile since it calls emitNervesEvent
 const mockParseHabitFile = vi.fn()
-vi.mock("../../../heart/daemon/habit-parser", () => ({
+vi.mock("../../../heart/habits/habit-parser", () => ({
   parseHabitFile: (...args: any[]) => mockParseHabitFile(...args),
 }))
 
@@ -20,7 +20,7 @@ vi.mock("../../../heart/daemon/cadence", () => ({
   parseCadenceToMs: (...args: any[]) => mockParseCadenceToMs(...args),
 }))
 
-import { HabitScheduler, type HabitSchedulerOptions, type HabitSchedulerDeps } from "../../../heart/daemon/habit-scheduler"
+import { HabitScheduler, type HabitSchedulerOptions, type HabitSchedulerDeps } from "../../../heart/habits/habit-scheduler"
 
 function makeMockCronManager(overrides: Partial<OsCronManager> = {}): OsCronManager {
   return {

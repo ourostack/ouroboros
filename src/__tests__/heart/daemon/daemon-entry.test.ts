@@ -22,7 +22,7 @@ const { migrateHabitsFromTaskSystemMock } = vi.hoisted(() => ({
   migrateHabitsFromTaskSystemMock: vi.fn(),
 }))
 
-vi.mock("../../../heart/daemon/habit-scheduler", () => ({
+vi.mock("../../../heart/habits/habit-scheduler", () => ({
   HabitScheduler: class MockHabitScheduler {
     constructor(public options: unknown) {}
     start = habitSchedulerStartMock
@@ -32,7 +32,7 @@ vi.mock("../../../heart/daemon/habit-scheduler", () => ({
   },
 }))
 
-vi.mock("../../../heart/daemon/habit-migration", () => ({
+vi.mock("../../../heart/habits/habit-migration", () => ({
   migrateHabitsFromTaskSystem: migrateHabitsFromTaskSystemMock,
 }))
 

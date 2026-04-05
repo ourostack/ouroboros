@@ -1,9 +1,9 @@
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { parseHabitFile, type HabitFile } from "./habit-parser"
-import { parseCadenceToCron, parseCadenceToMs } from "./cadence"
-import type { OsCronManager } from "./os-cron"
-import type { ScheduledTaskJob } from "./task-scheduler"
+import { parseCadenceToCron, parseCadenceToMs } from "../daemon/cadence"
+import type { OsCronManager } from "../daemon/os-cron"
+import type { ScheduledTaskJob } from "../daemon/task-scheduler"
 
 export interface FsWatcher {
   close: () => void

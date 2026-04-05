@@ -32,7 +32,7 @@ import { findFreshestFriendSession, listSessionActivity, type SessionActivityRec
 import { sendProactiveBlueBubblesMessageToSession } from "./bluebubbles"
 import { buildHabitTurnMessage } from "./habit-turn-message"
 import { indexJournalFiles } from "../mind/journal-index"
-import { parseHabitFile } from "../heart/daemon/habit-parser"
+import { parseHabitFile } from "../heart/habits/habit-parser"
 import { parseCadenceToMs } from "../heart/daemon/cadence"
 import { readHealth, getDefaultHealthPath } from "../heart/daemon/daemon-health"
 
