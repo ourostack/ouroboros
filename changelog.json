@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.221",
+      "changes": [
+        "fix: BB proactive send resolves friend by name when UUID lookup fails — sendProactiveBlueBubblesMessageToSession now falls back to store.listAll() name matching when store.get() returns null. This handles agents passing friend names instead of UUIDs, bypassing the upstream resolution that wasn't working in all contexts."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.220",
       "changes": [
         "fix: send_message BB session key resolution — agents don't know the real BB session key (e.g. 'chat_any;-;ari@mendelow.me'), so they pass the default 'session'. buildChatRefForSessionKey failed on this fake key, returning missing_target. Now auto-resolves the real BB session key from the sessions directory when the default key is used."
