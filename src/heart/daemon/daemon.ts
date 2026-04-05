@@ -309,6 +309,8 @@ export async function handleAgentSenseTurn(
   command: Extract<DaemonCommand, { kind: "agent.senseTurn" }>,
 ): Promise<DaemonResponse> {
   try {
+    const { setAgentName } = await import("../identity")
+    setAgentName(command.agent)
     const { runSenseTurn } = await import("../../senses/shared-turn")
     const result = await runSenseTurn({
       agentName: command.agent,

@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.226",
+      "changes": [
+        "fix(daemon): set agent name before senseTurn so MCP messages resolve identity — setAgentName() is now called at the top of the senseTurn handler, before any downstream code that depends on agent identity (loadAgentConfig, getAgentSecretsPath, etc.)"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.225",
       "changes": ["debug: emit event at top of FileFriendStore.get() to verify it's called"]
     },
