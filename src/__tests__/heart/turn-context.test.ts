@@ -38,7 +38,7 @@ vi.mock("../../heart/target-resolution", () => ({
 
 const mockReadPendingObligations = vi.fn().mockReturnValue([])
 const mockListActiveReturnObligations = vi.fn().mockReturnValue([])
-vi.mock("../../heart/obligations", () => ({
+vi.mock("../../arc/obligations", () => ({
   readPendingObligations: (...args: any[]) => mockReadPendingObligations(...args),
   listActiveReturnObligations: (...args: any[]) => mockListActiveReturnObligations(...args),
 }))
@@ -98,12 +98,12 @@ vi.mock("../../repertoire/tasks", () => ({
 }))
 
 const mockReadRecentEpisodes = vi.fn().mockReturnValue([])
-vi.mock("../../mind/episodes", () => ({
+vi.mock("../../arc/episodes", () => ({
   readRecentEpisodes: (...args: any[]) => mockReadRecentEpisodes(...args),
 }))
 
 const mockReadActiveCares = vi.fn().mockReturnValue([])
-vi.mock("../../heart/cares", () => ({
+vi.mock("../../arc/cares", () => ({
   readActiveCares: (...args: any[]) => mockReadActiveCares(...args),
 }))
 

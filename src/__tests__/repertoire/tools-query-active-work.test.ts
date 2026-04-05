@@ -186,8 +186,8 @@ vi.mock("../../heart/bridges/manager", () => ({
   formatBridgeStatus: vi.fn(() => "bridge"),
 }))
 
-vi.mock("../../heart/obligations", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../heart/obligations")>()
+vi.mock("../../arc/obligations", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../arc/obligations")>()
   return {
     ...actual,
     createObligation: vi.fn(),

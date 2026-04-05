@@ -1,6 +1,6 @@
 import { getAgentName, getAgentRoot } from "../../heart/identity"
 import { requestInnerWake } from "../../heart/daemon/socket-client"
-import { advanceObligation } from "../../heart/obligations"
+import { advanceObligation } from "../../arc/obligations"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { CodingSession, CodingSessionUpdate } from "./types"
 

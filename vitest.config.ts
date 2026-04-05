@@ -30,7 +30,7 @@ export default defineConfig({
         "src/repertoire/coding/types.ts",
         "src/mind/friends/store.ts",
         "src/repertoire/tasks/types.ts",
-        "src/heart/attention-types.ts",
+        "src/arc/attention-types.ts",
         "src/nerves/coverage/cli-main.ts",
         "src/heart/providers/anthropic-token.ts",
         "src/nerves/observation.ts",

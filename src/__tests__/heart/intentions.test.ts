@@ -8,7 +8,7 @@ import {
   resolveIntention,
   dismissIntention,
   type IntentionRecord,
-} from "../../heart/intentions"
+} from "../../arc/intentions"
 
 describe("intentions store", () => {
   let tmpDir: string

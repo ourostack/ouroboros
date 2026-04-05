@@ -1,9 +1,9 @@
 import { emitNervesEvent } from "../nerves/runtime"
-import { readRecentEpisodes, type EpisodeRecord } from "../mind/episodes"
-import { readPendingObligations, type Obligation } from "./obligations"
-import { readActiveCares, type CareRecord } from "./cares"
-import { readOpenIntentions, type IntentionRecord } from "./intentions"
-import { readPeerPresence, type AgentPresence } from "./presence"
+import { readRecentEpisodes, type EpisodeRecord } from "../arc/episodes"
+import { readPendingObligations, type Obligation } from "../arc/obligations"
+import { readActiveCares, type CareRecord } from "../arc/cares"
+import { readOpenIntentions, type IntentionRecord } from "../arc/intentions"
+import { readPeerPresence, type AgentPresence } from "../arc/presence"
 import { type TempoMode } from "./tempo"
 
 export interface TemporalView {

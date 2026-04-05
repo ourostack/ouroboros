@@ -1,10 +1,10 @@
 import type OpenAI from "openai";
 import { getAgentRoot, getAgentName } from "../heart/identity";
 import { handleSurface, type SurfaceRouteResult } from "../senses/surface-tool";
-import { advanceReturnObligation, findPendingObligationForOrigin, fulfillObligation } from "../heart/obligations";
+import { advanceReturnObligation, findPendingObligationForOrigin, fulfillObligation } from "../arc/obligations";
 import { findFreshestFriendSession, listSessionActivity } from "../heart/session-activity";
 import * as path from "path";
-import type { AttentionItem } from "../heart/attention-types";
+import type { AttentionItem } from "../arc/attention-types";
 import type { ToolDefinition } from "./tools-base";
 
 // Surface tool schema — canonical home. Handler lives in senses/surface-tool.ts.

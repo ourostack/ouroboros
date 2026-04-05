@@ -6,10 +6,10 @@ import {
   buildTemporalView,
   type TemporalView,
 } from "../../heart/temporal-view"
-import { emitEpisode } from "../../mind/episodes"
-import { createObligation } from "../../heart/obligations"
-import { createCare } from "../../heart/cares"
-import { captureIntention } from "../../heart/intentions"
+import { emitEpisode } from "../../arc/episodes"
+import { createObligation } from "../../arc/obligations"
+import { createCare } from "../../arc/cares"
+import { captureIntention } from "../../arc/intentions"
 
 describe("temporal view", () => {
   let tmpDir: string

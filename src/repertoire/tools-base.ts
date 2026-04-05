@@ -54,7 +54,7 @@ export interface ToolContext {
   activeWorkFrame?: ActiveWorkFrame;
   supportedReasoningEfforts?: readonly string[];
   setReasoningEffort?: (level: string) => void;
-  delegatedOrigins?: import("../heart/attention-types").AttentionItem[];
+  delegatedOrigins?: import("../arc/attention-types").AttentionItem[];
 }
 
 export type ToolHandler = (args: Record<string, string>, ctx?: ToolContext) => string | Promise<string>;

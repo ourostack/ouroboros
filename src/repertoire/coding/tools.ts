@@ -4,7 +4,7 @@ import { attachCodingSessionFeedback, formatCodingTail, getCodingSessionManager 
 import { prepareCodingContextPack } from "./context-pack"
 import type { ToolContext } from "../tools-base"
 import { getAgentRoot } from "../../heart/identity"
-import { advanceObligation, createObligation, findPendingObligationForOrigin } from "../../heart/obligations"
+import { advanceObligation, createObligation, findPendingObligationForOrigin } from "../../arc/obligations"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { getCodingCompletionScrutiny } from "../../mind/scrutiny"
 import type { CodingRunner, CodingSession, CodingSessionRequest } from "./types"

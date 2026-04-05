@@ -1,6 +1,6 @@
 import { sanitizeKey } from "../heart/config";
 import { formatOtherActiveSessionSummaries, type ActiveWorkFrame } from "../heart/active-work";
-import type { Obligation } from "../heart/obligations";
+import type { Obligation } from "../arc/obligations";
 import { emitNervesEvent } from "../nerves/runtime";
 
 type SessionOrigin = { friendId: string; channel: string; key: string }

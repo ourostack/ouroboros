@@ -8,7 +8,7 @@ import {
   type Obligation,
   type ObligationMeaning,
   type WaitingOnRef,
-} from "../../heart/obligations"
+} from "../../arc/obligations"
 
 describe("obligation enrichment", () => {
   let tmpDir: string

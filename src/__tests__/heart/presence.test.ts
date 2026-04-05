@@ -9,7 +9,7 @@ import {
   readPeerPresence,
   type AgentPresence,
   type PresenceAvailability,
-} from "../../heart/presence"
+} from "../../arc/presence"
 
 describe("presence", () => {
   let tmpDir: string

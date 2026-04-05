@@ -9,7 +9,7 @@ import {
   fulfillObligation,
   findPendingObligationForOrigin,
   advanceObligation,
-} from "../../heart/obligations"
+} from "../../arc/obligations"
 
 describe("obligations store", () => {
   let tmpDir: string
