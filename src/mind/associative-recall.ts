@@ -1,13 +1,12 @@
 import type OpenAI from "openai"
 import * as fs from "fs"
 import * as path from "path"
-import { getOpenAIEmbeddingsApiKey } from "../heart/config"
 import { emitNervesEvent } from "../nerves/runtime"
 import { resolveDiaryRoot } from "./diary"
+import { type EmbeddingProvider, createDefaultEmbeddingProvider } from "./embedding-provider"
 
-export interface EmbeddingProvider {
-  embed(texts: string[]): Promise<number[][]>
-}
+// Re-export EmbeddingProvider so existing consumers don't break.
+export type { EmbeddingProvider }
 
 export interface DiaryEntryRecord {
   id: string
@@ -45,48 +44,15 @@ export interface InjectAssociativeRecallOptions extends RecallQueryOptions {
   journalDir?: string
 }
 
-const DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 const DEFAULT_MIN_SCORE = 0.5
 const DEFAULT_TOP_K = 3
 
-class OpenAIEmbeddingProvider implements EmbeddingProvider {
-  private apiKey: string
-  private model: string
-
-  constructor(apiKey: string, model = DEFAULT_EMBEDDING_MODEL) {
-    this.apiKey = apiKey
-    this.model = model
-  }
-
-  async embed(texts: string[]): Promise<number[][]> {
-    const response = await fetch("https://api.openai.com/v1/embeddings", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: this.model,
-        input: texts,
-      }),
-    })
-    if (!response.ok) {
-      throw new Error(`embedding request failed: ${response.status} ${response.statusText}`)
-    }
-    const payload = (await response.json()) as { data?: Array<{ embedding: number[] }> }
-    if (!payload.data || payload.data.length !== texts.length) {
-      throw new Error("embedding response missing expected vectors")
-    }
-    return payload.data.map((entry) => entry.embedding)
-  }
-}
-
 function createDefaultProvider(): EmbeddingProvider {
-  const apiKey = getOpenAIEmbeddingsApiKey()
-  if (!apiKey) {
+  const provider = createDefaultEmbeddingProvider()
+  if (!provider) {
     throw new Error("openaiEmbeddingsApiKey not configured")
   }
-  return new OpenAIEmbeddingProvider(apiKey)
+  return provider
 }
 
 function readFacts(diaryRoot: string): DiaryEntryRecord[] {
