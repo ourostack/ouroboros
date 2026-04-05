@@ -58,7 +58,7 @@ describe("travel planning skill", () => {
     const { readFileSync } = require("node:fs")
     const content = readFileSync(realPath, "utf-8")
 
-    expect(content).toContain("vault_get")
+    expect(content).toContain("credential_get")
     expect(content).toContain("weather_lookup")
     expect(content).toContain("travel_advisory")
     expect(content).toContain("geocode_search")
@@ -90,6 +90,6 @@ describe("browser-navigation skill", () => {
 
     expect(content).toContain("browser_navigate")
     expect(content).toContain("CAPTCHA")
-    expect(content).toContain("vault_get")
+    expect(content).toContain("credential_get")
   })
 })

@@ -23,6 +23,10 @@ export interface HatchCredentialsInput {
   deployment?: string
   githubToken?: string
   baseUrl?: string
+  vaultMasterPassword?: string
+  vaultAdminToken?: string
+  vaultClientId?: string
+  vaultClientSecret?: string
 }
 
 export interface HatchFlowInput {

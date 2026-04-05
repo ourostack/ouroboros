@@ -2,9 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.228",
+      "changes": [
+        "refactor(repertoire): credential access layer with encrypted store, vault config types, golden path integration test"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.227",
       "changes": [
-        "fix: direct filesystem name resolution in sendProactiveBlueBubblesMessageToSession — bypass store.get()/listAll() with raw fs reads on friends directory when store lookup fails"
+        "fix: direct filesystem name resolution in sendProactiveBlueBubblesMessageToSession"
       ]
     },
     {

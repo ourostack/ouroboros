@@ -8,7 +8,7 @@
 
 import { handleApiError } from "../heart/api-error"
 import { emitNervesEvent } from "../nerves/runtime"
-import { getBitwardenClient } from "./bitwarden-client"
+import { getCredentialStore } from "./credential-access"
 
 export interface ApiRequestOptions {
   /** Base URL (e.g. "https://graph.microsoft.com/v1.0") */
@@ -33,10 +33,10 @@ export interface ApiRequestOptions {
   contentType?: string
   /** Extra metadata for nerves events */
   eventMeta?: Record<string, unknown>
-  /** Vault item ID to fetch bearer token from. Overrides `token` when present. */
-  vaultKey?: string
-  /** Field name within vault item to use as token. Defaults to "apiKey". */
-  vaultField?: string
+  /** Domain to fetch bearer token from credential store. Overrides `token` when present. */
+  credentialDomain?: string
+  /** Field name within credential to use as token. Defaults to "password". */
+  credentialField?: string
 }
 
 /**
@@ -46,32 +46,29 @@ export interface ApiRequestOptions {
 export async function apiRequest(options: ApiRequestOptions): Promise<string> {
   const {
     baseUrl, method, path, token, clientName, serviceLabel, connectionName,
-    body, extraHeaders, contentType, eventMeta, vaultKey, vaultField,
+    body, extraHeaders, contentType, eventMeta, credentialDomain, credentialField,
   } = options
 
-  // Resolve token from vault if vaultKey is provided
+  // Resolve token from credential store if credentialDomain is provided
   let resolvedToken = token
-  if (vaultKey) {
+  if (credentialDomain) {
     try {
-      const client = getBitwardenClient()
-      if (!client.isConnected()) {
-        return handleApiError(new Error("Vault is locked — connect the vault first"), serviceLabel, connectionName)
-      }
-      resolvedToken = await client.getRawSecret(vaultKey, vaultField ?? "apiKey")
+      const store = getCredentialStore()
+      resolvedToken = await store.getRawSecret(credentialDomain, credentialField ?? "password")
       emitNervesEvent({
-        event: "client.vault_fetch",
+        event: "client.credential_fetch",
         component: "clients",
-        message: `fetched credential from vault for ${serviceLabel}`,
-        meta: { client: clientName, vaultKey },
+        message: `fetched credential from store for ${serviceLabel}`,
+        meta: { client: clientName, credentialDomain },
       })
     } catch (err) {
       emitNervesEvent({
         level: "error",
-        event: "client.vault_error",
+        event: "client.credential_error",
         component: "clients",
-        message: `failed to fetch vault credential for ${serviceLabel}`,
+        message: `failed to fetch credential for ${serviceLabel}`,
         /* v8 ignore next -- defensive: getRawSecret throws Error instances @preserve */
-        meta: { client: clientName, vaultKey, reason: err instanceof Error ? err.message : String(err) },
+        meta: { client: clientName, credentialDomain, reason: err instanceof Error ? err.message : String(err) },
       })
       return handleApiError(err, serviceLabel, connectionName)
     }

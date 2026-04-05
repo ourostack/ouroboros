@@ -68,6 +68,10 @@ export interface AgentConfig {
     tool: string[]
     followup: string[]
   }
+  vault?: {
+    email: string
+    serverUrl?: string  // Vaultwarden URL, omit for Bitwarden Cloud
+  }
   sync?: {
     enabled?: boolean
     remote?: string

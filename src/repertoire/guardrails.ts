@@ -284,23 +284,23 @@ function checkWriteTrustGuardrails(toolName: string, args: Record<string, string
   return deny(REASONS.needsTrustForWrite)
 }
 
-// --- vault tool trust gating ---
+// --- credential tool trust gating ---
 
-// Vault write tools: family only
-const VAULT_FAMILY_TOOLS = new Set(["vault_store", "vault_delete"])
-// Vault read tools: friend+
-const VAULT_TRUSTED_TOOLS = new Set(["vault_get", "vault_list"])
+// Credential write tools: family only
+const CREDENTIAL_FAMILY_TOOLS = new Set(["credential_store", "credential_delete"])
+// Credential read tools: friend+
+const CREDENTIAL_TRUSTED_TOOLS = new Set(["credential_get", "credential_list"])
 
 // Travel tools: friend+ (weather_lookup accesses vault credentials indirectly;
 // advisory and geocode are public APIs but gated for consistency)
 const TRAVEL_TRUSTED_TOOLS = new Set(["weather_lookup", "travel_advisory", "geocode_search"])
 
-function checkVaultTrustGuardrails(toolName: string, context: GuardContext): GuardResult {
-  if (VAULT_FAMILY_TOOLS.has(toolName)) {
+function checkCredentialTrustGuardrails(toolName: string, context: GuardContext): GuardResult {
+  if (CREDENTIAL_FAMILY_TOOLS.has(toolName)) {
     if (context.trustLevel === "family") return allow
     return deny(REASONS.needsTrust)
   }
-  if (VAULT_TRUSTED_TOOLS.has(toolName) || TRAVEL_TRUSTED_TOOLS.has(toolName)) {
+  if (CREDENTIAL_TRUSTED_TOOLS.has(toolName) || TRAVEL_TRUSTED_TOOLS.has(toolName)) {
     if (isTrustedLevel(context.trustLevel)) return allow
     return deny(REASONS.needsTrust)
   }
@@ -308,9 +308,9 @@ function checkVaultTrustGuardrails(toolName: string, context: GuardContext): Gua
 }
 
 function checkTrustLevelGuardrails(toolName: string, args: Record<string, string>, context: GuardContext): GuardResult {
-  // Vault tools have their own trust rules that apply at all levels
-  const vaultResult = checkVaultTrustGuardrails(toolName, context)
-  if (!vaultResult.allowed) return vaultResult
+  // Credential tools have their own trust rules that apply at all levels
+  const credentialResult = checkCredentialTrustGuardrails(toolName, context)
+  if (!credentialResult.allowed) return credentialResult
 
   // MCP server-specific trust (e.g. browser blocked in group chats) — applies at all trust levels
   if (toolName === "shell") {

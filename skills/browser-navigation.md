@@ -44,7 +44,7 @@ Follow this pattern for every page interaction:
 3. Use `browser_type` for username/password fields
 4. Use `browser_click` to submit
 5. Wait for redirect, then verify login succeeded via snapshot
-6. NEVER hardcode credentials -- use `vault_get` to retrieve login info
+6. NEVER hardcode credentials -- use `credential_get` to retrieve login info
 
 ### Search Forms (Hotels, Flights, Rentals)
 1. Navigate to the search page
@@ -58,7 +58,7 @@ Follow this pattern for every page interaction:
 ### Booking Forms
 1. **ALWAYS confirm with the user before proceeding to payment**
 2. Fill traveler information
-3. Use vault credentials for payment (via `vault_get` -- NEVER type raw card numbers)
+3. Use stored credentials for payment (via `credential_get` -- NEVER type raw card numbers)
 4. Screenshot the final review page for user confirmation
 5. Only click "Book" / "Confirm" after explicit user approval
 
@@ -98,7 +98,7 @@ The stealth configuration handles most fingerprinting automatically. Additionall
 - **CAPTCHAs**: Stop and ask the user to solve manually.
 - **Stale elements**: Re-snapshot the page and retry the interaction.
 - **Blocked/403**: The site may have detected automation. Wait 30 seconds and try with a different approach (e.g., direct URL instead of navigation).
-- **Session expired**: Re-login using stored vault credentials.
+- **Session expired**: Re-login using stored stored credentials.
 
 ## Human Confirmation Gates
 

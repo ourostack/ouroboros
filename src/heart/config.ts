@@ -71,6 +71,13 @@ export interface BlueBubblesChannelConfig {
   requestTimeoutMs: number
 }
 
+export interface VaultSecretsConfig {
+  masterPassword: string
+  adminToken?: string    // Vaultwarden admin token
+  clientId?: string      // Bitwarden API key client_id
+  clientSecret?: string  // Bitwarden API key client_secret
+}
+
 export interface IntegrationsConfig {
   perplexityApiKey: string
   openaiEmbeddingsApiKey: string
@@ -91,6 +98,7 @@ export interface OuroborosConfig {
   teamsChannel: TeamsChannelConfig
   bluebubbles: BlueBubblesConfig
   bluebubblesChannel: BlueBubblesChannelConfig
+  vault: VaultSecretsConfig
   integrations: IntegrationsConfig
 }
 
@@ -148,6 +156,9 @@ const DEFAULT_SECRETS_TEMPLATE: Omit<OuroborosConfig, "context"> = {
     webhookPath: "/bluebubbles-webhook",
     requestTimeoutMs: 30000,
   },
+  vault: {
+    masterPassword: "",
+  },
   integrations: {
     perplexityApiKey: "",
     openaiEmbeddingsApiKey: "",
@@ -170,6 +181,7 @@ function defaultRuntimeConfig(): OuroborosConfig {
     teamsChannel: { ...DEFAULT_SECRETS_TEMPLATE.teamsChannel },
     bluebubbles: { ...DEFAULT_SECRETS_TEMPLATE.bluebubbles },
     bluebubblesChannel: { ...DEFAULT_SECRETS_TEMPLATE.bluebubblesChannel },
+    vault: { ...DEFAULT_SECRETS_TEMPLATE.vault },
     integrations: { ...DEFAULT_SECRETS_TEMPLATE.integrations },
   }
 }
