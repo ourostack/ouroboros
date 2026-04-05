@@ -1,3 +1,4 @@
+import { emitNervesEvent } from "../nerves/runtime"
 import type OpenAI from "openai";
 import { getAgentRoot, getAgentName } from "../heart/identity";
 import { handleSurface, type SurfaceRouteResult } from "../senses/surface-tool";
@@ -191,4 +192,8 @@ export const surfaceToolDefinition: ToolDefinition = {
   },
   summaryKeys: ["content", "delegationId"],
 }
+/* v8 ignore stop */
+
+/* v8 ignore start -- module-level nerves file-completeness event @preserve */
+emitNervesEvent({ component: "repertoire", event: "repertoire.module_loaded", message: "tools-surface loaded", meta: {} })
 /* v8 ignore stop */

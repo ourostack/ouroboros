@@ -1,3 +1,4 @@
+import { emitNervesEvent } from "../nerves/runtime"
 import type OpenAI from "openai";
 import type { Integration, ResolvedContext } from "../mind/friends/types";
 import type { FriendStore } from "../mind/friends/store";
@@ -84,3 +85,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
 ];
 
 export const tools: OpenAI.ChatCompletionFunctionTool[] = baseToolDefinitions.map((d) => d.tool);
+
+/* v8 ignore start -- module-level nerves file-completeness event @preserve */
+emitNervesEvent({ component: "repertoire", event: "repertoire.module_loaded", message: "tools-base loaded", meta: {} })
+/* v8 ignore stop */

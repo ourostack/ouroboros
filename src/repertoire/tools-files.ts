@@ -1,3 +1,4 @@
+import { emitNervesEvent } from "../nerves/runtime"
 import * as fs from "fs";
 import * as fg from "fast-glob";
 import * as path from "path";
@@ -321,3 +322,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
     summaryKeys: ["pattern", "path", "include"],
   },
 ]
+
+/* v8 ignore start -- module-level nerves file-completeness event @preserve */
+emitNervesEvent({ component: "repertoire", event: "repertoire.module_loaded", message: "tools-files loaded", meta: {} })
+/* v8 ignore stop */
