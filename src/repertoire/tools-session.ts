@@ -465,11 +465,13 @@ export const sessionToolDefinitions: ToolDefinition[] = [
       // Resolve friend name → UUID if needed
       /* v8 ignore start -- name resolution: reads real filesystem, tested via live integration @preserve */
       if (friendId !== "self") {
+        const originalFriendId = friendId
         try {
           const agentRoot = getAgentRoot()
           const sessionsDir = path.join(agentRoot, "state", "sessions")
           const friendsDir = path.join(agentRoot, "friends")
-          if (!fs.existsSync(path.join(sessionsDir, friendId))) {
+          const sessionDirExists = fs.existsSync(path.join(sessionsDir, friendId))
+          if (!sessionDirExists) {
             const friendFiles = fs.readdirSync(friendsDir).filter((f) => f.endsWith(".json"))
             for (const file of friendFiles) {
               const raw = fs.readFileSync(path.join(friendsDir, file), "utf-8")
@@ -479,8 +481,22 @@ export const sessionToolDefinitions: ToolDefinition[] = [
                 break
               }
             }
+            emitNervesEvent({
+              component: "repertoire",
+              event: "repertoire.send_message_name_resolve",
+              message: friendId !== originalFriendId ? "resolved friend name to UUID" : "friend name resolution failed",
+              meta: { original: originalFriendId, resolved: friendId, friendsDir, fileCount: friendFiles.length },
+            })
           }
-        } catch { /* continue with original friendId */ }
+        } catch (err) {
+          emitNervesEvent({
+            level: "warn",
+            component: "repertoire",
+            event: "repertoire.send_message_name_resolve_error",
+            message: "friend name resolution threw",
+            meta: { friendId: originalFriendId, error: err instanceof Error ? err.message : String(err) },
+          })
+        }
       }
       /* v8 ignore stop */
 

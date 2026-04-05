@@ -1229,14 +1229,40 @@ export async function sendProactiveBlueBubblesMessageToSession(
   }
 
   // Fallback: if friendId is a name (not UUID), resolve via listAll
-  /* v8 ignore start -- name resolution fallback: tested via live integration @preserve */
+  /* v8 ignore start -- name resolution fallback + diagnostics @preserve */
   if (!friend && store.listAll) {
     try {
       const all = await store.listAll()
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.bluebubbles_proactive_name_resolve",
+        message: "attempting name-based friend resolution",
+        meta: {
+          friendId: params.friendId,
+          storeHasListAll: true,
+          friendCount: all.length,
+          friendNames: all.map((f) => f.name ?? "<no name>"),
+        },
+      })
       friend = all.find((f) => f.name?.toLowerCase() === params.friendId.toLowerCase()) ?? null
-    } catch {
+    } catch (err) {
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.bluebubbles_proactive_name_resolve_error",
+        message: "name resolution fallback failed",
+        meta: { friendId: params.friendId, error: err instanceof Error ? err.message : String(err) },
+      })
       friend = null
     }
+  } else if (!friend) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.bluebubbles_proactive_name_resolve_skip",
+      message: "name resolution skipped: store.listAll not available",
+      meta: { friendId: params.friendId, hasListAll: typeof store.listAll },
+    })
   }
   /* v8 ignore stop */
 
