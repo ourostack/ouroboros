@@ -133,9 +133,9 @@ describe("agentConfigV2Hook registration", () => {
     expect(daemonSource).toContain("registerUpdateHook(agentConfigV2Hook)")
   })
 
-  it("is registered alongside bundleMetaHook in daemon-cli.ts", async () => {
+  it("is registered alongside bundleMetaHook in cli-exec.ts", async () => {
     const cliSource = fs.readFileSync(
-      path.join(process.cwd(), "src", "heart", "daemon", "daemon-cli.ts"),
+      path.join(process.cwd(), "src", "heart", "daemon", "cli-exec.ts"),
       "utf-8",
     )
     expect(cliSource).toContain("registerUpdateHook(agentConfigV2Hook)")
