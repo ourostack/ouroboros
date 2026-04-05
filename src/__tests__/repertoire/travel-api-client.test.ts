@@ -69,6 +69,19 @@ describe("getWeather", () => {
     expect(result.country).toBe("GB")
   })
 
+  it("returns 'unknown' description when weather array is missing", async () => {
+    mockFetchResponse({
+      main: { temp: 10, feels_like: 8, humidity: 80 },
+      weather: [],
+      wind: { speed: 1 },
+      name: "Nowhere",
+      sys: { country: "XX" },
+    })
+
+    const result = await getWeather(0, 0)
+    expect(result.description).toBe("unknown")
+  })
+
   it("fetches API key from vault via getRawSecret", async () => {
     mockFetchResponse({
       main: { temp: 20, feels_like: 18, humidity: 50 },
@@ -138,6 +151,12 @@ describe("getWeatherByCity", () => {
     mockGetRawSecret.mockResolvedValue("test-key")
   })
 
+  it("handles HTTP error for city lookup", async () => {
+    mockFetchResponse({}, false, 404)
+
+    await expect(getWeatherByCity("NonexistentCity")).rejects.toThrow(/OpenWeatherMap/)
+  })
+
   it("returns weather data for city name", async () => {
     mockFetchResponse({
       main: { temp: 15, feels_like: 13, humidity: 70 },
@@ -199,6 +218,12 @@ describe("getTravelAdvisory", () => {
     await expect(getTravelAdvisory("XX")).rejects.toThrow()
   })
 
+  it("throws when no entry found for country", async () => {
+    mockFetchResponse({ data: [] })
+
+    await expect(getTravelAdvisory("ZZ")).rejects.toThrow(/No travel advisory found/)
+  })
+
   it("emits nerves events", async () => {
     mockFetchResponse({ data: [{ id: "GB", advisory: "Normal", advisory_text: "Level 1", level: 1, date_last_updated: "2026-01-01", country: "United Kingdom" }] })
 
@@ -246,6 +271,12 @@ describe("geocode", () => {
     expect(fetchOpts.headers.Authorization).toBeUndefined()
   })
 
+  it("handles HTTP error", async () => {
+    mockFetchResponse({}, false, 500)
+
+    await expect(geocode("test")).rejects.toThrow(/Nominatim geocode/)
+  })
+
   it("handles network error", async () => {
     mockFetch.mockRejectedValue(new Error("Network error"))
 
@@ -290,12 +321,27 @@ describe("reverseGeocode", () => {
     const fetchOpts = mockFetch.mock.calls[0][1]
     expect(fetchOpts.headers["User-Agent"]).toContain("Ouroboros")
   })
+
+  it("handles HTTP error", async () => {
+    mockFetchResponse({}, false, 500)
+
+    await expect(reverseGeocode(0, 0)).rejects.toThrow(/Nominatim reverse geocode/)
+  })
 })
 
 describe("searchPOI", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     nervesEvents.length = 0
+  })
+
+  it("returns 'unknown' type when type field is missing from result", async () => {
+    mockFetchResponse([
+      { lat: "40.7", lon: "-74.0", display_name: "Test Place" },
+    ])
+
+    const results = await searchPOI("test", 40.7, -74)
+    expect(results[0].type).toBe("unknown")
   })
 
   it("returns POI results near coordinates", async () => {
@@ -316,6 +362,12 @@ describe("searchPOI", () => {
 
     const url = mockFetch.mock.calls[0][0] as string
     expect(url).toContain("viewbox=")
+  })
+
+  it("handles HTTP error", async () => {
+    mockFetchResponse({}, false, 500)
+
+    await expect(searchPOI("hotel", 0, 0)).rejects.toThrow(/Nominatim POI search/)
   })
 
   it("emits nerves events", async () => {
