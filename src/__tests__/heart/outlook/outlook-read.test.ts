@@ -220,7 +220,7 @@ describe("outlook direct reads", () => {
     fs.mkdirSync(path.join(betaRoot, "state", "coding"), { recursive: true })
     fs.writeFileSync(path.join(betaRoot, "state", "coding", "sessions.json"), "{not-json", "utf-8")
 
-    const { readOutlookMachineState, readOutlookAgentState } = await import("../../../heart/daemon/outlook-read")
+    const { readOutlookMachineState, readOutlookAgentState } = await import("../../../heart/outlook/outlook-read")
 
     const machine = readOutlookMachineState({
       bundlesRoot,
@@ -301,7 +301,7 @@ describe("outlook direct reads", () => {
       status: "idle",
     })
 
-    const { readOutlookAgentState } = await import("../../../heart/daemon/outlook-read")
+    const { readOutlookAgentState } = await import("../../../heart/outlook/outlook-read")
 
     const first = readOutlookAgentState("alpha", {
       bundlesRoot,
@@ -426,7 +426,7 @@ describe("outlook direct reads", () => {
       status: "idle",
     })
 
-    const { readOutlookAgentState, readOutlookMachineState } = await import("../../../heart/daemon/outlook-read")
+    const { readOutlookAgentState, readOutlookMachineState } = await import("../../../heart/outlook/outlook-read")
 
     const gamma = readOutlookAgentState("gamma", {
       bundlesRoot,
@@ -553,7 +553,7 @@ describe("outlook direct reads", () => {
         }) as typeof fs.readFileSync,
       }
     })
-    const { readOutlookAgentState } = await import("../../../heart/daemon/outlook-read")
+    const { readOutlookAgentState } = await import("../../../heart/outlook/outlook-read")
     const eta = readOutlookAgentState("eta", {
       bundlesRoot,
       now: () => new Date("2026-03-29T12:00:00.000Z"),
@@ -628,7 +628,7 @@ describe("outlook direct reads", () => {
       }
     })
 
-    const { readOutlookAgentState, readOutlookMachineState } = await import("../../../heart/daemon/outlook-read")
+    const { readOutlookAgentState, readOutlookMachineState } = await import("../../../heart/outlook/outlook-read")
 
     const agent = readOutlookAgentState("alpha")
     const machine = readOutlookMachineState()
@@ -688,7 +688,7 @@ describe("outlook deep readers", () => {
         messages: [{ role: "system", content: "inner" }],
       })
 
-      const { readSessionInventory } = await import("../../../heart/daemon/outlook-read")
+      const { readSessionInventory } = await import("../../../heart/outlook/outlook-read")
       const inventory = readSessionInventory("alpha", {
         bundlesRoot,
         now: () => new Date("2026-03-30T12:00:00.000Z"),
@@ -723,7 +723,7 @@ describe("outlook deep readers", () => {
       const alphaRoot = path.join(bundlesRoot, "alpha.ouro")
       writeAgentConfig(alphaRoot)
 
-      const { readSessionInventory } = await import("../../../heart/daemon/outlook-read")
+      const { readSessionInventory } = await import("../../../heart/outlook/outlook-read")
       const inventory = readSessionInventory("alpha", { bundlesRoot })
 
       expect(inventory.totalCount).toBe(0)
@@ -742,7 +742,7 @@ describe("outlook deep readers", () => {
         ],
         state: { lastFriendActivityAt: "2026-03-30T10:00:00.000Z" },
       })
-      const { readSessionInventory } = await import("../../../heart/daemon/outlook-read")
+      const { readSessionInventory } = await import("../../../heart/outlook/outlook-read")
       const inv = readSessionInventory("alpha", { bundlesRoot })
       expect(inv.items[0]!.replyState).toBe("needs-reply")
     })
@@ -756,7 +756,7 @@ describe("outlook deep readers", () => {
         messages: [{ role: "user", content: "hello" }, { role: "assistant", content: "hi" }],
         state: { lastFriendActivityAt: "2026-03-30T10:00:00.000Z", mustResolveBeforeHandoff: true },
       })
-      const { readSessionInventory } = await import("../../../heart/daemon/outlook-read")
+      const { readSessionInventory } = await import("../../../heart/outlook/outlook-read")
       const inv = readSessionInventory("alpha", { bundlesRoot })
       expect(inv.items[0]!.replyState).toBe("on-hold")
     })
@@ -769,7 +769,7 @@ describe("outlook deep readers", () => {
         version: 1,
         messages: [],
       })
-      const { readSessionInventory } = await import("../../../heart/daemon/outlook-read")
+      const { readSessionInventory } = await import("../../../heart/outlook/outlook-read")
       const inv = readSessionInventory("alpha", { bundlesRoot })
       expect(inv.items[0]!.replyState).toBe("idle")
     })
@@ -782,7 +782,7 @@ describe("outlook deep readers", () => {
         version: 1,
         messages: [{ role: "user", content: "test" }],
       })
-      const { readSessionInventory } = await import("../../../heart/daemon/outlook-read")
+      const { readSessionInventory } = await import("../../../heart/outlook/outlook-read")
       const inv = readSessionInventory("alpha", { bundlesRoot })
       expect(inv.items[0]!.lastUsage).toBeNull()
       expect(inv.items[0]!.continuity).toBeNull()
@@ -801,7 +801,7 @@ describe("outlook deep readers", () => {
         status: "pending",
         createdAt: "2026-03-30T10:00:00.000Z",
       })
-      const { readOutlookAgentState } = await import("../../../heart/daemon/outlook-read")
+      const { readOutlookAgentState } = await import("../../../heart/outlook/outlook-read")
       const state = readOutlookAgentState("alpha", { bundlesRoot, now: () => new Date("2026-03-30T12:00:00.000Z") })
       expect(state.obligations.items[0]!.origin).toBeNull()
       expect(state.obligations.items[0]!.currentSurface).toBeNull()
@@ -814,7 +814,7 @@ describe("outlook deep readers", () => {
       fs.mkdirSync(path.join(alphaRoot, "state", "sessions", "friend-1", "cli"), { recursive: true })
       fs.writeFileSync(path.join(alphaRoot, "state", "sessions", "friend-1", "cli", "session.json"), "{bad-json", "utf-8")
 
-      const { readSessionInventory } = await import("../../../heart/daemon/outlook-read")
+      const { readSessionInventory } = await import("../../../heart/outlook/outlook-read")
       const inventory = readSessionInventory("alpha", { bundlesRoot })
 
       expect(inventory.totalCount).toBe(1)
@@ -844,7 +844,7 @@ describe("outlook deep readers", () => {
         state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: "2026-03-30T10:00:00.000Z" },
       })
 
-      const { readSessionTranscript } = await import("../../../heart/daemon/outlook-read")
+      const { readSessionTranscript } = await import("../../../heart/outlook/outlook-read")
       const transcript = readSessionTranscript("alpha", "friend-1", "cli", "session", { bundlesRoot })
 
       expect(transcript).not.toBeNull()
@@ -869,7 +869,7 @@ describe("outlook deep readers", () => {
       const alphaRoot = path.join(bundlesRoot, "alpha.ouro")
       writeAgentConfig(alphaRoot)
 
-      const { readSessionTranscript } = await import("../../../heart/daemon/outlook-read")
+      const { readSessionTranscript } = await import("../../../heart/outlook/outlook-read")
       const transcript = readSessionTranscript("alpha", "nobody", "cli", "session", { bundlesRoot })
       expect(transcript).toBeNull()
     })
@@ -902,7 +902,7 @@ describe("outlook deep readers", () => {
         }),
       ])
 
-      const { readCodingDeep } = await import("../../../heart/daemon/outlook-read")
+      const { readCodingDeep } = await import("../../../heart/outlook/outlook-read")
       const deep = readCodingDeep(alphaRoot)
 
       expect(deep.totalCount).toBe(2)
@@ -923,7 +923,7 @@ describe("outlook deep readers", () => {
     })
 
     it("handles missing coding state file", async () => {
-      const { readCodingDeep } = await import("../../../heart/daemon/outlook-read")
+      const { readCodingDeep } = await import("../../../heart/outlook/outlook-read")
       const deep = readCodingDeep("/tmp/nonexistent-agent.ouro")
       expect(deep.totalCount).toBe(0)
       expect(deep.items).toEqual([])
@@ -962,7 +962,7 @@ describe("outlook deep readers", () => {
         nextAction: "check deploy status",
       })
 
-      const { readAttentionView } = await import("../../../heart/daemon/outlook-read")
+      const { readAttentionView } = await import("../../../heart/outlook/outlook-read")
       const attention = readAttentionView("alpha", { bundlesRoot })
 
       expect(attention.queueLength).toBe(2)
@@ -981,7 +981,7 @@ describe("outlook deep readers", () => {
       const alphaRoot = path.join(bundlesRoot, "alpha.ouro")
       writeAgentConfig(alphaRoot)
 
-      const { readAttentionView } = await import("../../../heart/daemon/outlook-read")
+      const { readAttentionView } = await import("../../../heart/outlook/outlook-read")
       const attention = readAttentionView("alpha", { bundlesRoot })
 
       expect(attention.queueLength).toBe(0)
@@ -1016,7 +1016,7 @@ describe("outlook deep readers", () => {
         task: null,
       })
 
-      const { readBridgeInventory } = await import("../../../heart/daemon/outlook-read")
+      const { readBridgeInventory } = await import("../../../heart/outlook/outlook-read")
       const bridges = readBridgeInventory(alphaRoot)
 
       expect(bridges.totalCount).toBe(2)
@@ -1027,7 +1027,7 @@ describe("outlook deep readers", () => {
     })
 
     it("handles missing bridges directory", async () => {
-      const { readBridgeInventory } = await import("../../../heart/daemon/outlook-read")
+      const { readBridgeInventory } = await import("../../../heart/outlook/outlook-read")
       const bridges = readBridgeInventory("/tmp/nonexistent-agent.ouro")
       expect(bridges.totalCount).toBe(0)
     })
@@ -1055,7 +1055,7 @@ describe("outlook deep readers", () => {
         },
       })
 
-      const { readDaemonHealthDeep } = await import("../../../heart/daemon/outlook-read")
+      const { readDaemonHealthDeep } = await import("../../../heart/outlook/outlook-read")
       const health = readDaemonHealthDeep(healthPath)
 
       expect(health).not.toBeNull()
@@ -1067,7 +1067,7 @@ describe("outlook deep readers", () => {
     })
 
     it("returns null for missing health file", async () => {
-      const { readDaemonHealthDeep } = await import("../../../heart/daemon/outlook-read")
+      const { readDaemonHealthDeep } = await import("../../../heart/outlook/outlook-read")
       const health = readDaemonHealthDeep("/tmp/nonexistent-health.json")
       expect(health).toBeNull()
     })
@@ -1093,7 +1093,7 @@ describe("outlook deep readers", () => {
         { filename: "2026-03-29.md", preview: "Daemon hosting design", mtime: 1711713600000, embedding: [] },
       ])
 
-      const { readMemoryView } = await import("../../../heart/daemon/outlook-read")
+      const { readMemoryView } = await import("../../../heart/outlook/outlook-read")
       const memory = readMemoryView(agentRoot)
 
       expect(memory.diaryEntryCount).toBe(2)
@@ -1103,7 +1103,7 @@ describe("outlook deep readers", () => {
     })
 
     it("handles missing diary and journal directories", async () => {
-      const { readMemoryView } = await import("../../../heart/daemon/outlook-read")
+      const { readMemoryView } = await import("../../../heart/outlook/outlook-read")
       const memory = readMemoryView("/tmp/nonexistent-agent.ouro")
       expect(memory.diaryEntryCount).toBe(0)
       expect(memory.journalEntryCount).toBe(0)
@@ -1117,7 +1117,7 @@ describe("outlook deep readers", () => {
       const facts = [{ id: "f1", text: "Legacy fact.", source: "legacy", createdAt: "2026-03-28T10:00:00.000Z", embedding: [] }]
       fs.writeFileSync(path.join(agentRoot, "psyche", "memory", "facts.jsonl"), facts.map((f) => JSON.stringify(f)).join("\n") + "\n", "utf-8")
 
-      const { readMemoryView } = await import("../../../heart/daemon/outlook-read")
+      const { readMemoryView } = await import("../../../heart/outlook/outlook-read")
       const memory = readMemoryView(agentRoot)
 
       // Should NOT find entries in psyche/memory since we no longer fall back
@@ -1137,7 +1137,7 @@ describe("outlook deep readers", () => {
       writeJson(path.join(alphaRoot, "state", "sessions", "friend-1", "teams", "thread.json"), { version: 1, messages: [] })
       writeJson(path.join(alphaRoot, "state", "sessions", "friend-2", "cli", "session.json"), { version: 1, messages: [] })
 
-      const { readFriendView } = await import("../../../heart/daemon/outlook-read")
+      const { readFriendView } = await import("../../../heart/outlook/outlook-read")
       const friends = readFriendView("alpha", { bundlesRoot })
 
       expect(friends.totalFriends).toBe(2)
@@ -1161,7 +1161,7 @@ describe("outlook deep readers", () => {
       ]
       fs.writeFileSync(logPath, entries.map((e) => JSON.stringify(e)).join("\n") + "\n", "utf-8")
 
-      const { readLogView } = await import("../../../heart/daemon/outlook-read")
+      const { readLogView } = await import("../../../heart/outlook/outlook-read")
       const logs = readLogView(logPath)
 
       expect(logs.totalLines).toBe(2)
@@ -1171,7 +1171,7 @@ describe("outlook deep readers", () => {
     })
 
     it("returns empty for null log path", async () => {
-      const { readLogView } = await import("../../../heart/daemon/outlook-read")
+      const { readLogView } = await import("../../../heart/outlook/outlook-read")
       const logs = readLogView(null)
       expect(logs.totalLines).toBe(0)
     })
@@ -1185,7 +1185,7 @@ describe("outlook deep readers", () => {
       }
       fs.writeFileSync(logPath, lines.join("\n") + "\n", "utf-8")
 
-      const { readLogView } = await import("../../../heart/daemon/outlook-read")
+      const { readLogView } = await import("../../../heart/outlook/outlook-read")
       const logs = readLogView(logPath, 10)
 
       expect(logs.totalLines).toBe(200)
@@ -1203,7 +1203,7 @@ describe("outlook deep readers", () => {
         { session: { id: "c1", status: "running", runner: 42, workdir: null, lastActivityAt: null, failure: { command: "test" } } },
         { session: { id: "c2", status: "completed", originSession: { friendId: "f", channel: 42 }, obligationId: 123, scopeFile: 456 } },
       ])
-      const { readCodingDeep } = await import("../../../heart/daemon/outlook-read")
+      const { readCodingDeep } = await import("../../../heart/outlook/outlook-read")
       const deep = readCodingDeep(alphaRoot)
       expect(deep.items.length).toBe(2)
       expect(deep.items[0]!.runner).toBe("claude")
@@ -1218,7 +1218,7 @@ describe("outlook deep readers", () => {
       const alphaRoot = path.join(bundlesRoot, "alpha.ouro")
       fs.mkdirSync(path.join(alphaRoot, "state", "coding"), { recursive: true })
       fs.writeFileSync(path.join(alphaRoot, "state", "coding", "sessions.json"), "{bad", "utf-8")
-      const { readCodingDeep } = await import("../../../heart/daemon/outlook-read")
+      const { readCodingDeep } = await import("../../../heart/outlook/outlook-read")
       const deep = readCodingDeep(alphaRoot)
       expect(deep.totalCount).toBe(0)
     })
@@ -1231,7 +1231,7 @@ describe("outlook deep readers", () => {
       writeJson(path.join(alphaRoot, "state", "bridges", "b1.json"), { id: "b1", attachedSessions: [{ friendId: 42 }], task: { taskName: 42 } })
       writeJson(path.join(alphaRoot, "state", "bridges", "b2.json"), { noId: true })
       fs.writeFileSync(path.join(alphaRoot, "state", "bridges", "b3.json"), "{bad", "utf-8")
-      const { readBridgeInventory } = await import("../../../heart/daemon/outlook-read")
+      const { readBridgeInventory } = await import("../../../heart/outlook/outlook-read")
       const inv = readBridgeInventory(alphaRoot)
       expect(inv.totalCount).toBe(1)
       expect(inv.items[0]!.attachedSessions).toEqual([])
@@ -1244,7 +1244,7 @@ describe("outlook deep readers", () => {
       const tmpDir = makeBundleRoot()
       const healthPath = path.join(tmpDir, "health.json")
       writeJson(healthPath, { status: "ok" })
-      const { readDaemonHealthDeep } = await import("../../../heart/daemon/outlook-read")
+      const { readDaemonHealthDeep } = await import("../../../heart/outlook/outlook-read")
       const health = readDaemonHealthDeep(healthPath)
       expect(health).not.toBeNull()
       expect(health!.degradedComponents).toEqual([])
@@ -1283,7 +1283,7 @@ describe("outlook deep readers", () => {
         "Reflect on recent activity.",
       ].join("\n"), "utf-8")
 
-      const { readHabitView } = await import("../../../heart/daemon/outlook-read")
+      const { readHabitView } = await import("../../../heart/outlook/outlook-read")
       // Set now to 2 hours after lastRun — checkup is overdue (cadence 30m)
       const habits = readHabitView(agentRoot, {
         now: () => new Date("2026-03-30T10:00:00.000Z"),
@@ -1305,7 +1305,7 @@ describe("outlook deep readers", () => {
     })
 
     it("handles missing habits directory", async () => {
-      const { readHabitView } = await import("../../../heart/daemon/outlook-read")
+      const { readHabitView } = await import("../../../heart/outlook/outlook-read")
       const habits = readHabitView("/tmp/nonexistent-agent.ouro")
       expect(habits.totalCount).toBe(0)
     })
@@ -1322,7 +1322,7 @@ describe("outlook deep readers", () => {
     it("returns empty orientation when no state exists", async () => {
       agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "orient-empty-"))
       agentName = "test-agent"
-      const { readOrientationView } = await import("../../../heart/daemon/outlook-read")
+      const { readOrientationView } = await import("../../../heart/outlook/outlook-read")
       const orientation = readOrientationView(agentRoot, agentName)
       expect(orientation.currentSession).toBeNull()
       expect(orientation.centerOfGravity).toBeTruthy()
@@ -1347,7 +1347,7 @@ describe("outlook deep readers", () => {
         updatedAt: "2026-04-03T10:00:00Z",
       })
 
-      const { readOrientationView } = await import("../../../heart/daemon/outlook-read")
+      const { readOrientationView } = await import("../../../heart/outlook/outlook-read")
       const orientation = readOrientationView(agentRoot, agentName)
       expect(orientation.primaryObligation).not.toBeNull()
       expect(orientation.primaryObligation?.content).toBe("Deploy the new version")
@@ -1364,7 +1364,7 @@ describe("outlook deep readers", () => {
 
     it("returns empty changes when no prior snapshot exists", async () => {
       agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "changes-empty-"))
-      const { readChangesView } = await import("../../../heart/daemon/outlook-read")
+      const { readChangesView } = await import("../../../heart/outlook/outlook-read")
       const view = readChangesView(agentRoot)
       expect(view.changeCount).toBe(0)
       expect(view.items).toEqual([])
@@ -1394,7 +1394,7 @@ describe("outlook deep readers", () => {
         updatedAt: "2026-04-03T10:00:00Z",
       })
 
-      const { readChangesView } = await import("../../../heart/daemon/outlook-read")
+      const { readChangesView } = await import("../../../heart/outlook/outlook-read")
       const view = readChangesView(agentRoot)
       expect(view.changeCount).toBeGreaterThan(0)
       expect(view.items.some((c) => c.kind === "obligation_status_changed")).toBe(true)
@@ -1407,7 +1407,7 @@ describe("outlook deep readers", () => {
       fs.mkdirSync(snapshotDir, { recursive: true })
       fs.writeFileSync(path.join(snapshotDir, "active-work-snapshot.json"), "not json", "utf-8")
 
-      const { readChangesView } = await import("../../../heart/daemon/outlook-read")
+      const { readChangesView } = await import("../../../heart/outlook/outlook-read")
       const view = readChangesView(agentRoot)
       expect(view.changeCount).toBe(0)
     })
@@ -1422,7 +1422,7 @@ describe("outlook deep readers", () => {
 
     it("returns empty detail view when no obligations exist", async () => {
       agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "oblig-empty-"))
-      const { readObligationDetailView } = await import("../../../heart/daemon/outlook-read")
+      const { readObligationDetailView } = await import("../../../heart/outlook/outlook-read")
       const view = readObligationDetailView(agentRoot)
       expect(view.openCount).toBe(0)
       expect(view.primaryId).toBeNull()
@@ -1462,7 +1462,7 @@ describe("outlook deep readers", () => {
         meaning: null,
         updatedAt: "2026-04-03T08:00:00Z",
       })
-      const { readObligationDetailView } = await import("../../../heart/daemon/outlook-read")
+      const { readObligationDetailView } = await import("../../../heart/outlook/outlook-read")
       const view = readObligationDetailView(agentRoot)
       expect(view.openCount).toBe(2)
       expect(view.primaryId).toBeTruthy()

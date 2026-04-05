@@ -6,7 +6,7 @@ vi.mock("../../../nerves/runtime", () => ({
 
 describe("outlook types", () => {
   it("defines the canonical Outlook identity and release defaults", async () => {
-    const mod = await import("../../../heart/daemon/outlook-types")
+    const mod = await import("../../../heart/outlook/outlook-types")
 
     expect(mod.OUTLOOK_PRODUCT_NAME).toBe("Ouro Outlook")
     expect(mod.OUTLOOK_RELEASE_INTERACTION_MODEL).toBe("read-only")

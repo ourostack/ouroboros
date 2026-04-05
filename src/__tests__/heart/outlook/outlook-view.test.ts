@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 
 describe("outlook machine view", () => {
   it("builds a machine-overview-first view with daemon truth, entrypoints, and attention-sorted agents", async () => {
-    const { buildOutlookMachineView } = await import("../../../heart/daemon/outlook-view")
+    const { buildOutlookMachineView } = await import("../../../heart/outlook/outlook-view")
 
     const view = buildOutlookMachineView({
       machine: {
@@ -109,7 +109,7 @@ describe("outlook machine view", () => {
   })
 
   it("treats healthy idle machines as calm and keeps agent order stable within the same attention band", async () => {
-    const { buildOutlookMachineView } = await import("../../../heart/daemon/outlook-view")
+    const { buildOutlookMachineView } = await import("../../../heart/outlook/outlook-view")
 
     const view = buildOutlookMachineView({
       machine: {
@@ -170,7 +170,7 @@ describe("outlook machine view", () => {
   })
 
   it("marks stale but non-degraded machines as watchful and blocked agents as blocked", async () => {
-    const { buildOutlookMachineView } = await import("../../../heart/daemon/outlook-view")
+    const { buildOutlookMachineView } = await import("../../../heart/outlook/outlook-view")
 
     const view = buildOutlookMachineView({
       machine: {
@@ -228,7 +228,7 @@ describe("outlook machine view", () => {
 
 describe("outlook agent view", () => {
   it("builds a read-only human-default agent view with summary-only inward work and recent activity", async () => {
-    const { buildOutlookAgentView } = await import("../../../heart/daemon/outlook-view")
+    const { buildOutlookAgentView } = await import("../../../heart/outlook/outlook-view")
 
     const view = buildOutlookAgentView({
       agent: {
@@ -374,7 +374,7 @@ describe("outlook agent view", () => {
   })
 
   it("allows explicit deep inward drill-down for self-inspection without changing read-only behavior", async () => {
-    const { buildOutlookAgentView } = await import("../../../heart/daemon/outlook-view")
+    const { buildOutlookAgentView } = await import("../../../heart/outlook/outlook-view")
 
     const view = buildOutlookAgentView({
       agent: {
@@ -459,7 +459,7 @@ describe("outlook agent view", () => {
   })
 
   it("defaults to a human summary viewer and filters recent activity down to valid truth-bearing items", async () => {
-    const { buildOutlookAgentView } = await import("../../../heart/daemon/outlook-view")
+    const { buildOutlookAgentView } = await import("../../../heart/outlook/outlook-view")
 
     const view = buildOutlookAgentView({
       agent: {
@@ -600,7 +600,7 @@ describe("outlook agent view", () => {
   })
 
   it("omits inner activity when no latest inner timestamp exists", async () => {
-    const { buildOutlookAgentView } = await import("../../../heart/daemon/outlook-view")
+    const { buildOutlookAgentView } = await import("../../../heart/outlook/outlook-view")
 
     const view = buildOutlookAgentView({
       agent: {
