@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.215",
+      "changes": [
+        "fix: surface tool proactive delivery no longer gated by 24-hour session threshold — findFreshestFriendSession was called with activeOnly:true, filtering out sessions older than 24h even when the agent explicitly wants to send a proactive message. Both the bridge path and direct path now find any session regardless of age. Proactive BB delivery and trust checks still apply."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.214",
       "changes": [
         "fix: daemon death diagnostics — createStderrSink() bypassed EPIPE-safe default in createTerminalSink(), causing uncaught EPIPE crashes when daemon runs detached. Removed redundant unsafe default so the existing try-catch fires.",
