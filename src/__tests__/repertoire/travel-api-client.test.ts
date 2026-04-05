@@ -30,6 +30,10 @@ import {
   geocode,
   reverseGeocode,
   searchPOI,
+  parseAdvisoryLevel,
+  parseCountryName,
+  parseAdvisoryText,
+  setWeatherVaultConfig,
 } from "../../repertoire/travel-api-client"
 
 function mockFetchResponse(data: unknown, ok = true, status = 200): void {
@@ -41,6 +45,37 @@ function mockFetchResponse(data: unknown, ok = true, status = 200): void {
     text: async () => JSON.stringify(data),
   })
 }
+
+function mockFetchText(text: string, ok = true, status = 200): void {
+  mockFetch.mockResolvedValue({
+    ok,
+    status,
+    statusText: ok ? "OK" : "Error",
+    text: async () => text,
+    json: async () => { throw new Error("not json") },
+  })
+}
+
+const SAMPLE_RSS = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+<channel>
+  <title>Travel Advisories</title>
+  <item>
+    <title>Afghanistan - Level 4: Do Not Travel</title>
+    <link>https://travel.state.gov/.../destination.afg.html</link>
+    <pubDate>Mon, 15 Jan 2026</pubDate>
+    <category domain="Threat-Level">Level 4: Do Not Travel</category>
+    <category domain="Country-Tag">AF</category>
+  </item>
+  <item>
+    <title>United Kingdom - Level 1: Exercise Normal Precautions</title>
+    <link>https://travel.state.gov/.../destination.gbr.html</link>
+    <pubDate>Sun, 01 Jan 2026</pubDate>
+    <category domain="Threat-Level">Level 1: Exercise Normal Precautions</category>
+    <category domain="Country-Tag">UK</category>
+  </item>
+</channel>
+</rss>`
 
 describe("getWeather", () => {
   beforeEach(() => {
@@ -100,6 +135,23 @@ describe("getWeather", () => {
     // Verify it's NOT in Authorization header
     const fetchOpts = mockFetch.mock.calls[0][1]
     expect(fetchOpts?.headers?.Authorization).toBeUndefined()
+  })
+
+  it("uses custom vault item ID when configured via setWeatherVaultConfig", async () => {
+    setWeatherVaultConfig("custom-weather-item", "secret")
+    mockFetchResponse({
+      main: { temp: 20, feels_like: 18, humidity: 50 },
+      weather: [{ description: "rain" }],
+      wind: { speed: 3 },
+      name: "Paris",
+      sys: { country: "FR" },
+    })
+
+    await getWeather(48.8, 2.3)
+
+    expect(mockGetRawSecret).toHaveBeenCalledWith("custom-weather-item", "secret")
+    // Reset to default for other tests
+    setWeatherVaultConfig("openweathermap-api", "apiKey")
   })
 
   it("handles HTTP error gracefully", async () => {
@@ -175,59 +227,100 @@ describe("getWeatherByCity", () => {
   })
 })
 
+describe("parseAdvisoryLevel", () => {
+  it("extracts level number from title", () => {
+    expect(parseAdvisoryLevel("Afghanistan - Level 4: Do Not Travel")).toBe(4)
+    expect(parseAdvisoryLevel("United Kingdom - Level 1: Exercise Normal Precautions")).toBe(1)
+  })
+
+  it("returns 0 for unparseable titles", () => {
+    expect(parseAdvisoryLevel("Unknown format")).toBe(0)
+  })
+})
+
+describe("parseCountryName", () => {
+  it("extracts country name before dash", () => {
+    expect(parseCountryName("Afghanistan - Level 4: Do Not Travel")).toBe("Afghanistan")
+    expect(parseCountryName("United Kingdom - Level 1: Exercise Normal Precautions")).toBe("United Kingdom")
+  })
+
+  it("returns full string if no dash", () => {
+    expect(parseCountryName("NoDash")).toBe("NoDash")
+  })
+})
+
+describe("parseAdvisoryText", () => {
+  it("extracts advisory text after Level N:", () => {
+    expect(parseAdvisoryText("Afghanistan - Level 4: Do Not Travel")).toBe("Do Not Travel")
+    expect(parseAdvisoryText("UK - Level 1: Exercise Normal Precautions")).toBe("Exercise Normal Precautions")
+  })
+
+  it("returns full string if no match", () => {
+    expect(parseAdvisoryText("Unknown")).toBe("Unknown")
+  })
+})
+
 describe("getTravelAdvisory", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     nervesEvents.length = 0
   })
 
-  it("returns advisory data for country code", async () => {
-    mockFetchResponse({
-      data: [
-        {
-          id: "AF",
-          advisory: "Do Not Travel",
-          advisory_text: "Level 4: Do Not Travel",
-          level: 4,
-          date_last_updated: "2026-01-15",
-          country: "Afghanistan",
-        },
-      ],
-    })
+  it("returns advisory data for country code from RSS feed", async () => {
+    mockFetchText(SAMPLE_RSS)
 
     const result = await getTravelAdvisory("AF")
 
     expect(result.countryCode).toBe("AF")
     expect(result.advisoryLevel).toBe(4)
     expect(result.countryName).toBe("Afghanistan")
-    expect(result.lastUpdated).toBe("2026-01-15")
+    expect(result.advisoryText).toBe("Do Not Travel")
+    expect(result.lastUpdated).toBe("Mon, 15 Jan 2026")
+  })
+
+  it("fetches from the official RSS endpoint", async () => {
+    mockFetchText(SAMPLE_RSS)
+
+    await getTravelAdvisory("AF")
+
+    const fetchUrl = mockFetch.mock.calls[0][0] as string
+    expect(fetchUrl).toBe("https://travel.state.gov/_res/rss/TAsTWs.xml")
   })
 
   it("requires no authentication", async () => {
-    mockFetchResponse({ data: [{ id: "US", advisory: "Exercise Normal Precautions", advisory_text: "Level 1", level: 1, date_last_updated: "2026-03-01", country: "United States" }] })
+    mockFetchText(SAMPLE_RSS)
 
-    await getTravelAdvisory("US")
+    await getTravelAdvisory("AF")
 
     const fetchOpts = mockFetch.mock.calls[0][1]
     expect(fetchOpts?.headers?.Authorization).toBeUndefined()
   })
 
   it("handles HTTP error", async () => {
-    mockFetchResponse({}, false, 404)
+    mockFetchText("", false, 404)
 
-    await expect(getTravelAdvisory("XX")).rejects.toThrow()
+    await expect(getTravelAdvisory("XX")).rejects.toThrow(/Travel advisory API error/)
   })
 
   it("throws when no entry found for country", async () => {
-    mockFetchResponse({ data: [] })
+    mockFetchText(SAMPLE_RSS)
 
     await expect(getTravelAdvisory("ZZ")).rejects.toThrow(/No travel advisory found/)
   })
 
-  it("emits nerves events", async () => {
-    mockFetchResponse({ data: [{ id: "GB", advisory: "Normal", advisory_text: "Level 1", level: 1, date_last_updated: "2026-01-01", country: "United Kingdom" }] })
+  it("matches country code case-insensitively", async () => {
+    mockFetchText(SAMPLE_RSS)
 
-    await getTravelAdvisory("GB")
+    const result = await getTravelAdvisory("uk")
+
+    expect(result.countryName).toBe("United Kingdom")
+    expect(result.advisoryLevel).toBe(1)
+  })
+
+  it("emits nerves events", async () => {
+    mockFetchText(SAMPLE_RSS)
+
+    await getTravelAdvisory("AF")
 
     expect(nervesEvents.some((e) => e.event === "client.request_start")).toBe(true)
     expect(nervesEvents.some((e) => e.event === "client.request_end")).toBe(true)
