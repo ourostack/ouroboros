@@ -37,9 +37,21 @@ export interface GeoLocation {
 
 // --- OpenWeatherMap ---
 
+/**
+ * Vault item ID and field name for OpenWeatherMap API key.
+ * Override via setWeatherVaultConfig() for custom vault layouts.
+ */
+let weatherVaultItemId = "openweathermap-api"
+let weatherVaultField = "apiKey"
+
+export function setWeatherVaultConfig(itemId: string, field?: string): void {
+  weatherVaultItemId = itemId
+  if (field) weatherVaultField = field
+}
+
 async function getWeatherApiKey(): Promise<string> {
   const client = getBitwardenClient()
-  return client.getRawSecret("openweathermap-api", "apiKey")
+  return client.getRawSecret(weatherVaultItemId, weatherVaultField)
 }
 
 export async function getWeather(lat: number, lon: number): Promise<WeatherData> {
@@ -86,14 +98,44 @@ function parseWeatherResponse(data: any): WeatherData {
 
 // --- US State Dept Travel Advisories ---
 
-const TRAVEL_ADVISORY_URL = "https://cadatalog.state.gov/catalog/api/3/action/package_search"
+/**
+ * Official US State Department travel advisories RSS feed.
+ * This is the canonical public feed maintained by travel.state.gov.
+ * Returns XML/RSS with per-country advisory items.
+ */
+export const TRAVEL_ADVISORY_RSS_URL = "https://travel.state.gov/_res/rss/TAsTWs.xml"
+
+/**
+ * Parse advisory level (1-4) from an RSS item title like
+ * "Afghanistan - Level 4: Do Not Travel"
+ */
+export function parseAdvisoryLevel(title: string): number {
+  const match = title.match(/Level\s+(\d)/)
+  return match ? parseInt(match[1], 10) : 0
+}
+
+/**
+ * Parse country name from an RSS item title like
+ * "Afghanistan - Level 4: Do Not Travel"
+ */
+export function parseCountryName(title: string): string {
+  const dashIdx = title.indexOf(" - ")
+  return dashIdx > 0 ? title.slice(0, dashIdx).trim() : title.trim()
+}
+
+/**
+ * Extract advisory text from title (the part after "Level N: ").
+ */
+export function parseAdvisoryText(title: string): string {
+  const match = title.match(/Level\s+\d:\s*(.+)/)
+  return match ? match[1].trim() : title.trim()
+}
 
 export async function getTravelAdvisory(countryCode: string): Promise<TravelAdvisory> {
   return withNervesEvents("getTravelAdvisory", { countryCode }, async () => {
-    const url = `${TRAVEL_ADVISORY_URL}?q=${encodeURIComponent(countryCode)}`
-    const res = await fetch(url, {
+    const res = await fetch(TRAVEL_ADVISORY_RSS_URL, {
       headers: {
-        Accept: "application/json",
+        Accept: "application/xml, text/xml",
       },
     })
 
@@ -101,20 +143,39 @@ export async function getTravelAdvisory(countryCode: string): Promise<TravelAdvi
       throw new Error(`Travel advisory API error: ${res.status} ${res.statusText}`)
     }
 
-    const data = await res.json()
-    const entry = data.data?.[0]
+    const xml = await res.text()
 
-    if (!entry) {
-      throw new Error(`No travel advisory found for country code "${countryCode}"`)
+    // Parse RSS items via regex (no XML parser dependency needed).
+    // Each <item> contains <title>, <pubDate>, and <category domain="Country-Tag">.
+    const itemPattern = /<item>([\s\S]*?)<\/item>/g
+    let match: RegExpExecArray | null
+    while ((match = itemPattern.exec(xml)) !== null) {
+      const block = match[1]
+
+      // Extract country tag from <category domain="Country-Tag">XX</category>
+      const tagMatch = block.match(/<category\s+domain="Country-Tag">(.*?)<\/category>/)
+      const tag = tagMatch?.[1]?.trim().toUpperCase()
+
+      // The RSS feed uses FIPS country codes (e.g. "AF" for Afghanistan),
+      // which sometimes differ from ISO 3166. Try exact match first.
+      if (tag !== countryCode.toUpperCase()) continue
+
+      const titleMatch = block.match(/<title>(.*?)<\/title>/)
+      const title = titleMatch?.[1] ?? ""
+
+      const pubDateMatch = block.match(/<pubDate>(.*?)<\/pubDate>/)
+      const pubDate = pubDateMatch?.[1]?.trim() ?? ""
+
+      return {
+        countryCode,
+        countryName: parseCountryName(title),
+        advisoryLevel: parseAdvisoryLevel(title),
+        advisoryText: parseAdvisoryText(title),
+        lastUpdated: pubDate,
+      }
     }
 
-    return {
-      countryCode: entry.id,
-      countryName: entry.country,
-      advisoryLevel: entry.level,
-      advisoryText: entry.advisory_text,
-      lastUpdated: entry.date_last_updated,
-    }
+    throw new Error(`No travel advisory found for country code "${countryCode}"`)
   })
 }
 
