@@ -156,6 +156,9 @@ describe("loadConfig", () => {
         webhookPath: "/bluebubbles-webhook",
         requestTimeoutMs: 30000,
       },
+      vault: {
+        masterPassword: "",
+      },
       integrations: {
         perplexityApiKey: "",
       },
@@ -264,6 +267,35 @@ describe("loadConfig", () => {
     expect(config.providers.minimax.apiKey).toBe("")
     expect(config.context.maxTokens).toBe(80000)
     expect(config.context.contextMargin).toBe(20)
+  })
+
+  it("defaults vault secrets to empty masterPassword", async () => {
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({}))
+
+    const { loadConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    const config = loadConfig()
+
+    expect(config.vault.masterPassword).toBe("")
+    expect(config.vault.adminToken).toBeUndefined()
+    expect(config.vault.clientId).toBeUndefined()
+    expect(config.vault.clientSecret).toBeUndefined()
+  })
+
+  it("merges partial vault config from secrets.json", async () => {
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+      vault: {
+        masterPassword: "test-master-pw",
+        adminToken: "admin-tok",
+      },
+    }))
+
+    const { loadConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    const config = loadConfig()
+
+    expect(config.vault.masterPassword).toBe("test-master-pw")
+    expect(config.vault.adminToken).toBe("admin-tok")
   })
 
   it("does not use OUROBOROS_CONFIG_PATH env var", async () => {

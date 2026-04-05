@@ -71,10 +71,25 @@ Present top 3-5 options comparing:
 - **Never proceed with a financial commitment without explicit approval**
 
 ### Credential Handling
-- Use `vault_get` to retrieve payment credentials (never expose raw values)
-- Use `vault_get` for loyalty program numbers
-- Use browser-navigation skill form patterns for entering credentials
-- The credential gateway ensures secrets never enter model context
+
+Credentials are managed through the credential access layer, which stores
+agent-owned secrets encrypted in the bundle vault. Raw passwords never
+enter model context.
+
+- Use `credential_get` to check what credentials exist for a domain (metadata only, never passwords)
+- Use `credential_store` to save credentials the agent acquired (e.g., during sign-up for a service)
+- The credential gateway automatically injects secrets into API requests via `getRawSecret()`
+- Use browser-navigation skill form patterns for entering credentials during interactive sessions
+
+**How credentials work:**
+- Agent-owned credentials are AES-256-GCM encrypted in `~/AgentBundles/<agent>.ouro/vault/`
+- The master key lives at `~/.agentsecrets/<agent>/vault.key` (auto-generated on first use)
+- The agent can sign up for services and store its own credentials
+- Stored passwords are never returned to the model — only metadata (domain, username, notes)
+
+**Upgrade path:** Install `aac` (Bitwarden Agent Access CLI) for vault-backed credentials.
+When `aac` is available, the harness can read credentials from Bitwarden directly,
+enabling access to human-managed vault items without storing them locally.
 
 ### Post-Booking
 - Save confirmation details (confirmation number, dates, hotel name, airline, booking reference)
@@ -105,35 +120,15 @@ Track and reference these travel preferences:
 - `weather_lookup` - Current weather by city or coordinates
 - `travel_advisory` - US State Dept advisory by country code
 - `geocode_search` - Location/POI search with coordinates
-- `vault_get` - Retrieve credentials (payment, loyalty)
-- `vault_store` - Store new credentials (family trust required)
+- `credential_get` - Check credential metadata for a domain (never returns passwords)
+- `credential_store` - Store credentials the agent acquired (family trust, confirmation required)
+- `credential_list` - List stored credential domains
+- `credential_delete` - Delete stored credentials (family trust, confirmation required)
 
 ### MCP Tools (when configured)
 - Browser tools via `@playwright/mcp` - see `browser-navigation` skill
 - Duffel flight search (when MCP server available)
 - Expedia hotel search (when MCP server available)
-- Bitwarden vault management via `@bitwarden/mcp-server` (agent-facing interactive vault access)
-
-### Bitwarden MCP Server
-
-For agent-facing vault interaction (browsing items, searching, reading fields), configure
-`@bitwarden/mcp-server` as an MCP server in agent.json:
-
-```json
-{
-  "mcpServers": {
-    "bitwarden": {
-      "command": "npx",
-      "args": ["@bitwarden/mcp-server"]
-    }
-  }
-}
-```
-
-This is distinct from the built-in `bw` CLI-based credential gateway, which handles
-harness-internal secret injection (e.g., API keys injected into tool requests via
-`getRawSecret()`). The MCP server is for the agent to interactively browse and manage
-vault items on behalf of the user.
 
 ### Human Confirmation Required For
 - Any booking or payment

@@ -8,7 +8,7 @@
  */
 
 import { emitNervesEvent } from "../nerves/runtime"
-import { getBitwardenClient } from "./bitwarden-client"
+import { getCredentialStore } from "./credential-access"
 
 export interface WeatherData {
   temperature: number
@@ -37,21 +37,12 @@ export interface GeoLocation {
 
 // --- OpenWeatherMap ---
 
-/**
- * Vault item ID and field name for OpenWeatherMap API key.
- * Override via setWeatherVaultConfig() for custom vault layouts.
- */
-let weatherVaultItemId = "openweathermap-api"
-let weatherVaultField = "apiKey"
-
-export function setWeatherVaultConfig(itemId: string, field?: string): void {
-  weatherVaultItemId = itemId
-  if (field) weatherVaultField = field
-}
+/** Domain used for weather API key credential retrieval. */
+const WEATHER_CREDENTIAL_DOMAIN = "api.openweathermap.org"
 
 async function getWeatherApiKey(): Promise<string> {
-  const client = getBitwardenClient()
-  return client.getRawSecret(weatherVaultItemId, weatherVaultField)
+  const store = getCredentialStore()
+  return store.getRawSecret(WEATHER_CREDENTIAL_DOMAIN, "password")
 }
 
 export async function getWeather(lat: number, lon: number): Promise<WeatherData> {

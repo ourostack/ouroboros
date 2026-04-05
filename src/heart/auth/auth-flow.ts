@@ -54,6 +54,12 @@ interface SecretsTemplate {
     skipConfirmation: boolean
     port: number
   }
+  vault: {
+    masterPassword: string
+    adminToken?: string
+    clientId?: string
+    clientSecret?: string
+  }
   integrations: {
     perplexityApiKey: string
     openaiEmbeddingsApiKey: string
@@ -102,6 +108,9 @@ const DEFAULT_SECRETS_TEMPLATE: SecretsTemplate = {
   teamsChannel: {
     skipConfirmation: true,
     port: 3978,
+  },
+  vault: {
+    masterPassword: "",
   },
   integrations: {
     perplexityApiKey: "",
