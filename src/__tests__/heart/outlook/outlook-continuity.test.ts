@@ -21,9 +21,9 @@ vi.mock("../../../mind/episodes", () => ({
 
 describe("outlook continuity types", () => {
   it("OutlookPresenceView interface is exported", async () => {
-    const types = await import("../../../heart/daemon/outlook-types")
+    const types = await import("../../../heart/outlook/outlook-types")
     // Type check: the interface should exist (we import and use it)
-    const view: import("../../../heart/daemon/outlook-types").OutlookPresenceView = {
+    const view: import("../../../heart/outlook/outlook-types").OutlookPresenceView = {
       self: null,
       peers: [],
     }
@@ -32,8 +32,8 @@ describe("outlook continuity types", () => {
   })
 
   it("OutlookCareSummary interface is exported", async () => {
-    const _types = await import("../../../heart/daemon/outlook-types")
-    const summary: import("../../../heart/daemon/outlook-types").OutlookCareSummary = {
+    const _types = await import("../../../heart/outlook/outlook-types")
+    const summary: import("../../../heart/outlook/outlook-types").OutlookCareSummary = {
       activeCount: 0,
       items: [],
     }
@@ -41,8 +41,8 @@ describe("outlook continuity types", () => {
   })
 
   it("OutlookEpisodeSummary interface is exported", async () => {
-    const _types = await import("../../../heart/daemon/outlook-types")
-    const summary: import("../../../heart/daemon/outlook-types").OutlookEpisodeSummary = {
+    const _types = await import("../../../heart/outlook/outlook-types")
+    const summary: import("../../../heart/outlook/outlook-types").OutlookEpisodeSummary = {
       recentCount: 0,
       items: [],
     }
@@ -62,7 +62,7 @@ describe("outlook continuity read", () => {
     mockReadActiveCares.mockReturnValue(cares)
     mockReadRecentEpisodes.mockReturnValue(episodes)
 
-    const { readOutlookContinuity } = await import("../../../heart/daemon/outlook-read")
+    const { readOutlookContinuity } = await import("../../../heart/outlook/outlook-read")
     const result = readOutlookContinuity("/mock/agent-root", "ouroboros")
 
     expect(result.presence.self).toEqual(selfPresence)
@@ -77,7 +77,7 @@ describe("outlook continuity read", () => {
     mockReadActiveCares.mockReturnValue([])
     mockReadRecentEpisodes.mockReturnValue([])
 
-    const { readOutlookContinuity } = await import("../../../heart/daemon/outlook-read")
+    const { readOutlookContinuity } = await import("../../../heart/outlook/outlook-read")
     const result = readOutlookContinuity("/mock/agent-root", "ouroboros")
 
     expect(result.presence.self).toBeNull()

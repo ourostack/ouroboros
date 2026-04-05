@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 
 describe("outlook render", () => {
   it("renders a machine-first Outlook shell with agent drill-down affordances and polling hooks", async () => {
-    const { renderOutlookApp } = await import("../../../heart/daemon/outlook-render")
+    const { renderOutlookApp } = await import("../../../heart/outlook/outlook-render")
 
     const html = renderOutlookApp({
       origin: "http://127.0.0.1:4310",
@@ -134,7 +134,7 @@ describe("outlook render", () => {
   })
 
   it("renders a graceful empty-state shell when no agents are currently visible", async () => {
-    const { renderOutlookApp } = await import("../../../heart/daemon/outlook-render")
+    const { renderOutlookApp } = await import("../../../heart/outlook/outlook-render")
 
     const html = renderOutlookApp({
       origin: "http://127.0.0.1:4310",
@@ -216,7 +216,7 @@ describe("outlook render", () => {
   })
 
   it("falls back to raw machine truth when no machine view is provided", async () => {
-    const { renderOutlookApp } = await import("../../../heart/daemon/outlook-render")
+    const { renderOutlookApp } = await import("../../../heart/outlook/outlook-render")
 
     const html = renderOutlookApp({
       origin: "http://127.0.0.1:4310",

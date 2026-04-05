@@ -6,7 +6,7 @@ vi.mock("../../../nerves/runtime", () => ({
 
 describe("outlook http", () => {
   it("serves loopback-only HTML and JSON endpoints for Outlook", async () => {
-    const { startOutlookHttpServer } = await import("../../../heart/daemon/outlook-http")
+    const { startOutlookHttpServer } = await import("../../../heart/outlook/outlook-http")
 
     const server = await startOutlookHttpServer({
       host: "127.0.0.1",
@@ -54,7 +54,7 @@ describe("outlook http", () => {
   })
 
   it("renders the default app safely and normalizes trailing-slash Outlook routes", async () => {
-    const { startOutlookHttpServer } = await import("../../../heart/daemon/outlook-http")
+    const { startOutlookHttpServer } = await import("../../../heart/outlook/outlook-http")
 
     const server = await startOutlookHttpServer({
       host: "127.0.0.1",
@@ -134,7 +134,7 @@ describe("outlook http", () => {
   })
 
   it("returns a JSON 404 for unknown Outlook routes", async () => {
-    const { startOutlookHttpServer } = await import("../../../heart/daemon/outlook-http")
+    const { startOutlookHttpServer } = await import("../../../heart/outlook/outlook-http")
 
     const server = await startOutlookHttpServer({
       host: "127.0.0.1",
@@ -173,12 +173,12 @@ describe("outlook http", () => {
         : null
     ))
 
-    vi.doMock("../../../heart/daemon/outlook-read", () => ({
+    vi.doMock("../../../heart/outlook/outlook-read", () => ({
       readOutlookMachineState,
       readOutlookAgentState,
     }))
 
-    const { startOutlookHttpServer } = await import("../../../heart/daemon/outlook-http")
+    const { startOutlookHttpServer } = await import("../../../heart/outlook/outlook-http")
     const server = await startOutlookHttpServer()
 
     expect(server.origin).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
@@ -196,11 +196,11 @@ describe("outlook http", () => {
     expect(readOutlookAgentState).toHaveBeenCalledWith("slugger")
 
     await server.stop()
-    vi.doUnmock("../../../heart/daemon/outlook-read")
+    vi.doUnmock("../../../heart/outlook/outlook-read")
   })
 
   it("serves deep inspectability endpoints for agent surfaces", async () => {
-    const { startOutlookHttpServer } = await import("../../../heart/daemon/outlook-http")
+    const { startOutlookHttpServer } = await import("../../../heart/outlook/outlook-http")
 
     const server = await startOutlookHttpServer({
       host: "127.0.0.1",
@@ -277,7 +277,7 @@ describe("outlook http", () => {
   })
 
   it("serves inner-transcript and machine health/logs endpoints", async () => {
-    const { startOutlookHttpServer } = await import("../../../heart/daemon/outlook-http")
+    const { startOutlookHttpServer } = await import("../../../heart/outlook/outlook-http")
 
     const server = await startOutlookHttpServer({
       host: "127.0.0.1",
@@ -322,7 +322,7 @@ describe("outlook http", () => {
     const path = await import("path")
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "outlook-hooks-"))
 
-    const { startOutlookHttpServer } = await import("../../../heart/daemon/outlook-http")
+    const { startOutlookHttpServer } = await import("../../../heart/outlook/outlook-http")
     const server = await startOutlookHttpServer({
       host: "127.0.0.1",
       port: 0,
@@ -371,7 +371,7 @@ describe("outlook http", () => {
   })
 
   it("streams SSE events and supports manual broadcast", async () => {
-    const { startOutlookHttpServer } = await import("../../../heart/daemon/outlook-http")
+    const { startOutlookHttpServer } = await import("../../../heart/outlook/outlook-http")
 
     const server = await startOutlookHttpServer({
       host: "127.0.0.1",
@@ -414,7 +414,7 @@ describe("outlook http", () => {
   })
 
   it("serves /api/machine at root namespace (canonical)", async () => {
-    const { startOutlookHttpServer } = await import("../../../heart/daemon/outlook-http")
+    const { startOutlookHttpServer } = await import("../../../heart/outlook/outlook-http")
 
     const server = await startOutlookHttpServer({
       host: "127.0.0.1",
@@ -435,7 +435,7 @@ describe("outlook http", () => {
   })
 
   it("serves /api/agents/:agent at root namespace (canonical)", async () => {
-    const { startOutlookHttpServer } = await import("../../../heart/daemon/outlook-http")
+    const { startOutlookHttpServer } = await import("../../../heart/outlook/outlook-http")
 
     const server = await startOutlookHttpServer({
       host: "127.0.0.1",
@@ -461,7 +461,7 @@ describe("outlook http", () => {
   })
 
   it("streams SSE events at /api/events (canonical)", async () => {
-    const { startOutlookHttpServer } = await import("../../../heart/daemon/outlook-http")
+    const { startOutlookHttpServer } = await import("../../../heart/outlook/outlook-http")
 
     const server = await startOutlookHttpServer({
       host: "127.0.0.1",
@@ -498,7 +498,7 @@ describe("outlook http", () => {
   })
 
   it("serves /api/agents/:agent/coding and other surfaces at root namespace", async () => {
-    const { startOutlookHttpServer } = await import("../../../heart/daemon/outlook-http")
+    const { startOutlookHttpServer } = await import("../../../heart/outlook/outlook-http")
 
     const server = await startOutlookHttpServer({
       host: "127.0.0.1",
@@ -533,7 +533,7 @@ describe("outlook http", () => {
   })
 
   it("serves /api/agents/:agent/continuity endpoint", async () => {
-    const { startOutlookHttpServer } = await import("../../../heart/daemon/outlook-http")
+    const { startOutlookHttpServer } = await import("../../../heart/outlook/outlook-http")
 
     const mockContinuity = {
       presence: {
@@ -568,7 +568,7 @@ describe("outlook http", () => {
   })
 
   it("serves /api/agents/:agent/orientation endpoint", async () => {
-    const { startOutlookHttpServer } = await import("../../../heart/daemon/outlook-http")
+    const { startOutlookHttpServer } = await import("../../../heart/outlook/outlook-http")
 
     const mockOrientation = {
       currentSession: { friendId: "ari", channel: "cli", key: "chat", lastActivityAt: "2026-04-03T10:00:00Z" },
@@ -596,7 +596,7 @@ describe("outlook http", () => {
   })
 
   it("serves /api/agents/:agent/obligations endpoint", async () => {
-    const { startOutlookHttpServer } = await import("../../../heart/daemon/outlook-http")
+    const { startOutlookHttpServer } = await import("../../../heart/outlook/outlook-http")
 
     const mockObligations = {
       openCount: 2,
@@ -625,7 +625,7 @@ describe("outlook http", () => {
   })
 
   it("serves /api/agents/:agent/changes endpoint", async () => {
-    const { startOutlookHttpServer } = await import("../../../heart/daemon/outlook-http")
+    const { startOutlookHttpServer } = await import("../../../heart/outlook/outlook-http")
 
     const mockChanges = {
       changeCount: 1,
@@ -651,7 +651,7 @@ describe("outlook http", () => {
   })
 
   it("serves /api/agents/:agent/self-fix endpoint", async () => {
-    const { startOutlookHttpServer } = await import("../../../heart/daemon/outlook-http")
+    const { startOutlookHttpServer } = await import("../../../heart/outlook/outlook-http")
 
     const mockSelfFix = { active: false, currentStep: null, steps: [] }
 
@@ -672,7 +672,7 @@ describe("outlook http", () => {
   })
 
   it("serves /api/agents/:agent/memory-decisions endpoint", async () => {
-    const { startOutlookHttpServer } = await import("../../../heart/daemon/outlook-http")
+    const { startOutlookHttpServer } = await import("../../../heart/outlook/outlook-http")
 
     const mockDecisions = {
       totalCount: 1,

@@ -34,7 +34,7 @@ export default defineConfig({
         "src/nerves/coverage/cli-main.ts",
         "src/heart/providers/anthropic-token.ts",
         "src/nerves/observation.ts",
-        "src/heart/daemon/outlook-render.ts",
+        "src/heart/outlook/outlook-render.ts",
       ],
       thresholds: {
         lines: 100,

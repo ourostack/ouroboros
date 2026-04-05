@@ -7,9 +7,9 @@ import { listSessionActivity } from "../session-activity"
 import { buildTaskBoard } from "../../repertoire/tasks/board"
 import { scanTasks } from "../../repertoire/tasks/scanner"
 import type { TaskStatus } from "../../repertoire/tasks/types"
-import { listEnabledBundleAgents } from "./agent-discovery"
-import { getRuntimeMetadata, type RuntimeMetadata } from "./runtime-metadata"
-import { deriveInnerJob, formatSurfacedValue, getInnerDialogSessionPath, readInnerDialogRawData } from "./thoughts"
+import { listEnabledBundleAgents } from "../daemon/agent-discovery"
+import { getRuntimeMetadata, type RuntimeMetadata } from "../daemon/runtime-metadata"
+import { deriveInnerJob, formatSurfacedValue, getInnerDialogSessionPath, readInnerDialogRawData } from "../daemon/thoughts"
 import {
   OUTLOOK_DEFAULT_INNER_VISIBILITY,
   OUTLOOK_PRODUCT_NAME,

@@ -2,7 +2,7 @@ import type { CodingSession, CodingSessionOrigin } from "../../nerves/observatio
 import type { BridgeRecord, BridgeSessionRef, BridgeTaskLink } from "../../nerves/observation"
 import type { TaskStatus, RuntimeMetadata } from "../../nerves/observation"
 import type { UsageData } from "../../nerves/observation"
-import type { InnerJobStatus } from "./thoughts"
+import type { InnerJobStatus } from "../daemon/thoughts"
 
 // Re-export domain types through the observation layer
 export type { UsageData } from "../../nerves/observation"
