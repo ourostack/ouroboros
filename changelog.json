@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.206",
+      "changes": [
+        "feat: capability discovery and tiered self-configuration — config registry with tier-aware metadata (T1 self-service, T2 proposal, T3 operator-only), read_config tool with topic-filtered discovery, update_config tool for T1 immediate changes, propose_config tool for T2 operator-approval flow, version-change surfacing in start-of-turn packet via buildCapabilitiesSection"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.205",
       "changes": [
         "refactor: enforce subsystem boundaries — eliminate all heart/ and nerves/ static imports from senses/, move AttentionItem type to heart/, surfaceToolDef to repertoire/, SteeringFollowUpEffect to heart/turn-coordinator, inline BlueBubbles runtime state reader in daemon"
