@@ -1,4 +1,3 @@
-import { emitNervesEvent } from "../nerves/runtime"
 import type OpenAI from "openai";
 
 export const ponderTool: OpenAI.ChatCompletionFunctionTool = {
@@ -65,6 +64,3 @@ export const restTool: OpenAI.ChatCompletionFunctionTool = {
   },
 };
 
-/* v8 ignore start -- module-level nerves file-completeness event @preserve */
-emitNervesEvent({ component: "repertoire", event: "repertoire.module_loaded", message: "tools-flow loaded", meta: {} })
-/* v8 ignore stop */
