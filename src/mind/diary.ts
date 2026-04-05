@@ -1,11 +1,11 @@
 import * as fs from "fs";
 import * as path from "path";
 import { randomUUID } from "crypto";
-import { getOpenAIEmbeddingsApiKey } from "../heart/config";
 import { getAgentRoot } from "../heart/identity";
 import { emitNervesEvent } from "../nerves/runtime";
 import { trackSyncWrite } from "../heart/sync";
 import { cosineSimilarity } from "./associative-recall";
+import { type EmbeddingProvider, createDefaultEmbeddingProvider } from "./embedding-provider";
 
 export interface DiaryStorePaths {
   rootDir: string;
@@ -28,9 +28,8 @@ export interface DiaryWriteResult {
   skipped: number;
 }
 
-export interface DiaryEmbeddingProvider {
-  embed(texts: string[]): Promise<number[][]>;
-}
+/** @deprecated Use EmbeddingProvider from ./embedding-provider instead. */
+export type DiaryEmbeddingProvider = EmbeddingProvider;
 
 export interface SaveDiaryEntryOptions {
   text: string;
@@ -39,7 +38,7 @@ export interface SaveDiaryEntryOptions {
   diaryRoot?: string;
   now?: () => Date;
   idFactory?: () => string;
-  embeddingProvider?: DiaryEmbeddingProvider;
+  embeddingProvider?: EmbeddingProvider;
 }
 
 export interface EntityIndexEntry {
@@ -53,36 +52,6 @@ export type EntityIndex = Record<string, EntityIndexEntry>;
 const DEDUP_THRESHOLD = 0.6;
 const SEMANTIC_DEDUP_THRESHOLD = 0.95;
 const ENTITY_TOKEN = /[a-z0-9]+/g;
-const DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small";
-
-class OpenAIEmbeddingProvider implements DiaryEmbeddingProvider {
-  constructor(private readonly apiKey: string, private readonly model: string = DEFAULT_EMBEDDING_MODEL) {}
-
-  async embed(texts: string[]): Promise<number[][]> {
-    const response = await fetch("https://api.openai.com/v1/embeddings", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: this.model,
-        input: texts,
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`embedding request failed: ${response.status} ${response.statusText}`);
-    }
-
-    const payload = (await response.json()) as { data?: Array<{ embedding: number[] }> };
-    if (!payload.data || payload.data.length !== texts.length) {
-      throw new Error("embedding response missing expected vectors");
-    }
-
-    return payload.data.map((entry) => entry.embedding);
-  }
-}
 
 export function ensureDiaryStorePaths(rootDir: string): DiaryStorePaths {
   const factsPath = path.join(rootDir, "facts.jsonl");
@@ -234,13 +203,7 @@ export function appendEntriesWithDedup(stores: DiaryStorePaths, incoming: DiaryE
   return { added, skipped };
 }
 
-function createDefaultEmbeddingProvider(): DiaryEmbeddingProvider | null {
-  const apiKey = getOpenAIEmbeddingsApiKey().trim();
-  if (!apiKey) return null;
-  return new OpenAIEmbeddingProvider(apiKey);
-}
-
-async function buildEmbedding(text: string, embeddingProvider?: DiaryEmbeddingProvider): Promise<number[]> {
+async function buildEmbedding(text: string, embeddingProvider?: EmbeddingProvider): Promise<number[]> {
   const provider = embeddingProvider ?? createDefaultEmbeddingProvider();
   if (!provider) {
     emitNervesEvent({
@@ -306,7 +269,7 @@ export interface BackfillEmbeddingsResult {
 
 export async function backfillEmbeddings(options?: {
   diaryRoot?: string;
-  embeddingProvider?: DiaryEmbeddingProvider;
+  embeddingProvider?: EmbeddingProvider;
   batchSize?: number;
 }): Promise<BackfillEmbeddingsResult> {
   const diaryRoot = resolveDiaryRoot(options?.diaryRoot);
@@ -391,7 +354,7 @@ function uniqueFacts(facts: DiaryEntry[]): DiaryEntry[] {
 export async function searchDiaryEntries(
   query: string,
   facts: DiaryEntry[],
-  embeddingProvider?: DiaryEmbeddingProvider,
+  embeddingProvider?: EmbeddingProvider,
 ): Promise<DiaryEntry[]> {
   const trimmed = query.trim();
   if (!trimmed) return [];
