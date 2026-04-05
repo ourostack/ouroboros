@@ -1228,41 +1228,35 @@ export async function sendProactiveBlueBubblesMessageToSession(
     friend = null
   }
 
-  // Fallback: if friendId is a name (not UUID), resolve via listAll
-  /* v8 ignore start -- name resolution fallback + diagnostics @preserve */
-  if (!friend && store.listAll) {
+  // Direct filesystem fallback — store.get() with name resolution wasn't working in production
+  // despite correct compiled code. Bypass the entire store abstraction.
+  /* v8 ignore start -- direct filesystem name resolution @preserve */
+  if (!friend) {
     try {
-      const all = await store.listAll()
-      emitNervesEvent({
-        component: "senses",
-        event: "senses.bluebubbles_proactive_name_resolve",
-        message: "attempting name-based friend resolution",
-        meta: {
-          friendId: params.friendId,
-          storeHasListAll: true,
-          friendCount: all.length,
-          friendNames: all.map((f) => f.name ?? "<no name>"),
-        },
-      })
-      friend = all.find((f) => f.name?.toLowerCase() === params.friendId.toLowerCase()) ?? null
+      const friendsDir = path.join(getAgentRoot(), "friends")
+      const files = fs.readdirSync(friendsDir).filter((f: string) => f.endsWith(".json"))
+      for (const file of files) {
+        const raw = JSON.parse(fs.readFileSync(path.join(friendsDir, file), "utf-8")) as FriendRecord
+        if (raw.name?.toLowerCase() === params.friendId.toLowerCase()) {
+          friend = raw
+          emitNervesEvent({
+            component: "senses",
+            event: "senses.bluebubbles_proactive_name_resolved",
+            message: "resolved friend by name via direct filesystem scan",
+            meta: { friendId: params.friendId, resolvedId: raw.id, name: raw.name },
+          })
+          break
+        }
+      }
     } catch (err) {
       emitNervesEvent({
         level: "warn",
         component: "senses",
         event: "senses.bluebubbles_proactive_name_resolve_error",
-        message: "name resolution fallback failed",
+        message: "direct filesystem name resolution failed",
         meta: { friendId: params.friendId, error: err instanceof Error ? err.message : String(err) },
       })
-      friend = null
     }
-  } else if (!friend) {
-    emitNervesEvent({
-      level: "warn",
-      component: "senses",
-      event: "senses.bluebubbles_proactive_name_resolve_skip",
-      message: "name resolution skipped: store.listAll not available",
-      meta: { friendId: params.friendId, hasListAll: typeof store.listAll },
-    })
   }
   /* v8 ignore stop */
 
