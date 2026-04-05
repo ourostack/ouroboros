@@ -18,7 +18,7 @@ describe("BlueBubbles mutation log", () => {
   })
 
   it("appends durable mutation records under agentstate without touching the session prompt", async () => {
-    const { getBlueBubblesMutationLogPath, recordBlueBubblesMutation } = await import("../../senses/bluebubbles-mutation-log")
+    const { getBlueBubblesMutationLogPath, recordBlueBubblesMutation } = await import("../../../senses/bluebubbles/mutation-log")
 
     const pathToLog = getBlueBubblesMutationLogPath("slugger", "chat:any;+;group/id:thread/reply")
     expect(pathToLog).toBe(
@@ -103,7 +103,7 @@ describe("BlueBubbles mutation log", () => {
   })
 
   it("records null chat identity fields when BlueBubbles only gives a session key", async () => {
-    const { getBlueBubblesMutationLogPath, recordBlueBubblesMutation } = await import("../../senses/bluebubbles-mutation-log")
+    const { getBlueBubblesMutationLogPath, recordBlueBubblesMutation } = await import("../../../senses/bluebubbles/mutation-log")
 
     recordBlueBubblesMutation("slugger", {
       kind: "mutation",
@@ -144,7 +144,7 @@ describe("BlueBubbles mutation log", () => {
       getBlueBubblesMutationLogPath,
       listBlueBubblesRecoveryCandidates,
       recordBlueBubblesMutation,
-    } = await import("../../senses/bluebubbles-mutation-log")
+    } = await import("../../../senses/bluebubbles/mutation-log")
 
     recordBlueBubblesMutation("slugger", {
       kind: "mutation",

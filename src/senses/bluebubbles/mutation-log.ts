@@ -1,9 +1,9 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
-import type { BlueBubblesNormalizedMutation } from "./bluebubbles-model"
-import { emitNervesEvent } from "../nerves/runtime"
-import { getAgentRoot } from "../heart/identity"
-import { sanitizeKey } from "../heart/config"
+import type { BlueBubblesNormalizedMutation } from "./model"
+import { emitNervesEvent } from "../../nerves/runtime"
+import { getAgentRoot } from "../../heart/identity"
+import { sanitizeKey } from "../../heart/config"
 
 export interface BlueBubblesMutationLogEntry {
   recordedAt: string

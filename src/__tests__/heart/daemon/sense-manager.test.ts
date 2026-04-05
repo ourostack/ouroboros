@@ -609,7 +609,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({
         agents: [
           expect.objectContaining({ name: "slugger:teams", agentArg: "slugger", entry: "senses/teams-entry.js" }),
-          expect.objectContaining({ name: "slugger:bluebubbles", agentArg: "slugger", entry: "senses/bluebubbles-entry.js" }),
+          expect.objectContaining({ name: "slugger:bluebubbles", agentArg: "slugger", entry: "senses/bluebubbles/entry.js" }),
         ],
       }),
     )
