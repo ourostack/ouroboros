@@ -37,6 +37,10 @@ exports[`tool registry contract > tool surface area snapshot 1`] = `
   "shell_status",
   "shell_tail",
   "update_config",
+  "vault_delete",
+  "vault_get",
+  "vault_list",
+  "vault_store",
   "web_search",
   "write_file",
 ]

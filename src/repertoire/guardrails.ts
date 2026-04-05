@@ -257,8 +257,31 @@ function checkWriteTrustGuardrails(toolName: string, args: Record<string, string
   return deny(REASONS.needsTrustForWrite)
 }
 
+// --- vault tool trust gating ---
+
+// Vault write tools: family only
+const VAULT_FAMILY_TOOLS = new Set(["vault_store", "vault_delete"])
+// Vault read tools: friend+
+const VAULT_TRUSTED_TOOLS = new Set(["vault_get", "vault_list"])
+
+function checkVaultTrustGuardrails(toolName: string, context: GuardContext): GuardResult {
+  if (VAULT_FAMILY_TOOLS.has(toolName)) {
+    if (context.trustLevel === "family") return allow
+    return deny(REASONS.needsTrust)
+  }
+  if (VAULT_TRUSTED_TOOLS.has(toolName)) {
+    if (isTrustedLevel(context.trustLevel)) return allow
+    return deny(REASONS.needsTrust)
+  }
+  return allow
+}
+
 function checkTrustLevelGuardrails(toolName: string, args: Record<string, string>, context: GuardContext): GuardResult {
-  // Trusted levels (family/friend) — no trust guardrails. Undefined defaults to friend.
+  // Vault tools have their own trust rules that apply at all levels
+  const vaultResult = checkVaultTrustGuardrails(toolName, context)
+  if (!vaultResult.allowed) return vaultResult
+
+  // Trusted levels (family/friend) — no further trust guardrails. Undefined defaults to friend.
   if (isTrustedLevel(context.trustLevel)) return allow
 
   if (toolName === "shell") {
