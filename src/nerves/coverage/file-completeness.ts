@@ -58,6 +58,10 @@ const DISPATCH_EXEMPT_PATTERNS = [
   // cli-parse and cli-render are pure functions with no side effects.
   "daemon/cli-parse",
   "daemon/cli-render",
+  // Shared utility modules: pure helpers consumed by modules that own observability.
+  "arc/json-store",
+  "repertoire/api-client",
+  "mind/embedding-provider",
 ]
 
 function isDispatchExempt(filePath: string): boolean {
