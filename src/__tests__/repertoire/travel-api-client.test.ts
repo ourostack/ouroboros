@@ -154,6 +154,23 @@ describe("getWeather", () => {
     setWeatherVaultConfig("openweathermap-api", "apiKey")
   })
 
+  it("keeps existing vault field when setWeatherVaultConfig called without field arg", async () => {
+    setWeatherVaultConfig("custom-item-only")
+    mockFetchResponse({
+      main: { temp: 20, feels_like: 18, humidity: 50 },
+      weather: [{ description: "sunny" }],
+      wind: { speed: 1 },
+      name: "Rome",
+      sys: { country: "IT" },
+    })
+
+    await getWeather(41.9, 12.5)
+
+    expect(mockGetRawSecret).toHaveBeenCalledWith("custom-item-only", "apiKey")
+    // Reset to default for other tests
+    setWeatherVaultConfig("openweathermap-api", "apiKey")
+  })
+
   it("handles HTTP error gracefully", async () => {
     mockFetchResponse({ message: "unauthorized" }, false, 401)
 
@@ -324,6 +341,40 @@ describe("getTravelAdvisory", () => {
 
     expect(nervesEvents.some((e) => e.event === "client.request_start")).toBe(true)
     expect(nervesEvents.some((e) => e.event === "client.request_end")).toBe(true)
+  })
+
+  it("defaults title to empty string when <title> tag is missing from RSS item", async () => {
+    const rssNoTitle = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel>
+  <item>
+    <pubDate>Mon, 15 Jan 2026</pubDate>
+    <category domain="Country-Tag">AF</category>
+  </item>
+</channel></rss>`
+    mockFetchText(rssNoTitle)
+
+    const result = await getTravelAdvisory("AF")
+
+    expect(result.countryCode).toBe("AF")
+    expect(result.countryName).toBe("")
+    expect(result.lastUpdated).toBe("Mon, 15 Jan 2026")
+  })
+
+  it("defaults pubDate to empty string when <pubDate> tag is missing from RSS item", async () => {
+    const rssNoPubDate = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel>
+  <item>
+    <title>Afghanistan - Level 4: Do Not Travel</title>
+    <category domain="Country-Tag">AF</category>
+  </item>
+</channel></rss>`
+    mockFetchText(rssNoPubDate)
+
+    const result = await getTravelAdvisory("AF")
+
+    expect(result.countryCode).toBe("AF")
+    expect(result.advisoryLevel).toBe(4)
+    expect(result.lastUpdated).toBe("")
   })
 })
 
