@@ -616,11 +616,10 @@ export const sessionToolDefinitions: ToolDefinition[] = [
           const bbDir = path.join(agentRoot, "state", "sessions", friendId, "bluebubbles")
           if (fs.existsSync(bbDir)) {
             const files = fs.readdirSync(bbDir).filter((f) => f.endsWith(".json"))
-            // Prefer individual chats (;-;) over group chats (;+;) for proactive DMs
+            // Only use DM sessions (;-;) for proactive delivery — never group chats (;+;)
             const dmFile = files.find((f) => f.includes(";-;"))
-            const chosen = dmFile ?? files[0]
-            if (chosen) {
-              resolvedKey = chosen.replace(/\.json$/, "")
+            if (dmFile) {
+              resolvedKey = dmFile.replace(/\.json$/, "")
             }
           }
         } catch { /* continue with default key */ }

@@ -141,7 +141,7 @@ export interface ProactiveBlueBubblesSessionSendParams {
 
 export interface ProactiveBlueBubblesSessionSendResult {
   delivered: boolean
-  reason?: "friend_not_found" | "trust_skip" | "missing_target" | "send_error"
+  reason?: "friend_not_found" | "trust_skip" | "missing_target" | "send_error" | "group_blocked"
 }
 
 const defaultDeps: RuntimeDeps = {
@@ -1301,6 +1301,22 @@ export async function sendProactiveBlueBubblesMessageToSession(
     })
     return { delivered: false, reason: "missing_target" }
   }
+
+  // Proactive outreach to individuals must go to DMs, never group chats.
+  // Explicit cross-chat responses (bridge completions, delegation returns) ARE allowed to groups
+  // because the request originated from that group.
+  /* v8 ignore start -- group gate: only fires when proactive send targets a group session @preserve */
+  if (chat.isGroup && params.intent !== "explicit_cross_chat") {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.bluebubbles_proactive_group_blocked",
+      message: "proactive send blocked: would route to group chat",
+      meta: { friendId: params.friendId, sessionKey: params.sessionKey, chatGuid: chat.chatGuid ?? null, intent: params.intent ?? null },
+    })
+    return { delivered: false, reason: "group_blocked" }
+  }
+  /* v8 ignore stop */
 
   try {
     await client.sendText({ chat, text: params.text })
