@@ -25,7 +25,7 @@ describe("config-registry", () => {
       for (const [key, entry] of CONFIG_REGISTRY) {
         expect(entry.path).toBe(key)
         expect(entry.path).toEqual(expect.any(String))
-        expect([1, 2, 3]).toContain(entry.tier)
+        expect(["self", "managed"]).toContain(entry.tier)
         expect(entry.description).toEqual(expect.any(String))
         expect(entry.description.length).toBeGreaterThan(0)
         expect(entry).toHaveProperty("default")
@@ -35,11 +35,11 @@ describe("config-registry", () => {
       }
     })
 
-    it("tier values are 1, 2, or 3 only", async () => {
-      emitTestEvent("tier values are 1, 2, or 3")
+    it("tier values are 'self' or 'managed' only", async () => {
+      emitTestEvent("tier values are self or managed")
       const { CONFIG_REGISTRY } = await import("../../heart/config-registry")
       for (const [, entry] of CONFIG_REGISTRY) {
-        expect([1, 2, 3]).toContain(entry.tier)
+        expect(["self", "managed"]).toContain(entry.tier)
       }
     })
 
@@ -73,10 +73,10 @@ describe("config-registry", () => {
       }
     })
 
-    it("T1 keys are self-service: contextMargin, phrases, shell.defaultTimeout, logging", async () => {
-      emitTestEvent("T1 keys are self-service")
+    it("self keys include all agent-configurable settings", async () => {
+      emitTestEvent("self keys are agent-configurable")
       const { CONFIG_REGISTRY } = await import("../../heart/config-registry")
-      const t1Keys = [
+      const selfKeys = [
         "context.contextMargin",
         "phrases.thinking",
         "phrases.tool",
@@ -84,18 +84,6 @@ describe("config-registry", () => {
         "shell.defaultTimeout",
         "logging.level",
         "logging.sinks",
-      ]
-      for (const key of t1Keys) {
-        const entry = CONFIG_REGISTRY.get(key)
-        expect(entry, `missing T1 key: ${key}`).toBeDefined()
-        expect(entry!.tier, `${key} should be T1`).toBe(1)
-      }
-    })
-
-    it("T2 keys are proposal: humanFacing, agentFacing, context.maxTokens, senses, sync", async () => {
-      emitTestEvent("T2 keys are proposal")
-      const { CONFIG_REGISTRY } = await import("../../heart/config-registry")
-      const t2Keys = [
         "humanFacing.provider",
         "humanFacing.model",
         "agentFacing.provider",
@@ -106,22 +94,23 @@ describe("config-registry", () => {
         "senses.bluebubbles",
         "sync.enabled",
         "sync.remote",
+        "mcpServers",
       ]
-      for (const key of t2Keys) {
+      for (const key of selfKeys) {
         const entry = CONFIG_REGISTRY.get(key)
-        expect(entry, `missing T2 key: ${key}`).toBeDefined()
-        expect(entry!.tier, `${key} should be T2`).toBe(2)
+        expect(entry, `missing self key: ${key}`).toBeDefined()
+        expect(entry!.tier, `${key} should be self`).toBe("self")
       }
     })
 
-    it("T3 keys are operator-only: version, enabled, mcpServers", async () => {
-      emitTestEvent("T3 keys are operator-only")
+    it("managed keys are harness-only: version, enabled", async () => {
+      emitTestEvent("managed keys are harness-only")
       const { CONFIG_REGISTRY } = await import("../../heart/config-registry")
-      const t3Keys = ["version", "enabled", "mcpServers"]
-      for (const key of t3Keys) {
+      const managedKeys = ["version", "enabled"]
+      for (const key of managedKeys) {
         const entry = CONFIG_REGISTRY.get(key)
-        expect(entry, `missing T3 key: ${key}`).toBeDefined()
-        expect(entry!.tier, `${key} should be T3`).toBe(3)
+        expect(entry, `missing managed key: ${key}`).toBeDefined()
+        expect(entry!.tier, `${key} should be managed`).toBe("managed")
       }
     })
   })
@@ -137,33 +126,23 @@ describe("config-registry", () => {
   })
 
   describe("getRegistryEntriesByTier", () => {
-    it("filters entries by tier 1", async () => {
-      emitTestEvent("getRegistryEntriesByTier filters tier 1")
+    it("filters entries by tier 'self'", async () => {
+      emitTestEvent("getRegistryEntriesByTier filters self")
       const { getRegistryEntriesByTier } = await import("../../heart/config-registry")
-      const entries = getRegistryEntriesByTier(1)
+      const entries = getRegistryEntriesByTier("self")
       expect(entries.length).toBeGreaterThan(0)
       for (const entry of entries) {
-        expect(entry.tier).toBe(1)
+        expect(entry.tier).toBe("self")
       }
     })
 
-    it("filters entries by tier 2", async () => {
-      emitTestEvent("getRegistryEntriesByTier filters tier 2")
+    it("filters entries by tier 'managed'", async () => {
+      emitTestEvent("getRegistryEntriesByTier filters managed")
       const { getRegistryEntriesByTier } = await import("../../heart/config-registry")
-      const entries = getRegistryEntriesByTier(2)
+      const entries = getRegistryEntriesByTier("managed")
       expect(entries.length).toBeGreaterThan(0)
       for (const entry of entries) {
-        expect(entry.tier).toBe(2)
-      }
-    })
-
-    it("filters entries by tier 3", async () => {
-      emitTestEvent("getRegistryEntriesByTier filters tier 3")
-      const { getRegistryEntriesByTier } = await import("../../heart/config-registry")
-      const entries = getRegistryEntriesByTier(3)
-      expect(entries.length).toBeGreaterThan(0)
-      for (const entry of entries) {
-        expect(entry.tier).toBe(3)
+        expect(entry.tier).toBe("managed")
       }
     })
   })

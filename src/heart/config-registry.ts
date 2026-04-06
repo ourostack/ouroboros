@@ -2,7 +2,7 @@ import { emitNervesEvent } from "../nerves/runtime"
 
 export interface ConfigRegistryEntry {
   path: string
-  tier: 1 | 2 | 3
+  tier: "self" | "managed"
   description: string
   default: unknown
   effects: string
@@ -81,11 +81,11 @@ function validateObject(requiredFields: Record<string, (v: unknown) => string | 
 }
 
 const registryData: ConfigRegistryEntry[] = [
-  // --- Tier 3: Operator-only ---
+  // --- Managed: harness-only ---
   {
     path: "version",
-    tier: 3,
-    description: "Agent config schema version. Must be an integer >= 1.",
+    tier: "managed",
+    description: "Agent config schema version. Managed by the harness. Must be an integer >= 1.",
     default: 2,
     effects: "Controls which config migrations apply on load. Changing incorrectly can corrupt config.",
     topics: ["schema", "migration"],
@@ -93,26 +93,26 @@ const registryData: ConfigRegistryEntry[] = [
   },
   {
     path: "enabled",
-    tier: 3,
-    description: "Whether the agent is enabled. When false, the agent refuses to start.",
+    tier: "managed",
+    description: "Whether the agent is enabled. Managed by the harness. When false, the agent refuses to start.",
     default: true,
     effects: "Disables all agent functionality when set to false.",
     topics: ["lifecycle", "activation"],
     validate: validateBoolean,
   },
+
+  // --- Self: agent-configurable ---
   {
     path: "mcpServers",
-    tier: 3,
-    description: "MCP server configurations. Maps server name to command, args, and env.",
+    tier: "self",
+    description: "MCP server configurations. Maps server name to command, args, and env. The agent can add or remove MCP servers.",
     default: undefined,
-    effects: "Adds or removes MCP tool servers. Incorrect config can expose the agent to untrusted tool sources.",
+    effects: "Adds or removes MCP tool servers.",
     topics: ["tools", "mcp", "servers", "extensions"],
   },
-
-  // --- Tier 2: Proposal ---
   {
     path: "humanFacing.provider",
-    tier: 2,
+    tier: "self",
     description: "Provider for human-facing interactions (CLI, Teams, BlueBubbles).",
     default: "anthropic",
     effects: "Changes the LLM provider used for all human-facing conversations. Affects quality, latency, and cost.",
@@ -121,7 +121,7 @@ const registryData: ConfigRegistryEntry[] = [
   },
   {
     path: "humanFacing.model",
-    tier: 2,
+    tier: "self",
     description: "Model name for human-facing interactions.",
     default: "claude-opus-4-6",
     effects: "Changes the specific model used for human-facing conversations.",
@@ -130,7 +130,7 @@ const registryData: ConfigRegistryEntry[] = [
   },
   {
     path: "agentFacing.provider",
-    tier: 2,
+    tier: "self",
     description: "Provider for agent-facing interactions (inner dialog, delegation).",
     default: "anthropic",
     effects: "Changes the LLM provider used for inner dialog and agent-to-agent communication.",
@@ -139,7 +139,7 @@ const registryData: ConfigRegistryEntry[] = [
   },
   {
     path: "agentFacing.model",
-    tier: 2,
+    tier: "self",
     description: "Model name for agent-facing interactions.",
     default: "claude-opus-4-6",
     effects: "Changes the specific model used for inner dialog and agent-to-agent communication.",
@@ -148,7 +148,7 @@ const registryData: ConfigRegistryEntry[] = [
   },
   {
     path: "context.maxTokens",
-    tier: 2,
+    tier: "self",
     description: "Maximum context window size in tokens.",
     default: 80000,
     effects: "Larger values allow more context but increase cost and latency. Must match model capability.",
@@ -157,7 +157,7 @@ const registryData: ConfigRegistryEntry[] = [
   },
   {
     path: "senses.cli",
-    tier: 2,
+    tier: "self",
     description: "CLI sense configuration. Controls whether the CLI interface is enabled.",
     default: { enabled: true },
     effects: "Enables or disables the CLI (terminal) interaction channel.",
@@ -166,7 +166,7 @@ const registryData: ConfigRegistryEntry[] = [
   },
   {
     path: "senses.teams",
-    tier: 2,
+    tier: "self",
     description: "Teams sense configuration. Controls whether the Teams interface is enabled.",
     default: { enabled: false },
     effects: "Enables or disables the Microsoft Teams interaction channel.",
@@ -175,7 +175,7 @@ const registryData: ConfigRegistryEntry[] = [
   },
   {
     path: "senses.bluebubbles",
-    tier: 2,
+    tier: "self",
     description: "BlueBubbles sense configuration. Controls whether the iMessage interface is enabled.",
     default: { enabled: false },
     effects: "Enables or disables the BlueBubbles (iMessage) interaction channel.",
@@ -184,7 +184,7 @@ const registryData: ConfigRegistryEntry[] = [
   },
   {
     path: "sync.enabled",
-    tier: 2,
+    tier: "self",
     description: "Whether git-based bundle sync is enabled.",
     default: false,
     effects: "Enables automatic synchronization of agent state via git. Requires sync.remote to be configured.",
@@ -193,7 +193,7 @@ const registryData: ConfigRegistryEntry[] = [
   },
   {
     path: "sync.remote",
-    tier: 2,
+    tier: "self",
     description: "Git remote name used for bundle sync.",
     default: "origin",
     effects: "Controls which git remote is used when sync is enabled.",
@@ -201,10 +201,9 @@ const registryData: ConfigRegistryEntry[] = [
     validate: validateString,
   },
 
-  // --- Tier 1: Self-service ---
   {
     path: "context.contextMargin",
-    tier: 1,
+    tier: "self",
     description: "Percentage of context window reserved as margin before compaction triggers.",
     default: 20,
     effects: "Higher values trigger compaction earlier, preserving more headroom. Lower values use more context.",
@@ -213,7 +212,7 @@ const registryData: ConfigRegistryEntry[] = [
   },
   {
     path: "phrases.thinking",
-    tier: 1,
+    tier: "self",
     description: "Array of phrases displayed while the agent is thinking.",
     default: ["working"],
     effects: "Changes the thinking indicator text shown to users. Purely cosmetic.",
@@ -222,7 +221,7 @@ const registryData: ConfigRegistryEntry[] = [
   },
   {
     path: "phrases.tool",
-    tier: 1,
+    tier: "self",
     description: "Array of phrases displayed while the agent is running a tool.",
     default: ["running tool"],
     effects: "Changes the tool-use indicator text shown to users. Purely cosmetic.",
@@ -231,7 +230,7 @@ const registryData: ConfigRegistryEntry[] = [
   },
   {
     path: "phrases.followup",
-    tier: 1,
+    tier: "self",
     description: "Array of phrases displayed during follow-up processing.",
     default: ["processing"],
     effects: "Changes the follow-up indicator text shown to users. Purely cosmetic.",
@@ -240,7 +239,7 @@ const registryData: ConfigRegistryEntry[] = [
   },
   {
     path: "shell.defaultTimeout",
-    tier: 1,
+    tier: "self",
     description: "Default timeout in milliseconds for shell command execution.",
     default: undefined,
     effects: "Controls how long shell commands run before timing out. Undefined uses system default.",
@@ -249,7 +248,7 @@ const registryData: ConfigRegistryEntry[] = [
   },
   {
     path: "logging.level",
-    tier: 1,
+    tier: "self",
     description: "Minimum log level: debug, info, warn, or error.",
     default: undefined,
     effects: "Controls verbosity of runtime logging. Lower levels produce more output.",
@@ -258,7 +257,7 @@ const registryData: ConfigRegistryEntry[] = [
   },
   {
     path: "logging.sinks",
-    tier: 1,
+    tier: "self",
     description: "Array of log sink types: 'terminal' and/or 'ndjson'.",
     default: undefined,
     effects: "Controls where log output is directed. Terminal shows in console, ndjson writes structured logs.",
@@ -281,7 +280,7 @@ export function getRegistryEntries(): ConfigRegistryEntry[] {
   return [...CONFIG_REGISTRY.values()]
 }
 
-export function getRegistryEntriesByTier(tier: 1 | 2 | 3): ConfigRegistryEntry[] {
+export function getRegistryEntriesByTier(tier: "self" | "managed"): ConfigRegistryEntry[] {
   emitNervesEvent({
     component: "heart",
     event: "config_registry.access",

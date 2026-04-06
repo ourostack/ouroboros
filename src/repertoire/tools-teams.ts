@@ -62,7 +62,6 @@ export const teamsToolDefinitions: ToolDefinition[] = [
       return graphRequest(ctx.graphToken, args.method, args.path, args.body);
     },
     integration: "graph",
-    confirmationRequired: true,
     summaryKeys: ["method", "path"],
   },
   // -- Generic ADO tools --
@@ -124,7 +123,6 @@ export const teamsToolDefinitions: ToolDefinition[] = [
       return adoRequest(ctx.adoToken, args.method, args.organization, args.path, args.body, args.host);
     },
     integration: "ado",
-    confirmationRequired: true,
     summaryKeys: ["method", "organization", "path"],
   },
   // -- Convenience aliases (backward compat) --
@@ -236,7 +234,6 @@ export const teamsToolDefinitions: ToolDefinition[] = [
       }
     },
     /* v8 ignore stop */
-    confirmationRequired: true,
     summaryKeys: ["user_name", "user_id"],
   },
   // -- Documentation tools --

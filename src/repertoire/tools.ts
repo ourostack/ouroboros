@@ -33,7 +33,7 @@ export { surfaceToolDef } from "./tools-surface";
 const allDefinitions: ToolDefinition[] = [...baseToolDefinitions, ...bluebubblesToolDefinitions, ...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions, surfaceToolDefinition];
 
 // MCP tool definitions — populated each time getToolsForChannel() is called with an mcpManager.
-// Kept separate from allDefinitions so execTool/isConfirmation* can find them.
+// Kept separate from allDefinitions so execTool can find them.
 let mcpDefinitions: ToolDefinition[] = []
 
 /** Exported for testing — reset the MCP definitions cache. */
@@ -134,20 +134,6 @@ export function getToolsForChannel(
 function findDefinition(toolName: string): ToolDefinition | undefined {
   return allDefinitions.find((d) => d.tool.function.name === toolName)
     ?? mcpDefinitions.find((d) => d.tool.function.name === toolName)
-}
-
-// Check whether a tool requires user confirmation before execution.
-// Reads from ToolDefinition.confirmationRequired instead of a separate Set.
-export function isConfirmationRequired(toolName: string): boolean {
-  const def = findDefinition(toolName);
-  return def?.confirmationRequired === true;
-}
-
-// Check whether a tool's confirmation is non-bypassable (cannot be skipped by skipConfirmation).
-// Used for T2 config proposals that must always require operator approval.
-export function isConfirmationAlwaysRequired(toolName: string): boolean {
-  const def = findDefinition(toolName);
-  return def?.confirmationAlwaysRequired === true;
 }
 
 function normalizeGuardArgs(_name: string, args: Record<string, string>): Record<string, string> {
