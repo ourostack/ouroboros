@@ -289,13 +289,22 @@ function checkWriteTrustGuardrails(toolName: string, args: Record<string, string
 // --- credential tool trust gating ---
 
 // Credential write tools: family only
-const CREDENTIAL_FAMILY_TOOLS = new Set(["credential_store", "credential_delete", "vault_setup"])
+const CREDENTIAL_FAMILY_TOOLS = new Set([
+  "credential_store", "credential_delete", "vault_setup",
+  // User profile tools: family only
+  "user_profile_store", "user_profile_get", "user_profile_delete",
+  // Payment tools: family only
+  "stripe_create_card", "stripe_deactivate_card", "stripe_list_cards",
+  // Booking tools that involve payment: family only
+  "flight_book", "flight_hold", "flight_cancel",
+])
 // Credential read tools: friend+
 const CREDENTIAL_TRUSTED_TOOLS = new Set(["credential_get", "credential_list"])
 
 // Travel tools: friend+ (weather_lookup accesses vault credentials indirectly;
 // advisory and geocode are public APIs but gated for consistency)
-const TRAVEL_TRUSTED_TOOLS = new Set(["weather_lookup", "travel_advisory", "geocode_search"])
+// Flight search is also friend+ (read-only, no payment)
+const TRAVEL_TRUSTED_TOOLS = new Set(["weather_lookup", "travel_advisory", "geocode_search", "flight_search"])
 
 function checkCredentialTrustGuardrails(toolName: string, context: GuardContext): GuardResult {
   if (CREDENTIAL_FAMILY_TOOLS.has(toolName)) {

@@ -2,6 +2,7 @@ import { McpClient } from "./mcp-client"
 import type { McpToolInfo } from "./mcp-client"
 import { loadAgentConfig, type McpServerConfig } from "../heart/identity"
 import { emitNervesEvent } from "../nerves/runtime"
+import { getCredentialStore } from "./credential-access"
 
 interface ServerEntry {
   name: string
@@ -120,8 +121,63 @@ export class McpManager {
     this.servers.clear()
   }
 
+  /**
+   * Resolve `vault:DOMAIN/FIELD` references in server env config.
+   * Returns resolved env or throws with a descriptive error.
+   */
+  private async resolveVaultEnv(
+    _serverName: string,
+    env: Record<string, string>,
+  ): Promise<Record<string, string>> {
+    const resolved = { ...env }
+    const store = getCredentialStore()
+
+    for (const [key, value] of Object.entries(resolved)) {
+      const match = value.match(/^vault:([^/]+)\/(.+)$/)
+      if (!match) continue
+
+      const [, domain, field] = match
+      try {
+        resolved[key] = await store.getRawSecret(domain, field)
+      } catch (err) {
+        /* v8 ignore next -- reason @preserve */
+        const reason = err instanceof Error ? err.message : String(err)
+        // Classify the error for actionable messaging
+        let classification = "vault unreachable"
+        if (reason.includes("no credential found")) {
+          classification = "item not found"
+        } else if (reason.includes("field") && reason.includes("not found")) {
+          classification = "field empty"
+        }
+        throw new Error(`vault:${domain}/${field} could not be resolved: ${classification}`)
+      }
+    }
+
+    return resolved
+  }
+
   private async connectServer(name: string, config: McpServerConfig): Promise<void> {
-    const client = new McpClient(config)
+    // Resolve vault: references in env before spawning
+    let resolvedConfig = config
+    if (config.env) {
+      try {
+        const resolvedEnv = await this.resolveVaultEnv(name, config.env)
+        resolvedConfig = { ...config, env: resolvedEnv }
+      } catch (err) {
+        /* v8 ignore next -- reason @preserve */
+        const reason = err instanceof Error ? err.message : String(err)
+        emitNervesEvent({
+          level: "error",
+          event: "mcp.vault_resolve_error",
+          component: "repertoire",
+          message: `skipping MCP server "${name}": ${reason}`,
+          meta: { server: name, reason },
+        })
+        return // Skip this server, continue to next
+      }
+    }
+
+    const client = new McpClient(resolvedConfig)
 
     const entry: ServerEntry = {
       name,

@@ -64,6 +64,8 @@ const DISPATCH_EXEMPT_PATTERNS = [
   "repertoire/api-client",
   "repertoire/github-client",
   "mind/embedding-provider",
+  // Commerce utility module: error classes and pure helpers (no independent side effects).
+  "repertoire/commerce-errors",
 ]
 
 function isDispatchExempt(filePath: string): boolean {
