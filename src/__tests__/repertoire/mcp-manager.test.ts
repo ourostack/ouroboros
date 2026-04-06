@@ -1,6 +1,23 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import type { McpToolInfo } from "../../repertoire/mcp-client"
 
+// Track nerves events for vault resolution tests
+const nervesEvents: Array<Record<string, unknown>> = []
+vi.mock("../../nerves/runtime", () => ({
+  emitNervesEvent: vi.fn((event: Record<string, unknown>) => {
+    nervesEvents.push(event)
+  }),
+}))
+
+// Mock credential store for vault env resolution
+const mockGetRawSecret = vi.fn()
+vi.mock("../../repertoire/credential-access", () => ({
+  getCredentialStore: () => ({
+    getRawSecret: mockGetRawSecret,
+    isReady: () => true,
+  }),
+}))
+
 interface MockClient {
   connect: ReturnType<typeof vi.fn>
   listTools: ReturnType<typeof vi.fn>
@@ -60,6 +77,8 @@ describe("McpManager", () => {
 
   beforeEach(() => {
     clientInstances = []
+    nervesEvents.length = 0
+    mockGetRawSecret.mockReset()
     clientFactory = () => {
       const client = createMockClient()
       clientInstances.push(client)
@@ -307,6 +326,93 @@ describe("McpManager", () => {
       const manager = new McpManager()
       manager.shutdown()
       expect(clientInstances).toHaveLength(0)
+    })
+  })
+
+  describe("vault env resolution", () => {
+    it("resolves vault: references in server env config", async () => {
+      mockGetRawSecret.mockResolvedValue("resolved-secret")
+
+      const manager = new McpManager()
+
+      await manager.start({
+        liteapi: {
+          command: "liteapi-server",
+          env: { LITEAPI_KEY: "vault:liteapi.travel/apiKey" },
+        },
+      })
+
+      expect(mockGetRawSecret).toHaveBeenCalledWith("liteapi.travel", "apiKey")
+      expect(clientInstances).toHaveLength(1)
+      expect(clientInstances[0].connect).toHaveBeenCalled()
+    })
+
+    it("skips server when vault item not found", async () => {
+      mockGetRawSecret.mockRejectedValue(new Error("no credential found"))
+
+      const manager = new McpManager()
+
+      await manager.start({
+        liteapi: {
+          command: "liteapi-server",
+          env: { LITEAPI_KEY: "vault:liteapi.travel/apiKey" },
+        },
+      })
+
+      // Server should be skipped, no client created
+      expect(clientInstances).toHaveLength(0)
+      expect(nervesEvents.some((e) => e.event === "mcp.vault_resolve_error")).toBe(true)
+    })
+
+    it("classifies 'field empty' vault errors", async () => {
+      mockGetRawSecret.mockRejectedValue(new Error("field apiKey not found in item"))
+
+      const manager = new McpManager()
+
+      await manager.start({
+        liteapi: {
+          command: "liteapi-server",
+          env: { LITEAPI_KEY: "vault:liteapi.travel/apiKey" },
+        },
+      })
+
+      expect(clientInstances).toHaveLength(0)
+      const vaultError = nervesEvents.find((e) => e.event === "mcp.vault_resolve_error")
+      expect(vaultError).toBeDefined()
+      expect((vaultError!.message as string)).toContain("field empty")
+    })
+
+    it("classifies generic vault errors as 'vault unreachable'", async () => {
+      mockGetRawSecret.mockRejectedValue(new Error("connection refused"))
+
+      const manager = new McpManager()
+
+      await manager.start({
+        liteapi: {
+          command: "liteapi-server",
+          env: { LITEAPI_KEY: "vault:liteapi.travel/apiKey" },
+        },
+      })
+
+      expect(clientInstances).toHaveLength(0)
+      const vaultError = nervesEvents.find((e) => e.event === "mcp.vault_resolve_error")
+      expect(vaultError).toBeDefined()
+      expect((vaultError!.message as string)).toContain("vault unreachable")
+    })
+
+    it("passes through non-vault env values unchanged", async () => {
+      const manager = new McpManager()
+
+      await manager.start({
+        simple: {
+          command: "simple-server",
+          env: { PLAIN_KEY: "just-a-value" },
+        },
+      })
+
+      // No vault resolution needed, server should connect normally
+      expect(mockGetRawSecret).not.toHaveBeenCalled()
+      expect(clientInstances).toHaveLength(1)
     })
 
     it("prevents restart attempts after shutdown", async () => {

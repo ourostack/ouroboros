@@ -2,7 +2,7 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.237",
+      "version": "0.1.0-alpha.238",
       "changes": [
         "feat: pretty `ouro status` \u2014 ANSI colored output with box-drawing header, status dots, grouped senses/workers by agent. Added git sync info to overview.",
         "fix: socket half-close \u2014 sendDaemonCommand now calls client.end() after writing, preventing intermittent connection hangs.",

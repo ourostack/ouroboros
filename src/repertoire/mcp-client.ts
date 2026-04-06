@@ -58,6 +58,7 @@ export class McpClient {
     this.process = spawn(this.config.command, this.config.args ?? [], {
       env,
       stdio: ["pipe", "pipe", "pipe"],
+      cwd: this.config.cwd,
     })
 
     this.setupLineReader()
