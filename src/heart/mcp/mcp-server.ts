@@ -6,6 +6,51 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { resolveSessionId } from "../daemon/session-id-resolver"
 import { drainPending, getPendingDir } from "../../mind/pending"
 
+export const SENSE_TURN_MAX_RETRIES = 3
+export const SENSE_TURN_RETRY_DELAYS_MS = [1000, 2000, 4000]
+// Allow test override
+export let _senseTurnRetryDelays = SENSE_TURN_RETRY_DELAYS_MS
+export function _setSenseTurnRetryDelays(delays: number[]): void { _senseTurnRetryDelays = delays }
+
+/**
+ * Send a senseTurn command to the daemon with retry logic.
+ * Retries on transient failures: empty response (daemon mid-restart),
+ * ECONNREFUSED (daemon not yet listening), ENOENT (socket not yet created).
+ */
+async function sendSenseTurnWithRetry(
+  socketPath: string,
+  command: Extract<DaemonCommand, { kind: "agent.senseTurn" }>,
+): Promise<DaemonResponse> {
+  let lastError: Error | null = null
+  /* v8 ignore start -- retry loop: functionally tested via mcp-send-message retry tests @preserve */
+  for (let attempt = 0; attempt <= SENSE_TURN_MAX_RETRIES; attempt++) {
+    try {
+      const response = await sendDaemonCommand(socketPath, command)
+      return response
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error))
+      const msg = lastError.message
+      const isTransient = msg.includes("ECONNREFUSED")
+        || msg.includes("ENOENT")
+        || msg.includes("empty response")
+        || msg.includes("Empty response")
+      if (!isTransient || attempt >= SENSE_TURN_MAX_RETRIES) {
+        throw lastError
+      }
+      const delay = _senseTurnRetryDelays[attempt] ?? 4000
+      emitNervesEvent({
+        component: "daemon",
+        event: "daemon.mcp_sense_turn_retry",
+        message: `senseTurn attempt ${attempt + 1} failed, retrying in ${delay}ms`,
+        meta: { attempt: attempt + 1, error: msg, delay },
+      })
+      await new Promise((resolve) => setTimeout(resolve, delay))
+    }
+  }
+  throw lastError ?? new Error("senseTurn failed after retries")
+  /* v8 ignore stop */
+}
+
 /**
  * MCP tool schema definition.
  * Matches the MCP protocol's tool listing format.
@@ -271,7 +316,7 @@ export function createMcpServer(options: McpServerOptions): McpServer {
       const message = toolArgs.message as string ?? ""
       /* v8 ignore stop */
       try {
-        const response = await sendDaemonCommand(socketPath, {
+        const response = await sendSenseTurnWithRetry(socketPath, {
           kind: "agent.senseTurn",
           agent,
           friendId,
@@ -345,7 +390,7 @@ export function createMcpServer(options: McpServerOptions): McpServer {
       const context = toolArgs.context as string | undefined
       const delegateMessage = context ? `[delegate] ${task}\n\ncontext: ${context}` : `[delegate] ${task}`
       try {
-        const response = await sendDaemonCommand(socketPath, {
+        const response = await sendSenseTurnWithRetry(socketPath, {
           kind: "agent.senseTurn",
           agent,
           friendId,
