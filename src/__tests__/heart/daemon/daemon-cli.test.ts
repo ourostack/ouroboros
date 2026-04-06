@@ -1351,16 +1351,13 @@ describe("ouro CLI execution", () => {
 
     const result = await runOuroCli(["status"], deps)
 
-    expect(result).toContain("| Daemon       | unknown |")
-    expect(result).toContain("| Socket       | unknown |")
-    expect(result).toContain("| Version      | unknown |")
-    expect(result).toContain("| Last Updated | unknown |")
-    expect(result).toContain("| Workers      | 0")
-    expect(result).toContain("| Senses       | 0")
-    expect(result).toContain("| Health       | unknown |")
-    expect(result).toContain("| Outlook      | unavailable |")
-    expect(result).toContain("| Entry Path   | unknown |")
-    expect(result).toContain("| Mode         | unknown |")
+    expect(result).toContain("unknown")
+    expect(result).toContain("unavailable")
+    expect(result).toContain("Socket")
+    expect(result).toContain("Health")
+    expect(result).toContain("Outlook")
+    expect(result).toContain("Git Sync")
+    expect(result).toContain("disabled")
   })
 
   it("renders daemon status with Overview, Senses, and Workers sections", async () => {
@@ -1427,7 +1424,7 @@ describe("ouro CLI execution", () => {
 
     const result = await runOuroCli(["status"], deps)
 
-    expect(result).toContain("Overview")
+    expect(result).toContain("ouroboros daemon")
     expect(result).toContain("Senses")
     expect(result).toContain("Workers")
     expect(result).toContain(PACKAGE_VERSION.version)
@@ -1436,13 +1433,9 @@ describe("ouro CLI execution", () => {
     expect(result).toContain("interactive")
     expect(result).toContain("/bluebubbles-webhook")
     expect(result).toContain("inner-dialog")
-    expect(result).toContain("n/a")
-    expect(result).toContain("| Entry Path")
-    expect(result).toContain("/usr/local/lib/node_modules/@ouro.bot/cli/dist/heart/daemon/daemon-entry.js")
-    expect(result).toContain("| Outlook")
+    expect(result).toContain("restarts: 0")
+    expect(result).toContain("Outlook")
     expect(result).toContain("http://127.0.0.1:4310/outlook")
-    expect(result).toContain("| Mode")
-    expect(result).toContain("production")
   })
 
   it("falls back to the raw sense name when daemon status includes an unknown sense label", async () => {

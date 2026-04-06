@@ -19,6 +19,7 @@ export function sendDaemonCommand(socketPath: string, command: DaemonCommand): P
 
     client.on("connect", () => {
       client.write(JSON.stringify(command) + "\n")
+      client.end()
     })
     client.on("data", (chunk) => {
       raw += chunk.toString("utf-8")

@@ -55,7 +55,7 @@ vi.mock("../../repertoire/tasks", () => ({
 }))
 
 import type { McpManager } from "../../repertoire/mcp-manager"
-import { getToolsForChannel, execTool, isConfirmationRequired, summarizeArgs, resetMcpDefinitions } from "../../repertoire/tools"
+import { getToolsForChannel, execTool, summarizeArgs, resetMcpDefinitions } from "../../repertoire/tools"
 
 function makeMockMcpManager(
   allTools: Array<{ server: string; tools: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> }>,
@@ -168,16 +168,6 @@ describe("execTool with MCP tools", () => {
     const result = await execTool("broken_fail", {})
     expect(result).toContain("[mcp error]")
     expect(result).toContain("connection lost")
-  })
-
-  it("isConfirmationRequired returns false for MCP tools", () => {
-    const mgr = makeMockMcpManager([{
-      server: "browser",
-      tools: [{ name: "navigate", description: "Nav", inputSchema: { type: "object" } }],
-    }])
-    getToolsForChannel(undefined, undefined, undefined, undefined, mgr)
-
-    expect(isConfirmationRequired("browser_navigate")).toBe(false)
   })
 
   it("summarizeArgs works for MCP tools (falls back to generic summary)", () => {

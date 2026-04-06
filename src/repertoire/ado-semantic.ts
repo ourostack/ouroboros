@@ -404,7 +404,6 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
       return result
     },
     integration: "ado",
-    confirmationRequired: true,
     summaryKeys: ["organization", "project", "title"],
   },
 
@@ -448,7 +447,6 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
       return result
     },
     integration: "ado",
-    confirmationRequired: true,
     summaryKeys: ["organization", "project", "title"],
   },
 
@@ -505,7 +503,6 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
       return JSON.stringify({ moved, errors, organization: adoCtx.organization, project: adoCtx.project })
     },
     integration: "ado",
-    confirmationRequired: true,
     summaryKeys: ["organization", "project", "workItemIds"],
   },
 
@@ -566,7 +563,6 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
       return JSON.stringify({ results, organization: adoCtx.organization, project: adoCtx.project })
     },
     integration: "ado",
-    confirmationRequired: true,
     summaryKeys: ["organization", "project"],
   },
 
@@ -783,7 +779,6 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
       return JSON.stringify({ results, organization: adoCtx.organization, project: adoCtx.project })
     },
     integration: "ado",
-    confirmationRequired: true,
     summaryKeys: ["organization", "project"],
   },
 

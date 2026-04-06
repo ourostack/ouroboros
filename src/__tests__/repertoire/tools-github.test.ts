@@ -34,9 +34,9 @@ describe("githubToolDefinitions", () => {
     expect(def.integration).toBe("github")
   })
 
-  it("file_ouroboros_bug has confirmationRequired true", () => {
+  it("file_ouroboros_bug has no confirmationRequired (removed)", () => {
     const def = githubToolDefinitions.find((d) => d.tool.function.name === "file_ouroboros_bug")!
-    expect(def.confirmationRequired).toBe(true)
+    expect((def as any).confirmationRequired).toBeUndefined()
   })
 })
 

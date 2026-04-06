@@ -5,7 +5,7 @@ import {
   getProviderConfig,
 } from "./config";
 import { loadAgentConfig } from "./identity";
-import { execTool, summarizeArgs, buildToolResultSummary, settleTool, observeTool, ponderTool, restTool, getToolsForChannel, isConfirmationRequired, isConfirmationAlwaysRequired } from "../repertoire/tools";
+import { execTool, summarizeArgs, buildToolResultSummary, settleTool, observeTool, ponderTool, restTool, getToolsForChannel } from "../repertoire/tools";
 import type { ToolContext } from "../repertoire/tools";
 import { getChannelCapabilities, channelToFacing, type Facing } from "../mind/friends/channel";
 import { surfaceToolDef } from "../repertoire/tools";
@@ -212,7 +212,6 @@ export interface ChannelCallbacks {
   onToolEnd(name: string, summary: string, success: boolean): void;
   onError(error: Error, severity: "transient" | "terminal"): void;
   onKick?(): void;
-  onConfirmAction?(name: string, args: Record<string, string>): Promise<"confirmed" | "denied">;
   // Clear any buffered text accumulated during streaming. Called before emitting
   // the settle answer so streamed noise (e.g. refusal text) is discarded.
   onClearText?(): void;
@@ -220,7 +219,6 @@ export interface ChannelCallbacks {
 
 export interface RunAgentOptions {
   toolChoiceRequired?: boolean;
-  skipConfirmation?: boolean;
   toolContext?: ToolContext;
   traceId?: string;
   bridgeContext?: string;
@@ -1074,23 +1072,6 @@ export async function runAgent(
             messages.push({ role: "tool", tool_call_id: tc.id, content: rejection });
             providerRuntime.appendToolOutput(tc.id, rejection);
             continue;
-          }
-          // Confirmation check for mutate tools.
-          // confirmationAlwaysRequired tools cannot be bypassed by skipConfirmation.
-          const needsConfirmation = isConfirmationRequired(tc.name) && (!options?.skipConfirmation || isConfirmationAlwaysRequired(tc.name));
-          if (needsConfirmation) {
-            let decision: "confirmed" | "denied" = "denied";
-            if (callbacks.onConfirmAction) {
-              decision = await callbacks.onConfirmAction(tc.name, args);
-            }
-            if (decision !== "confirmed") {
-              const cancelled = "Action cancelled by user.";
-              callbacks.onToolStart(tc.name, args);
-              callbacks.onToolEnd(tc.name, argSummary, false);
-              messages.push({ role: "tool", tool_call_id: tc.id, content: cancelled });
-              providerRuntime.appendToolOutput(tc.id, cancelled);
-              continue;
-            }
           }
           callbacks.onToolStart(tc.name, args);
           let toolResult: string;
