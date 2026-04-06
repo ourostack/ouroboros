@@ -89,7 +89,8 @@ export const surfaceToolDefinition: ToolDefinition = {
                   friendId: bridgeTarget.friendId,
                   sessionKey: bridgeTarget.key,
                   text: content,
-                })
+                  intent: "explicit_cross_chat",
+                } as any)
                 if (proactiveResult.delivered) {
                   // Inject surfaced content into the target session so it knows what was delivered
                   const { appendSyntheticAssistantMessage } = await import("../mind/context")
@@ -118,8 +119,8 @@ export const surfaceToolDefinition: ToolDefinition = {
         const allFriendSessions = listSessionActivity({ sessionsDir, friendsDir, agentName, activeThresholdMs: Number.MAX_SAFE_INTEGER })
           .filter((s) => s.friendId === friendId && s.channel !== "inner")
 
-        // 2a: Attempt proactive BB delivery on any BB session (prefer freshest)
-        const bbSession = allFriendSessions.find((s) => s.channel === "bluebubbles")
+        // 2a: Attempt proactive BB delivery on a DM session (;-; = individual, never ;+; = group)
+        const bbSession = allFriendSessions.find((s) => s.channel === "bluebubbles" && s.key.includes(";-;"))
         if (bbSession) {
           const { sendProactiveBlueBubblesMessageToSession } = await import("../senses/bluebubbles")
           const proactiveResult = await sendProactiveBlueBubblesMessageToSession({

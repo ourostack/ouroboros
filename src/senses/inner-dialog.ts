@@ -28,7 +28,7 @@ import { emitNervesEvent } from "../nerves/runtime"
 import type { FriendRecord, ResolvedContext } from "../mind/friends/types"
 import type { FriendStore } from "../mind/friends/store"
 import { createBridgeManager } from "../heart/bridges/manager"
-import { findFreshestFriendSession, listSessionActivity, type SessionActivityRecord } from "../heart/session-activity"
+import { listSessionActivity, type SessionActivityRecord } from "../heart/session-activity"
 import { sendProactiveBlueBubblesMessageToSession } from "./bluebubbles"
 import { buildHabitTurnMessage } from "./habit-turn-message"
 import { indexJournalFiles } from "../mind/journal-index"
@@ -327,7 +327,8 @@ async function tryDeliverDelegatedCompletion(
     friendId: target.friendId,
     sessionKey: target.key,
     text: outboundEnvelope.content,
-  })
+    intent: "explicit_cross_chat",
+  } as any)
   return result.delivered
 }
 
@@ -463,14 +464,15 @@ export async function routeDelegatedCompletion(
   }
 
   // Priority 2: Freshest active friend session.
-  const freshest = findFreshestFriendSession({
+  // For BB, prefer DM sessions (;-;) over group chats (;+;) — proactive outreach should never land in groups.
+  const allFriendSessions = listSessionActivity({
     sessionsDir: path.join(agentRoot, "state", "sessions"),
     friendsDir: path.join(agentRoot, "friends"),
     agentName,
-    friendId: delegatedFrom.friendId,
-    activeOnly: true,
-  })
-  if (freshest && freshest.channel !== "inner") {
+  }).filter((s) => s.friendId === delegatedFrom.friendId && s.channel !== "inner")
+  const bbDm = allFriendSessions.find((s) => s.channel === "bluebubbles" && s.key.includes(";-;"))
+  const freshest = bbDm ?? allFriendSessions.find((s) => s.channel !== "bluebubbles" || s.key.includes(";-;")) ?? allFriendSessions[0]
+  if (freshest) {
     if (await tryDeliverDelegatedCompletion(freshest, outboundEnvelope)) {
       advanceObligationQuietly(agentName, obligationId, { status: "returned", returnedAt: timestamp, returnTarget: "freshest-session" })
       return
