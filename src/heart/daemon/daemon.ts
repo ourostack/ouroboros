@@ -448,9 +448,8 @@ export class OuroDaemon {
       })
     }
 
-    // Pre-initialize MCP connections so they're ready for the first command (non-blocking)
-    /* v8 ignore next -- catch callback: getSharedMcpManager logs errors internally @preserve */
-    getSharedMcpManager().catch(() => {})
+    // MCP connections are lazily initialized per-agent during senseTurn
+    // (daemon manages multiple agents; agent identity must be set before loading MCP config)
 
     /* v8 ignore start -- orphan cleanup + pidfile: calls process management functions @preserve */
     killOrphanProcesses()

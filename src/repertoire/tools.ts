@@ -11,6 +11,8 @@ import type { ProviderCapability } from "../heart/core";
 import { guardInvocation } from "./guardrails";
 import { getAgentRoot } from "../heart/identity";
 import { surfaceToolDefinition } from "./tools-surface";
+import type { McpManager } from "./mcp-manager";
+import { mcpToolsAsDefinitions } from "./mcp-tools";
 
 function safeGetAgentRoot(): string | undefined {
   try {
@@ -29,6 +31,15 @@ export { surfaceToolDef } from "./tools-surface";
 
 // All tool definitions in a single registry
 const allDefinitions: ToolDefinition[] = [...baseToolDefinitions, ...bluebubblesToolDefinitions, ...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions, surfaceToolDefinition];
+
+// MCP tool definitions — populated each time getToolsForChannel() is called with an mcpManager.
+// Kept separate from allDefinitions so execTool/isConfirmation* can find them.
+let mcpDefinitions: ToolDefinition[] = []
+
+/** Exported for testing — reset the MCP definitions cache. */
+export function resetMcpDefinitions(): void {
+  mcpDefinitions = []
+}
 
 function baseToolsForCapabilities(): OpenAI.ChatCompletionFunctionTool[] {
   // Use baseToolDefinitions at call time so dynamically-added tools are included
@@ -70,6 +81,7 @@ export function getToolsForChannel(
   toolPreferences?: Record<string, string>,
   _context?: Pick<ResolvedContext, "friend" | "channel">,
   providerCapabilities?: ReadonlySet<ProviderCapability>,
+  mcpManager?: McpManager,
 ): OpenAI.ChatCompletionFunctionTool[] {
   const baseTools = baseToolsForCapabilities();
   const bluebubblesTools = capabilities?.channel === "bluebubbles"
@@ -108,20 +120,33 @@ export function getToolsForChannel(
     }
   }
 
+  // Append first-class MCP tools when mcpManager is provided
+  if (mcpManager) {
+    mcpDefinitions = mcpToolsAsDefinitions(mcpManager)
+    const mcpSchemas = mcpDefinitions.map((d) => d.tool)
+    result = [...result, ...mcpSchemas]
+  }
+
   return filterByCapability(result, providerCapabilities);
+}
+
+// Look up a tool definition from the combined registry (native + MCP).
+function findDefinition(toolName: string): ToolDefinition | undefined {
+  return allDefinitions.find((d) => d.tool.function.name === toolName)
+    ?? mcpDefinitions.find((d) => d.tool.function.name === toolName)
 }
 
 // Check whether a tool requires user confirmation before execution.
 // Reads from ToolDefinition.confirmationRequired instead of a separate Set.
 export function isConfirmationRequired(toolName: string): boolean {
-  const def = allDefinitions.find((d) => d.tool.function.name === toolName);
+  const def = findDefinition(toolName);
   return def?.confirmationRequired === true;
 }
 
 // Check whether a tool's confirmation is non-bypassable (cannot be skipped by skipConfirmation).
 // Used for T2 config proposals that must always require operator approval.
 export function isConfirmationAlwaysRequired(toolName: string): boolean {
-  const def = allDefinitions.find((d) => d.tool.function.name === toolName);
+  const def = findDefinition(toolName);
   return def?.confirmationAlwaysRequired === true;
 }
 
@@ -137,8 +162,8 @@ export async function execTool(name: string, args: Record<string, string>, ctx?:
     meta: { name, ...(name === "shell" && args.command ? { command: args.command } : {}) },
   });
 
-  // Look up from combined registry
-  const def = allDefinitions.find((d) => d.tool.function.name === name);
+  // Look up from combined registry (native + MCP)
+  const def = findDefinition(name);
   if (!def) {
     emitNervesEvent({
       level: "error",
@@ -151,10 +176,13 @@ export async function execTool(name: string, args: Record<string, string>, ctx?:
   }
 
   // Guardrail check: structural + trust-level
+  const mcpDef = mcpDefinitions.find((d) => d.tool.function.name === name)
   const guardContext = {
     readPaths: editFileReadTracker,
     trustLevel: ctx?.context?.friend?.trustLevel,
     agentRoot: safeGetAgentRoot(),
+    ...(mcpDef?.mcpServer ? { mcpServerName: mcpDef.mcpServer } : {}),
+    ...((ctx?.context as any)?.isGroupChat !== undefined ? { isGroupChat: (ctx?.context as any).isGroupChat } : {}),
   }
   const guardArgs = normalizeGuardArgs(name, args)
   const guardResult = guardInvocation(name, guardArgs, guardContext)
@@ -210,7 +238,7 @@ function summarizeUnknownArgs(args: Record<string, string>): string {
 }
 
 export function summarizeArgs(name: string, args: Record<string, string>): string {
-  const def = allDefinitions.find((d) => d.tool.function.name === name);
+  const def = findDefinition(name);
   if (def && def.summaryKeys !== undefined) {
     return summarizeKeyValues(args, def.summaryKeys);
   }

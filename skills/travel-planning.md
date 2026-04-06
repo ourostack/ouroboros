@@ -26,7 +26,7 @@ browser tools -> reviews, local info, pricing
 ## Flight Search
 
 ### Using Duffel MCP (when available)
-- Search via `ouro mcp call duffel search_flights`
+- Search via `duffel_search_flights` tool (first-class MCP tool)
 - Provide: origin, destination, dates, passengers, cabin class
 - Compare options on price, duration, stops, airline
 
@@ -45,7 +45,7 @@ Present top 3-5 options comparing:
 ## Accommodation Search
 
 ### Hotel Search
-- Use Expedia MCP when available (`ouro mcp call expedia search_hotels`)
+- Use Expedia MCP when available (`expedia_search_hotels` tool)
 - Compare: price per night, total stay cost, location, rating, amenities
 - Check cancellation policies (crucial for travel planning)
 

@@ -1002,7 +1002,7 @@ describe("agent.ts main() - onKick and toolChoiceRequired", () => {
 
     expect(mocks.buildSystem).toHaveBeenCalledWith(
       "cli",
-      expect.objectContaining({ mcpManager: undefined }),
+      {},
       expect.objectContaining({
         friend: expect.objectContaining({ name: "testuser" }),
         channel: expect.objectContaining({ channel: "cli" }),

@@ -607,4 +607,5 @@ describe("getCredentialStore / resetCredentialStore", () => {
     const store = getCredentialStore()
     expect(store).toBeInstanceOf(BuiltInCredentialStore)
   })
+
 })

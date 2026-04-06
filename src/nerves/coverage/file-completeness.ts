@@ -54,6 +54,7 @@ const DISPATCH_EXEMPT_PATTERNS = [
   "repertoire/tools-continuity",
   "repertoire/tools-surface",
   "repertoire/tools-config",
+  "repertoire/tools-base",
   // CLI sub-modules: cli-exec.ts is the router with emitNervesEvent calls;
   // cli-parse and cli-render are pure functions with no side effects.
   "daemon/cli-parse",

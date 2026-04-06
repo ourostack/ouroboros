@@ -950,7 +950,7 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
   const mcpManager = await getSharedMcpManager() ?? undefined
   const sessionMessages: OpenAI.ChatCompletionMessageParam[] = existing?.messages && existing.messages.length > 0
     ? existing.messages
-    : [{ role: "system", content: await buildSystem("cli", { mcpManager }, resolvedContext) }]
+    : [{ role: "system", content: await buildSystem("cli", {}, resolvedContext) }]
 
   // Per-turn pipeline input: CLI capabilities and pending dir
   const cliCapabilities = getChannelCapabilities("cli")

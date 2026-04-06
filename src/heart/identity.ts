@@ -89,6 +89,19 @@ export const DEFAULT_AGENT_PHRASES: AgentConfig["phrases"] = {
   followup: ["processing"],
 }
 
+export const DEFAULT_VAULT_SERVER_URL = "https://vault.ouro.bot"
+
+/**
+ * Resolve the vault config for an agent, applying defaults.
+ * If vault is not configured in agent.json, returns default values.
+ */
+export function resolveVaultConfig(agentName: string, config?: AgentConfig["vault"]): { email: string; serverUrl: string } {
+  return {
+    email: config?.email ?? `${agentName}@ouro.bot`,
+    serverUrl: config?.serverUrl ?? DEFAULT_VAULT_SERVER_URL,
+  }
+}
+
 export const DEFAULT_AGENT_SENSES: AgentSensesConfig = {
   cli: { enabled: true },
   teams: { enabled: false },
@@ -474,6 +487,7 @@ export function loadAgentConfig(): AgentConfig {
     senses: normalizeSenses(parsed.senses, configFile),
     mcpServers: parsed.mcpServers as Record<string, McpServerConfig> | undefined,
     phrases: parsed.phrases as AgentConfig["phrases"],
+    vault: parsed.vault as AgentConfig["vault"] | undefined,
   }
   emitNervesEvent({
     event: "identity.resolve",

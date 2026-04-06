@@ -147,9 +147,9 @@ describe("credential_store", () => {
     expect(result).toContain("disk full")
   })
 
-  it("has confirmationRequired set", () => {
+  it("does not require confirmation (trust gating is sufficient)", () => {
     const tool = findTool("credential_store")
-    expect(tool.confirmationRequired).toBe(true)
+    expect(tool.confirmationRequired).toBeUndefined()
   })
 
   it("emits nerves event", async () => {
@@ -266,9 +266,9 @@ describe("credential_delete", () => {
     expect(result).toContain("permission denied")
   })
 
-  it("has confirmationRequired set", () => {
+  it("does not require confirmation (trust gating is sufficient)", () => {
     const tool = findTool("credential_delete")
-    expect(tool.confirmationRequired).toBe(true)
+    expect(tool.confirmationRequired).toBeUndefined()
   })
 
   it("emits nerves event", async () => {

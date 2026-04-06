@@ -36,6 +36,7 @@ import {
   parseAdvisoryLevel,
   parseCountryName,
   parseAdvisoryText,
+  isoToCountryName,
 } from "../../repertoire/travel-api-client"
 
 function mockFetchResponse(data: unknown, ok = true, status = 200): void {
@@ -344,6 +345,90 @@ describe("getTravelAdvisory", () => {
     expect(result.countryCode).toBe("AF")
     expect(result.advisoryLevel).toBe(4)
     expect(result.lastUpdated).toBe("")
+  })
+
+  it("falls back to title-based matching when ISO code differs from FIPS code (ES -> Spain)", async () => {
+    // The RSS feed uses FIPS "SP" for Spain, but callers pass ISO "ES"
+    const rssSpain = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel>
+  <item>
+    <title>Spain - Level 2: Exercise Increased Caution</title>
+    <pubDate>Mon, 01 Mar 2026</pubDate>
+    <category domain="Country-Tag">SP</category>
+  </item>
+  <item>
+    <title>El Salvador - Level 3: Reconsider Travel</title>
+    <pubDate>Mon, 01 Feb 2026</pubDate>
+    <category domain="Country-Tag">ES</category>
+  </item>
+</channel></rss>`
+    mockFetchText(rssSpain)
+
+    // ES in ISO = Spain, ES in FIPS = El Salvador
+    // The function should resolve ES to Spain via title-based matching
+    const result = await getTravelAdvisory("ES")
+
+    expect(result.countryName).toBe("Spain")
+    expect(result.advisoryLevel).toBe(2)
+  })
+
+  it("still matches FIPS codes directly when they match", async () => {
+    // AF is both ISO and FIPS for Afghanistan
+    mockFetchText(SAMPLE_RSS)
+
+    const result = await getTravelAdvisory("AF")
+
+    expect(result.countryName).toBe("Afghanistan")
+    expect(result.advisoryLevel).toBe(4)
+  })
+
+  it("throws when ISO code diverges from FIPS but no matching title found", async () => {
+    // DE maps to "Germany" in the divergence table, but RSS has no Germany entry
+    const rssNoGermany = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel>
+  <item>
+    <title>Afghanistan - Level 4: Do Not Travel</title>
+    <pubDate>Mon, 15 Jan 2026</pubDate>
+    <category domain="Country-Tag">AF</category>
+  </item>
+</channel></rss>`
+    mockFetchText(rssNoGermany)
+
+    await expect(getTravelAdvisory("DE")).rejects.toThrow(/No travel advisory found/)
+  })
+
+  it("matches Burma/Myanmar via ISO code MM (FIPS is BM)", async () => {
+    const rssBurma = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel>
+  <item>
+    <title>Burma (Myanmar) - Level 4: Do Not Travel</title>
+    <pubDate>Tue, 15 Jan 2026</pubDate>
+    <category domain="Country-Tag">BM</category>
+  </item>
+</channel></rss>`
+    mockFetchText(rssBurma)
+
+    const result = await getTravelAdvisory("MM")
+
+    expect(result.countryName).toBe("Burma (Myanmar)")
+    expect(result.advisoryLevel).toBe(4)
+  })
+})
+
+describe("isoToCountryName", () => {
+  it("returns country name for known ISO codes that differ from FIPS", () => {
+    expect(isoToCountryName("ES")).toBe("Spain")
+    expect(isoToCountryName("MM")).toBe("Burma")
+    expect(isoToCountryName("TL")).toBe("Timor-Leste")
+  })
+
+  it("is case-insensitive", () => {
+    expect(isoToCountryName("es")).toBe("Spain")
+  })
+
+  it("returns undefined for codes not in the divergence table", () => {
+    expect(isoToCountryName("US")).toBeUndefined()
+    expect(isoToCountryName("AF")).toBeUndefined()
   })
 })
 
