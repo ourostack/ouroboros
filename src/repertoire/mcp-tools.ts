@@ -20,7 +20,9 @@ export function mcpToolsAsDefinitions(mcpManager: McpManager): ToolDefinition[] 
       tool: {
         type: "function" as const,
         function: {
-          name: `${entry.server}_${tool.name}`,
+          name: tool.name.startsWith(`${entry.server}_`) || tool.name === entry.server
+            ? tool.name
+            : `${entry.server}_${tool.name}`,
           description: tool.description || `MCP tool: ${tool.name} (server: ${entry.server})`,
           parameters: tool.inputSchema ?? { type: "object", properties: {} },
         },
