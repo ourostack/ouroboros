@@ -199,4 +199,46 @@ describe("mcpToolsAsDefinitions", () => {
     const result = mcpToolsAsDefinitions(mgr)
     expect(result[0].tool.type).toBe("function")
   })
+
+  describe("double-prefix avoidance", () => {
+    it("skips prefix when tool name already starts with server name (e.g. browser_navigate)", () => {
+      const mgr = makeMockMcpManager([{
+        server: "browser",
+        tools: [{ name: "browser_navigate", description: "Navigate", inputSchema: { type: "object" } }],
+      }])
+
+      const result = mcpToolsAsDefinitions(mgr)
+      expect(result[0].tool.function.name).toBe("browser_navigate")
+    })
+
+    it("still prefixes when tool name does NOT start with server name", () => {
+      const mgr = makeMockMcpManager([{
+        server: "duffel",
+        tools: [{ name: "search_flights", description: "Search", inputSchema: { type: "object" } }],
+      }])
+
+      const result = mcpToolsAsDefinitions(mgr)
+      expect(result[0].tool.function.name).toBe("duffel_search_flights")
+    })
+
+    it("still prefixes when server is a prefix of tool name but not at underscore boundary (server='b', tool='browser_navigate')", () => {
+      const mgr = makeMockMcpManager([{
+        server: "b",
+        tools: [{ name: "browser_navigate", description: "Navigate", inputSchema: { type: "object" } }],
+      }])
+
+      const result = mcpToolsAsDefinitions(mgr)
+      expect(result[0].tool.function.name).toBe("b_browser_navigate")
+    })
+
+    it("returns just the tool name when it exactly equals the server name", () => {
+      const mgr = makeMockMcpManager([{
+        server: "browser",
+        tools: [{ name: "browser", description: "Browser tool", inputSchema: { type: "object" } }],
+      }])
+
+      const result = mcpToolsAsDefinitions(mgr)
+      expect(result[0].tool.function.name).toBe("browser")
+    })
+  })
 })

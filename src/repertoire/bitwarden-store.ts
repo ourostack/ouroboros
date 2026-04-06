@@ -24,12 +24,43 @@ function execBw(args: string[], sessionToken?: string): Promise<string> {
   return new Promise((resolve, reject) => {
     execFileCb("bw", args, { timeout: 30_000, env }, (err, stdout) => {
       if (err) {
+        if (isBwNotInstalled(err)) {
+          reject(new Error("bw CLI not found. Install from https://bitwarden.com/help/cli/"))
+          return
+        }
         reject(new Error(`bw CLI error: ${err.message}`))
         return
       }
       resolve(stdout)
     })
   })
+}
+
+/** Check if the error indicates the bw CLI binary is not installed. */
+function isBwNotInstalled(err: Error): boolean {
+  const msg = err.message.toLowerCase()
+  const code = (err as NodeJS.ErrnoException).code
+  return code === "ENOENT" || msg.includes("enoent") || msg.includes("not found") || msg.includes("command not found")
+}
+
+/** Check if the error is transient (network/timeout) and worth retrying. */
+function isTransientError(err: Error): boolean {
+  const msg = err.message.toLowerCase()
+  return (
+    msg.includes("econnrefused") ||
+    msg.includes("etimedout") ||
+    msg.includes("enotfound") ||
+    msg.includes("socket hang up") ||
+    msg.includes("503") ||
+    msg.includes("server unavailable")
+  )
+}
+
+const MAX_RETRIES = 3
+const BASE_BACKOFF_MS = 1000
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 // ---------------------------------------------------------------------------
@@ -71,14 +102,54 @@ export class BitwardenCredentialStore implements CredentialStore {
   /**
    * Ensure the bw CLI is authenticated and unlocked.
    * Handles three states: logged out → login, locked → unlock, already unlocked → no-op.
+   * Retries transient failures (network/timeout) up to MAX_RETRIES with exponential backoff.
    */
   async login(): Promise<void> {
+    let lastError: Error | undefined
+
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      try {
+        await this.loginAttempt()
+        return
+      } catch (err) {
+        /* v8 ignore next -- defensive: loginAttempt always throws Error instances @preserve */
+        lastError = err instanceof Error ? err : new Error(String(err))
+
+        // Don't retry non-transient errors (auth failures, bw not installed)
+        if (!isTransientError(lastError)) {
+          throw lastError
+        }
+
+        // Don't retry after final attempt
+        if (attempt === MAX_RETRIES - 1) break
+
+        const backoffMs = BASE_BACKOFF_MS * Math.pow(2, attempt)
+        emitNervesEvent({
+          event: "repertoire.bw_login_retry",
+          component: "repertoire",
+          message: `bw login attempt ${attempt + 1} failed, retrying in ${backoffMs}ms`,
+          meta: { attempt: attempt + 1, backoffMs, reason: lastError.message },
+        })
+
+        await delay(backoffMs)
+      }
+    }
+
+    throw lastError!
+  }
+
+  /** Single login attempt — called by login() retry loop. */
+  private async loginAttempt(): Promise<void> {
     // Check current status
     let status: { status?: string; serverUrl?: string; userEmail?: string } = {}
     try {
       const raw = await execBw(["status"])
       status = JSON.parse(raw)
-    } catch {
+    } catch (err) {
+      // If bw CLI is not installed or a transient error, propagate it for retry
+      if (err instanceof Error && (isBwNotInstalled(err) || isTransientError(err))) {
+        throw err
+      }
       // CLI not configured or broken — proceed with full setup
     }
 

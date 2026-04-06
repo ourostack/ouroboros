@@ -427,4 +427,160 @@ describe("BitwardenCredentialStore", () => {
       expect(result).toBe(false)
     })
   })
+
+  describe("retry logic", () => {
+    it("retries on transient failure and succeeds on third attempt", async () => {
+      let callCount = 0
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          callCount++
+          if (callCount <= 2) {
+            // First two status calls fail with transient error
+            cb(new Error("ECONNREFUSED"), "", "")
+          } else {
+            cb(null, JSON.stringify({ status: "unauthenticated" }), "")
+          }
+          return
+        }
+        if (args[0] === "config") {
+          cb(null, "", "")
+          return
+        }
+        if (args[0] === "login") {
+          cb(null, "session-token", "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      await store.login()
+
+      // Should have called status 3 times (2 failures + 1 success)
+      expect(callCount).toBe(3)
+    })
+
+    it("gives up after max retries with clear error", async () => {
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(new Error("ECONNREFUSED"), "", "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      await expect(store.login()).rejects.toThrow(/ECONNREFUSED/)
+    })
+
+    it("does NOT retry on auth failures (wrong password)", async () => {
+      let statusCalls = 0
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unauthenticated" }), "")
+          return
+        }
+        if (args[0] === "config") {
+          cb(null, "", "")
+          return
+        }
+        if (args[0] === "login") {
+          statusCalls++
+          cb(new Error("Username or password is incorrect"), "", "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      await expect(store.login()).rejects.toThrow(/incorrect/)
+      // Should only try login once — no retry on auth errors
+      expect(statusCalls).toBe(1)
+    })
+
+    it("gives descriptive error when bw CLI is not installed (ENOENT)", async () => {
+      mockExecFile.mockImplementation((_cmd: string, _args: string[], _opts: unknown, cb: Function) => {
+        const err = new Error("spawn bw ENOENT") as NodeJS.ErrnoException
+        err.code = "ENOENT"
+        cb(err, "", "")
+      })
+
+      await expect(store.login()).rejects.toThrow(/bw CLI not found/)
+      await expect(store.login()).rejects.toThrow(/https:\/\/bitwarden\.com\/help\/cli/)
+    })
+
+    it("uses exponential backoff timing (1s, 2s, 4s)", async () => {
+      vi.useFakeTimers()
+
+      let callCount = 0
+      const callTimes: number[] = []
+
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          callCount++
+          callTimes.push(Date.now())
+          if (callCount <= 2) {
+            cb(new Error("ECONNREFUSED"), "", "")
+          } else {
+            cb(null, JSON.stringify({ status: "unauthenticated" }), "")
+          }
+          return
+        }
+        if (args[0] === "config") {
+          cb(null, "", "")
+          return
+        }
+        if (args[0] === "login") {
+          cb(null, "session-token", "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      const loginPromise = store.login()
+
+      // Advance through backoff timers
+      await vi.advanceTimersByTimeAsync(1000) // first retry after 1s
+      await vi.advanceTimersByTimeAsync(2000) // second retry after 2s
+
+      await loginPromise
+
+      // Verify backoff intervals
+      expect(callTimes).toHaveLength(3)
+      const gap1 = callTimes[1] - callTimes[0]
+      const gap2 = callTimes[2] - callTimes[1]
+      expect(gap1).toBeGreaterThanOrEqual(1000)
+      expect(gap2).toBeGreaterThanOrEqual(2000)
+
+      vi.useRealTimers()
+    })
+
+    it("emits nerves events for retry attempts", async () => {
+      let callCount = 0
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          callCount++
+          if (callCount <= 1) {
+            cb(new Error("ECONNREFUSED"), "", "")
+          } else {
+            cb(null, JSON.stringify({ status: "unauthenticated" }), "")
+          }
+          return
+        }
+        if (args[0] === "config") {
+          cb(null, "", "")
+          return
+        }
+        if (args[0] === "login") {
+          cb(null, "session-token", "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      await store.login()
+
+      // Should have emitted a retry nerves event
+      expect(nervesEvents.some((e) =>
+        e.event === "repertoire.bw_login_retry",
+      )).toBe(true)
+    })
+  })
 })

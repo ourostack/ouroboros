@@ -117,7 +117,7 @@ Track and reference these travel preferences:
 ## Tool Reference
 
 ### Native Tools (always available)
-- `weather_lookup` - Current weather by city or coordinates
+- `weather_lookup` - Current weather and daily forecast by city or coordinates (Open-Meteo, zero config)
 - `travel_advisory` - US State Dept advisory by country code
 - `geocode_search` - Location/POI search with coordinates
 - `credential_get` - Check credential metadata for a domain (never returns passwords)
