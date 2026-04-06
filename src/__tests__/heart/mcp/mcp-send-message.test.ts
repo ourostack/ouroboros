@@ -363,4 +363,93 @@ describe("MCP send_message tool", () => {
     const response = parseResponse(output)
     expect(response.result.tools.some((t: any) => t.name === "check_response")).toBe(true)
   })
+
+  it("retries send_message on transient daemon errors", async () => {
+    // Use fast delays for testing
+    const { _setSenseTurnRetryDelays } = await import("../../../heart/mcp/mcp-server")
+    _setSenseTurnRetryDelays([10, 10, 10])
+
+    // First call: ECONNREFUSED (daemon restarting), second call: success
+    mockSendDaemonCommand
+      .mockRejectedValueOnce(new Error("connect ECONNREFUSED /tmp/ouroboros-daemon.sock"))
+      .mockResolvedValueOnce({
+        ok: true,
+        message: "recovered after retry",
+        data: { ponderDeferred: false },
+      })
+
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
+    const server = createMcpServer({
+      agent: "test-agent",
+      friendId: "friend-1",
+      socketPath: "/tmp/test.sock",
+      stdin,
+      stdout,
+    })
+
+    const outputPromise = collectOutput(stdout)
+    server.start()
+
+    writeJsonRpc(stdin, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "send_message",
+        arguments: { message: "hello after restart" },
+      },
+    })
+
+    await new Promise((r) => setTimeout(r, 500))
+    const output = await outputPromise
+    server.stop()
+    _setSenseTurnRetryDelays([1000, 2000, 4000])
+
+    expect(mockSendDaemonCommand).toHaveBeenCalledTimes(2)
+    const response = parseResponse(output)
+    expect(response.result.content[0].text).toBe("recovered after retry")
+    expect(response.result.isError).toBeFalsy()
+  })
+
+  it("gives up after max retries on persistent daemon failure", async () => {
+    const { _setSenseTurnRetryDelays } = await import("../../../heart/mcp/mcp-server")
+    _setSenseTurnRetryDelays([10, 10, 10])
+
+    mockSendDaemonCommand
+      .mockRejectedValue(new Error("connect ECONNREFUSED /tmp/ouroboros-daemon.sock"))
+
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
+    const server = createMcpServer({
+      agent: "test-agent",
+      friendId: "friend-1",
+      socketPath: "/tmp/test.sock",
+      stdin,
+      stdout,
+    })
+
+    const outputPromise = collectOutput(stdout)
+    server.start()
+
+    writeJsonRpc(stdin, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "send_message",
+        arguments: { message: "this will fail" },
+      },
+    })
+
+    await new Promise((r) => setTimeout(r, 500))
+    const output = await outputPromise
+    server.stop()
+    _setSenseTurnRetryDelays([1000, 2000, 4000])
+
+    // 1 initial + 3 retries = 4 total attempts
+    expect(mockSendDaemonCommand.mock.calls.length).toBeGreaterThanOrEqual(4)
+
+    const response = parseResponse(output)
+    expect(response.result.isError).toBe(true)
+    expect(response.result.content[0].text).toContain("daemon is not running")
+  })
 })
