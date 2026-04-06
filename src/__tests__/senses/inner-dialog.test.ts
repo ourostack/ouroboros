@@ -545,7 +545,7 @@ describe("inner dialog runtime", () => {
     expect(typeof input.enforceTrustGate).toBe("function")
   })
 
-  it("passes toolChoiceRequired: true and skipConfirmation: true in runAgentOptions", async () => {
+  it("passes toolChoiceRequired: true in runAgentOptions", async () => {
     await runInnerDialogTurn({
       reason: "boot",
       instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
@@ -555,7 +555,6 @@ describe("inner dialog runtime", () => {
     const input = mockHandleInboundTurn.mock.calls[0][0]
     expect(input.runAgentOptions).toEqual(expect.objectContaining({
       toolChoiceRequired: true,
-      skipConfirmation: true,
     }))
   })
 

@@ -755,7 +755,6 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
     runAgentOptions: {
       traceId,
       toolChoiceRequired: true,
-      skipConfirmation: true,
       mcpManager,
       toolContext: {
         signin: async () => undefined,
