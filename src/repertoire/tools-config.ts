@@ -83,7 +83,7 @@ export const configToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "update_config",
-        description: "Update a Tier 1 (self-service) agent configuration value immediately. For Tier 2 keys that require operator approval, use propose_config instead. Tier 3 (operator-only) keys are refused.",
+        description: "Update an agent configuration value. Managed keys (version, enabled) cannot be modified.",
         parameters: {
           type: "object",
           properties: {
@@ -119,16 +119,10 @@ export const configToolDefinitions: ToolDefinition[] = [
         }
       }
 
-      // Tier 3: refuse
-      if (entry.tier === 3) {
-        emitNervesEvent({ component: "repertoire", event: "repertoire.update_config_refused", message: `refused T3 change to ${a.path}`, meta: { path: a.path, tier: 3 } });
-        return `Refused: "${a.path}" is an operator-only (Tier 3) key. ${entry.description} Only the operator can change this value directly in agent.json.`;
-      }
-
-      // Tier 2: refuse — must use propose_config
-      if (entry.tier === 2) {
-        emitNervesEvent({ component: "repertoire", event: "repertoire.update_config_refused", message: `refused T2 change to ${a.path} — use propose_config`, meta: { path: a.path, tier: 2 } });
-        return `Refused: "${a.path}" is a Tier 2 (proposal) key that requires operator approval. Use propose_config instead of update_config to propose this change.`;
+      // Managed: refuse
+      if (entry.tier === "managed") {
+        emitNervesEvent({ component: "repertoire", event: "repertoire.update_config_refused", message: `refused managed change to ${a.path}`, meta: { path: a.path, tier: "managed" } });
+        return `This key is managed by the harness and cannot be modified directly.`;
       }
 
       const agentRoot = getAgentRoot();
@@ -141,7 +135,7 @@ export const configToolDefinitions: ToolDefinition[] = [
         return `Error: failed to read agent.json at ${configPath}`;
       }
 
-      // Apply T1 change immediately
+      // Apply change immediately
       const parts = entry.path.split(".");
       let target: Record<string, unknown> = rawConfig;
       for (let i = 0; i < parts.length - 1; i++) {
@@ -155,87 +149,6 @@ export const configToolDefinitions: ToolDefinition[] = [
       fs.writeFileSync(configPath, JSON.stringify(rawConfig, null, 2) + "\n", "utf-8");
       emitNervesEvent({ component: "repertoire", event: "repertoire.update_config_applied", message: `applied config change to ${a.path}`, meta: { path: a.path, tier: entry.tier, value: parsedValue } });
       return `Success: "${a.path}" updated to ${JSON.stringify(parsedValue)}. Change applied immediately.`;
-    },
-  },
-  {
-    tool: {
-      type: "function",
-      function: {
-        name: "propose_config",
-        description: "Propose a change to a Tier 2 (proposal) agent configuration value. Requires operator approval before the change is applied. For Tier 1 self-service keys, use update_config instead.",
-        parameters: {
-          type: "object",
-          properties: {
-            path: { type: "string", description: "Config key in dot-notation (e.g., 'context.maxTokens', 'humanFacing.model')" },
-            value: { type: "string", description: "New value as JSON (e.g., '120000', '\"azure\"', '{\"enabled\": true}')" },
-          },
-          required: ["path", "value"],
-        },
-      },
-    },
-    confirmationRequired: true,
-    confirmationAlwaysRequired: true,
-    handler: (a) => {
-      const entry = getRegistryEntry(a.path);
-      if (!entry) {
-        emitNervesEvent({ component: "repertoire", event: "repertoire.propose_config_error", message: `unknown config path: ${a.path}`, meta: { path: a.path } });
-        return `Error: unknown config path "${a.path}". Use read_config to see available paths.`;
-      }
-
-      let parsedValue: unknown;
-      try {
-        parsedValue = JSON.parse(a.value);
-      } catch {
-        emitNervesEvent({ component: "repertoire", event: "repertoire.propose_config_error", message: `invalid JSON value for ${a.path}`, meta: { path: a.path, value: a.value } });
-        return `Error: invalid JSON value. Provide value as valid JSON (e.g., 120000, "azure", {"enabled": true}).`;
-      }
-
-      // Validate value against registry entry's validator
-      /* v8 ignore next -- all current entries have validators; guard kept for future entries without one @preserve */
-      if (entry.validate) {
-        const validationError = entry.validate(parsedValue);
-        if (validationError) {
-          emitNervesEvent({ component: "repertoire", event: "repertoire.propose_config_error", message: `validation failed for ${a.path}: ${validationError}`, meta: { path: a.path, value: a.value, validationError } });
-          return `Error: validation failed for "${a.path}": ${validationError}`;
-        }
-      }
-
-      // Tier 3: refuse
-      if (entry.tier === 3) {
-        emitNervesEvent({ component: "repertoire", event: "repertoire.propose_config_refused", message: `refused T3 change to ${a.path}`, meta: { path: a.path, tier: 3 } });
-        return `Refused: "${a.path}" is an operator-only (Tier 3) key. ${entry.description} Only the operator can change this value directly in agent.json.`;
-      }
-
-      // Tier 1: refuse — use update_config for self-service keys
-      if (entry.tier === 1) {
-        emitNervesEvent({ component: "repertoire", event: "repertoire.propose_config_refused", message: `refused T1 change to ${a.path} — use update_config`, meta: { path: a.path, tier: 1 } });
-        return `Refused: "${a.path}" is a Tier 1 (self-service) key. Use update_config instead — no operator approval needed.`;
-      }
-
-      const agentRoot = getAgentRoot();
-      const configPath = path.join(agentRoot, "agent.json");
-      let rawConfig: Record<string, unknown>;
-      try {
-        rawConfig = JSON.parse(fs.readFileSync(configPath, "utf-8")) as Record<string, unknown>;
-      } catch {
-        /* v8 ignore next -- defensive: agent.json read failure in propose_config @preserve */
-        return `Error: failed to read agent.json at ${configPath}`;
-      }
-
-      // Apply T2 change (operator confirmation already obtained via confirmationAlwaysRequired)
-      const parts = entry.path.split(".");
-      let target: Record<string, unknown> = rawConfig;
-      for (let i = 0; i < parts.length - 1; i++) {
-        if (!(parts[i] in target) || typeof target[parts[i]] !== "object" || target[parts[i]] === null) {
-          target[parts[i]] = {};
-        }
-        target = target[parts[i]] as Record<string, unknown>;
-      }
-      target[parts[parts.length - 1]] = parsedValue;
-
-      fs.writeFileSync(configPath, JSON.stringify(rawConfig, null, 2) + "\n", "utf-8");
-      emitNervesEvent({ component: "repertoire", event: "repertoire.propose_config_applied", message: `applied approved config change to ${a.path}`, meta: { path: a.path, tier: entry.tier, value: parsedValue } });
-      return `Success: "${a.path}" updated to ${JSON.stringify(parsedValue)}. Change approved and applied.`;
     },
   },
 ];

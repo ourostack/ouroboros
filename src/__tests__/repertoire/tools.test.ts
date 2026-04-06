@@ -703,35 +703,12 @@ describe("ToolDefinition type and registry", () => {
     }
   })
 
-  it("graph_mutate and ado_mutate have confirmationRequired set to true", async () => {
+  it("confirmationRequired no longer exists on any teams tool definition", async () => {
     vi.resetModules()
     const toolsTeams = await import("../../repertoire/tools-teams")
-    const graphMutate = toolsTeams.teamsToolDefinitions.find(
-      (d: any) => d.tool.function.name === "graph_mutate"
-    )
-    const adoMutate = toolsTeams.teamsToolDefinitions.find(
-      (d: any) => d.tool.function.name === "ado_mutate"
-    )
-    expect(graphMutate?.confirmationRequired).toBe(true)
-    expect(adoMutate?.confirmationRequired).toBe(true)
-  })
-
-  it("non-mutate teams tools have confirmationRequired undefined or false", async () => {
-    vi.resetModules()
-    const toolsTeams = await import("../../repertoire/tools-teams")
-    const nonMutate = toolsTeams.teamsToolDefinitions.filter(
-      (d: any) => !["graph_mutate", "ado_mutate", "teams_send_message"].includes(d.tool.function.name)
-    )
-    for (const def of nonMutate) {
-      expect(def.confirmationRequired).toBeFalsy()
+    for (const def of toolsTeams.teamsToolDefinitions) {
+      expect((def as any).confirmationRequired).toBeUndefined()
     }
-  })
-
-  it("confirmationRequired Set no longer exported from tools-teams", async () => {
-    vi.resetModules()
-    const toolsTeams = await import("../../repertoire/tools-teams")
-    // The Set export should not exist
-    expect((toolsTeams as any).confirmationRequired).toBeUndefined()
   })
 
   it("base tool definitions include expected tool names", async () => {
@@ -1136,44 +1113,6 @@ describe("getToolsForChannel with toolPreferences", () => {
   })
 })
 
-describe("isConfirmationRequired", () => {
-  it("returns true for graph_mutate", async () => {
-    vi.resetModules()
-    const { isConfirmationRequired } = await import("../../repertoire/tools")
-    expect(isConfirmationRequired("graph_mutate")).toBe(true)
-  })
-
-  it("returns true for ado_mutate", async () => {
-    vi.resetModules()
-    const { isConfirmationRequired } = await import("../../repertoire/tools")
-    expect(isConfirmationRequired("ado_mutate")).toBe(true)
-  })
-
-  it("returns false for graph_query", async () => {
-    vi.resetModules()
-    const { isConfirmationRequired } = await import("../../repertoire/tools")
-    expect(isConfirmationRequired("graph_query")).toBe(false)
-  })
-
-  it("returns false for ado_query", async () => {
-    vi.resetModules()
-    const { isConfirmationRequired } = await import("../../repertoire/tools")
-    expect(isConfirmationRequired("ado_query")).toBe(false)
-  })
-
-  it("returns false for base tools", async () => {
-    vi.resetModules()
-    const { isConfirmationRequired } = await import("../../repertoire/tools")
-    expect(isConfirmationRequired("read_file")).toBe(false)
-    expect(isConfirmationRequired("shell")).toBe(false)
-  })
-
-  it("returns false for unknown tool", async () => {
-    vi.resetModules()
-    const { isConfirmationRequired } = await import("../../repertoire/tools")
-    expect(isConfirmationRequired("nonexistent")).toBe(false)
-  })
-})
 
 describe("tool access trust-level alignment (D1b Rule 1)", () => {
   const bbCaps = {
@@ -2635,12 +2574,6 @@ describe("github tool registration", () => {
     // If file_ouroboros_bug is registered, calling it without a token returns AUTH_REQUIRED
     const result = await execTool("file_ouroboros_bug", { title: "t" })
     expect(result).toContain("AUTH_REQUIRED:github")
-  })
-
-  it("isConfirmationRequired returns true for file_ouroboros_bug", async () => {
-    vi.resetModules()
-    const { isConfirmationRequired } = await import("../../repertoire/tools")
-    expect(isConfirmationRequired("file_ouroboros_bug")).toBe(true)
   })
 
   it("summarizeArgs returns title key=value for file_ouroboros_bug", async () => {

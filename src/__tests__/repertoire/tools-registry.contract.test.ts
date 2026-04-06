@@ -142,10 +142,9 @@ describe("tool registry contract", () => {
     expect(names).toContain("intention_capture");
     expect(names).toContain("intention_manage");
 
-    // Added in capability discovery: 3 tools
+    // Added in capability discovery: 2 tools (propose_config removed)
     expect(names).toContain("read_config");
     expect(names).toContain("update_config");
-    expect(names).toContain("propose_config");
 
     // Added in credential access layer: 4 credential tools (replaced 5 vault tools)
     expect(names).toContain("credential_get");
@@ -161,7 +160,7 @@ describe("tool registry contract", () => {
     // Added in vault integration: 1 vault tool
     expect(names).toContain("vault_setup");
 
-    // Exact count: 45 tools total (44 + vault_setup)
-    expect(names).toHaveLength(45);
+    // Exact count: 44 tools total (45 - propose_config removed)
+    expect(names).toHaveLength(44);
   });
 });

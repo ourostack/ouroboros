@@ -452,24 +452,6 @@ export function createTeamsCallbacks(
         safeSend(msg)
       }
     },
-    onConfirmAction: options?.conversationId
-      ? async (name: string, args: Record<string, string>) => {
-          const convId = options.conversationId!
-          const argsDesc = Object.entries(args).map(([k, v]) => `${k}: ${v}`).join(", ")
-          safeUpdate(`Confirm action: ${name} (${argsDesc}) -- reply "yes" to confirm or "no" to cancel`)
-          return new Promise<"confirmed" | "denied">((resolve) => {
-            _pendingConfirmations.set(convId, resolve)
-            // Auto-deny after 2 minutes to prevent indefinite blocking
-            // (e.g. when the stream dies and the user never sees the prompt).
-            setTimeout(() => {
-              if (_pendingConfirmations.has(convId)) {
-                _pendingConfirmations.delete(convId)
-                resolve("denied")
-              }
-            }, 120_000)
-          })
-        }
-      : undefined,
     flush: async () => {
       stopFlushTimer()
       stopPhraseRotation()
@@ -501,27 +483,6 @@ export function createTeamsCallbacks(
       }
     },
   }
-}
-
-// Per-conversation pending confirmation resolvers.
-// When a mutate tool needs confirmation, the resolver is stored here.
-// The next message from the same conversation resolves it.
-const _pendingConfirmations = new Map<string, (decision: "confirmed" | "denied") => void>()
-
-// Confirmation response words (case-insensitive)
-const CONFIRM_WORDS = new Set(["yes", "confirm", "go", "y", "ok", "approve", "proceed"])
-
-export function resolvePendingConfirmation(convId: string, text: string): boolean {
-  const resolver = _pendingConfirmations.get(convId)
-  if (!resolver) return false
-  _pendingConfirmations.delete(convId)
-  const word = text.trim().toLowerCase()
-  if (CONFIRM_WORDS.has(word)) {
-    resolver("confirmed")
-  } else {
-    resolver("denied")
-  }
-  return true
 }
 
 const _turnCoordinator = createTurnCoordinator()
@@ -672,7 +633,6 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
       },
       ...(reactionOverrides?.isReactionSignal ? { isReactionSignal: true } : {}),
     }
-    if (channelConfig.skipConfirmation) agentOptions.skipConfirmation = true
 
     // ── Call shared pipeline ──────────────────────────────────────────
 
@@ -984,14 +944,6 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
     const channelId = activity.channelId || "msteams"
 
     emitNervesEvent({ level: "info", event: "channel.message_received", component: "channels", message: `[${label}] incoming teams message`, meta: { userId: userId.slice(0, 12), conversationId: convId.slice(0, 20) } })
-
-    // Resolve pending confirmations IMMEDIATELY — before token fetches or
-    // the conversation lock.  The original message holds the lock while
-    // awaiting confirmation, so acquiring it here would deadlock.  Token
-    // fetches are also unnecessary (and slow) for a simple yes/no reply.
-    if (resolvePendingConfirmation(convId, text)) {
-      return
-    }
 
     const commandRegistry = createTeamsCommandRegistry()
     const parsedSlashCommand = parseSlashCommand(text)
