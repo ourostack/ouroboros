@@ -2,10 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.236",
+      "version": "0.1.0-alpha.237",
       "changes": [
-        "fix(engine): provider-aware retry classification — retries now use both generic isTransientError AND provider classifyError",
-        "feat(engine): retry instrumentation — engine.provider_retry / engine.provider_retry_skip events with full diagnostics"
+        "feat: pretty `ouro status` \u2014 ANSI colored output with box-drawing header, status dots, grouped senses/workers by agent. Added git sync info to overview.",
+        "fix: socket half-close \u2014 sendDaemonCommand now calls client.end() after writing, preventing intermittent connection hangs.",
+        "refactor: config tiers \u2014 replaced numeric T1/T2/T3 with `self` (agent-configurable) and `managed` (harness-only). All config keys are now agent-writable except `version` and `enabled`. mcpServers promoted to self.",
+        "refactor: removed confirmation system \u2014 deleted propose_config tool, confirmationRequired/confirmationAlwaysRequired/onConfirmAction from core, all tool definitions, and Teams sense. Was only wired up on Teams, silently failed everywhere else. -1,361 lines."
       ]
     },
     {
