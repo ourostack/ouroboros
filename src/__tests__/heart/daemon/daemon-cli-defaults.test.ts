@@ -244,11 +244,13 @@ describe("daemon CLI default dependency branches", () => {
     vi.resetModules()
 
     class MockConnection extends EventEmitter {
-      write = vi.fn()
-      end = vi.fn(() => {
-        this.emit("data", Buffer.from("{\"ok\":true,\"summary\":\"status-ok\"}", "utf-8"))
-        this.emit("end")
+      write = vi.fn(() => {
+        queueMicrotask(() => {
+          this.emit("data", Buffer.from("{\"ok\":true,\"summary\":\"status-ok\"}", "utf-8"))
+          this.emit("end")
+        })
       })
+      end = vi.fn()
     }
 
     const createConnection = vi.fn(() => {
@@ -286,10 +288,12 @@ describe("daemon CLI default dependency branches", () => {
     vi.resetModules()
 
     class MockConnection extends EventEmitter {
-      write = vi.fn()
-      end = vi.fn(() => {
-        this.emit("end")
+      write = vi.fn(() => {
+        queueMicrotask(() => {
+          this.emit("end")
+        })
       })
+      end = vi.fn()
     }
 
     const createConnection = vi.fn(() => {
@@ -327,11 +331,13 @@ describe("daemon CLI default dependency branches", () => {
     vi.resetModules()
 
     class MockConnection extends EventEmitter {
-      write = vi.fn()
-      end = vi.fn(() => {
-        this.emit("data", Buffer.from("not-json", "utf-8"))
-        this.emit("end")
+      write = vi.fn(() => {
+        queueMicrotask(() => {
+          this.emit("data", Buffer.from("not-json", "utf-8"))
+          this.emit("end")
+        })
       })
+      end = vi.fn()
     }
 
     const createConnection = vi.fn(() => {
@@ -644,10 +650,12 @@ describe("daemon CLI default dependency branches", () => {
     vi.resetModules()
 
     class MockConnection extends EventEmitter {
-      write = vi.fn()
-      end = vi.fn(() => {
-        this.emit("end")
+      write = vi.fn(() => {
+        queueMicrotask(() => {
+          this.emit("end")
+        })
       })
+      end = vi.fn()
     }
 
     const createConnection = vi.fn(() => {

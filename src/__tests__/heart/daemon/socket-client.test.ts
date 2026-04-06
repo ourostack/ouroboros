@@ -24,11 +24,13 @@ describe("daemon socket client", () => {
 
   it("sends an inner.wake command when the daemon socket exists", async () => {
     class MockConnection extends EventEmitter {
-      write = vi.fn()
-      end = vi.fn(() => {
-        this.emit("data", Buffer.from("{\"ok\":true,\"message\":\"woke inner dialog for slugger\"}", "utf-8"))
-        this.emit("end")
+      write = vi.fn(() => {
+        queueMicrotask(() => {
+          this.emit("data", Buffer.from("{\"ok\":true,\"message\":\"woke inner dialog for slugger\"}", "utf-8"))
+          this.emit("end")
+        })
       })
+      end = vi.fn()
     }
 
     const createConnection = vi.fn(() => {
@@ -49,7 +51,7 @@ describe("daemon socket client", () => {
     expect(createConnection).toHaveBeenCalledWith("/tmp/daemon.sock")
     expect(response).toEqual({ ok: true, message: "woke inner dialog for slugger" })
     const connection = createConnection.mock.results[0]?.value as MockConnection
-    expect(connection.write).toHaveBeenCalledWith(JSON.stringify({ kind: "inner.wake", agent: "slugger" }))
+    expect(connection.write).toHaveBeenCalledWith(JSON.stringify({ kind: "inner.wake", agent: "slugger" }) + "\n")
   })
 
   it("rejects socket commands when the connection emits an error", async () => {
@@ -74,11 +76,13 @@ describe("daemon socket client", () => {
 
   it("stringifies non-Error JSON parse failures from daemon responses", async () => {
     class MockConnection extends EventEmitter {
-      write = vi.fn()
-      end = vi.fn(() => {
-        this.emit("data", Buffer.from("not-json", "utf-8"))
-        this.emit("end")
+      write = vi.fn(() => {
+        queueMicrotask(() => {
+          this.emit("data", Buffer.from("not-json", "utf-8"))
+          this.emit("end")
+        })
       })
+      end = vi.fn()
     }
 
     const createConnection = vi.fn(() => {

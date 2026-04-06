@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.230",
+      "changes": [
+        "fix: socket client no longer half-closes before senseTurn response arrives, fixing MCP send_message returning empty for long-running commands"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.229",
       "changes": [
         "fix: BB session key resolution prefers DM (;-;) over group chat (;+;) — alphabetical sort put group chats first, causing proactive messages to land in group chats instead of personal DMs",
@@ -17,17 +23,19 @@
     {
       "version": "0.1.0-alpha.226",
       "changes": [
-        "fix(daemon): set agent name before senseTurn so MCP messages resolve identity — setAgentName() is now called at the top of the senseTurn handler, before any downstream code that depends on agent identity (loadAgentConfig, getAgentSecretsPath, etc.)"
+        "fix(daemon): set agent name before senseTurn so MCP messages resolve identity \u2014 setAgentName() is now called at the top of the senseTurn handler, before any downstream code that depends on agent identity (loadAgentConfig, getAgentSecretsPath, etc.)"
       ]
     },
     {
       "version": "0.1.0-alpha.225",
-      "changes": ["debug: emit event at top of FileFriendStore.get() to verify it's called"]
+      "changes": [
+        "debug: emit event at top of FileFriendStore.get() to verify it's called"
+      ]
     },
     {
       "version": "0.1.0-alpha.224",
       "changes": [
-        "fix: FileFriendStore.get() now resolves friend names — when UUID lookup fails, scans the friends directory for a name match. This is the deepest possible layer for name resolution, ensuring it works regardless of which tool or code path calls store.get()."
+        "fix: FileFriendStore.get() now resolves friend names \u2014 when UUID lookup fails, scans the friends directory for a name match. This is the deepest possible layer for name resolution, ensuring it works regardless of which tool or code path calls store.get()."
       ]
     },
     {
@@ -39,127 +47,127 @@
     {
       "version": "0.1.0-alpha.222",
       "changes": [
-        "debug: add diagnostic nerves events to proactive BB delivery — name resolution in both tools-session.ts and sendProactiveBlueBubblesMessageToSession now emit events showing friend count, names, resolution success/failure, and errors. Temporary diagnostics to identify why name→UUID resolution isn't working in production."
+        "debug: add diagnostic nerves events to proactive BB delivery \u2014 name resolution in both tools-session.ts and sendProactiveBlueBubblesMessageToSession now emit events showing friend count, names, resolution success/failure, and errors. Temporary diagnostics to identify why name\u2192UUID resolution isn't working in production."
       ]
     },
     {
       "version": "0.1.0-alpha.221",
       "changes": [
-        "fix: BB proactive send resolves friend by name when UUID lookup fails — sendProactiveBlueBubblesMessageToSession now falls back to store.listAll() name matching when store.get() returns null. This handles agents passing friend names instead of UUIDs, bypassing the upstream resolution that wasn't working in all contexts."
+        "fix: BB proactive send resolves friend by name when UUID lookup fails \u2014 sendProactiveBlueBubblesMessageToSession now falls back to store.listAll() name matching when store.get() returns null. This handles agents passing friend names instead of UUIDs, bypassing the upstream resolution that wasn't working in all contexts."
       ]
     },
     {
       "version": "0.1.0-alpha.220",
       "changes": [
-        "fix: send_message BB session key resolution — agents don't know the real BB session key (e.g. 'chat_any;-;ari@mendelow.me'), so they pass the default 'session'. buildChatRefForSessionKey failed on this fake key, returning missing_target. Now auto-resolves the real BB session key from the sessions directory when the default key is used."
+        "fix: send_message BB session key resolution \u2014 agents don't know the real BB session key (e.g. 'chat_any;-;ari@mendelow.me'), so they pass the default 'session'. buildChatRefForSessionKey failed on this fake key, returning missing_target. Now auto-resolves the real BB session key from the sessions directory when the default key is used."
       ]
     },
     {
       "version": "0.1.0-alpha.219",
       "changes": [
-        "fix: proactive message delivery — three bugs fixed. (1) surface tool now resolves friend names to UUIDs by scanning friends directory. (2) send_message tool also resolves friend names to UUIDs. (3) deliverCrossChatMessage no longer immediately queues generic_outreach — it now attempts delivery when a deliverer is available, with the deliverer's own trust checks still gating actual sends. Previously, any proactive send from inner dialog was silently queued without attempting delivery."
+        "fix: proactive message delivery \u2014 three bugs fixed. (1) surface tool now resolves friend names to UUIDs by scanning friends directory. (2) send_message tool also resolves friend names to UUIDs. (3) deliverCrossChatMessage no longer immediately queues generic_outreach \u2014 it now attempts delivery when a deliverer is available, with the deliverer's own trust checks still gating actual sends. Previously, any proactive send from inner dialog was silently queued without attempting delivery."
       ]
     },
     {
       "version": "0.1.0-alpha.218",
       "changes": [
-        "fix: surface tool now resolves friend names to UUIDs — agents pass friend names but sessions are stored under UUID directories. Added name-to-UUID resolution by scanning the friends directory when the friendId doesn't match a session directory."
+        "fix: surface tool now resolves friend names to UUIDs \u2014 agents pass friend names but sessions are stored under UUID directories. Added name-to-UUID resolution by scanning the friends directory when the friendId doesn't match a session directory."
       ]
     },
     {
       "version": "0.1.0-alpha.217",
       "changes": [
-        "feat: Bitwarden vault client (bw CLI wrapper) with credential gateway — BitwardenClient class with SDK-first/CLI-fallback, singleton accessor, nerves events on all operations. Raw secrets never enter model context.",
-        "feat: vault tools (vault_get, vault_store, vault_list, vault_delete) with trust gating — read ops require friend+, write/delete require family-only. Destructive operations require confirmation.",
-        "feat: stealth browser MCP configuration with trust gating — Playwright MCP auto-provisions when configured, browser tools appear in agent tool list. Trust-gated to CLI and trusted 1:1 only (group chat blocked).",
-        "feat: travel API tools (weather_lookup, travel_advisory, geocode_search) — native weather via OpenWeatherMap + vault-backed API key, State Dept RSS feed for advisories, geocoding via Nominatim. All friend+ trust-gated.",
-        "feat: credential gateway (vaultKey on apiRequest()) — automatic secret injection from vault into HTTP headers at call time, keeping credentials out of model context entirely.",
+        "feat: Bitwarden vault client (bw CLI wrapper) with credential gateway \u2014 BitwardenClient class with SDK-first/CLI-fallback, singleton accessor, nerves events on all operations. Raw secrets never enter model context.",
+        "feat: vault tools (vault_get, vault_store, vault_list, vault_delete) with trust gating \u2014 read ops require friend+, write/delete require family-only. Destructive operations require confirmation.",
+        "feat: stealth browser MCP configuration with trust gating \u2014 Playwright MCP auto-provisions when configured, browser tools appear in agent tool list. Trust-gated to CLI and trusted 1:1 only (group chat blocked).",
+        "feat: travel API tools (weather_lookup, travel_advisory, geocode_search) \u2014 native weather via OpenWeatherMap + vault-backed API key, State Dept RSS feed for advisories, geocoding via Nominatim. All friend+ trust-gated.",
+        "feat: credential gateway (vaultKey on apiRequest()) \u2014 automatic secret injection from vault into HTTP headers at call time, keeping credentials out of model context entirely.",
         "feat: travel-planning and browser-navigation skills"
       ]
     },
     {
       "version": "0.1.0-alpha.216",
       "changes": [
-        "fix: surface tool proactive BB delivery masked by newer MCP/CLI sessions — findFreshestFriendSession picked the single freshest session regardless of channel, so an MCP or CLI session being newer than the BB session caused the BB proactive path to be skipped entirely. Now scans all friend sessions, attempts BB delivery first on any BB session, then falls back to queuing on the freshest non-inner session."
+        "fix: surface tool proactive BB delivery masked by newer MCP/CLI sessions \u2014 findFreshestFriendSession picked the single freshest session regardless of channel, so an MCP or CLI session being newer than the BB session caused the BB proactive path to be skipped entirely. Now scans all friend sessions, attempts BB delivery first on any BB session, then falls back to queuing on the freshest non-inner session."
       ]
     },
     {
       "version": "0.1.0-alpha.215",
       "changes": [
-        "fix: surface tool proactive delivery no longer gated by 24-hour session threshold — findFreshestFriendSession was called with activeOnly:true, filtering out sessions older than 24h even when the agent explicitly wants to send a proactive message. Both the bridge path and direct path now find any session regardless of age. Proactive BB delivery and trust checks still apply."
+        "fix: surface tool proactive delivery no longer gated by 24-hour session threshold \u2014 findFreshestFriendSession was called with activeOnly:true, filtering out sessions older than 24h even when the agent explicitly wants to send a proactive message. Both the bridge path and direct path now find any session regardless of age. Proactive BB delivery and trust checks still apply."
       ]
     },
     {
       "version": "0.1.0-alpha.214",
       "changes": [
-        "fix: daemon death diagnostics — createStderrSink() bypassed EPIPE-safe default in createTerminalSink(), causing uncaught EPIPE crashes when daemon runs detached. Removed redundant unsafe default so the existing try-catch fires.",
-        "fix: daemon tombstone now covers all exit paths — unhandledRejection writes tombstone with full error+stack (was just a warn log, but Node 15+ terminates on these). Added process.on('exit') catch-all for any unanticipated exit. SIGINT/SIGTERM marked graceful to avoid false positives. _lastKnownCause threads real error through to exit handler."
+        "fix: daemon death diagnostics \u2014 createStderrSink() bypassed EPIPE-safe default in createTerminalSink(), causing uncaught EPIPE crashes when daemon runs detached. Removed redundant unsafe default so the existing try-catch fires.",
+        "fix: daemon tombstone now covers all exit paths \u2014 unhandledRejection writes tombstone with full error+stack (was just a warn log, but Node 15+ terminates on these). Added process.on('exit') catch-all for any unanticipated exit. SIGINT/SIGTERM marked graceful to avoid false positives. _lastKnownCause threads real error through to exit handler."
       ]
     },
     {
       "version": "0.1.0-alpha.213",
       "changes": [
-        "cleanup: remove vestigial subagents/ directory and package.json files entry (content already in ouroboros-skills repo). Remove backward-compat re-exports from heart/core.ts (tools, execTool, summarizeArgs, getToolsForChannel, streamChatCompletion, streamResponsesApi, toResponsesInput, toResponsesTools, buildSystem, Channel, hasToolIntent — no consumers used them). Update ARCHITECTURE.md, README.md, and CONTRIBUTING.md to reflect the full audit restructuring: new arc/ subsystem, heart/ topic subdirectories, split tool modules, BlueBubbles directory, scopes list."
+        "cleanup: remove vestigial subagents/ directory and package.json files entry (content already in ouroboros-skills repo). Remove backward-compat re-exports from heart/core.ts (tools, execTool, summarizeArgs, getToolsForChannel, streamChatCompletion, streamResponsesApi, toResponsesInput, toResponsesTools, buildSystem, Channel, hasToolIntent \u2014 no consumers used them). Update ARCHITECTURE.md, README.md, and CONTRIBUTING.md to reflect the full audit restructuring: new arc/ subsystem, heart/ topic subdirectories, split tool modules, BlueBubbles directory, scopes list."
       ]
     },
     {
       "version": "0.1.0-alpha.212",
       "changes": [
-        "refactor: consolidate BlueBubbles sense into senses/bluebubbles/ directory — move 9 flat files (bluebubbles.ts, bluebubbles-client.ts, bluebubbles-model.ts, bluebubbles-media.ts, bluebubbles-inbound-log.ts, bluebubbles-mutation-log.ts, bluebubbles-runtime-state.ts, bluebubbles-session-cleanup.ts, bluebubbles-entry.ts) into senses/bluebubbles/ with shorter names (index.ts, client.ts, model.ts, etc.). All imports updated across 20+ files including test files, sense-manager, daemon, and package.json."
+        "refactor: consolidate BlueBubbles sense into senses/bluebubbles/ directory \u2014 move 9 flat files (bluebubbles.ts, bluebubbles-client.ts, bluebubbles-model.ts, bluebubbles-media.ts, bluebubbles-inbound-log.ts, bluebubbles-mutation-log.ts, bluebubbles-runtime-state.ts, bluebubbles-session-cleanup.ts, bluebubbles-entry.ts) into senses/bluebubbles/ with shorter names (index.ts, client.ts, model.ts, etc.). All imports updated across 20+ files including test files, sense-manager, daemon, and package.json."
       ]
     },
     {
       "version": "0.1.0-alpha.211",
       "changes": [
-        "refactor: extract duplicated patterns into shared utilities — mind/embedding-provider.ts (shared OpenAI embedding client from diary + associative-recall), arc/json-store.ts (shared JSON file CRUD from obligations + cares + intentions), repertoire/api-client.ts (shared HTTP request helper from graph + ado + github clients). M12 (channel callback factory) skipped: CLI and Teams streaming implementations are too different for clean abstraction."
+        "refactor: extract duplicated patterns into shared utilities \u2014 mind/embedding-provider.ts (shared OpenAI embedding client from diary + associative-recall), arc/json-store.ts (shared JSON file CRUD from obligations + cares + intentions), repertoire/api-client.ts (shared HTTP request helper from graph + ado + github clients). M12 (channel callback factory) skipped: CLI and Teams streaming implementations are too different for clean abstraction."
       ]
     },
     {
       "version": "0.1.0-alpha.210",
       "changes": [
-        "refactor: create src/arc/ subsystem — extract durable continuity state (obligations, cares, episodes, intentions, presence, attention-types) from heart/ and mind/ into dedicated arc/ module. arc/ owns the agent's continuity state, distinct from engine mechanics (heart) and cognition (mind). All imports updated across 40+ files."
+        "refactor: create src/arc/ subsystem \u2014 extract durable continuity state (obligations, cares, episodes, intentions, presence, attention-types) from heart/ and mind/ into dedicated arc/ module. arc/ owns the agent's continuity state, distinct from engine mechanics (heart) and cognition (mind). All imports updated across 40+ files."
       ]
     },
     {
       "version": "0.1.0-alpha.209",
       "changes": [
-        "refactor: restructure daemon/ directory — move outlook files to heart/outlook/, habit files to heart/habits/, hatch/specialist files to heart/hatch/, versioning/update files to heart/versioning/, auth-flow to heart/auth/, mcp-server to heart/mcp/. daemon/ reduced from 60 to 36 core daemon-lifecycle files."
+        "refactor: restructure daemon/ directory \u2014 move outlook files to heart/outlook/, habit files to heart/habits/, hatch/specialist files to heart/hatch/, versioning/update files to heart/versioning/, auth-flow to heart/auth/, mcp-server to heart/mcp/. daemon/ reduced from 60 to 36 core daemon-lifecycle files."
       ]
     },
     {
       "version": "0.1.0-alpha.208",
       "changes": [
-        "refactor: split daemon-cli.ts (3,630 lines) into 5 focused modules — cli-types (command/deps types), cli-parse (argument parsing), cli-render (output formatting), cli-exec (command execution router), cli-defaults (production dependency wiring). daemon-cli.ts reduced to 42-line re-export shim."
+        "refactor: split daemon-cli.ts (3,630 lines) into 5 focused modules \u2014 cli-types (command/deps types), cli-parse (argument parsing), cli-render (output formatting), cli-exec (command execution router), cli-defaults (production dependency wiring). daemon-cli.ts reduced to 42-line re-export shim."
       ]
     },
     {
       "version": "0.1.0-alpha.207",
       "changes": [
-        "refactor: split tools-base.ts (1,912 lines) into 9 category modules — tools-files, tools-shell, tools-memory, tools-bridge, tools-session, tools-continuity, tools-flow, tools-surface, tools-config. Surface tool handler extracted from tools.ts to tools-surface.ts."
+        "refactor: split tools-base.ts (1,912 lines) into 9 category modules \u2014 tools-files, tools-shell, tools-memory, tools-bridge, tools-session, tools-continuity, tools-flow, tools-surface, tools-config. Surface tool handler extracted from tools.ts to tools-surface.ts."
       ]
     },
     {
       "version": "0.1.0-alpha.206",
       "changes": [
-        "feat: capability discovery and tiered self-configuration — config registry with tier-aware metadata (T1 self-service, T2 proposal, T3 operator-only), read_config tool with topic-filtered discovery, update_config tool for T1 immediate changes, propose_config tool for T2 operator-approval flow, version-change surfacing in start-of-turn packet via buildCapabilitiesSection"
+        "feat: capability discovery and tiered self-configuration \u2014 config registry with tier-aware metadata (T1 self-service, T2 proposal, T3 operator-only), read_config tool with topic-filtered discovery, update_config tool for T1 immediate changes, propose_config tool for T2 operator-approval flow, version-change surfacing in start-of-turn packet via buildCapabilitiesSection"
       ]
     },
     {
       "version": "0.1.0-alpha.205",
       "changes": [
-        "refactor: enforce subsystem boundaries — eliminate all heart/ and nerves/ static imports from senses/, move AttentionItem type to heart/, surfaceToolDef to repertoire/, SteeringFollowUpEffect to heart/turn-coordinator, inline BlueBubbles runtime state reader in daemon"
+        "refactor: enforce subsystem boundaries \u2014 eliminate all heart/ and nerves/ static imports from senses/, move AttentionItem type to heart/, surfaceToolDef to repertoire/, SteeringFollowUpEffect to heart/turn-coordinator, inline BlueBubbles runtime state reader in daemon"
       ]
     },
     {
       "version": "0.1.0-alpha.204",
       "changes": [
-        "refactor: introduce TurnContext snapshot — centralize state assembly from pipeline.ts into buildTurnContext(), thread pre-read state through prompt assembly to eliminate ad-hoc filesystem reads"
+        "refactor: introduce TurnContext snapshot \u2014 centralize state assembly from pipeline.ts into buildTurnContext(), thread pre-read state through prompt assembly to eliminate ad-hoc filesystem reads"
       ]
     },
     {
       "version": "0.1.0-alpha.203",
       "changes": [
-        "refactor: unify obligation systems — mind/obligations.ts merged into heart/obligations.ts with prefixed ReturnObligation API"
+        "refactor: unify obligation systems \u2014 mind/obligations.ts merged into heart/obligations.ts with prefixed ReturnObligation API"
       ]
     },
     {
