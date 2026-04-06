@@ -1127,19 +1127,49 @@ export async function runAgent(
         callbacks.onError(new Error("context trimmed, retrying..."), "transient");
         continue;
       }
-      // Transient errors: retry with exponential backoff
-      if (isTransientError(e) && retryCount < MAX_RETRIES) {
+      // Transient errors: retry with exponential backoff.
+      // Two-layer detection: generic isTransientError (HTTP codes, network patterns)
+      // PLUS provider-specific classifyError (catches SDK-wrapped errors that
+      // generic detection might miss).
+      const errorForClassification = e instanceof Error ? e : /* v8 ignore next -- defensive @preserve */ new Error(String(e))
+      let providerClassification: ProviderErrorClassification
+      try {
+        providerClassification = providerRuntime.classifyError(errorForClassification)
+      } catch {
+        /* v8 ignore next -- defensive: classifyError should not throw @preserve */
+        providerClassification = "unknown"
+      }
+      const retryableByClassification = providerClassification === "rate-limit"
+        || providerClassification === "server-error"
+        || providerClassification === "network-error"
+      const retryableByGeneric = isTransientError(e)
+      const shouldRetry = (retryableByGeneric || retryableByClassification) && retryCount < MAX_RETRIES
+
+      emitNervesEvent({
+        level: shouldRetry ? "info" : "warn",
+        event: shouldRetry ? "engine.provider_retry" : "engine.provider_retry_skip",
+        component: "engine",
+        message: shouldRetry
+          ? `provider error is retryable (attempt ${retryCount + 1}/${MAX_RETRIES})`
+          : `provider error is not retryable or retries exhausted`,
+        meta: {
+          provider: providerRuntime.id,
+          model: providerRuntime.model,
+          retryCount,
+          maxRetries: MAX_RETRIES,
+          retryableByGeneric,
+          retryableByClassification,
+          providerClassification,
+          errorMessage: errorForClassification.message.slice(0, 200),
+          httpStatus: (e as HttpError).status ?? null,
+        },
+      })
+
+      if (shouldRetry) {
         retryCount++;
         const delay = RETRY_BASE_MS * Math.pow(2, retryCount - 1);
-        let classification: string
-        try {
-          classification = providerRuntime.classifyError(e instanceof Error ? e : /* v8 ignore next -- defensive: errors are always Error instances @preserve */ new Error(String(e)))
-        } catch {
-          /* v8 ignore next -- defensive: classifyError should not throw @preserve */
-          classification = classifyTransientError(e)
-        }
         /* v8 ignore next -- defensive: all classifications have labels @preserve */
-        const cause = TRANSIENT_RETRY_LABELS[classification] ?? classification
+        const cause = TRANSIENT_RETRY_LABELS[providerClassification] ?? providerClassification
         callbacks.onError(new Error(`${cause}, retrying in ${delay / 1000}s (${retryCount}/${MAX_RETRIES})...`), "transient");
         // Wait with abort support
         const aborted = await new Promise<boolean>((resolve) => {
@@ -1158,13 +1188,8 @@ export async function runAgent(
         providerRuntime.resetTurnState(messages);
         continue;
       }
-      terminalError = e instanceof Error ? e : new Error(String(e));
-      try {
-        terminalErrorClassification = providerRuntime.classifyError(terminalError);
-      } catch {
-        /* v8 ignore next -- defensive: classifyError should not throw @preserve */
-        terminalErrorClassification = "unknown";
-      }
+      terminalError = errorForClassification;
+      terminalErrorClassification = providerClassification;
 
       /* v8 ignore start — auth-failure guidance: tested via provider error classification tests @preserve */
       if (terminalErrorClassification === "auth-failure") {
