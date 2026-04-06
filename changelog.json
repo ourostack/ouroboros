@@ -2,7 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.234",
+      "version": "0.1.0-alpha.236",
+      "changes": [
+        "fix(engine): provider-aware retry classification — retries now use both generic isTransientError AND provider classifyError, catching SDK-wrapped errors generic detection misses",
+        "feat(engine): retry instrumentation — every retry/skip decision emits engine.provider_retry or engine.provider_retry_skip with full diagnostics"
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.235",
       "changes": [
         "fix(mcp): add retry logic for senseTurn daemon routing — retries on ECONNREFUSED, ENOENT, and empty response with exponential backoff (1s, 2s, 4s)"
       ]
