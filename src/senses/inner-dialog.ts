@@ -700,7 +700,7 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
         }
       }
       // Fresh session: build system prompt
-      const systemPrompt = await buildSystem("inner", { toolChoiceRequired: true, mcpManager })
+      const systemPrompt = await buildSystem("inner", { toolChoiceRequired: true })
       return {
         messages: [{ role: "system" as const, content: systemPrompt }],
         sessionPath: sessionFilePath,

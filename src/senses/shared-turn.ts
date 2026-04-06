@@ -24,6 +24,7 @@ import { accumulateFriendTokens } from "../mind/friends/tokens"
 import { enforceTrustGate } from "./trust-gate"
 import { handleInboundTurn } from "./pipeline"
 import type { Channel } from "../mind/friends/types"
+import { getSharedMcpManager } from "../repertoire/mcp-manager"
 import { emitNervesEvent } from "../nerves/runtime"
 
 const RESPONSE_CAP = 50_000
@@ -95,6 +96,9 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   }
   const resolver = new FriendResolver(friendStore, resolverParams)
 
+  // Initialize MCP manager so MCP tools appear as first-class tools in the agent's tool list
+  const mcpManager = await getSharedMcpManager() ?? undefined
+
   // Session path and loading
   const sessPath = sessionPath(friendId, channel, sessionKey)
   const existing = loadSession(sessPath)
@@ -143,6 +147,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     externalId: friendId,
     enforceTrustGate,
     drainPending,
+    runAgentOptions: { mcpManager },
     /* v8 ignore start — delegation wrappers; these just forward to the real functions */
     runAgent: (msgs, cb, ch, sig, opts) => runAgent(msgs, cb, ch, sig, opts),
     postTurn: (turnMessages, sessionPathArg, usage, hooks, state) => {

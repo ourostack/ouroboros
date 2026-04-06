@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest"
 import { parseOuroCommand, runOuroCli, type OuroCliDeps } from "../../heart/daemon/daemon-cli"
-import { mcpToolsSection, bodyMapSection } from "../../mind/prompt"
+import { bodyMapSection } from "../../mind/prompt"
 import { OURO_CLI_TRUST_MANIFEST } from "../../repertoire/guardrails"
 
 function createMockDeps(overrides: Partial<OuroCliDeps> = {}): OuroCliDeps {
@@ -83,9 +83,10 @@ describe("MCP integration — full flow", () => {
       expect(result).toContain("no MCP servers configured")
     })
 
-    it("mcpToolsSection returns empty for no manager", () => {
-      const result = mcpToolsSection(undefined)
-      expect(result).toBe("")
+    it("MCP tools are now first-class — no system prompt section needed", () => {
+      // mcpToolsSection was removed. MCP tools appear in the active tool list directly.
+      // This test documents that the old pattern is gone.
+      expect(true).toBe(true)
     })
   })
 

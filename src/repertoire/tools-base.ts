@@ -13,6 +13,7 @@ import { continuityToolDefinitions } from "./tools-continuity";
 import { configToolDefinitions } from "./tools-config";
 import { codingToolDefinitions } from "./coding/tools"
 import { credentialToolDefinitions } from "./tools-credential"
+import { vaultToolDefinitions } from "./tools-vault"
 import { travelToolDefinitions } from "./tools-travel";
 // Re-export flow tools for consumers that import them from tools-base
 export { ponderTool, observeTool, settleTool, restTool } from "./tools-flow";
@@ -69,6 +70,8 @@ export interface ToolDefinition {
   confirmationAlwaysRequired?: boolean;
   requiredCapability?: import("../heart/core").ProviderCapability;
   summaryKeys?: string[];
+  /** For first-class MCP tools: the server this tool belongs to. */
+  mcpServer?: string;
 }
 
 // Tracks which file paths have been read via read_file in this session.
@@ -87,10 +90,12 @@ export const baseToolDefinitions: ToolDefinition[] = [
   ...configToolDefinitions,
   ...codingToolDefinitions,
   ...credentialToolDefinitions,
+  ...vaultToolDefinitions,
   ...travelToolDefinitions,
 ];
 
 // Convenience array of just the tool schemas (no handler/integration metadata).
 // Used by consumers that need the OpenAI function-tool format.
 export const tools: OpenAI.ChatCompletionFunctionTool[] = baseToolDefinitions.map((d) => d.tool);
+
 

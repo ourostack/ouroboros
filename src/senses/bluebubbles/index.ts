@@ -735,7 +735,7 @@ async function handleBlueBubblesNormalizedEvent(
     const sessionMessages: OpenAI.ChatCompletionMessageParam[] =
       existing?.messages && existing.messages.length > 0
         ? existing.messages
-        : [{ role: "system", content: await resolvedDeps.buildSystem("bluebubbles", { mcpManager }, context) }]
+        : [{ role: "system", content: await resolvedDeps.buildSystem("bluebubbles", {}, context) }]
 
     if (event.kind === "message") {
       const agentName = resolvedDeps.getAgentName()

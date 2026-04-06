@@ -486,30 +486,62 @@ let _store: CredentialStore | null = null
 
 /**
  * Get the credential store singleton.
- * Tries aac first (if binary exists and has sessions); falls back to BuiltInCredentialStore.
+ *
+ * Priority:
+ *   1. BitwardenCredentialStore — if vault config exists in agent.json + secrets.json
+ *   2. BuiltInCredentialStore — fallback for agents without a vault (local-only, encrypted files)
+ *
+ * Future auth providers (1Password, etc.) would be added here as additional backends.
  */
 export function getCredentialStore(): CredentialStore {
   if (_store) return _store
 
-  // Default to BuiltInCredentialStore — aac detection is async and
-  // would need to be done at startup. For now, always use built-in.
-  // Callers can explicitly create AacCredentialStore if needed.
   let agentName: string
+  let backend = "built-in"
   try {
     // Dynamic import to avoid circular dependency at module level
     const identity = require("../heart/identity")
     agentName = identity.getAgentName()
+
+    // Try to load vault config from agent.json + secrets.json
+    const config = identity.loadAgentConfig?.()
+    const vaultConfig = identity.resolveVaultConfig?.(agentName, config?.vault)
+    const secretsPath = identity.getAgentSecretsPath?.(agentName)
+    let vaultSecrets: { masterPassword?: string } | undefined
+    /* v8 ignore start -- requires real agent secrets.json + vault config + bw CLI @preserve */
+    if (secretsPath) {
+      try {
+        const fs = require("fs")
+        const secrets = JSON.parse(fs.readFileSync(secretsPath, "utf-8"))
+        vaultSecrets = secrets.vault
+      } catch {
+        // No secrets file or no vault section — fall through to built-in
+      }
+    }
+
+    const serverUrl = vaultConfig?.serverUrl
+    const email = vaultConfig?.email
+    const masterPassword = vaultSecrets?.masterPassword
+    if (serverUrl && email && masterPassword) {
+      const { BitwardenCredentialStore } = require("./bitwarden-store")
+      _store = new BitwardenCredentialStore(serverUrl, email, masterPassword)
+      backend = "bitwarden"
+    }
+    /* v8 ignore stop */
   } catch {
     agentName = "default"
   }
 
-  _store = new BuiltInCredentialStore(agentName)
+  /* v8 ignore next -- false branch only reachable when BitwardenCredentialStore was created above @preserve */
+  if (!_store) {
+    _store = new BuiltInCredentialStore(agentName!)
+  }
 
   emitNervesEvent({
     event: "repertoire.credential_store_init",
     component: "repertoire",
     message: "credential store initialized",
-    meta: { backend: "built-in", agentName },
+    meta: { backend, agentName: agentName! },
   })
 
   return _store

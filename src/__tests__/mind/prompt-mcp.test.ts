@@ -13,6 +13,10 @@ vi.mock("child_process", () => ({
   spawnSync: vi.fn(),
 }))
 
+vi.mock("../../nerves/runtime", () => ({
+  emitNervesEvent: vi.fn(),
+}))
+
 vi.mock("../../repertoire/skills", () => ({
   listSkills: vi.fn(),
   loadSkill: vi.fn(),
@@ -31,6 +35,8 @@ vi.mock("../../heart/identity", () => ({
     name: "testagent",
     provider: "minimax",
     context: { maxTokens: 80000, contextMargin: 20 },
+    humanFacing: { provider: "minimax", model: "test-model" },
+    agentFacing: { provider: "minimax", model: "test-model" },
   })),
   getAgentName: vi.fn(() => "testagent"),
   getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/testagent/secrets.json"),
@@ -39,58 +45,59 @@ vi.mock("../../heart/identity", () => ({
   resetIdentity: vi.fn(),
 }))
 
-import * as fs from "fs"
-import { bodyMapSection, mcpToolsSection } from "../../mind/prompt"
+vi.mock("../../heart/core", async () => {
+  const actual = await vi.importActual<typeof import("../../heart/core")>("../../heart/core")
+  return {
+    ...actual,
+    getProviderDisplayLabel: vi.fn(() => "minimax (test-model)"),
+  }
+})
 
-describe("MCP system prompt injection", () => {
+import * as fs from "fs"
+import { bodyMapSection } from "../../mind/prompt"
+
+describe("MCP system prompt — first-class tools (no mcpToolsSection)", () => {
   beforeEach(() => {
-    vi.mocked(fs.readFileSync).mockReturnValue("")
+    vi.mocked(fs.readFileSync).mockImplementation((path: any) => {
+      if (typeof path === "string" && path.includes("package.json")) {
+        return JSON.stringify({ version: "0.0.0-test" })
+      }
+      return ""
+    })
     vi.mocked(fs.existsSync).mockReturnValue(false)
     vi.mocked(fs.readdirSync).mockReturnValue([])
     mockGetBoard.mockReturnValue([])
   })
 
-  describe("mcpToolsSection", () => {
-    it("returns empty string when no mcpManager provided", () => {
-      const result = mcpToolsSection(undefined)
-      expect(result).toBe("")
+  describe("mcpToolsSection removed", () => {
+    it("mcpToolsSection is not exported from prompt.ts", async () => {
+      const prompt = await import("../../mind/prompt")
+      expect("mcpToolsSection" in prompt).toBe(false)
     })
 
-    it("returns empty string when mcpManager has no tools", () => {
-      const mockManager = {
-        listAllTools: vi.fn().mockReturnValue([]),
-      }
-      const result = mcpToolsSection(mockManager as never)
-      expect(result).toBe("")
-    })
-
-    it("formats tools section with server names and tool descriptions", () => {
+    it("buildSystem output does not contain '## mcp tools' section", async () => {
+      const { buildSystem } = await import("../../mind/prompt")
       const mockManager = {
         listAllTools: vi.fn().mockReturnValue([
           {
-            server: "ado",
+            server: "browser",
             tools: [
-              { name: "get_work_items", description: "Query work items from ADO", inputSchema: {} },
-              { name: "create_work_item", description: "Create a new work item", inputSchema: {} },
-            ],
-          },
-          {
-            server: "mail",
-            tools: [
-              { name: "send_mail", description: "Send an email", inputSchema: {} },
+              { name: "navigate", description: "Nav", inputSchema: {} },
             ],
           },
         ]),
       }
-      const result = mcpToolsSection(mockManager as never)
+      const result = buildSystem({
+        agentName: "testagent",
+        mcpManager: mockManager as never,
+      })
+      expect(result).not.toContain("## mcp tools")
+    })
 
-      expect(result).toContain("mcp tools")
-      expect(result).toContain("ouro mcp call")
-      expect(result).toContain("### ado")
-      expect(result).toContain("- get_work_items: Query work items from ADO")
-      expect(result).toContain("- create_work_item: Create a new work item")
-      expect(result).toContain("### mail")
-      expect(result).toContain("- send_mail: Send an email")
+    it("buildSystem without mcpManager also has no mcp tools section", async () => {
+      const { buildSystem } = await import("../../mind/prompt")
+      const result = buildSystem({ agentName: "testagent" })
+      expect(result).not.toContain("## mcp tools")
     })
   })
 

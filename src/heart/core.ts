@@ -643,6 +643,7 @@ export async function runAgent(
     toolPreferences && Object.keys(toolPreferences).length > 0 ? toolPreferences : undefined,
     currentContext,
     providerRuntime.capabilities,
+    options?.mcpManager,
   );
   // Augment tool context with reasoning effort controls from provider
   const augmentedToolContext: ToolContext | undefined = options?.toolContext

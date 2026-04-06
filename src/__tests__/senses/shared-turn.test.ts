@@ -128,6 +128,16 @@ vi.mock("../../mind/friends/store-file", async () => {
   }
 })
 
+const mockGetSharedMcpManager = vi.fn().mockResolvedValue(null)
+
+vi.mock("../../repertoire/mcp-manager", async () => {
+  const actual = await vi.importActual<typeof import("../../repertoire/mcp-manager")>("../../repertoire/mcp-manager")
+  return {
+    ...actual,
+    getSharedMcpManager: (...args: any[]) => mockGetSharedMcpManager(...args),
+  }
+})
+
 // ── Helpers ────────────────────────────────────────────────────
 
 function makeFriend(overrides: Partial<FriendRecord> = {}): FriendRecord {
@@ -297,6 +307,64 @@ describe("runSenseTurn", () => {
     const input = mockHandleInboundTurn.mock.calls[0][0]
     // drainPending is injected as dependency
     expect(input.drainPending).toBeDefined()
+  })
+
+  it("buildSystem is called without mcpManager (now passed via runAgentOptions)", async () => {
+    const fakeMcpManager = { listAllTools: vi.fn().mockReturnValue([]) }
+    mockGetSharedMcpManager.mockResolvedValue(fakeMcpManager)
+    // Ensure fresh session so buildSystem is called
+    mockLoadSession.mockReturnValue(null)
+
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    await runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+    })
+
+    // buildSystem should NOT receive mcpManager — it's now passed via runAgentOptions
+    expect(mockBuildSystem).toHaveBeenCalled()
+    const buildSystemCall = mockBuildSystem.mock.calls[0]
+    expect(buildSystemCall[1]).toEqual({})
+  })
+
+  it("passes mcpManager in runAgentOptions to handleInboundTurn", async () => {
+    const fakeMcpManager = { listAllTools: vi.fn().mockReturnValue([]) }
+    mockGetSharedMcpManager.mockResolvedValue(fakeMcpManager)
+
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    await runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    expect(input.runAgentOptions).toBeDefined()
+    expect(input.runAgentOptions.mcpManager).toBe(fakeMcpManager)
+  })
+
+  it("handles null mcpManager gracefully (no MCP servers)", async () => {
+    mockGetSharedMcpManager.mockResolvedValue(null)
+    mockLoadSession.mockReturnValue(null)
+
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const result = await runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+    })
+
+    expect(result.response).toBeDefined()
+    // buildSystem should receive empty options (no mcpManager)
+    const buildSystemCall = mockBuildSystem.mock.calls[0]
+    expect(buildSystemCall[1]).toEqual({})
   })
 
   it("returns empty response when handleInboundTurn produces no text", async () => {

@@ -158,7 +158,10 @@ describe("tool registry contract", () => {
     expect(names).toContain("travel_advisory");
     expect(names).toContain("geocode_search");
 
-    // Exact count: 44 tools total (was 45, removed vault_pair in credential refactor)
-    expect(names).toHaveLength(44);
+    // Added in vault integration: 1 vault tool
+    expect(names).toContain("vault_setup");
+
+    // Exact count: 45 tools total (44 + vault_setup)
+    expect(names).toHaveLength(45);
   });
 });

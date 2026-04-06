@@ -2,9 +2,35 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.233",
+      "changes": [
+        "feat: first-class MCP tools \u2014 MCP tools now appear in the agent tool list directly (no shell indirection). Agent can call browser_navigate, browser_click etc. as native tools.",
+        "fix: daemon MCP pre-init poisoned singleton \u2014 removed eager getSharedMcpManager() at daemon startup that cached null before agent identity was set.",
+        "fix: removed dead mcpManager field from BuildSystemOptions \u2014 MCP manager now flows through runAgentOptions.",
+        "fix: MCP tool results filter to text-only content types.",
+        "includes: vault integration, travel advisory fix, credential access layer, HKDF-Expand crypto fix."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.232",
+      "changes": [
+        "feat: first-class MCP tools \u2014 MCP server tools now appear in the agent's active tool list (e.g. browser_navigate, duffel_search_flights) and are callable directly by the model, eliminating fragile shell indirection",
+        "feat: mcpToolsAsDefinitions() converts McpManager tools to ToolDefinition objects with {server}_{tool} naming",
+        "feat: first-class MCP trust gating \u2014 mcpServerName on GuardContext enables per-server trust rules (browser blocked for acquaintance, blocked in group chat)",
+        "refactor: removed mcpToolsSection() from system prompt \u2014 MCP tools no longer need prompt documentation",
+        "fix: execTool, isConfirmationRequired, summarizeArgs now check combined native+MCP registry"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.231",
       "changes": [
-        "fix: defense-in-depth group chat blocking for proactive BB delivery — sendProactiveBlueBubblesMessageToSession now rejects group chat keys (;+;) unless intent is explicit_cross_chat (bridge/delegation responses). All upper-layer paths (surface tool, send_message tool, inner-dialog delegation) now filter to DM sessions only for proactive outreach, and pass explicit_cross_chat intent for bridge/delegation returns where group responses are legitimate."
+        "fix: defense-in-depth group chat blocking for proactive BB delivery \u2014 sendProactiveBlueBubblesMessageToSession now rejects group chat keys (;+;) unless intent is explicit_cross_chat (bridge/delegation responses). All upper-layer paths (surface tool, send_message tool, inner-dialog delegation) now filter to DM sessions only for proactive outreach, and pass explicit_cross_chat intent for bridge/delegation returns where group responses are legitimate.",
+        "fix: travel advisory now resolves ISO codes that differ from FIPS (ES -> Spain, not El Salvador)",
+        "fix: MCP bridge sense now includes MCP tool descriptions in system prompt (browser tools visible)",
+        "fix: removed confirmationRequired from credential_store/credential_delete (trust gating sufficient)",
+        "feat: vault integration \u2014 Bitwarden/Vaultwarden account creation with PBKDF2/HKDF/AES-256-CBC crypto",
+        "feat: vault_setup tool for one-time vault provisioning (family trust gated)",
+        "feat: BitwardenCredentialStore wrapping bw CLI for agent-owned vault access"
       ]
     },
     {
@@ -16,14 +42,14 @@
     {
       "version": "0.1.0-alpha.229",
       "changes": [
-        "fix: BB session key resolution prefers DM (;-;) over group chat (;+;) — alphabetical sort put group chats first, causing proactive messages to land in group chats instead of personal DMs",
+        "fix: BB session key resolution prefers DM (;-;) over group chat (;+;) \u2014 alphabetical sort put group chats first, causing proactive messages to land in group chats instead of personal DMs",
         "chore: remove temporary debug traces (send-message-debug.log, friends.get_called event)"
       ]
     },
     {
       "version": "0.1.0-alpha.227",
       "changes": [
-        "fix: direct filesystem name resolution in sendProactiveBlueBubblesMessageToSession — bypass store.get()/listAll() with raw fs reads on friends directory when store lookup fails"
+        "fix: direct filesystem name resolution in sendProactiveBlueBubblesMessageToSession \u2014 bypass store.get()/listAll() with raw fs reads on friends directory when store lookup fails"
       ]
     },
     {

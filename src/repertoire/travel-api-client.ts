@@ -97,6 +97,51 @@ function parseWeatherResponse(data: any): WeatherData {
 export const TRAVEL_ADVISORY_RSS_URL = "https://travel.state.gov/_res/rss/TAsTWs.xml"
 
 /**
+ * Mapping of ISO 3166-1 alpha-2 codes to country names, ONLY for codes
+ * where ISO differs from FIPS 10-4 (which the State Dept RSS feed uses).
+ *
+ * The RSS feed Country-Tag uses FIPS codes. Callers typically pass ISO codes.
+ * When the codes match (e.g. AF for Afghanistan), no lookup is needed.
+ * This table handles the ~30 codes where they diverge.
+ */
+const ISO_FIPS_DIVERGENCE: Record<string, string> = {
+  AT: "Austria",       // FIPS: AU
+  AU: "Australia",     // FIPS: AS
+  BD: "Bangladesh",    // FIPS: BG
+  BN: "Brunei",        // FIPS: BX
+  BO: "Bolivia",       // FIPS: BL
+  CH: "Switzerland",   // FIPS: SZ
+  CZ: "Czechia",       // FIPS: EZ
+  DE: "Germany",       // FIPS: GM
+  ES: "Spain",         // FIPS: SP
+  FI: "Finland",       // FIPS: FI → same, but title might say "Finland"
+  GQ: "Equatorial Guinea", // FIPS: EK
+  HR: "Croatia",       // FIPS: HR → same
+  IE: "Ireland",       // FIPS: EI
+  KP: "North Korea",   // FIPS: KN
+  KR: "South Korea",   // FIPS: KS
+  LT: "Lithuania",     // FIPS: LH
+  MM: "Burma",         // FIPS: BM (State Dept uses "Burma (Myanmar)")
+  NO: "Norway",        // FIPS: NO → same
+  PH: "Philippines",   // FIPS: RP
+  RO: "Romania",       // FIPS: RO → same
+  SE: "Sweden",        // FIPS: SW
+  TL: "Timor-Leste",   // FIPS: TT
+  TW: "Taiwan",        // FIPS: TW → same
+  VA: "Holy See",      // FIPS: VT
+  YE: "Yemen",         // FIPS: YM
+}
+
+/**
+ * Look up the expected country name for an ISO alpha-2 code,
+ * but ONLY when that code diverges from the FIPS code used in the RSS feed.
+ * Returns undefined for codes where ISO == FIPS (no title fallback needed).
+ */
+export function isoToCountryName(isoCode: string): string | undefined {
+  return ISO_FIPS_DIVERGENCE[isoCode.toUpperCase()]
+}
+
+/**
  * Parse advisory level (1-4) from an RSS item title like
  * "Afghanistan - Level 4: Do Not Travel"
  */
@@ -135,21 +180,19 @@ export async function getTravelAdvisory(countryCode: string): Promise<TravelAdvi
     }
 
     const xml = await res.text()
+    const upperCode = countryCode.toUpperCase()
+
+    // When the caller's ISO code diverges from FIPS, we need a title-based fallback.
+    const expectedCountryName = isoToCountryName(upperCode)
 
     // Parse RSS items via regex (no XML parser dependency needed).
     // Each <item> contains <title>, <pubDate>, and <category domain="Country-Tag">.
     const itemPattern = /<item>([\s\S]*?)<\/item>/g
+    let titleFallbackMatch: TravelAdvisory | null = null
     let match: RegExpExecArray | null
+
     while ((match = itemPattern.exec(xml)) !== null) {
       const block = match[1]
-
-      // Extract country tag from <category domain="Country-Tag">XX</category>
-      const tagMatch = block.match(/<category\s+domain="Country-Tag">(.*?)<\/category>/)
-      const tag = tagMatch?.[1]?.trim().toUpperCase()
-
-      // The RSS feed uses FIPS country codes (e.g. "AF" for Afghanistan),
-      // which sometimes differ from ISO 3166. Try exact match first.
-      if (tag !== countryCode.toUpperCase()) continue
 
       const titleMatch = block.match(/<title>(.*?)<\/title>/)
       const title = titleMatch?.[1] ?? ""
@@ -157,14 +200,41 @@ export async function getTravelAdvisory(countryCode: string): Promise<TravelAdvi
       const pubDateMatch = block.match(/<pubDate>(.*?)<\/pubDate>/)
       const pubDate = pubDateMatch?.[1]?.trim() ?? ""
 
-      return {
-        countryCode,
-        countryName: parseCountryName(title),
-        advisoryLevel: parseAdvisoryLevel(title),
-        advisoryText: parseAdvisoryText(title),
-        lastUpdated: pubDate,
+      // Extract country tag from <category domain="Country-Tag">XX</category>
+      const tagMatch = block.match(/<category\s+domain="Country-Tag">(.*?)<\/category>/)
+      const tag = tagMatch?.[1]?.trim().toUpperCase()
+
+      // Primary match: FIPS tag matches the requested code directly.
+      // Skip this path when the caller's ISO code is known to diverge from FIPS —
+      // e.g. ISO "ES" = Spain, but FIPS "ES" = El Salvador. In that case, only
+      // the title-based fallback should match.
+      if (tag === upperCode && !expectedCountryName) {
+        return {
+          countryCode,
+          countryName: parseCountryName(title),
+          advisoryLevel: parseAdvisoryLevel(title),
+          advisoryText: parseAdvisoryText(title),
+          lastUpdated: pubDate,
+        }
+      }
+
+      // Title-based match: when ISO differs from FIPS, match by country name.
+      // Uses startsWith to handle names like "Burma (Myanmar)" matching "Burma".
+      if (expectedCountryName && !titleFallbackMatch) {
+        const titleCountry = parseCountryName(title)
+        if (titleCountry.toLowerCase().startsWith(expectedCountryName.toLowerCase())) {
+          titleFallbackMatch = {
+            countryCode,
+            countryName: titleCountry,
+            advisoryLevel: parseAdvisoryLevel(title),
+            advisoryText: parseAdvisoryText(title),
+            lastUpdated: pubDate,
+          }
+        }
       }
     }
+
+    if (titleFallbackMatch) return titleFallbackMatch
 
     throw new Error(`No travel advisory found for country code "${countryCode}"`)
   })

@@ -9,6 +9,8 @@ export interface GuardContext {
   agentRoot?: string
   senseType?: string
   isGroupChat?: boolean
+  /** For first-class MCP tools: the server this tool belongs to. */
+  mcpServerName?: string
 }
 
 export type GuardResult = { allowed: true } | { allowed: false; reason: string }
@@ -287,7 +289,7 @@ function checkWriteTrustGuardrails(toolName: string, args: Record<string, string
 // --- credential tool trust gating ---
 
 // Credential write tools: family only
-const CREDENTIAL_FAMILY_TOOLS = new Set(["credential_store", "credential_delete"])
+const CREDENTIAL_FAMILY_TOOLS = new Set(["credential_store", "credential_delete", "vault_setup"])
 // Credential read tools: friend+
 const CREDENTIAL_TRUSTED_TOOLS = new Set(["credential_get", "credential_list"])
 
@@ -307,12 +309,29 @@ function checkCredentialTrustGuardrails(toolName: string, context: GuardContext)
   return allow
 }
 
+function checkFirstClassMcpTrust(context: GuardContext): GuardResult {
+  if (!context.mcpServerName) return allow
+  const rules = MCP_SERVER_TRUST[context.mcpServerName]
+  if (!rules) return allow
+  if (!trustLevelSatisfied(rules.minTrust, context.trustLevel ?? "friend")) {
+    return deny(REASONS.needsTrust)
+  }
+  if (rules.blockGroupChat && context.isGroupChat) {
+    return deny("browser tools are only available in 1:1 conversations, not group chats.")
+  }
+  return allow
+}
+
 function checkTrustLevelGuardrails(toolName: string, args: Record<string, string>, context: GuardContext): GuardResult {
   // Credential tools have their own trust rules that apply at all levels
   const credentialResult = checkCredentialTrustGuardrails(toolName, context)
   if (!credentialResult.allowed) return credentialResult
 
-  // MCP server-specific trust (e.g. browser blocked in group chats) — applies at all trust levels
+  // First-class MCP tool trust (e.g. browser_navigate) — applies at all trust levels
+  const firstClassMcpResult = checkFirstClassMcpTrust(context)
+  if (!firstClassMcpResult.allowed) return firstClassMcpResult
+
+  // MCP server-specific trust via shell (e.g. ouro mcp call browser) — applies at all trust levels
   if (toolName === "shell") {
     const mcpResult = checkMcpServerTrust(args.command || "", context)
     if (!mcpResult.allowed) return mcpResult

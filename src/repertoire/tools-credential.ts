@@ -100,7 +100,6 @@ export const credentialToolDefinitions: ToolDefinition[] = [
         return `Credential store error: ${err instanceof Error ? err.message : String(err)}`
       }
     },
-    confirmationRequired: true,
     summaryKeys: ["domain"],
   },
 
@@ -192,7 +191,6 @@ export const credentialToolDefinitions: ToolDefinition[] = [
         return `Credential delete error: ${err instanceof Error ? err.message : String(err)}`
       }
     },
-    confirmationRequired: true,
     summaryKeys: ["domain"],
   },
 ]

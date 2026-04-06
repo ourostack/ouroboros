@@ -710,7 +710,7 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
           const existing = loadSession(sessPath)
           const messages: OpenAI.ChatCompletionMessageParam[] = existing?.messages && existing.messages.length > 0
             ? existing.messages
-            : [{ role: "system", content: await buildSystem("teams", { mcpManager }, resolvedContext) }]
+            : [{ role: "system", content: await buildSystem("teams", {}, resolvedContext) }]
           repairOrphanedToolCalls(messages)
           return {
             messages,
