@@ -4,20 +4,6 @@ import { describe, it, expect, vi, beforeEach } from "vitest"
 const mockFetch = vi.fn()
 vi.stubGlobal("fetch", mockFetch)
 
-// Mock credential store
-const mockGetRawSecret = vi.fn()
-
-vi.mock("../../repertoire/credential-access", () => ({
-  getCredentialStore: vi.fn(() => ({
-    get: vi.fn(),
-    getRawSecret: mockGetRawSecret,
-    store: vi.fn(),
-    list: vi.fn(),
-    delete: vi.fn(),
-    isReady: vi.fn(() => true),
-  })),
-}))
-
 // Track nerves events
 const nervesEvents: Array<Record<string, unknown>> = []
 vi.mock("../../nerves/runtime", () => ({
@@ -37,6 +23,8 @@ import {
   parseCountryName,
   parseAdvisoryText,
   isoToCountryName,
+  wmoWeatherDescription,
+  WMO_WEATHER_CODES,
 } from "../../repertoire/travel-api-client"
 
 function mockFetchResponse(data: unknown, ok = true, status = 200): void {
@@ -80,20 +68,46 @@ const SAMPLE_RSS = `<?xml version="1.0" encoding="UTF-8"?>
 </channel>
 </rss>`
 
+describe("WMO weather codes", () => {
+  it("maps known WMO codes to descriptions", () => {
+    expect(wmoWeatherDescription(0)).toBe("clear sky")
+    expect(wmoWeatherDescription(3)).toBe("overcast")
+    expect(wmoWeatherDescription(61)).toBe("slight rain")
+    expect(wmoWeatherDescription(95)).toBe("thunderstorm")
+  })
+
+  it("returns 'unknown' for unrecognized codes", () => {
+    expect(wmoWeatherDescription(-1)).toBe("unknown")
+    expect(wmoWeatherDescription(999)).toBe("unknown")
+  })
+
+  it("exports the full WMO_WEATHER_CODES lookup table", () => {
+    expect(Object.keys(WMO_WEATHER_CODES).length).toBeGreaterThan(20)
+    expect(WMO_WEATHER_CODES[0]).toBe("clear sky")
+    expect(WMO_WEATHER_CODES[99]).toBe("thunderstorm with heavy hail")
+  })
+})
+
 describe("getWeather", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     nervesEvents.length = 0
-    mockGetRawSecret.mockResolvedValue("test-api-key")
   })
 
-  it("returns structured weather data for valid coordinates", async () => {
+  it("returns structured weather data from Open-Meteo for valid coordinates", async () => {
     mockFetchResponse({
-      main: { temp: 22, feels_like: 20, humidity: 65 },
-      weather: [{ description: "clear sky" }],
-      wind: { speed: 5.2 },
-      name: "London",
-      sys: { country: "GB" },
+      current: {
+        temperature_2m: 22,
+        apparent_temperature: 20,
+        relative_humidity_2m: 65,
+        wind_speed_10m: 5.2,
+        weather_code: 0,
+      },
+      daily: {
+        temperature_2m_max: [25],
+        temperature_2m_min: [18],
+        weather_code: [0],
+      },
     })
 
     const result = await getWeather(51.5, -0.12)
@@ -103,47 +117,81 @@ describe("getWeather", () => {
     expect(result.description).toBe("clear sky")
     expect(result.humidity).toBe(65)
     expect(result.windSpeed).toBe(5.2)
-    expect(result.city).toBe("London")
-    expect(result.country).toBe("GB")
+    expect(result.city).toBe("51.5,-0.12")
+    expect(result.country).toBe("")
+    expect(result.dailyHigh).toBe(25)
+    expect(result.dailyLow).toBe(18)
   })
 
-  it("returns 'unknown' description when weather array is missing", async () => {
+  it("calls Open-Meteo forecast API with correct parameters", async () => {
+    mockFetchResponse({ current: {}, daily: {} })
+
+    await getWeather(48.8, 2.3)
+
+    const fetchUrl = mockFetch.mock.calls[0][0] as string
+    expect(fetchUrl).toContain("api.open-meteo.com/v1/forecast")
+    expect(fetchUrl).toContain("latitude=48.8")
+    expect(fetchUrl).toContain("longitude=2.3")
+    expect(fetchUrl).toContain("current=")
+    expect(fetchUrl).toContain("daily=")
+    expect(fetchUrl).toContain("timezone=auto")
+    // No API key in URL
+    expect(fetchUrl).not.toContain("appid")
+    expect(fetchUrl).not.toContain("key=")
+  })
+
+  it("includes User-Agent header", async () => {
+    mockFetchResponse({ current: {}, daily: {} })
+
+    await getWeather(0, 0)
+
+    const fetchOpts = mockFetch.mock.calls[0][1]
+    expect(fetchOpts.headers["User-Agent"]).toContain("Ouroboros")
+  })
+
+  it("requires no authentication", async () => {
+    mockFetchResponse({ current: {}, daily: {} })
+
+    await getWeather(0, 0)
+
+    const fetchOpts = mockFetch.mock.calls[0][1]
+    expect(fetchOpts.headers.Authorization).toBeUndefined()
+  })
+
+  it("returns 'unknown' description for unrecognized weather code", async () => {
     mockFetchResponse({
-      main: { temp: 10, feels_like: 8, humidity: 80 },
-      weather: [],
-      wind: { speed: 1 },
-      name: "Nowhere",
-      sys: { country: "XX" },
+      current: { weather_code: 999 },
+      daily: {},
     })
 
     const result = await getWeather(0, 0)
     expect(result.description).toBe("unknown")
   })
 
-  it("fetches API key from credential store via getRawSecret", async () => {
-    mockFetchResponse({
-      main: { temp: 20, feels_like: 18, humidity: 50 },
-      weather: [{ description: "rain" }],
-      wind: { speed: 3 },
-      name: "Paris",
-      sys: { country: "FR" },
-    })
+  it("handles missing current data gracefully with defaults", async () => {
+    mockFetchResponse({ daily: {} })
 
-    await getWeather(48.8, 2.3)
+    const result = await getWeather(0, 0)
+    expect(result.temperature).toBe(0)
+    expect(result.feelsLike).toBe(0)
+    expect(result.humidity).toBe(0)
+    expect(result.windSpeed).toBe(0)
+    expect(result.description).toBe("unknown")
+  })
 
-    expect(mockGetRawSecret).toHaveBeenCalledWith("api.openweathermap.org", "password")
-    // Verify API key appears in URL
-    const fetchUrl = mockFetch.mock.calls[0][0] as string
-    expect(fetchUrl).toContain("appid=test-api-key")
-    // Verify it's NOT in Authorization header
-    const fetchOpts = mockFetch.mock.calls[0][1]
-    expect(fetchOpts?.headers?.Authorization).toBeUndefined()
+  it("handles completely empty response (no current or daily)", async () => {
+    mockFetchResponse({})
+
+    const result = await getWeather(10, 20)
+    expect(result.temperature).toBe(0)
+    expect(result.dailyHigh).toBeUndefined()
+    expect(result.dailyLow).toBeUndefined()
   })
 
   it("handles HTTP error gracefully", async () => {
-    mockFetchResponse({ message: "unauthorized" }, false, 401)
+    mockFetchResponse({}, false, 500)
 
-    await expect(getWeather(0, 0)).rejects.toThrow()
+    await expect(getWeather(0, 0)).rejects.toThrow(/Open-Meteo API error/)
   })
 
   it("handles network error gracefully", async () => {
@@ -152,20 +200,8 @@ describe("getWeather", () => {
     await expect(getWeather(0, 0)).rejects.toThrow(/Network error/)
   })
 
-  it("handles credential store error", async () => {
-    mockGetRawSecret.mockRejectedValue(new Error("no credential found"))
-
-    await expect(getWeather(0, 0)).rejects.toThrow(/credential/)
-  })
-
   it("emits nerves events for start and end", async () => {
-    mockFetchResponse({
-      main: { temp: 20, feels_like: 18, humidity: 50 },
-      weather: [{ description: "sunny" }],
-      wind: { speed: 2 },
-      name: "NYC",
-      sys: { country: "US" },
-    })
+    mockFetchResponse({ current: {}, daily: {} })
 
     await getWeather(40.7, -74)
 
@@ -180,37 +216,138 @@ describe("getWeather", () => {
 
     expect(nervesEvents.some((e) => e.event === "client.error")).toBe(true)
   })
-
 })
 
 describe("getWeatherByCity", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     nervesEvents.length = 0
-    mockGetRawSecret.mockResolvedValue("test-key")
   })
 
-  it("handles HTTP error for city lookup", async () => {
-    mockFetchResponse({}, false, 404)
-
-    await expect(getWeatherByCity("NonexistentCity")).rejects.toThrow(/OpenWeatherMap/)
-  })
-
-  it("returns weather data for city name", async () => {
-    mockFetchResponse({
-      main: { temp: 15, feels_like: 13, humidity: 70 },
-      weather: [{ description: "overcast" }],
-      wind: { speed: 4 },
-      name: "Berlin",
-      sys: { country: "DE" },
+  it("geocodes city then fetches forecast from Open-Meteo", async () => {
+    // First call: geocoding
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: async () => ({
+        results: [{ latitude: 52.52, longitude: 13.405, name: "Berlin", country_code: "DE" }],
+      }),
+    })
+    // Second call: forecast
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: async () => ({
+        current: {
+          temperature_2m: 15,
+          apparent_temperature: 13,
+          relative_humidity_2m: 70,
+          wind_speed_10m: 4,
+          weather_code: 3,
+        },
+        daily: {
+          temperature_2m_max: [18],
+          temperature_2m_min: [10],
+          weather_code: [3],
+        },
+      }),
     })
 
     const result = await getWeatherByCity("Berlin")
 
     expect(result.city).toBe("Berlin")
+    expect(result.country).toBe("DE")
     expect(result.temperature).toBe(15)
-    const url = mockFetch.mock.calls[0][0] as string
-    expect(url).toContain("q=Berlin")
+    expect(result.description).toBe("overcast")
+
+    // Verify geocoding call
+    const geoUrl = mockFetch.mock.calls[0][0] as string
+    expect(geoUrl).toContain("geocoding-api.open-meteo.com")
+    expect(geoUrl).toContain("name=Berlin")
+
+    // Verify forecast call
+    const forecastUrl = mockFetch.mock.calls[1][0] as string
+    expect(forecastUrl).toContain("api.open-meteo.com/v1/forecast")
+    expect(forecastUrl).toContain("latitude=52.52")
+  })
+
+  it("throws when geocoding returns no results", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: async () => ({ results: [] }),
+    })
+
+    await expect(getWeatherByCity("Xyzzyville")).rejects.toThrow(/No location found/)
+  })
+
+  it("throws when geocoding returns undefined results", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: async () => ({}),
+    })
+
+    await expect(getWeatherByCity("Nowhere")).rejects.toThrow(/No location found/)
+  })
+
+  it("handles geocoding HTTP error", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      statusText: "Error",
+      json: async () => ({}),
+    })
+
+    await expect(getWeatherByCity("Berlin")).rejects.toThrow(/Open-Meteo geocoding error/)
+  })
+
+  it("handles forecast HTTP error after successful geocoding", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: async () => ({
+        results: [{ latitude: 52.52, longitude: 13.405, name: "Berlin", country_code: "DE" }],
+      }),
+    })
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+      statusText: "Error",
+      json: async () => ({}),
+    })
+
+    await expect(getWeatherByCity("Berlin")).rejects.toThrow(/Open-Meteo API error/)
+  })
+
+  it("requires no authentication for either geocoding or forecast", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: async () => ({
+        results: [{ latitude: 0, longitude: 0, name: "Test", country_code: "XX" }],
+      }),
+    })
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: async () => ({ current: {}, daily: {} }),
+    })
+
+    await getWeatherByCity("Test")
+
+    for (const call of mockFetch.mock.calls) {
+      const opts = call[1]
+      expect(opts.headers.Authorization).toBeUndefined()
+      expect(opts.headers["User-Agent"]).toContain("Ouroboros")
+    }
   })
 })
 
@@ -429,6 +566,37 @@ describe("isoToCountryName", () => {
   it("returns undefined for codes not in the divergence table", () => {
     expect(isoToCountryName("US")).toBeUndefined()
     expect(isoToCountryName("AF")).toBeUndefined()
+  })
+
+  it("returns correct names for newly added divergent ISO/FIPS codes", () => {
+    // Each of these ISO codes differs from its FIPS counterpart
+    const expected: Record<string, string> = {
+      AG: "Antigua and Barbuda",
+      BH: "Bahrain",
+      BS: "Bahamas",
+      BW: "Botswana",
+      CD: "Congo (Kinshasa)",
+      CI: "Cote d'Ivoire",
+      CL: "Chile",
+      CN: "China",
+      DK: "Denmark",
+      DO: "Dominican Republic",
+      DZ: "Algeria",
+      IL: "Israel",
+      JP: "Japan",
+      MA: "Morocco",
+      NG: "Nigeria",
+      PT: "Portugal",
+      SG: "Singapore",
+      TR: "Turkey",
+      UA: "Ukraine",
+      VN: "Vietnam",
+      ZA: "South Africa",
+    }
+
+    for (const [code, name] of Object.entries(expected)) {
+      expect(isoToCountryName(code), `isoToCountryName("${code}") should be "${name}"`).toBe(name)
+    }
   })
 })
 
