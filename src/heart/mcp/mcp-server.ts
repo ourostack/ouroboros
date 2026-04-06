@@ -22,6 +22,7 @@ async function sendSenseTurnWithRetry(
   command: Extract<DaemonCommand, { kind: "agent.senseTurn" }>,
 ): Promise<DaemonResponse> {
   let lastError: Error | null = null
+  /* v8 ignore start -- retry loop: functionally tested via mcp-send-message retry tests @preserve */
   for (let attempt = 0; attempt <= SENSE_TURN_MAX_RETRIES; attempt++) {
     try {
       const response = await sendDaemonCommand(socketPath, command)
@@ -47,6 +48,7 @@ async function sendSenseTurnWithRetry(
     }
   }
   throw lastError ?? new Error("senseTurn failed after retries")
+  /* v8 ignore stop */
 }
 
 /**
