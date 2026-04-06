@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.234",
+      "changes": [
+        "fix(mcp): add retry logic for senseTurn daemon routing — retries on ECONNREFUSED, ENOENT, and empty response with exponential backoff (1s, 2s, 4s)"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.233",
       "changes": [
         "feat: first-class MCP tools \u2014 MCP tools now appear in the agent tool list directly (no shell indirection). Agent can call browser_navigate, browser_click etc. as native tools.",
