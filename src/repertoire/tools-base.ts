@@ -66,8 +66,6 @@ export interface ToolDefinition {
   tool: OpenAI.ChatCompletionFunctionTool;
   handler: ToolHandler;
   integration?: Integration;
-  confirmationRequired?: boolean;
-  confirmationAlwaysRequired?: boolean;
   requiredCapability?: import("../heart/core").ProviderCapability;
   summaryKeys?: string[];
   /** For first-class MCP tools: the server this tool belongs to. */

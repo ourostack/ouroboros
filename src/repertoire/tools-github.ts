@@ -40,7 +40,6 @@ export const githubToolDefinitions: ToolDefinition[] = [
       return githubRequest(ctx.githubToken, "POST", `/repos/${owner}/${repo}/issues`, JSON.stringify(payload))
     },
     integration: "github",
-    confirmationRequired: true,
     summaryKeys: ["title"],
   },
 ]

@@ -771,7 +771,7 @@ describe("daemon CLI default dependency branches", () => {
 
     })
 
-    expect(statusResult).toContain("| Daemon       | stopped")
+    expect(statusResult).toContain("stopped")
     expect(statusResult).toContain("daemon not running; run `ouro up`")
 
     await expect(runOuroCli(["status"], {

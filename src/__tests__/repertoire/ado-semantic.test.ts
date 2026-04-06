@@ -279,11 +279,10 @@ describe("ado_backlog_list tool", () => {
 describe("ado_create_epic tool", () => {
   beforeEach(() => { vi.resetAllMocks() })
 
-  it("is registered with integration 'ado' and confirmationRequired", () => {
+  it("is registered with integration 'ado'", () => {
     const def = findTool("ado_create_epic")
     expect(def).toBeDefined()
     expect(def!.integration).toBe("ado")
-    expect(def!.confirmationRequired).toBe(true)
   })
 
   it("creates an epic with correct JSON Patch operations", async () => {
@@ -325,11 +324,10 @@ describe("ado_create_epic tool", () => {
 describe("ado_create_issue tool", () => {
   beforeEach(() => { vi.resetAllMocks() })
 
-  it("is registered with integration 'ado' and confirmationRequired", () => {
+  it("is registered with integration 'ado'", () => {
     const def = findTool("ado_create_issue")
     expect(def).toBeDefined()
     expect(def!.integration).toBe("ado")
-    expect(def!.confirmationRequired).toBe(true)
   })
 
   it("creates an issue with title, description, area path, and parent", async () => {
@@ -357,11 +355,10 @@ describe("ado_create_issue tool", () => {
 describe("ado_move_items tool", () => {
   beforeEach(() => { vi.resetAllMocks() })
 
-  it("is registered with integration 'ado' and confirmationRequired", () => {
+  it("is registered with integration 'ado'", () => {
     const def = findTool("ado_move_items")
     expect(def).toBeDefined()
     expect(def!.integration).toBe("ado")
-    expect(def!.confirmationRequired).toBe(true)
   })
 
   it("reparents work items to a new parent", async () => {
@@ -409,7 +406,6 @@ describe("ado_preview_changes tool", () => {
     const def = findTool("ado_preview_changes")
     expect(def).toBeDefined()
     expect(def!.integration).toBe("ado")
-    expect(def!.confirmationRequired).toBeUndefined()
   })
 
   it("returns structured preview without executing mutations", async () => {
@@ -668,11 +664,10 @@ describe("channel-aware formatting", () => {
 describe("ado_batch_update tool", () => {
   beforeEach(() => { vi.resetAllMocks() })
 
-  it("is registered with integration 'ado' and confirmationRequired", () => {
+  it("is registered with integration 'ado'", () => {
     const def = findTool("ado_batch_update")
     expect(def).toBeDefined()
     expect(def!.integration).toBe("ado")
-    expect(def!.confirmationRequired).toBe(true)
   })
 
   it("batch with all operations succeeding returns all success results", async () => {
@@ -825,11 +820,10 @@ describe("ado_batch_update tool", () => {
 describe("ado_restructure_backlog tool", () => {
   beforeEach(() => { vi.resetAllMocks() })
 
-  it("is registered with integration 'ado' and confirmationRequired", () => {
+  it("is registered with integration 'ado'", () => {
     const def = findTool("ado_restructure_backlog")
     expect(def).toBeDefined()
     expect(def!.integration).toBe("ado")
-    expect(def!.confirmationRequired).toBe(true)
   })
 
   it("performs bulk reparent operations", async () => {
@@ -933,7 +927,6 @@ describe("ado_detect_orphans tool", () => {
     const def = findTool("ado_detect_orphans")
     expect(def).toBeDefined()
     expect(def!.integration).toBe("ado")
-    expect(def!.confirmationRequired).toBeUndefined()
   })
 
   it("finds items without parents that should have one", async () => {
@@ -1019,7 +1012,6 @@ describe("ado_detect_cycles tool", () => {
     const def = findTool("ado_detect_cycles")
     expect(def).toBeDefined()
     expect(def!.integration).toBe("ado")
-    expect(def!.confirmationRequired).toBeUndefined()
   })
 
   it("detects A->B->C->A cycle", async () => {
@@ -1083,7 +1075,6 @@ describe("ado_validate_parent_type_rules tool", () => {
     const def = findTool("ado_validate_parent_type_rules")
     expect(def).toBeDefined()
     expect(def!.integration).toBe("ado")
-    expect(def!.confirmationRequired).toBeUndefined()
   })
 
   it("finds type violations (Task parented to Epic in Scrum)", async () => {
