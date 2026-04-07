@@ -77,8 +77,8 @@ export function formatImageRef(n: number): string {
 export function replacePathsWithRefs(input: string): { text: string; images: Map<number, string> } {
   const images = new Map<number, string>()
   // Match absolute paths starting with / that end with an image extension.
-  // Allow backslash-escaped characters (like `\ ` for spaces in macOS drag-drop).
-  const pathRegex = /(\/(?:[^\s\\]|\\.)+\.(?:png|jpe?g|gif|webp))/gi
+  // Allow backslash-escaped spaces (like `\ ` from macOS drag-drop).
+  const pathRegex = /(\/(?:[^\s]|\\ )+\.(?:png|jpe?g|gif|webp))/gi
   let counter = 0
   const text = input.replace(pathRegex, (match) => {
     counter++
