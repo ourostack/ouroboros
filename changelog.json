@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.245",
+      "changes": [
+        "fix(tui): input separators span full terminal width, status line indented 2 spaces."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.244",
       "changes": [
         "refactor(sync): git-status-based bundle sync \u2014 postTurnPush discovers dirty files via `git status --porcelain` instead of broken explicit trackSyncWrite tracking (only 3/9 writers used it). Removed dead infrastructure. Remote push optional and non-fatal.",
