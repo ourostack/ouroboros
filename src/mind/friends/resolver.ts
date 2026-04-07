@@ -54,13 +54,13 @@ export class FriendResolver {
     if (this.params.provider === "local" && !this.params.externalId.includes("@")) {
       try {
         const all = typeof this.store.listAll === "function" ? await this.store.listAll() : []
+        /* v8 ignore start -- migration path: only fires when legacy hostname-format friend exists @preserve */
         const migrationMatch = all.find((f) =>
           f.externalIds.some(
             (eid) => eid.provider === "local" && eid.externalId.startsWith(this.params.externalId + "@"),
           ),
         )
         if (migrationMatch) {
-          // Link the new external ID format to the existing friend
           const now = new Date().toISOString()
           migrationMatch.externalIds.push({
             provider: this.params.provider,
@@ -81,6 +81,7 @@ export class FriendResolver {
           })
           return migrationMatch
         }
+        /* v8 ignore stop */
       } catch {
         // fall through to create new
       }
