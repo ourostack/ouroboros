@@ -8,7 +8,6 @@
 
 import * as fs from "fs"
 import * as path from "path"
-import { trackSyncWrite } from "../heart/sync"
 
 /**
  * Generate a timestamped random ID.
@@ -76,12 +75,10 @@ export function readJsonFileOrThrow<T>(dir: string, id: string, label: string): 
 
 /**
  * Write a record to a JSON file, creating the directory if needed.
- * Automatically calls trackSyncWrite.
  */
 export function writeJsonFile<T>(dir: string, id: string, record: T): void {
   fs.mkdirSync(dir, { recursive: true })
   const filePath = path.join(dir, `${id}.json`)
   fs.writeFileSync(filePath, JSON.stringify(record, null, 2), "utf-8")
-  trackSyncWrite(filePath)
 }
 
