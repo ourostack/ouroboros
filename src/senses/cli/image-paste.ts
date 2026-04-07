@@ -6,7 +6,8 @@
  * in the input text, replaces them with `[Image #N]` references, reads the
  * files, and produces OpenAI-compatible `image_url` content blocks.
  */
-import { readFile } from "fs/promises"
+import { readFile, unlink } from "fs/promises"
+import { execFileSync } from "child_process"
 import * as path from "path"
 import type OpenAI from "openai"
 import { emitNervesEvent } from "../../nerves/runtime"
@@ -19,10 +20,15 @@ export function isImagePath(str: string): boolean {
   return IMAGE_EXTENSION_REGEX.test(unescapePath(str))
 }
 
-/** Convert backslash-escaped spaces to plain spaces (macOS drag-drop format) */
+/** Strip shell escape backslashes from a path (macOS/Linux drag-drop format) */
 export function unescapePath(str: string): string {
-  return str.replace(/\\ /g, " ")
+  // Handle double-backslashes first (actual backslash in filename)
+  // then remove single escape backslashes
+  return str.replace(/\\(.)/g, "$1")
 }
+
+/** Detect temp screenshot paths from macOS screencapture */
+const TEMP_SCREENSHOT_RE = /\/TemporaryItems\/.*screencaptureui.*\/Screenshot/i
 
 /** Map file extension to MIME media type */
 function extensionToMediaType(ext: string): string {
@@ -43,26 +49,75 @@ function extensionToMediaType(ext: string): string {
 
 /**
  * Read an image file and return base64 + media type.
- * Returns null on any error (file not found, permission denied, etc.)
+ * Falls back to clipboard for temp screenshot paths (macOS screencapture
+ * creates ephemeral files in TemporaryItems that are cleaned up quickly).
+ * Returns null on any error.
  */
 export async function tryReadImage(absolutePath: string): Promise<{ base64: string; mediaType: string } | null> {
+  // Try reading the file directly first
   try {
     const buffer = await readFile(absolutePath)
-    const ext = path.extname(absolutePath)
-    return {
-      base64: Buffer.from(buffer).toString("base64"),
-      mediaType: extensionToMediaType(ext),
+    if (buffer.length > 0) {
+      const ext = path.extname(absolutePath)
+      return {
+        base64: Buffer.from(buffer).toString("base64"),
+        mediaType: extensionToMediaType(ext),
+      }
     }
   } catch {
-    emitNervesEvent({
-      component: "senses",
-      event: "senses.image_read_error",
-      message: `Failed to read image: ${absolutePath}`,
-      meta: { path: absolutePath },
-    })
+    // File not found or permission denied — try clipboard fallback
+  }
+
+  // Clipboard fallback for macOS temp screenshots
+  /* v8 ignore start -- clipboard fallback requires real macOS screencapture @preserve */
+  if (process.platform === "darwin" && TEMP_SCREENSHOT_RE.test(absolutePath)) {
+    const clipboardImage = await getImageFromClipboard()
+    if (clipboardImage) return clipboardImage
+  }
+  /* v8 ignore stop */
+
+  emitNervesEvent({
+    component: "senses",
+    event: "senses.image_read_error",
+    message: `Failed to read image: ${absolutePath}`,
+    meta: { path: absolutePath },
+  })
+  return null
+}
+
+/**
+ * Read image data from macOS clipboard via osascript.
+ * Used as fallback when temp screenshot files are already cleaned up.
+ */
+/* v8 ignore start -- macOS clipboard integration @preserve */
+async function getImageFromClipboard(): Promise<{ base64: string; mediaType: string } | null> {
+  const tmpPath = "/tmp/ouro_clipboard_image.png"
+  try {
+    // Check if clipboard has image data
+    execFileSync("osascript", ["-e", "the clipboard as «class PNGf»"], { stdio: "pipe" })
+
+    // Save clipboard image to temp file
+    execFileSync("osascript", [
+      "-e", "set png_data to (the clipboard as «class PNGf»)",
+      "-e", `set fp to open for access POSIX file "${tmpPath}" with write permission`,
+      "-e", "write png_data to fp",
+      "-e", "close access fp",
+    ], { stdio: "pipe" })
+
+    const buffer = await readFile(tmpPath)
+    void unlink(tmpPath).catch(() => {})
+
+    if (buffer.length === 0) return null
+
+    return {
+      base64: Buffer.from(buffer).toString("base64"),
+      mediaType: "image/png",
+    }
+  } catch {
     return null
   }
 }
+/* v8 ignore stop */
 
 /** Format an image reference placeholder */
 export function formatImageRef(n: number): string {
@@ -70,15 +125,14 @@ export function formatImageRef(n: number): string {
 }
 
 /**
- * Scan input for absolute path tokens ending with image extensions.
- * Matches `/` followed by non-whitespace chars (allowing `\ ` for escaped spaces)
- * ending with an image extension.
+ * Scan input for absolute image file paths and replace with [Image #N] references.
+ * Handles backslash-escaped characters (macOS drag-drop) and paths with spaces.
  */
 export function replacePathsWithRefs(input: string): { text: string; images: Map<number, string> } {
   const images = new Map<number, string>()
-  // Match absolute paths starting with / that end with an image extension.
-  // Allow backslash-escaped spaces (like `\ ` from macOS drag-drop).
-  const pathRegex = /(\/(?:[^\s]|\\ )+\.(?:png|jpe?g|gif|webp))/gi
+  // Match absolute paths: start with /, contain non-whitespace or backslash-escaped chars,
+  // end with an image extension. The (?:\\.|\S) alternation allows `\ ` sequences.
+  const pathRegex = /(?:\/(?:\\.|[^\s])+\.(?:png|jpe?g|gif|webp))/gi
   let counter = 0
   const text = input.replace(pathRegex, (match) => {
     counter++
