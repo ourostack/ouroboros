@@ -125,25 +125,20 @@ export function formatImageRef(n: number): string {
 }
 
 /**
- * Scan input for image file paths and replace with [Image #N] references.
- * Uses Claude Code's approach: split on spaces before absolute paths first,
- * then check each segment for image extensions.
+ * Scan input for absolute image file paths and replace with [Image #N] references.
+ * Handles backslash-escaped characters (macOS drag-drop) and paths with spaces.
  */
 export function replacePathsWithRefs(input: string): { text: string; images: Map<number, string> } {
   const images = new Map<number, string>()
-  // Split on spaces that precede absolute paths (like Claude Code's usePasteHandler)
-  const segments = input.split(/ (?=\/)/).flatMap(s => s.split("\n"))
+  // Match absolute paths: start with /, contain non-whitespace or backslash-escaped chars,
+  // end with an image extension. The (?:\\.|\S) alternation allows `\ ` sequences.
+  const pathRegex = /(?:\/(?:\\.|[^\s])+\.(?:png|jpe?g|gif|webp))/gi
   let counter = 0
-  const outputSegments = segments.map(segment => {
-    const cleaned = unescapePath(segment.trim())
-    if (cleaned.startsWith("/") && IMAGE_EXTENSION_REGEX.test(cleaned)) {
-      counter++
-      images.set(counter, cleaned)
-      return formatImageRef(counter)
-    }
-    return segment
+  const text = input.replace(pathRegex, (match) => {
+    counter++
+    images.set(counter, unescapePath(match))
+    return formatImageRef(counter)
   })
-  const text = outputSegments.join(" ")
   return { text, images }
 }
 
