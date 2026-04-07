@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto"
-import { getBlueBubblesChannelConfig, getBlueBubblesConfig } from "../../heart/config"
+import { getBlueBubblesChannelConfig, getBlueBubblesConfig, getMinimaxConfig } from "../../heart/config"
 import { loadAgentConfig } from "../../heart/identity"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { MINIMAX_PROVIDER_BASE_URL } from "../../heart/providers/minimax"
+import { minimaxVlmDescribe } from "../../heart/providers/minimax-vlm"
 import { normalizeBlueBubblesEvent, type BlueBubblesChatRef, type BlueBubblesNormalizedEvent } from "./model"
-import { hydrateBlueBubblesAttachments } from "./media"
+import { hydrateBlueBubblesAttachments, type VlmDescribeFn } from "./media"
 
 export interface BlueBubblesSendTextParams {
   chat: BlueBubblesChatRef
@@ -464,6 +466,7 @@ export function createBlueBubblesClient(
       }
 
       emitNervesEvent({
+        level: "warn",
         component: "senses",
         event: "senses.bluebubbles_repair_start",
         message: "repairing bluebubbles event by guid",
@@ -537,12 +540,49 @@ export function createBlueBubblesClient(
           hydrated.balloonBundleId !== "com.apple.messages.URLBalloonProvider" &&
           hydrated.attachments.length > 0
         ) {
+          const agentConfig = loadAgentConfig()
+          const chatModel: string = agentConfig.humanFacing.model
+          const chatProvider: string = agentConfig.humanFacing.provider
+          const vlmDescribe: VlmDescribeFn = async (params) => {
+            if (chatProvider !== "minimax") {
+              throw new Error(
+                "VLM fallback requires a minimax credential for this agent — " +
+                "configure one or switch to a vision-capable chat model",
+              )
+            }
+            const { apiKey } = getMinimaxConfig()
+            if (!apiKey) {
+              throw new Error(
+                "VLM fallback: minimax API key not found in secrets.json — " +
+                "re-run credential setup or ask the user to add a minimax key",
+              )
+            }
+            return minimaxVlmDescribe({
+              apiKey,
+              prompt: params.prompt,
+              imageDataUrl: params.imageDataUrl,
+              baseURL: MINIMAX_PROVIDER_BASE_URL,
+              attachmentGuid: params.attachmentGuid,
+              mimeType: params.mimeType,
+              chatModel: params.chatModel,
+            })
+          }
+          // VLM prompt context wants the user's raw inbound text — NOT
+          // the agent-facing rendering, which now carries the attachment
+          // marker after the B2 fix. Pull it from the source payload.
+          const rawUserText =
+            typeof (data as { text?: unknown }).text === "string"
+              ? ((data as { text: string }).text).trim()
+              : ""
           const media = await hydrateBlueBubblesAttachments(
             hydrated.attachments,
             config,
             channelConfig,
             {
-              preferAudioInput: providerSupportsAudioInput(loadAgentConfig().humanFacing.provider),
+              preferAudioInput: providerSupportsAudioInput(chatProvider),
+              chatModel,
+              vlmDescribe,
+              userText: rawUserText,
             },
           )
           const transcriptSuffix = media.transcriptAdditions.map((entry) => `[${entry}]`).join("\n")
@@ -555,6 +595,7 @@ export function createBlueBubblesClient(
           }
         }
         emitNervesEvent({
+          level: "warn",
           component: "senses",
           event: "senses.bluebubbles_repair_end",
           message: "bluebubbles event repaired",

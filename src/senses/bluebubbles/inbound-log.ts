@@ -90,6 +90,7 @@ export function recordBlueBubblesInbound(
   }
 
   emitNervesEvent({
+    level: "warn",
     component: "senses",
     event: "senses.bluebubbles_inbound_logged",
     message: "recorded bluebubbles inbound message to sidecar log",

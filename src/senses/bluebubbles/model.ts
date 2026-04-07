@@ -210,6 +210,13 @@ function formatMessageText(data: JsonRecord, attachments: BlueBubblesAttachmentS
     if (balloonBundleId === "com.apple.messages.URLBalloonProvider") {
       return `${text}\n[link preview attached]`
     }
+    // B2 fix: when text and attachments both exist, append the attachment
+    // marker so downstream senses can see the guid/filename. Previously the
+    // marker was dropped whenever text was non-empty, which hid images from
+    // the agent when the user captioned a screenshot.
+    if (attachments.length > 0) {
+      return `${text}\n${formatAttachmentText(attachments)}`
+    }
     return text
   }
   return formatAttachmentText(attachments)

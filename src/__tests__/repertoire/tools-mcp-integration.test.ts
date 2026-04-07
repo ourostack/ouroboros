@@ -1,7 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
 
-// Track nerves events
-const nervesEvents: Array<Record<string, unknown>> = []
+// Track nerves events. vi.mock factories cannot reference top-level variables
+// because they hoist above imports — use vi.hoisted so the mock and the
+// assertions share the same array.
+const { nervesEvents } = vi.hoisted(() => ({
+  nervesEvents: [] as Array<Record<string, unknown>>,
+}))
 vi.mock("../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn((event: Record<string, unknown>) => {
     nervesEvents.push(event)

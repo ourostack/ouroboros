@@ -494,6 +494,103 @@ describe("normalizeBlueBubblesEvent", () => {
     expect(result.textForAgent).toContain("IMG_5045.heic.jpeg")
   })
 
+  it("preserves the attachment marker when text is present (B2 fix)", async () => {
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
+    const payload = {
+      type: "new-message",
+      data: {
+        guid: "B2-FIX-TEXT-PLUS-IMAGE",
+        text: "check this out",
+        handle: { address: "ari@mendelow.me", service: "iMessage" },
+        attachments: [
+          {
+            guid: "att-guid-1",
+            mimeType: "image/jpeg",
+            transferName: "IMG_9999.jpeg",
+            totalBytes: 1234,
+            height: 1080,
+            width: 1920,
+          },
+        ],
+        dateCreated: 1772946699999,
+        isFromMe: false,
+        chats: [
+          {
+            guid: "any;-;ari@mendelow.me",
+            style: 45,
+            chatIdentifier: "ari@mendelow.me",
+            displayName: "",
+          },
+        ],
+      },
+    }
+    const result = normalizeBlueBubblesEvent(payload)
+    expect(result.textForAgent).toContain("check this out")
+    expect(result.textForAgent).toContain("image attachment")
+    expect(result.textForAgent).toContain("IMG_9999.jpeg")
+  })
+
+  it("text + multiple attachments: marker still appended alongside the text", async () => {
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
+    const payload = {
+      type: "new-message",
+      data: {
+        guid: "B2-FIX-TEXT-MULTI-ATT",
+        text: "here they are",
+        handle: { address: "ari@mendelow.me", service: "iMessage" },
+        attachments: [
+          { guid: "a1", mimeType: "image/png", transferName: "a.png" },
+          { guid: "a2", mimeType: "image/png", transferName: "b.png" },
+        ],
+        dateCreated: 1772946700000,
+        isFromMe: false,
+        chats: [
+          {
+            guid: "any;-;ari@mendelow.me",
+            style: 45,
+            chatIdentifier: "ari@mendelow.me",
+            displayName: "",
+          },
+        ],
+      },
+    }
+    const result = normalizeBlueBubblesEvent(payload)
+    expect(result.textForAgent).toContain("here they are")
+    expect(result.textForAgent).toContain("image attachment")
+  })
+
+  it("text with URL preview balloon: keeps the link-preview marker (regression guard)", async () => {
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
+    const result = normalizeBlueBubblesEvent(dmOgPayload)
+    expect(result.textForAgent).toContain("https://ouroboros.bot")
+    expect(result.textForAgent).toContain("link preview")
+  })
+
+  it("text-only message (no attachments): returns text unchanged (regression guard)", async () => {
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
+    const payload = {
+      type: "new-message",
+      data: {
+        guid: "B2-FIX-TEXT-ONLY",
+        text: "hello there",
+        handle: { address: "ari@mendelow.me", service: "iMessage" },
+        attachments: [],
+        dateCreated: 1772946701000,
+        isFromMe: false,
+        chats: [
+          {
+            guid: "any;-;ari@mendelow.me",
+            style: 45,
+            chatIdentifier: "ari@mendelow.me",
+            displayName: "",
+          },
+        ],
+      },
+    }
+    const result = normalizeBlueBubblesEvent(payload)
+    expect(result.textForAgent).toBe("hello there")
+  })
+
   it("normalizes audio attachments into explicit fallback text", async () => {
     const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
     const result = normalizeBlueBubblesEvent(dmAudioPayload)
