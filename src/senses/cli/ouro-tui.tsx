@@ -64,11 +64,13 @@ export interface TuiProps {
   readonly model: string
   readonly completedMessages: CompletedMessage[]
   readonly inputHistory: readonly string[]
+  readonly queuedInputs: readonly string[]
   readonly live: LiveState
   readonly elapsedSeconds: number
   readonly contextPercent: number
   readonly onSubmit: (text: string) => void
   readonly onCtrlC: (hasInput: boolean) => CtrlCAction
+  readonly onPopQueue: () => string[]
   readonly headerShown: boolean
   readonly cwd: string
 }
@@ -273,12 +275,32 @@ function LiveArea({ live, elapsed }: {
   )
 }
 
+// ─── Queued Messages ───────────────────────────────────────────────
+
+export function QueuedMessages({ items }: {
+  readonly items: readonly string[]
+}): React.ReactElement {
+  if (items.length === 0) return <Text>{""}</Text>
+  return (
+    <Box flexDirection="column">
+      {items.map((text, i) => (
+        <Text key={i}>
+          <Text color={OURO.shadow}>{"\u231B queued: "}</Text>
+          <Text color={OURO.mist}>{"\""}{text}{"\""}</Text>
+        </Text>
+      ))}
+    </Box>
+  )
+}
+
 // ─── Input ──────────────────────────────────────────────────────────
 
-function InputArea({ onSubmit, onCtrlC, history, agentName, model }: {
+function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agentName, model }: {
   readonly onSubmit: (text: string) => void
   readonly onCtrlC: (hasInput: boolean) => CtrlCAction
   readonly history: readonly string[]
+  readonly queuedInputs: readonly string[]
+  readonly onPopQueue: () => string[]
   readonly agentName: string
   readonly model: string
 }): React.ReactElement {
@@ -343,6 +365,11 @@ function InputArea({ onSubmit, onCtrlC, history, agentName, model }: {
         setTooltip("Esc again to clear")
         if (tooltipTimerRef.current) clearTimeout(tooltipTimerRef.current)
         tooltipTimerRef.current = setTimeout(() => setTooltip(""), 2000)
+      } else if (queuedInputs.length > 0) {
+        // Pop all queued messages into input for editing
+        const items = onPopQueue()
+        updateInput(items.join("\n"))
+        historyIdx.current = -1
       } else {
         setTooltip("")
       }
@@ -408,15 +435,24 @@ function InputArea({ onSubmit, onCtrlC, history, agentName, model }: {
       }
       return
     }
-    // Up/Down: history
-    if (key.upArrow && history.length > 0) {
-      if (historyIdx.current === -1) {
-        savedInput.current = inputRef.current
-        historyIdx.current = history.length - 1
-      } else if (historyIdx.current > 0) {
-        historyIdx.current--
+    // Up/Down: queue pop takes priority over history
+    if (key.upArrow) {
+      // If not already browsing history and queue has items, pop queue into input
+      if (historyIdx.current === -1 && queuedInputs.length > 0) {
+        const items = onPopQueue()
+        updateInput(items.join("\n"))
+        return
       }
-      updateInput(history[historyIdx.current])
+      // Otherwise, browse history
+      if (history.length > 0) {
+        if (historyIdx.current === -1) {
+          savedInput.current = inputRef.current
+          historyIdx.current = history.length - 1
+        } else if (historyIdx.current > 0) {
+          historyIdx.current--
+        }
+        updateInput(history[historyIdx.current])
+      }
       return
     }
     if (key.downArrow) {
@@ -503,9 +539,15 @@ function InputArea({ onSubmit, onCtrlC, history, agentName, model }: {
       ) : (
         <Box>
           <Text color={OURO.teal} bold>{") "}</Text>
-          <Text color={OURO.bone}>{input.slice(0, cursorPos)}</Text>
-          {cursorVisible ? <Text color={OURO.scale}>{"█"}</Text> : <Text color={OURO.bone}>{input[cursorPos] ?? " "}</Text>}
-          <Text color={OURO.bone}>{input.slice(cursorPos + (cursorVisible ? 0 : 1))}</Text>
+          {!input && queuedInputs.length > 0 ? (
+            <Text color={OURO.shadow}>{"Press up to edit queued messages"}</Text>
+          ) : (
+            <>
+              <Text color={OURO.bone}>{input.slice(0, cursorPos)}</Text>
+              {cursorVisible ? <Text color={OURO.scale}>{"█"}</Text> : <Text color={OURO.bone}>{input[cursorPos] ?? " "}</Text>}
+              <Text color={OURO.bone}>{input.slice(cursorPos + (cursorVisible ? 0 : 1))}</Text>
+            </>
+          )}
         </Box>
       )}
       {/* Bottom separator */}
@@ -527,11 +569,13 @@ export function OuroTui({
   model,
   completedMessages,
   inputHistory,
+  queuedInputs,
   live,
   elapsedSeconds,
   contextPercent,
   onSubmit,
   onCtrlC,
+  onPopQueue,
   cwd,
 }: TuiProps): React.ReactElement {
   return (
@@ -557,12 +601,17 @@ export function OuroTui({
       <LiveArea live={live} elapsed={elapsedSeconds} />
       {(live.loading || live.streamingText || live.activeTool) ? <Box marginBottom={1}><Text>{""}</Text></Box> : null}
 
+      {/* Queued messages — between live area and input */}
+      {queuedInputs.length > 0 ? <QueuedMessages items={queuedInputs} /> : null}
+
       {/* Input */}
       <Box marginTop={1}><Text>{""}</Text></Box>
       <InputArea
         onSubmit={onSubmit}
         onCtrlC={onCtrlC}
         history={inputHistory}
+        queuedInputs={queuedInputs}
+        onPopQueue={onPopQueue}
         agentName={agentName}
         model={model}
       />
