@@ -1065,6 +1065,7 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
   // Force exit: lingering handles (Ink cleanup timers, MCP connections) keep the
   // event loop alive after the interactive session ends. This is safe because all
   // session persistence has already completed in the finally block above.
-  process.exit(0)
+  /* v8 ignore next -- process.exit not callable in vitest @preserve */
+  if (!options?._testInputSource) process.exit(0)
 }
 // CI trigger
