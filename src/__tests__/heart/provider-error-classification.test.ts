@@ -145,6 +145,38 @@ describe("classifyOpenAICodexError", () => {
   })
 })
 
+describe("classifyGithubCopilotError", () => {
+  it("classifies 401 as auth-failure", async () => {
+    const mod = await import("../../heart/providers/github-copilot")
+    const classify = (mod as any).classifyGithubCopilotError
+    expect(classify(makeHttpError("Unauthorized", 401))).toBe("auth-failure")
+  })
+
+  it("classifies 429 as rate-limit", async () => {
+    const mod = await import("../../heart/providers/github-copilot")
+    const classify = (mod as any).classifyGithubCopilotError
+    expect(classify(makeHttpError("Too many", 429))).toBe("rate-limit")
+  })
+
+  it("classifies 5xx as server-error", async () => {
+    const mod = await import("../../heart/providers/github-copilot")
+    const classify = (mod as any).classifyGithubCopilotError
+    expect(classify(makeHttpError("Internal Server Error", 500))).toBe("server-error")
+  })
+
+  it("classifies network errors as network-error", async () => {
+    const mod = await import("../../heart/providers/github-copilot")
+    const classify = (mod as any).classifyGithubCopilotError
+    expect(classify(makeNetworkError("connect ECONNRESET", "ECONNRESET"))).toBe("network-error")
+  })
+
+  it("classifies unknown errors as unknown", async () => {
+    const mod = await import("../../heart/providers/github-copilot")
+    const classify = (mod as any).classifyGithubCopilotError
+    expect(classify(new Error("something weird"))).toBe("unknown")
+  })
+})
+
 describe("classifyAzureError", () => {
   it("classifies 401 as auth-failure", async () => {
     const mod = await import("../../heart/providers/azure")
@@ -206,5 +238,107 @@ describe("classifyMinimaxError", () => {
     const mod = await import("../../heart/providers/minimax")
     const classify = (mod as any).classifyMinimaxError
     expect(classify(new Error("something weird"))).toBe("unknown")
+  })
+})
+
+// ── Shared classifier (exercised directly) ──
+
+describe("classifyHttpError (shared)", () => {
+  it("maps 401/403 to auth-failure", async () => {
+    const { classifyHttpError } = await import("../../heart/providers/error-classification")
+    expect(classifyHttpError(makeHttpError("Unauthorized", 401))).toBe("auth-failure")
+    expect(classifyHttpError(makeHttpError("Forbidden", 403))).toBe("auth-failure")
+  })
+
+  it("maps 429 to rate-limit by default", async () => {
+    const { classifyHttpError } = await import("../../heart/providers/error-classification")
+    expect(classifyHttpError(makeHttpError("Too many", 429))).toBe("rate-limit")
+  })
+
+  it("maps 5xx to server-error", async () => {
+    const { classifyHttpError } = await import("../../heart/providers/error-classification")
+    expect(classifyHttpError(makeHttpError("ISE", 500))).toBe("server-error")
+    expect(classifyHttpError(makeHttpError("Bad GW", 502))).toBe("server-error")
+  })
+
+  it("maps SDK 'Request timed out.' to network-error", async () => {
+    const { classifyHttpError } = await import("../../heart/providers/error-classification")
+    expect(classifyHttpError(new Error("Request timed out."))).toBe("network-error")
+  })
+
+  it("maps connection error messages to network-error", async () => {
+    const { classifyHttpError } = await import("../../heart/providers/error-classification")
+    expect(classifyHttpError(new Error("Connection error."))).toBe("network-error")
+    expect(classifyHttpError(new Error("fetch failed"))).toBe("network-error")
+    expect(classifyHttpError(makeNetworkError("read ETIMEDOUT", "ETIMEDOUT"))).toBe("network-error")
+  })
+
+  it("returns unknown when nothing matches", async () => {
+    const { classifyHttpError } = await import("../../heart/providers/error-classification")
+    expect(classifyHttpError(new Error("something we have not seen"))).toBe("unknown")
+  })
+
+  it("override.isAuthFailure fires before status check", async () => {
+    const { classifyHttpError } = await import("../../heart/providers/error-classification")
+    // Status is 200 (not normally an auth failure), but override forces it.
+    const err = makeHttpError("oauth token expired", 200)
+    expect(
+      classifyHttpError(err, { isAuthFailure: (e) => e.message.includes("oauth") }),
+    ).toBe("auth-failure")
+  })
+
+  it("override.isUsageLimit reclassifies 429", async () => {
+    const { classifyHttpError } = await import("../../heart/providers/error-classification")
+    const err = makeHttpError("You have exceeded your monthly quota", 429)
+    expect(
+      classifyHttpError(err, { isUsageLimit: (e) => /quota|exceeded/i.test(e.message) }),
+    ).toBe("usage-limit")
+  })
+
+  it("override.isServerError catches Anthropic 529 (overloaded)", async () => {
+    const { classifyHttpError } = await import("../../heart/providers/error-classification")
+    const err = makeHttpError("Overloaded", 529)
+    expect(
+      classifyHttpError(err, { isServerError: (e) => (e as any).status === 529 }),
+    ).toBe("server-error")
+  })
+})
+
+describe("isNetworkError (shared)", () => {
+  it("matches Node.js socket/DNS error codes", async () => {
+    const { isNetworkError } = await import("../../heart/providers/error-classification")
+    for (const code of [
+      "ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "ETIMEDOUT", "EPIPE",
+      "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH", "ECONNABORTED",
+    ]) {
+      expect(isNetworkError(makeNetworkError("net fail", code))).toBe(true)
+    }
+  })
+
+  it("matches SDK timeout/connection error message strings", async () => {
+    const { isNetworkError } = await import("../../heart/providers/error-classification")
+    expect(isNetworkError(new Error("Request timed out."))).toBe(true)
+    expect(isNetworkError(new Error("request timeout"))).toBe(true)
+    expect(isNetworkError(new Error("Connection error."))).toBe(true)
+    expect(isNetworkError(new Error("fetch failed"))).toBe(true)
+    expect(isNetworkError(new Error("socket hang up"))).toBe(true)
+    expect(isNetworkError(new Error("getaddrinfo ENOTFOUND"))).toBe(true)
+  })
+
+  it("does not match unrelated messages", async () => {
+    const { isNetworkError } = await import("../../heart/providers/error-classification")
+    expect(isNetworkError(new Error("invalid request"))).toBe(false)
+    expect(isNetworkError(new Error("model not found"))).toBe(false)
+  })
+
+  it("handles errors with no message (defensive)", async () => {
+    const { isNetworkError } = await import("../../heart/providers/error-classification")
+    // An Error whose .message is the empty string — covers the
+    // `error.message || ""` defensive branch.
+    expect(isNetworkError(new Error())).toBe(false)
+    // And an Error with null-ish message after construction.
+    const err = new Error("placeholder")
+    Object.defineProperty(err, "message", { value: undefined })
+    expect(isNetworkError(err)).toBe(false)
   })
 })

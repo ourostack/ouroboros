@@ -507,39 +507,41 @@ function isContextOverflow(err: unknown): boolean {
 // HTTP error with optional status code (OpenAI SDK errors)
 interface HttpError extends Error { status?: number }
 
-// Detect transient network errors worth retrying
-export function isTransientError(err: unknown): boolean {
-  if (!(err instanceof Error)) return false;
-  const msg = err.message || "";
-  const code = (err as NodeJS.ErrnoException).code || "";
-  // Node.js network error codes
-  if (["ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "ETIMEDOUT", "EPIPE",
-       "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH", "ECONNABORTED"].includes(code)) return true;
-  // OpenAI SDK / fetch errors
-  if (msg.includes("fetch failed")) return true;
-  if (msg.includes("network") && !msg.includes("context")) return true;
-  if (msg.includes("ECONNRESET") || msg.includes("ETIMEDOUT")) return true;
-  if (msg.includes("socket hang up")) return true;
-  if (msg.includes("getaddrinfo")) return true;
-  // HTTP 429 / 500 / 502 / 503 / 504
-  const status = (err as HttpError).status;
-  if (status === 429 || status === 500 || status === 502 || status === 503 || status === 504) return true;
-  return false;
-}
+// HTTP statuses that will never become retryable on their own — the request is
+// semantically wrong (malformed, unauthorized, missing route, etc.) and the
+// caller has to do something different before it can succeed.
+const NON_RETRYABLE_HTTP_STATUSES: ReadonlySet<number> = new Set([
+  400, // Bad Request — malformed payload
+  401, // Unauthorized — credentials invalid/expired
+  403, // Forbidden — credentials lack permission
+  404, // Not Found — model/route doesn't exist
+  422, // Unprocessable Entity — semantic validation failure
+])
 
-export function classifyTransientError(err: unknown): string {
-  if (!(err instanceof Error)) return "unknown error";
-  const status = (err as HttpError).status;
-  if (status === 429) return "rate limited";
-  if (status === 401 || status === 403) return "auth error";
-  if (status && status >= 500) return "server error";
-  return "network error";
+// Provider-classified error categories that we never retry. usage-limit is
+// distinct from rate-limit: rate limits clear in seconds (retryable), usage
+// limits are billing quotas that take hours/days to reset.
+const NON_RETRYABLE_CLASSIFICATIONS: ReadonlySet<ProviderErrorClassification> = new Set([
+  "auth-failure",
+  "usage-limit",
+])
+
+// Default policy: retry every error from the provider, EXCEPT the small set
+// above. The user explicitly requested this — past behavior was to retry only
+// on a known-transient list, which silently dropped real harness/SDK timeouts
+// (e.g. OpenAI SDK's "Request timed out." has no err.code and no status, so
+// the substring matchers missed it).
+export function isRetryBlocked(error: Error, classification: ProviderErrorClassification): boolean {
+  const status = (error as HttpError).status
+  if (status !== undefined && NON_RETRYABLE_HTTP_STATUSES.has(status)) return true
+  if (NON_RETRYABLE_CLASSIFICATIONS.has(classification)) return true
+  return false
 }
 
 const MAX_RETRIES = 3;
 const RETRY_BASE_MS = 2000;
 
-const TRANSIENT_RETRY_LABELS: Record<string, string> = {
+const RETRY_LABELS: Record<ProviderErrorClassification, string> = {
   "auth-failure": "auth error",
   "usage-limit": "usage limit",
   "rate-limit": "rate limited",
@@ -1108,10 +1110,10 @@ export async function runAgent(
         callbacks.onError(new Error("context trimmed, retrying..."), "transient");
         continue;
       }
-      // Transient errors: retry with exponential backoff.
-      // Two-layer detection: generic isTransientError (HTTP codes, network patterns)
-      // PLUS provider-specific classifyError (catches SDK-wrapped errors that
-      // generic detection might miss).
+      // Retry policy: retry every error EXCEPT those on the blocklist
+      // (NON_RETRYABLE_HTTP_STATUSES / NON_RETRYABLE_CLASSIFICATIONS).
+      // The classification still drives the user-facing label and the
+      // auth-failure guidance message below — it just no longer gates retries.
       const errorForClassification = e instanceof Error ? e : /* v8 ignore next -- defensive @preserve */ new Error(String(e))
       let providerClassification: ProviderErrorClassification
       try {
@@ -1120,11 +1122,8 @@ export async function runAgent(
         /* v8 ignore next -- defensive: classifyError should not throw @preserve */
         providerClassification = "unknown"
       }
-      const retryableByClassification = providerClassification === "rate-limit"
-        || providerClassification === "server-error"
-        || providerClassification === "network-error"
-      const retryableByGeneric = isTransientError(e)
-      const shouldRetry = (retryableByGeneric || retryableByClassification) && retryCount < MAX_RETRIES
+      const blocked = isRetryBlocked(errorForClassification, providerClassification)
+      const shouldRetry = !blocked && retryCount < MAX_RETRIES
 
       emitNervesEvent({
         level: shouldRetry ? "info" : "warn",
@@ -1132,14 +1131,15 @@ export async function runAgent(
         component: "engine",
         message: shouldRetry
           ? `provider error is retryable (attempt ${retryCount + 1}/${MAX_RETRIES})`
-          : `provider error is not retryable or retries exhausted`,
+          : blocked
+            ? `provider error is on retry blocklist`
+            : `provider error retries exhausted`,
         meta: {
           provider: providerRuntime.id,
           model: providerRuntime.model,
           retryCount,
           maxRetries: MAX_RETRIES,
-          retryableByGeneric,
-          retryableByClassification,
+          blocked,
           providerClassification,
           errorMessage: errorForClassification.message.slice(0, 200),
           httpStatus: (e as HttpError).status ?? null,
@@ -1149,8 +1149,7 @@ export async function runAgent(
       if (shouldRetry) {
         retryCount++;
         const delay = RETRY_BASE_MS * Math.pow(2, retryCount - 1);
-        /* v8 ignore next -- defensive: all classifications have labels @preserve */
-        const cause = TRANSIENT_RETRY_LABELS[providerClassification] ?? providerClassification
+        const cause = RETRY_LABELS[providerClassification]
         callbacks.onError(new Error(`${cause}, retrying in ${delay / 1000}s (${retryCount}/${MAX_RETRIES})...`), "transient");
         // Wait with abort support
         const aborted = await new Promise<boolean>((resolve) => {

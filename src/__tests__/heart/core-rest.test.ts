@@ -281,11 +281,17 @@ describe("rest tool in runAgent", () => {
   it("rest is rejected when attention queue has items", async () => {
     // First call: rest (should be rejected because attention queue has items)
     mockCreate.mockReturnValueOnce(makeStream(restToolCallChunks()))
-    // After rejection, model tries rest again (this time with empty attention queue simulated via tool execution)
-    // For test purposes, just provide enough calls to end the loop
+    // After rejection, model tries rest again. Once mocked-once calls are
+    // exhausted, fall through to a blocklisted (HTTP 400) error so the engine
+    // terminates immediately instead of walking the retry backoff.
     mockCreate.mockReturnValueOnce(makeStream(restToolCallChunks()))
     mockCreate.mockReturnValueOnce(makeStream(restToolCallChunks()))
     mockCreate.mockReturnValueOnce(makeStream(restToolCallChunks()))
+    mockCreate.mockImplementation(() => {
+      const err: any = new Error("test fixture: stop loop")
+      err.status = 400
+      throw err
+    })
 
     const callbacks = makeCallbacks()
     await runAgent(

@@ -215,91 +215,47 @@ async function resetConfig() {
   config.resetConfigCache()
 }
 
-describe("isTransientError", () => {
-  it("detects Node.js network error codes", async () => {
-    const { isTransientError } = await import("../../heart/core")
-    for (const code of ["ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "ETIMEDOUT", "EPIPE",
-                         "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH", "ECONNABORTED"]) {
-      const err: any = new Error("fail")
-      err.code = code
-      expect(isTransientError(err)).toBe(true)
+describe("isRetryBlocked", () => {
+  it("blocks 400/401/403/404/422 HTTP statuses", async () => {
+    const { isRetryBlocked } = await import("../../heart/core")
+    for (const status of [400, 401, 403, 404, 422]) {
+      const err: any = new Error("client error")
+      err.status = status
+      expect(isRetryBlocked(err, "unknown")).toBe(true)
     }
   })
 
-  it("detects fetch/network errors by message", async () => {
-    const { isTransientError } = await import("../../heart/core")
-    expect(isTransientError(new Error("fetch failed"))).toBe(true)
-    expect(isTransientError(new Error("network error"))).toBe(true)
-    expect(isTransientError(new Error("socket hang up"))).toBe(true)
-    expect(isTransientError(new Error("getaddrinfo ENOTFOUND"))).toBe(true)
-    expect(isTransientError(new Error("ECONNRESET by peer"))).toBe(true)
-    expect(isTransientError(new Error("ETIMEDOUT waiting"))).toBe(true)
+  it("blocks auth-failure and usage-limit classifications", async () => {
+    const { isRetryBlocked } = await import("../../heart/core")
+    expect(isRetryBlocked(new Error("any"), "auth-failure")).toBe(true)
+    expect(isRetryBlocked(new Error("any"), "usage-limit")).toBe(true)
   })
 
-  it("detects HTTP status codes 429 and 5xx", async () => {
-    const { isTransientError } = await import("../../heart/core")
-    for (const status of [429, 500, 502, 503, 504]) {
+  it("does NOT block HTTP 5xx, 429, or transport timeouts", async () => {
+    const { isRetryBlocked } = await import("../../heart/core")
+    for (const status of [429, 500, 502, 503, 504, 529]) {
       const err: any = new Error("server error")
       err.status = status
-      expect(isTransientError(err)).toBe(true)
+      expect(isRetryBlocked(err, "server-error")).toBe(false)
     }
+    // Bare "Request timed out." from the OpenAI/Anthropic SDK — no status,
+    // no err.code, no message keyword the old detector recognized. Must
+    // still retry under the new policy.
+    expect(isRetryBlocked(new Error("Request timed out."), "unknown")).toBe(false)
   })
 
-  it("returns false for non-transient errors", async () => {
-    const { isTransientError } = await import("../../heart/core")
-    expect(isTransientError(new Error("invalid request"))).toBe(false)
-    expect(isTransientError(new Error("authentication failed"))).toBe(false)
-    expect(isTransientError("not an error")).toBe(false)
-    expect(isTransientError(new Error())).toBe(false) // empty message
-    const err: any = new Error("bad request")
+  it("does NOT block unknown classifications by default", async () => {
+    const { isRetryBlocked } = await import("../../heart/core")
+    expect(isRetryBlocked(new Error("anything"), "unknown")).toBe(false)
+    expect(isRetryBlocked(new Error("anything"), "rate-limit")).toBe(false)
+    expect(isRetryBlocked(new Error("anything"), "network-error")).toBe(false)
+  })
+
+  it("treats blocklisted status as blocked even if classification disagrees", async () => {
+    const { isRetryBlocked } = await import("../../heart/core")
+    const err: any = new Error("malformed")
     err.status = 400
-    expect(isTransientError(err)).toBe(false)
-  })
-
-  it("returns false for context overflow messages (not transient)", async () => {
-    const { isTransientError } = await import("../../heart/core")
-    expect(isTransientError(new Error("context_length_exceeded"))).toBe(false)
-    expect(isTransientError(new Error("context window exceeds limit"))).toBe(false)
-  })
-})
-
-describe("classifyTransientError", () => {
-  it("classifies non-Error values as unknown error", async () => {
-    const { classifyTransientError } = await import("../../heart/core")
-    expect(classifyTransientError("string-error")).toBe("unknown error")
-    expect(classifyTransientError(42)).toBe("unknown error")
-    expect(classifyTransientError(null)).toBe("unknown error")
-  })
-
-  it("classifies 429 as rate limited", async () => {
-    const { classifyTransientError } = await import("../../heart/core")
-    const err: any = new Error("too many requests")
-    err.status = 429
-    expect(classifyTransientError(err)).toBe("rate limited")
-  })
-
-  it("classifies 401 and 403 as auth error", async () => {
-    const { classifyTransientError } = await import("../../heart/core")
-    for (const status of [401, 403]) {
-      const err: any = new Error("unauthorized")
-      err.status = status
-      expect(classifyTransientError(err)).toBe("auth error")
-    }
-  })
-
-  it("classifies 5xx as server error", async () => {
-    const { classifyTransientError } = await import("../../heart/core")
-    for (const status of [500, 502, 503, 504]) {
-      const err: any = new Error("server error")
-      err.status = status
-      expect(classifyTransientError(err)).toBe("server error")
-    }
-  })
-
-  it("classifies regular errors as network error", async () => {
-    const { classifyTransientError } = await import("../../heart/core")
-    expect(classifyTransientError(new Error("ECONNRESET"))).toBe("network error")
-    expect(classifyTransientError(new Error("fetch failed"))).toBe("network error")
+    expect(isRetryBlocked(err, "rate-limit")).toBe(true)
   })
 })
 
@@ -1133,8 +1089,11 @@ describe("runAgent", () => {
   })
 
   it("fires onError on API errors with terminal severity and ends loop", async () => {
+    // Use a blocklisted status (400) so the engine terminates without retry.
     mockCreate.mockImplementation(() => {
-      throw new Error("API rate limit")
+      const err: any = new Error("API rate limit")
+      err.status = 400
+      throw err
     })
 
     const errors: { error: Error; severity: string }[] = []
@@ -1396,24 +1355,35 @@ describe("runAgent", () => {
   })
 
   it("wraps non-Error thrown values in Error in onError callback", async () => {
+    vi.useFakeTimers()
     mockCreate.mockImplementation(() => {
       throw "string error"
     })
 
-    const errors: Error[] = []
+    const errors: { error: Error; severity: string }[] = []
     const callbacks: ChannelCallbacks = {
       onModelStart: () => {},
       onModelStreamStart: () => {},
       onTextChunk: () => {},
       onToolStart: () => {},
       onToolEnd: () => {},
-      onError: (err) => errors.push(err),
+      onError: (err, severity) => errors.push({ error: err, severity }),
     }
 
-    await runAgent([{ role: "system", content: "test" }], callbacks)
-    expect(errors).toHaveLength(1)
-    expect(errors[0]).toBeInstanceOf(Error)
-    expect(errors[0].message).toBe("string error")
+    const promise = runAgent([{ role: "system", content: "test" }], callbacks)
+    // Walk through 2s+4s+8s retry backoff, then terminal.
+    await vi.advanceTimersByTimeAsync(2100)
+    await vi.advanceTimersByTimeAsync(4100)
+    await vi.advanceTimersByTimeAsync(8100)
+    await vi.advanceTimersByTimeAsync(100)
+    await promise
+
+    // 3 retry messages + 1 terminal — the terminal one carries the wrapped string.
+    const terminal = errors.find((e) => e.severity === "terminal")
+    expect(terminal).toBeDefined()
+    expect(terminal!.error).toBeInstanceOf(Error)
+    expect(terminal!.error.message).toBe("string error")
+    vi.useRealTimers()
   })
 
   it("pushes assistant message without content when only tool calls are returned", async () => {
@@ -2312,7 +2282,12 @@ describe("runAgent", () => {
   })
 
   it("returns undefined usage on error", async () => {
-    mockCreate.mockImplementation(() => { throw new Error("invalid request") })
+    // Use a blocklisted status so the engine terminates fast (no retry walk).
+    mockCreate.mockImplementation(() => {
+      const err: any = new Error("invalid request")
+      err.status = 400
+      throw err
+    })
 
     const callbacks: ChannelCallbacks = {
       onModelStart: () => {},
@@ -2457,9 +2432,13 @@ describe("runAgent", () => {
   })
 
   it("surfaces error via onError when retry also fails with overflow", async () => {
+    // Pair the overflow with a blocklisted 400 status so the second attempt
+    // (after trimming) terminates immediately instead of walking the retry
+    // backoff. This isolates the overflow-recovery path being tested.
     mockCreate.mockImplementation(() => {
       const err: any = new Error("context_length_exceeded")
       err.code = "context_length_exceeded"
+      err.status = 400
       throw err
     })
 
@@ -2486,8 +2465,13 @@ describe("runAgent", () => {
   })
 
   it("does not catch non-overflow errors with overflow recovery", async () => {
+    // Use a blocklisted status (400) so the engine terminates without retry —
+    // this test is about the overflow handler NOT swallowing non-overflow
+    // errors, not about retry semantics.
     mockCreate.mockImplementation(() => {
-      throw new Error("invalid request format")
+      const err: any = new Error("invalid request format")
+      err.status = 400
+      throw err
     })
 
     const errors: Error[] = []
@@ -2868,6 +2852,83 @@ describe("runAgent", () => {
     expect(errors[0].message).toContain("retrying")
 
     vi.useRealTimers()
+  })
+
+  // Regression: a bare "Request timed out." error from the OpenAI/Anthropic
+  // SDKs (no err.code, no status) used to slip past the old isTransientError
+  // detector and surface as a terminal error in BlueBubbles. The new
+  // blocklist-based policy must retry it.
+  it("retries SDK 'Request timed out.' errors with no code or status", async () => {
+    vi.useFakeTimers()
+    let callCount = 0
+    mockCreate.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        // Exactly the shape the OpenAI SDK throws when its internal timeout
+        // (or AbortController) fires: plain Error with the bare message.
+        throw new Error("Request timed out.")
+      }
+      return makeStream([makeChunk("ok")])
+    })
+
+    const errors: { error: Error; severity: string }[] = []
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: (err, severity) => errors.push({ error: err, severity }),
+    }
+
+    const messages: any[] = [{ role: "system", content: "test" }]
+    const promise = runAgent(messages, callbacks)
+
+    await vi.advanceTimersByTimeAsync(2100)
+    await vi.advanceTimersByTimeAsync(100)
+
+    await promise
+
+    expect(callCount).toBe(2)
+    expect(errors).toHaveLength(1)
+    expect(errors[0].error.message).toContain("retrying in 2s (1/3)")
+    expect(errors[0].severity).toBe("transient")
+
+    vi.useRealTimers()
+  })
+
+  it("does NOT retry HTTP 400 / 401 / 403 / 404 / 422 — fails terminally on first hit", async () => {
+    for (const status of [400, 401, 403, 404, 422]) {
+      let callCount = 0
+      mockCreate.mockImplementation(() => {
+        callCount++
+        const err: any = new Error(`status ${status}`)
+        err.status = status
+        throw err
+      })
+
+      const errors: { error: Error; severity: string }[] = []
+      const callbacks: ChannelCallbacks = {
+        onModelStart: () => {},
+        onModelStreamStart: () => {},
+        onTextChunk: () => {},
+        onReasoningChunk: () => {},
+        onToolStart: () => {},
+        onToolEnd: () => {},
+        onError: (err, severity) => errors.push({ error: err, severity }),
+      }
+
+      const messages: any[] = [{ role: "system", content: "test" }]
+      await runAgent(messages, callbacks)
+
+      // Exactly one call (no retries) and one terminal error.
+      expect(callCount).toBe(1)
+      // Filter to terminal severity — auth-failure path may produce a guidance
+      // wrapper before the underlying error.
+      const terminal = errors.filter((e) => e.severity === "terminal")
+      expect(terminal.length).toBe(1)
+    }
   })
 
   // ── system prompt refresh (Feature 5) ──
@@ -4973,7 +5034,6 @@ describe("openai-codex oauth provider contract", () => {
     expect(mockOpenAICtor).toHaveBeenCalledWith(expect.objectContaining({
       apiKey: oauthAccessToken,
       baseURL: "https://chatgpt.com/backend-api/codex",
-      timeout: 30000,
       maxRetries: 0,
       defaultHeaders: {
         "chatgpt-account-id": accountId,
