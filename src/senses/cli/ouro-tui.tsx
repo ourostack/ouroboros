@@ -295,7 +295,7 @@ export function QueuedMessages({ items }: {
 
 // ─── Input ──────────────────────────────────────────────────────────
 
-function InputArea({ onSubmit, onCtrlC, history, queuedInputs: _queuedInputs, onPopQueue: _onPopQueue, agentName, model }: {
+function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agentName, model }: {
   readonly onSubmit: (text: string) => void
   readonly onCtrlC: (hasInput: boolean) => CtrlCAction
   readonly history: readonly string[]
@@ -365,6 +365,11 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs: _queuedInputs, on
         setTooltip("Esc again to clear")
         if (tooltipTimerRef.current) clearTimeout(tooltipTimerRef.current)
         tooltipTimerRef.current = setTimeout(() => setTooltip(""), 2000)
+      } else if (queuedInputs.length > 0) {
+        // Pop all queued messages into input for editing
+        const items = onPopQueue()
+        updateInput(items.join("\n"))
+        historyIdx.current = -1
       } else {
         setTooltip("")
       }
@@ -430,15 +435,24 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs: _queuedInputs, on
       }
       return
     }
-    // Up/Down: history
-    if (key.upArrow && history.length > 0) {
-      if (historyIdx.current === -1) {
-        savedInput.current = inputRef.current
-        historyIdx.current = history.length - 1
-      } else if (historyIdx.current > 0) {
-        historyIdx.current--
+    // Up/Down: queue pop takes priority over history
+    if (key.upArrow) {
+      // If not already browsing history and queue has items, pop queue into input
+      if (historyIdx.current === -1 && queuedInputs.length > 0) {
+        const items = onPopQueue()
+        updateInput(items.join("\n"))
+        return
       }
-      updateInput(history[historyIdx.current])
+      // Otherwise, browse history
+      if (history.length > 0) {
+        if (historyIdx.current === -1) {
+          savedInput.current = inputRef.current
+          historyIdx.current = history.length - 1
+        } else if (historyIdx.current > 0) {
+          historyIdx.current--
+        }
+        updateInput(history[historyIdx.current])
+      }
       return
     }
     if (key.downArrow) {
