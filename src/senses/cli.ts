@@ -573,6 +573,28 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
         .map(msg => msg.content)
       tuiStore.seedHistory(prevUserMsgs)
 
+      // Show session resume context: last 2 exchanges as normal messages
+      if (messages.length > 1) {
+        const userAssistantMsgs = messages.filter(
+          (m): m is { role: "user" | "assistant"; content: string } =>
+            (m.role === "user" || m.role === "assistant") && typeof m.content === "string" && m.content.trim().length > 0,
+        )
+        // Extract last 2 exchanges (up to 4 messages)
+        const lastExchanges: Array<{ role: "user" | "assistant"; content: string }> = []
+        for (let i = userAssistantMsgs.length - 1; i >= 0 && lastExchanges.length < 4; i--) {
+          lastExchanges.unshift({ role: userAssistantMsgs[i].role, content: userAssistantMsgs[i].content })
+        }
+        tuiStore.addResumeMessages(lastExchanges)
+      }
+
+      // Compute resumeInfo for header banner
+      const resumeInfo = messages.length > 1
+        ? {
+          messageCount: messages.filter(m => m.role === "user" || m.role === "assistant").length,
+          timeAgo: options.lastActivityAt ? formatTimeAgo(new Date(options.lastActivityAt)) : "unknown",
+        }
+        : undefined
+
       // Ctrl-C state machine (Claude Code behavior):
       // During generation: abort current request
       // Idle with text: clear input
@@ -631,6 +653,7 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
           onPopQueue: () => { const items = storeRef.popAllQueuedForEditing(); inputQueue!.drainAll(); return items },
           headerShown: storeRef.headerShown,
           cwd: process.cwd().replace(process.env.HOME ?? "", "~"),
+          resumeInfo,
         })
       }
 

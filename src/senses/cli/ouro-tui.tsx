@@ -73,6 +73,7 @@ export interface TuiProps {
   readonly onPopQueue: () => string[]
   readonly headerShown: boolean
   readonly cwd: string
+  readonly resumeInfo?: { messageCount: number; timeAgo: string }
 }
 
 // ─── Header ─────────────────────────────────────────────────────────
@@ -87,11 +88,12 @@ function termWidth(): number {
   return process.stdout.columns || 80
 }
 
-function Header({ agentName, model, contextPercent, cwd }: {
+function Header({ agentName, model, contextPercent, cwd, resumeInfo }: {
   readonly agentName: string
   readonly model: string
   readonly contextPercent: number
   readonly cwd: string
+  readonly resumeInfo?: { messageCount: number; timeAgo: string }
 }): React.ReactElement {
   const showCtx = contextPercent > 0
   const info = [agentName, model, cwd, showCtx ? `ctx ${contextPercent}%` : ""].filter(Boolean).join(" · ")
@@ -118,6 +120,9 @@ function Header({ agentName, model, contextPercent, cwd }: {
       <Text color={OURO.scale}>{line1}</Text>
       <Text color={OURO.scale}>{line2}</Text>
       <Text color={OURO.scale}>{TAIL3}<Text color={OURO.glow}>{line3text}</Text><Text color={OURO.scale}>{HEAD3}</Text></Text>
+      {resumeInfo ? (
+        <Text color={OURO.teal}>{"  resuming \u00b7 "}{resumeInfo.messageCount}{" messages \u00b7 last active "}{resumeInfo.timeAgo}</Text>
+      ) : null}
     </Box>
   )
 }
@@ -605,6 +610,7 @@ export function OuroTui({
   onCtrlC,
   onPopQueue,
   cwd,
+  resumeInfo,
 }: TuiProps): React.ReactElement {
   return (
     <Box flexDirection="column">
@@ -615,7 +621,7 @@ export function OuroTui({
             return (
               <Box key="header" flexDirection="column" marginBottom={2}>
                 <Box marginTop={1}><Text>{""}</Text></Box>
-                <Header agentName={agentName} model={model} contextPercent={contextPercent} cwd={cwd} />
+                <Header agentName={agentName} model={model} contextPercent={contextPercent} cwd={cwd} resumeInfo={resumeInfo} />
                 <Text color={OURO.shadow} dimColor>{"  Ctrl-C twice to exit \u00b7 \u2191\u2193 history \u00b7 Esc clear \u00b7 opt+Enter newline"}</Text>
               </Box>
             )

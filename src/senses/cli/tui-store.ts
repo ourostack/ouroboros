@@ -191,6 +191,21 @@ export class TuiStore {
     this._inputHistory.push(...texts)
   }
 
+  /** Push previous session exchanges as normal user/assistant messages (for resume display) */
+  addResumeMessages(exchanges: Array<{ role: "user" | "assistant"; content: string }>): void {
+    if (exchanges.length === 0) {
+      this.notify()
+      return
+    }
+    const msgs: CompletedMessage[] = exchanges.map((ex, i) => ({
+      id: `resume-${i}`,
+      role: ex.role,
+      content: ex.content,
+    }))
+    this._completed = [...msgs, ...this._completed]
+    this.notify()
+  }
+
   // ─── Queued input display ────────────────────────────────────────
 
   enqueueInput(text: string): void {
