@@ -1,4 +1,3 @@
-import { AsyncLocalStorage } from "node:async_hooks"
 import { execFileSync } from "child_process"
 import * as fs from "fs"
 import * as path from "path"
@@ -8,41 +7,6 @@ import type { SyncConfig } from "./config"
 export interface SyncResult {
   ok: boolean
   error?: string
-}
-
-/**
- * Turn-scoped write tracker using AsyncLocalStorage.
- * Each turn runs inside its own async context (via runWithSyncContext),
- * so concurrent turns from different senses never share or clobber each
- * other's tracked writes.
- *
- * Continuity writers (episodes, obligations, cares, intentions, diary)
- * call trackSyncWrite() after every fs write. drainSyncWrites() returns
- * the current turn's accumulated set and clears it.
- */
-const syncContext = new AsyncLocalStorage<Set<string>>()
-
-/**
- * Run a function inside its own sync-write tracking context.
- * All trackSyncWrite / drainSyncWrites calls within `fn` (including
- * across awaits) operate on a private Set scoped to this invocation.
- */
-export function runWithSyncContext<T>(fn: () => T): T {
-  return syncContext.run(new Set<string>(), fn)
-}
-
-/** Register an absolute file path written during this turn. No-op if called outside a sync context. */
-export function trackSyncWrite(absolutePath: string): void {
-  syncContext.getStore()?.add(absolutePath)
-}
-
-/** Return all paths written this turn and clear the set. Returns [] if called outside a sync context. */
-export function drainSyncWrites(): string[] {
-  const store = syncContext.getStore()
-  if (!store) return []
-  const paths = [...store]
-  store.clear()
-  return paths
 }
 
 /**
@@ -86,11 +50,11 @@ export function preTurnPull(agentRoot: string, config: SyncConfig): SyncResult {
 }
 
 /**
- * Post-turn push: commit and push files written during this turn.
- * Receives an explicit list of absolute paths (from drainSyncWrites) instead of
- * discovering changes via git status. Empty list = no changes = skip.
+ * Post-turn push: discover dirty files via `git status`, commit, and push.
+ * Uses git-status-based discovery instead of explicit path tracking, ensuring
+ * all file writers are captured regardless of whether they call a tracking API.
  */
-export function postTurnPush(agentRoot: string, config: SyncConfig, writtenPaths: string[]): SyncResult {
+export function postTurnPush(agentRoot: string, config: SyncConfig): SyncResult {
   emitNervesEvent({
     component: "heart",
     event: "heart.sync_push_start",
@@ -98,7 +62,25 @@ export function postTurnPush(agentRoot: string, config: SyncConfig, writtenPaths
     meta: { agentRoot, remote: config.remote },
   })
 
-  if (writtenPaths.length === 0) {
+  let statusOutput: string
+  try {
+    statusOutput = execFileSync("git", ["status", "--porcelain"], {
+      cwd: agentRoot,
+      stdio: "pipe",
+      timeout: 10000,
+    }).toString().trim()
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err)
+    emitNervesEvent({
+      component: "heart",
+      event: "heart.sync_push_error",
+      message: "post-turn push: git status failed",
+      meta: { agentRoot, error },
+    })
+    return { ok: false, error }
+  }
+
+  if (statusOutput.length === 0) {
     emitNervesEvent({
       component: "heart",
       event: "heart.sync_push_end",
@@ -108,24 +90,10 @@ export function postTurnPush(agentRoot: string, config: SyncConfig, writtenPaths
     return { ok: true }
   }
 
-  // Convert absolute paths to relative (for git add)
-  const relativePaths = writtenPaths
-    .map((p) => path.relative(agentRoot, p))
-    .filter((p) => p.length > 0 && !p.startsWith(".."))
-
-  if (relativePaths.length === 0) {
-    emitNervesEvent({
-      component: "heart",
-      event: "heart.sync_push_end",
-      message: "post-turn push: no in-bundle paths to sync",
-      meta: { agentRoot },
-    })
-    return { ok: true }
-  }
+  const changedCount = statusOutput.split("\n").length
 
   try {
-    // Stage only the specific files written during this turn
-    execFileSync("git", ["add", "--", ...relativePaths], {
+    execFileSync("git", ["add", "-A"], {
       cwd: agentRoot,
       stdio: "pipe",
       timeout: 10000,
@@ -136,6 +104,23 @@ export function postTurnPush(agentRoot: string, config: SyncConfig, writtenPaths
       stdio: "pipe",
       timeout: 10000,
     })
+
+    // Check if a remote exists
+    const remoteOutput = execFileSync("git", ["remote"], {
+      cwd: agentRoot,
+      stdio: "pipe",
+      timeout: 5000,
+    }).toString().trim()
+
+    if (remoteOutput.length === 0) {
+      emitNervesEvent({
+        component: "heart",
+        event: "heart.sync_push_end",
+        message: "post-turn push: committed locally, no remote configured",
+        meta: { agentRoot, changedCount },
+      })
+      return { ok: true }
+    }
 
     try {
       execFileSync("git", ["push", config.remote], {
@@ -166,7 +151,6 @@ export function postTurnPush(agentRoot: string, config: SyncConfig, writtenPaths
           JSON.stringify({
             error: retryError,
             failedAt: new Date().toISOString(),
-            paths: relativePaths,
           }, null, 2),
           "utf-8",
         )
@@ -186,7 +170,7 @@ export function postTurnPush(agentRoot: string, config: SyncConfig, writtenPaths
       component: "heart",
       event: "heart.sync_push_end",
       message: "post-turn push complete",
-      meta: { agentRoot, changedCount: relativePaths.length },
+      meta: { agentRoot, changedCount },
     })
 
     return { ok: true }

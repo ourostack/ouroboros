@@ -28,7 +28,7 @@ import { writeAgentProviderSelection, loadAgentSecrets } from "../heart/auth/aut
 import { deriveTempo } from "../heart/tempo"
 import { buildTemporalView } from "../heart/temporal-view"
 import { buildStartOfTurnPacket, renderStartOfTurnPacket, buildCapabilitiesSection } from "../heart/start-of-turn-packet"
-import { preTurnPull, postTurnPush, drainSyncWrites, runWithSyncContext } from "../heart/sync"
+import { preTurnPull, postTurnPush } from "../heart/sync"
 import { getSyncConfig } from "../heart/config"
 import { derivePresence, writePresence } from "../arc/presence"
 import { emitEpisode } from "../arc/episodes"
@@ -194,7 +194,6 @@ function prependTurnSections(
 let _lastSessionKey: string | null = null
 
 export async function handleInboundTurn(input: InboundTurnInput): Promise<InboundTurnResult> {
-  return runWithSyncContext(async () => {
   // Reset session-scoped state when the session changes
   const sessionKey = `${input.channel}/${input.sessionKey ?? "session"}`
   if (sessionKey !== _lastSessionKey) {
@@ -375,9 +374,8 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   let syncConfig: import("../heart/config").SyncConfig = { enabled: false, remote: "origin" }
   try { syncConfig = getSyncConfig() } catch { /* config not available */ }
 
-  // Wrap the turn body in try/finally so drainSyncWrites always runs — even on
-  // error or early-return failover paths. This prevents writes from leaking into
-  // the next turn's accumulator.
+  // Wrap the turn body in try/finally so postTurnPush always runs — even on
+  // error or early-return failover paths.
   try {
   /* v8 ignore start -- sync-enabled branches tested in sync.test.ts, pipeline tests mock at module boundary @preserve */
   if (syncConfig.enabled) {
@@ -661,14 +659,9 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     ...(input.switchedProvider ? { switchedProvider: input.switchedProvider } : {}),
   }
   } finally {
-    // Step 6b: Post-turn sync push (opt-in, turn-scoped writes only).
-    // In a finally block so writes are always drained — even on error or early-return
-    // failover paths. This prevents writes from leaking into the next turn.
-    const writtenPaths = drainSyncWrites()
-    /* v8 ignore next 3 -- postTurnPush integration tested in sync.test.ts @preserve */
-    if (syncConfig.enabled && writtenPaths.length > 0) {
-      postTurnPush(getAgentRoot(), syncConfig, writtenPaths)
+    // Step 6b: Post-turn sync push (opt-in, git-status-based discovery).
+    if (syncConfig.enabled) {
+      postTurnPush(getAgentRoot(), syncConfig)
     }
   }
-  }) // end runWithSyncContext
 }
