@@ -708,7 +708,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
     return { kind: "inner.status", ...(agent ? { agent } : {}) }
   }
   if (head === "chat") {
-    if (!second) throw new Error(`Usage\n${usage()}`)
+    if (!second) return { kind: "chat.connect", agent: "" }
     return { kind: "chat.connect", agent: second }
   }
   if (head === "msg") return parseMessageCommand(args.slice(1))
