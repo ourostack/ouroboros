@@ -539,9 +539,15 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
       ) : (
         <Box>
           <Text color={OURO.teal} bold>{") "}</Text>
-          <Text color={OURO.bone}>{input.slice(0, cursorPos)}</Text>
-          {cursorVisible ? <Text color={OURO.scale}>{"█"}</Text> : <Text color={OURO.bone}>{input[cursorPos] ?? " "}</Text>}
-          <Text color={OURO.bone}>{input.slice(cursorPos + (cursorVisible ? 0 : 1))}</Text>
+          {!input && queuedInputs.length > 0 ? (
+            <Text color={OURO.shadow}>{"Press up to edit queued messages"}</Text>
+          ) : (
+            <>
+              <Text color={OURO.bone}>{input.slice(0, cursorPos)}</Text>
+              {cursorVisible ? <Text color={OURO.scale}>{"█"}</Text> : <Text color={OURO.bone}>{input[cursorPos] ?? " "}</Text>}
+              <Text color={OURO.bone}>{input.slice(cursorPos + (cursorVisible ? 0 : 1))}</Text>
+            </>
+          )}
         </Box>
       )}
       {/* Bottom separator */}
