@@ -10,7 +10,7 @@
  * ZERO business logic here — pure rendering from CliStore state.
  */
 import React, { useState, useRef, useEffect, useCallback } from "react"
-import { Text, Box, Static, useInput } from "ink"
+import { Text, Box, Static, useInput, useStdin } from "ink"
 import { StreamingMarkdown } from "./streaming-markdown"
 
 // ─── Ouroboros Brand Palette (ANSI RGB) ─────────────────────────────
@@ -77,9 +77,14 @@ export interface TuiProps {
 
 // ─── Header ─────────────────────────────────────────────────────────
 
-/** Safe terminal width: capped at 200, with 2-char margin */
+/** Terminal width for content (capped at 200, with 2-char margin) */
 function safeWidth(): number {
   return Math.min(process.stdout.columns || 80, 200) - 2
+}
+
+/** Full terminal width for edge-to-edge elements (separators) */
+function termWidth(): number {
+  return process.stdout.columns || 80
 }
 
 function Header({ agentName, model, contextPercent, cwd }: {
@@ -147,11 +152,11 @@ function MessageBlock({ msg }: { readonly msg: CompletedMessage }): React.ReactE
     )
   }
 
-  // ── Session history (dimmed replay of last exchanges) ──
+  // ── Session history (dimmed recap of recent exchanges) ──
   if (msg.role === "history-summary") {
     return (
-      <Box flexDirection="column" marginTop={1}>
-        <Text dimColor>{msg.content}</Text>
+      <Box flexDirection="column" marginTop={1} marginBottom={1}>
+        <Text color={OURO.shadow}>{msg.content}</Text>
       </Box>
     )
   }
@@ -159,23 +164,25 @@ function MessageBlock({ msg }: { readonly msg: CompletedMessage }): React.ReactE
     return (
       <Box flexDirection="column" marginTop={1}>
         <Box>
-          <Text dimColor bold>{") "}</Text>
-          <Text dimColor bold>{msg.content}</Text>
+          <Text color={OURO.shadow} bold>{") "}</Text>
+          <Text color={OURO.shadow} bold>{msg.content}</Text>
         </Box>
+        <Box marginBottom={1}><Text>{""}</Text></Box>
       </Box>
     )
   }
   if (msg.role === "history-assistant") {
     return (
       <Box flexDirection="column" marginBottom={1}>
-        {msg.content ? <StreamingMarkdown text={msg.content} maxWidth={safeWidth()} /> : null}
+        {msg.content ? <Text color={OURO.shadow}>{msg.content}</Text> : null}
+        <Box marginBottom={1}><Text>{""}</Text></Box>
       </Box>
     )
   }
   if (msg.role === "history-end") {
     return (
-      <Box flexDirection="column">
-        <Text dimColor>{"─".repeat(safeWidth() + 2)}</Text>
+      <Box flexDirection="column" marginBottom={1}>
+        <Text color={OURO.separator}>{"─".repeat(termWidth())}</Text>
       </Box>
     )
   }
@@ -345,6 +352,23 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
   const cursorRef = useRef(0)
   const historyIdx = useRef(-1)
   const savedInput = useRef("")
+
+  // Raw stdin handler for Alt+Enter (ESC + CR/LF) — Ink 3.2's useInput splits
+  // \x1b\r into separate events, so we catch the combined sequence here.
+  const { stdin } = useStdin()
+  useEffect(() => {
+    if (!stdin) return
+    const onData = (data: Buffer) => {
+      const str = data.toString("utf-8")
+      if (str === "\x1b\r" || str === "\x1b\n") {
+        const before = inputRef.current.slice(0, cursorRef.current)
+        const after = inputRef.current.slice(cursorRef.current)
+        updateInput(before + "\n" + after, cursorRef.current + 1)
+      }
+    }
+    stdin.on("data", onData)
+    return () => { stdin.off("data", onData) }
+  }, [stdin]) // eslint-disable-line react-hooks/exhaustive-deps
   const tooltipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => () => {
@@ -409,11 +433,18 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
       return
     }
     if (key.return) {
-      if (key.meta) {
-        // Alt+Enter: insert newline
+      // Alt+Enter or Shift+Enter: insert newline
+      if (key.meta || key.shift) {
         const before = inputRef.current.slice(0, cursorRef.current)
         const after = inputRef.current.slice(cursorRef.current)
         updateInput(before + "\n" + after, cursorRef.current + 1)
+        return
+      }
+      // Backslash+Enter: insert newline (like Claude Code)
+      if (cursorRef.current > 0 && inputRef.current[cursorRef.current - 1] === "\\") {
+        const before = inputRef.current.slice(0, cursorRef.current - 1)
+        const after = inputRef.current.slice(cursorRef.current)
+        updateInput(before + "\n" + after, cursorRef.current)
         return
       }
       const text = inputRef.current
@@ -546,8 +577,7 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
     }
   })
 
-  // Get terminal width (capped for sanity)
-  const cols = safeWidth()
+
 
   const isMultiline = input.includes("\n")
   const inputLines = input.split("\n")
@@ -555,7 +585,7 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
   return (
     <Box flexDirection="column">
       {/* Top separator — full terminal width (no margin) */}
-      <Text dimColor>{"─".repeat(cols + 2)}</Text>
+      <Text dimColor>{"─".repeat(termWidth())}</Text>
       {/* Input prompt — multi-line shows each line with continuation marker */}
       {isMultiline ? (
         <Box flexDirection="column">
@@ -584,7 +614,7 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
         </Box>
       )}
       {/* Bottom separator — full terminal width (no margin) */}
-      <Text dimColor>{"─".repeat(cols + 2)}</Text>
+      <Text dimColor>{"─".repeat(termWidth())}</Text>
       {/* Status + hints + tooltip — BELOW the box */}
       <Box>
         <Text dimColor>{"  "}{agentName}{model ? ` · ${model}` : ""} · /help</Text>
@@ -621,7 +651,7 @@ export function OuroTui({
               <Box key="header" flexDirection="column" marginBottom={2}>
                 <Box marginTop={1}><Text>{""}</Text></Box>
                 <Header agentName={agentName} model={model} contextPercent={contextPercent} cwd={cwd} />
-                <Text color={OURO.shadow} dimColor>{"  Ctrl-C twice to exit \u00b7 \u2191\u2193 history \u00b7 Esc clear \u00b7 Alt+Enter newline"}</Text>
+                <Text color={OURO.shadow} dimColor>{"  Ctrl-C twice to exit \u00b7 \u2191\u2193 history \u00b7 Esc clear \u00b7 opt+Enter newline"}</Text>
               </Box>
             )
           }
