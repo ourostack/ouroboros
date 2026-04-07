@@ -104,6 +104,64 @@ describe("InputQueue", () => {
     expect((await iter.next()).done).toBe(true)
   })
 
+  describe("drainAll", () => {
+    it("returns all buffered items and clears the queue", () => {
+      const queue = new InputQueue()
+      queue.push("a")
+      queue.push("b")
+      queue.push("c")
+      const drained = queue.drainAll()
+      expect(drained).toEqual(["a", "b", "c"])
+      // Queue should be empty now
+      queue.close()
+      // Drain again should be empty
+      expect(queue.drainAll()).toEqual([])
+    })
+
+    it("returns empty array when queue is empty", () => {
+      const queue = new InputQueue()
+      expect(queue.drainAll()).toEqual([])
+    })
+
+    it("leaves pending promise untouched", async () => {
+      const queue = new InputQueue()
+      const iter = queue[Symbol.asyncIterator]()
+
+      // Start awaiting — creates a pending promise
+      const nextPromise = iter.next()
+
+      // Push some items to buffer, then drain
+      queue.push("buffered")
+      // The push above resolved the pending promise, so push more to buffer
+      queue.push("x")
+      queue.push("y")
+      const drained = queue.drainAll()
+      expect(drained).toEqual(["x", "y"])
+
+      // The pending promise should have resolved with "buffered"
+      const result = await nextPromise
+      expect(result).toEqual({ value: "buffered", done: false })
+
+      queue.close()
+    })
+
+    it("does not affect subsequent pushes", async () => {
+      const queue = new InputQueue()
+      queue.push("first")
+      queue.drainAll()
+
+      // New push after drain should work normally
+      queue.push("second")
+      queue.close()
+
+      const results: string[] = []
+      for await (const item of queue) {
+        results.push(item)
+      }
+      expect(results).toEqual(["second"])
+    })
+  })
+
   it("supports multiple sequential pushes and awaits", async () => {
     const queue = new InputQueue()
     const results: string[] = []
