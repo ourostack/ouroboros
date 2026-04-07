@@ -33,12 +33,52 @@ import { buildOutlookAgentView, buildOutlookMachineView } from "../outlook/outlo
 const PIDFILE_PATH = path.join(os.homedir(), ".ouro-cli", "daemon.pids")
 
 /**
+ * Scan `ps -eo pid,ppid,command` output for daemon-owned entry points whose
+ * parent has died (PPID reparented to init/PID 1). Returns the list of PIDs
+ * that are safe to SIGTERM — true orphans, not children of live sibling
+ * daemons running from worktrees, test suites, or other users of the harness.
+ *
+ * Exported so unit tests can exercise the filter without shelling out.
+ */
+export function parseOrphanPidsFromPs(psOutput: string, selfPid: number): number[] {
+  const orphans: number[] = []
+  for (const line of psOutput.split("\n")) {
+    // Explicitly exclude MCP server processes — they share a harness entry
+    // point but are not daemon children and must never be killed.
+    if (line.includes("mcp-serve") || line.includes("mcp serve")) continue
+    // Match only daemon-owned JS entry points.
+    if (
+      !line.includes("agent-entry.js")
+      && !line.includes("daemon-entry.js")
+      && !line.includes("bluebubbles/entry.js")
+      && !line.includes("teams-entry.js")
+    ) continue
+    // Parse `<pid> <ppid> <command...>`. ps pads these with leading spaces.
+    // Regex guarantees both groups are \d+ so parseInt can't produce NaN.
+    const match = line.trim().match(/^(\d+)\s+(\d+)\s/)
+    if (!match) continue
+    const pid = parseInt(match[1]!, 10)
+    const ppid = parseInt(match[2]!, 10)
+    if (pid === selfPid) continue
+    // CRITICAL: only kill processes whose parent is init (PID 1). A live
+    // PPID means the process belongs to another daemon instance (parallel
+    // test run, sibling worktree, another user of /tmp/ouroboros-daemon.sock).
+    // Killing those will crash unrelated harnesses — we saw this in B6
+    // when a vitest worker's daemon killed slugger's production children.
+    if (ppid !== 1) continue
+    orphans.push(pid)
+  }
+  return orphans
+}
+
+/**
  * Kill all ouro processes from the previous daemon instance using the pidfile.
  * On startup, reads PIDs from ~/.ouro-cli/daemon.pids, kills them all, then
  * deletes the file. The new daemon writes its own PIDs after spawning.
  *
- * Falls back to ps-based scanning if the pidfile doesn't exist (first run
- * or manual cleanup).
+ * Falls back to ps-based scanning scoped to true orphans (PPID=1) if the
+ * pidfile doesn't exist (first run, previous daemon crashed before writing,
+ * manual cleanup). The scope is narrow on purpose — see parseOrphanPidsFromPs.
  */
 /* v8 ignore start -- process lifecycle: uses kill/ps, tested via deployment @preserve */
 export function killOrphanProcesses(): void {
@@ -51,20 +91,13 @@ export function killOrphanProcesses(): void {
       pidsToKill = raw.split("\n").map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n) && n !== process.pid)
       fs.unlinkSync(PIDFILE_PATH)
     } catch {
-      // No pidfile — fall back to ps scan
+      // No pidfile — fall back to ps scan (scoped to orphans with PPID=1).
     }
 
-    // Fallback: scan ps for daemon-owned processes only (not MCP servers or external tools)
     if (pidsToKill.length === 0) {
       try {
-        const result = execSync("ps -eo pid,command", { encoding: "utf-8", timeout: 5000 })
-        for (const line of result.split("\n")) {
-          // Only match daemon-owned entry points, NOT mcp-serve or other external processes
-          if (line.includes("mcp-serve") || line.includes("mcp serve")) continue
-          if (!line.includes("agent-entry.js") && !line.includes("daemon-entry.js") && !line.includes("bluebubbles/entry.js") && !line.includes("teams-entry.js")) continue
-          const pid = parseInt(line.trim(), 10)
-          if (!isNaN(pid) && pid !== process.pid) pidsToKill.push(pid)
-        }
+        const result = execSync("ps -eo pid,ppid,command", { encoding: "utf-8", timeout: 5000 })
+        pidsToKill = parseOrphanPidsFromPs(result, process.pid)
       } catch { /* ps failed — best effort */ }
     }
 
