@@ -600,11 +600,13 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
           model: loadAgentConfig().humanFacing?.model ?? "",
           completedMessages: storeRef.completedMessages as any,
           inputHistory: storeRef.inputHistory,
+          queuedInputs: storeRef.queuedInputs as any,
           live: storeRef.live,
           elapsedSeconds: elapsed,
           contextPercent: 0,
           onSubmit: (text: string) => { ctrlCWarned = false; inputQueue!.push(text) },
           onCtrlC: handleCtrlC,
+          onPopQueue: () => storeRef.popAllQueuedForEditing(),
           headerShown: storeRef.headerShown,
           cwd: process.cwd().replace(process.env.HOME ?? "", "~"),
         })
