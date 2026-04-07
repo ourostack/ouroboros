@@ -18,6 +18,7 @@ import {
 import { OuroDaemon } from "../../../heart/daemon/daemon"
 import * as identity from "../../../heart/identity"
 import * as sessionActivity from "../../../heart/session-activity"
+import { createTmpBundle } from "../../test-helpers/tmpdir-bundle"
 
 const PACKAGE_VERSION = JSON.parse(
   fs.readFileSync(path.join(process.cwd(), "package.json"), "utf-8"),
@@ -699,27 +700,19 @@ describe("ouro CLI execution", () => {
   })
 
   it("runs `auth` locally with provider autodetected from agent.json", async () => {
-    const agentName = `auth-local-${Date.now()}`
-    const agentRoot = path.join(os.homedir(), "AgentBundles", `${agentName}.ouro`)
-    fs.mkdirSync(agentRoot, { recursive: true })
-    fs.writeFileSync(
-      path.join(agentRoot, "agent.json"),
-      JSON.stringify({
+    const tmp = createTmpBundle({
+      agentName: "auth-local",
+      agentJson: {
         version: 2,
         enabled: true,
         provider: "anthropic",
         humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
-        phrases: {
-          thinking: ["working"],
-          tool: ["running tool"],
-          followup: ["processing"],
-        },
-      }, null, 2) + "\n",
-      "utf-8",
-    )
+        phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
+      },
+    })
 
-    const runAuthFlow = vi.fn(async () => ({ message: `authenticated ${agentName} with anthropic` }))
+    const runAuthFlow = vi.fn(async () => ({ message: `authenticated ${tmp.agentName} with anthropic` }))
     const deps = {
       socketPath: "/tmp/ouro-test.sock",
       sendCommand: vi.fn(async () => ({ ok: true, message: "unexpected daemon call" })),
@@ -728,49 +721,41 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-
+      bundlesRoot: tmp.bundlesRoot,
+      secretsRoot: tmp.secretsRoot,
       runAuthFlow,
     } as OuroCliDeps & {
       runAuthFlow: typeof runAuthFlow
     }
 
     try {
-      const result = await runOuroCli(["auth", "--agent", agentName], deps)
+      const result = await runOuroCli(["auth", "--agent", tmp.agentName], deps)
 
-      expect(result).toBe(`authenticated ${agentName} with anthropic`)
+      expect(result).toBe(`authenticated ${tmp.agentName} with anthropic`)
       expect(runAuthFlow).toHaveBeenCalledWith(expect.objectContaining({
-        agentName,
+        agentName: tmp.agentName,
         provider: "anthropic",
       }))
       expect(deps.sendCommand).not.toHaveBeenCalled()
     } finally {
-      fs.rmSync(agentRoot, { recursive: true, force: true })
+      tmp.cleanup()
     }
   })
 
   it("ouro auth --provider stores credentials without switching provider", async () => {
-    const agentName = `auth-store-${Date.now()}`
-    const agentRoot = path.join(os.homedir(), "AgentBundles", `${agentName}.ouro`)
-    const agentConfigPath = path.join(agentRoot, "agent.json")
-    fs.mkdirSync(agentRoot, { recursive: true })
-    fs.writeFileSync(
-      agentConfigPath,
-      JSON.stringify({
+    const tmp = createTmpBundle({
+      agentName: "auth-store",
+      agentJson: {
         version: 2,
         enabled: true,
         provider: "anthropic",
         humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
-        phrases: {
-          thinking: ["working"],
-          tool: ["running tool"],
-          followup: ["processing"],
-        },
-      }, null, 2) + "\n",
-      "utf-8",
-    )
+        phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
+      },
+    })
 
-    const runAuthFlow = vi.fn(async () => ({ message: `authenticated ${agentName} with openai-codex` }))
+    const runAuthFlow = vi.fn(async () => ({ message: `authenticated ${tmp.agentName} with openai-codex` }))
     const deps = {
       socketPath: "/tmp/ouro-test.sock",
       sendCommand: vi.fn(async () => ({ ok: true, message: "unexpected daemon call" })),
@@ -779,26 +764,27 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-
+      bundlesRoot: tmp.bundlesRoot,
+      secretsRoot: tmp.secretsRoot,
       runAuthFlow,
     } as OuroCliDeps & {
       runAuthFlow: typeof runAuthFlow
     }
 
     try {
-      const result = await runOuroCli(["auth", "--agent", agentName, "--provider", "openai-codex"], deps)
+      const result = await runOuroCli(["auth", "--agent", tmp.agentName, "--provider", "openai-codex"], deps)
 
-      expect(result).toBe(`authenticated ${agentName} with openai-codex`)
+      expect(result).toBe(`authenticated ${tmp.agentName} with openai-codex`)
       expect(runAuthFlow).toHaveBeenCalledWith(expect.objectContaining({
-        agentName,
+        agentName: tmp.agentName,
         provider: "openai-codex",
       }))
       // Behavior change: auth stores credentials but does NOT switch
-      const updated = JSON.parse(fs.readFileSync(agentConfigPath, "utf-8")) as { provider: string }
+      const updated = JSON.parse(fs.readFileSync(tmp.agentConfigPath, "utf-8")) as { provider: string }
       expect(updated.provider).toBe("anthropic")
       expect(deps.sendCommand).not.toHaveBeenCalled()
     } finally {
-      fs.rmSync(agentRoot, { recursive: true, force: true })
+      tmp.cleanup()
     }
   })
 
@@ -844,7 +830,7 @@ describe("ouro CLI execution", () => {
       const result = await runFreshOuroCli(["auth", "--agent", "slugger"], deps)
 
       expect(result).toBe("authenticated slugger with minimax")
-      expect(readAgentConfigForAgent).toHaveBeenCalledWith("slugger")
+      expect(readAgentConfigForAgent).toHaveBeenCalledWith("slugger", undefined)
       expect(defaultRunRuntimeAuthFlow).toHaveBeenCalledWith({
         agentName: "slugger",
         provider: "minimax",
@@ -858,21 +844,16 @@ describe("ouro CLI execution", () => {
   })
 
   it("ouro auth --provider stores credentials but does NOT switch provider", async () => {
-    const agentName = `auth-no-switch-${Date.now()}`
-    const agentRoot = path.join(os.homedir(), "AgentBundles", `${agentName}.ouro`)
-    const agentConfigPath = path.join(agentRoot, "agent.json")
-    fs.mkdirSync(agentRoot, { recursive: true })
-    fs.writeFileSync(
-      agentConfigPath,
-      JSON.stringify({
+    const tmp = createTmpBundle({
+      agentName: "auth-no-switch",
+      agentJson: {
         version: 2, enabled: true, provider: "anthropic",
         humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
-      }, null, 2) + "\n",
-      "utf-8",
-    )
-    const runAuthFlow = vi.fn(async () => ({ message: `authenticated ${agentName} with github-copilot` }))
+      },
+    })
+    const runAuthFlow = vi.fn(async () => ({ message: `authenticated ${tmp.agentName} with github-copilot` }))
     const deps = {
       socketPath: "/tmp/ouro-test.sock",
       sendCommand: vi.fn(async () => ({ ok: true, message: "ok" })),
@@ -881,31 +862,29 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      bundlesRoot: tmp.bundlesRoot,
+      secretsRoot: tmp.secretsRoot,
       runAuthFlow,
     } as OuroCliDeps & { runAuthFlow: typeof runAuthFlow }
     try {
-      await runOuroCli(["auth", "--agent", agentName, "--provider", "github-copilot"], deps)
-      const updated = JSON.parse(fs.readFileSync(agentConfigPath, "utf-8")) as { provider: string }
+      await runOuroCli(["auth", "--agent", tmp.agentName, "--provider", "github-copilot"], deps)
+      const updated = JSON.parse(fs.readFileSync(tmp.agentConfigPath, "utf-8")) as { provider: string }
       expect(updated.provider).toBe("anthropic")
     } finally {
-      fs.rmSync(agentRoot, { recursive: true, force: true })
+      tmp.cleanup()
     }
   })
 
   it("ouro auth verify reports provider status", async () => {
-    const agentName = `auth-verify-${Date.now()}`
-    const agentRoot = path.join(os.homedir(), "AgentBundles", `${agentName}.ouro`)
-    fs.mkdirSync(agentRoot, { recursive: true })
-    fs.writeFileSync(
-      path.join(agentRoot, "agent.json"),
-      JSON.stringify({
+    const tmp = createTmpBundle({
+      agentName: "auth-verify",
+      agentJson: {
         version: 2, enabled: true, provider: "anthropic",
         humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
-      }, null, 2) + "\n",
-      "utf-8",
-    )
+      },
+    })
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
       sendCommand: vi.fn(async () => ({ ok: true, message: "ok" })),
@@ -914,40 +893,31 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      bundlesRoot: tmp.bundlesRoot,
+      secretsRoot: tmp.secretsRoot,
     }
     try {
-      const result = await runOuroCli(["auth", "verify", "--agent", agentName], deps)
+      const result = await runOuroCli(["auth", "verify", "--agent", tmp.agentName], deps)
       expect(typeof result).toBe("string")
       expect(result).toContain("anthropic")
     } finally {
-      fs.rmSync(agentRoot, { recursive: true, force: true })
+      tmp.cleanup()
     }
   })
 
   it("ouro auth switch updates provider in agent.json", async () => {
-    const agentName = `auth-switch-new-${Date.now()}`
-    const agentRoot = path.join(os.homedir(), "AgentBundles", `${agentName}.ouro`)
-    const agentConfigPath = path.join(agentRoot, "agent.json")
-    fs.mkdirSync(agentRoot, { recursive: true })
-    const secretsDir = path.join(os.homedir(), ".agentsecrets", agentName)
-    fs.mkdirSync(secretsDir, { recursive: true })
-    fs.writeFileSync(
-      path.join(secretsDir, "secrets.json"),
-      JSON.stringify({
-        providers: { "github-copilot": { model: "claude-sonnet-4.6", githubToken: "ghp_test", baseUrl: "https://api.test.com" } },
-      }, null, 2) + "\n",
-      "utf-8",
-    )
-    fs.writeFileSync(
-      agentConfigPath,
-      JSON.stringify({
+    const tmp = createTmpBundle({
+      agentName: "auth-switch-new",
+      agentJson: {
         version: 2, enabled: true, provider: "anthropic",
         humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
-      }, null, 2) + "\n",
-      "utf-8",
-    )
+      },
+      secretsJson: {
+        providers: { "github-copilot": { model: "claude-sonnet-4.6", githubToken: "ghp_test", baseUrl: "https://api.test.com" } },
+      },
+    })
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
       sendCommand: vi.fn(async () => ({ ok: true, message: "ok" })),
@@ -956,44 +926,34 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      bundlesRoot: tmp.bundlesRoot,
+      secretsRoot: tmp.secretsRoot,
     }
     try {
-      const result = await runOuroCli(["auth", "switch", "--agent", agentName, "--provider", "github-copilot"], deps)
+      const result = await runOuroCli(["auth", "switch", "--agent", tmp.agentName, "--provider", "github-copilot"], deps)
       expect(result).toContain("switched")
       expect(result).toContain("github-copilot")
-      const updated = JSON.parse(fs.readFileSync(agentConfigPath, "utf-8")) as any
+      const updated = JSON.parse(fs.readFileSync(tmp.agentConfigPath, "utf-8")) as any
       expect(updated.humanFacing.provider).toBe("github-copilot")
       expect(updated.agentFacing.provider).toBe("github-copilot")
     } finally {
-      fs.rmSync(agentRoot, { recursive: true, force: true })
-      fs.rmSync(secretsDir, { recursive: true, force: true })
+      tmp.cleanup()
     }
   })
 
   it("ouro auth --switch flag form updates provider in agent.json", async () => {
-    const agentName = `auth-flag-switch-${Date.now()}`
-    const agentRoot = path.join(os.homedir(), "AgentBundles", `${agentName}.ouro`)
-    const agentConfigPath = path.join(agentRoot, "agent.json")
-    fs.mkdirSync(agentRoot, { recursive: true })
-    const secretsDir = path.join(os.homedir(), ".agentsecrets", agentName)
-    fs.mkdirSync(secretsDir, { recursive: true })
-    fs.writeFileSync(
-      path.join(secretsDir, "secrets.json"),
-      JSON.stringify({
-        providers: { "github-copilot": { model: "claude-sonnet-4.6", githubToken: "ghp_test", baseUrl: "https://api.test.com" } },
-      }, null, 2) + "\n",
-      "utf-8",
-    )
-    fs.writeFileSync(
-      agentConfigPath,
-      JSON.stringify({
+    const tmp = createTmpBundle({
+      agentName: "auth-flag-switch",
+      agentJson: {
         version: 2, enabled: true, provider: "openai-codex",
         humanFacing: { provider: "openai-codex", model: "gpt-5.4" },
         agentFacing: { provider: "openai-codex", model: "gpt-5.4" },
         phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
-      }, null, 2) + "\n",
-      "utf-8",
-    )
+      },
+      secretsJson: {
+        providers: { "github-copilot": { model: "claude-sonnet-4.6", githubToken: "ghp_test", baseUrl: "https://api.test.com" } },
+      },
+    })
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
       sendCommand: vi.fn(async () => ({ ok: true, message: "ok" })),
@@ -1002,43 +962,34 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      bundlesRoot: tmp.bundlesRoot,
+      secretsRoot: tmp.secretsRoot,
     }
     try {
-      const result = await runOuroCli(["auth", "--switch", "--agent", agentName, "--provider", "github-copilot"], deps)
+      const result = await runOuroCli(["auth", "--switch", "--agent", tmp.agentName, "--provider", "github-copilot"], deps)
       expect(result).toContain("switched")
       expect(result).toContain("github-copilot")
-      const updated = JSON.parse(fs.readFileSync(agentConfigPath, "utf-8")) as any
+      const updated = JSON.parse(fs.readFileSync(tmp.agentConfigPath, "utf-8")) as any
       expect(updated.humanFacing.provider).toBe("github-copilot")
       expect(updated.agentFacing.provider).toBe("github-copilot")
     } finally {
-      fs.rmSync(agentRoot, { recursive: true, force: true })
-      fs.rmSync(secretsDir, { recursive: true, force: true })
+      tmp.cleanup()
     }
   })
 
   it("ouro auth verify uses pingProvider for github-copilot", async () => {
-    const agentName = `auth-verify-ghcp-${Date.now()}`
-    const agentRoot = path.join(os.homedir(), "AgentBundles", `${agentName}.ouro`)
-    const secretsDir = path.join(os.homedir(), ".agentsecrets", agentName)
-    fs.mkdirSync(agentRoot, { recursive: true })
-    fs.mkdirSync(secretsDir, { recursive: true })
-    fs.writeFileSync(
-      path.join(agentRoot, "agent.json"),
-      JSON.stringify({
+    const tmp = createTmpBundle({
+      agentName: "auth-verify-ghcp",
+      agentJson: {
         version: 2, enabled: true, provider: "github-copilot",
         humanFacing: { provider: "github-copilot", model: "claude-sonnet-4.6" },
         agentFacing: { provider: "github-copilot", model: "claude-sonnet-4.6" },
         phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
-      }, null, 2) + "\n",
-      "utf-8",
-    )
-    fs.writeFileSync(
-      path.join(secretsDir, "secrets.json"),
-      JSON.stringify({
+      },
+      secretsJson: {
         providers: { "github-copilot": { model: "claude-sonnet-4.6", githubToken: "ghp_valid_token", baseUrl: "https://api.test.com" } },
-      }, null, 2) + "\n",
-      "utf-8",
-    )
+      },
+    })
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
       sendCommand: vi.fn(async () => ({ ok: true, message: "ok" })),
@@ -1047,42 +998,33 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      bundlesRoot: tmp.bundlesRoot,
+      secretsRoot: tmp.secretsRoot,
     }
     try {
       // pingProvider is mocked to return { ok: true } at the top of this file
-      const result = await runOuroCli(["auth", "verify", "--agent", agentName, "--provider", "github-copilot"], deps)
+      const result = await runOuroCli(["auth", "verify", "--agent", tmp.agentName, "--provider", "github-copilot"], deps)
       expect(result).toBe("github-copilot: ok")
     } finally {
-      fs.rmSync(agentRoot, { recursive: true, force: true })
-      fs.rmSync(secretsDir, { recursive: true, force: true })
+      tmp.cleanup()
     }
   })
 
   it("ouro auth verify reports failure from pingProvider", async () => {
     const { pingProvider } = await import("../../../heart/provider-ping")
     vi.mocked(pingProvider).mockResolvedValueOnce({ ok: false, classification: "auth-failure", message: "token expired" })
-    const agentName = `auth-verify-ghcp-fail-${Date.now()}`
-    const agentRoot = path.join(os.homedir(), "AgentBundles", `${agentName}.ouro`)
-    const secretsDir = path.join(os.homedir(), ".agentsecrets", agentName)
-    fs.mkdirSync(agentRoot, { recursive: true })
-    fs.mkdirSync(secretsDir, { recursive: true })
-    fs.writeFileSync(
-      path.join(agentRoot, "agent.json"),
-      JSON.stringify({
+    const tmp = createTmpBundle({
+      agentName: "auth-verify-ghcp-fail",
+      agentJson: {
         version: 2, enabled: true, provider: "github-copilot",
         humanFacing: { provider: "github-copilot", model: "claude-sonnet-4.6" },
         agentFacing: { provider: "github-copilot", model: "claude-sonnet-4.6" },
         phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
-      }, null, 2) + "\n",
-      "utf-8",
-    )
-    fs.writeFileSync(
-      path.join(secretsDir, "secrets.json"),
-      JSON.stringify({
+      },
+      secretsJson: {
         providers: { "github-copilot": { model: "claude-sonnet-4.6", githubToken: "ghp_expired", baseUrl: "https://api.test.com" } },
-      }, null, 2) + "\n",
-      "utf-8",
-    )
+      },
+    })
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
       sendCommand: vi.fn(async () => ({ ok: true, message: "ok" })),
@@ -1091,35 +1033,27 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      bundlesRoot: tmp.bundlesRoot,
+      secretsRoot: tmp.secretsRoot,
     }
     try {
-      const result = await runOuroCli(["auth", "verify", "--agent", agentName, "--provider", "github-copilot"], deps)
+      const result = await runOuroCli(["auth", "verify", "--agent", tmp.agentName, "--provider", "github-copilot"], deps)
       expect(result).toBe("github-copilot: failed (token expired)")
     } finally {
-      fs.rmSync(agentRoot, { recursive: true, force: true })
-      fs.rmSync(secretsDir, { recursive: true, force: true })
+      tmp.cleanup()
     }
   })
 
   it("ouro auth verify checks all providers when no --provider given", async () => {
-    const agentName = `auth-verify-all-${Date.now()}`
-    const agentRoot = path.join(os.homedir(), "AgentBundles", `${agentName}.ouro`)
-    const secretsDir = path.join(os.homedir(), ".agentsecrets", agentName)
-    fs.mkdirSync(agentRoot, { recursive: true })
-    fs.mkdirSync(secretsDir, { recursive: true })
-    fs.writeFileSync(
-      path.join(agentRoot, "agent.json"),
-      JSON.stringify({
+    const tmp = createTmpBundle({
+      agentName: "auth-verify-all",
+      agentJson: {
         version: 2, enabled: true, provider: "anthropic",
         humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
-      }, null, 2) + "\n",
-      "utf-8",
-    )
-    fs.writeFileSync(
-      path.join(secretsDir, "secrets.json"),
-      JSON.stringify({
+      },
+      secretsJson: {
         providers: {
           azure: { endpoint: "https://az.test.com", apiKey: "az-key" },
           minimax: { apiKey: "" },
@@ -1127,9 +1061,8 @@ describe("ouro CLI execution", () => {
           "openai-codex": { oauthAccessToken: "tok" },
           "github-copilot": { githubToken: "ghp_test", baseUrl: "https://api.test.com" },
         },
-      }, null, 2) + "\n",
-      "utf-8",
-    )
+      },
+    })
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
       sendCommand: vi.fn(async () => ({ ok: true, message: "ok" })),
@@ -1138,10 +1071,12 @@ describe("ouro CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      bundlesRoot: tmp.bundlesRoot,
+      secretsRoot: tmp.secretsRoot,
     }
     try {
       // pingProvider is mocked to return { ok: true } — all providers with creds pass
-      const result = await runOuroCli(["auth", "verify", "--agent", agentName], deps)
+      const result = await runOuroCli(["auth", "verify", "--agent", tmp.agentName], deps)
       expect(result).toContain("azure: ok")
       // minimax has empty apiKey — pingProvider still returns ok (mock), but empty creds
       // are detected by pingProvider's hasEmptyCredentials before the mock is called
@@ -1153,8 +1088,7 @@ describe("ouro CLI execution", () => {
       const lines = (result as string).split("\n")
       expect(lines.length).toBe(5)
     } finally {
-      fs.rmSync(agentRoot, { recursive: true, force: true })
-      fs.rmSync(secretsDir, { recursive: true, force: true })
+      tmp.cleanup()
     }
   })
 
@@ -5554,6 +5488,15 @@ describe("--agent flag CLI execution", () => {
 })
 
 describe("ouro thoughts CLI execution", () => {
+  // Self-contained tmpdir bundle so this suite never writes into ~/AgentBundles.
+  // The thoughts CLI handler honors `deps.bundlesRoot` so we route reads here.
+  const tmp = createTmpBundle({ agentName: "thoughts-test" })
+  const testAgentName = tmp.agentName
+  const agentBundlesRoot = tmp.bundlesRoot
+  const testAgentRoot = tmp.agentRoot
+  const sessionDir = path.join(testAgentRoot, "state", "sessions", "self", "inner")
+  const sessionFile = path.join(sessionDir, "dialog.json")
+
   function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
     return {
       socketPath: "/tmp/ouro-test.sock",
@@ -5563,16 +5506,10 @@ describe("ouro thoughts CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-
+      bundlesRoot: agentBundlesRoot,
       ...overrides,
     }
   }
-
-  const testAgentName = `thoughts-test-${Date.now()}`
-  const agentBundlesRoot = path.join(os.homedir(), "AgentBundles")
-  const testAgentRoot = path.join(agentBundlesRoot, `${testAgentName}.ouro`)
-  const sessionDir = path.join(testAgentRoot, "state", "sessions", "self", "inner")
-  const sessionFile = path.join(sessionDir, "dialog.json")
 
   function writeSessionFile(messages: unknown[]): void {
     fs.mkdirSync(sessionDir, { recursive: true })
@@ -5580,7 +5517,7 @@ describe("ouro thoughts CLI execution", () => {
   }
 
   afterAll(() => {
-    fs.rmSync(testAgentRoot, { recursive: true, force: true })
+    tmp.cleanup()
   })
 
   it("returns formatted thoughts with --agent", async () => {
@@ -6078,20 +6015,15 @@ describe("ouro config model", () => {
   })
 
   it("config.model writes model to specified facing in agent.json", async () => {
-    const agentName = `config-model-facing-${Date.now()}`
-    const agentRoot = path.join(os.homedir(), "AgentBundles", `${agentName}.ouro`)
-    const agentConfigPath = path.join(agentRoot, "agent.json")
-    fs.mkdirSync(agentRoot, { recursive: true })
-    fs.writeFileSync(
-      agentConfigPath,
-      JSON.stringify({
+    const tmp = createTmpBundle({
+      agentName: "config-model-facing",
+      agentJson: {
         version: 2, enabled: true, provider: "anthropic",
         humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
-      }, null, 2) + "\n",
-      "utf-8",
-    )
+      },
+    })
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
       sendCommand: vi.fn(async () => ({ ok: true, message: "ok" })),
@@ -6100,45 +6032,36 @@ describe("ouro config model", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      bundlesRoot: tmp.bundlesRoot,
+      secretsRoot: tmp.secretsRoot,
     }
     try {
-      const result = await runOuroCli(["config", "model", "--agent", agentName, "--facing", "human", "claude-sonnet-4.6"], deps)
+      const result = await runOuroCli(["config", "model", "--agent", tmp.agentName, "--facing", "human", "claude-sonnet-4.6"], deps)
       expect(result).toContain("claude-sonnet-4.6")
-      const updated = JSON.parse(fs.readFileSync(agentConfigPath, "utf-8")) as any
+      const updated = JSON.parse(fs.readFileSync(tmp.agentConfigPath, "utf-8")) as any
       expect(updated.humanFacing.model).toBe("claude-sonnet-4.6")
       // agentFacing should be unchanged
       expect(updated.agentFacing.model).toBe("claude-opus-4-6")
     } finally {
-      fs.rmSync(agentRoot, { recursive: true, force: true })
+      tmp.cleanup()
     }
   })
 })
 
 describe("auth.switch with facing", () => {
   it("auth switch updates specified facing only", async () => {
-    const agentName = `auth-switch-facing-${Date.now()}`
-    const agentRoot = path.join(os.homedir(), "AgentBundles", `${agentName}.ouro`)
-    const agentConfigPath = path.join(agentRoot, "agent.json")
-    fs.mkdirSync(agentRoot, { recursive: true })
-    const secretsDir = path.join(os.homedir(), ".agentsecrets", agentName)
-    fs.mkdirSync(secretsDir, { recursive: true })
-    fs.writeFileSync(
-      path.join(secretsDir, "secrets.json"),
-      JSON.stringify({
-        providers: { "github-copilot": { githubToken: "ghp_test", baseUrl: "https://api.test.com" } },
-      }, null, 2) + "\n",
-      "utf-8",
-    )
-    fs.writeFileSync(
-      agentConfigPath,
-      JSON.stringify({
+    const tmp = createTmpBundle({
+      agentName: "auth-switch-facing",
+      agentJson: {
         version: 2, enabled: true, provider: "anthropic",
         humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
-      }, null, 2) + "\n",
-      "utf-8",
-    )
+      },
+      secretsJson: {
+        providers: { "github-copilot": { githubToken: "ghp_test", baseUrl: "https://api.test.com" } },
+      },
+    })
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
       sendCommand: vi.fn(async () => ({ ok: true, message: "ok" })),
@@ -6147,45 +6070,35 @@ describe("auth.switch with facing", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      bundlesRoot: tmp.bundlesRoot,
+      secretsRoot: tmp.secretsRoot,
     }
     try {
-      const result = await runOuroCli(["auth", "switch", "--agent", agentName, "--provider", "github-copilot", "--facing", "human"], deps)
+      const result = await runOuroCli(["auth", "switch", "--agent", tmp.agentName, "--provider", "github-copilot", "--facing", "human"], deps)
       expect(result).toContain("switched")
       expect(result).toContain("github-copilot")
-      const updated = JSON.parse(fs.readFileSync(agentConfigPath, "utf-8")) as any
+      const updated = JSON.parse(fs.readFileSync(tmp.agentConfigPath, "utf-8")) as any
       expect(updated.humanFacing.provider).toBe("github-copilot")
       // agentFacing should be unchanged
       expect(updated.agentFacing.provider).toBe("anthropic")
     } finally {
-      fs.rmSync(agentRoot, { recursive: true, force: true })
-      fs.rmSync(secretsDir, { recursive: true, force: true })
+      tmp.cleanup()
     }
   })
 
   it("auth switch updates both facings when --facing not specified", async () => {
-    const agentName = `auth-switch-both-${Date.now()}`
-    const agentRoot = path.join(os.homedir(), "AgentBundles", `${agentName}.ouro`)
-    const agentConfigPath = path.join(agentRoot, "agent.json")
-    fs.mkdirSync(agentRoot, { recursive: true })
-    const secretsDir = path.join(os.homedir(), ".agentsecrets", agentName)
-    fs.mkdirSync(secretsDir, { recursive: true })
-    fs.writeFileSync(
-      path.join(secretsDir, "secrets.json"),
-      JSON.stringify({
-        providers: { "minimax": { apiKey: "mm-key" } },
-      }, null, 2) + "\n",
-      "utf-8",
-    )
-    fs.writeFileSync(
-      agentConfigPath,
-      JSON.stringify({
+    const tmp = createTmpBundle({
+      agentName: "auth-switch-both",
+      agentJson: {
         version: 2, enabled: true, provider: "anthropic",
         humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
-      }, null, 2) + "\n",
-      "utf-8",
-    )
+      },
+      secretsJson: {
+        providers: { "minimax": { apiKey: "mm-key" } },
+      },
+    })
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
       sendCommand: vi.fn(async () => ({ ok: true, message: "ok" })),
@@ -6194,16 +6107,17 @@ describe("auth.switch with facing", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      bundlesRoot: tmp.bundlesRoot,
+      secretsRoot: tmp.secretsRoot,
     }
     try {
-      const result = await runOuroCli(["auth", "switch", "--agent", agentName, "--provider", "minimax"], deps)
+      const result = await runOuroCli(["auth", "switch", "--agent", tmp.agentName, "--provider", "minimax"], deps)
       expect(result).toContain("switched")
-      const updated = JSON.parse(fs.readFileSync(agentConfigPath, "utf-8")) as any
+      const updated = JSON.parse(fs.readFileSync(tmp.agentConfigPath, "utf-8")) as any
       expect(updated.humanFacing.provider).toBe("minimax")
       expect(updated.agentFacing.provider).toBe("minimax")
     } finally {
-      fs.rmSync(agentRoot, { recursive: true, force: true })
-      fs.rmSync(secretsDir, { recursive: true, force: true })
+      tmp.cleanup()
     }
   })
 

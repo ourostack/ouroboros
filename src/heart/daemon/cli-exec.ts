@@ -1452,7 +1452,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
   // ── auth (local, no daemon socket needed) ──
   if (command.kind === "auth.run") {
-    const provider = command.provider ?? readAgentConfigForAgent(command.agent).config.humanFacing.provider
+    const provider = command.provider ?? readAgentConfigForAgent(command.agent, deps.bundlesRoot).config.humanFacing.provider
     /* v8 ignore next -- tests always inject runAuthFlow; default is for production @preserve */
     const authRunner = deps.runAuthFlow ?? (await import("../auth/auth-flow")).runRuntimeAuthFlow
     const result = await authRunner({
@@ -1467,7 +1467,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     // Verify the credentials actually work by pinging the provider
     /* v8 ignore start -- integration: real API ping after auth @preserve */
     try {
-      const { secrets } = loadAgentSecrets(command.agent)
+      const { secrets } = loadAgentSecrets(command.agent, { secretsRoot: deps.secretsRoot })
       const status = await verifyProviderCredentials(provider, secrets.providers)
       deps.writeStdout(`${provider}: ${status}`)
     } catch {
@@ -1480,7 +1480,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   // ── auth verify (local, no daemon socket needed) ──
   /* v8 ignore start -- auth verify/switch: tested in daemon-cli.test.ts but v8 traces differ in CI @preserve */
   if (command.kind === "auth.verify") {
-    const { secrets } = loadAgentSecrets(command.agent)
+    const { secrets } = loadAgentSecrets(command.agent, { secretsRoot: deps.secretsRoot })
     const providers = secrets.providers
     if (command.provider) {
       const status = await verifyProviderCredentials(command.provider, providers)
@@ -1500,7 +1500,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
   // ── auth switch (local, no daemon socket needed) ──
   if (command.kind === "auth.switch") {
-    const { secrets } = loadAgentSecrets(command.agent)
+    const { secrets } = loadAgentSecrets(command.agent, { secretsRoot: deps.secretsRoot })
     const providerSecrets = secrets.providers[command.provider]
     if (!providerSecrets || !hasStoredCredentials(command.provider, providerSecrets)) {
       const message = `no credentials stored for ${command.provider}. Run \`ouro auth --agent ${command.agent} --provider ${command.provider}\` first.`
@@ -1515,10 +1515,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       return message
     }
     if (command.facing) {
-      writeAgentProviderSelection(command.agent, command.facing, command.provider)
+      writeAgentProviderSelection(command.agent, command.facing, command.provider, deps.bundlesRoot)
     } else {
-      writeAgentProviderSelection(command.agent, "human", command.provider)
-      writeAgentProviderSelection(command.agent, "agent", command.provider)
+      writeAgentProviderSelection(command.agent, "human", command.provider, deps.bundlesRoot)
+      writeAgentProviderSelection(command.agent, "agent", command.provider, deps.bundlesRoot)
     }
     const message = `switched ${command.agent} to ${command.provider} (verified working)`
     deps.writeStdout(message)
@@ -1529,14 +1529,14 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   // ── config models (local, no daemon socket needed) ──
   /* v8 ignore start -- config models: tested via daemon-cli.test.ts @preserve */
   if (command.kind === "config.models") {
-    const { config } = readAgentConfigForAgent(command.agent)
+    const { config } = readAgentConfigForAgent(command.agent, deps.bundlesRoot)
     const provider = config.humanFacing.provider
     if (provider !== "github-copilot") {
       const message = `model listing not available for ${provider} — check provider documentation.`
       deps.writeStdout(message)
       return message
     }
-    const { secrets } = loadAgentSecrets(command.agent)
+    const { secrets } = loadAgentSecrets(command.agent, { secretsRoot: deps.secretsRoot })
     const ghConfig = secrets.providers["github-copilot"]
     if (!ghConfig.githubToken || !ghConfig.baseUrl) {
       throw new Error(`github-copilot credentials not configured. Run \`ouro auth --agent ${command.agent} --provider github-copilot\` first.`)
@@ -1564,10 +1564,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   if (command.kind === "config.model") {
     const facing = command.facing ?? "human"
     // Validate model availability for github-copilot before writing
-    const { config } = readAgentConfigForAgent(command.agent)
+    const { config } = readAgentConfigForAgent(command.agent, deps.bundlesRoot)
     const facingConfig = facing === "human" ? config.humanFacing : config.agentFacing
     if (facingConfig.provider === "github-copilot") {
-      const { secrets } = loadAgentSecrets(command.agent)
+      const { secrets } = loadAgentSecrets(command.agent, { secretsRoot: deps.secretsRoot })
       const ghConfig = secrets.providers["github-copilot"]
       if (ghConfig.githubToken && ghConfig.baseUrl) {
         const fetchFn = deps.fetchImpl ?? fetch
@@ -1592,7 +1592,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         }
       }
     }
-    const { provider, previousModel } = writeAgentModel(command.agent, facing, command.modelName)
+    const { provider, previousModel } = writeAgentModel(command.agent, facing, command.modelName, { bundlesRoot: deps.bundlesRoot })
     const message = previousModel
       ? `updated ${command.agent} model on ${provider}: ${previousModel} → ${command.modelName}`
       : `set ${command.agent} model on ${provider}: ${command.modelName}`
@@ -1682,7 +1682,9 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   if (command.kind === "thoughts") {
     try {
       const agentName = command.agent ?? getAgentName()
-      const agentRoot = path.join(getAgentBundlesRoot(), `${agentName}.ouro`)
+      /* v8 ignore next -- production fallback: tests always inject bundlesRoot via createTmpBundle @preserve */
+      const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
+      const agentRoot = path.join(bundlesRoot, `${agentName}.ouro`)
       const sessionFilePath = getInnerDialogSessionPath(agentRoot)
       if (command.json) {
         try {

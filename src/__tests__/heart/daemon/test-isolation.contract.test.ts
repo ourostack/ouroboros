@@ -77,24 +77,10 @@ const TESTAGENT_NO_MOCK_ALLOWLIST = new Set<string>([
 ])
 
 // Lines that currently construct a write path under real ~/AgentBundles.
-// Protected at runtime by `auth-${Date.now()}` uniqueness + try/finally cleanup,
-// but those break under test interruption / OOM. Convert to os.tmpdir() in
-// follow-up PRs and remove from this list. Format: "<relative-path>:<line>".
-const REAL_BUNDLES_WRITE_ALLOWLIST = new Set<string>([
-  "src/__tests__/heart/daemon/daemon-cli.test.ts:703",
-  "src/__tests__/heart/daemon/daemon-cli.test.ts:753",
-  "src/__tests__/heart/daemon/daemon-cli.test.ts:862",
-  "src/__tests__/heart/daemon/daemon-cli.test.ts:897",
-  "src/__tests__/heart/daemon/daemon-cli.test.ts:929",
-  "src/__tests__/heart/daemon/daemon-cli.test.ts:975",
-  "src/__tests__/heart/daemon/daemon-cli.test.ts:1021",
-  "src/__tests__/heart/daemon/daemon-cli.test.ts:1065",
-  "src/__tests__/heart/daemon/daemon-cli.test.ts:1106",
-  "src/__tests__/heart/daemon/daemon-cli.test.ts:5572",
-  "src/__tests__/heart/daemon/daemon-cli.test.ts:6082",
-  "src/__tests__/heart/daemon/daemon-cli.test.ts:6120",
-  "src/__tests__/heart/daemon/daemon-cli.test.ts:6167",
-])
+// Empty as of the daemon-cli.test.ts conversion — all auth tests + thoughts
+// test now use `createTmpBundle()` from src/__tests__/test-helpers/tmpdir-bundle.ts.
+// New offenders are blocked by the contract test below.
+const REAL_BUNDLES_WRITE_ALLOWLIST = new Set<string>()
 
 const TESTS_ROOT = join(process.cwd(), "src", "__tests__")
 

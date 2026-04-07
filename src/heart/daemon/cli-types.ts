@@ -106,6 +106,18 @@ export interface OuroCliDeps {
   getInstalledBinaryPath?: () => string | null
   execInstalledBinary?: (binaryPath: string, args: string[]) => never
   agentBundleRoot?: string
+  /**
+   * Root directory containing all `<agent>.ouro` bundles. Defaults to
+   * `getAgentBundlesRoot()` (~/AgentBundles). Tests should set this to a
+   * tmpdir to avoid leaking real bundles into the developer's home.
+   */
+  bundlesRoot?: string
+  /**
+   * Root directory containing per-agent secrets (parent of `<agent>/secrets.json`).
+   * Defaults to `~/.agentsecrets`. Tests should set this to a tmpdir to avoid
+   * leaking real credentials files into the developer's home.
+   */
+  secretsRoot?: string
   healthFilePath?: string
 }
 
