@@ -8,6 +8,11 @@ vi.mock("../../nerves/runtime", () => ({
   }),
 }))
 
+// Mock bw-installer — ensureBwCli resolves immediately (bw assumed present)
+vi.mock("../../repertoire/bw-installer", () => ({
+  ensureBwCli: vi.fn().mockResolvedValue("/usr/local/bin/bw"),
+}))
+
 // Mock child_process
 const mockExecFile = vi.fn()
 

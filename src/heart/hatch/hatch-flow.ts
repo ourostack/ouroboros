@@ -113,7 +113,7 @@ function writeFriendImprint(bundleRoot: string, humanName: string, now: Date): v
   fs.mkdirSync(friendsDir, { recursive: true })
   const nowIso = now.toISOString()
   const id = `friend-${slugify(humanName) || "friend"}`
-  const localExternalId = `${os.userInfo().username}@${os.hostname()}`
+  const localExternalId = os.userInfo().username
   const record = {
     id,
     name: humanName,

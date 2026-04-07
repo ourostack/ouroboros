@@ -91,8 +91,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   } else {
     // Treat as local user identity (username@hostname pattern)
     const username = os.userInfo().username
-    const hostname = os.hostname()
-    resolverParams = { provider: "local", externalId: `${username}@${hostname}`, displayName: username, channel }
+    resolverParams = { provider: "local", externalId: username, displayName: username, channel }
   }
   const resolver = new FriendResolver(friendStore, resolverParams)
 
