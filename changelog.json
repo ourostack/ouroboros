@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.257",
+      "changes": [
+        "test(daemon): convert all `daemon-cli.test.ts` auth/thoughts/config tests to use `os.tmpdir()` via the new `createTmpBundle()` helper. Previously these tests wrote real bundles to `~/AgentBundles/auth-local-${Date.now()}.ouro` etc., relying on `try/finally` cleanup that doesn't fire on test interruption \u2014 leaking bundle directories into the developer's home and inflating noise on the running daemon. The `REAL_BUNDLES_WRITE_ALLOWLIST` ratchet in `test-isolation.contract.test.ts` is now empty.",
+        "fix(daemon/cli-exec): plumb `bundlesRoot` and `secretsRoot` deps through the auth.run / auth.verify / auth.switch / config.model / config.models / thoughts handlers so tests can route reads/writes to a tmpdir without monkey-patching the identity module. Production code paths still default to `getAgentBundlesRoot()` and `~/.agentsecrets`."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.256",
       "changes": [
         "fix(tui): cursor renders as inverse character (not inserted block) \u2014 matches standard terminal cursor behavior.",
