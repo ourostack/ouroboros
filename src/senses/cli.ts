@@ -1061,5 +1061,10 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
   } finally {
     sessionLock?.release()
   }
+
+  // Force exit: lingering handles (Ink cleanup timers, MCP connections) keep the
+  // event loop alive after the interactive session ends. This is safe because all
+  // session persistence has already completed in the finally block above.
+  process.exit(0)
 }
 // CI trigger
