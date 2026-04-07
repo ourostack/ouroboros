@@ -252,4 +252,87 @@ describe("image-paste utilities", () => {
       expect(result).toEqual([{ type: "text", text: "[Image #1] describe this" }])
     })
   })
+
+  // ─── Extended Edge Cases (Unit 6a) ───────────────────────────────
+  describe("edge cases", () => {
+    it("replacePathsWithRefs: multiple images separated by text", async () => {
+      const { replacePathsWithRefs } = await import("../../../senses/cli/image-paste")
+      const result = replacePathsWithRefs("/Users/foo/a.png some text /Users/foo/b.png more text")
+      expect(result.text).toBe("[Image #1] some text [Image #2] more text")
+      expect(result.images.size).toBe(2)
+    })
+
+    it("replacePathsWithRefs: path with no spaces (no escaping needed)", async () => {
+      const { replacePathsWithRefs } = await import("../../../senses/cli/image-paste")
+      const result = replacePathsWithRefs("/Users/foo/no-spaces-here.png")
+      expect(result.text).toBe("[Image #1]")
+      expect(result.images.get(1)).toBe("/Users/foo/no-spaces-here.png")
+    })
+
+    it("replacePathsWithRefs: path with multiple escaped spaces", async () => {
+      const { replacePathsWithRefs } = await import("../../../senses/cli/image-paste")
+      const result = replacePathsWithRefs("/Users/foo/My\\ Cool\\ Screenshot\\ 2026.png")
+      expect(result.text).toBe("[Image #1]")
+      expect(result.images.get(1)).toBe("/Users/foo/My Cool Screenshot 2026.png")
+    })
+
+    it("replacePathsWithRefs: path with special characters (parentheses, hyphens)", async () => {
+      const { replacePathsWithRefs } = await import("../../../senses/cli/image-paste")
+      const result = replacePathsWithRefs("/Users/foo/image-(1)-final.png")
+      expect(result.text).toBe("[Image #1]")
+      expect(result.images.get(1)).toBe("/Users/foo/image-(1)-final.png")
+    })
+
+    it("replacePathsWithRefs: only whitespace input", async () => {
+      const { replacePathsWithRefs } = await import("../../../senses/cli/image-paste")
+      const result = replacePathsWithRefs("   ")
+      expect(result.text).toBe("   ")
+      expect(result.images.size).toBe(0)
+    })
+
+    it("replacePathsWithRefs: path that looks like a path but has no image extension", async () => {
+      const { replacePathsWithRefs } = await import("../../../senses/cli/image-paste")
+      const result = replacePathsWithRefs("/Users/foo/document.docx look at this")
+      expect(result.text).toBe("/Users/foo/document.docx look at this")
+      expect(result.images.size).toBe(0)
+    })
+
+    it("replacePathsWithRefs: very long path", async () => {
+      const { replacePathsWithRefs } = await import("../../../senses/cli/image-paste")
+      const longPath = "/Users/" + "a".repeat(200) + "/screenshot.png"
+      const result = replacePathsWithRefs(longPath + " describe")
+      expect(result.text).toBe("[Image #1] describe")
+      expect(result.images.get(1)).toBe(longPath)
+    })
+
+    it("tryReadImage: 0-byte file returns base64 of empty buffer", async () => {
+      const fs = await import("fs/promises")
+      vi.mocked(fs.readFile).mockResolvedValue(Buffer.alloc(0))
+      const { tryReadImage } = await import("../../../senses/cli/image-paste")
+      const result = await tryReadImage("/Users/foo/empty.png")
+      expect(result).not.toBeNull()
+      expect(result!.base64).toBe("")
+      expect(result!.mediaType).toBe("image/png")
+    })
+
+    it("resolveImageContent: skips unreadable image, keeps readable one", async () => {
+      const fs = await import("fs/promises")
+      let callCount = 0
+      vi.mocked(fs.readFile).mockImplementation(async () => {
+        callCount++
+        if (callCount === 1) return Buffer.from("good-data")
+        throw new Error("ENOENT")
+      })
+      const { resolveImageContent } = await import("../../../senses/cli/image-paste")
+      const images = new Map([
+        [1, "/Users/foo/good.png"],
+        [2, "/Users/foo/missing.png"],
+      ])
+      const result = await resolveImageContent("[Image #1] and [Image #2]", images)
+      // Should have 1 image_url (the good one) + 1 text
+      expect(result).toHaveLength(2)
+      expect(result[0].type).toBe("image_url")
+      expect(result[1]).toEqual({ type: "text", text: "[Image #1] and [Image #2]" })
+    })
+  })
 })
