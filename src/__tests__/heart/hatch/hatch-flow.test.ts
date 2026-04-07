@@ -74,7 +74,7 @@ describe("hatch flow", () => {
     expect(friend.name).toBe("Ari")
     expect(friend.trustLevel).toBe("family")
     expect(friend.externalIds[0].provider).toBe("local")
-    expect(friend.externalIds[0].externalId).toBe(`${os.userInfo().username}@${os.hostname()}`)
+    expect(friend.externalIds[0].externalId).toBe(os.userInfo().username)
 
     // habits/ dir at bundle root (not tasks/habits/)
     const habitsDir = path.join(result.bundleRoot, "habits")

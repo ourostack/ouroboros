@@ -485,6 +485,46 @@ export class AacCredentialStore implements CredentialStore {
 let _store: CredentialStore | null = null
 
 /**
+ * Auto-add vault defaults to agent.json when no vault section exists.
+ * Returns the vault config (either existing or freshly written defaults).
+ */
+export function ensureVaultDefaults(
+  agentName: string,
+  agentRoot: string,
+  existingVault: { email: string; serverUrl?: string } | undefined,
+): { email: string; serverUrl?: string } | undefined {
+  if (existingVault) {
+    return existingVault
+  }
+
+  const configPath = path.join(agentRoot, "agent.json")
+  let raw: Record<string, unknown>
+  try {
+    raw = JSON.parse(fs.readFileSync(configPath, "utf-8"))
+  } catch {
+    // agent.json unreadable — cannot auto-configure
+    return undefined
+  }
+
+  const defaults = {
+    email: `${agentName}@ouro.bot`,
+    serverUrl: "https://vault.ouro.bot",
+  }
+
+  raw.vault = defaults
+  fs.writeFileSync(configPath, JSON.stringify(raw, null, 2) + "\n", "utf-8")
+
+  emitNervesEvent({
+    event: "repertoire.vault_defaults_auto_configured",
+    component: "repertoire",
+    message: "auto-configured vault defaults in agent.json",
+    meta: { agentName, email: defaults.email, serverUrl: defaults.serverUrl },
+  })
+
+  return defaults
+}
+
+/**
  * Get the credential store singleton.
  *
  * Priority:
@@ -502,17 +542,21 @@ export function getCredentialStore(): CredentialStore {
     // Dynamic import to avoid circular dependency at module level
     const identity = require("../heart/identity")
     agentName = identity.getAgentName()
+    const agentRoot = identity.getAgentRoot(agentName)
 
     // Try to load vault config from agent.json + secrets.json
     const config = identity.loadAgentConfig?.()
-    const vaultConfig = identity.resolveVaultConfig?.(agentName, config?.vault)
+
+    // Auto-configure vault defaults if missing
+    const vaultSection = ensureVaultDefaults(agentName, agentRoot, config?.vault)
+    const vaultConfig = identity.resolveVaultConfig?.(agentName, vaultSection)
     const secretsPath = identity.getAgentSecretsPath?.(agentName)
     let vaultSecrets: { masterPassword?: string } | undefined
     /* v8 ignore start -- requires real agent secrets.json + vault config + bw CLI @preserve */
     if (secretsPath) {
       try {
-        const fs = require("fs")
-        const secrets = JSON.parse(fs.readFileSync(secretsPath, "utf-8"))
+        const fsSync = require("fs")
+        const secrets = JSON.parse(fsSync.readFileSync(secretsPath, "utf-8"))
         vaultSecrets = secrets.vault
       } catch {
         // No secrets file or no vault section — fall through to built-in
