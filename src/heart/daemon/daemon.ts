@@ -72,9 +72,62 @@ export function parseOrphanPidsFromPs(psOutput: string, selfPid: number): number
 }
 
 /**
+ * Given a list of PIDs from the pidfile, return only those that are actual
+ * orphans (PPID reparented to init/PID 1). Protects against a polluted
+ * pidfile killing a PID that the OS has reassigned to an unrelated process.
+ *
+ * Implementation: shells out to `ps -p <csv> -o pid,ppid` for a batch lookup.
+ * Returns the empty list if ps fails — safer to skip cleanup than to
+ * wildcard-kill on a bad read.
+ *
+ * Exported for direct unit coverage.
+ */
+export function filterPidfilePidsToActualOrphans(
+  candidatePids: number[],
+  psRunner: (pids: number[]) => string | null = runPsCheck,
+): number[] {
+  if (candidatePids.length === 0) return []
+  const psOutput = psRunner(candidatePids)
+  if (psOutput === null) return []
+  const survivingOrphans: number[] = []
+  // `ps -p x,y,z -o pid,ppid` emits a header line then one row per found PID.
+  // PIDs not found (already exited) are silently omitted — which is the
+  // correct behavior for us: we only want to kill live orphans.
+  for (const line of psOutput.split("\n")) {
+    const match = line.trim().match(/^(\d+)\s+(\d+)$/)
+    if (!match) continue
+    const pid = parseInt(match[1]!, 10)
+    const ppid = parseInt(match[2]!, 10)
+    if (ppid !== 1) continue
+    if (!candidatePids.includes(pid)) continue
+    survivingOrphans.push(pid)
+  }
+  return survivingOrphans
+}
+
+/* v8 ignore start -- shells out to ps; covered by filterPidfilePidsToActualOrphans unit tests via injected runner @preserve */
+function runPsCheck(pids: number[]): string | null {
+  try {
+    const csv = pids.join(",")
+    return execSync(`ps -p ${csv} -o pid=,ppid=`, { encoding: "utf-8", timeout: 5000 })
+  } catch {
+    // ps returns non-zero when none of the requested PIDs exist. Treat as
+    // "no survivors" rather than an error.
+    return ""
+  }
+}
+/* v8 ignore stop */
+
+/**
  * Kill all ouro processes from the previous daemon instance using the pidfile.
  * On startup, reads PIDs from ~/.ouro-cli/daemon.pids, kills them all, then
  * deletes the file. The new daemon writes its own PIDs after spawning.
+ *
+ * Safety: pidfile contents are verified before being killed — each PID must
+ * be an actual orphan (PPID reparented to init/PID 1) via
+ * `filterPidfilePidsToActualOrphans`. Otherwise a polluted pidfile (written
+ * by a test, or a crashed daemon whose PIDs have since been reused by the
+ * OS) could SIGTERM unrelated processes.
  *
  * Falls back to ps-based scanning scoped to true orphans (PPID=1) if the
  * pidfile doesn't exist (first run, previous daemon crashed before writing,
@@ -88,7 +141,12 @@ export function killOrphanProcesses(): void {
     // Primary: read pidfile from previous daemon
     try {
       const raw = fs.readFileSync(PIDFILE_PATH, "utf-8")
-      pidsToKill = raw.split("\n").map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n) && n !== process.pid)
+      const candidates = raw.split("\n")
+        .map((s) => parseInt(s.trim(), 10))
+        .filter((n) => !isNaN(n) && n !== process.pid)
+      // Verify each candidate is an actual live orphan before killing. See
+      // docstring above for why this matters.
+      pidsToKill = filterPidfilePidsToActualOrphans(candidates)
       fs.unlinkSync(PIDFILE_PATH)
     } catch {
       // No pidfile — fall back to ps scan (scoped to orphans with PPID=1).
@@ -554,7 +612,15 @@ export class OuroDaemon {
       fs.unlinkSync(this.socketPath)
     }
 
-    this.server = net.createServer((connection) => {
+    // allowHalfOpen: true lets the server keep its writable side open after
+    // the client sends FIN. Without this, when a client calls `client.end()`
+    // after writing a command, node closes the server's writable side
+    // automatically — so a long-running response (like an agent.senseTurn
+    // LLM turn that takes 5+ seconds) never reaches the client. The
+    // socket-client fix in #303/#334 also removed client.end() on the
+    // sending side, but this option is defense in depth: even if a future
+    // caller half-closes, the server still writes its response correctly.
+    this.server = net.createServer({ allowHalfOpen: true }, (connection) => {
       let raw = ""
       let responded = false
 
@@ -768,9 +834,12 @@ export class OuroDaemon {
   }
 
   async stop(): Promise<void> {
+    // Must be named `_end` (not `_stop`) to satisfy the nerves audit's
+    // start/end pairing rule — see src/nerves/coverage/audit-rules.ts.
+    // This is the counterpart to `daemon.server_start` emitted at line 480.
     emitNervesEvent({
       component: "daemon",
-      event: "daemon.server_stop",
+      event: "daemon.server_end",
       message: "stopping daemon server",
       meta: { socketPath: this.socketPath },
     })

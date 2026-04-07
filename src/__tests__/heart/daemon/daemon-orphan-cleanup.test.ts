@@ -1,5 +1,8 @@
-import { describe, it, expect } from "vitest"
-import { parseOrphanPidsFromPs } from "../../../heart/daemon/daemon"
+import { describe, it, expect, vi } from "vitest"
+import {
+  parseOrphanPidsFromPs,
+  filterPidfilePidsToActualOrphans,
+} from "../../../heart/daemon/daemon"
 
 // The orphan-cleanup fallback is load-bearing: when the pidfile is missing
 // (previous daemon crashed before writing it, first run, manual cleanup), the
@@ -103,5 +106,77 @@ describe("parseOrphanPidsFromPs", () => {
       "    node /x/dist/heart/daemon/agent-entry.js --agent slugger",
     ].join("\n")
     expect(parseOrphanPidsFromPs(psOutput, 99)).toEqual([])
+  })
+})
+
+describe("filterPidfilePidsToActualOrphans", () => {
+  // A polluted pidfile could list PIDs the OS has since reassigned to some
+  // unrelated process (browser, photo app, etc). This filter verifies each
+  // pidfile PID is still an orphan (PPID=1) via a live `ps -p` check before
+  // it's eligible for SIGTERM. Tests use an injected ps-runner so nothing
+  // actually shells out.
+
+  it("returns empty list when given no candidates (short-circuit before shelling out)", () => {
+    const psRunner = vi.fn(() => "")
+    expect(filterPidfilePidsToActualOrphans([], psRunner)).toEqual([])
+    expect(psRunner).not.toHaveBeenCalled()
+  })
+
+  it("keeps PIDs whose ps row shows PPID=1", () => {
+    // The `ps -p x,y -o pid=,ppid=` form suppresses the header and emits
+    // `<pid> <ppid>` one per line. We match that exact shape.
+    const psRunner = vi.fn(() => [
+      " 5000     1",
+      " 5001     1",
+    ].join("\n"))
+    expect(filterPidfilePidsToActualOrphans([5000, 5001], psRunner)).toEqual([5000, 5001])
+    expect(psRunner).toHaveBeenCalledWith([5000, 5001])
+  })
+
+  it("skips PIDs whose ps row shows a live parent (reused or still-attached)", () => {
+    // Core regression guard: if a pidfile entry was reused by the OS for an
+    // unrelated process with PPID != 1, DO NOT SIGTERM it. The whole point
+    // of this filter.
+    const psRunner = vi.fn(() => [
+      " 5000     1",  // real orphan, keep
+      " 5001   742",  // PID was reused by an unrelated app, drop
+      " 5002     1",  // real orphan, keep
+    ].join("\n"))
+    expect(filterPidfilePidsToActualOrphans([5000, 5001, 5002], psRunner)).toEqual([5000, 5002])
+  })
+
+  it("drops ps rows for PIDs we didn't ask about (defensive)", () => {
+    // Guard against ps emitting extra rows for some reason. We only ever
+    // kill PIDs we explicitly asked about.
+    const psRunner = vi.fn(() => [
+      " 5000     1",
+      " 9999     1",  // not in our candidates — must not be returned
+    ].join("\n"))
+    expect(filterPidfilePidsToActualOrphans([5000], psRunner)).toEqual([5000])
+  })
+
+  it("returns empty list when ps omits all PIDs (process already exited)", () => {
+    // `ps -p <csv>` silently drops PIDs it can't find. That's exactly what
+    // we want — "process already exited" means "nothing to kill".
+    const psRunner = vi.fn(() => "")
+    expect(filterPidfilePidsToActualOrphans([5000, 5001], psRunner)).toEqual([])
+  })
+
+  it("returns empty list when psRunner signals failure with null", () => {
+    // If the ps shell-out fails entirely, skip cleanup rather than
+    // wildcard-killing based on unverified pidfile data.
+    const psRunner = vi.fn(() => null)
+    expect(filterPidfilePidsToActualOrphans([5000, 5001], psRunner)).toEqual([])
+  })
+
+  it("tolerates malformed ps output lines", () => {
+    const psRunner = vi.fn(() => [
+      "",
+      "garbage",
+      " 5000     1",
+      "not even close to a ps row",
+      " 5001 not-a-number",
+    ].join("\n"))
+    expect(filterPidfilePidsToActualOrphans([5000, 5001], psRunner)).toEqual([5000])
   })
 })

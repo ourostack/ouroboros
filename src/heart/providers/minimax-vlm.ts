@@ -33,7 +33,20 @@ export interface MinimaxVlmDescribeParams {
   chatModel?: string
 }
 
-const DEFAULT_TIMEOUT_MS = 60_000
+// No default timeout — if the caller doesn't pass `timeoutMs`, we don't
+// layer an AbortSignal on top of fetch, which means undici's own defaults
+// (headersTimeout and bodyTimeout, both 5 minutes in the current Node) are
+// the ceiling. That's the right ceiling: long enough to tolerate any
+// legitimate MiniMax VLM slow window, short enough to eventually give up on
+// a dead endpoint, and — unlike a number we picked — it's the stack's
+// actual default rather than a harness-imposed fiction.
+//
+// Tests that want to exercise the timeout branch pass an explicit
+// `timeoutMs`; production callers omit it and get undici's behavior.
+//
+// Same reasoning as PR #322 (dropped the 30s SDK timeout from the LLM
+// providers): the harness shouldn't impose artificially tight request
+// ceilings when the underlying stack already has correct defaults.
 const MODEL_NAME = "minimax-vlm"
 const SUPPORTED_DATA_URL_PATTERN = /^data:image\/(png|jpeg|webp);base64,/i
 
@@ -146,35 +159,42 @@ export async function minimaxVlmDescribe(params: MinimaxVlmDescribeParams): Prom
   }
 
   const fetchImpl = params.fetchImpl ?? fetch
-  const timeoutMs = params.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const url = buildVlmUrl(params.baseURL)
 
   emitStart(params)
   const startTs = Date.now()
 
+  // Only layer an AbortSignal if the caller explicitly asked for one.
+  // Omitting it lets undici's defaults (headersTimeout + bodyTimeout = 5min
+  // each in current Node) act as the ceiling — see the long comment on
+  // DEFAULT_TIMEOUT_MS above for the rationale.
+  const fetchOptions: RequestInit = {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${params.apiKey}`,
+      "Content-Type": "application/json",
+      "MM-API-Source": "Ouroboros",
+    },
+    body: JSON.stringify({
+      prompt: params.prompt,
+      image_url: params.imageDataUrl,
+    }),
+  }
+  if (typeof params.timeoutMs === "number" && params.timeoutMs > 0) {
+    fetchOptions.signal = AbortSignal.timeout(params.timeoutMs)
+  }
+
   let response: Response
   try {
-    response = await fetchImpl(url, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${params.apiKey}`,
-        "Content-Type": "application/json",
-        "MM-API-Source": "Ouroboros",
-      },
-      body: JSON.stringify({
-        prompt: params.prompt,
-        image_url: params.imageDataUrl,
-      }),
-      signal: AbortSignal.timeout(timeoutMs),
-    })
+    response = await fetchImpl(url, fetchOptions)
   } catch (error) {
     const err = (error instanceof Error ? error : new Error(String(error))) as Error & { name?: string }
     if (err.name === "AbortError" || err.name === "TimeoutError") {
-      const seconds = Math.round(timeoutMs / 1000)
-      throwAndEmit(
-        params,
-        `minimax VLM: request timed out after ${seconds}s — retry or ask the user to resend the image`,
-      )
+      const seconds = typeof params.timeoutMs === "number" ? Math.round(params.timeoutMs / 1000) : null
+      const hint = seconds !== null
+        ? `request timed out after ${seconds}s — retry or ask the user to resend the image`
+        : `request timed out (underlying stack default) — retry or ask the user to resend the image`
+      throwAndEmit(params, `minimax VLM: ${hint}`)
     }
     if (isNetworkError(err)) {
       throwAndEmit(

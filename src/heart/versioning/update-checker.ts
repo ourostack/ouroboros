@@ -97,9 +97,11 @@ export function stopUpdateChecker(): void {
     clearInterval(_intervalId)
     _intervalId = null
   }
+  // `_end` (not `_stop`) to satisfy the nerves audit's start/end pairing
+  // rule — counterpart to `daemon.update_checker_start` above.
   emitNervesEvent({
     component: "daemon",
-    event: "daemon.update_checker_stop",
+    event: "daemon.update_checker_end",
     message: "stopping update checker",
     meta: {},
   })

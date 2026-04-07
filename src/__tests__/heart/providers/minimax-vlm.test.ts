@@ -629,8 +629,12 @@ describe("minimaxVlmDescribe", () => {
     }
   })
 
-  it("uses default timeoutMs when not provided (falsy-guard path)", async () => {
-    emitTestEvent("default timeout fallback")
+  it("omits AbortSignal entirely when timeoutMs is not provided (no harness-imposed ceiling)", async () => {
+    // Regression guard on the "no harness-enforced timeout" decision. When
+    // the caller doesn't pass timeoutMs, the fetch call must NOT set a
+    // signal — we let undici's defaults (headersTimeout + bodyTimeout) be
+    // the ceiling. Same reasoning as PR #322 for LLM providers.
+    emitTestEvent("no-timeout no-signal")
     const fetchImpl = vi.fn().mockResolvedValue(
       okResponse({ content: "ok", base_resp: { status_code: 0, status_msg: "ok" } }),
     )
@@ -640,8 +644,70 @@ describe("minimaxVlmDescribe", () => {
       imageDataUrl: PNG_DATA_URL,
       baseURL: "https://api.minimaxi.chat/v1",
       fetchImpl,
+      // no timeoutMs
     })
     expect(result).toBe("ok")
+    // Verify fetch was called without a signal property at all.
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    const fetchOptions = fetchImpl.mock.calls[0]?.[1] as RequestInit
+    expect(fetchOptions.signal).toBeUndefined()
+  })
+
+  it("layers an AbortSignal only when caller passes explicit timeoutMs", async () => {
+    emitTestEvent("explicit timeout gets signal")
+    const fetchImpl = vi.fn().mockResolvedValue(
+      okResponse({ content: "ok", base_resp: { status_code: 0, status_msg: "ok" } }),
+    )
+    await minimaxVlmDescribe({
+      apiKey: "sk",
+      prompt: "p",
+      imageDataUrl: PNG_DATA_URL,
+      baseURL: "https://api.minimaxi.chat/v1",
+      fetchImpl,
+      timeoutMs: 30_000,
+    })
+    const fetchOptions = fetchImpl.mock.calls[0]?.[1] as RequestInit
+    expect(fetchOptions.signal).toBeDefined()
+    expect(fetchOptions.signal).toBeInstanceOf(AbortSignal)
+  })
+
+  it("falsy timeoutMs (0, negative) is treated as 'no timeout' not 'immediate abort'", async () => {
+    // Defensive: a caller passing timeoutMs: 0 probably means "no timeout",
+    // not "abort immediately". We gate the signal on >0.
+    emitTestEvent("falsy timeoutMs bypasses signal")
+    const fetchImpl = vi.fn().mockResolvedValue(
+      okResponse({ content: "ok", base_resp: { status_code: 0, status_msg: "ok" } }),
+    )
+    await minimaxVlmDescribe({
+      apiKey: "sk",
+      prompt: "p",
+      imageDataUrl: PNG_DATA_URL,
+      baseURL: "https://api.minimaxi.chat/v1",
+      fetchImpl,
+      timeoutMs: 0,
+    })
+    const fetchOptions = fetchImpl.mock.calls[0]?.[1] as RequestInit
+    expect(fetchOptions.signal).toBeUndefined()
+  })
+
+  it("timeout error message adapts when no timeoutMs was set (stack default ceiling)", async () => {
+    // If a caller didn't set timeoutMs but still somehow hits an AbortError
+    // (e.g., undici's own headersTimeout fires), the error message should
+    // say "underlying stack default" instead of a made-up number.
+    emitTestEvent("no-timeout abort message")
+    const abortError = new Error("The operation was aborted.")
+    abortError.name = "AbortError"
+    const fetchImpl = vi.fn().mockRejectedValue(abortError)
+    await expect(
+      minimaxVlmDescribe({
+        apiKey: "sk",
+        prompt: "p",
+        imageDataUrl: PNG_DATA_URL,
+        baseURL: "https://api.minimaxi.chat/v1",
+        fetchImpl,
+        // no timeoutMs
+      }),
+    ).rejects.toThrow(/underlying stack default/i)
   })
 
   it("response without Trace-Id header — error meta traceId is undefined", async () => {

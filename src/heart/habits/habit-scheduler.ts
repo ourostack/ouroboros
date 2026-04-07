@@ -140,9 +140,11 @@ export class HabitScheduler {
   }
 
   stop(): void {
+    // `_end` (not `_stop`) to pair with `daemon.habit_scheduler_start`
+    // under the nerves audit start/end pairing rule.
     emitNervesEvent({
       component: "daemon",
-      event: "daemon.habit_scheduler_stop",
+      event: "daemon.habit_scheduler_end",
       message: "habit scheduler stopping",
       meta: { agent: this.agent },
     })

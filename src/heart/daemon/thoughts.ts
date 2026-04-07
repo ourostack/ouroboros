@@ -554,9 +554,12 @@ export function followThoughts(
 
   return () => {
     fs.unwatchFile(sessionPath)
+    // Must be named `_end` (not `_stop`) to satisfy the nerves audit's
+    // start/end pairing rule — see src/nerves/coverage/audit-rules.ts which
+    // pairs `<prefix>_start` with `<prefix>_end` or `<prefix>_error`.
     emitNervesEvent({
       component: "daemon",
-      event: "daemon.thoughts_follow_stop",
+      event: "daemon.thoughts_follow_end",
       message: "stopped following inner dialog session",
       meta: { sessionPath, totalTurns: displayedCount },
     })

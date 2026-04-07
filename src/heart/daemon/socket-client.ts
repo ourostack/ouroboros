@@ -62,8 +62,23 @@ export function sendDaemonCommand(socketPath: string, command: DaemonCommand): P
     let raw = ""
 
     client.on("connect", () => {
+      // Write the command + newline delimiter. DO NOT call client.end()
+      // afterwards — the server closes the connection once it has written
+      // its response, which triggers our on("end") handler with the full
+      // response in `raw`.
+      //
+      // Calling client.end() here half-closes the TCP connection. The
+      // daemon server uses net.createServer() with the default
+      // allowHalfOpen: false, so when the server sees the client's FIN it
+      // auto-closes its own writable side — and any response the server
+      // tries to write after processing a long-running command (like
+      // agent.senseTurn, which runs a full LLM turn) gets dropped on the
+      // floor. Verified via repro: with client.end(), agent.senseTurn
+      // returns empty in ~149ms; without it, the same call returns the real
+      // response in ~5.8s. This is a regression of the fix in #303 that
+      // was silently reverted by 253e4b1f (commit titled "socket half-close
+      // fix" but actually *added* the half-close back).
       client.write(JSON.stringify(command) + "\n")
-      client.end()
     })
     client.on("data", (chunk) => {
       raw += chunk.toString("utf-8")
@@ -178,8 +193,10 @@ export function checkDaemonSocketAlive(socketPath: string): Promise<boolean> {
     }
 
     client.on("connect", () => {
-      client.write(JSON.stringify({ kind: "daemon.status" } satisfies DaemonCommand))
-      client.end()
+      // Same half-close rationale as sendDaemonCommand: do NOT call
+      // client.end() here. The server closes after responding and that
+      // triggers the on("end") handler below.
+      client.write(JSON.stringify({ kind: "daemon.status" } satisfies DaemonCommand) + "\n")
     })
     client.on("data", (chunk) => {
       raw += chunk.toString("utf-8")
