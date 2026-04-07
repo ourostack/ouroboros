@@ -22,6 +22,9 @@ describe("preTurnPull", () => {
   beforeEach(() => {
     vi.mocked(childProcess.execFileSync).mockReset()
     vi.mocked(emitNervesEvent).mockReset()
+    // Default: git remote returns a configured remote, so pull proceeds.
+    // Tests that need different behavior (errors, no remote) override this.
+    vi.mocked(childProcess.execFileSync).mockReturnValue(Buffer.from("origin\n"))
   })
 
   it("runs git pull with argv array when sync is enabled", async () => {
@@ -36,8 +39,52 @@ describe("preTurnPull", () => {
     )
   })
 
-  it("returns error on pull failure", async () => {
+  it("skips pull when no remote is configured (local-only mode)", async () => {
+    const calls: Array<string[]> = []
+    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
+      calls.push(args as string[])
+      const argv = args as string[]
+      if (argv[0] === "remote") return Buffer.from("") // no remotes
+      throw new Error(`unexpected git invocation: ${argv.join(" ")}`)
+    })
+
+    const { preTurnPull } = await import("../../heart/sync")
+    const result = preTurnPull("/fake/agent/root", defaultConfig)
+
+    expect(result.ok).toBe(true)
+    expect(result.error).toBeUndefined()
+    expect(calls).toEqual([["remote"]]) // only the check, no pull
+    expect(emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        component: "heart",
+        event: "heart.sync_pull_end",
+        message: "pre-turn pull skipped: no remote configured",
+      }),
+    )
+  })
+
+  it("returns error when the git remote check itself fails", async () => {
     vi.mocked(childProcess.execFileSync).mockImplementation(() => {
+      throw new Error("fatal: not a git repository")
+    })
+
+    const { preTurnPull } = await import("../../heart/sync")
+    const result = preTurnPull("/fake/agent/root", defaultConfig)
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain("not a git repository")
+    expect(emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "heart.sync_pull_error",
+        message: "pre-turn pull failed: git remote check failed",
+      }),
+    )
+  })
+
+  it("returns error on pull failure (remote check passes, pull throws)", async () => {
+    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
+      const argv = args as string[]
+      if (argv[0] === "remote") return Buffer.from("origin\n")
       throw new Error("fatal: Could not read from remote repository")
     })
 
@@ -46,6 +93,12 @@ describe("preTurnPull", () => {
 
     expect(result.ok).toBe(false)
     expect(result.error).toContain("fatal: Could not read from remote repository")
+    expect(emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "heart.sync_pull_error",
+        message: "pre-turn pull failed",
+      }),
+    )
   })
 
   it("returns ok true on success", async () => {
@@ -83,7 +136,7 @@ describe("preTurnPull", () => {
     )
   })
 
-  it("handles non-Error throw", async () => {
+  it("handles non-Error throw from the remote check", async () => {
     vi.mocked(childProcess.execFileSync).mockImplementation(() => {
       throw "string error" // eslint-disable-line no-throw-literal
     })
@@ -93,6 +146,20 @@ describe("preTurnPull", () => {
 
     expect(result.ok).toBe(false)
     expect(result.error).toBe("string error")
+  })
+
+  it("handles non-Error throw from the pull itself", async () => {
+    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
+      const argv = args as string[]
+      if (argv[0] === "remote") return Buffer.from("origin\n")
+      throw "pull-string-error" // eslint-disable-line no-throw-literal
+    })
+
+    const { preTurnPull } = await import("../../heart/sync")
+    const result = preTurnPull("/fake/agent/root", defaultConfig)
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toBe("pull-string-error")
   })
 })
 

@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.248",
+      "changes": [
+        "feat(daemon): `ouro status` Git Sync now resolves and shows the actual remote URL via `git remote get-url`. Three states: `origin → git@github.com:me/foo.git` when the remote resolves, `local only` when sync is enabled but no remote is configured, `disabled` when sync is off. Previously you had to `cd` into the bundle and run `git remote -v` to find out where it pushes.",
+        "fix(heart/sync): `preTurnPull` now skips the pull when no git remote is configured, mirroring the existing `postTurnPush` behavior. Closes the half-implemented 'no-remote sync' (local-only commit log) story \u2014 previously, enabling sync without a remote produced a `syncFailure` on every turn from the failing `git pull` call."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.247",
       "changes": [
         "fix(tui): show opt+enter for newline hint in status bar."

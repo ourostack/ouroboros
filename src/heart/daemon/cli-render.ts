@@ -55,6 +55,7 @@ interface StatusSyncRow {
   agent: string
   enabled: boolean
   remote: string
+  remoteUrl?: string
 }
 
 export interface StatusPayload {
@@ -155,7 +156,10 @@ export function parseStatusPayload(data: unknown): StatusPayload | null {
     const enabled = booleanField(row.enabled)
     const remote = stringField(row.remote)
     if (!agent || enabled === null || !remote) return null
-    return { agent, enabled, remote } satisfies StatusSyncRow
+    const remoteUrl = stringField(row.remoteUrl) ?? undefined
+    return remoteUrl !== undefined
+      ? { agent, enabled, remote, remoteUrl }
+      : { agent, enabled, remote } satisfies StatusSyncRow
   })
 
   if (
@@ -341,7 +345,10 @@ export function formatDaemonStatusOutput(response: DaemonResponse, fallback: str
       const name = row.agent.padEnd(agentNameWidth)
       const dot = row.enabled ? green("●") : dim("○")
       const stateText = (row.enabled ? "enabled " : "disabled").padEnd(10)
-      const detail = row.enabled ? `remote: ${row.remote}` : ""
+      let detail = ""
+      if (row.enabled) {
+        detail = row.remoteUrl !== undefined ? `${row.remote} → ${row.remoteUrl}` : "local only"
+      }
       lines.push(`    ${name} ${dot} ${stateText}  ${dim(detail)}`)
     }
     lines.push("")
