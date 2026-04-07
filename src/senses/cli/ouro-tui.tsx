@@ -77,9 +77,14 @@ export interface TuiProps {
 
 // ─── Header ─────────────────────────────────────────────────────────
 
-/** Safe terminal width: capped at 200, with 2-char margin */
+/** Terminal width for content (capped at 200, with 2-char margin) */
 function safeWidth(): number {
   return Math.min(process.stdout.columns || 80, 200) - 2
+}
+
+/** Full terminal width for edge-to-edge elements (separators) */
+function termWidth(): number {
+  return process.stdout.columns || 80
 }
 
 function Header({ agentName, model, contextPercent, cwd }: {
@@ -409,17 +414,31 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
       return
     }
     if (key.return) {
-      if (key.meta) {
-        // Alt+Enter: insert newline
+      // Alt+Enter or Shift+Enter: insert newline
+      if (key.meta || key.shift) {
         const before = inputRef.current.slice(0, cursorRef.current)
         const after = inputRef.current.slice(cursorRef.current)
         updateInput(before + "\n" + after, cursorRef.current + 1)
+        return
+      }
+      // Backslash+Enter: insert newline (like Claude Code)
+      if (cursorRef.current > 0 && inputRef.current[cursorRef.current - 1] === "\\") {
+        const before = inputRef.current.slice(0, cursorRef.current - 1)
+        const after = inputRef.current.slice(cursorRef.current)
+        updateInput(before + "\n" + after, cursorRef.current)
         return
       }
       const text = inputRef.current
       if (text.trim()) onSubmit(text)
       updateInput("")
       historyIdx.current = -1
+      return
+    }
+    // Ctrl+J: insert newline (terminal-universal alternative)
+    if (key.ctrl && inputChar === "j") {
+      const before = inputRef.current.slice(0, cursorRef.current)
+      const after = inputRef.current.slice(cursorRef.current)
+      updateInput(before + "\n" + after, cursorRef.current + 1)
       return
     }
     if (key.backspace || key.delete) {
@@ -555,7 +574,7 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
   return (
     <Box flexDirection="column">
       {/* Top separator — full terminal width (no margin) */}
-      <Text dimColor>{"─".repeat(cols + 2)}</Text>
+      <Text dimColor>{"─".repeat(termWidth())}</Text>
       {/* Input prompt — multi-line shows each line with continuation marker */}
       {isMultiline ? (
         <Box flexDirection="column">
@@ -584,12 +603,12 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
         </Box>
       )}
       {/* Bottom separator — full terminal width (no margin) */}
-      <Text dimColor>{"─".repeat(cols + 2)}</Text>
+      <Text dimColor>{"─".repeat(termWidth())}</Text>
       {/* Status + hints + tooltip — BELOW the box */}
       <Box>
         <Text dimColor>{"  "}{agentName}{model ? ` · ${model}` : ""} · /help</Text>
         <Box flexGrow={1} />
-        {tooltip ? <Text dimColor>{tooltip}</Text> : <Text dimColor>{"opt+enter for newline"}</Text>}
+        {tooltip ? <Text dimColor>{tooltip}</Text> : <Text dimColor>{"\\+enter for newline"}</Text>}
       </Box>
     </Box>
   )
@@ -621,7 +640,7 @@ export function OuroTui({
               <Box key="header" flexDirection="column" marginBottom={2}>
                 <Box marginTop={1}><Text>{""}</Text></Box>
                 <Header agentName={agentName} model={model} contextPercent={contextPercent} cwd={cwd} />
-                <Text color={OURO.shadow} dimColor>{"  Ctrl-C twice to exit \u00b7 \u2191\u2193 history \u00b7 Esc clear \u00b7 Alt+Enter newline"}</Text>
+                <Text color={OURO.shadow} dimColor>{"  Ctrl-C twice to exit \u00b7 \u2191\u2193 history \u00b7 Esc clear \u00b7 \\+Enter newline"}</Text>
               </Box>
             )
           }
