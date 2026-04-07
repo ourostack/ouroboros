@@ -442,6 +442,13 @@ export class InputQueue implements AsyncIterable<string> {
     }
   }
 
+  /** Drain all buffered items, leaving any pending async awaiter untouched. */
+  drainAll(): string[] {
+    const items = [...this.queue]
+    this.queue = []
+    return items
+  }
+
   [Symbol.asyncIterator](): AsyncIterator<string> {
     return {
       next: (): Promise<IteratorResult<string>> => {
@@ -600,11 +607,13 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
           model: loadAgentConfig().humanFacing?.model ?? "",
           completedMessages: storeRef.completedMessages as any,
           inputHistory: storeRef.inputHistory,
+          queuedInputs: storeRef.queuedInputs as any,
           live: storeRef.live,
           elapsedSeconds: elapsed,
           contextPercent: 0,
-          onSubmit: (text: string) => { ctrlCWarned = false; inputQueue!.push(text) },
+          onSubmit: (text: string) => { ctrlCWarned = false; inputQueue!.push(text); storeRef.enqueueInput(text) },
           onCtrlC: handleCtrlC,
+          onPopQueue: () => { const items = storeRef.popAllQueuedForEditing(); inputQueue!.drainAll(); return items },
           headerShown: storeRef.headerShown,
           cwd: process.cwd().replace(process.env.HOME ?? "", "~"),
         })
@@ -759,6 +768,8 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
     for await (const input of inputSource) {
       if (closed) break
       if (!input.trim()) continue
+      // Remove from TUI queue display as the agent picks up this message
+      tuiStore?.dequeueInput(input)
 
       // Optional input gate (e.g. trust gate in main)
       if (options.onInput) {
