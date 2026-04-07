@@ -9,6 +9,22 @@ vi.mock("../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn(),
 }))
 
+// The sync module checks `.git` presence before touching git at all. We wrap
+// fs with a partial mock so that existsSync claims `.git` paths exist by
+// default (letting the mocked git commands take over for the fake agent root
+// used in most tests) and delegates to real fs for everything else (so tmpDir
+// tests that write pending-sync.json still work). Individual tests override
+// via `existsSyncMock.mockImplementationOnce` to exercise the not-a-repo path.
+const existsSyncMock = vi.hoisted(() => vi.fn())
+vi.mock("fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("fs")>()
+  existsSyncMock.mockImplementation((target: string) => {
+    if (typeof target === "string" && target.endsWith("/.git")) return true
+    return actual.existsSync(target)
+  })
+  return { ...actual, existsSync: existsSyncMock }
+})
+
 import * as childProcess from "child_process"
 import { emitNervesEvent } from "../../nerves/runtime"
 
@@ -36,6 +52,29 @@ describe("preTurnPull", () => {
       "git",
       ["pull", "origin"],
       expect.objectContaining({ cwd: "/fake/agent/root" }),
+    )
+  })
+
+  it("returns an actionable error when the bundle is not a git repo", async () => {
+    // Override the default spy: pretend .git does NOT exist for this bundle.
+    existsSyncMock.mockImplementationOnce(() => false)
+
+    const { preTurnPull } = await import("../../heart/sync")
+    const result = preTurnPull("/fake/agent/root", defaultConfig)
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain("not a git repo")
+    expect(result.error).toContain("git init")
+    expect(result.error).toContain("/fake/agent/root")
+    // No git invocations should have happened
+    expect(childProcess.execFileSync).not.toHaveBeenCalled()
+    expect(emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: "warn",
+        component: "heart",
+        event: "heart.sync_not_a_repo",
+        message: "pre-turn pull failed: bundle is not a git repo",
+      }),
     )
   })
 
@@ -167,6 +206,28 @@ describe("postTurnPush", () => {
   beforeEach(() => {
     vi.mocked(childProcess.execFileSync).mockReset()
     vi.mocked(emitNervesEvent).mockReset()
+  })
+
+  it("returns an actionable error when the bundle is not a git repo", async () => {
+    existsSyncMock.mockImplementationOnce(() => false)
+
+    const { postTurnPush } = await import("../../heart/sync")
+    const result = postTurnPush("/fake/agent/root", defaultConfig)
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain("not a git repo")
+    expect(result.error).toContain("git init")
+    expect(result.error).toContain("/fake/agent/root")
+    // No git invocations should have happened
+    expect(childProcess.execFileSync).not.toHaveBeenCalled()
+    expect(emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: "warn",
+        component: "heart",
+        event: "heart.sync_not_a_repo",
+        message: "post-turn push failed: bundle is not a git repo",
+      }),
+    )
   })
 
   /** Helper: mock execFileSync to route by git subcommand */

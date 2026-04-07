@@ -1361,7 +1361,7 @@ describe("ouro CLI execution", () => {
     expect(result).not.toContain("Git Sync")
   })
 
-  it("renders Git Sync as a per-agent section with remote URL, local-only, and disabled states", async () => {
+  it("renders Git Sync as a per-agent section with remote URL, local-only, not-a-repo, and disabled states", async () => {
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
       sendCommand: vi.fn(async () => ({
@@ -1372,10 +1372,12 @@ describe("ouro CLI execution", () => {
           senses: [],
           workers: [],
           sync: [
-            // Enabled with a resolved remote URL
-            { agent: "slugger", enabled: true, remote: "origin", remoteUrl: "git@github.com:me/slugger-state.git" },
-            // Enabled but no remote configured (local-only mode)
-            { agent: "local-bot", enabled: true, remote: "origin" },
+            // Enabled, bundle is a git repo with resolved remote URL
+            { agent: "slugger", enabled: true, remote: "origin", gitInitialized: true, remoteUrl: "git@github.com:me/slugger-state.git" },
+            // Enabled, bundle is a git repo but no remote configured (local-only mode)
+            { agent: "local-bot", enabled: true, remote: "origin", gitInitialized: true },
+            // Enabled but bundle is NOT a git repo — surface as error
+            { agent: "needs-init", enabled: true, remote: "origin", gitInitialized: false },
             // Disabled
             { agent: "ouroboros", enabled: false, remote: "origin" },
           ],
@@ -1394,11 +1396,16 @@ describe("ouro CLI execution", () => {
     // Header line
     expect(result).toContain("slugger")
     expect(result).toContain("local-bot")
+    expect(result).toContain("needs-init")
     expect(result).toContain("ouroboros")
     // Enabled with URL: shows "<remote> → <url>"
     expect(result).toContain("origin → git@github.com:me/slugger-state.git")
-    // Enabled without URL: shows "local only"
+    // Enabled without URL, but a git repo: shows "local only"
     expect(result).toContain("local only")
+    // Enabled but not a git repo: shows actionable error with "git init" hint
+    expect(result).toContain("not a git repo")
+    expect(result).toContain("git init")
+    expect(result).toContain("error")
     // Disabled state
     expect(result).toContain("disabled")
   })

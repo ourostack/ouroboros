@@ -1,14 +1,16 @@
-import { describe, expect, it, vi, afterEach } from "vitest"
+import { beforeEach, describe, expect, it, vi, afterEach } from "vitest"
 
 const getAgentBundlesRootMock = vi.hoisted(() => vi.fn(() => "/mock/AgentBundles"))
 const emitNervesEventMock = vi.hoisted(() => vi.fn())
 const readdirSyncMock = vi.hoisted(() => vi.fn())
 const readFileSyncMock = vi.hoisted(() => vi.fn())
+const existsSyncMock = vi.hoisted(() => vi.fn())
 const execFileSyncMock = vi.hoisted(() => vi.fn())
 
 vi.mock("fs", () => ({
   readdirSync: readdirSyncMock,
   readFileSync: readFileSyncMock,
+  existsSync: existsSyncMock,
 }))
 
 vi.mock("child_process", () => ({
@@ -85,12 +87,16 @@ describe("listEnabledBundleAgents", () => {
 })
 
 describe("listBundleSyncRows", () => {
-  afterEach(() => {
+  beforeEach(() => {
     getAgentBundlesRootMock.mockReset()
     getAgentBundlesRootMock.mockReturnValue("/mock/AgentBundles")
     emitNervesEventMock.mockReset()
     readdirSyncMock.mockReset()
     readFileSyncMock.mockReset()
+    existsSyncMock.mockReset()
+    // Default: all .git paths exist (bundle is a git repo).
+    // Tests that verify the not-a-repo path override this.
+    existsSyncMock.mockReturnValue(true)
     execFileSyncMock.mockReset()
     // Default: git remote get-url errors (no remote configured / not a repo).
     // Tests that verify URL resolution override this.
@@ -121,7 +127,7 @@ describe("listBundleSyncRows", () => {
     const { listBundleSyncRows } = await import("../../../heart/daemon/agent-discovery")
 
     expect(listBundleSyncRows()).toEqual([
-      { agent: "alpha", enabled: true, remote: "upstream" },
+      { agent: "alpha", enabled: true, remote: "upstream", gitInitialized: true },
       { agent: "beta", enabled: false, remote: "origin" },
       { agent: "gamma", enabled: false, remote: "origin" },
     ])
@@ -145,7 +151,7 @@ describe("listBundleSyncRows", () => {
     const { listBundleSyncRows } = await import("../../../heart/daemon/agent-discovery")
 
     expect(listBundleSyncRows()).toEqual([
-      { agent: "live", enabled: true, remote: "origin" },
+      { agent: "live", enabled: true, remote: "origin", gitInitialized: true },
     ])
   })
 
@@ -173,7 +179,7 @@ describe("listBundleSyncRows", () => {
 
     expect(listBundleSyncRows()).toEqual([
       { agent: "broken", enabled: false, remote: "origin" },
-      { agent: "ok", enabled: true, remote: "main" },
+      { agent: "ok", enabled: true, remote: "main", gitInitialized: true },
     ])
   })
 
@@ -237,6 +243,7 @@ describe("listBundleSyncRows", () => {
         agent: "synced",
         enabled: true,
         remote: "origin",
+        gitInitialized: true,
         remoteUrl: "git@github.com:me/synced-state.git",
       },
     ])
@@ -278,7 +285,7 @@ describe("listBundleSyncRows", () => {
     const { listBundleSyncRows } = await import("../../../heart/daemon/agent-discovery")
 
     expect(listBundleSyncRows()).toEqual([
-      { agent: "local", enabled: true, remote: "origin" },
+      { agent: "local", enabled: true, remote: "origin", gitInitialized: true },
     ])
     // Verify execFileSync was attempted
     expect(execFileSyncMock).toHaveBeenCalledWith(
@@ -303,7 +310,7 @@ describe("listBundleSyncRows", () => {
     const { listBundleSyncRows } = await import("../../../heart/daemon/agent-discovery")
 
     expect(listBundleSyncRows()).toEqual([
-      { agent: "empty", enabled: true, remote: "origin" },
+      { agent: "empty", enabled: true, remote: "origin", gitInitialized: true },
     ])
   })
 
@@ -322,5 +329,35 @@ describe("listBundleSyncRows", () => {
 
     listBundleSyncRows()
     expect(execFileSyncMock).not.toHaveBeenCalled()
+    // Disabled rows should also skip the .git existsSync check
+    expect(existsSyncMock).not.toHaveBeenCalled()
+  })
+
+  it("flags gitInitialized=false when sync is enabled but .git is missing, and skips git invocation", async () => {
+    readdirSyncMock.mockReturnValue([
+      { name: "needs-init.ouro", isDirectory: () => true },
+    ])
+    readFileSyncMock.mockImplementation((target: string) => {
+      if (target.endsWith("/needs-init.ouro/agent.json")) {
+        return JSON.stringify({ enabled: true, sync: { enabled: true } })
+      }
+      throw new Error(`unexpected read: ${target}`)
+    })
+    existsSyncMock.mockReturnValue(false) // .git does not exist
+
+    const { listBundleSyncRows } = await import("../../../heart/daemon/agent-discovery")
+
+    expect(listBundleSyncRows()).toEqual([
+      {
+        agent: "needs-init",
+        enabled: true,
+        remote: "origin",
+        gitInitialized: false,
+      },
+    ])
+    // No remote URL lookup should be attempted when the bundle isn't a repo
+    expect(execFileSyncMock).not.toHaveBeenCalled()
+    // existsSync should have been called with the .git path
+    expect(existsSyncMock).toHaveBeenCalledWith("/mock/AgentBundles/needs-init.ouro/.git")
   })
 })

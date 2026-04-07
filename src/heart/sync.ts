@@ -10,6 +10,22 @@ export interface SyncResult {
 }
 
 /**
+ * Check whether the bundle is initialized as a git repo.
+ * Used by both pre-turn pull and post-turn push to surface a clear,
+ * actionable error when sync is enabled but the user never ran `git init`
+ * inside their bundle. This error is propagated all the way into the
+ * agent's start-of-turn packet as a Sync warning, so the agent can
+ * either ask the user or run `git init` itself.
+ */
+function ensureGitRepo(agentRoot: string): SyncResult {
+  if (fs.existsSync(path.join(agentRoot, ".git"))) {
+    return { ok: true }
+  }
+  const error = `bundle is not a git repo; run \`git init\` inside ${agentRoot} to enable sync (or disable sync in agent.json)`
+  return { ok: false, error }
+}
+
+/**
  * Pre-turn pull: sync the agent bundle from remote before assembling the start-of-turn packet.
  *
  * If the bundle has no git remote configured, the pull is skipped and the function
@@ -24,6 +40,21 @@ export function preTurnPull(agentRoot: string, config: SyncConfig): SyncResult {
     message: "pre-turn pull starting",
     meta: { agentRoot, remote: config.remote },
   })
+
+  // Check that the bundle is actually a git repo before touching git at all.
+  // Surfaces a clear, actionable error via syncFailure → start-of-turn packet
+  // so the agent can propose running `git init` (or just do it).
+  const repoCheck = ensureGitRepo(agentRoot)
+  if (!repoCheck.ok) {
+    emitNervesEvent({
+      level: "warn",
+      component: "heart",
+      event: "heart.sync_not_a_repo",
+      message: "pre-turn pull failed: bundle is not a git repo",
+      meta: { agentRoot },
+    })
+    return repoCheck
+  }
 
   // Check if any remote is configured. If not, skip the pull (local-only mode).
   try {
@@ -96,6 +127,23 @@ export function postTurnPush(agentRoot: string, config: SyncConfig): SyncResult 
     message: "post-turn push starting",
     meta: { agentRoot, remote: config.remote },
   })
+
+  // Same git-repo check as preTurnPull. This is the more common failure path
+  // since postTurnPush runs after every turn while preTurnPull only runs on
+  // user-initiated turns. Prior to this guard, an un-init'd bundle would fail
+  // the git-status invocation below with a generic "not a git repository"
+  // error; now we catch it explicitly with an actionable message.
+  const repoCheck = ensureGitRepo(agentRoot)
+  if (!repoCheck.ok) {
+    emitNervesEvent({
+      level: "warn",
+      component: "heart",
+      event: "heart.sync_not_a_repo",
+      message: "post-turn push failed: bundle is not a git repo",
+      meta: { agentRoot },
+    })
+    return repoCheck
+  }
 
   let statusOutput: string
   try {

@@ -56,6 +56,7 @@ interface StatusSyncRow {
   enabled: boolean
   remote: string
   remoteUrl?: string
+  gitInitialized?: boolean
 }
 
 export interface StatusPayload {
@@ -156,10 +157,12 @@ export function parseStatusPayload(data: unknown): StatusPayload | null {
     const enabled = booleanField(row.enabled)
     const remote = stringField(row.remote)
     if (!agent || enabled === null || !remote) return null
-    const remoteUrl = stringField(row.remoteUrl) ?? undefined
-    return remoteUrl !== undefined
-      ? { agent, enabled, remote, remoteUrl }
-      : { agent, enabled, remote } satisfies StatusSyncRow
+    const parsed: StatusSyncRow = { agent, enabled, remote }
+    const remoteUrl = stringField(row.remoteUrl)
+    if (remoteUrl !== null) parsed.remoteUrl = remoteUrl
+    const gitInitialized = booleanField(row.gitInitialized)
+    if (gitInitialized !== null) parsed.gitInitialized = gitInitialized
+    return parsed
   })
 
   if (
@@ -343,11 +346,27 @@ export function formatDaemonStatusOutput(response: DaemonResponse, fallback: str
     const agentNameWidth = Math.max(12, ...payload.sync.map((r) => r.agent.length))
     for (const row of payload.sync) {
       const name = row.agent.padEnd(agentNameWidth)
-      const dot = row.enabled ? green("●") : dim("○")
-      const stateText = (row.enabled ? "enabled " : "disabled").padEnd(10)
-      let detail = ""
-      if (row.enabled) {
-        detail = row.remoteUrl !== undefined ? `${row.remote} → ${row.remoteUrl}` : "local only"
+      // Three states for enabled rows: error (not a repo), ok (remote URL), ok (local only).
+      // Disabled rows show the usual dim dot + "disabled".
+      let dot: string
+      let stateText: string
+      let detail: string
+      if (!row.enabled) {
+        dot = dim("○")
+        stateText = "disabled".padEnd(10)
+        detail = ""
+      } else if (row.gitInitialized === false) {
+        dot = red("●")
+        stateText = "error   ".padEnd(10)
+        detail = "not a git repo — run `git init` to enable sync"
+      } else if (row.remoteUrl !== undefined) {
+        dot = green("●")
+        stateText = "enabled ".padEnd(10)
+        detail = `${row.remote} → ${row.remoteUrl}`
+      } else {
+        dot = green("●")
+        stateText = "enabled ".padEnd(10)
+        detail = "local only"
       }
       lines.push(`    ${name} ${dot} ${stateText}  ${dim(detail)}`)
     }

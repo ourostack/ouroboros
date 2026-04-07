@@ -7,12 +7,14 @@ import { emitNervesEvent } from "../../nerves/runtime"
 type Readdir = (target: string, options: { withFileTypes: true }) => fs.Dirent[]
 type ReadText = (target: string, encoding: "utf-8") => string
 type GitExec = (command: string, args: string[], options: { cwd: string; stdio: "pipe"; timeout: number }) => Buffer
+type ExistsSync = (target: string) => boolean
 
 export interface AgentDiscoveryOptions {
   bundlesRoot?: string
   readdirSync?: Readdir
   readFileSync?: ReadText
   execFileSync?: GitExec
+  existsSync?: ExistsSync
 }
 
 export function listEnabledBundleAgents(options: AgentDiscoveryOptions = {}): string[] {
@@ -62,8 +64,15 @@ export interface BundleSyncRow {
   enabled: boolean
   remote: string
   /** Resolved URL of the configured remote, when one exists. Undefined when sync is
-   * disabled or when the bundle has no git remote configured (local-only mode). */
+   * disabled, the bundle isn't a git repo, or the bundle has no git remote
+   * configured (local-only mode). */
   remoteUrl?: string
+  /** True when the bundle directory contains a .git entry. Only meaningful
+   * when `enabled` is true — a bundle with sync disabled doesn't need to be a
+   * git repo. When sync is enabled and `gitInitialized` is false, the status
+   * renderer shows an actionable "not a git repo" error and the agent sees
+   * the same error surfaced as a syncFailure in its start-of-turn packet. */
+  gitInitialized?: boolean
 }
 
 /**
@@ -72,15 +81,16 @@ export interface BundleSyncRow {
  * sync rows without depending on argv-derived global identity. Bundles that
  * cannot be read are skipped silently.
  *
- * For rows with sync enabled, also resolves the remote URL by shelling out to
- * `git remote get-url <remote>` in the bundle directory. On any error (no
- * remote, not a git repo, git missing) the URL is left undefined and the
- * status renderer treats the bundle as "local only".
+ * For rows with sync enabled, also checks whether the bundle is a git repo
+ * (via .git directory presence) and resolves the remote URL via
+ * `git remote get-url <remote>`. On any error the URL is left undefined and
+ * the status renderer falls back to "local only" or "not a git repo".
  */
 export function listBundleSyncRows(options: AgentDiscoveryOptions = {}): BundleSyncRow[] {
   const bundlesRoot = options.bundlesRoot ?? getAgentBundlesRoot()
   const readFileSync = options.readFileSync ?? fs.readFileSync
   const execFileSync = options.execFileSync ?? nodeExecFileSync
+  const existsSync = options.existsSync ?? fs.existsSync
   const agents = listEnabledBundleAgents(options)
 
   const rows: BundleSyncRow[] = []
@@ -102,21 +112,29 @@ export function listBundleSyncRows(options: AgentDiscoveryOptions = {}): BundleS
       // Best-effort: bundle without readable config still gets a row with defaults
     }
 
-    let remoteUrl: string | undefined
+    const row: BundleSyncRow = { agent, enabled, remote }
+
     if (enabled) {
-      try {
-        const out = execFileSync("git", ["remote", "get-url", remote], {
-          cwd: bundleRoot,
-          stdio: "pipe",
-          timeout: 5000,
-        }).toString().trim()
-        if (out.length > 0) remoteUrl = out
-      } catch {
-        // No remote configured, not a git repo, or git missing — leave undefined.
+      // Only meaningful when sync is enabled — we don't care about disabled bundles'
+      // git state. Check .git presence before attempting any git invocation.
+      const gitInitialized = existsSync(path.join(bundleRoot, ".git"))
+      row.gitInitialized = gitInitialized
+
+      if (gitInitialized) {
+        try {
+          const out = execFileSync("git", ["remote", "get-url", remote], {
+            cwd: bundleRoot,
+            stdio: "pipe",
+            timeout: 5000,
+          }).toString().trim()
+          if (out.length > 0) row.remoteUrl = out
+        } catch {
+          // No remote configured or git missing — leave remoteUrl undefined.
+        }
       }
     }
 
-    rows.push(remoteUrl !== undefined ? { agent, enabled, remote, remoteUrl } : { agent, enabled, remote })
+    rows.push(row)
   }
   return rows
 }
