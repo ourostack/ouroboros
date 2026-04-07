@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.256",
+      "changes": [
+        "fix(tui): cursor renders as inverse character (not inserted block) \u2014 matches standard terminal cursor behavior.",
+        "fix(tui): Alt+Enter via ESC-timing (50ms window) instead of raw stdin handler that interfered with arrow keys.",
+        "fix(tui): image path regex now matches backslash-escaped spaces from macOS drag-drop."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.255",
       "changes": [
         "feat(tui): session resume shows last messages as regular chat (no dimmed preview) with teal resume banner in header.",
