@@ -580,9 +580,9 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
           (m): m is { role: "user" | "assistant"; content: string } =>
             (m.role === "user" || m.role === "assistant") && typeof m.content === "string" && m.content.trim().length > 0,
         )
-        // Extract last 3 exchanges (pairs of user+assistant)
+        // Extract last 2 exchanges (up to 4 messages)
         const lastExchanges: Array<{ role: "user" | "assistant"; content: string }> = []
-        for (let i = userAssistantMsgs.length - 1; i >= 0 && lastExchanges.length < 6; i--) {
+        for (let i = userAssistantMsgs.length - 1; i >= 0 && lastExchanges.length < 4; i--) {
           lastExchanges.unshift({ role: userAssistantMsgs[i].role, content: userAssistantMsgs[i].content })
         }
         const msgCount = messages.filter(m => m.role === "user" || m.role === "assistant").length

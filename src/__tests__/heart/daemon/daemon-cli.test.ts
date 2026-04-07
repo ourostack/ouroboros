@@ -589,7 +589,7 @@ describe("ouro CLI parsing", () => {
   })
 
   it("throws on malformed command shapes", () => {
-    expect(() => parseOuroCommand(["chat"])).toThrow("Usage")
+    expect(parseOuroCommand(["chat"])).toEqual({ kind: "chat.connect", agent: "" })
     expect(() => parseOuroCommand(["msg", "--to", "slugger"])).toThrow("Usage")
     expect(() => parseOuroCommand(["poke"])).toThrow("Usage")
     expect(() => parseOuroCommand(["link"])).toThrow("Usage")
