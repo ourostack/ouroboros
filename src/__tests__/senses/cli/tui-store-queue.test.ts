@@ -118,6 +118,48 @@ describe("TuiStore queue methods", () => {
     })
   })
 
+  describe("queue interaction with other store methods", () => {
+    it("queue survives modelStart (not cleared by new turn)", () => {
+      store.enqueueInput("pending message")
+      store.modelStart()
+      expect(store.queuedInputs).toEqual(["pending message"])
+    })
+
+    it("queue survives commitAssistantMessage", () => {
+      store.enqueueInput("pending")
+      store.modelStart()
+      store.appendText("response")
+      store.commitAssistantMessage()
+      expect(store.queuedInputs).toEqual(["pending"])
+    })
+
+    it("enqueue and dequeue interleave correctly", () => {
+      store.enqueueInput("a")
+      store.enqueueInput("b")
+      store.dequeueInput("a")
+      store.enqueueInput("c")
+      expect(store.queuedInputs).toEqual(["b", "c"])
+    })
+
+    it("dequeueInput with duplicates removes only first", () => {
+      store.enqueueInput("dup")
+      store.enqueueInput("dup")
+      store.enqueueInput("dup")
+      store.dequeueInput("dup")
+      expect(store.queuedInputs).toEqual(["dup", "dup"])
+    })
+
+    it("popAllQueuedForEditing after partial dequeue returns remaining", () => {
+      store.enqueueInput("a")
+      store.enqueueInput("b")
+      store.enqueueInput("c")
+      store.dequeueInput("b")
+      const popped = store.popAllQueuedForEditing()
+      expect(popped).toEqual(["a", "c"])
+      expect(store.queuedInputs).toEqual([])
+    })
+  })
+
   describe("clearQueue", () => {
     it("empties the queue", () => {
       store.enqueueInput("a")
