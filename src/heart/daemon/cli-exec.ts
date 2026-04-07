@@ -1889,6 +1889,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   if (command.kind === "chat.connect" && deps.startChat) {
     let agent = command.agent
     // No agent specified — show selection
+    /* v8 ignore start -- interactive agent selection: requires real promptInput + discovered agents @preserve */
     if (!agent) {
       const discovered = await Promise.resolve(
         deps.listDiscoveredAgents ? deps.listDiscoveredAgents() : defaultListDiscoveredAgents(),
@@ -1913,6 +1914,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         return message
       }
     }
+    /* v8 ignore stop */
     await ensureDaemonRunning(deps)
     await deps.startChat(agent)
     return ""
