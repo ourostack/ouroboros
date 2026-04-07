@@ -64,11 +64,13 @@ export interface TuiProps {
   readonly model: string
   readonly completedMessages: CompletedMessage[]
   readonly inputHistory: readonly string[]
+  readonly queuedInputs: readonly string[]
   readonly live: LiveState
   readonly elapsedSeconds: number
   readonly contextPercent: number
   readonly onSubmit: (text: string) => void
   readonly onCtrlC: (hasInput: boolean) => CtrlCAction
+  readonly onPopQueue: () => string[]
   readonly headerShown: boolean
   readonly cwd: string
 }
@@ -273,12 +275,32 @@ function LiveArea({ live, elapsed }: {
   )
 }
 
+// ─── Queued Messages ───────────────────────────────────────────────
+
+export function QueuedMessages({ items }: {
+  readonly items: readonly string[]
+}): React.ReactElement {
+  if (items.length === 0) return <Text>{""}</Text>
+  return (
+    <Box flexDirection="column">
+      {items.map((text, i) => (
+        <Text key={i}>
+          <Text color={OURO.shadow}>{"\u231B queued: "}</Text>
+          <Text color={OURO.mist}>{"\""}{text}{"\""}</Text>
+        </Text>
+      ))}
+    </Box>
+  )
+}
+
 // ─── Input ──────────────────────────────────────────────────────────
 
-function InputArea({ onSubmit, onCtrlC, history, agentName, model }: {
+function InputArea({ onSubmit, onCtrlC, history, queuedInputs: _queuedInputs, onPopQueue: _onPopQueue, agentName, model }: {
   readonly onSubmit: (text: string) => void
   readonly onCtrlC: (hasInput: boolean) => CtrlCAction
   readonly history: readonly string[]
+  readonly queuedInputs: readonly string[]
+  readonly onPopQueue: () => string[]
   readonly agentName: string
   readonly model: string
 }): React.ReactElement {
@@ -527,11 +549,13 @@ export function OuroTui({
   model,
   completedMessages,
   inputHistory,
+  queuedInputs,
   live,
   elapsedSeconds,
   contextPercent,
   onSubmit,
   onCtrlC,
+  onPopQueue,
   cwd,
 }: TuiProps): React.ReactElement {
   return (
@@ -557,12 +581,17 @@ export function OuroTui({
       <LiveArea live={live} elapsed={elapsedSeconds} />
       {(live.loading || live.streamingText || live.activeTool) ? <Box marginBottom={1}><Text>{""}</Text></Box> : null}
 
+      {/* Queued messages — between live area and input */}
+      {queuedInputs.length > 0 ? <QueuedMessages items={queuedInputs} /> : null}
+
       {/* Input */}
       <Box marginTop={1}><Text>{""}</Text></Box>
       <InputArea
         onSubmit={onSubmit}
         onCtrlC={onCtrlC}
         history={inputHistory}
+        queuedInputs={queuedInputs}
+        onPopQueue={onPopQueue}
         agentName={agentName}
         model={model}
       />
