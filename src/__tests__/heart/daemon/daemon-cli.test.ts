@@ -1339,6 +1339,7 @@ describe("ouro CLI execution", () => {
           overview: {},
           senses: [],
           workers: [],
+          sync: [],
         },
       })),
       startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
@@ -1356,8 +1357,41 @@ describe("ouro CLI execution", () => {
     expect(result).toContain("Socket")
     expect(result).toContain("Health")
     expect(result).toContain("Outlook")
+    // With no sync rows, the Git Sync section is omitted entirely (matches Senses/Workers)
+    expect(result).not.toContain("Git Sync")
+  })
+
+  it("renders Git Sync as a per-agent section when sync rows are present", async () => {
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({
+        ok: true,
+        summary: "daemon=running\tworkers=0\tsenses=0\thealth=ok",
+        data: {
+          overview: {},
+          senses: [],
+          workers: [],
+          sync: [
+            { agent: "slugger", enabled: true, remote: "origin" },
+            { agent: "ouroboros", enabled: false, remote: "origin" },
+          ],
+        },
+      })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    }
+
+    const result = await runOuroCli(["status"], deps)
+
     expect(result).toContain("Git Sync")
+    expect(result).toContain("slugger")
+    expect(result).toContain("ouroboros")
+    expect(result).toContain("enabled")
     expect(result).toContain("disabled")
+    expect(result).toContain("remote: origin")
   })
 
   it("renders daemon status with Overview, Senses, and Workers sections", async () => {
@@ -1727,6 +1761,104 @@ describe("ouro CLI execution", () => {
     const result = await runOuroCli(["status"], deps)
 
     expect(result).toBe("worker-row-missing-pid")
+  })
+
+  it("falls back to the raw daemon summary when sync is provided as a non-array", async () => {
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({
+        ok: true,
+        summary: "malformed-sync-not-array",
+        data: {
+          overview: {
+            daemon: "running",
+            socketPath: "/tmp/ouro-test.sock",
+            workerCount: 0,
+            senseCount: 0,
+            health: "ok",
+          },
+          senses: [],
+          workers: [],
+          sync: {},
+        },
+      })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    }
+
+    const result = await runOuroCli(["status"], deps)
+
+    expect(result).toBe("malformed-sync-not-array")
+  })
+
+  it("falls back to the raw daemon summary when a sync row is malformed", async () => {
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({
+        ok: true,
+        summary: "malformed-sync-row",
+        data: {
+          overview: {
+            daemon: "running",
+            socketPath: "/tmp/ouro-test.sock",
+            workerCount: 0,
+            senseCount: 0,
+            health: "ok",
+          },
+          senses: [],
+          workers: [],
+          sync: ["bad-row"],
+        },
+      })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    }
+
+    const result = await runOuroCli(["status"], deps)
+
+    expect(result).toBe("malformed-sync-row")
+  })
+
+  it("falls back to the raw daemon summary when a sync row is missing required fields", async () => {
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({
+        ok: true,
+        summary: "sync-row-missing-fields",
+        data: {
+          overview: {
+            daemon: "running",
+            socketPath: "/tmp/ouro-test.sock",
+            workerCount: 0,
+            senseCount: 0,
+            health: "ok",
+          },
+          senses: [],
+          workers: [],
+          sync: [
+            {
+              agent: "slugger",
+              // missing enabled and remote
+            },
+          ],
+        },
+      })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    }
+
+    const result = await runOuroCli(["status"], deps)
+
+    expect(result).toBe("sync-row-missing-fields")
   })
 
   it("routes bare ouro to hatch when no agents are discovered", async () => {

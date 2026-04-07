@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.243",
+      "changes": [
+        "fix(daemon): per-agent Git Sync in `ouro status` \u2014 was always showing `disabled` regardless of any agent's `agent.json`, because the daemon process has no argv-derived agent identity so `getSyncConfig()` fell into its catch. Status payload now carries a per-agent `sync` array (one row per enabled bundle) rendered as its own section like Senses and Workers, instead of a single global field on the overview block."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.241",
       "changes": [
         "feat: commerce bootstrap \u2014 bw CLI lazy-install, vault auto-config, resolver coverage"

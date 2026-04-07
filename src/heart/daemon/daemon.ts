@@ -3,7 +3,7 @@ import * as net from "net"
 import * as os from "os"
 import * as path from "path"
 import { getAgentBundlesRoot, getRepoRoot } from "../identity"
-import { getSyncConfig } from "../config"
+import { listBundleSyncRows, type BundleSyncRow } from "./agent-discovery"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { DaemonSenseManagerLike, DaemonSenseRow } from "./sense-manager"
 import { getRuntimeMetadata } from "./runtime-metadata"
@@ -244,14 +244,13 @@ interface DaemonStatusOverview {
   senseCount: number
   entryPath: string
   mode: "dev" | "production"
-  syncEnabled: boolean
-  syncRemote: string
 }
 
 interface DaemonStatusPayload {
   overview: DaemonStatusOverview
   workers: DaemonWorkerRow[]
   senses: DaemonSenseRow[]
+  sync: BundleSyncRow[]
 }
 
 function buildWorkerRows(
@@ -362,8 +361,7 @@ export class OuroDaemon {
     const workers = buildWorkerRows(snapshots)
     const senses = this.senseManager?.listSenseRows() ?? []
     const repoRoot = getRepoRoot()
-
-    const syncConfig = getSyncConfig()
+    const sync = listBundleSyncRows({ bundlesRoot: this.bundlesRoot })
 
     return {
       overview: {
@@ -376,11 +374,10 @@ export class OuroDaemon {
         senseCount: senses.length,
         entryPath: path.join(repoRoot, "dist", "heart", "daemon", "daemon-entry.js"),
         mode: detectRuntimeMode(repoRoot),
-        syncEnabled: syncConfig.enabled,
-        syncRemote: syncConfig.remote,
       },
       workers,
       senses,
+      sync,
     }
   }
 

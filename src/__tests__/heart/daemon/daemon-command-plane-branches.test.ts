@@ -95,7 +95,10 @@ describe("daemon command plane branches", () => {
 
   it("returns structured status data with separate senses and workers", async () => {
     const socketPath = tmpSocketPath("daemon-status")
-    const { daemon, processManager, senseManager } = make(socketPath)
+    // Use an empty bundlesRoot so listBundleSyncRows returns [] (no leak to real ~/AgentBundles)
+    const isolatedBundles = path.join(os.tmpdir(), `daemon-status-bundles-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+    fs.mkdirSync(isolatedBundles, { recursive: true })
+    const { daemon, processManager, senseManager } = make(socketPath, isolatedBundles)
 
     const emptyStatus = await daemon.handleCommand({ kind: "daemon.status" })
     expect(emptyStatus.data).toEqual({
@@ -109,6 +112,7 @@ describe("daemon command plane branches", () => {
       }),
       senses: [],
       workers: [],
+      sync: [],
     })
 
     senseManager.listSenseRows.mockReturnValueOnce([
@@ -187,6 +191,7 @@ describe("daemon command plane branches", () => {
         expect.objectContaining({ agent: "slugger", sense: "teams", status: "disabled" }),
         expect.objectContaining({ agent: "slugger", sense: "bluebubbles", status: "running" }),
       ],
+      sync: [],
     })
   })
 
@@ -280,8 +285,11 @@ describe("daemon command plane branches", () => {
 
   it("builds status rows without a sense manager when none is configured", async () => {
     const socketPath = tmpSocketPath("daemon-no-sense-manager")
+    const isolatedBundles = path.join(os.tmpdir(), `daemon-no-sense-bundles-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+    fs.mkdirSync(isolatedBundles, { recursive: true })
     const daemon = new OuroDaemon({
       socketPath,
+      bundlesRoot: isolatedBundles,
       processManager: {
         listAgentSnapshots: () => [
           {
@@ -322,6 +330,7 @@ describe("daemon command plane branches", () => {
       }),
       senses: [],
       workers: [expect.objectContaining({ agent: "slugger", worker: "inner-dialog", status: "crashed" })],
+      sync: [],
     })
   })
 
