@@ -191,21 +191,6 @@ export class TuiStore {
     this._inputHistory.push(...texts)
   }
 
-  /** Show session resume context: summary line + last N exchanges (dimmed), then separator */
-  addSessionHistory(summary: string, exchanges: Array<{ role: "user" | "assistant"; content: string }>): void {
-    const msgs: CompletedMessage[] = [
-      { id: "history-summary", role: "history-summary", content: summary },
-      ...exchanges.map((ex, i) => ({
-        id: `history-${i}`,
-        role: (ex.role === "user" ? "history-user" : "history-assistant") as CompletedMessage["role"],
-        content: ex.content,
-      })),
-      { id: "history-end", role: "history-end", content: "" },
-    ]
-    this._completed = [...msgs, ...this._completed]
-    this.notify()
-  }
-
   // ─── Queued input display ────────────────────────────────────────
 
   enqueueInput(text: string): void {
