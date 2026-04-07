@@ -913,8 +913,7 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
   const friendsPath = path.join(getAgentRoot(), "friends")
   const friendStore = new FileFriendStore(friendsPath)
   const username = os.userInfo().username
-  const hostname = os.hostname()
-  const localExternalId = `${username}@${hostname}`
+  const localExternalId = username
   const resolver = new FriendResolver(friendStore, {
     provider: "local" as const,
     externalId: localExternalId,
