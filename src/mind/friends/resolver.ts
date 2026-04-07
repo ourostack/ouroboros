@@ -50,7 +50,7 @@ export class FriendResolver {
 
     // Migration: local provider previously used "${username}@${hostname}" format.
     // If no exact match, try finding a friend with old-format external ID.
-    /* v8 ignore start -- one-time migration: hostname→username format, tested manually @preserve */
+    /* v8 ignore start -- migration path: only fires when legacy hostname-format friend exists @preserve */
     if (this.params.provider === "local" && !this.params.externalId.includes("@")) {
       try {
         const all = typeof this.store.listAll === "function" ? await this.store.listAll() : []
