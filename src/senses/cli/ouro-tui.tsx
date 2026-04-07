@@ -10,7 +10,7 @@
  * ZERO business logic here — pure rendering from CliStore state.
  */
 import React, { useState, useRef, useEffect, useCallback } from "react"
-import { Text, Box, Static, useInput } from "ink"
+import { Text, Box, Static, useInput, useStdin } from "ink"
 import { StreamingMarkdown } from "./streaming-markdown"
 
 // ─── Ouroboros Brand Palette (ANSI RGB) ─────────────────────────────
@@ -352,6 +352,23 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
   const cursorRef = useRef(0)
   const historyIdx = useRef(-1)
   const savedInput = useRef("")
+
+  // Raw stdin handler for Alt+Enter (ESC + CR/LF) — Ink 3.2's useInput splits
+  // \x1b\r into separate events, so we catch the combined sequence here.
+  const { stdin } = useStdin()
+  useEffect(() => {
+    if (!stdin) return
+    const onData = (data: Buffer) => {
+      const str = data.toString("utf-8")
+      if (str === "\x1b\r" || str === "\x1b\n") {
+        const before = inputRef.current.slice(0, cursorRef.current)
+        const after = inputRef.current.slice(cursorRef.current)
+        updateInput(before + "\n" + after, cursorRef.current + 1)
+      }
+    }
+    stdin.on("data", onData)
+    return () => { stdin.off("data", onData) }
+  }, [stdin]) // eslint-disable-line react-hooks/exhaustive-deps
   const tooltipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => () => {
@@ -434,13 +451,6 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
       if (text.trim()) onSubmit(text)
       updateInput("")
       historyIdx.current = -1
-      return
-    }
-    // Ctrl+J: insert newline (terminal-universal alternative)
-    if (key.ctrl && inputChar === "j") {
-      const before = inputRef.current.slice(0, cursorRef.current)
-      const after = inputRef.current.slice(cursorRef.current)
-      updateInput(before + "\n" + after, cursorRef.current + 1)
       return
     }
     if (key.backspace || key.delete) {
@@ -609,7 +619,7 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
       <Box>
         <Text dimColor>{"  "}{agentName}{model ? ` · ${model}` : ""} · /help</Text>
         <Box flexGrow={1} />
-        {tooltip ? <Text dimColor>{tooltip}</Text> : <Text dimColor>{"\\+enter for newline"}</Text>}
+        {tooltip ? <Text dimColor>{tooltip}</Text> : <Text dimColor>{"opt+enter for newline"}</Text>}
       </Box>
     </Box>
   )
@@ -641,7 +651,7 @@ export function OuroTui({
               <Box key="header" flexDirection="column" marginBottom={2}>
                 <Box marginTop={1}><Text>{""}</Text></Box>
                 <Header agentName={agentName} model={model} contextPercent={contextPercent} cwd={cwd} />
-                <Text color={OURO.shadow} dimColor>{"  Ctrl-C twice to exit \u00b7 \u2191\u2193 history \u00b7 Esc clear \u00b7 \\+Enter newline"}</Text>
+                <Text color={OURO.shadow} dimColor>{"  Ctrl-C twice to exit \u00b7 \u2191\u2193 history \u00b7 Esc clear \u00b7 opt+Enter newline"}</Text>
               </Box>
             )
           }
