@@ -89,6 +89,14 @@ export function replacePathsWithRefs(input: string): { text: string; images: Map
 }
 
 /**
+ * Process submit input: detect image paths, replace with refs, return map.
+ * This is the entry point called by InputArea on submit.
+ */
+export function processSubmitInput(text: string): { text: string; images: Map<number, string> } {
+  return replacePathsWithRefs(text)
+}
+
+/**
  * Build OpenAI content parts from text + image map.
  * For each image in the map, reads the file and creates an `image_url` content part.
  * Images that fail to read are silently skipped.

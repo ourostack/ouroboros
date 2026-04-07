@@ -12,6 +12,7 @@
 import React, { useState, useRef, useEffect, useCallback } from "react"
 import { Text, Box, Static, useInput, useStdin } from "ink"
 import { StreamingMarkdown } from "./streaming-markdown"
+import { processSubmitInput } from "./image-paste"
 
 // ─── Ouroboros Brand Palette (ANSI RGB) ─────────────────────────────
 // From packages/outlook-ui/src/style.css and ouroboros.bot
@@ -74,6 +75,7 @@ export interface TuiProps {
   readonly headerShown: boolean
   readonly cwd: string
   readonly resumeInfo?: { messageCount: number; timeAgo: string }
+  readonly onImageMap?: (images: Map<number, string>) => void
 }
 
 // ─── Header ─────────────────────────────────────────────────────────
@@ -305,7 +307,7 @@ export function QueuedMessages({ items }: {
 
 // ─── Input ──────────────────────────────────────────────────────────
 
-function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agentName, model }: {
+function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agentName, model, onImageMap }: {
   readonly onSubmit: (text: string) => void
   readonly onCtrlC: (hasInput: boolean) => CtrlCAction
   readonly history: readonly string[]
@@ -313,6 +315,7 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
   readonly onPopQueue: () => string[]
   readonly agentName: string
   readonly model: string
+  readonly onImageMap?: (images: Map<number, string>) => void
 }): React.ReactElement {
   const [input, setInput] = useState("")
   const [cursorPos, setCursorPos] = useState(0) // cursor position within input
@@ -418,7 +421,13 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
         return
       }
       const text = inputRef.current
-      if (text.trim()) onSubmit(text)
+      if (text.trim()) {
+        const { text: processedText, images } = processSubmitInput(text)
+        if (images.size > 0 && onImageMap) {
+          onImageMap(images)
+        }
+        onSubmit(images.size > 0 ? processedText : text)
+      }
       updateInput("")
       historyIdx.current = -1
       return
@@ -611,6 +620,7 @@ export function OuroTui({
   onPopQueue,
   cwd,
   resumeInfo,
+  onImageMap,
 }: TuiProps): React.ReactElement {
   return (
     <Box flexDirection="column">
@@ -648,6 +658,7 @@ export function OuroTui({
         onPopQueue={onPopQueue}
         agentName={agentName}
         model={model}
+        onImageMap={onImageMap}
       />
     </Box>
   )
