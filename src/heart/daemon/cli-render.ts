@@ -12,6 +12,7 @@ import { detectRuntimeMode } from "./runtime-mode"
 import { getRepoRoot } from "../identity"
 import { readDaemonTombstone } from "./daemon-tombstone"
 import { readHealth, getDefaultHealthPath } from "./daemon-health"
+import { listBundleSyncRows } from "./agent-discovery"
 import type { McpListCliCommand, McpCallCliCommand } from "./cli-types"
 
 // ── Status payload types ──
@@ -29,8 +30,6 @@ interface StatusOverviewRow {
   senseCount: number
   entryPath: string
   mode: string
-  syncEnabled: boolean
-  syncRemote: string
 }
 
 interface StatusSenseRow {
@@ -52,10 +51,17 @@ interface StatusWorkerRow {
   lastSignal: string | null
 }
 
+interface StatusSyncRow {
+  agent: string
+  enabled: boolean
+  remote: string
+}
+
 export interface StatusPayload {
   overview: StatusOverviewRow
   senses: StatusSenseRow[]
   workers: StatusWorkerRow[]
+  sync: StatusSyncRow[]
 }
 
 // ── Field extractors ──
@@ -80,8 +86,11 @@ export function parseStatusPayload(data: unknown): StatusPayload | null {
   const overview = raw.overview
   const senses = raw.senses
   const workers = raw.workers
+  const sync = raw.sync
   if (!overview || typeof overview !== "object" || Array.isArray(overview)) return null
   if (!Array.isArray(senses) || !Array.isArray(workers)) return null
+  // sync is optional for backward compatibility — older daemons may omit it
+  if (sync !== undefined && !Array.isArray(sync)) return null
 
   const parsedOverview: StatusOverviewRow = {
     daemon: stringField((overview as Record<string, unknown>).daemon) ?? "unknown",
@@ -96,8 +105,6 @@ export function parseStatusPayload(data: unknown): StatusPayload | null {
     senseCount: numberField((overview as Record<string, unknown>).senseCount) ?? 0,
     entryPath: stringField((overview as Record<string, unknown>).entryPath) ?? "unknown",
     mode: stringField((overview as Record<string, unknown>).mode) ?? "unknown",
-    syncEnabled: booleanField((overview as Record<string, unknown>).syncEnabled) ?? false,
-    syncRemote: stringField((overview as Record<string, unknown>).syncRemote) ?? "origin",
   }
 
   const parsedSenses = senses.map((entry) => {
@@ -141,12 +148,27 @@ export function parseStatusPayload(data: unknown): StatusPayload | null {
     } satisfies StatusWorkerRow
   })
 
-  if (parsedSenses.some((row) => row === null) || parsedWorkers.some((row) => row === null)) return null
+  const parsedSync = (sync ?? []).map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null
+    const row = entry as Record<string, unknown>
+    const agent = stringField(row.agent)
+    const enabled = booleanField(row.enabled)
+    const remote = stringField(row.remote)
+    if (!agent || enabled === null || !remote) return null
+    return { agent, enabled, remote } satisfies StatusSyncRow
+  })
+
+  if (
+    parsedSenses.some((row) => row === null) ||
+    parsedWorkers.some((row) => row === null) ||
+    parsedSync.some((row) => row === null)
+  ) return null
 
   return {
     overview: parsedOverview,
     senses: parsedSenses as StatusSenseRow[],
     workers: parsedWorkers as StatusWorkerRow[],
+    sync: parsedSync as StatusSyncRow[],
   }
 }
 
@@ -248,9 +270,6 @@ export function formatDaemonStatusOutput(response: DaemonResponse, fallback: str
   lines.push(kvLine("Socket", ov.socketPath))
   lines.push(kvLine("Outlook", ov.outlookUrl))
   lines.push(kvLine("Health", `${statusDot(ov.health)} ${ov.health}`))
-  /* v8 ignore next -- cosmetic: sync-enabled branch requires agent with sync configured @preserve */
-  const syncLabel = ov.syncEnabled ? `${green("●")} enabled (remote: ${ov.syncRemote})` : `${dim("○")} disabled`
-  lines.push(kvLine("Git Sync", syncLabel))
   lines.push(kvLine("Updated", ov.lastUpdated))
   lines.push("")
 
@@ -314,6 +333,20 @@ export function formatDaemonStatusOutput(response: DaemonResponse, fallback: str
     lines.push("")
   }
 
+  // ── Git Sync (per agent) ──
+  if (payload.sync.length > 0) {
+    lines.push(`  ${teal("──")} ${bold("Git Sync")} ${teal("─".repeat(35))}`)
+    const agentNameWidth = Math.max(12, ...payload.sync.map((r) => r.agent.length))
+    for (const row of payload.sync) {
+      const name = row.agent.padEnd(agentNameWidth)
+      const dot = row.enabled ? green("●") : dim("○")
+      const stateText = (row.enabled ? "enabled " : "disabled").padEnd(10)
+      const detail = row.enabled ? `remote: ${row.remote}` : ""
+      lines.push(`    ${name} ${dot} ${stateText}  ${dim(detail)}`)
+    }
+    lines.push("")
+  }
+
   return lines.join("\n")
 }
 
@@ -325,7 +358,10 @@ export function formatVersionOutput(): string {
   /* v8 ignore stop */
 }
 
-export function buildStoppedStatusPayload(socketPath: string): StatusPayload {
+export function buildStoppedStatusPayload(
+  socketPath: string,
+  syncRows: StatusSyncRow[] = [],
+): StatusPayload {
   const metadata = getRuntimeMetadata()
   const repoRoot = getRepoRoot()
   return {
@@ -342,15 +378,23 @@ export function buildStoppedStatusPayload(socketPath: string): StatusPayload {
       senseCount: 0,
       entryPath: path.join(repoRoot, "dist", "heart", "daemon", "daemon-entry.js"),
       mode: detectRuntimeMode(repoRoot),
-      syncEnabled: false,
-      syncRemote: "origin",
     },
     senses: [],
     workers: [],
+    sync: syncRows,
   }
 }
 
 export function daemonUnavailableStatusOutput(socketPath: string, healthFilePath?: string): string {
+  // Read per-agent sync config from disk so the user still sees it when the daemon is down.
+  // Best-effort: any fs error returns [] and the section is omitted.
+  let syncRows: StatusSyncRow[] = []
+  try {
+    syncRows = listBundleSyncRows()
+  } catch {
+    // listBundleSyncRows already swallows fs errors internally; this catch is a defensive
+    // safety net for environments where the fs module itself is partially mocked.
+  }
   /* v8 ignore start — tombstone read tested in daemon-status-tombstone.test; branch misreported @preserve */
   const tombstone = readDaemonTombstone()
   const deathLine = tombstone
@@ -362,7 +406,7 @@ export function daemonUnavailableStatusOutput(socketPath: string, healthFilePath
     formatDaemonStatusOutput({
       ok: true,
       summary: "daemon not running",
-      data: buildStoppedStatusPayload(socketPath),
+      data: buildStoppedStatusPayload(socketPath, syncRows),
     }, "daemon not running"),
     "",
   ]
