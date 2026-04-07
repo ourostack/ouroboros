@@ -587,7 +587,7 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
         }
         const msgCount = messages.filter(m => m.role === "user" || m.role === "assistant").length
         const timeAgo = options.lastActivityAt ? formatTimeAgo(new Date(options.lastActivityAt)) : null
-        const summary = `  resuming session (${msgCount} messages${timeAgo ? ` · last active ${timeAgo}` : ""})`
+        const summary = `  resuming session · ${msgCount} messages${timeAgo ? ` · last active ${timeAgo}` : ""} · showing recent`
         tuiStore.addSessionHistory(summary, lastExchanges)
       }
       /* v8 ignore stop */
