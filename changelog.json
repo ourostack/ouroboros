@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.244",
+      "changes": [
+        "refactor(sync): git-status-based bundle sync \u2014 postTurnPush discovers dirty files via `git status --porcelain` instead of broken explicit trackSyncWrite tracking (only 3/9 writers used it). Removed dead infrastructure. Remote push optional and non-fatal.",
+        "feat(tui): queued input steer \u2014 messages typed while agent is thinking appear dimmed above input area. UP/ESC pops all queued messages back into input for editing. Placeholder hint. Multiple messages supported, each sent as separate turn.",
+        "chore: deleted legacy InkCliApp adapter (776 lines dead code)."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.243",
       "changes": [
         "fix(daemon): per-agent Git Sync in `ouro status` \u2014 was always showing `disabled` regardless of any agent's `agent.json`, because the daemon process has no argv-derived agent identity so `getSyncConfig()` fell into its catch. Status payload now carries a per-agent `sync` array (one row per enabled bundle) rendered as its own section like Senses and Workers, instead of a single global field on the overview block."
