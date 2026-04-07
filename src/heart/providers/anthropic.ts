@@ -8,6 +8,7 @@ import type { ProviderCapability, ProviderErrorClassification, ProviderRuntime, 
 import { SettleStreamer } from "../streaming";
 import type { TurnResult } from "../streaming";
 import { getModelCapabilities } from "../model-capabilities";
+import { classifyHttpError } from "./error-classification";
 
 export type AnthropicThinkingBlock =
   | { type: "thinking"; thinking: string; signature: string }
@@ -224,30 +225,14 @@ function mergeAnthropicToolArguments(current: string, partial: string): string {
   return current + partial
 }
 
-/* v8 ignore start -- shared network error utility, tested via classification tests @preserve */
-function isNetworkError(error: Error): boolean {
-  const code = (error as NodeJS.ErrnoException).code || ""
-  if (["ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "ETIMEDOUT", "EPIPE",
-       "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH", "ECONNABORTED"].includes(code)) return true
-  const msg = error.message || ""
-  return msg.includes("fetch failed") || msg.includes("socket hang up") || msg.includes("getaddrinfo")
-}
-/* v8 ignore stop */
-
 export function classifyAnthropicError(error: Error): ProviderErrorClassification {
-  const status = (error as HttpError).status
-  if (status === 401 || status === 403 || isAnthropicAuthFailure(error)) return "auth-failure"
-  if (status === 429) return "rate-limit"
-  if (status === 529 || (status && status >= 500)) return "server-error"
-  if (isNetworkError(error)) return "network-error"
-  return "unknown"
+  return classifyHttpError(error, {
+    isAuthFailure: isAnthropicAuthFailure,
+    isServerError: (e) => (e as HttpError).status === 529,
+  })
 }
 
-/* v8 ignore start -- auth detection: only called from classifyAnthropicError which always passes Error @preserve */
-function isAnthropicAuthFailure(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  const status = (error as HttpError).status;
-  if (status === 401 || status === 403) return true;
+function isAnthropicAuthFailure(error: Error): boolean {
   const lower = error.message.toLowerCase();
   return (
     lower.includes("oauth authentication") ||
@@ -256,7 +241,6 @@ function isAnthropicAuthFailure(error: unknown): boolean {
     lower.includes("invalid api key")
   );
 }
-/* v8 ignore stop */
 
 
 async function streamAnthropicMessages(
@@ -455,7 +439,6 @@ export function createAnthropicProviderRuntime(model: string): ProviderRuntime {
   function createClient(token: string): Anthropic {
     return new Anthropic({
       authToken: token,
-      timeout: 30000,
       maxRetries: 0,
       defaultHeaders: {
         "anthropic-beta": ANTHROPIC_OAUTH_BETA_HEADER,

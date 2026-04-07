@@ -5,29 +5,11 @@ import type { ProviderCapability, ProviderErrorClassification, ProviderRuntime, 
 import type { ResponseItem, TurnResult } from "../streaming";
 import { streamChatCompletion, streamResponsesApi, toResponsesInput, toResponsesTools } from "../streaming";
 import { getModelCapabilities } from "../model-capabilities";
+import { classifyHttpError } from "./error-classification";
 
-interface HttpError extends Error { status?: number }
-
-/* v8 ignore start -- duplicated from shared provider utils, tested there @preserve */
-function isNetworkError(error: Error): boolean {
-  const code = (error as NodeJS.ErrnoException).code || ""
-  if (["ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "ETIMEDOUT", "EPIPE",
-       "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH", "ECONNABORTED"].includes(code)) return true
-  const msg = error.message || ""
-  return msg.includes("fetch failed") || msg.includes("socket hang up") || msg.includes("getaddrinfo")
-}
-/* v8 ignore stop */
-
-/* v8 ignore start -- duplicated classification pattern, tested via provider unit tests @preserve */
 export function classifyGithubCopilotError(error: Error): ProviderErrorClassification {
-  const status = (error as HttpError).status
-  if (status === 401 || status === 403) return "auth-failure"
-  if (status === 429) return "rate-limit"
-  if (status && status >= 500) return "server-error"
-  if (isNetworkError(error)) return "network-error"
-  return "unknown"
+  return classifyHttpError(error)
 }
-/* v8 ignore stop */
 
 
 export function createGithubCopilotProviderRuntime(model: string): ProviderRuntime {
@@ -58,7 +40,6 @@ export function createGithubCopilotProviderRuntime(model: string): ProviderRunti
   const client = new OpenAI({
     apiKey: config.githubToken,
     baseURL: config.baseUrl,
-    timeout: 30000,
     maxRetries: 0,
   });
 

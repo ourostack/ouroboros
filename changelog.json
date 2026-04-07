@@ -11,7 +11,10 @@
       "version": "0.1.0-alpha.242",
       "changes": [
         "fix(friends): stable local CLI identity \u2014 dropped hostname from external ID (was `username@hostname`, now just `username`). macOS hostname instability (`Mac` vs `Aris-MacBook-Pro.local`) was creating duplicate friend records with separate sessions and trust levels.",
-        "feat(friends): migration fallback \u2014 FriendResolver now searches for old `username@*` format IDs when exact match fails, linking new stable ID to existing friend record."
+        "feat(friends): migration fallback \u2014 FriendResolver now searches for old `username@*` format IDs when exact match fails, linking new stable ID to existing friend record.",
+        "fix(heart): retry-everything-except-blocklist policy \u2014 the SDK 'Request timed out.' error from MiniMax (and other providers) was reaching slugger as a terminal failure because neither the generic isTransientError detector nor the per-provider classifier recognized it. Replaced the two-layer transient detection with a small blocklist (HTTP 400/401/403/404/422 + classifications auth-failure/usage-limit). Default policy now retries every other error.",
+        "fix(heart/providers): drop the 30s OpenAI/Anthropic SDK timeout from all five providers (anthropic, azure, github-copilot, minimax, openai-codex). The SDK timeout caps the entire stream lifetime, so 30s killed any reasoning model mid-generation. SDK defaults (\u224810min) are sane.",
+        "refactor(heart/providers): consolidate duplicated isNetworkError + classifyXxxError scaffolding into a shared `error-classification.ts` module. Each provider now delegates via `classifyHttpError(err, overrides)` and only carries its own provider-specific quirks (Anthropic 529, Codex usage-limit message detection)."
       ]
     },
     {
