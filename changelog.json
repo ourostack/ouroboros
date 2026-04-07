@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.254",
+      "changes": [
+        "fix(daemon): orphan-cleanup fallback no longer kills processes from sibling harness instances. On startup, `killOrphanProcesses` scans `ps` for harness entry points (`agent-entry.js`, `daemon-entry.js`, `bluebubbles/entry.js`, `teams-entry.js`) and SIGTERMs them when the pidfile is missing. Previously any matching process was fair game, so a vitest-driven harness run from a sibling worktree (or a parallel Claude Code session running the coverage gate) would terminate the production daemon's children, triggering cascading graceful shutdowns and making production slugger unavailable for seconds-to-minutes at a time. Now the fallback only flags true orphans \u2014 processes whose PPID has been reparented to init (PID 1). Sibling daemons' live-parented children are left alone. New exported helper `parseOrphanPidsFromPs` isolates the filter for direct unit coverage. Complements the test-isolation guard shipped in alpha.253 (#333): that PR stopped tests from SENDING `inner.wake testagent` commands into the production socket; this PR stops the production daemon from SIGTERMing test-spawned child processes during its own startup."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.253",
       "changes": [
         "fix(daemon): test-isolation guard \u2014 stop tests from leaking real `inner.wake` commands into the running daemon. A pattern in 36+ test files mocks `getAgentName` to the literal `\"testagent\"` but does NOT mock `socket-client`, so any code path through pondering / rest / coding feedback fires a real socket connection at /tmp/ouroboros-daemon.sock with `inner.wake testagent`. The daemon errored on every command (`Unknown managed agent 'testagent'`) and at flood volumes that contributed to a real outage on the developer's machine. The fix is in `socket-client.ts` itself: detect vitest via `process.argv` (no env vars) and convert all socket operations into safe no-ops. Tests that legitimately exercise the real transport (socket-client.test.ts, daemon-cli-defaults.test.ts) opt out of the guard via a new `__bypassVitestGuardForTests()` setter that lives on globalThis to survive `vi.resetModules()`. New nerves events: `daemon.socket_command_test_blocked`, `daemon.inner_wake_test_blocked`.",
