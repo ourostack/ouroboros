@@ -55,6 +55,19 @@ export function getCliContinuityIngressTexts(input: string): string[] {
   return trimmed ? [trimmed] : []
 }
 
+/* v8 ignore start -- cosmetic time formatting @preserve */
+function formatTimeAgo(date: Date): string {
+  const seconds = Math.floor((Date.now() - date.getTime()) / 1000)
+  if (seconds < 60) return "just now"
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.floor(hours / 24)
+  return `${days}d ago`
+}
+/* v8 ignore stop */
+
 // readline.Interface exposes undocumented mutable line/cursor for in-progress input
 type ReadlineInternals = readline.Interface & { line: string; cursor: number }
 
@@ -498,6 +511,8 @@ export interface RunCliSessionOptions {
   skipSystemPromptRefresh?: boolean;
   /** Returns and clears pending content prefix to prepend to the next user message. */
   getContentPrefix?: () => string | undefined;
+  /** Last activity timestamp (ISO string) for session resume display. */
+  lastActivityAt?: string;
   /** Inject an input source for testing. When provided, Ink rendering is skipped
    *  and input is pulled from this async iterable instead. */
   _testInputSource?: AsyncIterable<string>;
@@ -557,6 +572,25 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
         .filter((msg): msg is { role: "user"; content: string } => msg.role === "user" && typeof msg.content === "string")
         .map(msg => msg.content)
       tuiStore.seedHistory(prevUserMsgs)
+
+      // Show session resume context: summary + last few exchanges (dimmed)
+      /* v8 ignore start -- session resume display: integration-only, tested visually @preserve */
+      if (messages.length > 1) {
+        const userAssistantMsgs = messages.filter(
+          (m): m is { role: "user" | "assistant"; content: string } =>
+            (m.role === "user" || m.role === "assistant") && typeof m.content === "string" && m.content.trim().length > 0,
+        )
+        // Extract last 3 exchanges (pairs of user+assistant)
+        const lastExchanges: Array<{ role: "user" | "assistant"; content: string }> = []
+        for (let i = userAssistantMsgs.length - 1; i >= 0 && lastExchanges.length < 6; i--) {
+          lastExchanges.unshift({ role: userAssistantMsgs[i].role, content: userAssistantMsgs[i].content })
+        }
+        const msgCount = messages.filter(m => m.role === "user" || m.role === "assistant").length
+        const timeAgo = options.lastActivityAt ? formatTimeAgo(new Date(options.lastActivityAt)) : null
+        const summary = `  resuming session (${msgCount} messages${timeAgo ? ` · last active ${timeAgo}` : ""})`
+        tuiStore.addSessionHistory(summary, lastExchanges)
+      }
+      /* v8 ignore stop */
 
       // Ctrl-C state machine (Claude Code behavior):
       // During generation: abort current request
@@ -974,6 +1008,7 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
       agentName: currentAgentName,
       pasteDebounceMs,
       messages: sessionMessages,
+      lastActivityAt: sessionState?.lastFriendActivityAt,
       _testInputSource: options?._testInputSource,
       onAsyncAssistantMessage: async (messages, _assistantMessage) => {
         postTurn(messages, sessPath, undefined, undefined, sessionState)

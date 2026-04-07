@@ -41,7 +41,7 @@ function ringColor(elapsedSec: number): string {
 
 export interface CompletedMessage {
   id: string
-  role: "user" | "assistant" | "system" | "tool"
+  role: "user" | "assistant" | "system" | "tool" | "history-user" | "history-assistant" | "history-summary"
   content: string
   toolCalls?: Array<{ name: string; argSummary: string; success?: boolean }>
 }
@@ -143,6 +143,29 @@ function MessageBlock({ msg }: { readonly msg: CompletedMessage }): React.ReactE
     return (
       <Box flexDirection="column">
         {visibleCalls.map((tc, i) => <ToolResultLine key={i} tc={tc} />)}
+      </Box>
+    )
+  }
+
+  // ── Session history (dimmed replay of last exchanges) ──
+  if (msg.role === "history-summary") {
+    return (
+      <Box flexDirection="column" marginTop={1}>
+        <Text dimColor>{msg.content}</Text>
+      </Box>
+    )
+  }
+  if (msg.role === "history-user") {
+    return (
+      <Box flexDirection="column" marginTop={1}>
+        <Text dimColor bold>{msg.content}</Text>
+      </Box>
+    )
+  }
+  if (msg.role === "history-assistant") {
+    return (
+      <Box flexDirection="column" marginBottom={1}>
+        {msg.content ? <Text dimColor>{msg.content}</Text> : null}
       </Box>
     )
   }
