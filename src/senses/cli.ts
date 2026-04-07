@@ -29,6 +29,7 @@ import { bundleMetaHook } from "../heart/daemon/hooks/bundle-meta"
 import { agentConfigV2Hook } from "../heart/daemon/hooks/agent-config-v2"
 import { getPackageVersion } from "../mind/bundle-manifest"
 import { StreamingWordWrapper } from "./cli-layout"
+import { resolveImageContent } from "./cli/image-paste"
 import { ImperativeSpinner } from "./cli/spinner-imperative"
 import { writeToolEnd } from "./cli/tool-display"
 
@@ -56,7 +57,7 @@ export function getCliContinuityIngressTexts(input: string): string[] {
 }
 
 /* v8 ignore start -- cosmetic time formatting @preserve */
-function formatTimeAgo(date: Date): string {
+export function formatTimeAgo(date: Date): string {
   const seconds = Math.floor((Date.now() - date.getTime()) / 1000)
   if (seconds < 60) return "just now"
   const minutes = Math.floor(seconds / 60)
@@ -525,6 +526,7 @@ export interface RunCliSessionOptions {
     callbacks: ChannelCallbacks & { flushMarkdown(): void },
     signal?: AbortSignal,
     toolContext?: ToolContext,
+    userContent?: OpenAI.ChatCompletionContentPart[],
   ) => Promise<{ usage?: UsageData; turnOutcome?: string; commandAction?: string }>;
 }
 
@@ -547,6 +549,8 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
   const useTui = !options._testInputSource && process.stdin.isTTY === true
   let currentAbort: AbortController | null = null
   let closed = false
+  // eslint-disable-next-line prefer-const -- set by onImageMap callback during input
+  let pendingImages = null as Map<number, string> | null
   let cliCallbacks!: ChannelCallbacks & { flushMarkdown(): void }
   let tuiStore: import("./cli/tui-store").TuiStore | null = null
   let inkRef: { unmount: () => void } | null = null
@@ -573,8 +577,7 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
         .map(msg => msg.content)
       tuiStore.seedHistory(prevUserMsgs)
 
-      // Show session resume context: summary + last few exchanges (dimmed)
-      /* v8 ignore start -- session resume display: integration-only, tested visually @preserve */
+      // Show session resume context: last 2 exchanges as normal messages
       if (messages.length > 1) {
         const userAssistantMsgs = messages.filter(
           (m): m is { role: "user" | "assistant"; content: string } =>
@@ -585,12 +588,16 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
         for (let i = userAssistantMsgs.length - 1; i >= 0 && lastExchanges.length < 4; i--) {
           lastExchanges.unshift({ role: userAssistantMsgs[i].role, content: userAssistantMsgs[i].content })
         }
-        const msgCount = messages.filter(m => m.role === "user" || m.role === "assistant").length
-        const timeAgo = options.lastActivityAt ? formatTimeAgo(new Date(options.lastActivityAt)) : null
-        const summary = `  resuming session · ${msgCount} messages${timeAgo ? ` · last active ${timeAgo}` : ""} · showing recent`
-        tuiStore.addSessionHistory(summary, lastExchanges)
+        tuiStore.addResumeMessages(lastExchanges)
       }
-      /* v8 ignore stop */
+
+      // Compute resumeInfo for header banner
+      const resumeInfo = messages.length > 1
+        ? {
+          messageCount: messages.filter(m => m.role === "user" || m.role === "assistant").length,
+          timeAgo: options.lastActivityAt ? formatTimeAgo(new Date(options.lastActivityAt)) : "unknown",
+        }
+        : undefined
 
       // Ctrl-C state machine (Claude Code behavior):
       // During generation: abort current request
@@ -650,6 +657,8 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
           onPopQueue: () => { const items = storeRef.popAllQueuedForEditing(); inputQueue!.drainAll(); return items },
           headerShown: storeRef.headerShown,
           cwd: process.cwd().replace(process.env.HOME ?? "", "~"),
+          resumeInfo,
+          onImageMap: (images: Map<number, string>) => { pendingImages = images },
         })
       }
 
@@ -846,12 +855,21 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
       currentAbort = new AbortController()
       if (tuiStore) tuiStore.suppressInput()
       inputCtrl?.suppress(() => { currentAbort?.abort() })
+
+      // Resolve pending image content before the turn executes
+      let contentParts: OpenAI.ChatCompletionContentPart[] | null = null
+      const currentImages = pendingImages
+      if (currentImages && currentImages.size > 0) {
+        contentParts = await resolveImageContent(input, currentImages)
+        pendingImages = null
+      }
+
       let result: { usage?: UsageData; turnOutcome?: string; commandAction?: string } | undefined
       try {
         if (options.runTurn) {
           // Pipeline-based turn: the runTurn callback handles user message assembly,
           // pending drain, trust gate, runAgent, postTurn, and token accumulation.
-          result = await options.runTurn(messages, input, cliCallbacks, currentAbort.signal, effectiveToolContext)
+          result = await options.runTurn(messages, input, cliCallbacks, currentAbort.signal, effectiveToolContext, contentParts ?? undefined)
 
           // Handle pipeline-intercepted commands with loop-control side effects
           if (result?.turnOutcome === "command") {
@@ -872,7 +890,10 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
         } else {
           // Legacy path: inline runAgent (used by serpent guide and tests)
           const prefix = options.getContentPrefix?.()
-          messages.push({ role: "user", content: prefix ? `${prefix}\n\n${input}` : input })
+          const userContent = contentParts
+            ? contentParts
+            : (prefix ? `${prefix}\n\n${input}` : input)
+          messages.push({ role: "user", content: userContent as any })
           const traceId = createTraceId()
           result = await runAgent(messages, cliCallbacks, options.skipSystemPromptRefresh ? undefined : "cli", currentAbort.signal, {
             toolChoiceRequired: getEffectiveToolChoiceRequired(),
@@ -1013,7 +1034,7 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
       onAsyncAssistantMessage: async (messages, _assistantMessage) => {
         postTurn(messages, sessPath, undefined, undefined, sessionState)
       },
-      runTurn: async (messages, userInput, callbacks, signal, toolContext) => {
+      runTurn: async (messages, userInput, callbacks, signal, toolContext, userContent) => {
         // Run the full per-turn pipeline: resolve -> gate -> session -> drain -> runAgent -> postTurn -> tokens
         // User message passed via input.messages so the pipeline can prepend pending messages to it.
         const failoverState = cliFailoverState
@@ -1039,7 +1060,7 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
           channel: "cli",
           sessionKey: "session",
           capabilities: cliCapabilities,
-          messages: [{ role: "user", content: userInput }],
+          messages: [{ role: "user", content: userContent ?? userInput }],
           continuityIngressTexts: getCliContinuityIngressTexts(userInput),
           callbacks: failoverAwareCallbacks,
           friendResolver: { resolve: () => Promise.resolve(resolvedContext) },

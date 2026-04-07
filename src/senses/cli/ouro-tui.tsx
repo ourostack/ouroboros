@@ -12,6 +12,7 @@
 import React, { useState, useRef, useEffect, useCallback } from "react"
 import { Text, Box, Static, useInput, useStdin } from "ink"
 import { StreamingMarkdown } from "./streaming-markdown"
+import { processSubmitInput } from "./image-paste"
 
 // ─── Ouroboros Brand Palette (ANSI RGB) ─────────────────────────────
 // From packages/outlook-ui/src/style.css and ouroboros.bot
@@ -41,7 +42,7 @@ function ringColor(elapsedSec: number): string {
 
 export interface CompletedMessage {
   id: string
-  role: "user" | "assistant" | "system" | "tool" | "history-user" | "history-assistant" | "history-summary" | "history-end"
+  role: "user" | "assistant" | "system" | "tool"
   content: string
   toolCalls?: Array<{ name: string; argSummary: string; success?: boolean }>
 }
@@ -73,6 +74,8 @@ export interface TuiProps {
   readonly onPopQueue: () => string[]
   readonly headerShown: boolean
   readonly cwd: string
+  readonly resumeInfo?: { messageCount: number; timeAgo: string }
+  readonly onImageMap?: (images: Map<number, string>) => void
 }
 
 // ─── Header ─────────────────────────────────────────────────────────
@@ -87,11 +90,12 @@ function termWidth(): number {
   return process.stdout.columns || 80
 }
 
-function Header({ agentName, model, contextPercent, cwd }: {
+function Header({ agentName, model, contextPercent, cwd, resumeInfo }: {
   readonly agentName: string
   readonly model: string
   readonly contextPercent: number
   readonly cwd: string
+  readonly resumeInfo?: { messageCount: number; timeAgo: string }
 }): React.ReactElement {
   const showCtx = contextPercent > 0
   const info = [agentName, model, cwd, showCtx ? `ctx ${contextPercent}%` : ""].filter(Boolean).join(" · ")
@@ -118,6 +122,9 @@ function Header({ agentName, model, contextPercent, cwd }: {
       <Text color={OURO.scale}>{line1}</Text>
       <Text color={OURO.scale}>{line2}</Text>
       <Text color={OURO.scale}>{TAIL3}<Text color={OURO.glow}>{line3text}</Text><Text color={OURO.scale}>{HEAD3}</Text></Text>
+      {resumeInfo ? (
+        <Text color={OURO.teal}>{"  resuming \u00b7 "}{resumeInfo.messageCount}{" messages \u00b7 last active "}{resumeInfo.timeAgo}</Text>
+      ) : null}
     </Box>
   )
 }
@@ -148,41 +155,6 @@ function MessageBlock({ msg }: { readonly msg: CompletedMessage }): React.ReactE
     return (
       <Box flexDirection="column">
         {visibleCalls.map((tc, i) => <ToolResultLine key={i} tc={tc} />)}
-      </Box>
-    )
-  }
-
-  // ── Session history (dimmed recap of recent exchanges) ──
-  if (msg.role === "history-summary") {
-    return (
-      <Box flexDirection="column" marginTop={1} marginBottom={1}>
-        <Text color={OURO.shadow}>{msg.content}</Text>
-      </Box>
-    )
-  }
-  if (msg.role === "history-user") {
-    return (
-      <Box flexDirection="column" marginTop={1}>
-        <Box>
-          <Text color={OURO.shadow} bold>{") "}</Text>
-          <Text color={OURO.shadow} bold>{msg.content}</Text>
-        </Box>
-        <Box marginBottom={1}><Text>{""}</Text></Box>
-      </Box>
-    )
-  }
-  if (msg.role === "history-assistant") {
-    return (
-      <Box flexDirection="column" marginBottom={1}>
-        {msg.content ? <Text color={OURO.shadow}>{msg.content}</Text> : null}
-        <Box marginBottom={1}><Text>{""}</Text></Box>
-      </Box>
-    )
-  }
-  if (msg.role === "history-end") {
-    return (
-      <Box flexDirection="column" marginBottom={1}>
-        <Text color={OURO.separator}>{"─".repeat(termWidth())}</Text>
       </Box>
     )
   }
@@ -335,7 +307,7 @@ export function QueuedMessages({ items }: {
 
 // ─── Input ──────────────────────────────────────────────────────────
 
-function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agentName, model }: {
+function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agentName, model, onImageMap }: {
   readonly onSubmit: (text: string) => void
   readonly onCtrlC: (hasInput: boolean) => CtrlCAction
   readonly history: readonly string[]
@@ -343,6 +315,7 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
   readonly onPopQueue: () => string[]
   readonly agentName: string
   readonly model: string
+  readonly onImageMap?: (images: Map<number, string>) => void
 }): React.ReactElement {
   const [input, setInput] = useState("")
   const [cursorPos, setCursorPos] = useState(0) // cursor position within input
@@ -448,7 +421,13 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
         return
       }
       const text = inputRef.current
-      if (text.trim()) onSubmit(text)
+      if (text.trim()) {
+        const { text: processedText, images } = processSubmitInput(text)
+        if (images.size > 0 && onImageMap) {
+          onImageMap(images)
+        }
+        onSubmit(images.size > 0 ? processedText : text)
+      }
       updateInput("")
       historyIdx.current = -1
       return
@@ -640,6 +619,8 @@ export function OuroTui({
   onCtrlC,
   onPopQueue,
   cwd,
+  resumeInfo,
+  onImageMap,
 }: TuiProps): React.ReactElement {
   return (
     <Box flexDirection="column">
@@ -650,7 +631,7 @@ export function OuroTui({
             return (
               <Box key="header" flexDirection="column" marginBottom={2}>
                 <Box marginTop={1}><Text>{""}</Text></Box>
-                <Header agentName={agentName} model={model} contextPercent={contextPercent} cwd={cwd} />
+                <Header agentName={agentName} model={model} contextPercent={contextPercent} cwd={cwd} resumeInfo={resumeInfo} />
                 <Text color={OURO.shadow} dimColor>{"  Ctrl-C twice to exit \u00b7 \u2191\u2193 history \u00b7 Esc clear \u00b7 opt+Enter newline"}</Text>
               </Box>
             )
@@ -677,6 +658,7 @@ export function OuroTui({
         onPopQueue={onPopQueue}
         agentName={agentName}
         model={model}
+        onImageMap={onImageMap}
       />
     </Box>
   )
