@@ -152,11 +152,11 @@ function MessageBlock({ msg }: { readonly msg: CompletedMessage }): React.ReactE
     )
   }
 
-  // ── Session history (dimmed replay of last exchanges) ──
+  // ── Session history (dimmed recap of recent exchanges) ──
   if (msg.role === "history-summary") {
     return (
-      <Box flexDirection="column" marginTop={1}>
-        <Text dimColor>{msg.content}</Text>
+      <Box flexDirection="column" marginTop={1} marginBottom={1}>
+        <Text color={OURO.shadow}>{msg.content}</Text>
       </Box>
     )
   }
@@ -164,23 +164,25 @@ function MessageBlock({ msg }: { readonly msg: CompletedMessage }): React.ReactE
     return (
       <Box flexDirection="column" marginTop={1}>
         <Box>
-          <Text dimColor bold>{") "}</Text>
-          <Text dimColor bold>{msg.content}</Text>
+          <Text color={OURO.shadow} bold>{") "}</Text>
+          <Text color={OURO.shadow} bold>{msg.content}</Text>
         </Box>
+        <Box marginBottom={1}><Text>{""}</Text></Box>
       </Box>
     )
   }
   if (msg.role === "history-assistant") {
     return (
       <Box flexDirection="column" marginBottom={1}>
-        {msg.content ? <StreamingMarkdown text={msg.content} maxWidth={safeWidth()} /> : null}
+        {msg.content ? <Text color={OURO.shadow}>{msg.content}</Text> : null}
+        <Box marginBottom={1}><Text>{""}</Text></Box>
       </Box>
     )
   }
   if (msg.role === "history-end") {
     return (
-      <Box flexDirection="column">
-        <Text dimColor>{"─".repeat(safeWidth() + 2)}</Text>
+      <Box flexDirection="column" marginBottom={1}>
+        <Text color={OURO.separator}>{"─".repeat(termWidth())}</Text>
       </Box>
     )
   }
@@ -565,8 +567,7 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
     }
   })
 
-  // Get terminal width (capped for sanity)
-  const cols = safeWidth()
+
 
   const isMultiline = input.includes("\n")
   const inputLines = input.split("\n")
