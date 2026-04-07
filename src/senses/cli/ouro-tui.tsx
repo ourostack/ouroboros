@@ -10,7 +10,7 @@
  * ZERO business logic here — pure rendering from CliStore state.
  */
 import React, { useState, useRef, useEffect, useCallback } from "react"
-import { Text, Box, Static, useInput, useStdin } from "ink"
+import { Text, Box, Static, useInput } from "ink"
 import { StreamingMarkdown } from "./streaming-markdown"
 import { processSubmitInput } from "./image-paste"
 
@@ -326,22 +326,10 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
   const historyIdx = useRef(-1)
   const savedInput = useRef("")
 
-  // Raw stdin handler for Alt+Enter (ESC + CR/LF) — Ink 3.2's useInput splits
-  // \x1b\r into separate events, so we catch the combined sequence here.
-  const { stdin } = useStdin()
-  useEffect(() => {
-    if (!stdin) return
-    const onData = (data: Buffer) => {
-      const str = data.toString("utf-8")
-      if (str === "\x1b\r" || str === "\x1b\n") {
-        const before = inputRef.current.slice(0, cursorRef.current)
-        const after = inputRef.current.slice(cursorRef.current)
-        updateInput(before + "\n" + after, cursorRef.current + 1)
-      }
-    }
-    stdin.on("data", onData)
-    return () => { stdin.off("data", onData) }
-  }, [stdin]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Track last ESC timestamp for Alt+Enter detection.
+  // Ink 3.2 splits \x1b\r into separate escape + return events.
+  // We detect the pattern by checking if Return arrives within 50ms of Escape.
+  const lastEscTime = useRef(0)
   const tooltipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => () => {
@@ -389,6 +377,7 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
     setTooltip("")
 
     if (key.escape) {
+      lastEscTime.current = Date.now()
       if (inputRef.current) {
         updateInput("")
         historyIdx.current = -1
@@ -406,8 +395,10 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
       return
     }
     if (key.return) {
-      // Alt+Enter or Shift+Enter: insert newline
-      if (key.meta || key.shift) {
+      // Alt+Enter: detect via key.meta OR recent ESC (within 50ms — Ink splits \x1b\r)
+      const recentEsc = (Date.now() - lastEscTime.current) < 50
+      if (key.meta || key.shift || recentEsc) {
+        lastEscTime.current = 0
         const before = inputRef.current.slice(0, cursorRef.current)
         const after = inputRef.current.slice(cursorRef.current)
         updateInput(before + "\n" + after, cursorRef.current + 1)
@@ -573,7 +564,7 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
               <Text color={OURO.teal} bold>{i === 0 ? ") " : "· "}</Text>
               <Text color={OURO.bone}>{line}</Text>
               {i === inputLines.length - 1 ? (
-                cursorVisible ? <Text color={OURO.scale}>{"█"}</Text> : <Text>{" "}</Text>
+                cursorVisible ? <Text inverse>{" "}</Text> : <Text>{" "}</Text>
               ) : null}
             </Box>
           ))}
@@ -586,8 +577,10 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
           ) : (
             <>
               <Text color={OURO.bone}>{input.slice(0, cursorPos)}</Text>
-              {cursorVisible ? <Text color={OURO.scale}>{"█"}</Text> : <Text color={OURO.bone}>{input[cursorPos] ?? " "}</Text>}
-              <Text color={OURO.bone}>{input.slice(cursorPos + (cursorVisible ? 0 : 1))}</Text>
+              {cursorVisible
+                ? <Text inverse>{input[cursorPos] ?? " "}</Text>
+                : <Text color={OURO.bone}>{input[cursorPos] ?? " "}</Text>}
+              <Text color={OURO.bone}>{input.slice(cursorPos + 1)}</Text>
             </>
           )}
         </Box>
