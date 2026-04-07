@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.249",
+      "changes": [
+        "feat(cli): `ouro chat` without agent name shows agent selection (auto-selects if 1 agent, numbered list if multiple).",
+        "fix(tui): session history user messages get `) ` prefix, separator line after history, reduced to last 2 exchanges."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.248",
       "changes": [
         "feat(daemon): `ouro status` Git Sync now resolves and shows the actual remote URL via `git remote get-url`. Three states: `origin → git@github.com:me/foo.git` when the remote resolves, `local only` when sync is enabled but no remote is configured, `disabled` when sync is off. Previously you had to `cd` into the bundle and run `git remote -v` to find out where it pushes.",

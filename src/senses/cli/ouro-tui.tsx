@@ -41,7 +41,7 @@ function ringColor(elapsedSec: number): string {
 
 export interface CompletedMessage {
   id: string
-  role: "user" | "assistant" | "system" | "tool" | "history-user" | "history-assistant" | "history-summary"
+  role: "user" | "assistant" | "system" | "tool" | "history-user" | "history-assistant" | "history-summary" | "history-end"
   content: string
   toolCalls?: Array<{ name: string; argSummary: string; success?: boolean }>
 }
@@ -158,14 +158,24 @@ function MessageBlock({ msg }: { readonly msg: CompletedMessage }): React.ReactE
   if (msg.role === "history-user") {
     return (
       <Box flexDirection="column" marginTop={1}>
-        <Text dimColor bold>{msg.content}</Text>
+        <Box>
+          <Text dimColor bold>{") "}</Text>
+          <Text dimColor bold>{msg.content}</Text>
+        </Box>
       </Box>
     )
   }
   if (msg.role === "history-assistant") {
     return (
       <Box flexDirection="column" marginBottom={1}>
-        {msg.content ? <Text dimColor>{msg.content}</Text> : null}
+        {msg.content ? <StreamingMarkdown text={msg.content} maxWidth={safeWidth()} /> : null}
+      </Box>
+    )
+  }
+  if (msg.role === "history-end") {
+    return (
+      <Box flexDirection="column">
+        <Text dimColor>{"─".repeat(safeWidth() + 2)}</Text>
       </Box>
     )
   }

@@ -1887,8 +1887,36 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   }
 
   if (command.kind === "chat.connect" && deps.startChat) {
+    let agent = command.agent
+    // No agent specified — show selection
+    /* v8 ignore start -- interactive agent selection: requires real promptInput + discovered agents @preserve */
+    if (!agent) {
+      const discovered = await Promise.resolve(
+        deps.listDiscoveredAgents ? deps.listDiscoveredAgents() : defaultListDiscoveredAgents(),
+      )
+      if (discovered.length === 0) {
+        deps.writeStdout("no agents found — run `ouro` to hatch one")
+        return "no agents found"
+      }
+      if (discovered.length === 1) {
+        agent = discovered[0]
+      } else if (deps.promptInput) {
+        const prompt = `who do you want to talk to?\n${discovered.map((a, i) => `${i + 1}. ${a}`).join("\n")}\n`
+        const answer = await deps.promptInput(prompt)
+        agent = discovered.includes(answer) ? answer : discovered[parseInt(answer, 10) - 1]
+        if (!agent) {
+          deps.writeStdout("invalid selection")
+          return "invalid selection"
+        }
+      } else {
+        const message = `who do you want to talk to? ${discovered.join(", ")} (use: ouro chat <agent>)`
+        deps.writeStdout(message)
+        return message
+      }
+    }
+    /* v8 ignore stop */
     await ensureDaemonRunning(deps)
-    await deps.startChat(command.agent)
+    await deps.startChat(agent)
     return ""
   }
 
