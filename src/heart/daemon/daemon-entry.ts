@@ -179,14 +179,23 @@ void daemon.start().then(() => {
 })
 
 process.on("SIGINT", () => {
-  _gracefulShutdown = true
+  // ALWAYS write a tombstone, even on signal-driven shutdown. The previous
+  // behavior was to set _gracefulShutdown=true and skip the tombstone, which
+  // meant ANY external SIGINT/SIGTERM (launchd policy, OOM killer, manual
+  // kill, killOrphanProcesses from a sibling daemon) silently disappeared
+  // from the death log. The user lost weeks of visibility into why their
+  // daemon kept dying. Tombstones are informational — having a "sigint"
+  // tombstone is strictly better than silence.
+  _tombstoneWritten = true
+  writeDaemonTombstone("sigint", new Error("daemon received SIGINT"))
   for (const s of habitSchedulers) { s.stopWatching(); s.stop() }
   setTimeout(() => process.exit(1), 5_000).unref()
   void daemon.stop().then(() => process.exit(0))
 })
 
 process.on("SIGTERM", () => {
-  _gracefulShutdown = true
+  _tombstoneWritten = true
+  writeDaemonTombstone("sigterm", new Error("daemon received SIGTERM"))
   for (const s of habitSchedulers) { s.stopWatching(); s.stop() }
   setTimeout(() => process.exit(1), 5_000).unref()
   void daemon.stop().then(() => process.exit(0))
@@ -202,7 +211,6 @@ process.stderr?.on?.("error", () => {})
 /* v8 ignore start -- global exception handlers: genuinely untestable in vitest; exercised by real daemon crashes @preserve */
 let _uncaughtCount = 0
 let _tombstoneWritten = false
-let _gracefulShutdown = false
 let _lastKnownCause: Error | null = null
 const CIRCUIT_BREAKER_WINDOW_MS = 60_000
 const CIRCUIT_BREAKER_MAX = 10
@@ -256,8 +264,14 @@ process.on("unhandledRejection", (reason) => {
 
 // Catch-all: write tombstone on any exit where we didn't already record the cause.
 // process.on('exit') is synchronous-only — writeDaemonTombstone uses writeFileSync, so it works.
+//
+// Previously this skipped writing if `_gracefulShutdown` was true, which made
+// SIGINT/SIGTERM-driven exits invisible in the death log. The signal handlers
+// above now always write their own tombstone before exiting, so this catch-all
+// only runs for exits the signal handlers didn't reach (e.g. process.exit
+// called from somewhere unexpected).
 process.on("exit", (code) => {
-  if (_tombstoneWritten || _gracefulShutdown) return
+  if (_tombstoneWritten) return
   const reason = code === 0 ? "unexpectedCleanExit" : "unexpectedExit"
   const error = _lastKnownCause ?? new Error(`daemon exited with code ${code} (no specific cause captured)`)
   writeDaemonTombstone(reason, error)

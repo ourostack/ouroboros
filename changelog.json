@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.259",
+      "changes": [
+        "fix(daemon): SIGINT and SIGTERM now ALWAYS write a tombstone before exiting, instead of silently skipping when `_gracefulShutdown` was set. The previous behavior made signal-driven shutdowns invisible in `~/.ouro-cli/daemon-death.json` \u2014 launchd policy decisions, the OOM killer, manual `kill`, and `killOrphanProcesses` from a sibling daemon all looked identical to a clean exit. After a real outage where the user's daemon kept dying with a tombstone from a week earlier, this restores observability: every signal-driven exit now records `reason: \"sigint\"` or `reason: \"sigterm\"` with timestamp + recentCrashes accumulator. The catch-all `process.on('exit')` handler also no longer short-circuits on graceful shutdown."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.258",
       "changes": [
         "fix(tui): deferred ESC handling fixes arrow keys and Alt+Enter.",

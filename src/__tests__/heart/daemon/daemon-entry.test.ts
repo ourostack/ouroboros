@@ -205,10 +205,18 @@ describe("daemon entrypoint", () => {
     // HabitScheduler should be stopped on SIGINT
     expect(habitSchedulerStopMock).toHaveBeenCalled()
     expect(exitSpy).toHaveBeenCalledWith(0)
+    // Tombstone is now written on SIGINT (regression: previous behavior was
+    // to set _gracefulShutdown=true and skip the tombstone, leaving signal-driven
+    // shutdowns invisible in the death log)
+    expect(writeDaemonTombstoneMock).toHaveBeenCalledWith("sigint", expect.any(Error))
 
+    writeDaemonTombstoneMock.mockClear()
     onHandlers.SIGTERM?.()
     await Promise.resolve()
     expect(exitSpy).toHaveBeenCalledWith(0)
+    // Same fix for SIGTERM — was the more common silent-death cause because
+    // killOrphanProcesses, launchd policies, and the OOM killer all use SIGTERM
+    expect(writeDaemonTombstoneMock).toHaveBeenCalledWith("sigterm", expect.any(Error))
 
     argvSpy.mockRestore()
   })
