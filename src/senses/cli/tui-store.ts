@@ -33,11 +33,13 @@ export class TuiStore {
   private _listeners = new Set<Listener>()
   private _headerShown = false
   private _inputHistory: string[] = []
+  private _queuedInputs: string[] = []
 
   get completedMessages(): readonly CompletedMessage[] { return this._completed }
   get live(): Readonly<LiveState> { return this._live }
   get headerShown(): boolean { return this._headerShown }
   get inputHistory(): readonly string[] { return this._inputHistory }
+  get queuedInputs(): readonly string[] { return this._queuedInputs }
 
   /** Elapsed seconds since spinner started — computed on demand, not stored */
   getElapsed(): number {
@@ -187,6 +189,33 @@ export class TuiStore {
   /** Seed input history from previous session messages (display only, no rendering) */
   seedHistory(texts: string[]): void {
     this._inputHistory.push(...texts)
+  }
+
+  // ─── Queued input display ────────────────────────────────────────
+
+  enqueueInput(text: string): void {
+    this._queuedInputs.push(text)
+    this.notify()
+  }
+
+  dequeueInput(text: string): void {
+    const idx = this._queuedInputs.indexOf(text)
+    if (idx !== -1) {
+      this._queuedInputs.splice(idx, 1)
+    }
+    this.notify()
+  }
+
+  popAllQueuedForEditing(): string[] {
+    const copy = [...this._queuedInputs]
+    this._queuedInputs = []
+    this.notify()
+    return copy
+  }
+
+  clearQueue(): void {
+    this._queuedInputs = []
+    this.notify()
   }
 }
 
