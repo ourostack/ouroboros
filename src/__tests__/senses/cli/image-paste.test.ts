@@ -305,14 +305,12 @@ describe("image-paste utilities", () => {
       expect(result.images.get(1)).toBe(longPath)
     })
 
-    it("tryReadImage: 0-byte file returns base64 of empty buffer", async () => {
+    it("tryReadImage: 0-byte file returns null (empty files are not valid images)", async () => {
       const fs = await import("fs/promises")
       vi.mocked(fs.readFile).mockResolvedValue(Buffer.alloc(0))
       const { tryReadImage } = await import("../../../senses/cli/image-paste")
       const result = await tryReadImage("/Users/foo/empty.png")
-      expect(result).not.toBeNull()
-      expect(result!.base64).toBe("")
-      expect(result!.mediaType).toBe("image/png")
+      expect(result).toBeNull()
     })
 
     it("resolveImageContent: skips unreadable image, keeps readable one", async () => {
