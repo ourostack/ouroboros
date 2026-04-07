@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.250",
+      "changes": [
+        "fix(sync): surface 'bundle is not a git repo' as an actionable error instead of silently failing. Previously, enabling `sync.enabled` on a bundle that had never been `git init`'d produced a generic `git status` failure buried in nerves logs; the agent saw nothing in its start-of-turn packet and the user saw nothing in `ouro status`. Now: (1) `preTurnPull` and `postTurnPush` detect the missing `.git` directory before touching git and return an actionable error with the bundle path and the `git init` hint; (2) this error propagates via `ctx.syncFailure` into the agent's Sync warning, so the agent can offer to run `git init` or just do it; (3) `ouro status` shows a red `error` state with `not a git repo — run \\`git init\\` to enable sync` next to the offending bundle. New nerves event: `heart.sync_not_a_repo`."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.249",
       "changes": [
         "feat(cli): `ouro chat` without agent name shows agent selection (auto-selects if 1 agent, numbered list if multiple).",
