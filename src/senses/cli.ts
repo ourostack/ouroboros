@@ -56,7 +56,7 @@ export function getCliContinuityIngressTexts(input: string): string[] {
 }
 
 /* v8 ignore start -- cosmetic time formatting @preserve */
-function formatTimeAgo(date: Date): string {
+export function formatTimeAgo(date: Date): string {
   const seconds = Math.floor((Date.now() - date.getTime()) / 1000)
   if (seconds < 60) return "just now"
   const minutes = Math.floor(seconds / 60)
@@ -572,25 +572,6 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
         .filter((msg): msg is { role: "user"; content: string } => msg.role === "user" && typeof msg.content === "string")
         .map(msg => msg.content)
       tuiStore.seedHistory(prevUserMsgs)
-
-      // Show session resume context: summary + last few exchanges (dimmed)
-      /* v8 ignore start -- session resume display: integration-only, tested visually @preserve */
-      if (messages.length > 1) {
-        const userAssistantMsgs = messages.filter(
-          (m): m is { role: "user" | "assistant"; content: string } =>
-            (m.role === "user" || m.role === "assistant") && typeof m.content === "string" && m.content.trim().length > 0,
-        )
-        // Extract last 2 exchanges (up to 4 messages)
-        const lastExchanges: Array<{ role: "user" | "assistant"; content: string }> = []
-        for (let i = userAssistantMsgs.length - 1; i >= 0 && lastExchanges.length < 4; i--) {
-          lastExchanges.unshift({ role: userAssistantMsgs[i].role, content: userAssistantMsgs[i].content })
-        }
-        const msgCount = messages.filter(m => m.role === "user" || m.role === "assistant").length
-        const timeAgo = options.lastActivityAt ? formatTimeAgo(new Date(options.lastActivityAt)) : null
-        const summary = `  resuming session · ${msgCount} messages${timeAgo ? ` · last active ${timeAgo}` : ""} · showing recent`
-        tuiStore.addSessionHistory(summary, lastExchanges)
-      }
-      /* v8 ignore stop */
 
       // Ctrl-C state machine (Claude Code behavior):
       // During generation: abort current request

@@ -41,7 +41,7 @@ function ringColor(elapsedSec: number): string {
 
 export interface CompletedMessage {
   id: string
-  role: "user" | "assistant" | "system" | "tool" | "history-user" | "history-assistant" | "history-summary" | "history-end"
+  role: "user" | "assistant" | "system" | "tool"
   content: string
   toolCalls?: Array<{ name: string; argSummary: string; success?: boolean }>
 }
@@ -148,41 +148,6 @@ function MessageBlock({ msg }: { readonly msg: CompletedMessage }): React.ReactE
     return (
       <Box flexDirection="column">
         {visibleCalls.map((tc, i) => <ToolResultLine key={i} tc={tc} />)}
-      </Box>
-    )
-  }
-
-  // ── Session history (dimmed recap of recent exchanges) ──
-  if (msg.role === "history-summary") {
-    return (
-      <Box flexDirection="column" marginTop={1} marginBottom={1}>
-        <Text color={OURO.shadow}>{msg.content}</Text>
-      </Box>
-    )
-  }
-  if (msg.role === "history-user") {
-    return (
-      <Box flexDirection="column" marginTop={1}>
-        <Box>
-          <Text color={OURO.shadow} bold>{") "}</Text>
-          <Text color={OURO.shadow} bold>{msg.content}</Text>
-        </Box>
-        <Box marginBottom={1}><Text>{""}</Text></Box>
-      </Box>
-    )
-  }
-  if (msg.role === "history-assistant") {
-    return (
-      <Box flexDirection="column" marginBottom={1}>
-        {msg.content ? <Text color={OURO.shadow}>{msg.content}</Text> : null}
-        <Box marginBottom={1}><Text>{""}</Text></Box>
-      </Box>
-    )
-  }
-  if (msg.role === "history-end") {
-    return (
-      <Box flexDirection="column" marginBottom={1}>
-        <Text color={OURO.separator}>{"─".repeat(termWidth())}</Text>
       </Box>
     )
   }
