@@ -11,6 +11,11 @@ export interface SyncResult {
 
 /**
  * Pre-turn pull: sync the agent bundle from remote before assembling the start-of-turn packet.
+ *
+ * If the bundle has no git remote configured, the pull is skipped and the function
+ * returns ok — matching the no-remote behavior of postTurnPush. This supports the
+ * "local-only sync" mode where the bundle accumulates a commit log without ever
+ * pushing or pulling from a remote.
  */
 export function preTurnPull(agentRoot: string, config: SyncConfig): SyncResult {
   emitNervesEvent({
@@ -19,6 +24,36 @@ export function preTurnPull(agentRoot: string, config: SyncConfig): SyncResult {
     message: "pre-turn pull starting",
     meta: { agentRoot, remote: config.remote },
   })
+
+  // Check if any remote is configured. If not, skip the pull (local-only mode).
+  try {
+    const remoteOutput = execFileSync("git", ["remote"], {
+      cwd: agentRoot,
+      stdio: "pipe",
+      timeout: 5000,
+    }).toString().trim()
+
+    if (remoteOutput.length === 0) {
+      emitNervesEvent({
+        component: "heart",
+        event: "heart.sync_pull_end",
+        message: "pre-turn pull skipped: no remote configured",
+        meta: { agentRoot },
+      })
+      return { ok: true }
+    }
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err)
+
+    emitNervesEvent({
+      component: "heart",
+      event: "heart.sync_pull_error",
+      message: "pre-turn pull failed: git remote check failed",
+      meta: { agentRoot, error },
+    })
+
+    return { ok: false, error }
+  }
 
   try {
     execFileSync("git", ["pull", config.remote], {

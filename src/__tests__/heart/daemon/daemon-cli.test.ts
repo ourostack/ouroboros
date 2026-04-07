@@ -1361,7 +1361,7 @@ describe("ouro CLI execution", () => {
     expect(result).not.toContain("Git Sync")
   })
 
-  it("renders Git Sync as a per-agent section when sync rows are present", async () => {
+  it("renders Git Sync as a per-agent section with remote URL, local-only, and disabled states", async () => {
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
       sendCommand: vi.fn(async () => ({
@@ -1372,7 +1372,11 @@ describe("ouro CLI execution", () => {
           senses: [],
           workers: [],
           sync: [
-            { agent: "slugger", enabled: true, remote: "origin" },
+            // Enabled with a resolved remote URL
+            { agent: "slugger", enabled: true, remote: "origin", remoteUrl: "git@github.com:me/slugger-state.git" },
+            // Enabled but no remote configured (local-only mode)
+            { agent: "local-bot", enabled: true, remote: "origin" },
+            // Disabled
             { agent: "ouroboros", enabled: false, remote: "origin" },
           ],
         },
@@ -1387,11 +1391,16 @@ describe("ouro CLI execution", () => {
     const result = await runOuroCli(["status"], deps)
 
     expect(result).toContain("Git Sync")
+    // Header line
     expect(result).toContain("slugger")
+    expect(result).toContain("local-bot")
     expect(result).toContain("ouroboros")
-    expect(result).toContain("enabled")
+    // Enabled with URL: shows "<remote> → <url>"
+    expect(result).toContain("origin → git@github.com:me/slugger-state.git")
+    // Enabled without URL: shows "local only"
+    expect(result).toContain("local only")
+    // Disabled state
     expect(result).toContain("disabled")
-    expect(result).toContain("remote: origin")
   })
 
   it("renders daemon status with Overview, Senses, and Workers sections", async () => {

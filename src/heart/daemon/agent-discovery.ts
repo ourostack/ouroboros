@@ -1,15 +1,18 @@
 import * as fs from "fs"
 import * as path from "path"
+import { execFileSync as nodeExecFileSync } from "child_process"
 import { getAgentBundlesRoot } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 
 type Readdir = (target: string, options: { withFileTypes: true }) => fs.Dirent[]
 type ReadText = (target: string, encoding: "utf-8") => string
+type GitExec = (command: string, args: string[], options: { cwd: string; stdio: "pipe"; timeout: number }) => Buffer
 
 export interface AgentDiscoveryOptions {
   bundlesRoot?: string
   readdirSync?: Readdir
   readFileSync?: ReadText
+  execFileSync?: GitExec
 }
 
 export function listEnabledBundleAgents(options: AgentDiscoveryOptions = {}): string[] {
@@ -58,6 +61,9 @@ export interface BundleSyncRow {
   agent: string
   enabled: boolean
   remote: string
+  /** Resolved URL of the configured remote, when one exists. Undefined when sync is
+   * disabled or when the bundle has no git remote configured (local-only mode). */
+  remoteUrl?: string
 }
 
 /**
@@ -65,15 +71,22 @@ export interface BundleSyncRow {
  * Used by the daemon (and stopped-state status renderer) to build per-agent
  * sync rows without depending on argv-derived global identity. Bundles that
  * cannot be read are skipped silently.
+ *
+ * For rows with sync enabled, also resolves the remote URL by shelling out to
+ * `git remote get-url <remote>` in the bundle directory. On any error (no
+ * remote, not a git repo, git missing) the URL is left undefined and the
+ * status renderer treats the bundle as "local only".
  */
 export function listBundleSyncRows(options: AgentDiscoveryOptions = {}): BundleSyncRow[] {
   const bundlesRoot = options.bundlesRoot ?? getAgentBundlesRoot()
   const readFileSync = options.readFileSync ?? fs.readFileSync
+  const execFileSync = options.execFileSync ?? nodeExecFileSync
   const agents = listEnabledBundleAgents(options)
 
   const rows: BundleSyncRow[] = []
   for (const agent of agents) {
-    const configPath = path.join(bundlesRoot, `${agent}.ouro`, "agent.json")
+    const bundleRoot = path.join(bundlesRoot, `${agent}.ouro`)
+    const configPath = path.join(bundleRoot, "agent.json")
     let enabled = false
     let remote = "origin"
     try {
@@ -88,7 +101,22 @@ export function listBundleSyncRows(options: AgentDiscoveryOptions = {}): BundleS
     } catch {
       // Best-effort: bundle without readable config still gets a row with defaults
     }
-    rows.push({ agent, enabled, remote })
+
+    let remoteUrl: string | undefined
+    if (enabled) {
+      try {
+        const out = execFileSync("git", ["remote", "get-url", remote], {
+          cwd: bundleRoot,
+          stdio: "pipe",
+          timeout: 5000,
+        }).toString().trim()
+        if (out.length > 0) remoteUrl = out
+      } catch {
+        // No remote configured, not a git repo, or git missing — leave undefined.
+      }
+    }
+
+    rows.push(remoteUrl !== undefined ? { agent, enabled, remote, remoteUrl } : { agent, enabled, remote })
   }
   return rows
 }
