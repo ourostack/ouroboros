@@ -2,9 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.252",
+      "changes": [
+        "fix(tui): polished history preview (spacing, shadow color, showing-recent label), full-width separators, backslash+enter and ctrl+j for newlines."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.251",
       "changes": [
-        "fix(bluebubbles): images sent via iMessage now reach the model — adds capability-gated image hydration with a MiniMax VLM fallback. Reasoning MiniMax chat models (M2/M2.1/M2.5/M2.7) silently drop OpenAI-style `image_url` content parts, so previously slugger answered image questions from fabricated context. Now, when the active chat model lacks the new `vision: true` capability flag, inbound screenshots are auto-described at ingestion via `/v1/coding_plan/vlm` and the description text replaces the `image_url` part before the turn reaches the model. Vision-capable models (claude-opus/sonnet-4-6, gpt-5.4, MiniMax-Text-01, MiniMax-VL-01) continue to see images natively via pass-through.",
+        "fix(bluebubbles): images sent via iMessage now reach the model \u2014 adds capability-gated image hydration with a MiniMax VLM fallback. Reasoning MiniMax chat models (M2/M2.1/M2.5/M2.7) silently drop OpenAI-style `image_url` content parts, so previously slugger answered image questions from fabricated context. Now, when the active chat model lacks the new `vision: true` capability flag, inbound screenshots are auto-described at ingestion via `/v1/coding_plan/vlm` and the description text replaces the `image_url` part before the turn reaches the model. Vision-capable models (claude-opus/sonnet-4-6, gpt-5.4, MiniMax-Text-01, MiniMax-VL-01) continue to see images natively via pass-through.",
         "feat(tools): new `describe_image` agent tool registered into the BlueBubbles tool set when the chat model lacks vision. Lets the agent re-interrogate an attachment with a targeted prompt (e.g. 'what's the flight number in the bottom-right?') after ingestion. Backed by a bounded in-memory attachment cache populated during hydration; handler re-downloads bytes and calls the same VLM client.",
         "fix(bluebubbles): `formatMessageText` now preserves the attachment marker when a message has BOTH text and attachments (B2). Previously the marker was dropped whenever text was present, hiding attachments from the agent's view of the message.",
         "feat(heart): `ModelCapabilities` gains `vision?: boolean` and `audio?: boolean` flags (B4). Vision rows populated for claude-opus-4-6, claude-sonnet-4-6, claude-opus-4.6, claude-sonnet-4.6, gpt-5.4, MiniMax-Text-01, MiniMax-VL-01. M2.1/M2.5/M2.7 intentionally left unset.",
@@ -14,7 +20,7 @@
     {
       "version": "0.1.0-alpha.250",
       "changes": [
-        "fix(sync): surface 'bundle is not a git repo' as an actionable error instead of silently failing. Previously, enabling `sync.enabled` on a bundle that had never been `git init`'d produced a generic `git status` failure buried in nerves logs; the agent saw nothing in its start-of-turn packet and the user saw nothing in `ouro status`. Now: (1) `preTurnPull` and `postTurnPush` detect the missing `.git` directory before touching git and return an actionable error with the bundle path and the `git init` hint; (2) this error propagates via `ctx.syncFailure` into the agent's Sync warning, so the agent can offer to run `git init` or just do it; (3) `ouro status` shows a red `error` state with `not a git repo — run \\`git init\\` to enable sync` next to the offending bundle. New nerves event: `heart.sync_not_a_repo`."
+        "fix(sync): surface 'bundle is not a git repo' as an actionable error instead of silently failing. Previously, enabling `sync.enabled` on a bundle that had never been `git init`'d produced a generic `git status` failure buried in nerves logs; the agent saw nothing in its start-of-turn packet and the user saw nothing in `ouro status`. Now: (1) `preTurnPull` and `postTurnPush` detect the missing `.git` directory before touching git and return an actionable error with the bundle path and the `git init` hint; (2) this error propagates via `ctx.syncFailure` into the agent's Sync warning, so the agent can offer to run `git init` or just do it; (3) `ouro status` shows a red `error` state with `not a git repo \u2014 run \\`git init\\` to enable sync` next to the offending bundle. New nerves event: `heart.sync_not_a_repo`."
       ]
     },
     {
@@ -27,7 +33,7 @@
     {
       "version": "0.1.0-alpha.248",
       "changes": [
-        "feat(daemon): `ouro status` Git Sync now resolves and shows the actual remote URL via `git remote get-url`. Three states: `origin → git@github.com:me/foo.git` when the remote resolves, `local only` when sync is enabled but no remote is configured, `disabled` when sync is off. Previously you had to `cd` into the bundle and run `git remote -v` to find out where it pushes.",
+        "feat(daemon): `ouro status` Git Sync now resolves and shows the actual remote URL via `git remote get-url`. Three states: `origin \u2192 git@github.com:me/foo.git` when the remote resolves, `local only` when sync is enabled but no remote is configured, `disabled` when sync is off. Previously you had to `cd` into the bundle and run `git remote -v` to find out where it pushes.",
         "fix(heart/sync): `preTurnPull` now skips the pull when no git remote is configured, mirroring the existing `postTurnPush` behavior. Closes the half-implemented 'no-remote sync' (local-only commit log) story \u2014 previously, enabling sync without a remote produced a `syncFailure` on every turn from the failing `git pull` call."
       ]
     },
