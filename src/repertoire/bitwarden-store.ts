@@ -11,6 +11,7 @@
 import { execFile as execFileCb } from "node:child_process"
 import type { CredentialMeta, CredentialStore } from "./credential-access"
 import { emitNervesEvent } from "../nerves/runtime"
+import { ensureBwCli } from "./bw-installer"
 
 // ---------------------------------------------------------------------------
 // bw CLI wrapper
@@ -105,6 +106,9 @@ export class BitwardenCredentialStore implements CredentialStore {
    * Retries transient failures (network/timeout) up to MAX_RETRIES with exponential backoff.
    */
   async login(): Promise<void> {
+    // Ensure bw CLI is installed before any bw commands
+    await ensureBwCli()
+
     let lastError: Error | undefined
 
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
