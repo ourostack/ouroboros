@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.240",
+      "changes": [
+        "fix(cli): process exits immediately after chat session ends \u2014 lingering Ink timers and MCP connections were keeping the event loop alive, requiring an extra Ctrl+C after \"bye\"."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.239",
       "changes": [
         "fix(friends): stable local CLI identity \u2014 dropped hostname from external ID (was `username@hostname`, now just `username`). macOS hostname instability (`Mac` vs `Aris-MacBook-Pro.local`) was creating duplicate friend records with separate sessions and trust levels.",
