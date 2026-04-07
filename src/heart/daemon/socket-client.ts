@@ -5,7 +5,51 @@ import type { DaemonCommand, DaemonResponse } from "./daemon"
 
 export const DEFAULT_DAEMON_SOCKET_PATH = "/tmp/ouroboros-daemon.sock"
 
+/**
+ * Defense-in-depth: detect if we're running under vitest. Tests that forget
+ * to `vi.mock("../../heart/daemon/socket-client")` would otherwise leak real
+ * `inner.wake` commands (with whatever literal agent name the test uses,
+ * commonly "testagent") into whichever real daemon happens to be running on
+ * the developer's machine. That has caused real outages when test loops
+ * flooded the production-on-localhost daemon.
+ *
+ * We detect vitest via `process.argv` (not env vars — the project bans those)
+ * and convert all socket operations into safe no-ops. Individual tests are
+ * still expected to vi.mock this module so they can assert on call counts,
+ * but this guard guarantees that "I forgot to mock" can never again take
+ * down the daemon.
+ *
+ * The socket-client's OWN tests (which exercise the real functions against a
+ * test socket) call `__bypassVitestGuardForTests(true)` to opt out of the
+ * guard. We persist that flag on globalThis so it survives `vi.resetModules`
+ * (which clears the module cache between tests).
+ */
+const BYPASS_KEY = "__ouro_socket_client_bypass_vitest_guard__"
+
+/** ONLY for socket-client.test.ts. Do not call from any other test or production code. */
+export function __bypassVitestGuardForTests(bypass: boolean): void {
+  ;(globalThis as Record<string, unknown>)[BYPASS_KEY] = bypass
+}
+
+function isUnderVitest(): boolean {
+  if ((globalThis as Record<string, unknown>)[BYPASS_KEY] === true) return false
+  /* v8 ignore next -- defensive: process and process.argv always exist in node @preserve */
+  if (typeof process === "undefined" || !Array.isArray(process.argv)) return false
+  return process.argv.some((arg) => typeof arg === "string" && arg.includes("vitest"))
+}
+
 export function sendDaemonCommand(socketPath: string, command: DaemonCommand): Promise<DaemonResponse> {
+  if (isUnderVitest()) {
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.socket_command_test_blocked",
+      message: "blocked socket command from leaking into real daemon under vitest",
+      meta: { socketPath, kind: command.kind },
+    })
+    return Promise.resolve({ ok: true, message: "test mode: socket call suppressed" })
+  }
+
   emitNervesEvent({
     component: "daemon",
     event: "daemon.socket_command_start",
@@ -98,6 +142,10 @@ export function sendDaemonCommand(socketPath: string, command: DaemonCommand): P
 }
 
 export function checkDaemonSocketAlive(socketPath: string): Promise<boolean> {
+  if (isUnderVitest()) {
+    return Promise.resolve(false)
+  }
+
   emitNervesEvent({
     component: "daemon",
     event: "daemon.socket_alive_check_start",
@@ -156,6 +204,17 @@ export async function requestInnerWake(
   agent: string,
   socketPath = DEFAULT_DAEMON_SOCKET_PATH,
 ): Promise<DaemonResponse | null> {
+  if (isUnderVitest()) {
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.inner_wake_test_blocked",
+      message: "blocked inner wake from leaking into real daemon under vitest",
+      meta: { agent, socketPath },
+    })
+    return null
+  }
+
   const socketAvailable = fs.existsSync(socketPath)
 
   emitNervesEvent({

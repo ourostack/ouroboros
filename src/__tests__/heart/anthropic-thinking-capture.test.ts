@@ -29,6 +29,14 @@ vi.mock("fs", () => ({
 vi.mock("child_process", () => ({ execSync: vi.fn(), spawnSync: vi.fn() }))
 vi.mock("../../repertoire/skills", () => ({ listSkills: vi.fn(), loadSkill: vi.fn() }))
 
+// Hard-mock the daemon socket client so this test never connects to /tmp/ouroboros-daemon.sock
+vi.mock("../../heart/daemon/socket-client", () => ({
+  DEFAULT_DAEMON_SOCKET_PATH: "/tmp/ouroboros-test-mock.sock",
+  sendDaemonCommand: vi.fn().mockResolvedValue({ ok: true }),
+  checkDaemonSocketAlive: vi.fn().mockResolvedValue(false),
+  requestInnerWake: vi.fn().mockResolvedValue(null),
+}))
+
 vi.mock("../../heart/identity", () => ({
   loadAgentConfig: vi.fn(() => ({
     name: "testagent",

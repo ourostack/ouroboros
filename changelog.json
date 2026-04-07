@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.253",
+      "changes": [
+        "fix(daemon): test-isolation guard \u2014 stop tests from leaking real `inner.wake` commands into the running daemon. A pattern in 36+ test files mocks `getAgentName` to the literal `\"testagent\"` but does NOT mock `socket-client`, so any code path through pondering / rest / coding feedback fires a real socket connection at /tmp/ouroboros-daemon.sock with `inner.wake testagent`. The daemon errored on every command (`Unknown managed agent 'testagent'`) and at flood volumes that contributed to a real outage on the developer's machine. The fix is in `socket-client.ts` itself: detect vitest via `process.argv` (no env vars) and convert all socket operations into safe no-ops. Tests that legitimately exercise the real transport (socket-client.test.ts, daemon-cli-defaults.test.ts) opt out of the guard via a new `__bypassVitestGuardForTests()` setter that lives on globalThis to survive `vi.resetModules()`. New nerves events: `daemon.socket_command_test_blocked`, `daemon.inner_wake_test_blocked`.",
+        "test(contract): new test-isolation contract test ratchets two anti-patterns: (1) test files using `name: \"testagent\"` without mocking socket-client, and (2) test files constructing write paths under the real `~/AgentBundles` via `os.homedir()`. Existing offenders are grandfathered in two allowlists; new offenders fail the build. Follow-up PRs shrink the allowlists toward zero."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.252",
       "changes": [
         "fix(tui): polished history preview (spacing, shadow color, showing-recent label), full-width separators, backslash+enter and ctrl+j for newlines."
