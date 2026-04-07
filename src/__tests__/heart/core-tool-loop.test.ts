@@ -23,6 +23,16 @@ vi.mock("child_process", () => ({
   spawnSync: vi.fn(),
 }))
 
+// Hard-mock the daemon socket client so this test never connects to the real
+// /tmp/ouroboros-daemon.sock. Tests that don't mock this leak inner.wake commands
+// for the literal "testagent" name into whatever real daemon happens to be running.
+vi.mock("../../heart/daemon/socket-client", () => ({
+  DEFAULT_DAEMON_SOCKET_PATH: "/tmp/ouroboros-test-mock.sock",
+  sendDaemonCommand: vi.fn().mockResolvedValue({ ok: true }),
+  checkDaemonSocketAlive: vi.fn().mockResolvedValue(false),
+  requestInnerWake: vi.fn().mockResolvedValue(null),
+}))
+
 vi.mock("../../repertoire/skills", () => ({
   listSkills: vi.fn(),
   loadSkill: vi.fn(),

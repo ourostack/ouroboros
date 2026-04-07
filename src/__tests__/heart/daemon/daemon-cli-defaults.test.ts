@@ -1,8 +1,20 @@
-import { describe, expect, it, vi } from "vitest"
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 import { EventEmitter } from "events"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
+
+// This suite tests the REAL default sendCommand transport with mocked net.
+// Disable the socket-client vitest guard for the duration so the guard's
+// no-op short circuit doesn't bypass the actual code paths under test.
+beforeAll(async () => {
+  const { __bypassVitestGuardForTests } = await import("../../../heart/daemon/socket-client")
+  __bypassVitestGuardForTests(true)
+})
+afterAll(async () => {
+  const { __bypassVitestGuardForTests } = await import("../../../heart/daemon/socket-client")
+  __bypassVitestGuardForTests(false)
+})
 
 function withProcessPlatform(platform: NodeJS.Platform): () => void {
   const original = Object.getOwnPropertyDescriptor(process, "platform")
