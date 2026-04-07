@@ -579,7 +579,7 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
       <Box>
         <Text dimColor>{"  "}{agentName}{model ? ` · ${model}` : ""} · /help</Text>
         <Box flexGrow={1} />
-        {tooltip ? <Text dimColor>{tooltip}</Text> : null}
+        {tooltip ? <Text dimColor>{tooltip}</Text> : <Text dimColor>{"opt+enter for newline"}</Text>}
       </Box>
     </Box>
   )
