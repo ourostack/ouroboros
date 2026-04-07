@@ -521,8 +521,8 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
 
   return (
     <Box flexDirection="column">
-      {/* Top separator */}
-      <Text dimColor>{"─".repeat(cols)}</Text>
+      {/* Top separator — full terminal width (no margin) */}
+      <Text dimColor>{"─".repeat(cols + 2)}</Text>
       {/* Input prompt — multi-line shows each line with continuation marker */}
       {isMultiline ? (
         <Box flexDirection="column">
@@ -550,11 +550,11 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
           )}
         </Box>
       )}
-      {/* Bottom separator */}
-      <Text dimColor>{"─".repeat(cols)}</Text>
+      {/* Bottom separator — full terminal width (no margin) */}
+      <Text dimColor>{"─".repeat(cols + 2)}</Text>
       {/* Status + hints + tooltip — BELOW the box */}
       <Box>
-        <Text dimColor>{agentName}{model ? ` · ${model}` : ""} · /help</Text>
+        <Text dimColor>{"  "}{agentName}{model ? ` · ${model}` : ""} · /help</Text>
         <Box flexGrow={1} />
         {tooltip ? <Text dimColor>{tooltip}</Text> : null}
       </Box>
