@@ -383,7 +383,14 @@ function dateSection(): string {
 }
 
 function toolsSection(channel: Channel, options?: BuildSystemOptions, context?: ResolvedContext): string {
-  const channelTools = getToolsForChannel(getChannelCapabilities(channel), undefined, context, options?.providerCapabilities);
+  const channelTools = getToolsForChannel(
+    getChannelCapabilities(channel),
+    undefined,
+    context,
+    options?.providerCapabilities,
+    undefined,
+    options?.chatModel,
+  );
   const activeTools = (options?.toolChoiceRequired ?? true) ? [...channelTools, settleTool] : channelTools;
   const list = activeTools
     .map((t) => `- ${t.function.name}: ${t.function.description}`)
@@ -530,6 +537,13 @@ export interface BuildSystemOptions {
   delegationDecision?: DelegationDecision;
   providerCapabilities?: ReadonlySet<import("../heart/core").ProviderCapability>;
   supportedReasoningEfforts?: readonly string[];
+  /**
+   * Active chat model — threaded into getToolsForChannel so the
+   * BlueBubbles `describe_image` tool is gated out when the model has
+   * native vision. Optional; defaults to "describe_image included" (the
+   * conservative default) when omitted.
+   */
+  chatModel?: string;
   pendingMessages?: Array<{ from: string; content: string }>;
   /** Rendered start-of-turn packet for continuity-aware prompt. */
   startOfTurnPacket?: string;
@@ -1079,6 +1093,9 @@ function channelHasCodingTools(
   channel: Channel,
   providerCapabilities?: ReadonlySet<import("../heart/core").ProviderCapability>,
 ): boolean {
+  // Coding tools are capability/integration-gated, not vision-gated — passing
+  // undefined for chatModel keeps describe_image out of the scan (which is
+  // BB-scoped anyway) without affecting the coding-tool presence check.
   const tools = getToolsForChannel(getChannelCapabilities(channel), undefined, undefined, providerCapabilities)
   const codingToolNames = new Set(["edit_file", "write_file", "shell", "coding_spawn"])
   return tools.some((t) => codingToolNames.has(t.function.name))

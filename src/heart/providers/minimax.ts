@@ -4,6 +4,13 @@ import { emitNervesEvent } from "../../nerves/runtime";
 import type { ProviderErrorClassification, ProviderRuntime, ProviderTurnRequest } from "../core";
 import { classifyHttpError } from "./error-classification";
 
+/**
+ * Canonical MiniMax chat-completions base URL. Exported so the BlueBubbles
+ * VLM fallback (which targets a sibling endpoint under the same host) can
+ * derive its URL from one source of truth instead of hard-coding.
+ */
+export const MINIMAX_PROVIDER_BASE_URL = "https://api.minimaxi.chat/v1"
+
 export function classifyMinimaxError(error: Error): ProviderErrorClassification {
   return classifyHttpError(error)
 }
@@ -28,7 +35,7 @@ export function createMinimaxProviderRuntime(model: string): ProviderRuntime {
 
   const client = new OpenAI({
     apiKey: minimaxConfig.apiKey,
-    baseURL: "https://api.minimaxi.chat/v1",
+    baseURL: MINIMAX_PROVIDER_BASE_URL,
     maxRetries: 0,
   });
   return {

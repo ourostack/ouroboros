@@ -119,6 +119,20 @@ describe("BlueBubbles inbound log", () => {
     expect(recordBlueBubblesInbound("slugger", messageEvent, "mutation-recovery")).toBe(logPath)
   })
 
+  it("emits senses.bluebubbles_inbound_logged at warn level so it survives the BB default log level", async () => {
+    vi.resetModules()
+    const nervesMock = vi.fn()
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: nervesMock }))
+    const { recordBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
+    recordBlueBubblesInbound("slugger", messageEvent, "webhook")
+    const logged = nervesMock.mock.calls.find(
+      (c) => c[0]?.event === "senses.bluebubbles_inbound_logged",
+    )
+    expect(logged).toBeDefined()
+    expect(logged?.[0].level).toBe("warn")
+    vi.doUnmock("../../../nerves/runtime")
+  })
+
   it("stringifies non-Error write failures when inbound sidecar serialization explodes", async () => {
     const { getBlueBubblesInboundLogPath, recordBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
 

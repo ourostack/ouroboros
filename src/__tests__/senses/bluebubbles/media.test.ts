@@ -1489,3 +1489,530 @@ describe("BlueBubbles media hydration", () => {
     })
   })
 })
+
+describe("BlueBubbles media hydration — capability-aware image routing", () => {
+  const pngBytes = Buffer.from("png-bytes")
+  const pngBase64 = pngBytes.toString("base64")
+  const pngDataUrl = `data:image/png;base64,${pngBase64}`
+
+  function baseConfig() {
+    return {
+      serverUrl: "http://bluebubbles.local",
+      password: "secret-token",
+      accountId: "default",
+    }
+  }
+  function baseChannel() {
+    return {
+      port: 18790,
+      webhookPath: "/bluebubbles-webhook",
+      requestTimeoutMs: 30000,
+    }
+  }
+  function pngResponse() {
+    return new Response(pngBytes, {
+      status: 200,
+      headers: { "content-type": "image/png" },
+    })
+  }
+  function gifResponse() {
+    return new Response(Buffer.from("gif-bytes"), {
+      status: 200,
+      headers: { "content-type": "image/gif" },
+    })
+  }
+
+  it("vision-capable chat model: uses native image_url pass-through and never calls VLM", async () => {
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
+    const vlmDescribe = vi.fn(async () => {
+      throw new Error("should not be called")
+    })
+    const result = await hydrateBlueBubblesAttachments(
+      [{ guid: "g1", mimeType: "image/png", transferName: "pic.png" }],
+      baseConfig(),
+      baseChannel(),
+      {
+        fetchImpl: vi.fn().mockResolvedValue(pngResponse()),
+        chatModel: "claude-opus-4-6",
+        vlmDescribe,
+      },
+    )
+    expect(vlmDescribe).not.toHaveBeenCalled()
+    expect(result.inputParts).toEqual([
+      {
+        type: "image_url",
+        image_url: { url: pngDataUrl, detail: "auto" },
+      },
+    ])
+  })
+
+  it("non-vision chat model: fires VLM and replaces image_url with a text part", async () => {
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
+    const vlmDescribe = vi.fn(async () => "a tabby cat sitting on a keyboard")
+    const result = await hydrateBlueBubblesAttachments(
+      [{ guid: "g1", mimeType: "image/png", transferName: "pic.png" }],
+      baseConfig(),
+      baseChannel(),
+      {
+        fetchImpl: vi.fn().mockResolvedValue(pngResponse()),
+        chatModel: "MiniMax-M2.5",
+        vlmDescribe,
+        userText: "what is this?",
+      },
+    )
+    expect(vlmDescribe).toHaveBeenCalledTimes(1)
+    const call = vlmDescribe.mock.calls[0][0] as {
+      prompt: string
+      imageDataUrl: string
+      attachmentGuid: string
+      mimeType: string
+      chatModel: string
+    }
+    expect(call.prompt).toContain('User message: "what is this?"')
+    expect(call.prompt).toContain("Describe this image in detail")
+    expect(call.prompt).toContain("Include any text visible in the image verbatim")
+    expect(call.imageDataUrl).toBe(pngDataUrl)
+    expect(call.attachmentGuid).toBe("g1")
+    expect(call.mimeType).toBe("image/png")
+    expect(call.chatModel).toBe("MiniMax-M2.5")
+    expect(result.inputParts).toEqual([
+      { type: "text", text: "[image description: a tabby cat sitting on a keyboard]" },
+    ])
+  })
+
+  it("non-vision chat model with multiple images: fires VLM once per image, preserves order", async () => {
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
+    const descriptions = ["first image description", "second image description"]
+    const vlmDescribe = vi.fn(async () => descriptions.shift() ?? "fallback")
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(pngResponse())
+      .mockResolvedValueOnce(pngResponse())
+    const result = await hydrateBlueBubblesAttachments(
+      [
+        { guid: "g1", mimeType: "image/png", transferName: "a.png" },
+        { guid: "g2", mimeType: "image/png", transferName: "b.png" },
+      ],
+      baseConfig(),
+      baseChannel(),
+      {
+        fetchImpl,
+        chatModel: "MiniMax-M2.5",
+        vlmDescribe,
+        userText: "check these",
+      },
+    )
+    expect(vlmDescribe).toHaveBeenCalledTimes(2)
+    expect(result.inputParts).toEqual([
+      { type: "text", text: "[image description: first image description]" },
+      { type: "text", text: "[image description: second image description]" },
+    ])
+  })
+
+  it("non-vision chat model, image-only (no user text): prompt still has User message: \"\"", async () => {
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
+    const vlmDescribe = vi.fn(async () => "desc")
+    await hydrateBlueBubblesAttachments(
+      [{ guid: "g1", mimeType: "image/png", transferName: "pic.png" }],
+      baseConfig(),
+      baseChannel(),
+      {
+        fetchImpl: vi.fn().mockResolvedValue(pngResponse()),
+        chatModel: "MiniMax-M2.5",
+        vlmDescribe,
+      },
+    )
+    const prompt = (vlmDescribe.mock.calls[0][0] as { prompt: string }).prompt
+    expect(prompt).toContain('User message: ""')
+  })
+
+  it("non-vision chat model with inbound text: prompt includes the text verbatim", async () => {
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
+    const vlmDescribe = vi.fn(async () => "desc")
+    await hydrateBlueBubblesAttachments(
+      [{ guid: "g1", mimeType: "image/png", transferName: "pic.png" }],
+      baseConfig(),
+      baseChannel(),
+      {
+        fetchImpl: vi.fn().mockResolvedValue(pngResponse()),
+        chatModel: "MiniMax-M2.5",
+        vlmDescribe,
+        userText: "whats the flight number in the bottom right?",
+      },
+    )
+    const prompt = (vlmDescribe.mock.calls[0][0] as { prompt: string }).prompt
+    expect(prompt).toContain('User message: "whats the flight number in the bottom right?"')
+  })
+
+  it("unsupported format (gif) with non-vision chat model: skips VLM, emits vision_format_unsupported, injects text part", async () => {
+    vi.resetModules()
+    const nervesMock = vi.fn()
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: nervesMock }))
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
+    const vlmDescribe = vi.fn(async () => "should not be called")
+    const result = await hydrateBlueBubblesAttachments(
+      [{ guid: "g1", mimeType: "image/gif", transferName: "fun.gif" }],
+      baseConfig(),
+      baseChannel(),
+      {
+        fetchImpl: vi.fn().mockResolvedValue(gifResponse()),
+        chatModel: "MiniMax-M2.5",
+        vlmDescribe,
+      },
+    )
+    expect(vlmDescribe).not.toHaveBeenCalled()
+    expect(result.inputParts).toEqual([
+      { type: "text", text: "[image attachment not shown: unsupported format image/gif]" },
+    ])
+    const unsupported = nervesMock.mock.calls.find(
+      (c) => c[0]?.event === "senses.bluebubbles_vision_format_unsupported",
+    )
+    expect(unsupported).toBeDefined()
+    expect(unsupported?.[0].meta).toMatchObject({
+      mimeType: "image/gif",
+      transferName: "fun.gif",
+      attachmentGuid: "g1",
+      chatModel: "MiniMax-M2.5",
+    })
+    const hydrate = nervesMock.mock.calls.find(
+      (c) => c[0]?.event === "senses.bluebubbles_media_hydrate" && c[0]?.meta?.attachmentGuid === "g1",
+    )
+    expect(hydrate?.[0].meta).toMatchObject({
+      attachmentGuid: "g1",
+      mimeType: "image/gif",
+      hydrationPath: "skip-unsupported",
+    })
+    vi.doUnmock("../../../nerves/runtime")
+  })
+
+  it("unsupported format with vision-capable chat model: passes through as image_url, no unsupported event", async () => {
+    vi.resetModules()
+    const nervesMock = vi.fn()
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: nervesMock }))
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
+    const vlmDescribe = vi.fn(async () => "should not be called")
+    const result = await hydrateBlueBubblesAttachments(
+      [{ guid: "g1", mimeType: "image/gif", transferName: "fun.gif" }],
+      baseConfig(),
+      baseChannel(),
+      {
+        fetchImpl: vi.fn().mockResolvedValue(gifResponse()),
+        chatModel: "MiniMax-VL-01",
+        vlmDescribe,
+      },
+    )
+    expect(vlmDescribe).not.toHaveBeenCalled()
+    expect(result.inputParts).toEqual([
+      {
+        type: "image_url",
+        image_url: {
+          url: `data:image/gif;base64,${Buffer.from("gif-bytes").toString("base64")}`,
+          detail: "auto",
+        },
+      },
+    ])
+    const unsupported = nervesMock.mock.calls.find(
+      (c) => c[0]?.event === "senses.bluebubbles_vision_format_unsupported",
+    )
+    expect(unsupported).toBeUndefined()
+    const hydrate = nervesMock.mock.calls.find(
+      (c) => c[0]?.event === "senses.bluebubbles_media_hydrate" && c[0]?.meta?.attachmentGuid === "g1",
+    )
+    expect(hydrate?.[0].meta).toMatchObject({ hydrationPath: "native-passthrough" })
+    vi.doUnmock("../../../nerves/runtime")
+  })
+
+  it("VLM describer throws: turn does not crash, falls back to text part with reason", async () => {
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
+    const vlmDescribe = vi.fn(async () => {
+      throw new Error("vlm unavailable — retry in a moment")
+    })
+    const result = await hydrateBlueBubblesAttachments(
+      [{ guid: "g1", mimeType: "image/png", transferName: "pic.png" }],
+      baseConfig(),
+      baseChannel(),
+      {
+        fetchImpl: vi.fn().mockResolvedValue(pngResponse()),
+        chatModel: "MiniMax-M2.5",
+        vlmDescribe,
+      },
+    )
+    expect(result.inputParts).toEqual([
+      { type: "text", text: "[image description failed: vlm unavailable — retry in a moment]" },
+    ])
+  })
+
+  it("audio attachment with non-vision chat model: audio path unchanged (regression guard)", async () => {
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
+    const transcribeAudio = vi.fn().mockResolvedValue("hello there")
+    const result = await hydrateBlueBubblesAttachments(
+      [{ guid: "a1", mimeType: "audio/mp3", transferName: "note.mp3" }],
+      baseConfig(),
+      baseChannel(),
+      {
+        fetchImpl: vi.fn().mockResolvedValue(
+          new Response(Buffer.from("audio"), {
+            status: 200,
+            headers: { "content-type": "audio/mp3" },
+          }),
+        ),
+        transcribeAudio,
+        preferAudioInput: false,
+        chatModel: "MiniMax-M2.5",
+        vlmDescribe: vi.fn(),
+      },
+    )
+    expect(result.transcriptAdditions).toEqual(["voice note transcript: hello there"])
+  })
+
+  it("mixed attachments (image + audio) with non-vision chat model: both paths fire", async () => {
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
+    const vlmDescribe = vi.fn(async () => "a screenshot")
+    const transcribeAudio = vi.fn().mockResolvedValue("hello")
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(pngResponse())
+      .mockResolvedValueOnce(
+        new Response(Buffer.from("audio"), {
+          status: 200,
+          headers: { "content-type": "audio/mp3" },
+        }),
+      )
+    const result = await hydrateBlueBubblesAttachments(
+      [
+        { guid: "g1", mimeType: "image/png", transferName: "pic.png" },
+        { guid: "a1", mimeType: "audio/mp3", transferName: "note.mp3" },
+      ],
+      baseConfig(),
+      baseChannel(),
+      {
+        fetchImpl,
+        transcribeAudio,
+        preferAudioInput: false,
+        chatModel: "MiniMax-M2.5",
+        vlmDescribe,
+      },
+    )
+    expect(vlmDescribe).toHaveBeenCalledTimes(1)
+    expect(transcribeAudio).toHaveBeenCalledTimes(1)
+    expect(result.inputParts).toEqual([
+      { type: "text", text: "[image description: a screenshot]" },
+    ])
+    expect(result.transcriptAdditions).toEqual(["voice note transcript: hello"])
+  })
+
+  it("per-attachment bluebubbles_media_hydrate event: fires once per attachment with AX-4 meta", async () => {
+    vi.resetModules()
+    const nervesMock = vi.fn()
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: nervesMock }))
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
+    const vlmDescribe = vi.fn(async () => "desc")
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(pngResponse())
+      .mockResolvedValueOnce(pngResponse())
+    await hydrateBlueBubblesAttachments(
+      [
+        { guid: "g1", mimeType: "image/png", transferName: "a.png" },
+        { guid: "g2", mimeType: "image/png", transferName: "b.png" },
+      ],
+      baseConfig(),
+      baseChannel(),
+      {
+        fetchImpl,
+        chatModel: "MiniMax-M2.5",
+        vlmDescribe,
+      },
+    )
+    const hydrates = nervesMock.mock.calls.filter(
+      (c) => c[0]?.event === "senses.bluebubbles_media_hydrate",
+    )
+    expect(hydrates.length).toBe(2)
+    const g1 = hydrates.find((c) => c[0].meta.attachmentGuid === "g1")
+    const g2 = hydrates.find((c) => c[0].meta.attachmentGuid === "g2")
+    expect(g1?.[0].meta).toMatchObject({
+      attachmentGuid: "g1",
+      mimeType: "image/png",
+      hydrationPath: "vlm-describe",
+    })
+    expect(typeof g1?.[0].meta.byteCount).toBe("number")
+    expect(g2?.[0].meta).toMatchObject({
+      attachmentGuid: "g2",
+      mimeType: "image/png",
+      hydrationPath: "vlm-describe",
+    })
+    vi.doUnmock("../../../nerves/runtime")
+  })
+
+  it("when chatModel is omitted: defaults to native pass-through (backward compat)", async () => {
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
+    const result = await hydrateBlueBubblesAttachments(
+      [{ guid: "g1", mimeType: "image/png", transferName: "pic.png" }],
+      baseConfig(),
+      baseChannel(),
+      {
+        fetchImpl: vi.fn().mockResolvedValue(pngResponse()),
+      },
+    )
+    expect(result.inputParts).toEqual([
+      {
+        type: "image_url",
+        image_url: { url: pngDataUrl, detail: "auto" },
+      },
+    ])
+  })
+
+  it("uses global fetch when fetchImpl dep is omitted (default-arg fallback)", async () => {
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
+    const originalFetch = global.fetch
+    try {
+      const stub = vi.fn().mockResolvedValue(pngResponse())
+      ;(global as { fetch: typeof fetch }).fetch = stub as unknown as typeof fetch
+      const result = await hydrateBlueBubblesAttachments(
+        [{ guid: "g1", mimeType: "image/png", transferName: "pic.png" }],
+        baseConfig(),
+        baseChannel(),
+        { chatModel: "claude-opus-4-6" },
+      )
+      expect(stub).toHaveBeenCalledTimes(1)
+      expect(result.inputParts[0]).toMatchObject({ type: "image_url" })
+    } finally {
+      ;(global as { fetch: typeof fetch }).fetch = originalFetch
+    }
+  })
+
+  it("webp image with non-vision chat model: supported VLM format", async () => {
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
+    const vlmDescribe = vi.fn(async () => "webp desc")
+    const result = await hydrateBlueBubblesAttachments(
+      [{ guid: "g1", mimeType: "image/webp", transferName: "pic.webp" }],
+      baseConfig(),
+      baseChannel(),
+      {
+        fetchImpl: vi.fn().mockResolvedValue(
+          new Response(Buffer.from("webp-bytes"), {
+            status: 200,
+            headers: { "content-type": "image/webp" },
+          }),
+        ),
+        chatModel: "MiniMax-M2.5",
+        vlmDescribe,
+      },
+    )
+    expect(vlmDescribe).toHaveBeenCalledTimes(1)
+    expect(result.inputParts).toEqual([
+      { type: "text", text: "[image description: webp desc]" },
+    ])
+  })
+
+  it("jpeg image with non-vision chat model: supported VLM format", async () => {
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
+    const vlmDescribe = vi.fn(async () => "jpeg desc")
+    const result = await hydrateBlueBubblesAttachments(
+      [{ guid: "g1", mimeType: "image/jpeg", transferName: "pic.jpg" }],
+      baseConfig(),
+      baseChannel(),
+      {
+        fetchImpl: vi.fn().mockResolvedValue(
+          new Response(Buffer.from("jpeg-bytes"), {
+            status: 200,
+            headers: { "content-type": "image/jpeg" },
+          }),
+        ),
+        chatModel: "MiniMax-M2.5",
+        vlmDescribe,
+      },
+    )
+    expect(vlmDescribe).toHaveBeenCalledTimes(1)
+    expect(result.inputParts).toEqual([
+      { type: "text", text: "[image description: jpeg desc]" },
+    ])
+  })
+
+  it("senses.bluebubbles_media_hydrate emits at warn level so it survives the BB default log level (B3)", async () => {
+    vi.resetModules()
+    const nervesMock = vi.fn()
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: nervesMock }))
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
+    await hydrateBlueBubblesAttachments(
+      [{ guid: "g1", mimeType: "image/png", transferName: "pic.png" }],
+      baseConfig(),
+      baseChannel(),
+      {
+        fetchImpl: vi.fn().mockResolvedValue(pngResponse()),
+        chatModel: "claude-opus-4-6",
+      },
+    )
+    const hydrate = nervesMock.mock.calls.find(
+      (c) => c[0]?.event === "senses.bluebubbles_media_hydrate",
+    )
+    expect(hydrate).toBeDefined()
+    expect(hydrate?.[0].level).toBe("warn")
+    vi.doUnmock("../../../nerves/runtime")
+  })
+
+  it("non-vision chat model with missing content-type: routes through skip-unsupported", async () => {
+    vi.resetModules()
+    const nervesMock = vi.fn()
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: nervesMock }))
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
+    // Attachment reports no mimeType and response has no content-type → image
+    // detection still fires on extension (".png") but contentType is
+    // undefined, so isSupportedVlmFormat rejects it.
+    const result = await hydrateBlueBubblesAttachments(
+      [{ guid: "g1", transferName: "pic.png" }],
+      baseConfig(),
+      baseChannel(),
+      {
+        fetchImpl: vi.fn().mockResolvedValue(new Response(Buffer.from("x"), { status: 200 })),
+        chatModel: "MiniMax-M2.5",
+        vlmDescribe: vi.fn(),
+      },
+    )
+    expect(result.inputParts[0]).toMatchObject({ type: "text" })
+    const unsupported = nervesMock.mock.calls.find(
+      (c) => c[0]?.event === "senses.bluebubbles_vision_format_unsupported",
+    )
+    expect(unsupported).toBeDefined()
+    vi.doUnmock("../../../nerves/runtime")
+  })
+
+  it("VLM describer throws a non-Error value: turn does not crash, fallback text includes coerced reason", async () => {
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const vlmDescribe = vi.fn(async () => {
+      throw "plain string failure"
+    }) as unknown as Parameters<typeof hydrateBlueBubblesAttachments>[3]["vlmDescribe"]
+    const result = await hydrateBlueBubblesAttachments(
+      [{ guid: "g1", mimeType: "image/png", transferName: "pic.png" }],
+      baseConfig(),
+      baseChannel(),
+      {
+        fetchImpl: vi.fn().mockResolvedValue(pngResponse()),
+        chatModel: "MiniMax-M2.5",
+        vlmDescribe,
+      },
+    )
+    expect(result.inputParts[0]).toEqual({
+      type: "text",
+      text: "[image description failed: plain string failure]",
+    })
+  })
+
+  it("non-vision chat model but no vlmDescribe dep provided: falls back to notice", async () => {
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
+    const result = await hydrateBlueBubblesAttachments(
+      [{ guid: "g1", mimeType: "image/png", transferName: "pic.png" }],
+      baseConfig(),
+      baseChannel(),
+      {
+        fetchImpl: vi.fn().mockResolvedValue(pngResponse()),
+        chatModel: "MiniMax-M2.5",
+      },
+    )
+    // No vlmDescribe → behave like an error path
+    expect(result.inputParts).toEqual([
+      { type: "text", text: expect.stringMatching(/image description failed/i) },
+    ])
+  })
+})

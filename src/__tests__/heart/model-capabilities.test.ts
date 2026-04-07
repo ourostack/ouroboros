@@ -44,6 +44,85 @@ describe("model-capabilities", () => {
     })
   })
 
+  describe("vision capability rows", () => {
+    it("claude-opus-4-6 has vision: true", async () => {
+      emitTestEvent("claude-opus-4-6 vision")
+      const { getModelCapabilities } = await import("../../heart/model-capabilities")
+      expect(getModelCapabilities("claude-opus-4-6").vision).toBe(true)
+    })
+
+    it("claude-sonnet-4-6 has vision: true", async () => {
+      emitTestEvent("claude-sonnet-4-6 vision")
+      const { getModelCapabilities } = await import("../../heart/model-capabilities")
+      expect(getModelCapabilities("claude-sonnet-4-6").vision).toBe(true)
+    })
+
+    it("claude-opus-4.6 (dot alias) has vision: true", async () => {
+      emitTestEvent("claude-opus-4.6 vision")
+      const { getModelCapabilities } = await import("../../heart/model-capabilities")
+      expect(getModelCapabilities("claude-opus-4.6").vision).toBe(true)
+    })
+
+    it("claude-sonnet-4.6 (dot alias) has vision: true", async () => {
+      emitTestEvent("claude-sonnet-4.6 vision")
+      const { getModelCapabilities } = await import("../../heart/model-capabilities")
+      expect(getModelCapabilities("claude-sonnet-4.6").vision).toBe(true)
+    })
+
+    it("gpt-5.4 has vision: true", async () => {
+      emitTestEvent("gpt-5.4 vision")
+      const { getModelCapabilities } = await import("../../heart/model-capabilities")
+      expect(getModelCapabilities("gpt-5.4").vision).toBe(true)
+    })
+
+    it("MiniMax-Text-01 has vision: true", async () => {
+      emitTestEvent("MiniMax-Text-01 vision")
+      const { getModelCapabilities } = await import("../../heart/model-capabilities")
+      expect(getModelCapabilities("MiniMax-Text-01").vision).toBe(true)
+    })
+
+    it("MiniMax-VL-01 has vision: true", async () => {
+      emitTestEvent("MiniMax-VL-01 vision")
+      const { getModelCapabilities } = await import("../../heart/model-capabilities")
+      expect(getModelCapabilities("MiniMax-VL-01").vision).toBe(true)
+    })
+
+    it("MiniMax-M2.1 does NOT have vision set (falsy)", async () => {
+      emitTestEvent("MiniMax-M2.1 vision unset")
+      const { getModelCapabilities } = await import("../../heart/model-capabilities")
+      expect(getModelCapabilities("MiniMax-M2.1").vision).toBeFalsy()
+    })
+
+    it("MiniMax-M2.5 does NOT have vision set (falsy)", async () => {
+      emitTestEvent("MiniMax-M2.5 vision unset")
+      const { getModelCapabilities } = await import("../../heart/model-capabilities")
+      expect(getModelCapabilities("MiniMax-M2.5").vision).toBeFalsy()
+    })
+
+    it("MiniMax-M2.7 does NOT have vision set (falsy)", async () => {
+      emitTestEvent("MiniMax-M2.7 vision unset")
+      const { getModelCapabilities } = await import("../../heart/model-capabilities")
+      expect(getModelCapabilities("MiniMax-M2.7").vision).toBeFalsy()
+    })
+
+    it("unknown model does NOT have vision set", async () => {
+      emitTestEvent("unknown model vision unset")
+      const { getModelCapabilities } = await import("../../heart/model-capabilities")
+      expect(getModelCapabilities("unknown-model-xyz").vision).toBeUndefined()
+    })
+
+    it("ModelCapabilities type accepts vision and audio flags", async () => {
+      emitTestEvent("ModelCapabilities vision/audio type")
+      type ModelCapabilities = import("../../heart/model-capabilities").ModelCapabilities
+      const withBoth: ModelCapabilities = { vision: true, audio: false }
+      const withNeither: ModelCapabilities = {}
+      expect(withBoth.vision).toBe(true)
+      expect(withBoth.audio).toBe(false)
+      expect(withNeither.vision).toBeUndefined()
+      expect(withNeither.audio).toBeUndefined()
+    })
+  })
+
   describe("getModelCapabilities()", () => {
     it("returns capabilities for a known model", async () => {
       emitTestEvent("getModelCapabilities known model")
