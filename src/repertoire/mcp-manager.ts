@@ -108,8 +108,10 @@ export class McpManager {
 
   shutdown(): void {
     this.shuttingDown = true
+    // `_end` (not `_stop`) to pair with `mcp.manager_start` under the
+    // nerves audit start/end pairing rule.
     emitNervesEvent({
-      event: "mcp.manager_stop",
+      event: "mcp.manager_end",
       component: "repertoire",
       message: "shutting down MCP manager",
       meta: { serverCount: this.servers.size },

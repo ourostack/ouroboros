@@ -481,10 +481,16 @@ describe("daemon CLI default dependency branches", () => {
         write: (chunk: string) => void
         end: () => void
       }
-      conn.write = vi.fn()
-      conn.end = vi.fn(() => {
-        conn.emit("error", Object.assign(new Error("refused"), { code: "ECONNREFUSED" }))
+      // Emit the ECONNREFUSED error from `write` instead of `end`, because
+      // the socket-client no longer calls client.end() after writing (that
+      // was causing the server's allowHalfOpen:false to auto-close the
+      // server side — see the MCP empty-response fix).
+      conn.write = vi.fn(() => {
+        queueMicrotask(() => {
+          conn.emit("error", Object.assign(new Error("refused"), { code: "ECONNREFUSED" }))
+        })
       })
+      conn.end = vi.fn()
       queueMicrotask(() => conn.emit("connect"))
       return conn
     })
@@ -519,11 +525,17 @@ describe("daemon CLI default dependency branches", () => {
         end: () => void
         setTimeout: (ms: number, cb: () => void) => void
       }
-      conn.write = vi.fn()
-      conn.end = vi.fn(() => {
-        conn.emit("error", new Error("first failure"))
-        conn.emit("end")
+      // Emit both error and end from `write` (socket-client no longer
+      // calls client.end() after writing). This exercises the double-
+      // finalize guard: error triggers finalize(false), then end tries
+      // to finalize again but the `done` flag short-circuits.
+      conn.write = vi.fn(() => {
+        queueMicrotask(() => {
+          conn.emit("error", new Error("first failure"))
+          conn.emit("end")
+        })
       })
+      conn.end = vi.fn()
       conn.setTimeout = vi.fn()
       queueMicrotask(() => conn.emit("connect"))
       return conn

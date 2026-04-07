@@ -505,9 +505,11 @@ export function createMcpServer(options: McpServerOptions): McpServer {
       if (!running) return
       running = false
       stdin.removeListener("data", onData)
+      // `_end` (not `_stop`) to satisfy the nerves audit's start/end
+      // pairing rule — counterpart to `daemon.mcp_server_start`.
       emitNervesEvent({
         component: "daemon",
-        event: "daemon.mcp_server_stop",
+        event: "daemon.mcp_server_end",
         message: "MCP server stopped",
         meta: { agent, friendId },
       })

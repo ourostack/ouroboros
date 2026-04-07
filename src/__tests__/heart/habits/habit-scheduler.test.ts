@@ -895,7 +895,7 @@ describe("HabitScheduler", () => {
 
       expect(mockEmitNervesEvent).toHaveBeenCalledWith(
         expect.objectContaining({
-          event: "daemon.habit_scheduler_stop",
+          event: "daemon.habit_scheduler_end",
           component: "daemon",
         }),
       )
