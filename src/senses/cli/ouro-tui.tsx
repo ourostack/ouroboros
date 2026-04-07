@@ -326,9 +326,10 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
   const historyIdx = useRef(-1)
   const savedInput = useRef("")
 
-  // Track last ESC timestamp for Alt+Enter detection.
-  // Ink 3.2 splits \x1b\r into separate escape + return events.
-  // We detect the pattern by checking if Return arrives within 50ms of Escape.
+  // Deferred ESC handling: Ink 3.2 fires escape events for ESC prefix of arrow
+  // keys (\x1b[D) and Alt+Enter (\x1b\r). We defer ESC actions by 80ms — if
+  // another key arrives in that window, it was an escape sequence, not standalone ESC.
+  const escTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastEscTime = useRef(0)
   const tooltipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -378,21 +379,31 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
 
     if (key.escape) {
       lastEscTime.current = Date.now()
-      if (inputRef.current) {
-        updateInput("")
-        historyIdx.current = -1
-        setTooltip("Esc again to clear")
-        if (tooltipTimerRef.current) clearTimeout(tooltipTimerRef.current)
-        tooltipTimerRef.current = setTimeout(() => setTooltip(""), 2000)
-      } else if (queuedInputs.length > 0) {
-        // Pop all queued messages into input for editing
-        const items = onPopQueue()
-        updateInput(items.join("\n"))
-        historyIdx.current = -1
-      } else {
-        setTooltip("")
-      }
+      // Defer ESC action — if another key arrives within 80ms, this was an escape
+      // sequence prefix (arrow key, Alt+Enter), not a standalone Escape press.
+      if (escTimerRef.current) clearTimeout(escTimerRef.current)
+      escTimerRef.current = setTimeout(() => {
+        escTimerRef.current = null
+        if (inputRef.current) {
+          updateInput("")
+          historyIdx.current = -1
+          setTooltip("Esc again to clear")
+          if (tooltipTimerRef.current) clearTimeout(tooltipTimerRef.current)
+          tooltipTimerRef.current = setTimeout(() => setTooltip(""), 2000)
+        } else if (queuedInputs.length > 0) {
+          const items = onPopQueue()
+          updateInput(items.join("\n"))
+          historyIdx.current = -1
+        } else {
+          setTooltip("")
+        }
+      }, 80)
       return
+    }
+    // Cancel pending ESC action — this key is part of an escape sequence
+    if (escTimerRef.current) {
+      clearTimeout(escTimerRef.current)
+      escTimerRef.current = null
     }
     if (key.return) {
       // Alt+Enter: detect via key.meta OR recent ESC (within 50ms — Ink splits \x1b\r)
@@ -564,7 +575,7 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
               <Text color={OURO.teal} bold>{i === 0 ? ") " : "· "}</Text>
               <Text color={OURO.bone}>{line}</Text>
               {i === inputLines.length - 1 ? (
-                cursorVisible ? <Text inverse>{" "}</Text> : <Text>{" "}</Text>
+                cursorVisible ? <Text backgroundColor={OURO.scale} color="#000000">{" "}</Text> : <Text>{" "}</Text>
               ) : null}
             </Box>
           ))}
@@ -578,7 +589,7 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
             <>
               <Text color={OURO.bone}>{input.slice(0, cursorPos)}</Text>
               {cursorVisible
-                ? <Text inverse>{input[cursorPos] ?? " "}</Text>
+                ? <Text backgroundColor={OURO.scale} color="#000000">{input[cursorPos] ?? " "}</Text>
                 : <Text color={OURO.bone}>{input[cursorPos] ?? " "}</Text>}
               <Text color={OURO.bone}>{input.slice(cursorPos + 1)}</Text>
             </>
