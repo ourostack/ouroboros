@@ -898,9 +898,36 @@ export class OuroDaemon {
     await this.senseManager?.stopAll()
 
     if (this.server) {
-      await new Promise<void>((resolve) => {
-        this.server?.close(() => resolve())
-      })
+      // DO NOT `await` server.close() here. server.close() resolves only
+      // after every open connection has closed. When stop() is invoked
+      // from the daemon.stop command handler, the calling client's
+      // connection is STILL open — its flushResponse() is currently
+      // awaiting THIS function. Awaiting close() creates a deadlock:
+      //
+      //   client → flushResponse → handleRawPayload → daemon.stop case
+      //   → stop() → await server.close() (waits for client's connection)
+      //   → client's connection waits for flushResponse to call
+      //     connection.end() → DEADLOCK
+      //
+      // Both processes sit in kevent forever. Verified live on
+      // 2026-04-08: alpha.268 daemon hung at `daemon.server_end` log
+      // line for 5+ minutes after a client sent daemon.stop, while the
+      // client (alpha.270 ouro up) hung waiting for the response.
+      //
+      // This regressed when #303/#334/#339 stopped half-closing the
+      // client socket and switched the server to allowHalfOpen: true.
+      // Previously, the client called .end() after writing its command,
+      // which (with allowHalfOpen: false) caused node to auto-tear-down
+      // the server's writable side — incidentally unblocking
+      // server.close() before the response was sent. The half-close
+      // breakage masked this deadlock; the fix exposed it.
+      //
+      // Solution: fire close() and let it complete asynchronously. Once
+      // stop() returns, the daemon.stop case returns its response,
+      // flushResponse() calls connection.end(response), the connection
+      // closes, and server.close()'s pending callback fires. The event
+      // loop drains and the daemon exits cleanly.
+      this.server.close()
       this.server = null
     }
     /* v8 ignore start -- outlookServer stop: only reachable when the outlook HTTP server successfully bound to port 6876 during start(). Coverage fluctuates locally because a running production daemon holds the port and tests get EADDRINUSE, leaving outlookServer null. In CI the port is free and this block runs. Not worth fighting port contention to cover two trivial lines. @preserve */
