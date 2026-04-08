@@ -94,6 +94,48 @@ export function handleForwardDelete(text: string, cursorPos: number): InputResul
   return { text: before + after, cursorPos }
 }
 
+// ─── Home / End ──────────────────────────────────────────────────
+
+/** Home key: move cursor to position 0. Returns new cursor position. */
+export function handleHome(_text: string, _cursorPos: number): number {
+  return 0
+}
+
+/** End key: move cursor to end of text. Returns new cursor position. */
+export function handleEnd(text: string, _cursorPos: number): number {
+  return text.length
+}
+
+// ─── Escape Sequence Classification ──────────────────────────────
+
+/**
+ * Classify raw escape sequences that Ink passes through as regular characters.
+ * Returns:
+ *   "home"   — Home key sequences
+ *   "end"    — End key sequences
+ *   "ignore" — PageUp, PageDown, mouse wheel (should be suppressed)
+ *   null     — not a recognized escape sequence
+ */
+export function classifyEscapeSequence(inputChar: string): "home" | "end" | "ignore" | null {
+  if (!inputChar.startsWith("\x1b[")) return null
+
+  const seq = inputChar.slice(2) // after \x1b[
+
+  // Home: \x1b[H or \x1b[1~
+  if (seq === "H" || seq === "1~") return "home"
+
+  // End: \x1b[F or \x1b[4~
+  if (seq === "F" || seq === "4~") return "end"
+
+  // PageUp: \x1b[5~, PageDown: \x1b[6~
+  if (seq === "5~" || seq === "6~") return "ignore"
+
+  // SGR mouse wheel: \x1b[<64;... or \x1b[<65;...
+  if (seq.startsWith("<64;") || seq.startsWith("<65;")) return "ignore"
+
+  return null
+}
+
 /**
  * Alt+Y: yank-pop -- replace previously yanked text with next ring entry.
  * Returns null if not in yanking state or ring is empty.
