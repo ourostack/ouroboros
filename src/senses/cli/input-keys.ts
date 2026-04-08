@@ -154,3 +154,42 @@ export function handleYankPop(text: string, cursorPos: number, ring: KillRing): 
   const after = text.slice(cursorPos)
   return { text: before + popped + after, cursorPos: yankStart + popped.length }
 }
+
+// ─── Clipboard Image Paste ───────────────────────────────────────
+
+export interface ClipboardImageResult {
+  text: string
+  cursorPos: number
+  imageRef: number
+  imageData: { base64: string; mediaType: string }
+}
+
+type ClipboardReader = () => Promise<{ base64: string; mediaType: string } | null>
+
+/**
+ * Handle an empty paste event by checking clipboard for images (macOS only).
+ * Returns null if no image found, not on macOS, or clipboard empty.
+ */
+export async function handleEmptyPaste(
+  text: string,
+  cursorPos: number,
+  currentImageCount: number,
+  platform: string,
+  clipboardReader: ClipboardReader,
+): Promise<ClipboardImageResult | null> {
+  if (platform !== "darwin") return null
+
+  const imageData = await clipboardReader()
+  if (!imageData) return null
+
+  const refNum = currentImageCount + 1
+  const ref = `[Image #${refNum}]`
+  const before = text.slice(0, cursorPos)
+  const after = text.slice(cursorPos)
+  return {
+    text: before + ref + after,
+    cursorPos: cursorPos + ref.length,
+    imageRef: refNum,
+    imageData,
+  }
+}
