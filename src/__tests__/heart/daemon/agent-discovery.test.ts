@@ -86,6 +86,112 @@ describe("listEnabledBundleAgents", () => {
   })
 })
 
+describe("listAllBundleAgents", () => {
+  afterEach(() => {
+    getAgentBundlesRootMock.mockReset()
+    getAgentBundlesRootMock.mockReturnValue("/mock/AgentBundles")
+    emitNervesEventMock.mockReset()
+    readdirSyncMock.mockReset()
+    readFileSyncMock.mockReset()
+  })
+
+  it("returns rows for both enabled and disabled bundles, sorted by name", async () => {
+    readdirSyncMock.mockReturnValue([
+      { name: "zeta.ouro", isDirectory: () => true },
+      { name: "alpha.ouro", isDirectory: () => true },
+      { name: "off.ouro", isDirectory: () => true },
+      { name: "notes", isDirectory: () => true }, // not .ouro, skipped
+    ])
+    readFileSyncMock.mockImplementation((target: string) => {
+      if (target.endsWith("/zeta.ouro/agent.json")) {
+        return JSON.stringify({ enabled: true })
+      }
+      if (target.endsWith("/alpha.ouro/agent.json")) {
+        return JSON.stringify({}) // missing enabled defaults to true
+      }
+      if (target.endsWith("/off.ouro/agent.json")) {
+        return JSON.stringify({ enabled: false })
+      }
+      throw new Error(`unexpected read: ${target}`)
+    })
+
+    const { listAllBundleAgents } = await import("../../../heart/daemon/agent-discovery")
+
+    expect(listAllBundleAgents()).toEqual([
+      { name: "alpha", enabled: true },
+      { name: "off", enabled: false },
+      { name: "zeta", enabled: true },
+    ])
+  })
+
+  it("skips bundles whose agent.json is unreadable or malformed", async () => {
+    readdirSyncMock.mockReturnValue([
+      { name: "valid.ouro", isDirectory: () => true },
+      { name: "broken.ouro", isDirectory: () => true },
+      { name: "notjson.ouro", isDirectory: () => true },
+    ])
+    readFileSyncMock.mockImplementation((target: string) => {
+      if (target.endsWith("/valid.ouro/agent.json")) {
+        return JSON.stringify({ enabled: true })
+      }
+      if (target.endsWith("/broken.ouro/agent.json")) {
+        throw new Error("ENOENT")
+      }
+      if (target.endsWith("/notjson.ouro/agent.json")) {
+        return "not valid json {{"
+      }
+      throw new Error(`unexpected read: ${target}`)
+    })
+
+    const { listAllBundleAgents } = await import("../../../heart/daemon/agent-discovery")
+
+    expect(listAllBundleAgents()).toEqual([
+      { name: "valid", enabled: true },
+    ])
+  })
+
+  it("emits warning and returns empty list when fs discovery fails", async () => {
+    readdirSyncMock.mockImplementation(() => {
+      throw new Error("permission denied")
+    })
+
+    const { listAllBundleAgents } = await import("../../../heart/daemon/agent-discovery")
+
+    expect(listAllBundleAgents()).toEqual([])
+    expect(emitNervesEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: "warn",
+        event: "daemon.agent_discovery_failed",
+      }),
+    )
+  })
+
+  it("listEnabledBundleAgents stays in sync with listAllBundleAgents", async () => {
+    // Regression: ensure the refactored listEnabledBundleAgents (which now
+    // wraps listAllBundleAgents) keeps producing the same names as before.
+    readdirSyncMock.mockReturnValue([
+      { name: "a.ouro", isDirectory: () => true },
+      { name: "b.ouro", isDirectory: () => true },
+      { name: "c.ouro", isDirectory: () => true },
+    ])
+    readFileSyncMock.mockImplementation((target: string) => {
+      if (target.endsWith("/a.ouro/agent.json")) return JSON.stringify({ enabled: true })
+      if (target.endsWith("/b.ouro/agent.json")) return JSON.stringify({ enabled: false })
+      if (target.endsWith("/c.ouro/agent.json")) return JSON.stringify({ enabled: true })
+      throw new Error(`unexpected: ${target}`)
+    })
+
+    const { listEnabledBundleAgents, listAllBundleAgents } = await import("../../../heart/daemon/agent-discovery")
+
+    expect(listEnabledBundleAgents()).toEqual(["a", "c"])
+    expect(listAllBundleAgents()).toEqual([
+      { name: "a", enabled: true },
+      { name: "b", enabled: false },
+      { name: "c", enabled: true },
+    ])
+  })
+})
+
 describe("listBundleSyncRows", () => {
   beforeEach(() => {
     getAgentBundlesRootMock.mockReset()

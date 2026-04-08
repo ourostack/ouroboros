@@ -113,6 +113,7 @@ describe("daemon command plane branches", () => {
       senses: [],
       workers: [],
       sync: [],
+      agents: [],
     })
 
     senseManager.listSenseRows.mockReturnValueOnce([
@@ -192,6 +193,7 @@ describe("daemon command plane branches", () => {
         expect.objectContaining({ agent: "slugger", sense: "bluebubbles", status: "running" }),
       ],
       sync: [],
+      agents: [],
     })
   })
 
@@ -331,6 +333,7 @@ describe("daemon command plane branches", () => {
       senses: [],
       workers: [expect.objectContaining({ agent: "slugger", worker: "inner-dialog", status: "crashed" })],
       sync: [],
+      agents: [],
     })
   })
 
