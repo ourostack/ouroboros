@@ -330,6 +330,35 @@ describe("classifyEscapeSequence", () => {
   })
 })
 
+describe("Forward Delete Key", () => {
+  describe("handleForwardDelete", () => {
+    it("deletes character at cursor position (mid-text)", () => {
+      const result = handleForwardDelete("abcdef", 2)
+      expect(result).toEqual({ text: "abdef", cursorPos: 2 })
+    })
+
+    it("is a no-op at end of input", () => {
+      const result = handleForwardDelete("abc", 3)
+      expect(result).toEqual({ text: "abc", cursorPos: 3 })
+    })
+
+    it("deletes first character when cursor is at start", () => {
+      const result = handleForwardDelete("abc", 0)
+      expect(result).toEqual({ text: "bc", cursorPos: 0 })
+    })
+
+    it("handles empty string", () => {
+      const result = handleForwardDelete("", 0)
+      expect(result).toEqual({ text: "", cursorPos: 0 })
+    })
+
+    it("handles last remaining character", () => {
+      const result = handleForwardDelete("x", 0)
+      expect(result).toEqual({ text: "", cursorPos: 0 })
+    })
+  })
+})
+
 describe("Ctrl+D Behavior", () => {
   describe("handleCtrlD", () => {
     it("forward-deletes character at cursor when input is non-empty and cursor mid-text", () => {
