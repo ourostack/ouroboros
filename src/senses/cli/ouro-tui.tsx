@@ -441,16 +441,29 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
       historyIdx.current = -1
       return
     }
-    if (key.backspace || key.delete) {
+    // Forward delete key (fn+Backspace on macOS): delete character at cursor
+    if (key.delete && !key.backspace) {
+      if (key.meta) {
+        // Meta+Delete: kill to end of line (push to ring)
+        const result = handleKillToEnd(inputRef.current, cursorRef.current, killRing)
+        updateInput(result.text, result.cursorPos)
+      } else {
+        const result = handleForwardDelete(inputRef.current, cursorRef.current)
+        updateInput(result.text, result.cursorPos)
+      }
+      historyIdx.current = -1
+      return
+    }
+    // Backspace: delete character before cursor
+    if (key.backspace) {
       if (cursorRef.current > 0) {
         // Option+Backspace: delete word (also pushes to kill ring)
         if (key.meta) {
           const result = handleKillWordBack(inputRef.current, cursorRef.current, killRing)
           updateInput(result.text, result.cursorPos)
         } else {
-          const before = inputRef.current.slice(0, cursorRef.current - 1)
-          const after = inputRef.current.slice(cursorRef.current)
-          updateInput(before + after, cursorRef.current - 1)
+          const result = handleBackspace(inputRef.current, cursorRef.current)
+          updateInput(result.text, result.cursorPos)
         }
       }
       historyIdx.current = -1
