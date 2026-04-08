@@ -8,6 +8,7 @@
  * Works alongside Ink's stdin handling by intercepting raw data events.
  */
 import { EventEmitter } from "events"
+import { emitNervesEvent } from "../../nerves/runtime"
 
 const PASTE_START = "\x1b[200~"
 const PASTE_END = "\x1b[201~"
@@ -45,6 +46,7 @@ export class BracketedPasteHandler extends EventEmitter {
         if (endIdx !== -1) {
           // Found end marker -- emit paste content
           const pasteContent = combined.slice(0, endIdx)
+          emitNervesEvent({ component: "senses", event: "senses.bracketed_paste", message: "bracketed paste received", meta: { length: pasteContent.length } })
           this.emit("paste", pasteContent)
           this.buffer = ""
           this.pasting = false

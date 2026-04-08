@@ -5,6 +5,7 @@
  * direction accumulate into a single entry. Yank retrieves the most recent
  * entry; yank-pop cycles backward through the ring.
  */
+import { emitNervesEvent } from "../../nerves/runtime"
 
 const MAX_SIZE = 10
 
@@ -34,6 +35,7 @@ export class KillRing {
    * the ring is full.
    */
   push(text: string, direction: "append" | "prepend"): void {
+    emitNervesEvent({ component: "senses", event: "senses.kill_ring_push", message: "killed text to ring", meta: { direction, length: text.length } })
     if (this.accumulating && this.entries.length > 0) {
       const top = this.entries[this.entries.length - 1]
       this.entries[this.entries.length - 1] =

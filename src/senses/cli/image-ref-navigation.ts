@@ -5,6 +5,7 @@
  * backspace/delete removes them atomically, and word-kill treats them
  * as single words.
  */
+import { emitNervesEvent } from "../../nerves/runtime"
 
 const IMAGE_REF_PATTERN = /\[Image #\d+\]/g
 
@@ -53,6 +54,7 @@ export function imageRefStartingAt(text: string, pos: number): number | undefine
 export function deleteTokenBefore(text: string, pos: number): { text: string; pos: number } | null {
   const start = imageRefEndingAt(text, pos)
   if (start === undefined) return null
+  emitNervesEvent({ component: "senses", event: "senses.image_ref_delete", message: "deleted image ref token", meta: { pos } })
 
   const before = text.slice(0, start)
   const after = text.slice(pos)
