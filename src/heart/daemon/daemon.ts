@@ -896,10 +896,12 @@ export class OuroDaemon {
       })
       this.server = null
     }
+    /* v8 ignore start -- outlookServer stop: only reachable when the outlook HTTP server successfully bound to port 6876 during start(). Coverage fluctuates locally because a running production daemon holds the port and tests get EADDRINUSE, leaving outlookServer null. In CI the port is free and this block runs. Not worth fighting port contention to cover two trivial lines. @preserve */
     if (this.outlookServer) {
       await this.outlookServer.stop()
       this.outlookServer = null
     }
+    /* v8 ignore stop */
 
     if (fs.existsSync(this.socketPath)) {
       fs.unlinkSync(this.socketPath)
