@@ -878,6 +878,28 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
     await performSystemSetup(deps)
 
+    // Track whether we've already printed the "ouro updated to" message
+    // this turn so the bundle-meta-fallback path below doesn't double-print.
+    // There are three independent paths that can detect "the binary just
+    // got newer":
+    //   1. checkForCliUpdate found a newer version on npm (above) — this
+    //      path always re-execs, so the duplicate-detect runs in a
+    //      different process and the in-process tracker doesn't apply.
+    //   2. ensureCurrentVersionInstalled (called from performSystemSetup)
+    //      flipped the CurrentVersion symlink because the running package
+    //      version is newer than what the symlink pointed at. This is the
+    //      common npx path.
+    //   3. bundle-meta.json's stored runtime version differs from the
+    //      running version (fallback for when path 2 couldn't activate
+    //      but the binary is still newer).
+    //
+    // Verified live on 2026-04-08: npx download triggered both path 2 and
+    // path 3 in the same process and the user saw the message printed twice.
+    // Path 3's existing `linkedVersionBeforeUp !== currentVersion` guard
+    // catches the cross-process re-exec case (path 1) but not the
+    // in-process double-fire case (path 2 + path 3 in the same process).
+    let printedUpdateMessage = false
+
     const linkedVersionAfterSetup = deps.getCurrentCliVersion?.() ?? null
     const runtimeVersion = getPackageVersion()
     if (linkedVersionBeforeUp && linkedVersionBeforeUp !== runtimeVersion && linkedVersionAfterSetup === runtimeVersion) {
@@ -886,6 +908,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       if (changelogCommand) {
         deps.writeStdout(`review changes with: ${changelogCommand}`)
       }
+      printedUpdateMessage = true
     }
 
     // Run update hooks before starting daemon so user sees the output
@@ -903,9 +926,16 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     // Notify about CLI binary update (npx downloaded a new version).
     // Skip when the symlink already points to the running version — that
     // means path 1 (checkForCliUpdate + reExecFromNewVersion) already
-    // printed the update message before re-exec.
+    // printed the update message before re-exec. Also skip when path 2
+    // (the symlink-flip detector above) already printed in this same
+    // process — otherwise npx invocations print the message twice.
     /* v8 ignore start -- CLI update detection: tested via daemon-cli-version-detect.test.ts @preserve */
-    if (previousCliVersion && previousCliVersion !== currentVersion && linkedVersionBeforeUp !== currentVersion) {
+    if (
+      !printedUpdateMessage
+      && previousCliVersion
+      && previousCliVersion !== currentVersion
+      && linkedVersionBeforeUp !== currentVersion
+    ) {
       deps.writeStdout(`ouro updated to ${currentVersion} (was ${previousCliVersion})`)
       const changelogCommand = buildChangelogCommand(previousCliVersion, currentVersion)
       /* v8 ignore next -- buildChangelogCommand is non-null when previous/current runtime versions differ @preserve */
@@ -1212,11 +1242,27 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       content = `[Claude Code hook: ${eventType} in session ${sessionId}]`
     }
 
-    // Send to the specific agent configured for this hook
-    try {
-      await deps.sendCommand(deps.socketPath, { kind: "message.send", from: `claude-code:${sessionId}`, to: command.agent, content } as DaemonCommand).catch(() => {})
-      await deps.sendCommand(deps.socketPath, { kind: "inner.wake", agent: command.agent } as DaemonCommand).catch(() => {})
-    } catch { /* daemon not running — silent */ }
+    // Send to the specific agent configured for this hook. Short-circuit
+    // when the daemon socket file doesn't exist — otherwise every
+    // Claude Code lifecycle event during a daemon-down window logs two
+    // ENOENT errors in ouro.ndjson (one for message.send, one for
+    // inner.wake) which makes it hard to read the log around outages.
+    // The hook is best-effort: dropping notifications when the daemon
+    // is down is the correct behavior; we just don't want to log spam
+    // about it.
+    if (require("fs").existsSync(deps.socketPath)) {
+      try {
+        await deps.sendCommand(deps.socketPath, { kind: "message.send", from: `claude-code:${sessionId}`, to: command.agent, content } as DaemonCommand).catch(() => {})
+        await deps.sendCommand(deps.socketPath, { kind: "inner.wake", agent: command.agent } as DaemonCommand).catch(() => {})
+      } catch { /* daemon not running — silent */ }
+    } else {
+      emitNervesEvent({
+        component: "daemon",
+        event: "daemon.hook_skipped_no_socket",
+        message: "claude code hook skipped — daemon socket missing",
+        meta: { socketPath: deps.socketPath, eventType, agent: command.agent },
+      })
+    }
 
     // Output for Claude Code hook system
     deps.writeStdout(JSON.stringify({ continue: true }))

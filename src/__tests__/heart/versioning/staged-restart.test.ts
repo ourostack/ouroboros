@@ -149,4 +149,42 @@ describe("performStagedRestart", () => {
     expect(result.ok).toBe(false)
     expect(result.error).toBeDefined()
   })
+
+  it("uses installNewVersion when provided instead of npm install -g", async () => {
+    // Regression: the daemon's update checker invokes performStagedRestart
+    // which previously hardcoded `npm install -g @ouro.bot/cli@{version}`.
+    // The global install path doesn't end up on the daemon process's
+    // NODE_PATH, so the subsequent `require.resolve('@ouro.bot/cli')`
+    // -based path lookup always returned null. The daemon could never
+    // auto-update (verified live: alpha.268 daemon hung at
+    // staged_restart_path_failed for an alpha.270 update). Production
+    // callers now inject installNewVersion which uses the version-managed
+    // installer (~/.ouro-cli/versions/{version}/...).
+    const installNewVersion = vi.fn()
+    const execSync = vi.fn()
+    const deps = makeDeps({ installNewVersion, execSync })
+
+    const result = await performStagedRestart("0.2.0-alpha.1", deps)
+
+    expect(result.ok).toBe(true)
+    expect(installNewVersion).toHaveBeenCalledWith("0.2.0-alpha.1")
+    // execSync is no longer called for the install step when
+    // installNewVersion is injected. (Other steps like the hook runner
+    // still use spawnSync, not execSync, so execSync should be untouched.)
+    expect(execSync).not.toHaveBeenCalled()
+  })
+
+  it("propagates installNewVersion failures the same way as the legacy npm path", async () => {
+    const installNewVersion = vi.fn().mockImplementation(() => {
+      throw new Error("version-managed install failed")
+    })
+    const deps = makeDeps({ installNewVersion })
+
+    const result = await performStagedRestart("0.2.0-alpha.1", deps)
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain("version-managed install failed")
+    expect(deps.gracefulShutdown).not.toHaveBeenCalled()
+    expect(deps.spawnNewDaemon).not.toHaveBeenCalled()
+  })
 })
