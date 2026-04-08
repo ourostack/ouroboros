@@ -13,7 +13,7 @@ import { getAgentBundlesRoot, getAgentDaemonLogsDir, getAgentName, getAgentRoot,
 import { emitNervesEvent } from "../../nerves/runtime"
 import { installOuroCommand as defaultInstallOuroCommand } from "../versioning/ouro-path-installer"
 import { registerOuroBundleUti as defaultRegisterOuroBundleUti } from "../versioning/ouro-uti"
-import { getCurrentVersion, getPreviousVersion, listInstalledVersions, installVersion, activateVersion, ensureLayout, getOuroCliHome } from "../versioning/ouro-version-manager"
+import { getCurrentVersion, getPreviousVersion, listInstalledVersions, installVersion, activateVersion, ensureLayout, getOuroCliHome, pruneOldVersions } from "../versioning/ouro-version-manager"
 import { ensureSkillManagement as defaultEnsureSkillManagement } from "./skill-management-installer"
 import {
   runHatchFlow as defaultRunHatchFlow,
@@ -495,6 +495,14 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
         installVersion(version, {})
       }
       activateVersion(version, {})
+      // Self-prune: every successful version activation cleans up old
+      // versions outside the retention window. Without this, every CLI
+      // version ever installed accumulates indefinitely under
+      // ~/.ouro-cli/versions/ — the user observed installs going back to
+      // alpha.85 from March 20 (~100MB of dead node_modules trees).
+      // pruneOldVersions keeps the 5 most recent + the active + the
+      // previous version, so rollback stays one command away.
+      pruneOldVersions(undefined, {})
     },
     /* v8 ignore stop */
     /* v8 ignore start -- CLI version management defaults: integration code @preserve */
@@ -509,7 +517,14 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
       })
     },
     installCliVersion: async (version: string) => { installVersion(version, {}) },
-    activateCliVersion: (version: string) => { activateVersion(version, {}) },
+    activateCliVersion: (version: string) => {
+      activateVersion(version, {})
+      // Same self-prune as ensureCurrentVersionInstalled — fires from the
+      // checkForCliUpdate path 1 (in-process update detected → activate
+      // → re-exec). Without this, the path 1 code path never triggers
+      // a prune.
+      pruneOldVersions(undefined, {})
+    },
     getCurrentCliVersion: () => getCurrentVersion({}),
     getPreviousCliVersion: () => getPreviousVersion({}),
     listCliVersions: () => listInstalledVersions({}),
