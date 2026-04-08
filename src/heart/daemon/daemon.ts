@@ -14,6 +14,7 @@ import { agentConfigV2Hook } from "./hooks/agent-config-v2"
 import { getPackageVersion } from "../../mind/bundle-manifest"
 import { startUpdateChecker, stopUpdateChecker } from "../versioning/update-checker"
 import { performStagedRestart } from "../versioning/staged-restart"
+import { installVersion, activateVersion, getOuroCliHome } from "../versioning/ouro-version-manager"
 import { execSync, spawn, spawnSync } from "child_process"
 import { drainPending } from "../../mind/pending"
 import {
@@ -559,16 +560,34 @@ export class OuroDaemon {
         },
         onUpdate: /* v8 ignore start -- integration: real npm install + process spawn @preserve */ async (result) => {
           if (!result.latestVersion) return
+          // Install via the version manager (NOT `npm install -g`). The
+          // global install path doesn't end up on the daemon process's
+          // NODE_PATH, so the previous `require.resolve('@ouro.bot/cli')`
+          // -based path lookup always returned null and the staged restart
+          // never actually completed. Verified live on 2026-04-08:
+          // alpha.268 daemon detected alpha.270 was available, ran the
+          // staged restart, and bailed at `staged_restart_path_failed` —
+          // meaning the daemon could never auto-update itself and required
+          // manual `ouro up` to pick up new versions.
+          //
+          // Switch to the version-managed layout the CLI itself uses:
+          // installVersion(version) puts files at
+          //   ~/.ouro-cli/versions/{version}/node_modules/@ouro.bot/cli
+          // which is a known path we can compute deterministically.
+          // Then activateVersion(version) flips the CurrentVersion symlink
+          // so the next `ouro up` from the user sees the same version
+          // the daemon is running.
+          const cliHome = getOuroCliHome()
           await performStagedRestart(result.latestVersion, {
             execSync: (cmd) => execSync(cmd, { stdio: "inherit" }),
             spawnSync,
-            resolveNewCodePath: (_version) => {
-              try {
-                const resolved = execSync(`node -e "console.log(require.resolve('@ouro.bot/cli/package.json'))"`, { encoding: "utf-8" }).trim()
-                return resolved ? path.dirname(resolved) : null
-              } catch {
-                return null
-              }
+            installNewVersion: (version) => {
+              installVersion(version, {})
+              activateVersion(version, {})
+            },
+            resolveNewCodePath: (version) => {
+              const versionPath = path.join(cliHome, "versions", version, "node_modules", "@ouro.bot", "cli")
+              return fs.existsSync(versionPath) ? versionPath : null
             },
             gracefulShutdown: () => daemon.stop(),
             spawnNewDaemon: (entryPath, sock) => {

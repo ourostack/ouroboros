@@ -5,6 +5,12 @@ import { emitNervesEvent } from "../../nerves/runtime"
 export interface StagedRestartDeps {
   execSync: (command: string) => void
   spawnSync: (command: string, args: string[], options: Record<string, unknown>) => SpawnSyncReturns<Buffer>
+  /** Install (and ideally activate) the requested version. Defaults to
+   *  `npm install -g @ouro.bot/cli@{version}` for backward compatibility.
+   *  Production callers (the daemon's update checker) inject a
+   *  version-managed installer so the new code lands at a deterministic
+   *  path that resolveNewCodePath can find. */
+  installNewVersion?: (version: string) => void
   resolveNewCodePath: (version: string) => string | null
   gracefulShutdown: () => Promise<void>
   spawnNewDaemon: (entryPath: string, socketPath: string) => { pid: number | null }
@@ -32,13 +38,20 @@ export async function performStagedRestart(
 
   // Step 1: Install new version
   try {
-    deps.execSync(`npm install -g @ouro.bot/cli@${version}`)
+    if (deps.installNewVersion) {
+      deps.installNewVersion(version)
+    } else {
+      // Backward-compat fallback for callers that haven't migrated to the
+      // version-managed installer. Tests use this path with a mocked
+      // execSync; production callers inject installNewVersion.
+      deps.execSync(`npm install -g @ouro.bot/cli@${version}`)
+    }
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(err)
     emitNervesEvent({
       component: "daemon",
       event: "daemon.staged_restart_install_failed",
-      message: "npm install failed",
+      message: "install failed",
       meta: { version, error: errorMessage },
     })
     return { ok: false, error: errorMessage }
