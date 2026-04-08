@@ -118,7 +118,7 @@ export function handleEnd(text: string, _cursorPos: number): number {
  *   "ignore" — PageUp, PageDown, mouse wheel (should be suppressed)
  *   null     — not a recognized escape sequence
  */
-export function classifyEscapeSequence(inputChar: string): "home" | "end" | "ignore" | null {
+export function classifyEscapeSequence(inputChar: string): "home" | "end" | "ignore" | "word-left" | "word-right" | null {
   if (!inputChar.startsWith("\x1b[")) return null
 
   const seq = inputChar.slice(2) // after \x1b[
@@ -128,6 +128,12 @@ export function classifyEscapeSequence(inputChar: string): "home" | "end" | "ign
 
   // End: \x1b[F or \x1b[4~
   if (seq === "F" || seq === "4~") return "end"
+
+  // Option+Left: \x1b[1;3D (CSI modified arrow with Alt modifier)
+  if (seq === "1;3D") return "word-left"
+
+  // Option+Right: \x1b[1;3C
+  if (seq === "1;3C") return "word-right"
 
   // PageUp: \x1b[5~, PageDown: \x1b[6~
   if (seq === "5~" || seq === "6~") return "ignore"

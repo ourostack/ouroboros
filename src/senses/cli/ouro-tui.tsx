@@ -484,37 +484,20 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
       historyIdx.current = -1
       return
     }
-    // Left/right arrow: move cursor
+    // Left/right arrow: move cursor (char by char, token-aware)
+    // NOTE: Ink 3.2 bug — key.meta is ALWAYS true for arrow keys because all
+    // arrows start with \x1b and Ink sets meta=true for any ESC-prefixed input.
+    // Word-jump is handled via Meta+B/F (emacs bindings) instead.
     if (key.leftArrow) {
-      if (key.meta) {
-        // Option+Left: jump to previous word boundary
-        const before = inputRef.current.slice(0, cursorRef.current)
-        const match = before.match(/(?:^|\s)\S+\s*$/)
-        const newPos = match ? cursorRef.current - match[0].length + (match[0].startsWith(" ") ? 1 : 0) : 0
-        cursorRef.current = Math.max(0, newPos)
-        setCursorPos(cursorRef.current)
-      } else {
-        // Token-aware: hop over image ref chips
-        const chipStart = imageRefEndingAt(inputRef.current, cursorRef.current)
-        cursorRef.current = chipStart !== undefined ? chipStart : Math.max(0, cursorRef.current - 1)
-        setCursorPos(cursorRef.current)
-      }
+      const chipStart = imageRefEndingAt(inputRef.current, cursorRef.current)
+      cursorRef.current = chipStart !== undefined ? chipStart : Math.max(0, cursorRef.current - 1)
+      setCursorPos(cursorRef.current)
       return
     }
     if (key.rightArrow) {
-      if (key.meta) {
-        // Option+Right: jump to next word boundary
-        const after = inputRef.current.slice(cursorRef.current)
-        const match = after.match(/^\s*\S+/)
-        const newPos = match ? cursorRef.current + match[0].length : inputRef.current.length
-        cursorRef.current = Math.min(inputRef.current.length, newPos)
-        setCursorPos(cursorRef.current)
-      } else {
-        // Token-aware: hop over image ref chips
-        const chipEnd = imageRefStartingAt(inputRef.current, cursorRef.current)
-        cursorRef.current = chipEnd !== undefined ? chipEnd : Math.min(inputRef.current.length, cursorRef.current + 1)
-        setCursorPos(cursorRef.current)
-      }
+      const chipEnd = imageRefStartingAt(inputRef.current, cursorRef.current)
+      cursorRef.current = chipEnd !== undefined ? chipEnd : Math.min(inputRef.current.length, cursorRef.current + 1)
+      setCursorPos(cursorRef.current)
       return
     }
     // Up/Down: queue pop takes priority over history
@@ -691,22 +674,37 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
     // ─── Non-kill/non-yank keystroke resets ────────────────────────
     killRing.resetAccumulation()
     killRing.resetYankState()
+    // Detect raw escape sequences — Ink 3.2 strips \x1b prefix and sets key.meta,
+    // so we re-prepend it for classification when meta is set and inputChar starts with [
+    const escInput = key.meta && inputChar.startsWith("[") ? "\x1b" + inputChar : inputChar
+    const escClass = classifyEscapeSequence(escInput)
+    if (escClass === "home") {
+      cursorRef.current = handleHome(inputRef.current, cursorRef.current)
+      setCursorPos(cursorRef.current)
+      return
+    }
+    if (escClass === "end") {
+      cursorRef.current = handleEnd(inputRef.current, cursorRef.current)
+      setCursorPos(cursorRef.current)
+      return
+    }
+    if (escClass === "word-left") {
+      const before = inputRef.current.slice(0, cursorRef.current)
+      const match = before.match(/(?:^|\s)\S+\s*$/)
+      cursorRef.current = match ? Math.max(0, cursorRef.current - match[0].length + (match[0].startsWith(" ") ? 1 : 0)) : 0
+      setCursorPos(cursorRef.current)
+      return
+    }
+    if (escClass === "word-right") {
+      const after = inputRef.current.slice(cursorRef.current)
+      const match = after.match(/^\s*\S+/)
+      cursorRef.current = match ? Math.min(inputRef.current.length, cursorRef.current + match[0].length) : inputRef.current.length
+      setCursorPos(cursorRef.current)
+      return
+    }
+    if (escClass === "ignore") return
     // Regular character: insert at cursor position
     if (!key.ctrl && !key.meta && inputChar) {
-      // Detect raw escape sequences before inserting text
-      const escClass = classifyEscapeSequence(inputChar)
-      if (escClass === "home") {
-        cursorRef.current = handleHome(inputRef.current, cursorRef.current)
-        setCursorPos(cursorRef.current)
-        return
-      }
-      if (escClass === "end") {
-        cursorRef.current = handleEnd(inputRef.current, cursorRef.current)
-        setCursorPos(cursorRef.current)
-        return
-      }
-      if (escClass === "ignore") return // PageUp/PageDown/mouse wheel fallback
-
       const before = inputRef.current.slice(0, cursorRef.current)
       const after = inputRef.current.slice(cursorRef.current)
       updateInput(before + inputChar + after, cursorRef.current + 1)
