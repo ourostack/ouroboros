@@ -21,6 +21,7 @@ export type OuroCliCommand =
   | { kind: "daemon.stop" }
   | { kind: "daemon.status" }
   | { kind: "daemon.logs" }
+  | { kind: "daemon.logs.prune" }
   | { kind: "outlook"; json?: boolean }
   | { kind: "auth.run"; agent: string; provider?: AgentProvider }
   | { kind: "auth.verify"; agent: string; provider?: AgentProvider }
@@ -87,6 +88,7 @@ export interface OuroCliDeps {
   ensureDaemonBootPersistence?: (socketPath: string) => Promise<void> | void
   startChat?: (agentName: string) => Promise<void>
   tailLogs?: (options?: { follow?: boolean; lines?: number; agentFilter?: string }) => () => void
+  pruneDaemonLogs?: (options?: { logsDir?: string; agentName?: string }) => { filesCompacted: number; bytesFreed: number }
   taskModule?: TaskModule
   friendStore?: FriendStore
   whoamiInfo?: () => { agentName: string; homePath: string; bonesVersion: string }

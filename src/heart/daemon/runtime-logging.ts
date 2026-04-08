@@ -125,12 +125,20 @@ export function configureDaemonRuntimeLogger(
     ? path.join(options.homeDir, "AgentBundles", `${agentName}.ouro`, "state", "daemon", "logs")
     : getAgentDaemonLogsDir(agentName)
 
+  // Rotation policy per daemon ndjson stream (Unit 1c):
+  //   25 MB threshold x 5 gzipped generations = ~30 MB peak per stream.
+  // Call sites previously relied on the implicit 50 MB default; we now pass
+  // the options object explicitly so the policy is visible at the call site.
   const sinks: LogSink[] = config.sinks.map((sinkName) => {
     if (sinkName === "terminal") {
       return createTerminalSink()
     }
     const ndjsonPath = path.join(logsDir, `${processName}.ndjson`)
-    return createNdjsonFileSink(ndjsonPath)
+    return createNdjsonFileSink(ndjsonPath, {
+      maxSizeBytes: 25 * 1024 * 1024,
+      maxGenerations: 5,
+      compress: true,
+    })
   })
 
   const logger = createLogger({

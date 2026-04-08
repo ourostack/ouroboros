@@ -30,6 +30,7 @@ import { detectRuntimeMode } from "./runtime-mode"
 import { listEnabledBundleAgents } from "./agent-discovery"
 import { getPackageVersion } from "../../mind/bundle-manifest"
 import { syncGlobalOuroBotWrapper as defaultSyncGlobalOuroBotWrapper } from "../versioning/ouro-bot-global-installer"
+import { pruneDaemonLogs as defaultPruneDaemonLogs } from "./logs-prune"
 import { writeLaunchAgentPlist } from "./launchd"
 import { DEFAULT_DAEMON_SOCKET_PATH, sendDaemonCommand, checkDaemonSocketAlive } from "./socket-client"
 import { listSessionActivity } from "../session-activity"
@@ -535,6 +536,7 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     },
     /* v8 ignore stop */
     syncGlobalOuroBotWrapper: defaultSyncGlobalOuroBotWrapper,
+    pruneDaemonLogs: defaultPruneDaemonLogs,
     ensureSkillManagement: defaultEnsureSkillManagement,
     ensureDaemonBootPersistence: defaultEnsureDaemonBootPersistence,
     /* v8 ignore start -- dev-mode defaults: tests inject mocks for mode detection and binary resolution @preserve */

@@ -50,7 +50,14 @@ describe("CLI logging contract", () => {
     ;(cli as { configureCliRuntimeLogger: (friendId: string) => void }).configureCliRuntimeLogger("friend-123")
 
     expect(logPath).toHaveBeenCalledWith("cli", "runtime")
-    expect(createNdjsonFileSink).toHaveBeenCalledWith("/tmp/testagent-cli-runtime.ndjson")
+    expect(createNdjsonFileSink).toHaveBeenCalledWith(
+      "/tmp/testagent-cli-runtime.ndjson",
+      expect.objectContaining({
+        maxSizeBytes: 25 * 1024 * 1024,
+        maxGenerations: 5,
+        compress: true,
+      }),
+    )
     expect(createLogger).toHaveBeenCalledWith(
       expect.objectContaining({
         level: "info",
