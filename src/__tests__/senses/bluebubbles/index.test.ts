@@ -2866,6 +2866,70 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.handleInboundTurn).not.toHaveBeenCalled()
   })
 
+  // Regression guard for the double-VLM bug observed live on 2026-04-08T00:58Z:
+  // BlueBubbles sent a `new-message` webhook for an image-bearing iMessage,
+  // slugger ran the full repair → hydrate → VLM describe path, then ~3s later
+  // BB sent an `updated-message` webhook for the SAME messageGuid (delivery/
+  // read status update). The BB sense's `repairEvent` path promotes
+  // updated-message events with recoverable content back to `message` kind,
+  // which re-ran hydrateBlueBubblesAttachments and issued a SECOND VLM
+  // describe call for the same 291KB attachment — ~14s extra latency and
+  // double the MiniMax VLM token spend, for a turn that was going to be
+  // deduped downstream anyway. See `handleBlueBubblesEvent` in index.ts for
+  // the pre-repair dedup.
+  it("skips repairEvent entirely when an updated-message arrives for an already-processed messageGuid (no duplicate VLM describe)", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+
+    // Seed the inbound sidecar with the messageGuid as if the first
+    // webhook already processed it fully.
+    const { recordBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
+    recordBlueBubblesInbound("testagent", {
+      kind: "message",
+      eventType: "new-message",
+      messageGuid: editPayload.data.guid,
+      timestamp: Date.parse("2026-04-08T00:58:15.745Z"),
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        rawId: "ari@mendelow.me",
+        displayName: "ari@mendelow.me",
+      },
+      chat: {
+        chatGuid: "any;-;ari@mendelow.me",
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat:any;-;ari@mendelow.me",
+        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        participantHandles: [],
+      },
+      text: "wrong flight and you're forgetting how time zones work",
+      textForAgent: "wrong flight and you're forgetting how time zones work",
+      attachments: [],
+      hasPayloadData: false,
+      requiresRepair: false,
+    }, "webhook")
+
+    // Sanity check: the record we just wrote must be readable via the
+    // inbound-log helper. If this fails, the test isn't actually exercising
+    // the dedup path — it's a setup error.
+    const { hasRecordedBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
+    expect(hasRecordedBlueBubblesInbound("testagent", "chat:any;-;ari@mendelow.me", editPayload.data.guid)).toBe(true)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.handleBlueBubblesEvent(editPayload)
+
+    // Verify the early dedup check fired by looking for its nerves event.
+    // If this assertion fails, my pre-repair dedup isn't running.
+    const dedupCalls = mocks.emitNervesEvent.mock.calls.filter(
+      (call: unknown[]) => (call[0] as { event?: string })?.event === "senses.bluebubbles_repair_skipped_duplicate",
+    )
+    expect(dedupCalls.length).toBe(1)
+    expect(result.handled).toBe(true)
+  })
+
   it("does not run the same webhook message guid through the pipeline twice when deliveries race", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
