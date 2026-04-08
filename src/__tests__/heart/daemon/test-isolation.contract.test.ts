@@ -38,6 +38,16 @@ import { describe, expect, it } from "vitest"
  *      contains only the two files that legitimately exercise the real
  *      socket-client transport against test sockets — extending it requires
  *      conscious review.
+ *   4. Only files on the OURO_DAEMON_INSTANTIATION_ALLOWLIST may construct
+ *      `new OuroDaemon(...)`. Constructing a real daemon instance and
+ *      calling start() runs killOrphanProcesses() and writePidfile() against
+ *      the hardcoded production pidfile path (~/.ouro-cli/daemon.pids).
+ *      The runtime guards added in #346 short-circuit those functions under
+ *      vitest, but if a future change to start() adds a NEW production-state
+ *      side-effect, the existing tests would silently exercise it. The
+ *      allowlist forces conscious review of each new test that takes this
+ *      shape, so a future production-side leak through start() can't ride
+ *      in unnoticed alongside an unrelated change.
  */
 
 // Files that use `name: "testagent"` without mocking socket-client.
@@ -67,6 +77,28 @@ const REAL_BUNDLES_WRITE_ALLOWLIST = new Set<string>()
 const BYPASS_USE_ALLOWLIST = new Set<string>([
   "src/__tests__/heart/daemon/socket-client.test.ts",
   "src/__tests__/heart/daemon/daemon-cli-defaults.test.ts",
+])
+
+// Files allowed to construct `new OuroDaemon(...)`. The 11 files below all
+// rely on the runtime guards added in #346 (killOrphanProcesses() and
+// writePidfile() are no-ops under vitest) so they don't touch the real
+// production pidfile at ~/.ouro-cli/daemon.pids. Adding a 12th file should
+// be a deliberate, reviewed choice — there's a non-trivial risk that a
+// future change to OuroDaemon.start() introduces a NEW production-state
+// side-effect that the existing 11 tests would silently exercise. Forcing
+// allowlist edits gives that change a reviewer who can spot the drift.
+const OURO_DAEMON_INSTANTIATION_ALLOWLIST = new Set<string>([
+  "src/__tests__/heart/daemon/daemon-stop-deadlock.test.ts",
+  "src/__tests__/heart/daemon/daemon-command-plane-branches.test.ts",
+  "src/__tests__/heart/daemon/daemon-cli.test.ts",
+  "src/__tests__/heart/daemon/daemon-update-wiring.test.ts",
+  "src/__tests__/heart/daemon/daemon-socket-errors.test.ts",
+  "src/__tests__/heart/daemon/daemon-command-error.test.ts",
+  "src/__tests__/heart/daemon/daemon-boot-updates.test.ts",
+  "src/__tests__/heart/daemon/daemon-agent-commands.test.ts",
+  "src/__tests__/repertoire/mcp-wiring.test.ts",
+  "src/__tests__/heart/daemon/daemon-mcp-commands.test.ts",
+  "src/__tests__/heart/daemon/daemon-startup-sense-drain.test.ts",
 ])
 
 const TESTS_ROOT = join(process.cwd(), "src", "__tests__")
@@ -258,6 +290,67 @@ describe("test isolation contract", () => {
     expect(cleanedUp, [
       "These files were grandfathered into BYPASS_USE_ALLOWLIST but no longer",
       "call __bypassVitestGuardForTests. Remove them from the allowlist.",
+    ].join("\n")).toEqual([])
+  })
+
+  it("only allowlisted files may construct `new OuroDaemon(...)`", () => {
+    const allTests = walkTestFiles(TESTS_ROOT)
+    const newOffenders: string[] = []
+    const cleanedUp: string[] = []
+
+    for (const file of allTests) {
+      // Skip THIS contract test (mentions the pattern in comments).
+      if (file.endsWith("test-isolation.contract.test.ts")) continue
+
+      const content = readFileSync(file, "utf-8")
+      // Match `new OuroDaemon(` (with or without surrounding whitespace) so
+      // we catch both direct constructor calls and helper-wrapped variants.
+      if (!/new\s+OuroDaemon\s*\(/.test(content)) continue
+
+      const rel = relPath(file)
+      if (OURO_DAEMON_INSTANTIATION_ALLOWLIST.has(rel)) continue
+
+      newOffenders.push(rel)
+    }
+
+    // Detect allowlisted files that no longer construct OuroDaemon
+    for (const allowed of OURO_DAEMON_INSTANTIATION_ALLOWLIST) {
+      const fullPath = join(process.cwd(), allowed)
+      if (!existsSync(fullPath)) {
+        cleanedUp.push(`(deleted) ${allowed}`)
+        continue
+      }
+      const content = readFileSync(fullPath, "utf-8")
+      if (!/new\s+OuroDaemon\s*\(/.test(content)) {
+        cleanedUp.push(allowed)
+      }
+    }
+
+    expect(newOffenders, [
+      "These NEW test files construct `new OuroDaemon(...)` but are not on",
+      "the OURO_DAEMON_INSTANTIATION_ALLOWLIST. Constructing a real daemon",
+      "and calling start() runs killOrphanProcesses() and writePidfile()",
+      "against the production pidfile at ~/.ouro-cli/daemon.pids. The",
+      "runtime guards in #346 short-circuit those functions under vitest,",
+      "but if a future change to start() adds a NEW production-state",
+      "side-effect, your test would silently exercise it.",
+      "",
+      "Before adding a file to the allowlist, prefer one of:",
+      "  1. Use higher-level test seams (mock the daemon, not instantiate",
+      "     it). Most behavior can be tested by mocking sendCommand.",
+      "  2. If you really need a real daemon, write a unit test for the",
+      "     specific method instead of going through start().",
+      "",
+      "If you legitimately need to construct OuroDaemon, add the file path",
+      "to OURO_DAEMON_INSTANTIATION_ALLOWLIST in this contract test.",
+      "",
+      ...newOffenders.map((f) => `  ${f}`),
+    ].join("\n")).toEqual([])
+
+    expect(cleanedUp, [
+      "These files were grandfathered into OURO_DAEMON_INSTANTIATION_ALLOWLIST",
+      "but no longer construct OuroDaemon. Remove them from the allowlist to",
+      "ratchet the exception list down toward zero.",
     ].join("\n")).toEqual([])
   })
 })
