@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.264",
+      "changes": [
+        "fix(bluebubbles): dedup `updated-message` webhooks BEFORE running repair+hydrate+VLM. BlueBubbles routinely sends a `new-message` webhook for a fresh message, then follows up seconds later with one or more `updated-message` webhooks for delivery/read status. The BB sense's `repairEvent` path promotes updated-message events with recoverable content back to `message` kind, which re-runs the full hydration pipeline \u2014 including a second MiniMax VLM describe call on the same image. Verified live on 2026-04-08T00:58Z: two sequential VLM describes for attachment guid 317E37EB-..., 13.7s + 14.0s each, for the exact same 291KB JPEG, triggered by a `new-message` followed 3s later by an `updated-message` for the same guid. The downstream `handleBlueBubblesNormalizedEvent` dedup check was firing correctly but too late (after the expensive VLM round-trip). Fix: add a pre-repair dedup check in `handleBlueBubblesEvent` that consults the inbound sidecar by messageGuid and short-circuits before calling `client.repairEvent(...)`. New nerves event `senses.bluebubbles_repair_skipped_duplicate` at warn level for observability."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.263",
       "changes": [
         "fix(tui): arrow keys char-by-char (Ink 3.2 key.meta bug), Option+Arrow word-jump via CSI sequences."

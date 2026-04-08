@@ -985,7 +985,45 @@ export async function handleBlueBubblesEvent(
 ): Promise<BlueBubblesHandleResult> {
   const resolvedDeps = { ...defaultDeps, ...deps }
   const client = resolvedDeps.createClient()
-  const event = await client.repairEvent(normalizeBlueBubblesEvent(payload))
+  const normalized = normalizeBlueBubblesEvent(payload)
+  // Pre-repair dedup: if we've already processed this messageGuid, skip the
+  // repair+hydrate path entirely. Applies to BOTH `kind: "message"` AND
+  // `kind: "mutation"` events — BlueBubbles often sends a `new-message`
+  // webhook for a fresh message AND one or more follow-up `updated-message`
+  // webhooks for delivery/read status. The mutation path (inside repairEvent)
+  // can promote an updated-message back to a message if it has recoverable
+  // content, which then re-runs the full VLM-describe pipeline on the same
+  // attachment.
+  //
+  // Without this early check, we paid DOUBLE latency and double tokens on
+  // every image-bearing message. Verified live on 2026-04-08T00:58Z: two
+  // sequential VLM describes for attachment guid 317E37EB-..., 13.7s +
+  // 14.0s each, for the exact same 291KB JPEG — triggered by a sequence of
+  // `new-message` followed ~3s later by `updated-message` for the same guid.
+  //
+  // We still route the skip through `handleBlueBubblesNormalizedEvent` so
+  // the downstream `already_processed` path fires its observability events
+  // and the caller sees a consistent return shape.
+  const agentName = resolvedDeps.getAgentName()
+  if (
+    normalized.messageGuid
+    && hasRecordedBlueBubblesInbound(agentName, normalized.chat.sessionKey, normalized.messageGuid)
+  ) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.bluebubbles_repair_skipped_duplicate",
+      message: "skipped repair+hydrate for already-processed bluebubbles messageGuid",
+      meta: {
+        messageGuid: normalized.messageGuid,
+        sessionKey: normalized.chat.sessionKey,
+        eventType: normalized.eventType,
+        normalizedKind: normalized.kind,
+      },
+    })
+    return handleBlueBubblesNormalizedEvent(normalized, resolvedDeps, "webhook")
+  }
+  const event = await client.repairEvent(normalized)
   return handleBlueBubblesNormalizedEvent(event, resolvedDeps, "webhook")
 }
 
