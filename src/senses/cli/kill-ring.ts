@@ -84,3 +84,4 @@ export class KillRing {
     this.yankIndex = -1
   }
 }
+
