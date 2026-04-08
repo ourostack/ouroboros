@@ -14,7 +14,7 @@ import { Text, Box, Static, useInput } from "ink"
 import { StreamingMarkdown } from "./streaming-markdown"
 import { processSubmitInput } from "./image-paste"
 import { KillRing } from "./kill-ring"
-import { handleKillToEnd, handleKillToStart, handleKillWordBack, handleYank, handleYankPop, handleCursorLeft, handleCursorRight, handleBackspace, handleHome, handleEnd, classifyEscapeSequence } from "./input-keys"
+import { handleKillToEnd, handleKillToStart, handleKillWordBack, handleYank, handleYankPop, handleCursorLeft, handleCursorRight, handleBackspace, handleForwardDelete, handleHome, handleEnd, classifyEscapeSequence } from "./input-keys"
 
 // ─── Ouroboros Brand Palette (ANSI RGB) ─────────────────────────────
 // From packages/outlook-ui/src/style.css and ouroboros.bot
@@ -603,6 +603,16 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
       const result = handleBackspace(inputRef.current, cursorRef.current)
       updateInput(result.text, result.cursorPos)
       historyIdx.current = -1
+      return
+    }
+    // Ctrl+D: forward-delete when input present, exit when empty
+    if (key.ctrl && inputChar === "d") {
+      if (inputRef.current.length === 0) {
+        handleCtrlC()
+      } else {
+        const result = handleForwardDelete(inputRef.current, cursorRef.current)
+        updateInput(result.text, result.cursorPos)
+      }
       return
     }
     // ─── Kill Ring Keybindings ─────────────────────────────────────
