@@ -78,6 +78,7 @@ export interface TuiProps {
   readonly cwd: string
   readonly resumeInfo?: { messageCount: number; timeAgo: string }
   readonly onImageMap?: (images: Map<number, string>) => void
+  readonly onHistoryAdd?: (text: string) => void
 }
 
 // ─── Header ─────────────────────────────────────────────────────────
@@ -312,7 +313,7 @@ const killRing = new KillRing()
 
 // ─── Input ──────────────────────────────────────────────────────────
 
-function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agentName, model, onImageMap }: {
+function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agentName, model, onImageMap, onHistoryAdd }: {
   readonly onSubmit: (text: string) => void
   readonly onCtrlC: (hasInput: boolean) => CtrlCAction
   readonly history: readonly string[]
@@ -321,6 +322,7 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
   readonly agentName: string
   readonly model: string
   readonly onImageMap?: (images: Map<number, string>) => void
+  readonly onHistoryAdd?: (text: string) => void
 }): React.ReactElement {
   const [input, setInput] = useState("")
   const [cursorPos, setCursorPos] = useState(0) // cursor position within input
@@ -390,6 +392,8 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
       escTimerRef.current = setTimeout(() => {
         escTimerRef.current = null
         if (inputRef.current) {
+          // Save to history before clearing (so Up arrow can retrieve it)
+          if (onHistoryAdd) onHistoryAdd(inputRef.current)
           updateInput("")
           historyIdx.current = -1
           setTooltip("Esc again to clear")
@@ -752,6 +756,7 @@ export function OuroTui({
   cwd,
   resumeInfo,
   onImageMap,
+  onHistoryAdd,
 }: TuiProps): React.ReactElement {
   return (
     <Box flexDirection="column">
@@ -790,6 +795,7 @@ export function OuroTui({
         agentName={agentName}
         model={model}
         onImageMap={onImageMap}
+        onHistoryAdd={onHistoryAdd}
       />
     </Box>
   )

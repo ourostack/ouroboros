@@ -186,6 +186,11 @@ export class TuiStore {
     this.notify()
   }
 
+  /** Add text to input history only (no completed message, no notify). Used by ESC-to-clear. */
+  addToHistoryOnly(text: string): void {
+    this._inputHistory.push(text)
+  }
+
   /** Seed input history from previous session messages (display only, no rendering) */
   seedHistory(texts: string[]): void {
     this._inputHistory.push(...texts)
