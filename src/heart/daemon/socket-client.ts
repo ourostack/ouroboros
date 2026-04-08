@@ -23,6 +23,23 @@ export const DEFAULT_DAEMON_SOCKET_PATH = "/tmp/ouroboros-daemon.sock"
  * test socket) call `__bypassVitestGuardForTests(true)` to opt out of the
  * guard. We persist that flag on globalThis so it survives `vi.resetModules`
  * (which clears the module cache between tests).
+ *
+ * HARDENING (cross-file leak protection): the bypass flag lives on globalThis
+ * and is process-wide. With vitest's default `fileParallelism: true`,
+ * concurrently-running test files in the same worker can have the bypass on
+ * even though they didn't ask for it — and any test that uses
+ * `name: "testagent"` and exercises a code path through this module will
+ * leak `inner.wake testagent` to the production daemon socket. We saw this
+ * cause a real outage on 2026-04-08 (daemon SIGTERMed mid-validation).
+ *
+ * Defense: even when the bypass flag is set, we ALWAYS hard-block calls that
+ * target the production daemon socket path. Test files that legitimately
+ * exercise the real socket-client code paths use a synthetic socket path like
+ * `/tmp/daemon.sock` or `/tmp/some-real-daemon.sock` — those keep working.
+ * Calls to `/tmp/ouroboros-daemon.sock` (DEFAULT_DAEMON_SOCKET_PATH) under
+ * vitest are unconditionally blocked, regardless of bypass state. This makes
+ * the cross-file leak vector impossible without restricting legitimate
+ * socket-client unit tests.
  */
 const BYPASS_KEY = "__ouro_socket_client_bypass_vitest_guard__"
 
@@ -31,21 +48,36 @@ export function __bypassVitestGuardForTests(bypass: boolean): void {
   ;(globalThis as Record<string, unknown>)[BYPASS_KEY] = bypass
 }
 
-function isUnderVitest(): boolean {
-  if ((globalThis as Record<string, unknown>)[BYPASS_KEY] === true) return false
+function isVitestProcess(): boolean {
   /* v8 ignore next -- defensive: process and process.argv always exist in node @preserve */
   if (typeof process === "undefined" || !Array.isArray(process.argv)) return false
   return process.argv.some((arg) => typeof arg === "string" && arg.includes("vitest"))
 }
 
+function isProductionDaemonSocket(socketPath: string): boolean {
+  return socketPath === DEFAULT_DAEMON_SOCKET_PATH
+}
+
+/**
+ * Returns true when this socket call should be converted into a safe no-op
+ * because we're under vitest and the call would otherwise leak into a real
+ * daemon. The bypass flag short-circuits the guard for non-production socket
+ * paths only — production socket paths are ALWAYS blocked under vitest.
+ */
+function shouldSuppressSocketCall(socketPath: string): boolean {
+  if (!isVitestProcess()) return false
+  if (isProductionDaemonSocket(socketPath)) return true
+  return (globalThis as Record<string, unknown>)[BYPASS_KEY] !== true
+}
+
 export function sendDaemonCommand(socketPath: string, command: DaemonCommand): Promise<DaemonResponse> {
-  if (isUnderVitest()) {
+  if (shouldSuppressSocketCall(socketPath)) {
     emitNervesEvent({
       level: "warn",
       component: "daemon",
       event: "daemon.socket_command_test_blocked",
       message: "blocked socket command from leaking into real daemon under vitest",
-      meta: { socketPath, kind: command.kind },
+      meta: { socketPath, kind: command.kind, isProductionSocket: isProductionDaemonSocket(socketPath) },
     })
     return Promise.resolve({ ok: true, message: "test mode: socket call suppressed" })
   }
@@ -157,7 +189,7 @@ export function sendDaemonCommand(socketPath: string, command: DaemonCommand): P
 }
 
 export function checkDaemonSocketAlive(socketPath: string): Promise<boolean> {
-  if (isUnderVitest()) {
+  if (shouldSuppressSocketCall(socketPath)) {
     return Promise.resolve(false)
   }
 
@@ -221,13 +253,13 @@ export async function requestInnerWake(
   agent: string,
   socketPath = DEFAULT_DAEMON_SOCKET_PATH,
 ): Promise<DaemonResponse | null> {
-  if (isUnderVitest()) {
+  if (shouldSuppressSocketCall(socketPath)) {
     emitNervesEvent({
       level: "warn",
       component: "daemon",
       event: "daemon.inner_wake_test_blocked",
       message: "blocked inner wake from leaking into real daemon under vitest",
-      meta: { agent, socketPath },
+      meta: { agent, socketPath, isProductionSocket: isProductionDaemonSocket(socketPath) },
     })
     return null
   }
