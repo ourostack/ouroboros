@@ -180,4 +180,33 @@ describe("TuiStore queue methods", () => {
       expect(store.queuedInputs).toEqual([])
     })
   })
+
+  describe("addToHistoryOnly", () => {
+    it("adds text to input history without creating a completed message", () => {
+      store.addToHistoryOnly("saved text")
+      expect(store.inputHistory).toContain("saved text")
+      expect(store.completedMessages).toEqual([])
+    })
+
+    it("does not trigger notify (no listener called)", () => {
+      const listener = vi.fn()
+      store.subscribe(listener)
+      listener.mockClear()
+
+      store.addToHistoryOnly("quiet save")
+      expect(listener).not.toHaveBeenCalled()
+    })
+
+    it("text is retrievable via inputHistory", () => {
+      store.addToHistoryOnly("first")
+      store.addToHistoryOnly("second")
+      expect(store.inputHistory).toEqual(["first", "second"])
+    })
+
+    it("works alongside addUserMessage history", () => {
+      store.addToHistoryOnly("escaped text")
+      store.addUserMessage("submitted text")
+      expect(store.inputHistory).toEqual(["escaped text", "submitted text"])
+    })
+  })
 })
