@@ -201,4 +201,67 @@ describe("memory judgement heuristics — routing rules", () => {
 
     expect(system).toContain("one-off shell output with no durable lesson")
   })
+
+  it("diary guidance mentions bundle-layout discoveries so agents persist them", async () => {
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const system = await buildSystem("cli")
+
+    // Regression guard: slugger once spent a recall scan looking for a custom
+    // travel/ folder that was right at the bundle root, then said "i should
+    // know my own folder structure next time" — which is impossible without
+    // writing it down. The diary guidance now explicitly flags bundle-layout
+    // discoveries as a thing worth persisting.
+    expect(system).toContain("the shape of my own bundle")
+    expect(system).toContain("bundle-layout")
+  })
+})
+
+describe("non-persistent memory realism — locked content", () => {
+  beforeEach(() => {
+    vi.resetModules()
+    setupReadFileSync()
+    mockGetBoard.mockReset().mockReturnValue({
+      compact: "",
+      full: "",
+      byStatus: {
+        drafting: [],
+        processing: [],
+        validating: [],
+        collaborating: [],
+        paused: [],
+        blocked: [],
+        done: [],
+        cancelled: [],
+      },
+      actionRequired: [],
+      unresolvedDependencies: [],
+      activeSessions: [],
+    })
+  })
+
+  it("body map says custom top-level folders may exist and instructs list_directory before recall", async () => {
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const system = await buildSystem("cli")
+
+    // Standard folders are not exhaustive
+    expect(system).toContain("custom top-level folders")
+    // When in doubt, list the bundle root before searching notes
+    expect(system).toContain("list_directory")
+    expect(system).toContain("BEFORE reaching for `recall`")
+  })
+
+  it("contextSection tells the agent it does not just remember anything between sessions", async () => {
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const system = await buildSystem("cli")
+
+    // Explicit anti-pattern call-out
+    expect(system).toContain("i do not \"just remember\" anything between sessions")
+    // Three sources of knowledge in any given session
+    expect(system).toContain("blank slate carrying only")
+    // Resolutions don't persist — only files do
+    expect(system).toContain("future me cannot inherit resolutions, only files")
+  })
 })
