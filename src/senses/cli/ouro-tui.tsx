@@ -14,7 +14,7 @@ import { Text, Box, Static, useInput } from "ink"
 import { StreamingMarkdown } from "./streaming-markdown"
 import { processSubmitInput } from "./image-paste"
 import { KillRing } from "./kill-ring"
-import { handleKillToEnd, handleKillToStart, handleKillWordBack, handleYank, handleYankPop, handleCursorLeft, handleCursorRight, handleBackspace } from "./input-keys"
+import { handleKillToEnd, handleKillToStart, handleKillWordBack, handleYank, handleYankPop, handleCursorLeft, handleCursorRight, handleBackspace, handleHome, handleEnd, classifyEscapeSequence } from "./input-keys"
 
 // ─── Ouroboros Brand Palette (ANSI RGB) ─────────────────────────────
 // From packages/outlook-ui/src/style.css and ouroboros.bot
@@ -410,6 +410,8 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
       clearTimeout(escTimerRef.current)
       escTimerRef.current = null
     }
+    // PageUp/PageDown: suppress (no text insertion, no action)
+    if (key.pageUp || key.pageDown) return
     if (key.return) {
       // Alt+Enter: detect via key.meta OR recent ESC (within 50ms — Ink splits \x1b\r)
       const recentEsc = (Date.now() - lastEscTime.current) < 50
@@ -639,6 +641,20 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
     killRing.resetYankState()
     // Regular character: insert at cursor position
     if (!key.ctrl && !key.meta && inputChar) {
+      // Detect raw escape sequences before inserting text
+      const escClass = classifyEscapeSequence(inputChar)
+      if (escClass === "home") {
+        cursorRef.current = handleHome(inputRef.current, cursorRef.current)
+        setCursorPos(cursorRef.current)
+        return
+      }
+      if (escClass === "end") {
+        cursorRef.current = handleEnd(inputRef.current, cursorRef.current)
+        setCursorPos(cursorRef.current)
+        return
+      }
+      if (escClass === "ignore") return // PageUp/PageDown/mouse wheel fallback
+
       const before = inputRef.current.slice(0, cursorRef.current)
       const after = inputRef.current.slice(cursorRef.current)
       updateInput(before + inputChar + after, cursorRef.current + 1)
