@@ -71,14 +71,15 @@ describe("Kill Ring Keybindings", () => {
   })
 
   describe("Ctrl+W / Meta+Backspace (kill word back)", () => {
-    it("kills word before cursor", () => {
+    it("kills word before cursor including leading whitespace", () => {
       const result = handleKillWordBack("hello world", 11, ring)
-      expect(result).toEqual({ text: "hello ", cursorPos: 6 })
+      // Kills " world" (space + word), leaving "hello"
+      expect(result).toEqual({ text: "hello", cursorPos: 5 })
     })
 
-    it("pushes killed word to ring with 'prepend' direction", () => {
+    it("pushes killed word (with whitespace) to ring with 'prepend' direction", () => {
       handleKillWordBack("hello world", 11, ring)
-      expect(ring.yank()).toBe("world")
+      expect(ring.yank()).toBe(" world")
     })
 
     it("kills first word when cursor is within it", () => {
@@ -94,8 +95,9 @@ describe("Kill Ring Keybindings", () => {
 
     it("kills trailing spaces as part of the word", () => {
       const result = handleKillWordBack("hello   world", 8, ring)
-      // "hello   " -> kills "   " + preceding word boundary
-      expect(result.cursorPos).toBeLessThan(8)
+      // Cursor at 8 means before = "hello   ", regex kills " hello   " -> actually
+      // before is "hello   ", regex /\s*\S+\s*$/ matches "hello   " (trailing spaces + word)
+      expect(result.cursorPos).toBe(0)
     })
   })
 

@@ -13,6 +13,8 @@ import React, { useState, useRef, useEffect, useCallback } from "react"
 import { Text, Box, Static, useInput } from "ink"
 import { StreamingMarkdown } from "./streaming-markdown"
 import { processSubmitInput } from "./image-paste"
+import { KillRing } from "./kill-ring"
+import { handleKillToEnd, handleKillToStart, handleKillWordBack, handleYank, handleYankPop } from "./input-keys"
 
 // ─── Ouroboros Brand Palette (ANSI RGB) ─────────────────────────────
 // From packages/outlook-ui/src/style.css and ouroboros.bot
@@ -305,6 +307,9 @@ export function QueuedMessages({ items }: {
   )
 }
 
+// ─── Kill Ring (session-scoped) ─────────────────────────────────────
+const killRing = new KillRing()
+
 // ─── Input ──────────────────────────────────────────────────────────
 
 function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agentName, model, onImageMap }: {
@@ -436,12 +441,10 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
     }
     if (key.backspace || key.delete) {
       if (cursorRef.current > 0) {
-        // Option+Backspace: delete word
+        // Option+Backspace: delete word (also pushes to kill ring)
         if (key.meta) {
-          const before = inputRef.current.slice(0, cursorRef.current)
-          const after = inputRef.current.slice(cursorRef.current)
-          const wordStart = before.replace(/\s*\S+\s*$/, "")
-          updateInput(wordStart + after, wordStart.length)
+          const result = handleKillWordBack(inputRef.current, cursorRef.current, killRing)
+          updateInput(result.text, result.cursorPos)
         } else {
           const before = inputRef.current.slice(0, cursorRef.current - 1)
           const after = inputRef.current.slice(cursorRef.current)
@@ -549,6 +552,40 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
       setCursorPos(inputRef.current.length)
       return
     }
+    // ─── Kill Ring Keybindings ─────────────────────────────────────
+    // Ctrl+K: kill from cursor to end of line
+    if (key.ctrl && inputChar === "k") {
+      const result = handleKillToEnd(inputRef.current, cursorRef.current, killRing)
+      updateInput(result.text, result.cursorPos)
+      return
+    }
+    // Ctrl+U: kill from start to cursor
+    if (key.ctrl && inputChar === "u") {
+      const result = handleKillToStart(inputRef.current, cursorRef.current, killRing)
+      updateInput(result.text, result.cursorPos)
+      return
+    }
+    // Ctrl+W: kill word before cursor
+    if (key.ctrl && inputChar === "w") {
+      const result = handleKillWordBack(inputRef.current, cursorRef.current, killRing)
+      updateInput(result.text, result.cursorPos)
+      return
+    }
+    // Ctrl+Y: yank from kill ring
+    if (key.ctrl && inputChar === "y") {
+      const result = handleYank(inputRef.current, cursorRef.current, killRing)
+      if (result) updateInput(result.text, result.cursorPos)
+      return
+    }
+    // Alt+Y: yank-pop (cycle kill ring)
+    if (key.meta && inputChar === "y") {
+      const result = handleYankPop(inputRef.current, cursorRef.current, killRing)
+      if (result) updateInput(result.text, result.cursorPos)
+      return
+    }
+    // ─── Non-kill/non-yank keystroke resets ────────────────────────
+    killRing.resetAccumulation()
+    killRing.resetYankState()
     // Regular character: insert at cursor position
     if (!key.ctrl && !key.meta && inputChar) {
       const before = inputRef.current.slice(0, cursorRef.current)
