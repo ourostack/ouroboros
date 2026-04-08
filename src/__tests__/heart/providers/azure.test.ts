@@ -24,6 +24,17 @@ vi.mock("@azure/identity", () => ({
   },
 }))
 
+// Hard-mock the daemon socket client. The runtime guard in socket-client.ts
+// already prevents real socket calls under vitest (by detecting process.argv),
+// but the explicit mock lets tests that care assert on call counts and avoids
+// the per-file allowlist in test-isolation.contract.test.ts.
+vi.mock("../../../heart/daemon/socket-client", () => ({
+  DEFAULT_DAEMON_SOCKET_PATH: "/tmp/ouroboros-test-mock.sock",
+  sendDaemonCommand: vi.fn().mockResolvedValue({ ok: true }),
+  checkDaemonSocketAlive: vi.fn().mockResolvedValue(false),
+  requestInnerWake: vi.fn().mockResolvedValue(null),
+}))
+
 // Mock openai
 const mockAzureOpenAICtor = vi.fn()
 vi.mock("openai", () => {

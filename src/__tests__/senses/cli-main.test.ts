@@ -93,6 +93,17 @@ vi.mock("readline", () => ({
   createInterface: (...a: any[]) => mocks.createInterface(...a),
   cursorTo: (...a: any[]) => mocks.cursorTo(...a),
 }))
+
+// Hard-mock the daemon socket client. The runtime guard in socket-client.ts
+// already prevents real socket calls under vitest (by detecting process.argv),
+// but the explicit mock lets tests that care assert on call counts and avoids
+// the per-file allowlist in test-isolation.contract.test.ts.
+vi.mock("../../heart/daemon/socket-client", () => ({
+  DEFAULT_DAEMON_SOCKET_PATH: "/tmp/ouroboros-test-mock.sock",
+  sendDaemonCommand: vi.fn().mockResolvedValue({ ok: true }),
+  checkDaemonSocketAlive: vi.fn().mockResolvedValue(false),
+  requestInnerWake: vi.fn().mockResolvedValue(null),
+}))
 // Ink mock: captures onSubmit/onExit props and immediately schedules any pending
 // input sequence via microtasks (deterministic, no flaky setTimeout delays).
 vi.mock("ink", () => ({

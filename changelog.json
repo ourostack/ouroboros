@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.262",
+      "changes": [
+        "test(daemon): inject explicit `vi.mock(\"...heart/daemon/socket-client\", ...)` blocks into all 40 grandfathered test files in `TESTAGENT_NO_MOCK_ALLOWLIST`. The runtime guard in `socket-client.ts` already prevents real socket leaks under vitest, but the explicit mocks let those tests assert call counts cleanly and shrink the contract-test allowlist to zero. Both the testagent and the bundle-write allowlists in `test-isolation.contract.test.ts` are now empty Sets \u2014 any new offender fails the build."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.261",
       "changes": [
         "feat(tui): full input parity with Claude Code \u2014 kill ring, emacs nav, Home/End, Ctrl+D, forward delete, Esc history, bracketed paste, clipboard image, token deletion, chip navigation. 156 new tests."

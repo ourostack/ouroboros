@@ -29,52 +29,11 @@ import { describe, expect, it } from "vitest"
  *      `os.tmpdir()` or fully-mocked fs.)
  */
 
-// Files that currently use `name: "testagent"` without mocking socket-client.
-// These are protected at runtime by the vitest guard in socket-client.ts itself,
-// but the long-term fix is to add explicit mocks per file. Shrink this list
-// in follow-up PRs.
-const TESTAGENT_NO_MOCK_ALLOWLIST = new Set<string>([
-  "src/__tests__/heart/anthropic-thinking-request.test.ts",
-  "src/__tests__/heart/anthropic-thinking-roundtrip.test.ts",
-  "src/__tests__/heart/azure-fingerprint.test.ts",
-  "src/__tests__/heart/codex-phase-annotation.test.ts",
-  "src/__tests__/heart/dynamic-reasoning-effort.test.ts",
-  "src/__tests__/heart/no-response.test.ts",
-  "src/__tests__/heart/provider-capabilities.test.ts",
-  "src/__tests__/heart/providers/azure.test.ts",
-  "src/__tests__/heart/providers/github-copilot.test.ts",
-  "src/__tests__/heart/reasoning-effort-flow.test.ts",
-  "src/__tests__/heart/settle-gate.test.ts",
-  "src/__tests__/heart/streaming.test.ts",
-  "src/__tests__/mind/phrases.test.ts",
-  "src/__tests__/mind/prompt-baseline.test.ts",
-  "src/__tests__/mind/prompt-mcp-channel.test.ts",
-  "src/__tests__/mind/prompt-mcp.test.ts",
-  "src/__tests__/mind/prompt-memory-judgement.test.ts",
-  "src/__tests__/mind/prompt-memory-tools-contract.test.ts",
-  "src/__tests__/mind/prompt-reasoning-effort.test.ts",
-  "src/__tests__/mind/prompt-self-fix-workflow.test.ts",
-  "src/__tests__/mind/prompt-start-of-turn.test.ts",
-  "src/__tests__/mind/prompt.test.ts",
-  "src/__tests__/repertoire/tools-capability-gating.test.ts",
-  "src/__tests__/repertoire/tools-mcp-integration.test.ts",
-  "src/__tests__/repertoire/tools-memory-friend.test.ts",
-  "src/__tests__/repertoire/tools-no-response.test.ts",
-  "src/__tests__/repertoire/tools-set-reasoning-effort.test.ts",
-  "src/__tests__/repertoire/tools-shell.test.ts",
-  "src/__tests__/repertoire/tools.test.ts",
-  "src/__tests__/senses/bluebubbles/index.test.ts",
-  "src/__tests__/senses/cli-main-updates.test.ts",
-  "src/__tests__/senses/cli-main.test.ts",
-  "src/__tests__/senses/cli-tui-edge-cases.test.ts",
-  "src/__tests__/senses/cli.test.ts",
-  "src/__tests__/senses/cli/input-queue.test.ts",
-  "src/__tests__/senses/cli/tui-store-edge-cases.test.ts",
-  "src/__tests__/senses/cli/tui-store-queue.test.ts",
-  "src/__tests__/senses/teams-proactive-send.test.ts",
-  "src/__tests__/senses/teams-stranger-gate.test.ts",
-  "src/__tests__/senses/teams.test.ts",
-])
+// Files that use `name: "testagent"` without mocking socket-client.
+// Empty as of the bulk mock injection — all 40 grandfathered files now have
+// explicit `vi.mock("...heart/daemon/socket-client", ...)` blocks. New
+// offenders are blocked by the contract test below.
+const TESTAGENT_NO_MOCK_ALLOWLIST = new Set<string>()
 
 // Lines that currently construct a write path under real ~/AgentBundles.
 // Empty as of the daemon-cli.test.ts conversion — all auth tests + thoughts
