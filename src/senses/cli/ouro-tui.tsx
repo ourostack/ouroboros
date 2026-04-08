@@ -15,6 +15,7 @@ import { StreamingMarkdown } from "./streaming-markdown"
 import { processSubmitInput } from "./image-paste"
 import { KillRing } from "./kill-ring"
 import { handleKillToEnd, handleKillToStart, handleKillWordBack, handleYank, handleYankPop, handleCursorLeft, handleCursorRight, handleBackspace, handleForwardDelete, handleHome, handleEnd, classifyEscapeSequence } from "./input-keys"
+import { imageRefEndingAt, imageRefStartingAt, deleteTokenBefore, deleteTokenAfter } from "./image-ref-navigation"
 
 // ─── Ouroboros Brand Palette (ANSI RGB) ─────────────────────────────
 // From packages/outlook-ui/src/style.css and ouroboros.bot
@@ -452,8 +453,14 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
         const result = handleKillToEnd(inputRef.current, cursorRef.current, killRing)
         updateInput(result.text, result.cursorPos)
       } else {
-        const result = handleForwardDelete(inputRef.current, cursorRef.current)
-        updateInput(result.text, result.cursorPos)
+        // Token-aware: check for image ref chip at cursor
+        const chip = deleteTokenAfter(inputRef.current, cursorRef.current)
+        if (chip) {
+          updateInput(chip.text, chip.pos)
+        } else {
+          const result = handleForwardDelete(inputRef.current, cursorRef.current)
+          updateInput(result.text, result.cursorPos)
+        }
       }
       historyIdx.current = -1
       return
@@ -461,8 +468,12 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
     // Backspace: delete character before cursor
     if (key.backspace) {
       if (cursorRef.current > 0) {
-        // Option+Backspace: delete word (also pushes to kill ring)
-        if (key.meta) {
+        // Token-aware: check for image ref chip before cursor
+        const chip = deleteTokenBefore(inputRef.current, cursorRef.current)
+        if (chip) {
+          updateInput(chip.text, chip.pos)
+        } else if (key.meta) {
+          // Option+Backspace: delete word (also pushes to kill ring)
           const result = handleKillWordBack(inputRef.current, cursorRef.current, killRing)
           updateInput(result.text, result.cursorPos)
         } else {
@@ -483,7 +494,9 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
         cursorRef.current = Math.max(0, newPos)
         setCursorPos(cursorRef.current)
       } else {
-        cursorRef.current = Math.max(0, cursorRef.current - 1)
+        // Token-aware: hop over image ref chips
+        const chipStart = imageRefEndingAt(inputRef.current, cursorRef.current)
+        cursorRef.current = chipStart !== undefined ? chipStart : Math.max(0, cursorRef.current - 1)
         setCursorPos(cursorRef.current)
       }
       return
@@ -497,7 +510,9 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
         cursorRef.current = Math.min(inputRef.current.length, newPos)
         setCursorPos(cursorRef.current)
       } else {
-        cursorRef.current = Math.min(inputRef.current.length, cursorRef.current + 1)
+        // Token-aware: hop over image ref chips
+        const chipEnd = imageRefStartingAt(inputRef.current, cursorRef.current)
+        cursorRef.current = chipEnd !== undefined ? chipEnd : Math.min(inputRef.current.length, cursorRef.current + 1)
         setCursorPos(cursorRef.current)
       }
       return
@@ -615,10 +630,15 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
       }
       return
     }
-    // Ctrl+H: backspace
+    // Ctrl+H: token-aware backspace
     if (key.ctrl && inputChar === "h") {
-      const result = handleBackspace(inputRef.current, cursorRef.current)
-      updateInput(result.text, result.cursorPos)
+      const chip = deleteTokenBefore(inputRef.current, cursorRef.current)
+      if (chip) {
+        updateInput(chip.text, chip.pos)
+      } else {
+        const result = handleBackspace(inputRef.current, cursorRef.current)
+        updateInput(result.text, result.cursorPos)
+      }
       historyIdx.current = -1
       return
     }
@@ -645,10 +665,15 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
       updateInput(result.text, result.cursorPos)
       return
     }
-    // Ctrl+W: kill word before cursor
+    // Ctrl+W: kill word before cursor (token-aware)
     if (key.ctrl && inputChar === "w") {
-      const result = handleKillWordBack(inputRef.current, cursorRef.current, killRing)
-      updateInput(result.text, result.cursorPos)
+      const chip = deleteTokenBefore(inputRef.current, cursorRef.current)
+      if (chip) {
+        updateInput(chip.text, chip.pos)
+      } else {
+        const result = handleKillWordBack(inputRef.current, cursorRef.current, killRing)
+        updateInput(result.text, result.cursorPos)
+      }
       return
     }
     // Ctrl+Y: yank from kill ring
