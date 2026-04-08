@@ -6,6 +6,7 @@
  * useInput callback for testability.
  */
 import type { KillRing } from "./kill-ring"
+import { emitNervesEvent } from "../../nerves/runtime"
 
 export interface InputResult {
   text: string
@@ -17,6 +18,7 @@ export interface InputResult {
  * Pushes killed text to ring with "append" direction.
  */
 export function handleKillToEnd(text: string, cursorPos: number, ring: KillRing): InputResult {
+  emitNervesEvent({ component: "senses", event: "senses.input_kill", message: "kill to end", meta: { direction: "end" } })
   if (cursorPos >= text.length) {
     return { text, cursorPos }
   }
