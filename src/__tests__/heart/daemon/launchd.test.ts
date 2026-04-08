@@ -80,15 +80,19 @@ describe("launchd daemon management", () => {
       expect(xml).toMatch(/<key>RunAtLoad<\/key>\s*<true\/>/)
     })
 
-    it("includes StandardOutPath and StandardErrorPath when logDir provided", () => {
+    it("includes StandardOutPath but NOT StandardErrorPath when logDir provided", () => {
+      // PR 1 decision: we no longer emit StandardErrorPath. The daemon's
+      // nerves ndjson pipeline is the source of truth for diagnostics, and
+      // writing raw stderr to an unrotated file previously grew to 366 MB.
       const xml = generateDaemonPlist({
         ...defaultPlistOptions,
         logDir: "/tmp/logs",
       })
 
       expect(xml).toContain("<key>StandardOutPath</key>")
-      expect(xml).toContain("<key>StandardErrorPath</key>")
-      expect(xml).toContain("/tmp/logs")
+      expect(xml).toContain("/tmp/logs/ouro-daemon-stdout.log")
+      expect(xml).not.toContain("<key>StandardErrorPath</key>")
+      expect(xml).not.toContain("ouro-daemon-stderr.log")
     })
 
     it("includes Label key", () => {

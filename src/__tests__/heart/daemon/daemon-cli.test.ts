@@ -32,6 +32,7 @@ describe("ouro CLI parsing", () => {
     expect(parseOuroCommand(["down"])).toEqual({ kind: "daemon.stop" })
     expect(parseOuroCommand(["status"])).toEqual({ kind: "daemon.status" })
     expect(parseOuroCommand(["logs"])).toEqual({ kind: "daemon.logs" })
+    expect(parseOuroCommand(["logs", "prune"])).toEqual({ kind: "daemon.logs.prune" })
     expect(parseOuroCommand(["outlook"])).toEqual({ kind: "outlook" })
     expect(parseOuroCommand(["outlook", "--json"])).toEqual({ kind: "outlook", json: true })
     expect(parseOuroCommand(["hatch"])).toEqual({ kind: "hatch.start" })
@@ -3647,6 +3648,62 @@ describe("ensureDaemonRunning", () => {
       "/tmp/ouro-test.sock",
       { kind: "daemon.logs" },
     )
+  })
+
+  it("calls pruneDaemonLogs directly for ouro logs prune and prints the bytes-freed summary", async () => {
+    const pruneDaemonLogs = vi.fn(() => ({ filesCompacted: 3, bytesFreed: 123456 }))
+    const writeStdout = vi.fn()
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout,
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      pruneDaemonLogs,
+    }
+
+    const result = await runOuroCli(["logs", "prune"], deps)
+
+    expect(pruneDaemonLogs).toHaveBeenCalledTimes(1)
+    expect(deps.sendCommand).not.toHaveBeenCalled()
+    expect(result).toBe("compacted 3 files, freed 123456 bytes")
+    expect(writeStdout).toHaveBeenCalledWith("compacted 3 files, freed 123456 bytes")
+  })
+
+  it("uses singular 'file' in the prune summary when exactly one file is compacted", async () => {
+    const pruneDaemonLogs = vi.fn(() => ({ filesCompacted: 1, bytesFreed: 42 }))
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      pruneDaemonLogs,
+    }
+
+    const result = await runOuroCli(["logs", "prune"], deps)
+    expect(result).toBe("compacted 1 file, freed 42 bytes")
+  })
+
+  it("prints an unavailable message for ouro logs prune when pruneDaemonLogs dep is missing", async () => {
+    const writeStdout = vi.fn()
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout,
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    }
+
+    const result = await runOuroCli(["logs", "prune"], deps)
+    expect(result).toBe("logs prune unavailable (dep not wired)")
+    expect(writeStdout).toHaveBeenCalledWith("logs prune unavailable (dep not wired)")
   })
 })
 

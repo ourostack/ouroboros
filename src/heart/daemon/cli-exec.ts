@@ -257,7 +257,7 @@ async function verifyProviderCredentials(
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "outlook" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "outlook" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand>): DaemonCommand {
   return command
 }
 
@@ -1172,6 +1172,18 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   if (command.kind === "daemon.logs" && deps.tailLogs) {
     deps.tailLogs()
     return ""
+  }
+
+  if (command.kind === "daemon.logs.prune") {
+    if (!deps.pruneDaemonLogs) {
+      const message = "logs prune unavailable (dep not wired)"
+      deps.writeStdout(message)
+      return message
+    }
+    const result = deps.pruneDaemonLogs()
+    const message = `compacted ${result.filesCompacted} file${result.filesCompacted === 1 ? "" : "s"}, freed ${result.bytesFreed} bytes`
+    deps.writeStdout(message)
+    return message
   }
 
   if (command.kind === "outlook") {

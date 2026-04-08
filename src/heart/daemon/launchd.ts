@@ -74,11 +74,15 @@ export function generateDaemonPlist(options: DaemonPlistOptions): string {
   }
 
   if (options.logDir) {
+    // PR 1 decision: we no longer emit `StandardErrorPath` for the daemon.
+    // The daemon's structured nerves ndjson pipeline (rotated + gzipped via
+    // createNdjsonFileSink) is the source of truth for diagnostics. Writing
+    // raw process stderr to an unrotated file grew to 366 MB in the wild;
+    // dropping the key lets launchd forward stray stderr to the system log
+    // where it gets rotated by the OS.
     lines.push(
       `  <key>StandardOutPath</key>`,
       `  <string>${path.join(options.logDir, "ouro-daemon-stdout.log")}</string>`,
-      `  <key>StandardErrorPath</key>`,
-      `  <string>${path.join(options.logDir, "ouro-daemon-stderr.log")}</string>`,
     )
   }
 

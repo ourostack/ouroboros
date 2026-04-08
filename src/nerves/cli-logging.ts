@@ -36,7 +36,13 @@ export function configureCliRuntimeLogger(_friendId: string, options: CliRuntime
       // for an interactive session. Full detail goes to the ndjson file.
       return filterSink(createTerminalSink(), "warn")
     }
-    return createNdjsonFileSink(logPath("cli", "runtime"))
+    // Rotation policy for the CLI runtime sink (Unit 1c):
+    // 25 MB x 5 gzipped generations, matching the daemon stream policy.
+    return createNdjsonFileSink(logPath("cli", "runtime"), {
+      maxSizeBytes: 25 * 1024 * 1024,
+      maxGenerations: 5,
+      compress: true,
+    })
   })
 
   const logger = createLogger({

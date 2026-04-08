@@ -1,6 +1,12 @@
-import { appendFile, mkdirSync, renameSync, statSync, unlinkSync } from "fs"
+import { appendFile, existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "fs"
 import { dirname } from "path"
 import { randomUUID } from "crypto"
+import * as zlib from "zlib"
+// NOTE: runtime.ts imports `createLogger` and `ensureTraceId` from this file.
+// The cycle is safe in CommonJS because runtime.ts only uses those values
+// lazily inside `getRuntimeLogger()`, and we only call `emitNervesEvent` from
+// inside `rotateIfNeeded` — never at module top level.
+import { emitNervesEvent } from "./runtime"
 
 export type LogLevel = "debug" | "info" | "warn" | "error"
 
@@ -134,14 +140,71 @@ export function createStderrSink(write?: (chunk: string) => unknown): LogSink {
   return createTerminalSink(write)
 }
 
-const DEFAULT_MAX_LOG_SIZE_BYTES = 50 * 1024 * 1024 // 50MB
-const ROTATION_CHECK_INTERVAL_BYTES = 1024 * 1024 // ~1MB between stat checks
+export const DEFAULT_MAX_LOG_SIZE_BYTES = 25 * 1024 * 1024 // 25 MB per active stream
+export const DEFAULT_MAX_GENERATIONS = 5 // keep 5 gzipped historical generations
+const DEFAULT_ROTATION_CHECK_INTERVAL_BYTES = 1024 * 1024 // ~1MB between stat checks
+
+export interface RotateOptions {
+  /** Threshold in bytes that triggers a rotation. Default: 25 MB. */
+  maxSizeBytes?: number
+  /** How many historical generations to keep. Default: 5. */
+  maxGenerations?: number
+  /** Gzip rotated generations on disk. Default: true. */
+  compress?: boolean
+}
+
+export interface NdjsonSinkOptions extends RotateOptions {
+  /**
+   * How many bytes to queue up before the sink stat-checks the active file
+   * for rotation. Defaults to 1 MB to amortize stat cost over many writes.
+   * Tests set this to a tiny value (a few bytes) to exercise the rotation
+   * trigger path without having to write 1 MB of fixture data.
+   */
+  rotationCheckIntervalBytes?: number
+}
+
+/** Internal: compute the gzipped generation path for a given ndjson file. */
+function generationGzPath(base: string, ext: string, n: number): string {
+  return ext === ".ndjson" ? `${base}.${n}.ndjson.gz` : `${base}.${n}.gz`
+}
+
+/** Internal: compute the legacy uncompressed generation path for a given file. */
+function generationPlainPath(base: string, ext: string, n: number): string {
+  return ext === ".ndjson" ? `${base}.${n}.ndjson` : `${base}.${n}`
+}
 
 /**
- * Rotate a log file: shift .1 -> .2, delete old .2, rename current -> .1.
- * Uses the ndjson extension pattern: file.ndjson -> file.1.ndjson -> file.2.ndjson
+ * Rotate a log file in place.
+ *
+ * Scheme (25 MB × 5 gzipped generations by default):
+ *   active       : foo.ndjson
+ *   newest gen   : foo.1.ndjson.gz
+ *   oldest gen   : foo.5.ndjson.gz (dropped on next rotation)
+ *
+ * Legacy tolerance: uncompressed `foo.1.ndjson` / `foo.2.ndjson` files from the
+ * old scheme are treated as the corresponding generation and gzipped on first
+ * rotation.
+ *
+ * Concurrent-writer safety: the active file is renamed (inode stays alive for
+ * any open writer fd) then gzipped at the renamed path. An active writer
+ * continues writing to its original fd; on the next write cycle it sees the
+ * old path is missing and creates a fresh file.
+ *
+ * Backwards-compatible signature: passing a `number` as the second argument
+ * (the old API) is still accepted and interpreted as `maxSizeBytes`.
  */
-export function rotateIfNeeded(filePath: string, maxSizeBytes: number): boolean {
+export function rotateIfNeeded(
+  filePath: string,
+  optionsOrMaxSize?: RotateOptions | number,
+): boolean {
+  const options: RotateOptions =
+    typeof optionsOrMaxSize === "number"
+      ? { maxSizeBytes: optionsOrMaxSize }
+      : optionsOrMaxSize ?? {}
+  const maxSizeBytes = options.maxSizeBytes ?? DEFAULT_MAX_LOG_SIZE_BYTES
+  const maxGenerations = options.maxGenerations ?? DEFAULT_MAX_GENERATIONS
+  const compress = options.compress ?? true
+
   let size: number
   try {
     size = statSync(filePath).size
@@ -153,34 +216,135 @@ export function rotateIfNeeded(filePath: string, maxSizeBytes: number): boolean 
 
   const ext = filePath.endsWith(".ndjson") ? ".ndjson" : ""
   const base = ext ? filePath.slice(0, -ext.length) : filePath
-  const file1 = `${base}.1${ext}`
-  const file2 = `${base}.2${ext}`
+  const traceId = randomUUID()
 
-  try { unlinkSync(file2) } catch { /* may not exist */ }
-  try { renameSync(file1, file2) } catch { /* may not exist */ }
-  try { renameSync(filePath, file1) } catch { /* best effort */ }
+  emitNervesEvent({
+    component: "nerves",
+    event: "nerves.rotation_start",
+    trace_id: traceId,
+    message: "rotating log file",
+    meta: { path: filePath, currentSize: size, threshold: maxSizeBytes, generation: 1 },
+  })
 
-  return true
+  let completed = false
+  try {
+    // Step 1: drop / shift existing generations starting from the oldest.
+    // For each slot N (maxGenerations..2), find whatever occupies slot (N-1)
+    // (as .gz or legacy uncompressed) and move it to slot N. Slot N occupants
+    // get overwritten (oldest is dropped). Non-existent slots are skipped.
+    for (let n = maxGenerations; n >= 2; n--) {
+      const destGz = generationGzPath(base, ext, n)
+      const srcGz = generationGzPath(base, ext, n - 1)
+      const srcPlain = generationPlainPath(base, ext, n - 1)
+
+      // Drop whatever currently occupies the destination slot (oldest generation).
+      if (existsSync(destGz)) {
+        unlinkSync(destGz)
+      }
+      const destPlain = generationPlainPath(base, ext, n)
+      if (existsSync(destPlain)) {
+        unlinkSync(destPlain)
+      }
+
+      // Prefer moving .gz → .gz (cheap rename).
+      if (existsSync(srcGz)) {
+        renameSync(srcGz, destGz)
+        continue
+      }
+
+      // Legacy migration: if a plain .ndjson generation file exists from the
+      // old scheme, read it, gzip it into the destination slot, and delete
+      // the plain source.
+      if (existsSync(srcPlain)) {
+        if (compress) {
+          const buf = readFileSync(srcPlain)
+          const compressed = zlib.gzipSync(buf)
+          writeFileSync(destGz, compressed)
+          unlinkSync(srcPlain)
+        } else {
+          // compress=false: just rename
+          renameSync(srcPlain, destPlain)
+        }
+      }
+    }
+
+    // Step 2: rename the active file to the generation-1 plain path. The
+    // active writer keeps its open fd; the file path now points elsewhere.
+    const plain1 = generationPlainPath(base, ext, 1)
+    // If a stale .1 plain path exists (e.g. a previous compress=false run),
+    // remove it so the rename can claim the slot cleanly.
+    if (existsSync(plain1)) {
+      unlinkSync(plain1)
+    }
+    renameSync(filePath, plain1)
+
+    // Step 3: gzip (or keep plain) the renamed file into the .1 generation.
+    if (compress) {
+      const gz1 = generationGzPath(base, ext, 1)
+      // Remove any lingering .1.ndjson.gz to avoid "file exists" on write.
+      if (existsSync(gz1)) {
+        unlinkSync(gz1)
+      }
+      const buf = readFileSync(plain1)
+      const compressed = zlib.gzipSync(buf)
+      writeFileSync(gz1, compressed)
+      unlinkSync(plain1)
+    }
+
+    completed = true
+    emitNervesEvent({
+      component: "nerves",
+      event: "nerves.rotation_end",
+      trace_id: traceId,
+      message: "log rotation complete",
+      meta: { path: filePath, compressedPath: compress ? generationGzPath(base, ext, 1) : plain1, bytesFreed: size },
+    })
+    return true
+  } catch (err) {
+    /* v8 ignore next -- defensive: completed=true only reached after the try block's return @preserve */
+    if (!completed) {
+      /* v8 ignore next -- defensive: fs ops throw real Errors @preserve */
+      const reason = err instanceof Error ? err.message : String(err)
+      emitNervesEvent({
+        component: "nerves",
+        event: "nerves.rotation_error",
+        trace_id: traceId,
+        level: "error",
+        message: "log rotation failed",
+        meta: { path: filePath, error: reason },
+      })
+    }
+    throw err
+  }
 }
 
-export function createNdjsonFileSink(filePath: string, maxSizeBytes?: number): LogSink {
+export function createNdjsonFileSink(
+  filePath: string,
+  optionsOrMaxSize?: NdjsonSinkOptions | number,
+): LogSink {
   mkdirSync(dirname(filePath), { recursive: true })
+  const options: NdjsonSinkOptions =
+    typeof optionsOrMaxSize === "number"
+      ? { maxSizeBytes: optionsOrMaxSize }
+      : optionsOrMaxSize ?? {}
+  const rotationCheckInterval = options.rotationCheckIntervalBytes ?? DEFAULT_ROTATION_CHECK_INTERVAL_BYTES
   const queue: string[] = []
   let flushing = false
   let bytesSinceCheck = 0
-  const maxSize = maxSizeBytes ?? DEFAULT_MAX_LOG_SIZE_BYTES
 
   function flush(): void {
     if (flushing || queue.length === 0) return
     flushing = true
     const line = queue.shift() as string
 
-    /* v8 ignore start — rotation triggers only after ~1MB of writes @preserve */
-    if (bytesSinceCheck >= ROTATION_CHECK_INTERVAL_BYTES) {
+    if (bytesSinceCheck >= rotationCheckInterval) {
       bytesSinceCheck = 0
-      rotateIfNeeded(filePath, maxSize)
+      try {
+        rotateIfNeeded(filePath, options)
+      } catch {
+        // Rotation errors are surfaced via nerves events; never block writes.
+      }
     }
-    /* v8 ignore stop */
 
     appendFile(filePath, line, "utf8", () => {
       flushing = false
