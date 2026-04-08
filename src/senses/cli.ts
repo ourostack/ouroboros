@@ -659,6 +659,7 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
           cwd: process.cwd().replace(process.env.HOME ?? "", "~"),
           resumeInfo,
           onImageMap: (images: Map<number, string>) => { pendingImages = images },
+          onHistoryAdd: (text: string) => { storeRef.addToHistoryOnly(text) },
         })
       }
 

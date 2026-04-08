@@ -13,6 +13,9 @@ import React, { useState, useRef, useEffect, useCallback } from "react"
 import { Text, Box, Static, useInput } from "ink"
 import { StreamingMarkdown } from "./streaming-markdown"
 import { processSubmitInput } from "./image-paste"
+import { KillRing } from "./kill-ring"
+import { handleKillToEnd, handleKillToStart, handleKillWordBack, handleYank, handleYankPop, handleCursorLeft, handleCursorRight, handleBackspace, handleForwardDelete, handleHome, handleEnd, classifyEscapeSequence } from "./input-keys"
+import { imageRefEndingAt, imageRefStartingAt, deleteTokenBefore, deleteTokenAfter } from "./image-ref-navigation"
 
 // ─── Ouroboros Brand Palette (ANSI RGB) ─────────────────────────────
 // From packages/outlook-ui/src/style.css and ouroboros.bot
@@ -76,6 +79,7 @@ export interface TuiProps {
   readonly cwd: string
   readonly resumeInfo?: { messageCount: number; timeAgo: string }
   readonly onImageMap?: (images: Map<number, string>) => void
+  readonly onHistoryAdd?: (text: string) => void
 }
 
 // ─── Header ─────────────────────────────────────────────────────────
@@ -305,9 +309,12 @@ export function QueuedMessages({ items }: {
   )
 }
 
+// ─── Kill Ring (session-scoped) ─────────────────────────────────────
+const killRing = new KillRing()
+
 // ─── Input ──────────────────────────────────────────────────────────
 
-function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agentName, model, onImageMap }: {
+function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agentName, model, onImageMap, onHistoryAdd }: {
   readonly onSubmit: (text: string) => void
   readonly onCtrlC: (hasInput: boolean) => CtrlCAction
   readonly history: readonly string[]
@@ -316,6 +323,7 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
   readonly agentName: string
   readonly model: string
   readonly onImageMap?: (images: Map<number, string>) => void
+  readonly onHistoryAdd?: (text: string) => void
 }): React.ReactElement {
   const [input, setInput] = useState("")
   const [cursorPos, setCursorPos] = useState(0) // cursor position within input
@@ -385,6 +393,8 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
       escTimerRef.current = setTimeout(() => {
         escTimerRef.current = null
         if (inputRef.current) {
+          // Save to history before clearing (so Up arrow can retrieve it)
+          if (onHistoryAdd) onHistoryAdd(inputRef.current)
           updateInput("")
           historyIdx.current = -1
           setTooltip("Esc again to clear")
@@ -405,6 +415,8 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
       clearTimeout(escTimerRef.current)
       escTimerRef.current = null
     }
+    // PageUp/PageDown: suppress (no text insertion, no action)
+    if (key.pageUp || key.pageDown) return
     if (key.return) {
       // Alt+Enter: detect via key.meta OR recent ESC (within 50ms — Ink splits \x1b\r)
       const recentEsc = (Date.now() - lastEscTime.current) < 50
@@ -434,18 +446,39 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
       historyIdx.current = -1
       return
     }
-    if (key.backspace || key.delete) {
-      if (cursorRef.current > 0) {
-        // Option+Backspace: delete word
-        if (key.meta) {
-          const before = inputRef.current.slice(0, cursorRef.current)
-          const after = inputRef.current.slice(cursorRef.current)
-          const wordStart = before.replace(/\s*\S+\s*$/, "")
-          updateInput(wordStart + after, wordStart.length)
+    // Forward delete key (fn+Backspace on macOS): delete character at cursor
+    if (key.delete && !key.backspace) {
+      if (key.meta) {
+        // Meta+Delete: kill to end of line (push to ring)
+        const result = handleKillToEnd(inputRef.current, cursorRef.current, killRing)
+        updateInput(result.text, result.cursorPos)
+      } else {
+        // Token-aware: check for image ref chip at cursor
+        const chip = deleteTokenAfter(inputRef.current, cursorRef.current)
+        if (chip) {
+          updateInput(chip.text, chip.pos)
         } else {
-          const before = inputRef.current.slice(0, cursorRef.current - 1)
-          const after = inputRef.current.slice(cursorRef.current)
-          updateInput(before + after, cursorRef.current - 1)
+          const result = handleForwardDelete(inputRef.current, cursorRef.current)
+          updateInput(result.text, result.cursorPos)
+        }
+      }
+      historyIdx.current = -1
+      return
+    }
+    // Backspace: delete character before cursor
+    if (key.backspace) {
+      if (cursorRef.current > 0) {
+        // Token-aware: check for image ref chip before cursor
+        const chip = deleteTokenBefore(inputRef.current, cursorRef.current)
+        if (chip) {
+          updateInput(chip.text, chip.pos)
+        } else if (key.meta) {
+          // Option+Backspace: delete word (also pushes to kill ring)
+          const result = handleKillWordBack(inputRef.current, cursorRef.current, killRing)
+          updateInput(result.text, result.cursorPos)
+        } else {
+          const result = handleBackspace(inputRef.current, cursorRef.current)
+          updateInput(result.text, result.cursorPos)
         }
       }
       historyIdx.current = -1
@@ -461,7 +494,9 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
         cursorRef.current = Math.max(0, newPos)
         setCursorPos(cursorRef.current)
       } else {
-        cursorRef.current = Math.max(0, cursorRef.current - 1)
+        // Token-aware: hop over image ref chips
+        const chipStart = imageRefEndingAt(inputRef.current, cursorRef.current)
+        cursorRef.current = chipStart !== undefined ? chipStart : Math.max(0, cursorRef.current - 1)
         setCursorPos(cursorRef.current)
       }
       return
@@ -475,7 +510,9 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
         cursorRef.current = Math.min(inputRef.current.length, newPos)
         setCursorPos(cursorRef.current)
       } else {
-        cursorRef.current = Math.min(inputRef.current.length, cursorRef.current + 1)
+        // Token-aware: hop over image ref chips
+        const chipEnd = imageRefStartingAt(inputRef.current, cursorRef.current)
+        cursorRef.current = chipEnd !== undefined ? chipEnd : Math.min(inputRef.current.length, cursorRef.current + 1)
         setCursorPos(cursorRef.current)
       }
       return
@@ -549,8 +586,127 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
       setCursorPos(inputRef.current.length)
       return
     }
+    // ─── Emacs Navigation ─────────────────────────────────────────
+    // Ctrl+B: cursor left
+    if (key.ctrl && inputChar === "b") {
+      cursorRef.current = handleCursorLeft(inputRef.current, cursorRef.current)
+      setCursorPos(cursorRef.current)
+      return
+    }
+    // Ctrl+F: cursor right
+    if (key.ctrl && inputChar === "f") {
+      cursorRef.current = handleCursorRight(inputRef.current, cursorRef.current)
+      setCursorPos(cursorRef.current)
+      return
+    }
+    // Ctrl+P: history up (same as up arrow)
+    if (key.ctrl && inputChar === "p") {
+      if (historyIdx.current === -1 && queuedInputs.length > 0) {
+        const items = onPopQueue()
+        updateInput(items.join("\n"))
+        return
+      }
+      if (history.length > 0) {
+        if (historyIdx.current === -1) {
+          savedInput.current = inputRef.current
+          historyIdx.current = history.length - 1
+        } else if (historyIdx.current > 0) {
+          historyIdx.current--
+        }
+        updateInput(history[historyIdx.current])
+      }
+      return
+    }
+    // Ctrl+N: history down (same as down arrow)
+    if (key.ctrl && inputChar === "n") {
+      if (historyIdx.current >= 0) {
+        if (historyIdx.current < history.length - 1) {
+          historyIdx.current++
+          updateInput(history[historyIdx.current])
+        } else {
+          historyIdx.current = -1
+          updateInput(savedInput.current)
+        }
+      }
+      return
+    }
+    // Ctrl+H: token-aware backspace
+    if (key.ctrl && inputChar === "h") {
+      const chip = deleteTokenBefore(inputRef.current, cursorRef.current)
+      if (chip) {
+        updateInput(chip.text, chip.pos)
+      } else {
+        const result = handleBackspace(inputRef.current, cursorRef.current)
+        updateInput(result.text, result.cursorPos)
+      }
+      historyIdx.current = -1
+      return
+    }
+    // Ctrl+D: forward-delete when input present, exit when empty
+    if (key.ctrl && inputChar === "d") {
+      if (inputRef.current.length === 0) {
+        handleCtrlC()
+      } else {
+        const result = handleForwardDelete(inputRef.current, cursorRef.current)
+        updateInput(result.text, result.cursorPos)
+      }
+      return
+    }
+    // ─── Kill Ring Keybindings ─────────────────────────────────────
+    // Ctrl+K: kill from cursor to end of line
+    if (key.ctrl && inputChar === "k") {
+      const result = handleKillToEnd(inputRef.current, cursorRef.current, killRing)
+      updateInput(result.text, result.cursorPos)
+      return
+    }
+    // Ctrl+U: kill from start to cursor
+    if (key.ctrl && inputChar === "u") {
+      const result = handleKillToStart(inputRef.current, cursorRef.current, killRing)
+      updateInput(result.text, result.cursorPos)
+      return
+    }
+    // Ctrl+W: kill word before cursor (token-aware)
+    if (key.ctrl && inputChar === "w") {
+      const chip = deleteTokenBefore(inputRef.current, cursorRef.current)
+      if (chip) {
+        updateInput(chip.text, chip.pos)
+      } else {
+        const result = handleKillWordBack(inputRef.current, cursorRef.current, killRing)
+        updateInput(result.text, result.cursorPos)
+      }
+      return
+    }
+    // Ctrl+Y: yank from kill ring
+    if (key.ctrl && inputChar === "y") {
+      const result = handleYank(inputRef.current, cursorRef.current, killRing)
+      if (result) updateInput(result.text, result.cursorPos)
+      return
+    }
+    // Alt+Y: yank-pop (cycle kill ring)
+    if (key.meta && inputChar === "y") {
+      const result = handleYankPop(inputRef.current, cursorRef.current, killRing)
+      if (result) updateInput(result.text, result.cursorPos)
+      return
+    }
+    // ─── Non-kill/non-yank keystroke resets ────────────────────────
+    killRing.resetAccumulation()
+    killRing.resetYankState()
     // Regular character: insert at cursor position
     if (!key.ctrl && !key.meta && inputChar) {
+      // Detect raw escape sequences before inserting text
+      const escClass = classifyEscapeSequence(inputChar)
+      if (escClass === "home") {
+        cursorRef.current = handleHome(inputRef.current, cursorRef.current)
+        setCursorPos(cursorRef.current)
+        return
+      }
+      if (escClass === "end") {
+        cursorRef.current = handleEnd(inputRef.current, cursorRef.current)
+        setCursorPos(cursorRef.current)
+        return
+      }
+      if (escClass === "ignore") return // PageUp/PageDown/mouse wheel fallback
+
       const before = inputRef.current.slice(0, cursorRef.current)
       const after = inputRef.current.slice(cursorRef.current)
       updateInput(before + inputChar + after, cursorRef.current + 1)
@@ -625,6 +781,7 @@ export function OuroTui({
   cwd,
   resumeInfo,
   onImageMap,
+  onHistoryAdd,
 }: TuiProps): React.ReactElement {
   return (
     <Box flexDirection="column">
@@ -663,6 +820,7 @@ export function OuroTui({
         agentName={agentName}
         model={model}
         onImageMap={onImageMap}
+        onHistoryAdd={onHistoryAdd}
       />
     </Box>
   )
