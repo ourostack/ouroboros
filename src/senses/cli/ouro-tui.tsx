@@ -14,7 +14,7 @@ import { Text, Box, Static, useInput } from "ink"
 import { StreamingMarkdown } from "./streaming-markdown"
 import { processSubmitInput } from "./image-paste"
 import { KillRing } from "./kill-ring"
-import { handleKillToEnd, handleKillToStart, handleKillWordBack, handleYank, handleYankPop } from "./input-keys"
+import { handleKillToEnd, handleKillToStart, handleKillWordBack, handleYank, handleYankPop, handleCursorLeft, handleCursorRight, handleBackspace } from "./input-keys"
 
 // ─── Ouroboros Brand Palette (ANSI RGB) ─────────────────────────────
 // From packages/outlook-ui/src/style.css and ouroboros.bot
@@ -550,6 +550,57 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
     if (key.ctrl && inputChar === "e") {
       cursorRef.current = inputRef.current.length
       setCursorPos(inputRef.current.length)
+      return
+    }
+    // ─── Emacs Navigation ─────────────────────────────────────────
+    // Ctrl+B: cursor left
+    if (key.ctrl && inputChar === "b") {
+      cursorRef.current = handleCursorLeft(inputRef.current, cursorRef.current)
+      setCursorPos(cursorRef.current)
+      return
+    }
+    // Ctrl+F: cursor right
+    if (key.ctrl && inputChar === "f") {
+      cursorRef.current = handleCursorRight(inputRef.current, cursorRef.current)
+      setCursorPos(cursorRef.current)
+      return
+    }
+    // Ctrl+P: history up (same as up arrow)
+    if (key.ctrl && inputChar === "p") {
+      if (historyIdx.current === -1 && queuedInputs.length > 0) {
+        const items = onPopQueue()
+        updateInput(items.join("\n"))
+        return
+      }
+      if (history.length > 0) {
+        if (historyIdx.current === -1) {
+          savedInput.current = inputRef.current
+          historyIdx.current = history.length - 1
+        } else if (historyIdx.current > 0) {
+          historyIdx.current--
+        }
+        updateInput(history[historyIdx.current])
+      }
+      return
+    }
+    // Ctrl+N: history down (same as down arrow)
+    if (key.ctrl && inputChar === "n") {
+      if (historyIdx.current >= 0) {
+        if (historyIdx.current < history.length - 1) {
+          historyIdx.current++
+          updateInput(history[historyIdx.current])
+        } else {
+          historyIdx.current = -1
+          updateInput(savedInput.current)
+        }
+      }
+      return
+    }
+    // Ctrl+H: backspace
+    if (key.ctrl && inputChar === "h") {
+      const result = handleBackspace(inputRef.current, cursorRef.current)
+      updateInput(result.text, result.cursorPos)
+      historyIdx.current = -1
       return
     }
     // ─── Kill Ring Keybindings ─────────────────────────────────────

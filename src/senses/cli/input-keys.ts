@@ -66,6 +66,34 @@ export function handleYank(text: string, cursorPos: number, ring: KillRing): Inp
   return { text: before + yanked + after, cursorPos: cursorPos + yanked.length }
 }
 
+// ─── Emacs Cursor Navigation ─────────────────────────────────────
+
+/** Ctrl+B: move cursor left by 1. Returns new cursor position. */
+export function handleCursorLeft(_text: string, cursorPos: number): number {
+  return Math.max(0, cursorPos - 1)
+}
+
+/** Ctrl+F: move cursor right by 1. Returns new cursor position. */
+export function handleCursorRight(text: string, cursorPos: number): number {
+  return Math.min(text.length, cursorPos + 1)
+}
+
+/** Ctrl+H: backspace (delete char before cursor). */
+export function handleBackspace(text: string, cursorPos: number): InputResult {
+  if (cursorPos === 0) return { text, cursorPos }
+  const before = text.slice(0, cursorPos - 1)
+  const after = text.slice(cursorPos)
+  return { text: before + after, cursorPos: cursorPos - 1 }
+}
+
+/** Forward delete: delete char at cursor position. */
+export function handleForwardDelete(text: string, cursorPos: number): InputResult {
+  if (cursorPos >= text.length) return { text, cursorPos }
+  const before = text.slice(0, cursorPos)
+  const after = text.slice(cursorPos + 1)
+  return { text: before + after, cursorPos }
+}
+
 /**
  * Alt+Y: yank-pop -- replace previously yanked text with next ring entry.
  * Returns null if not in yanking state or ring is empty.
