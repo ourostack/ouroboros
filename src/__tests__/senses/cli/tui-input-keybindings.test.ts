@@ -20,6 +20,7 @@ import {
   handleHome,
   handleEnd,
   classifyEscapeSequence,
+  handleEmptyPaste,
 } from "../../../senses/cli/input-keys"
 
 describe("Kill Ring Keybindings", () => {
@@ -379,6 +380,57 @@ describe("Ctrl+D Behavior", () => {
     it("handles single character deletion", () => {
       const result = handleForwardDelete("x", 0)
       expect(result).toEqual({ text: "", cursorPos: 0 })
+    })
+  })
+})
+
+describe("Empty Cmd+V Clipboard Image", () => {
+  describe("handleEmptyPaste", () => {
+    it("calls clipboard reader when paste content is empty on darwin", async () => {
+      const clipboardReader = vi.fn().mockResolvedValue({
+        base64: "iVBOR...",
+        mediaType: "image/png",
+      })
+      const result = await handleEmptyPaste("hello ", 6, 0, "darwin", clipboardReader)
+      expect(clipboardReader).toHaveBeenCalled()
+      expect(result).not.toBeNull()
+      expect(result!.text).toBe("hello [Image #1]")
+      expect(result!.cursorPos).toBe(16)
+      expect(result!.imageRef).toBe(1)
+      expect(result!.imageData).toEqual({ base64: "iVBOR...", mediaType: "image/png" })
+    })
+
+    it("returns null when clipboard returns null", async () => {
+      const clipboardReader = vi.fn().mockResolvedValue(null)
+      const result = await handleEmptyPaste("hello", 5, 0, "darwin", clipboardReader)
+      expect(result).toBeNull()
+    })
+
+    it("returns null on non-darwin platforms", async () => {
+      const clipboardReader = vi.fn().mockResolvedValue({ base64: "abc", mediaType: "image/png" })
+      const result = await handleEmptyPaste("hello", 5, 0, "linux", clipboardReader)
+      expect(clipboardReader).not.toHaveBeenCalled()
+      expect(result).toBeNull()
+    })
+
+    it("increments image counter correctly", async () => {
+      const clipboardReader = vi.fn().mockResolvedValue({
+        base64: "abc",
+        mediaType: "image/png",
+      })
+      const result = await handleEmptyPaste("text ", 5, 2, "darwin", clipboardReader)
+      expect(result!.text).toBe("text [Image #3]")
+      expect(result!.imageRef).toBe(3)
+    })
+
+    it("inserts image ref at cursor mid-text", async () => {
+      const clipboardReader = vi.fn().mockResolvedValue({
+        base64: "abc",
+        mediaType: "image/png",
+      })
+      const result = await handleEmptyPaste("hello world", 5, 0, "darwin", clipboardReader)
+      expect(result!.text).toBe("hello[Image #1] world")
+      expect(result!.cursorPos).toBe(15)
     })
   })
 })
