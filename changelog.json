@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.266",
+      "changes": [
+        "fix(daemon): vitest guard for production pidfile (~/.ouro-cli/daemon.pids). The pidfile path is hardcoded with no DI seam, so when a test creates a real OuroDaemon instance and calls start(), the daemon's killOrphanProcesses() reads the REAL pidfile, ps-verifies the PIDs, and SIGTERMs the production daemon's PIDs. Verified live: alpha.265 daemon (PID 64988) was killed 93s after startup by `npx vitest run` invoking daemon.start() in 6 different test files. SIGTERM forensics added in alpha.265 captured the death (parentPid=1, parentCommand=/sbin/launchd) but the killer hint was misleading — the real culprit was the production-pidfile leak. Fix: killOrphanProcesses() and writePidfile() now short-circuit under vitest with warn-level nerves events. Tests that need to verify these functions' behavior continue to use the extracted pure helpers (parseOrphanPidsFromPs, filterPidfilePidsToActualOrphans). New unit tests verify the pidfile is unchanged after no-op calls. Same defense-in-depth pattern as the alpha.265 socket-client hardening — production-side state being touched from tests is now physically impossible from a vitest worker."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.265",
       "changes": [
         "fix(daemon): bulletproof vitest socket leak + SIGTERM forensics. Hardens the socket-client vitest guard so production daemon socket calls (DEFAULT_DAEMON_SOCKET_PATH = /tmp/ouroboros-daemon.sock) are unconditionally blocked under vitest, regardless of __bypassVitestGuardForTests state. Cross-file leaks via the globalThis bypass flag (process-wide, leaks across concurrent test files in the same vitest worker) can no longer reach the production daemon. Test files that legitimately exercise the real socket-client transport against synthetic test socket paths (/tmp/daemon.sock) continue to work. Background: a daemon outage on 2026-04-08 was traced to a 14-call burst of leaked `inner.wake testagent` errors, signature of vitest test runs hammering the production socket — same pattern as 1,460 historical daemon log entries.",
