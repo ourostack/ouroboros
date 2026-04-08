@@ -256,6 +256,70 @@ describe("loadAgentConfig", () => {
     expect(config.logging).toEqual({ level: "debug", sinks: ["terminal"] })
   })
 
+  it("preserves the sync block from agent.json", async () => {
+    // Regression: prior to this test, loadAgentConfig built its return object
+    // by hand-copying a fixed list of fields and silently dropped the `sync`
+    // block. The TypeScript type allowed it but the constructor didn't
+    // preserve it from disk, so getSyncConfig() always saw `enabled: false`
+    // and the entire sync code path (preTurnPull / postTurnPush) was dead.
+    // The bug hid for weeks because `ouro status` reads agent.json directly
+    // via listBundleSyncRows, not through loadAgentConfig — so the status
+    // display correctly showed "enabled" while sync did nothing.
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        version: 2,
+        enabled: true,
+        humanFacing: { provider: "minimax", model: "minimax-text-01" },
+        agentFacing: { provider: "minimax", model: "minimax-text-01" },
+        phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+        sync: { enabled: true, remote: "upstream" },
+      }),
+    )
+
+    const { loadAgentConfig, resetIdentity } = await import("../../heart/identity")
+    resetIdentity()
+    const config = loadAgentConfig()
+
+    expect(config.sync).toEqual({ enabled: true, remote: "upstream" })
+  })
+
+  it("preserves a partial sync block (enabled only, default remote)", async () => {
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        version: 2,
+        enabled: true,
+        humanFacing: { provider: "minimax", model: "minimax-text-01" },
+        agentFacing: { provider: "minimax", model: "minimax-text-01" },
+        phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+        sync: { enabled: true },
+      }),
+    )
+
+    const { loadAgentConfig, resetIdentity } = await import("../../heart/identity")
+    resetIdentity()
+    const config = loadAgentConfig()
+
+    expect(config.sync).toEqual({ enabled: true })
+  })
+
+  it("leaves config.sync undefined when agent.json has no sync block", async () => {
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        version: 2,
+        enabled: true,
+        humanFacing: { provider: "minimax", model: "minimax-text-01" },
+        agentFacing: { provider: "minimax", model: "minimax-text-01" },
+        phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+      }),
+    )
+
+    const { loadAgentConfig, resetIdentity } = await import("../../heart/identity")
+    resetIdentity()
+    const config = loadAgentConfig()
+
+    expect(config.sync).toBeUndefined()
+  })
+
   it("parses senses config when present", async () => {
     vi.mocked(fs.readFileSync).mockReturnValue(
       JSON.stringify({

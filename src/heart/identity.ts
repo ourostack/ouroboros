@@ -489,6 +489,14 @@ export function loadAgentConfig(): AgentConfig {
     mcpServers: parsed.mcpServers as Record<string, McpServerConfig> | undefined,
     phrases: parsed.phrases as AgentConfig["phrases"],
     vault: parsed.vault as AgentConfig["vault"] | undefined,
+    // The sync block was missing from this hand-rolled object literal since
+    // it was added to AgentConfig. Result: `getSyncConfig()` always read
+    // `agentConfig.sync?.enabled ?? false` and always saw undefined, so the
+    // entire sync code path (preTurnPull / postTurnPush in pipeline.ts) was
+    // dead. The `ouro status` per-agent Git Sync display kept reporting
+    // "enabled" because it reads agent.json directly via `listBundleSyncRows`,
+    // not through loadAgentConfig — so the bug hid in plain sight for weeks.
+    sync: parsed.sync as AgentConfig["sync"] | undefined,
   }
   emitNervesEvent({
     event: "identity.resolve",
