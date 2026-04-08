@@ -1,7 +1,12 @@
 import { describe, it, expect, vi } from "vitest"
+import * as fs from "fs"
+import * as os from "os"
+import * as path from "path"
 import {
   parseOrphanPidsFromPs,
   filterPidfilePidsToActualOrphans,
+  killOrphanProcesses,
+  writePidfile,
 } from "../../../heart/daemon/daemon"
 
 // The orphan-cleanup fallback is load-bearing: when the pidfile is missing
@@ -178,5 +183,36 @@ describe("filterPidfilePidsToActualOrphans", () => {
       " 5001 not-a-number",
     ].join("\n"))
     expect(filterPidfilePidsToActualOrphans([5000, 5001], psRunner)).toEqual([5000])
+  })
+})
+
+describe("vitest guard for production pidfile (defense in depth)", () => {
+  // The pidfile path is hardcoded under ~/.ouro-cli/ — there is no DI seam
+  // to redirect it. So when a test creates a real OuroDaemon and calls start(),
+  // the daemon's killOrphanProcesses() reads the REAL pidfile and SIGTERMs
+  // the production daemon's PIDs. Both functions are now no-ops under vitest.
+
+  it("killOrphanProcesses is a safe no-op under vitest", () => {
+    // Even if the real pidfile contains a real PID right now, this MUST not
+    // attempt to kill it. We verify by checking the pidfile is unchanged
+    // after the call (and by trusting that nothing exploded).
+    const pidfilePath = path.join(os.homedir(), ".ouro-cli", "daemon.pids")
+    const before = fs.existsSync(pidfilePath) ? fs.readFileSync(pidfilePath, "utf-8") : null
+
+    expect(() => killOrphanProcesses()).not.toThrow()
+
+    const after = fs.existsSync(pidfilePath) ? fs.readFileSync(pidfilePath, "utf-8") : null
+    expect(after).toBe(before)
+  })
+
+  it("writePidfile is a safe no-op under vitest", () => {
+    // Should not clobber the real production pidfile.
+    const pidfilePath = path.join(os.homedir(), ".ouro-cli", "daemon.pids")
+    const before = fs.existsSync(pidfilePath) ? fs.readFileSync(pidfilePath, "utf-8") : null
+
+    expect(() => writePidfile([99999, 99998])).not.toThrow()
+
+    const after = fs.existsSync(pidfilePath) ? fs.readFileSync(pidfilePath, "utf-8") : null
+    expect(after).toBe(before)
   })
 })

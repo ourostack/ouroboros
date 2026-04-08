@@ -33,6 +33,26 @@ import { buildOutlookAgentView, buildOutlookMachineView } from "../outlook/outlo
 const PIDFILE_PATH = path.join(os.homedir(), ".ouro-cli", "daemon.pids")
 
 /**
+ * Defense-in-depth: detect if we're running under vitest. The pidfile lives
+ * at a hardcoded path under the user's real ~/.ouro-cli/ — there's no DI
+ * seam to redirect it. So when a test creates a real OuroDaemon and calls
+ * start(), the daemon's killOrphanProcesses() reads the REAL pidfile,
+ * ps-verifies the PIDs, and SIGTERMs the production daemon. We saw this
+ * cause an outage on 2026-04-08 (alpha.265 daemon killed 93s after startup
+ * by a vitest test that called daemon.start()).
+ *
+ * Both killOrphanProcesses() and writePidfile() short-circuit under vitest
+ * to make the production pidfile sacred. Tests that need to verify these
+ * functions' behavior should use the extracted pure helpers
+ * (parseOrphanPidsFromPs, filterPidfilePidsToActualOrphans).
+ */
+function isVitestProcess(): boolean {
+  /* v8 ignore next -- defensive: process and process.argv always exist in node @preserve */
+  if (typeof process === "undefined" || !Array.isArray(process.argv)) return false
+  return process.argv.some((arg) => typeof arg === "string" && arg.includes("vitest"))
+}
+
+/**
  * Scan `ps -eo pid,ppid,command` output for daemon-owned entry points whose
  * parent has died (PPID reparented to init/PID 1). Returns the list of PIDs
  * that are safe to SIGTERM — true orphans, not children of live sibling
@@ -135,6 +155,16 @@ function runPsCheck(pids: number[]): string | null {
  */
 /* v8 ignore start -- process lifecycle: uses kill/ps, tested via deployment @preserve */
 export function killOrphanProcesses(): void {
+  if (isVitestProcess()) {
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.orphan_cleanup_test_blocked",
+      message: "blocked killOrphanProcesses from touching real pidfile under vitest",
+      meta: { pidfilePath: PIDFILE_PATH },
+    })
+    return
+  }
   try {
     let pidsToKill: number[] = []
 
@@ -186,6 +216,16 @@ export function killOrphanProcesses(): void {
  * Called after all agents and senses are spawned.
  */
 export function writePidfile(extraPids: number[] = []): void {
+  if (isVitestProcess()) {
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.write_pidfile_test_blocked",
+      message: "blocked writePidfile from clobbering real pidfile under vitest",
+      meta: { pidfilePath: PIDFILE_PATH, attemptedPids: extraPids.length },
+    })
+    return
+  }
   try {
     const pids = [process.pid, ...extraPids].filter(Boolean)
     fs.mkdirSync(path.dirname(PIDFILE_PATH), { recursive: true })
