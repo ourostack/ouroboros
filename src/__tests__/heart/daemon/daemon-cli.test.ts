@@ -1344,6 +1344,118 @@ describe("ouro CLI execution", () => {
     expect(result).toContain("disabled")
   })
 
+  it("renders Agents section with both enabled and disabled bundles", async () => {
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({
+        ok: true,
+        summary: "daemon=running\tworkers=0\tsenses=0\thealth=ok",
+        data: {
+          overview: {},
+          senses: [],
+          workers: [],
+          sync: [],
+          agents: [
+            { name: "alpha", enabled: true },
+            { name: "ouroboros", enabled: false },
+            { name: "slugger", enabled: true },
+          ],
+        },
+      })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    }
+
+    const result = await runOuroCli(["status"], deps)
+
+    expect(result).toContain("Agents")
+    expect(result).toContain("alpha")
+    expect(result).toContain("ouroboros")
+    expect(result).toContain("slugger")
+    expect(result).toContain("enabled")
+    expect(result).toContain("disabled")
+  })
+
+  it("falls back to the raw daemon summary when agents is provided as a non-array", async () => {
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({
+        ok: true,
+        summary: "malformed-agents",
+        data: {
+          overview: {},
+          senses: [],
+          workers: [],
+          sync: [],
+          agents: "not-an-array",
+        },
+      })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    }
+
+    const result = await runOuroCli(["status"], deps)
+    expect(result).toBe("malformed-agents")
+  })
+
+  it("falls back to the raw daemon summary when an agent row is missing required fields", async () => {
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({
+        ok: true,
+        summary: "malformed-agent-row",
+        data: {
+          overview: {},
+          senses: [],
+          workers: [],
+          sync: [],
+          agents: [{ name: "ok", enabled: true }, { name: "no-enabled-flag" }],
+        },
+      })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    }
+
+    const result = await runOuroCli(["status"], deps)
+    expect(result).toBe("malformed-agent-row")
+  })
+
+  it("falls back to the raw daemon summary when an agent row is null or wrong-typed", async () => {
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({
+        ok: true,
+        summary: "null-agent-row",
+        data: {
+          overview: {},
+          senses: [],
+          workers: [],
+          sync: [],
+          // null entries, array-as-row, and wrong-type entries all exercise the
+          // top-of-parser guard in parsedAgents.
+          agents: [null, { name: "ok", enabled: true }],
+        },
+      })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    }
+
+    const result = await runOuroCli(["status"], deps)
+    expect(result).toBe("null-agent-row")
+  })
+
   it("renders daemon status with Overview, Senses, and Workers sections", async () => {
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",

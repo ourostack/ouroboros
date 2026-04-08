@@ -3,7 +3,7 @@ import * as net from "net"
 import * as os from "os"
 import * as path from "path"
 import { getAgentBundlesRoot, getRepoRoot } from "../identity"
-import { listBundleSyncRows, type BundleSyncRow } from "./agent-discovery"
+import { listAllBundleAgents, listBundleSyncRows, type BundleAgentRow, type BundleSyncRow } from "./agent-discovery"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { DaemonSenseManagerLike, DaemonSenseRow } from "./sense-manager"
 import { getRuntimeMetadata } from "./runtime-metadata"
@@ -382,6 +382,11 @@ interface DaemonStatusPayload {
   workers: DaemonWorkerRow[]
   senses: DaemonSenseRow[]
   sync: BundleSyncRow[]
+  /** Every discovered bundle (`<name>.ouro` with a parseable agent.json),
+   * including disabled ones. The senses/workers/sync rows above only cover
+   * enabled bundles, so without this field disabled agents are invisible
+   * in `ouro status`. */
+  agents: BundleAgentRow[]
 }
 
 function buildWorkerRows(
@@ -493,6 +498,7 @@ export class OuroDaemon {
     const senses = this.senseManager?.listSenseRows() ?? []
     const repoRoot = getRepoRoot()
     const sync = listBundleSyncRows({ bundlesRoot: this.bundlesRoot })
+    const agents = listAllBundleAgents({ bundlesRoot: this.bundlesRoot })
 
     return {
       overview: {
@@ -509,6 +515,7 @@ export class OuroDaemon {
       workers,
       senses,
       sync,
+      agents,
     }
   }
 

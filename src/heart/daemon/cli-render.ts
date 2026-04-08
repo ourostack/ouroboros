@@ -12,7 +12,7 @@ import { detectRuntimeMode } from "./runtime-mode"
 import { getRepoRoot } from "../identity"
 import { readDaemonTombstone } from "./daemon-tombstone"
 import { readHealth, getDefaultHealthPath } from "./daemon-health"
-import { listBundleSyncRows } from "./agent-discovery"
+import { listAllBundleAgents, listBundleSyncRows } from "./agent-discovery"
 import type { McpListCliCommand, McpCallCliCommand } from "./cli-types"
 
 // ── Status payload types ──
@@ -59,11 +59,17 @@ interface StatusSyncRow {
   gitInitialized?: boolean
 }
 
+interface StatusAgentRow {
+  name: string
+  enabled: boolean
+}
+
 export interface StatusPayload {
   overview: StatusOverviewRow
   senses: StatusSenseRow[]
   workers: StatusWorkerRow[]
   sync: StatusSyncRow[]
+  agents: StatusAgentRow[]
 }
 
 // ── Field extractors ──
@@ -89,10 +95,12 @@ export function parseStatusPayload(data: unknown): StatusPayload | null {
   const senses = raw.senses
   const workers = raw.workers
   const sync = raw.sync
+  const agents = raw.agents
   if (!overview || typeof overview !== "object" || Array.isArray(overview)) return null
   if (!Array.isArray(senses) || !Array.isArray(workers)) return null
-  // sync is optional for backward compatibility — older daemons may omit it
+  // sync and agents are optional for backward compatibility — older daemons may omit them
   if (sync !== undefined && !Array.isArray(sync)) return null
+  if (agents !== undefined && !Array.isArray(agents)) return null
 
   const parsedOverview: StatusOverviewRow = {
     daemon: stringField((overview as Record<string, unknown>).daemon) ?? "unknown",
@@ -165,10 +173,20 @@ export function parseStatusPayload(data: unknown): StatusPayload | null {
     return parsed
   })
 
+  const parsedAgents = (agents ?? []).map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null
+    const row = entry as Record<string, unknown>
+    const name = stringField(row.name)
+    const enabled = booleanField(row.enabled)
+    if (!name || enabled === null) return null
+    return { name, enabled } satisfies StatusAgentRow
+  })
+
   if (
     parsedSenses.some((row) => row === null) ||
     parsedWorkers.some((row) => row === null) ||
-    parsedSync.some((row) => row === null)
+    parsedSync.some((row) => row === null) ||
+    parsedAgents.some((row) => row === null)
   ) return null
 
   return {
@@ -176,6 +194,7 @@ export function parseStatusPayload(data: unknown): StatusPayload | null {
     senses: parsedSenses as StatusSenseRow[],
     workers: parsedWorkers as StatusWorkerRow[],
     sync: parsedSync as StatusSyncRow[],
+    agents: parsedAgents as StatusAgentRow[],
   }
 }
 
@@ -279,6 +298,22 @@ export function formatDaemonStatusOutput(response: DaemonResponse, fallback: str
   lines.push(kvLine("Health", `${statusDot(ov.health)} ${ov.health}`))
   lines.push(kvLine("Updated", ov.lastUpdated))
   lines.push("")
+
+  // ── Agents ──
+  // Every discovered bundle, including disabled ones. The Senses/Workers/
+  // Git Sync sections below only show enabled bundles, so without this
+  // section disabled agents would be invisible in `ouro status`.
+  if (payload.agents.length > 0) {
+    lines.push(`  ${teal("──")} ${bold("Agents")} ${teal("─".repeat(37))}`)
+    const agentNameWidth = Math.max(12, ...payload.agents.map((r) => r.name.length))
+    for (const row of payload.agents) {
+      const name = row.name.padEnd(agentNameWidth)
+      const dot = row.enabled ? green("●") : dim("○")
+      const stateText = row.enabled ? "enabled " : "disabled"
+      lines.push(`    ${name} ${dot} ${stateText}`)
+    }
+    lines.push("")
+  }
 
   // ── Senses ──
   if (payload.senses.length > 0) {
@@ -387,6 +422,7 @@ export function formatVersionOutput(): string {
 export function buildStoppedStatusPayload(
   socketPath: string,
   syncRows: StatusSyncRow[] = [],
+  agentRows: StatusAgentRow[] = [],
 ): StatusPayload {
   const metadata = getRuntimeMetadata()
   const repoRoot = getRepoRoot()
@@ -408,18 +444,26 @@ export function buildStoppedStatusPayload(
     senses: [],
     workers: [],
     sync: syncRows,
+    agents: agentRows,
   }
 }
 
 export function daemonUnavailableStatusOutput(socketPath: string, healthFilePath?: string): string {
-  // Read per-agent sync config from disk so the user still sees it when the daemon is down.
-  // Best-effort: any fs error returns [] and the section is omitted.
+  // Read per-agent sync config and bundle list from disk so the user still
+  // sees them when the daemon is down. Best-effort: any fs error returns []
+  // and the corresponding section is omitted.
   let syncRows: StatusSyncRow[] = []
+  let agentRows: StatusAgentRow[] = []
   try {
     syncRows = listBundleSyncRows()
   } catch {
     // listBundleSyncRows already swallows fs errors internally; this catch is a defensive
     // safety net for environments where the fs module itself is partially mocked.
+  }
+  try {
+    agentRows = listAllBundleAgents()
+  } catch {
+    // Same defensive safety net for the bundle list.
   }
   /* v8 ignore start — tombstone read tested in daemon-status-tombstone.test; branch misreported @preserve */
   const tombstone = readDaemonTombstone()
@@ -432,7 +476,7 @@ export function daemonUnavailableStatusOutput(socketPath: string, healthFilePath
     formatDaemonStatusOutput({
       ok: true,
       summary: "daemon not running",
-      data: buildStoppedStatusPayload(socketPath, syncRows),
+      data: buildStoppedStatusPayload(socketPath, syncRows, agentRows),
     }, "daemon not running"),
     "",
   ]

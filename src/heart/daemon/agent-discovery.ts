@@ -17,7 +17,22 @@ export interface AgentDiscoveryOptions {
   existsSync?: ExistsSync
 }
 
-export function listEnabledBundleAgents(options: AgentDiscoveryOptions = {}): string[] {
+export interface BundleAgentRow {
+  name: string
+  enabled: boolean
+}
+
+/**
+ * Walk the bundles root and return one row per `<name>.ouro` directory whose
+ * `agent.json` is readable and parseable. Includes both enabled and disabled
+ * agents — the caller decides what to do with the `enabled` flag.
+ *
+ * Bundles whose `agent.json` is missing, malformed, or unreadable are skipped
+ * silently (they aren't real agents from the harness's perspective).
+ *
+ * Sorted alphabetically by name for stable display.
+ */
+export function listAllBundleAgents(options: AgentDiscoveryOptions = {}): BundleAgentRow[] {
   const bundlesRoot = options.bundlesRoot ?? getAgentBundlesRoot()
   const readdirSync = options.readdirSync ?? fs.readdirSync
   const readFileSync = options.readFileSync ?? fs.readFileSync
@@ -36,7 +51,7 @@ export function listEnabledBundleAgents(options: AgentDiscoveryOptions = {}): st
     return []
   }
 
-  const discovered: string[] = []
+  const discovered: BundleAgentRow[] = []
   for (const entry of entries) {
     if (!entry.isDirectory() || !entry.name.endsWith(".ouro")) continue
     const agentName = entry.name.slice(0, -5)
@@ -51,12 +66,14 @@ export function listEnabledBundleAgents(options: AgentDiscoveryOptions = {}): st
     } catch {
       continue
     }
-    if (enabled) {
-      discovered.push(agentName)
-    }
+    discovered.push({ name: agentName, enabled })
   }
 
-  return discovered.sort((left, right) => left.localeCompare(right))
+  return discovered.sort((left, right) => left.name.localeCompare(right.name))
+}
+
+export function listEnabledBundleAgents(options: AgentDiscoveryOptions = {}): string[] {
+  return listAllBundleAgents(options).filter((row) => row.enabled).map((row) => row.name)
 }
 
 export interface BundleSyncRow {
