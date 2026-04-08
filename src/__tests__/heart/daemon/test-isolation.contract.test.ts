@@ -15,10 +15,14 @@ import { describe, expect, it } from "vitest"
  *
  * The PRIMARY defense is in `src/heart/daemon/socket-client.ts` itself: it
  * detects vitest via `process.argv` and converts socket calls to safe no-ops.
- * This contract test is a SECONDARY defense — a static check that catches new
- * test files which inherit the dangerous pattern, even before they run.
+ * As of 2026-04-08 the guard is HARDENED: even when bypassed via
+ * `__bypassVitestGuardForTests`, the production daemon socket
+ * (DEFAULT_DAEMON_SOCKET_PATH = /tmp/ouroboros-daemon.sock) is unconditionally
+ * blocked under vitest. This means cross-file leaks via the bypass flag can
+ * no longer reach the production daemon — but they CAN still create surprises
+ * in concurrent tests. So we keep this contract test as a static defense.
  *
- * Two rules enforced as RATCHETS — current offenders are grandfathered in
+ * Three rules enforced as RATCHETS — current offenders are grandfathered in
  * the allowlists below, but no NEW files / lines can be added. Follow-up PRs
  * shrink the allowlists toward zero.
  *
@@ -27,6 +31,13 @@ import { describe, expect, it } from "vitest"
  *   2. No test file may construct a write path under the real ~/AgentBundles
  *      via `os.homedir()` joined with `"AgentBundles"`. (Tests must use
  *      `os.tmpdir()` or fully-mocked fs.)
+ *   3. Only files on the BYPASS_USE_ALLOWLIST may call
+ *      `__bypassVitestGuardForTests`. The bypass flag is process-wide
+ *      (globalThis), so any file that turns it on can leak the bypass into
+ *      concurrent test files in the same vitest worker. The allowlist
+ *      contains only the two files that legitimately exercise the real
+ *      socket-client transport against test sockets — extending it requires
+ *      conscious review.
  */
 
 // Files that use `name: "testagent"` without mocking socket-client.
@@ -40,6 +51,23 @@ const TESTAGENT_NO_MOCK_ALLOWLIST = new Set<string>()
 // test now use `createTmpBundle()` from src/__tests__/test-helpers/tmpdir-bundle.ts.
 // New offenders are blocked by the contract test below.
 const REAL_BUNDLES_WRITE_ALLOWLIST = new Set<string>()
+
+// Files allowed to call `__bypassVitestGuardForTests`. The bypass flag is
+// process-wide and can leak across concurrent test files in the same worker
+// (verified — caused a real daemon outage on 2026-04-08). The runtime guard
+// is hardened so production socket calls are blocked even with bypass on,
+// but reaching for the bypass should still be a deliberate, reviewed choice.
+//
+//   - socket-client.test.ts: tests the real socket-client transport against
+//     mocked net + a test socket path. The bypass is the only way for these
+//     tests to exercise the actual production code paths.
+//   - daemon-cli-defaults.test.ts: tests createDefaultOuroCliDeps wiring,
+//     which builds the real sendCommand transport that delegates to
+//     socket-client. Same justification.
+const BYPASS_USE_ALLOWLIST = new Set<string>([
+  "src/__tests__/heart/daemon/socket-client.test.ts",
+  "src/__tests__/heart/daemon/daemon-cli-defaults.test.ts",
+])
 
 const TESTS_ROOT = join(process.cwd(), "src", "__tests__")
 
@@ -177,6 +205,59 @@ describe("test isolation contract", () => {
       "These lines were grandfathered into REAL_BUNDLES_WRITE_ALLOWLIST but no longer",
       "match — either the line was fixed, the line numbers shifted, or the file was",
       "deleted. Update the allowlist in test-isolation.contract.test.ts.",
+    ].join("\n")).toEqual([])
+  })
+
+  it("only allowlisted files may call __bypassVitestGuardForTests", () => {
+    const allTests = walkTestFiles(TESTS_ROOT)
+    const newOffenders: string[] = []
+    const cleanedUp: string[] = []
+
+    for (const file of allTests) {
+      // Skip THIS contract test (mentions the bypass in comments).
+      if (file.endsWith("test-isolation.contract.test.ts")) continue
+
+      const content = readFileSync(file, "utf-8")
+      if (!content.includes("__bypassVitestGuardForTests")) continue
+
+      const rel = relPath(file)
+      if (BYPASS_USE_ALLOWLIST.has(rel)) continue
+
+      newOffenders.push(rel)
+    }
+
+    // Detect allowlisted files that no longer call the bypass
+    for (const allowed of BYPASS_USE_ALLOWLIST) {
+      const fullPath = join(process.cwd(), allowed)
+      if (!existsSync(fullPath)) {
+        cleanedUp.push(`(deleted) ${allowed}`)
+        continue
+      }
+      const content = readFileSync(fullPath, "utf-8")
+      if (!content.includes("__bypassVitestGuardForTests")) {
+        cleanedUp.push(allowed)
+      }
+    }
+
+    expect(newOffenders, [
+      "These NEW test files call __bypassVitestGuardForTests but are not on the",
+      "BYPASS_USE_ALLOWLIST. The bypass flag is process-wide (globalThis) — it",
+      "leaks into concurrent test files in the same vitest worker. The runtime",
+      "guard hard-blocks production socket calls regardless, but reaching for",
+      "the bypass should still be a deliberate, reviewed choice.",
+      "",
+      "If your test legitimately needs the bypass:",
+      "  1. Add the file path to BYPASS_USE_ALLOWLIST in this contract test.",
+      "  2. Document WHY in the same place (a sentence or two).",
+      "  3. Use a non-production socket path like `/tmp/daemon.sock` so the",
+      "     hardened production socket guard does not block your test.",
+      "",
+      ...newOffenders.map((f) => `  ${f}`),
+    ].join("\n")).toEqual([])
+
+    expect(cleanedUp, [
+      "These files were grandfathered into BYPASS_USE_ALLOWLIST but no longer",
+      "call __bypassVitestGuardForTests. Remove them from the allowlist.",
     ].join("\n")).toEqual([])
   })
 })
