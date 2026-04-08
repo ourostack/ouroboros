@@ -15,7 +15,7 @@ import { StreamingMarkdown } from "./streaming-markdown"
 import { processSubmitInput } from "./image-paste"
 import { KillRing } from "./kill-ring"
 import { handleKillToEnd, handleKillToStart, handleKillWordBack, handleYank, handleYankPop, handleCursorLeft, handleCursorRight, handleBackspace, handleForwardDelete, handleHome, handleEnd, classifyEscapeSequence } from "./input-keys"
-import { imageRefEndingAt, imageRefStartingAt, deleteTokenBefore, deleteTokenAfter } from "./image-ref-navigation"
+import { imageRefEndingAt, imageRefStartingAt, deleteTokenBefore } from "./image-ref-navigation"
 
 // ─── Ouroboros Brand Palette (ANSI RGB) ─────────────────────────────
 // From packages/outlook-ui/src/style.css and ouroboros.bot
@@ -446,27 +446,12 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
       historyIdx.current = -1
       return
     }
-    // Forward delete key (fn+Backspace on macOS): delete character at cursor
-    if (key.delete && !key.backspace) {
-      if (key.meta) {
-        // Meta+Delete: kill to end of line (push to ring)
-        const result = handleKillToEnd(inputRef.current, cursorRef.current, killRing)
-        updateInput(result.text, result.cursorPos)
-      } else {
-        // Token-aware: check for image ref chip at cursor
-        const chip = deleteTokenAfter(inputRef.current, cursorRef.current)
-        if (chip) {
-          updateInput(chip.text, chip.pos)
-        } else {
-          const result = handleForwardDelete(inputRef.current, cursorRef.current)
-          updateInput(result.text, result.cursorPos)
-        }
-      }
-      historyIdx.current = -1
-      return
-    }
-    // Backspace: delete character before cursor
-    if (key.backspace) {
+    // Backspace / Delete: Ink 3.2 maps \x7f (macOS backspace) to key.delete,
+    // and \x08 to key.backspace. Both mean "delete backward" on macOS.
+    // Only \x1b[3~ (fn+Backspace) is true forward-delete — but Ink also maps
+    // it to key.delete. We treat key.backspace OR key.delete as backspace
+    // (since \x7f is the common case), and handle forward-delete via Ctrl+D.
+    if (key.backspace || key.delete) {
       if (cursorRef.current > 0) {
         // Token-aware: check for image ref chip before cursor
         const chip = deleteTokenBefore(inputRef.current, cursorRef.current)
