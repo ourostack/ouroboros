@@ -13,6 +13,10 @@ import {
   handleKillWordBack,
   handleYank,
   handleYankPop,
+  handleCursorLeft,
+  handleCursorRight,
+  handleBackspace,
+  handleForwardDelete,
 } from "../../../senses/cli/input-keys"
 
 describe("Kill Ring Keybindings", () => {
@@ -194,6 +198,63 @@ describe("Kill Ring Keybindings", () => {
       handleKillToStart("prefix ", 7, ring) // kills "prefix "
       // Prepend: "prefix " + "hello world" = "prefix hello world"
       expect(ring.yank()).toBe("prefix hello world")
+    })
+  })
+})
+
+describe("Emacs Navigation (Ctrl+B/F/H)", () => {
+  describe("Ctrl+B (cursor left)", () => {
+    it("moves cursor left by 1", () => {
+      expect(handleCursorLeft("hello", 3)).toBe(2)
+    })
+
+    it("does not go below 0", () => {
+      expect(handleCursorLeft("hello", 0)).toBe(0)
+    })
+
+    it("moves from end of string", () => {
+      expect(handleCursorLeft("hi", 2)).toBe(1)
+    })
+  })
+
+  describe("Ctrl+F (cursor right)", () => {
+    it("moves cursor right by 1", () => {
+      expect(handleCursorRight("hello", 3)).toBe(4)
+    })
+
+    it("does not go beyond text length", () => {
+      expect(handleCursorRight("hello", 5)).toBe(5)
+    })
+
+    it("moves from start of string", () => {
+      expect(handleCursorRight("hi", 0)).toBe(1)
+    })
+  })
+
+  describe("Ctrl+H (backspace)", () => {
+    it("deletes character before cursor", () => {
+      const result = handleBackspace("hello", 3)
+      expect(result).toEqual({ text: "helo", cursorPos: 2 })
+    })
+
+    it("is a no-op at start of text", () => {
+      const result = handleBackspace("hello", 0)
+      expect(result).toEqual({ text: "hello", cursorPos: 0 })
+    })
+
+    it("deletes last character when cursor is at end", () => {
+      const result = handleBackspace("hello", 5)
+      expect(result).toEqual({ text: "hell", cursorPos: 4 })
+    })
+
+    it("handles single character string", () => {
+      const result = handleBackspace("x", 1)
+      expect(result).toEqual({ text: "", cursorPos: 0 })
+    })
+
+    it("handles empty string", () => {
+      const result = handleBackspace("", 0)
+      expect(result).toEqual({ text: "", cursorPos: 0 })
     })
   })
 })
