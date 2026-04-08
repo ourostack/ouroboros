@@ -17,6 +17,9 @@ import {
   handleCursorRight,
   handleBackspace,
   handleForwardDelete,
+  handleHome,
+  handleEnd,
+  classifyEscapeSequence,
 } from "../../../senses/cli/input-keys"
 
 describe("Kill Ring Keybindings", () => {
@@ -256,5 +259,73 @@ describe("Emacs Navigation (Ctrl+B/F/H)", () => {
       const result = handleBackspace("", 0)
       expect(result).toEqual({ text: "", cursorPos: 0 })
     })
+  })
+})
+
+describe("Home/End Keys", () => {
+  describe("handleHome", () => {
+    it("moves cursor to position 0", () => {
+      expect(handleHome("hello world", 5)).toBe(0)
+    })
+
+    it("is already at 0", () => {
+      expect(handleHome("hello", 0)).toBe(0)
+    })
+  })
+
+  describe("handleEnd", () => {
+    it("moves cursor to end of text", () => {
+      expect(handleEnd("hello world", 5)).toBe(11)
+    })
+
+    it("is already at end", () => {
+      expect(handleEnd("hello", 5)).toBe(5)
+    })
+  })
+})
+
+describe("classifyEscapeSequence", () => {
+  it("detects Home via \\x1b[H", () => {
+    expect(classifyEscapeSequence("\x1b[H")).toBe("home")
+  })
+
+  it("detects Home via \\x1b[1~", () => {
+    expect(classifyEscapeSequence("\x1b[1~")).toBe("home")
+  })
+
+  it("detects End via \\x1b[F", () => {
+    expect(classifyEscapeSequence("\x1b[F")).toBe("end")
+  })
+
+  it("detects End via \\x1b[4~", () => {
+    expect(classifyEscapeSequence("\x1b[4~")).toBe("end")
+  })
+
+  it("detects PageUp via \\x1b[5~", () => {
+    expect(classifyEscapeSequence("\x1b[5~")).toBe("ignore")
+  })
+
+  it("detects PageDown via \\x1b[6~", () => {
+    expect(classifyEscapeSequence("\x1b[6~")).toBe("ignore")
+  })
+
+  it("detects SGR mouse wheel up", () => {
+    expect(classifyEscapeSequence("\x1b[<64;10;20M")).toBe("ignore")
+  })
+
+  it("detects SGR mouse wheel down", () => {
+    expect(classifyEscapeSequence("\x1b[<65;10;20M")).toBe("ignore")
+  })
+
+  it("returns null for normal text", () => {
+    expect(classifyEscapeSequence("hello")).toBeNull()
+  })
+
+  it("returns null for unrecognized escape sequences", () => {
+    expect(classifyEscapeSequence("\x1b[Z")).toBeNull()
+  })
+
+  it("returns null for empty string", () => {
+    expect(classifyEscapeSequence("")).toBeNull()
   })
 })
