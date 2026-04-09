@@ -234,5 +234,47 @@ describe("HealthMonitor", () => {
       // Should not crash
       await expect(monitor.runChecks()).resolves.toBeDefined()
     })
+
+    it("calls onCriticalAgent for each non-running agent when multiple are down", async () => {
+      const onCriticalAgent = vi.fn()
+      const monitor = new HealthMonitor({
+        processManager: {
+          listAgentSnapshots: () => [
+            { name: "slugger", status: "crashed" },
+            { name: "ouroboros", status: "stopped" },
+            { name: "helper", status: "running" },
+          ],
+        },
+        scheduler: {
+          listJobs: () => [{ id: "daily", lastRun: "2026-01-01T00:00:00Z" }],
+        },
+        onCriticalAgent,
+      })
+
+      await monitor.runChecks()
+      expect(onCriticalAgent).toHaveBeenCalledTimes(2)
+      expect(onCriticalAgent).toHaveBeenCalledWith("slugger")
+      expect(onCriticalAgent).toHaveBeenCalledWith("ouroboros")
+    })
+
+    it("does not crash when onCriticalAgent callback throws", async () => {
+      const onCriticalAgent = vi.fn(() => {
+        throw new Error("restart failed")
+      })
+      const monitor = new HealthMonitor({
+        processManager: {
+          listAgentSnapshots: () => [{ name: "slugger", status: "stopped" }],
+        },
+        scheduler: {
+          listJobs: () => [{ id: "daily", lastRun: "2026-01-01T00:00:00Z" }],
+        },
+        onCriticalAgent,
+      })
+
+      // Should not throw, recovery is best-effort
+      const results = await monitor.runChecks()
+      expect(results[0]?.status).toBe("critical")
+      expect(onCriticalAgent).toHaveBeenCalledWith("slugger")
+    })
   })
 })
