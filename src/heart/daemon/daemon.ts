@@ -350,6 +350,14 @@ export interface OuroDaemonOptions {
   senseManager?: DaemonSenseManagerLike
   bundlesRoot?: string
   mode?: "dev" | "production"
+  /**
+   * Factory for the Outlook HTTP server. Tests inject a stub so they can
+   * exercise the full start/stop lifecycle without binding to port 6876
+   * (which is held by a running production daemon on dev machines and
+   * causes EADDRINUSE flakes). Defaults to the real `startOutlookHttpServer`
+   * wired with the daemon's bundlesRoot and view builders.
+   */
+  outlookServerFactory?: () => Promise<OutlookHttpServerHandle>
 }
 
 interface DaemonWorkerRow {
@@ -481,6 +489,7 @@ export class OuroDaemon {
   private readonly mode: "dev" | "production"
   private server: net.Server | null = null
   private outlookServer: OutlookHttpServerHandle | null = null
+  private readonly outlookServerFactory: () => Promise<OutlookHttpServerHandle>
 
   constructor(options: OuroDaemonOptions) {
     this.socketPath = options.socketPath
@@ -491,7 +500,43 @@ export class OuroDaemon {
     this.senseManager = options.senseManager ?? null
     this.bundlesRoot = options.bundlesRoot ?? getAgentBundlesRoot()
     this.mode = options.mode ?? "production"
+    this.outlookServerFactory = options.outlookServerFactory ?? this.createDefaultOutlookServer.bind(this)
   }
+
+  /* v8 ignore start -- default outlook server wiring: production-only path, tests inject outlookServerFactory stub instead. startOutlookHttpServer itself has full coverage in outlook-http.test.ts @preserve */
+  private createDefaultOutlookServer(): Promise<OutlookHttpServerHandle> {
+    return startOutlookHttpServer({
+      host: "127.0.0.1",
+      port: OUTLOOK_DEFAULT_PORT,
+      bundlesRoot: this.bundlesRoot,
+      readMachineState: () => readOutlookMachineState({ bundlesRoot: this.bundlesRoot }),
+      readMachineView: ({ machine }) => {
+        const overview = this.buildStatusPayload().overview
+        return buildOutlookMachineView({
+          machine,
+          daemon: {
+            status: overview.daemon,
+            health: overview.health,
+            mode: overview.mode,
+            socketPath: overview.socketPath,
+            outlookUrl: overview.outlookUrl,
+            entryPath: overview.entryPath,
+            workerCount: overview.workerCount,
+            senseCount: overview.senseCount,
+          },
+        })
+      },
+      readAgentState: (agentName) => readOutlookAgentState(agentName, { bundlesRoot: this.bundlesRoot }),
+      readAgentView: (agentName) => {
+        const agent = readOutlookAgentState(agentName, { bundlesRoot: this.bundlesRoot })
+        return buildOutlookAgentView({
+          agent,
+          viewer: { kind: "human" },
+        })
+      },
+    })
+  }
+  /* v8 ignore stop */
 
   private buildStatusPayload(): DaemonStatusPayload {
     const snapshots = this.processManager.listAgentSnapshots()
@@ -649,50 +694,20 @@ export class OuroDaemon {
     await this.scheduler.reconcile?.()
     await this.drainPendingBundleMessages()
     await this.drainPendingSenseMessages()
-    /* v8 ignore start — Outlook server startup, tested via outlook-http.test.ts */
-    if (!this.outlookServer) {
-      try {
-        this.outlookServer = await startOutlookHttpServer({
-          host: "127.0.0.1",
-          port: OUTLOOK_DEFAULT_PORT,
-          bundlesRoot: this.bundlesRoot,
-          readMachineState: () => readOutlookMachineState({ bundlesRoot: this.bundlesRoot }),
-          readMachineView: ({ machine }) => {
-            const overview = this.buildStatusPayload().overview
-            return buildOutlookMachineView({
-              machine,
-              daemon: {
-                status: overview.daemon,
-                health: overview.health,
-                mode: overview.mode,
-                socketPath: overview.socketPath,
-                outlookUrl: overview.outlookUrl,
-                entryPath: overview.entryPath,
-                workerCount: overview.workerCount,
-                senseCount: overview.senseCount,
-              },
-            })
-          },
-          readAgentState: (agentName) => readOutlookAgentState(agentName, { bundlesRoot: this.bundlesRoot }),
-          readAgentView: (agentName) => {
-            const agent = readOutlookAgentState(agentName, { bundlesRoot: this.bundlesRoot })
-            return buildOutlookAgentView({
-              agent,
-              viewer: { kind: "human" },
-            })
-          },
-        })
-      } catch (error) {
-        emitNervesEvent({
-          level: "warn",
-          component: "daemon",
-          event: "daemon.outlook_start_failed",
-          message: `Outlook server failed to start: ${String(error)}`,
-          meta: { port: OUTLOOK_DEFAULT_PORT },
-        })
-      }
+    // startInner is only reachable when this.server is null (guarded in
+    // start()), and stop() nulls out this.outlookServer alongside this.server,
+    // so outlookServer is guaranteed unset here — no need for a guard.
+    try {
+      this.outlookServer = await this.outlookServerFactory()
+    } catch (error) {
+      emitNervesEvent({
+        level: "warn",
+        component: "daemon",
+        event: "daemon.outlook_start_failed",
+        message: `Outlook server failed to start: ${String(error)}`,
+        meta: { port: OUTLOOK_DEFAULT_PORT },
+      })
     }
-    /* v8 ignore stop */
 
     if (fs.existsSync(this.socketPath)) {
       fs.unlinkSync(this.socketPath)
@@ -969,12 +984,10 @@ export class OuroDaemon {
       this.server.close()
       this.server = null
     }
-    /* v8 ignore start -- outlookServer stop: only reachable when the outlook HTTP server successfully bound to port 6876 during start(). Coverage fluctuates locally because a running production daemon holds the port and tests get EADDRINUSE, leaving outlookServer null. In CI the port is free and this block runs. Not worth fighting port contention to cover two trivial lines. @preserve */
     if (this.outlookServer) {
       await this.outlookServer.stop()
       this.outlookServer = null
     }
-    /* v8 ignore stop */
 
     if (fs.existsSync(this.socketPath)) {
       fs.unlinkSync(this.socketPath)
