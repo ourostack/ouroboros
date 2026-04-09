@@ -7,7 +7,7 @@ import {
   MAX_VLM_IMAGE_BYTES,
   normalizeImageForVision,
 } from "../../../heart/attachments/image-normalize"
-import { buildCliLocalFileAttachmentRecord } from "../../../heart/attachments/types"
+import { buildCliLocalFileAttachmentRecord } from "../../../heart/attachments/sources/cli-local-file"
 
 const tempDirs: string[] = []
 
