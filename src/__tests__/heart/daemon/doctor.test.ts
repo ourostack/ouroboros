@@ -109,6 +109,20 @@ describe("runDoctorChecks", () => {
     expect(result.categories.length).toBeGreaterThan(0)
     expect(result.summary.failed).toBeGreaterThan(0)
   })
+
+  it("handles non-Error throws in category checkers", async () => {
+    const deps = createMockDeps({
+      existsSync: vi.fn().mockImplementation(() => {
+        throw "string error" // eslint-disable-line no-throw-literal
+      }),
+    })
+
+    const result = await runDoctorChecks(deps)
+    expect(result.categories.length).toBeGreaterThan(0)
+    // The crash detail should stringify the non-Error value
+    const failedChecks = result.categories.flatMap((c) => c.checks).filter((c) => c.status === "fail")
+    expect(failedChecks.some((c) => c.detail?.includes("string error"))).toBe(true)
+  })
 })
 
 // ── Daemon checks ──
@@ -254,6 +268,48 @@ describe("checkAgents", () => {
     const cat = checkAgents(deps)
     expect(cat.checks[0].status).toBe("fail")
     expect(cat.checks[0].detail).toBe("missing")
+  })
+
+  it("warns when humanFacing.provider is missing but model is present", () => {
+    const config = JSON.stringify({
+      version: 2,
+      humanFacing: { model: "claude-4" },
+      agentFacing: { provider: "anthropic", model: "claude-4" },
+    })
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/test.ouro/agent.json"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/test.ouro/agent.json": config }),
+    })
+    const cat = checkAgents(deps)
+    expect(cat.checks[0].status).toBe("warn")
+    expect(cat.checks[0].detail).toContain("humanFacing.provider")
+    expect(cat.checks[0].detail).not.toContain("humanFacing.model")
+  })
+
+  it("warns when version field is missing but facings are present", () => {
+    const config = JSON.stringify({
+      humanFacing: { provider: "anthropic", model: "claude-4" },
+      agentFacing: { provider: "anthropic", model: "claude-4" },
+    })
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/test.ouro/agent.json"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/test.ouro/agent.json": config }),
+    })
+    const cat = checkAgents(deps)
+    expect(cat.checks[0].status).toBe("warn")
+    expect(cat.checks[0].detail).toContain("version")
+  })
+
+  it("skips agent.json that does not exist during senses check", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["noconfig.ouro"] }),
+    })
+    const cat = checkSenses(deps)
+    // Should produce a fallback warning since no senses were found
+    expect(cat.checks[0].status).toBe("warn")
   })
 
   it("handles multiple agents with mixed health", () => {
@@ -425,6 +481,22 @@ describe("checkHabits", () => {
     expect(cat.checks[0].detail).toContain("no habits directory")
   })
 
+  it("skips launchd check when LaunchAgents dir does not exist", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/habits",
+        // LaunchAgents NOT in the set
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+    })
+    const cat = checkHabits(deps)
+    // Should have habits dir check but no launchd check
+    expect(cat.checks).toHaveLength(1)
+    expect(cat.checks[0].label).toContain("habits dir")
+    expect(cat.checks[0].status).toBe("pass")
+  })
+
   it("warns when no agents found", () => {
     const deps = createMockDeps({
       existsSync: existsFor(["/tmp/bundles"]),
@@ -517,6 +589,22 @@ describe("checkSecurity", () => {
     expect(cat.checks.find((c) => c.label.includes("credential leak"))?.detail).toContain("could not read")
   })
 
+  it("skips credential leak check when agent.json does not exist", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/secrets/test/secrets.json",
+        // agent.json NOT in the set
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      statSync: statFor({ "/tmp/secrets/test/secrets.json": { mode: 0o600, size: 100 } }),
+    })
+    const cat = checkSecurity(deps)
+    // Should have perms check but no credential leak check
+    expect(cat.checks.find((c) => c.label.includes("perms"))?.status).toBe("pass")
+    expect(cat.checks.find((c) => c.label.includes("credential leak"))).toBeUndefined()
+  })
+
   it("warns when no agents found", () => {
     const deps = createMockDeps({
       existsSync: existsFor(["/tmp/bundles"]),
@@ -598,6 +686,16 @@ describe("checkDisk", () => {
     })
     const cat = checkDisk(deps)
     // Should still produce a result (0 bytes counted)
+    expect(cat.checks.find((c) => c.label.includes("log size"))?.status).toBe("pass")
+  })
+
+  it("handles readdirSync failure on logs dir gracefully", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/home/.ouro-cli/logs", "/tmp/bundles"]),
+      readdirSync: vi.fn().mockImplementation(() => { throw new Error("EACCES") }),
+    })
+    const cat = checkDisk(deps)
+    // Should still produce a result with 0 bytes (catch absorbs error)
     expect(cat.checks.find((c) => c.label.includes("log size"))?.status).toBe("pass")
   })
 })
