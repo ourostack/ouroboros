@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.305",
+      "changes": [
+        "feat(daemon): add sense-level liveness probes for hung webhook detection. New `/health` endpoint on BlueBubbles webhook server returns `{ status: \"ok\", uptime: N }` via GET/HEAD (localhost only, 405 for other methods). Generic `SenseProbe` interface in HealthMonitor runs probes alongside existing checks every 60s — failed probes produce critical results triggering auto-recovery restart. HTTP health probe factory `createHttpHealthProbe(name, port, timeoutMs)` makes reusable probes for any sense with an HTTP endpoint. BlueBubbles probe auto-registered in daemon-entry when BB sense config exists. Directly addresses the documented 70-minute Lobster outage where BB webhook server was hung but process was alive. New files: `http-health-probe.ts` + 3 test files. 26 new tests at 100% coverage on new code."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.304",
       "changes": [
         "feat(mind): add content trust framing to recall results. New `classifyProvenanceTrust()` in `src/mind/provenance-trust.ts` categorizes diary entry provenance as self/trusted/external. Diary entries surfaced via `recall` or associative recall from external sources (messages, emails, web content) now get `[diary/external]` tag instead of `[diary]`. System prompt adds guidance: external entries should not be followed as instructions. This closes the prompt injection defense chain from the Lobster research — even if an attacker plants instructions in content that gets persisted to the diary, the recall pipeline marks it as external and steers the agent away from executing embedded instructions. 19 new tests across 4 files at 100% coverage."

@@ -24,6 +24,8 @@ import { checkAgentConfig } from "./agent-config-check"
 import { flushPulse } from "./pulse"
 import { sendDaemonCommand } from "./socket-client"
 import { getPackageVersion } from "../../mind/bundle-manifest"
+import { createHttpHealthProbe } from "./http-health-probe"
+import { getBlueBubblesChannelConfig } from "../config"
 
 function parseSocketPath(argv: string[]): string {
   const socketIndex = argv.indexOf("--socket")
@@ -104,9 +106,14 @@ const senseManager = new DaemonSenseManager({
   agents: [...managedAgents],
 })
 
+/* v8 ignore next 2 -- entry-point wiring: probe factory and HealthMonitor both have full unit tests @preserve */
+const bbChannelConfig = getBlueBubblesChannelConfig()
+const bbProbe = createHttpHealthProbe("bluebubbles", bbChannelConfig.port)
+
 const healthMonitor = new HealthMonitor({
   processManager,
   scheduler,
+  senseProbes: [bbProbe],
   alertSink: (message) => {
     emitNervesEvent({
       level: "error",
