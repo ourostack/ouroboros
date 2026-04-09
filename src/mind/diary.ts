@@ -4,6 +4,7 @@ import { randomUUID } from "crypto";
 import { getAgentRoot } from "../heart/identity";
 import { emitNervesEvent } from "../nerves/runtime";
 import { cosineSimilarity } from "./associative-recall";
+import { detectSuspiciousContent } from "./diary-integrity";
 import { type EmbeddingProvider, createDefaultEmbeddingProvider } from "./embedding-provider";
 
 export interface DiaryStorePaths {
@@ -264,6 +265,21 @@ export async function saveDiaryEntry(options: SaveDiaryEntryOptions): Promise<Di
     embedding,
     ...(options.provenance ? { provenance: options.provenance } : {}),
   };
+
+  const integrity = detectSuspiciousContent(text);
+  if (integrity.suspicious) {
+    emitNervesEvent({
+      level: "warn",
+      component: "mind",
+      event: "mind.diary_integrity_warning",
+      message: "suspicious content detected in diary entry",
+      meta: {
+        patterns: integrity.patterns,
+        textPreview: text.slice(0, 200),
+        entryId: fact.id,
+      },
+    });
+  }
 
   return appendEntriesWithDedup(stores, [fact], { semanticThreshold: SEMANTIC_DEDUP_THRESHOLD });
 }
