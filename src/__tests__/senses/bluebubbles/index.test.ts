@@ -2797,6 +2797,39 @@ describe("BlueBubbles sense runtime", () => {
     expect(hasRecordedBlueBubblesInbound("testagent", "chat:any;-;ari@mendelow.me", "B20D4E2B-2E6E-48B5-95CD-6E24A368E4A7")).toBe(true)
   })
 
+  it("writes only one inbound sidecar entry per handled message turn", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+
+    mocks.handleInboundTurn.mockResolvedValueOnce({
+      gateResult: {
+        allowed: true,
+      },
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    expect(result).toEqual({
+      handled: true,
+      notifiedAgent: true,
+      kind: "message",
+    })
+
+    const { getBlueBubblesInboundLogPath } = await import("../../../senses/bluebubbles/inbound-log")
+    const logPath = getBlueBubblesInboundLogPath("testagent", "chat:any;-;ari@mendelow.me")
+    const lines = fs.readFileSync(logPath, "utf-8").trim().split("\n")
+
+    expect(lines).toHaveLength(1)
+    expect(JSON.parse(lines[0] ?? "{}")).toEqual(
+      expect.objectContaining({
+        messageGuid: "B20D4E2B-2E6E-48B5-95CD-6E24A368E4A7",
+        source: "webhook",
+      }),
+    )
+  })
+
   it("handles trust-gated mutation events without trying to record a message inbound sidecar", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
