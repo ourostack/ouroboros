@@ -9,6 +9,7 @@ import {
   type CommandHelp,
   type CommandCategory,
 } from "../../../heart/daemon/cli-help"
+import { parseOuroCommand } from "../../../heart/daemon/cli-parse"
 
 // ── Unit 0a: Command metadata registry ──
 
@@ -232,5 +233,34 @@ describe("suggestCommand()", () => {
 
   it("returns exact match command name for distance 0", () => {
     expect(suggestCommand("stop")).toBe("stop")
+  })
+})
+
+// ── Unit 2a: help command kind ──
+
+describe("parseOuroCommand help handling", () => {
+  it("parses 'help' as { kind: 'help' }", () => {
+    emitNervesEvent({ component: "daemon", event: "cli_help_parse_test", message: "testing help parse" })
+    expect(parseOuroCommand(["help"])).toEqual({ kind: "help" })
+  })
+
+  it("parses 'help chat' as { kind: 'help', command: 'chat' }", () => {
+    expect(parseOuroCommand(["help", "chat"])).toEqual({ kind: "help", command: "chat" })
+  })
+
+  it("parses 'help task' as { kind: 'help', command: 'task' }", () => {
+    expect(parseOuroCommand(["help", "task"])).toEqual({ kind: "help", command: "task" })
+  })
+
+  it("parses 'chat --help' as { kind: 'help', command: 'chat' }", () => {
+    expect(parseOuroCommand(["chat", "--help"])).toEqual({ kind: "help", command: "chat" })
+  })
+
+  it("parses 'task --help' as { kind: 'help', command: 'task' }", () => {
+    expect(parseOuroCommand(["task", "--help"])).toEqual({ kind: "help", command: "task" })
+  })
+
+  it("parses 'status --help' as { kind: 'help', command: 'status' }", () => {
+    expect(parseOuroCommand(["status", "--help"])).toEqual({ kind: "help", command: "status" })
   })
 })
