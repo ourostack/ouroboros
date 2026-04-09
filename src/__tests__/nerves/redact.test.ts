@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
-import { SENSITIVE_KEYS, redactMeta, redactString } from "../../nerves/redact"
+import { SENSITIVE_KEYS, redactLogEntry, redactMeta, redactString } from "../../nerves/redact"
+import type { LogEvent } from "../../nerves"
 
 describe("nerves/redact", () => {
   describe("redactMeta (structured key redaction)", () => {
@@ -127,6 +128,59 @@ describe("nerves/redact", () => {
 
     it("returns empty string for empty input", () => {
       expect(redactString("")).toBe("")
+    })
+  })
+
+  describe("redactLogEntry (full entry redaction)", () => {
+    const baseEntry: LogEvent = {
+      ts: "2026-04-08T00:00:00.000Z",
+      level: "info",
+      event: "test.event",
+      trace_id: "trace-1",
+      component: "test",
+      message: "clean message",
+      meta: {},
+    }
+
+    it("applies both structured key redaction and string regex to an entry", () => {
+      const entry: LogEvent = {
+        ...baseEntry,
+        message: "using Bearer eyJabc.def.ghi for auth",
+        meta: { apiKey: "sk-ant-real-key", user: "alice" },
+      }
+      const result = redactLogEntry(entry)
+      expect(result.meta).toEqual({ apiKey: "[REDACTED:apiKey]", user: "alice" })
+      expect(result.message).toBe("using [REDACTED:bearer_token] for auth")
+    })
+
+    it("passes through clean entry unchanged (structurally equal)", () => {
+      const entry: LogEvent = {
+        ...baseEntry,
+        message: "nothing sensitive here",
+        meta: { model: "gpt-4", count: 42 },
+      }
+      const result = redactLogEntry(entry)
+      expect(result).toEqual(entry)
+    })
+
+    it("does not mutate the original entry object", () => {
+      const entry: LogEvent = {
+        ...baseEntry,
+        meta: { password: "hunter2" },
+      }
+      const original = JSON.parse(JSON.stringify(entry))
+      redactLogEntry(entry)
+      expect(entry).toEqual(original)
+    })
+
+    it("redacts sensitive patterns in the message field", () => {
+      const entry: LogEvent = {
+        ...baseEntry,
+        message: "API key: sk-proj-abc123_DEF",
+        meta: {},
+      }
+      const result = redactLogEntry(entry)
+      expect(result.message).toBe("API key: [REDACTED:openai_key]")
     })
   })
 })
