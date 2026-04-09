@@ -656,6 +656,22 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
       if (result) updateInput(result.text, result.cursorPos)
       return
     }
+    // Option+Backspace: Ink parses \x1b\x7f as meta=true, inputChar="" (empty because
+    // \x7f matches key.delete but the whole input was \x1b\x7f not \x7f).
+    // Signature: key.meta && !inputChar && !key.escape && !key.return
+    if (key.meta && !inputChar && !key.escape && !key.return && !key.tab) {
+      if (cursorRef.current > 0) {
+        const chip = deleteTokenBefore(inputRef.current, cursorRef.current)
+        if (chip) {
+          updateInput(chip.text, chip.pos)
+        } else {
+          const result = handleKillWordBack(inputRef.current, cursorRef.current, killRing)
+          updateInput(result.text, result.cursorPos)
+        }
+      }
+      historyIdx.current = -1
+      return
+    }
     // ─── Non-kill/non-yank keystroke resets ────────────────────────
     killRing.resetAccumulation()
     killRing.resetYankState()
