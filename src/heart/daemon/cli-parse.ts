@@ -688,6 +688,16 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   const [head, second] = args
   if (!head) return { kind: "daemon.up" }
 
+  // ── help command ──
+  if (head === "help") {
+    return second ? { kind: "help", command: second } : { kind: "help" }
+  }
+
+  // ── per-command --help ──
+  if (args.includes("--help")) {
+    return { kind: "help", command: head }
+  }
+
   if (head === "--agent" && second) {
     return parseOuroCommand(args.slice(2))
   }
