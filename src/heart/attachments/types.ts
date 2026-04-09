@@ -1,15 +1,14 @@
-import { createHash } from "node:crypto"
 import * as path from "node:path"
 import { emitNervesEvent } from "../../nerves/runtime"
-import type { BlueBubblesAttachmentSummary } from "../../senses/bluebubbles/model"
 
 export type AttachmentKind = "image" | "audio" | "document" | "binary" | "unknown"
 export type AttachmentSourceKind = "bluebubbles" | "cli-local-file"
 export type AttachmentVariant = "original" | "vision_safe"
+export type AttachmentSourceData = object
 
-export interface AttachmentRecordBase {
+export interface AttachmentRecordBase<TSource extends AttachmentSourceKind = AttachmentSourceKind> {
   id: string
-  source: AttachmentSourceKind
+  source: TSource
   sourceId: string
   kind: AttachmentKind
   displayName: string
@@ -19,19 +18,12 @@ export interface AttachmentRecordBase {
   lastSeenAt: number
 }
 
-export interface BlueBubblesAttachmentRecord extends AttachmentRecordBase {
-  source: "bluebubbles"
-  sourceData: BlueBubblesAttachmentSummary & { guid: string; localPath?: string }
+export type AttachmentRecord<
+  TSource extends AttachmentSourceKind = AttachmentSourceKind,
+  TSourceData extends AttachmentSourceData = AttachmentSourceData,
+> = AttachmentRecordBase<TSource> & {
+  sourceData: TSourceData
 }
-
-export interface CliLocalFileAttachmentRecord extends AttachmentRecordBase {
-  source: "cli-local-file"
-  sourceData: {
-    path: string
-  }
-}
-
-export type AttachmentRecord = BlueBubblesAttachmentRecord | CliLocalFileAttachmentRecord
 
 export interface MaterializedAttachment {
   attachmentId: string
@@ -40,6 +32,46 @@ export interface MaterializedAttachment {
   displayName: string
   mimeType?: string
   byteCount?: number
+}
+
+export function createAttachmentRecord<
+  TSource extends AttachmentSourceKind,
+  TSourceData extends AttachmentSourceData,
+>(
+  input: {
+    source: TSource
+    sourceId: string
+    displayName: string
+    mimeType?: string
+    byteCount?: number
+    sourceData: TSourceData
+  },
+  now = Date.now(),
+): AttachmentRecord<TSource, TSourceData> {
+  const record: AttachmentRecord<TSource, TSourceData> = {
+    id: buildAttachmentId(input.source, input.sourceId),
+    source: input.source,
+    sourceId: input.sourceId,
+    kind: classifyAttachmentKind(input.mimeType, input.displayName),
+    displayName: input.displayName,
+    mimeType: input.mimeType,
+    byteCount: input.byteCount,
+    createdAt: now,
+    lastSeenAt: now,
+    sourceData: input.sourceData,
+  }
+
+  emitNervesEvent({
+    component: "engine",
+    event: "engine.attachment_record_built",
+    message: "attachment record helper invoked",
+    meta: {
+      source: record.source,
+      kind: record.kind,
+    },
+  })
+
+  return record
 }
 
 export function buildAttachmentId(source: AttachmentSourceKind, stableId: string): string {
@@ -71,91 +103,4 @@ export function classifyAttachmentKind(mimeType?: string, displayName?: string):
   }
   if (!normalizedMime && !displayName) return "unknown"
   return "binary"
-}
-
-function stableCliLocalFileId(filePath: string): string {
-  return createHash("sha1").update(path.resolve(filePath)).digest("hex").slice(0, 16)
-}
-
-export function buildBlueBubblesAttachmentRecord(
-  summary: BlueBubblesAttachmentSummary,
-  now = Date.now(),
-  options: {
-    localPath?: string
-    mimeType?: string
-    byteCount?: number
-  } = {},
-): BlueBubblesAttachmentRecord {
-  const guid = summary.guid?.trim()
-  if (!guid) {
-    throw new Error("BlueBubbles attachment guid is required")
-  }
-
-  const displayName = summary.transferName?.trim() || guid
-  const mimeType = options.mimeType?.trim().toLowerCase() || summary.mimeType?.trim().toLowerCase() || undefined
-  const record: BlueBubblesAttachmentRecord = {
-    id: buildAttachmentId("bluebubbles", guid),
-    source: "bluebubbles",
-    sourceId: guid,
-    kind: classifyAttachmentKind(mimeType, displayName),
-    displayName,
-    mimeType,
-    byteCount: options.byteCount ?? summary.totalBytes,
-    createdAt: now,
-    lastSeenAt: now,
-    sourceData: {
-      ...summary,
-      guid,
-      ...(options.localPath ? { localPath: path.resolve(options.localPath) } : {}),
-    },
-  }
-  emitNervesEvent({
-    component: "engine",
-    event: "engine.attachment_record_built",
-    message: "attachment record helper invoked",
-    meta: {
-      source: "bluebubbles",
-      kind: record.kind,
-    },
-  })
-  return record
-}
-
-export function buildCliLocalFileAttachmentRecord(
-  input: {
-    path: string
-    mimeType?: string
-    byteCount?: number
-    displayName?: string
-  },
-  now = Date.now(),
-): CliLocalFileAttachmentRecord {
-  const resolvedPath = path.resolve(input.path)
-  const displayName = input.displayName?.trim() || path.basename(resolvedPath)
-  const mimeType = input.mimeType?.trim().toLowerCase() || undefined
-  const stableId = stableCliLocalFileId(resolvedPath)
-  const record: CliLocalFileAttachmentRecord = {
-    id: buildAttachmentId("cli-local-file", stableId),
-    source: "cli-local-file",
-    sourceId: stableId,
-    kind: classifyAttachmentKind(mimeType, displayName),
-    displayName,
-    mimeType,
-    byteCount: input.byteCount,
-    createdAt: now,
-    lastSeenAt: now,
-    sourceData: {
-      path: resolvedPath,
-    },
-  }
-  emitNervesEvent({
-    component: "engine",
-    event: "engine.attachment_record_built",
-    message: "attachment record helper invoked",
-    meta: {
-      source: "cli-local-file",
-      kind: record.kind,
-    },
-  })
-  return record
 }
