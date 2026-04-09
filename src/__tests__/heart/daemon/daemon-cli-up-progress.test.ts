@@ -5,6 +5,7 @@ import { emitNervesEvent } from "../../../nerves/runtime"
 const mocks = vi.hoisted(() => ({
   applyPendingUpdates: vi.fn(async () => ({ updated: [] })),
   registerUpdateHook: vi.fn(),
+  pruneStaleEphemeralBundles: vi.fn(() => [] as string[]),
 }))
 
 vi.mock("../../../heart/versioning/update-hooks", () => ({
@@ -16,6 +17,10 @@ vi.mock("../../../heart/versioning/update-hooks", () => ({
 
 vi.mock("../../../heart/daemon/hooks/bundle-meta", () => ({
   bundleMetaHook: vi.fn(),
+}))
+
+vi.mock("../../../heart/daemon/stale-bundle-prune", () => ({
+  pruneStaleEphemeralBundles: (...a: any[]) => mocks.pruneStaleEphemeralBundles(...a),
 }))
 
 import { runOuroCli, type OuroCliDeps } from "../../../heart/daemon/daemon-cli"
@@ -78,6 +83,16 @@ describe("ouro up: progress messages", () => {
     await runOuroCli(["up"], deps)
 
     expect(deps.writeStdout).toHaveBeenCalledWith("starting daemon...")
+  })
+
+  it("prints pruned stale bundle names", async () => {
+    mocks.pruneStaleEphemeralBundles.mockReturnValueOnce(["stale.ouro", "dead.ouro"])
+    const deps = makeDeps()
+
+    await runOuroCli(["up"], deps)
+
+    expect(deps.writeStdout).toHaveBeenCalledWith("pruned stale bundle: stale.ouro")
+    expect(deps.writeStdout).toHaveBeenCalledWith("pruned stale bundle: dead.ouro")
   })
 
   it("progress messages appear in correct order", async () => {
