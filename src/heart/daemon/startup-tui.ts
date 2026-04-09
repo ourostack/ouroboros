@@ -48,6 +48,8 @@ export interface PollDaemonStartupDeps {
   writeStdout: (text: string) => void
   now: () => number
   sleep: (ms: number) => Promise<void>
+  /** Read the latest daemon log event message (tail ndjson). Returns null if unavailable. */
+  readLatestDaemonEvent?: () => string | null
 }
 
 // ── Pure functions ──
@@ -176,17 +178,25 @@ export async function pollDaemonStartup(deps: PollDaemonStartupDeps): Promise<St
       const response = await deps.sendCommand(deps.socketPath, { kind: "daemon.status" })
       payload = parseStatusPayload(response.data)
     } catch {
-      // Socket not yet available — show waiting message and retry
+      // Socket not yet available — show what the daemon is doing from its log
       const elapsedSec = (elapsed / 1000).toFixed(1)
       const frameIndex = Math.floor(elapsed / 100) % SPINNER_FRAMES.length
       const spinner = SPINNER_FRAMES[frameIndex]
+      const latestEvent = deps.readLatestDaemonEvent?.() ?? null
+      const lines: string[] = []
+      lines.push(`${spinner} ${BOLD}waiting for daemon${RESET} ${DIM}(${elapsedSec}s)${RESET}`)
+      if (latestEvent) {
+        lines.push(`  ${DIM}${latestEvent}${RESET}`)
+      }
       let output = ""
       if (prevLineCount > 0) {
         output += `\x1b[${prevLineCount}A`
       }
-      output += `\x1b[2K${spinner} ${BOLD}waiting for daemon${RESET} ${DIM}(${elapsedSec}s)${RESET}\n`
+      for (const line of lines) {
+        output += `\x1b[2K${line}\n`
+      }
       deps.writeStdout(output)
-      prevLineCount = 1
+      prevLineCount = lines.length
     }
 
     if (payload) {
