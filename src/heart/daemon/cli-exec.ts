@@ -82,6 +82,7 @@ import { runDoctorChecks } from "./doctor"
 import { formatDoctorOutput } from "./cli-render-doctor"
 import { runInteractiveRepair } from "./interactive-repair"
 import { pollDaemonStartup } from "./startup-tui"
+import { pruneStaleEphemeralBundles } from "./stale-bundle-prune"
 
 // ── ensureDaemonRunning ──
 
@@ -968,6 +969,12 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       const fromStr = from ? ` (was ${from})` : ""
       const count = agents.length
       deps.writeStdout(`updated ${count} agent${count === 1 ? "" : "s"} to runtime ${to}${fromStr}`)
+    }
+
+    // ── stale bundle pruning ──
+    const prunedBundles = pruneStaleEphemeralBundles({ bundlesRoot: deps.bundlesRoot })
+    for (const name of prunedBundles) {
+      deps.writeStdout(`pruned stale bundle: ${name}`)
     }
 
     deps.writeStdout("starting daemon...")
