@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.298",
+      "changes": [
+        "chore(scripts): new `scripts/rebase-and-rebump.sh` automates the rebase-and-rebump dance when a PR loses the alpha-version race against a concurrently-merging sibling. Fetches origin/main, attempts merge, auto-resolves version-file conflicts (package.json, packages/ouro.bot/package.json, changelog.json, package-lock.json) by: computing next-version via `semver.inc()` against main's version (works for alpha/beta/rc/stable), writing both package.json files, extracting the user's changelog entry by content-diff (not version number, so same-version races are handled), renumbering it, and committing. Non-version conflicts bail cleanly. Uses `semver.inc()` so it survives the transition out of alpha."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.297",
       "changes": [
         "feat(mind): add integrity scanning for diary entries at write time. New detectSuspiciousContent() in src/mind/diary-integrity.ts checks entry text for prompt injection patterns (instruction framing, override language, role injection, boundary markers) before persisting. Detection emits a mind.diary_integrity_warning nerves event with matched pattern categories, text preview, and entry ID. Entries still save (flag, don't block) to avoid false-positive data loss. 41 unit tests + 4 integration tests with 100% coverage on new code."

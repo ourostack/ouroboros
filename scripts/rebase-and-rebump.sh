@@ -168,26 +168,28 @@ else
     const merged = JSON.parse(theirsRaw)
 
     // Extract user-added entry from ours side (stage :2 = HEAD = user branch).
+    // Compare by changes CONTENT, not by version number — both sides may have
+    // the same version number (e.g. both are alpha.297) with different changes
+    // when PRs race. The user's entry is the one in ours whose changes text
+    // doesn't appear in any entry on main's side.
     const oursRaw = execSync('git show :2:changelog.json', { encoding: 'utf-8' })
     const ours = JSON.parse(oursRaw)
-    const theirsVersions = new Set(merged.versions.map((v) => v.version))
-    const userAdded = ours.versions.filter((v) => !theirsVersions.has(v.version))
+    const theirsChangesSet = new Set(
+      merged.versions.map((v) => JSON.stringify(v.changes))
+    )
+    const userEntry = ours.versions.find(
+      (v) => !theirsChangesSet.has(JSON.stringify(v.changes))
+    )
 
-    if (userAdded.length === 0) {
-      // No user-added entry on this branch — shouldn't happen for a normal
-      // PR but bail gracefully and just take theirs.
+    if (!userEntry) {
+      // No unique entry found — user's entry is identical to theirs.
+      // Just take theirs.
       fs.writeFileSync('changelog.json', JSON.stringify(merged, null, 2) + '\n')
       process.exit(0)
     }
 
-    if (userAdded.length > 1) {
-      console.error('[rebase-and-rebump] more than one user-added changelog entry — aborting')
-      console.error('Versions found: ' + userAdded.map((v) => v.version).join(', '))
-      process.exit(1)
-    }
-
     // Renumber the user-added entry to NEXT_VERSION and prepend.
-    const renumbered = { ...userAdded[0], version: '$NEXT_VERSION' }
+    const renumbered = { ...userEntry, version: '$NEXT_VERSION' }
     merged.versions.unshift(renumbered)
 
     fs.writeFileSync('changelog.json', JSON.stringify(merged, null, 2) + '\n')
