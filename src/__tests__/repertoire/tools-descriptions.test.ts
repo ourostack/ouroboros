@@ -102,6 +102,7 @@ describe("Phase 2: tool description enrichment", () => {
     it("ponder description contains usage guidance", () => {
       const desc = ponderTool.function.description ?? ""
       expect(desc).toContain("Don't ponder trivial questions")
+      expect(desc).toContain("does not end the turn")
     })
 
     it("settle description contains substantive response guidance", () => {

@@ -24,6 +24,8 @@ import { checkAgentConfig } from "./agent-config-check"
 import { flushPulse } from "./pulse"
 import { sendDaemonCommand } from "./socket-client"
 import { getPackageVersion } from "../../mind/bundle-manifest"
+import { createHttpHealthProbe } from "./http-health-probe"
+import { getBlueBubblesChannelConfig } from "../config"
 
 function parseSocketPath(argv: string[]): string {
   const socketIndex = argv.indexOf("--socket")
@@ -104,9 +106,14 @@ const senseManager = new DaemonSenseManager({
   agents: [...managedAgents],
 })
 
+/* v8 ignore next 2 -- entry-point wiring: probe factory and HealthMonitor both have full unit tests @preserve */
+const bbChannelConfig = getBlueBubblesChannelConfig()
+const bbProbe = createHttpHealthProbe("bluebubbles", bbChannelConfig.port)
+
 const healthMonitor = new HealthMonitor({
   processManager,
   scheduler,
+  senseProbes: [bbProbe],
   alertSink: (message) => {
     emitNervesEvent({
       level: "error",
@@ -115,6 +122,10 @@ const healthMonitor = new HealthMonitor({
       message: "health monitor produced critical alert",
       meta: { message },
     })
+  },
+  /* v8 ignore next 3 -- wiring: delegates to processManager.restartAgent which has full unit tests @preserve */
+  onCriticalAgent: (agentName) => {
+    try { processManager.restartAgent(agentName) } catch { /* recovery is best-effort */ }
   },
 })
 
@@ -179,6 +190,7 @@ void daemon.start().then(() => {
         },
       })
       scheduler.start()
+      scheduler.startPeriodicReconciliation()
       scheduler.watchForChanges()
       habitSchedulers.push(scheduler)
     } catch (err: unknown) {
@@ -192,6 +204,8 @@ void daemon.start().then(() => {
       })
     }
   }
+
+  healthMonitor.startPeriodicChecks(60_000)
 /* v8 ignore start -- startup failure + signal handlers: call process.exit, untestable in vitest @preserve */
 }).catch(async (err: unknown) => {
   const error = err instanceof Error ? err : new Error(String(err))
@@ -220,6 +234,7 @@ process.on("SIGINT", () => {
   _tombstoneWritten = true
   writeDaemonTombstone("sigint", new Error("daemon received SIGINT"))
   for (const s of habitSchedulers) { s.stopWatching(); s.stop() }
+  healthMonitor.stopPeriodicChecks()
   setTimeout(() => process.exit(1), 5_000).unref()
   void daemon.stop().then(() => process.exit(0))
 })
@@ -228,6 +243,7 @@ process.on("SIGTERM", () => {
   _tombstoneWritten = true
   writeDaemonTombstone("sigterm", new Error("daemon received SIGTERM"))
   for (const s of habitSchedulers) { s.stopWatching(); s.stop() }
+  healthMonitor.stopPeriodicChecks()
   setTimeout(() => process.exit(1), 5_000).unref()
   void daemon.stop().then(() => process.exit(0))
 })

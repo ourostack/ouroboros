@@ -82,6 +82,13 @@ describe("delegationHintSection (selfhood framing)", () => {
     expect(result).toBe("")
   })
 
+  it("returns empty string when there are no surviving reasons", () => {
+    const result = delegationHintSection({
+      delegationDecision: { target: "delegate-inward", reasons: [], outwardClosureRequired: false },
+    })
+    expect(result).toBe("")
+  })
+
   it("returns prose for delegate-inward with single reason", () => {
     const result = delegationHintSection({
       delegationDecision: {

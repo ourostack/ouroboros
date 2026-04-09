@@ -4,13 +4,21 @@
  * When a user drags an image file onto the terminal, macOS pastes the absolute
  * path (often with backslash-escaped spaces). This module detects image paths
  * in the input text, replaces them with `[Image #N]` references, reads the
- * files, and produces OpenAI-compatible `image_url` content blocks.
+ * files, registers them as shared attachments, and produces OpenAI-compatible
+ * `image_url` content blocks.
  */
-import { readFile, unlink } from "fs/promises"
+import { createHash } from "node:crypto"
+import { access, mkdir, readFile, unlink, writeFile } from "fs/promises"
 import { execFileSync } from "child_process"
 import * as path from "path"
 import type OpenAI from "openai"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { getAgentName, getAgentRoot } from "../../heart/identity"
+import { renderAttachmentBlock } from "../../heart/attachments/render"
+import { rememberRecentAttachment } from "../../heart/attachments/store"
+import { materializeAttachment } from "../../heart/attachments/materialize"
+import { buildCliLocalFileAttachmentRecord } from "../../heart/attachments/sources/cli-local-file"
+import type { AttachmentRecord } from "../../heart/attachments/types"
 
 /** Matches image file extensions (case-insensitive) */
 export const IMAGE_EXTENSION_REGEX = /\.(png|jpe?g|gif|webp)$/i
@@ -53,15 +61,19 @@ function extensionToMediaType(ext: string): string {
  * creates ephemeral files in TemporaryItems that are cleaned up quickly).
  * Returns null on any error.
  */
-export async function tryReadImage(absolutePath: string): Promise<{ base64: string; mediaType: string } | null> {
+export async function tryReadImage(
+  absolutePath: string,
+): Promise<{ buffer: Buffer; base64: string; mediaType: string; fromClipboard: boolean } | null> {
   // Try reading the file directly first
   try {
     const buffer = await readFile(absolutePath)
     if (buffer.length > 0) {
       const ext = path.extname(absolutePath)
       return {
+        buffer: Buffer.from(buffer),
         base64: Buffer.from(buffer).toString("base64"),
         mediaType: extensionToMediaType(ext),
+        fromClipboard: false,
       }
     }
   } catch {
@@ -90,7 +102,7 @@ export async function tryReadImage(absolutePath: string): Promise<{ base64: stri
  * Used as fallback when temp screenshot files are already cleaned up.
  */
 /* v8 ignore start -- macOS clipboard integration @preserve */
-async function getImageFromClipboard(): Promise<{ base64: string; mediaType: string } | null> {
+async function getImageFromClipboard(): Promise<{ buffer: Buffer; base64: string; mediaType: string; fromClipboard: boolean } | null> {
   const tmpPath = "/tmp/ouro_clipboard_image.png"
   try {
     // Check if clipboard has image data
@@ -110,8 +122,10 @@ async function getImageFromClipboard(): Promise<{ base64: string; mediaType: str
     if (buffer.length === 0) return null
 
     return {
+      buffer: Buffer.from(buffer),
       base64: Buffer.from(buffer).toString("base64"),
       mediaType: "image/png",
+      fromClipboard: true,
     }
   } catch {
     return null
@@ -150,6 +164,47 @@ export function processSubmitInput(text: string): { text: string; images: Map<nu
   return replacePathsWithRefs(text)
 }
 
+function extensionForMediaType(mediaType: string): string {
+  switch (mediaType) {
+    case "image/jpeg":
+      return ".jpg"
+    case "image/gif":
+      return ".gif"
+    case "image/webp":
+      return ".webp"
+    default:
+      return ".png"
+  }
+}
+
+async function pathExists(targetPath: string): Promise<boolean> {
+  try {
+    await access(targetPath)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function persistClipboardImage(
+  agentRoot: string,
+  originalPath: string,
+  image: { buffer: Buffer; mediaType: string },
+): Promise<string> {
+  const hash = createHash("sha1").update(originalPath).digest("hex").slice(0, 16)
+  const targetPath = path.join(
+    agentRoot,
+    "state",
+    "attachments",
+    "imports",
+    "cli",
+    `${hash}${extensionForMediaType(image.mediaType)}`,
+  )
+  await mkdir(path.dirname(targetPath), { recursive: true })
+  await writeFile(targetPath, image.buffer)
+  return targetPath
+}
+
 /**
  * Build OpenAI content parts from text + image map.
  * For each image in the map, reads the file and creates an `image_url` content part.
@@ -164,12 +219,52 @@ export async function resolveImageContent(
     return [{ type: "text" as const, text }]
   }
 
+  const agentName = getAgentName()
+  const agentRoot = getAgentRoot(agentName)
   const parts: OpenAI.ChatCompletionContentPart[] = []
+  const rememberedAttachments: AttachmentRecord[] = []
 
   // Read all images in parallel
   const entries = Array.from(images.entries())
   const results = await Promise.all(
-    entries.map(async ([, absolutePath]) => tryReadImage(absolutePath)),
+    entries.map(async ([, absolutePath]) => {
+      const image = await tryReadImage(absolutePath)
+      if (!image) return null
+
+      const sourcePath = image.fromClipboard || !await pathExists(absolutePath)
+        ? await persistClipboardImage(agentRoot, absolutePath, image)
+        : absolutePath
+
+      const attachment = rememberRecentAttachment(
+        agentName,
+        buildCliLocalFileAttachmentRecord({
+          path: sourcePath,
+          mimeType: image.mediaType,
+          byteCount: image.buffer.length,
+        }),
+        agentRoot,
+      )
+      rememberedAttachments.push(attachment)
+
+      try {
+        const materialized = await materializeAttachment(agentName, attachment.id, {
+          agentRoot,
+          variant: "vision_safe",
+        })
+        const normalizedBuffer = await readFile(materialized.path)
+        return {
+          attachment,
+          mediaType: materialized.mimeType ?? image.mediaType,
+          base64: Buffer.from(normalizedBuffer).toString("base64"),
+        }
+      } catch {
+        return {
+          attachment,
+          mediaType: image.mediaType,
+          base64: image.base64,
+        }
+      }
+    }),
   )
 
   for (const result of results) {
@@ -182,7 +277,9 @@ export async function resolveImageContent(
   }
 
   // Always include the text part
-  parts.push({ type: "text" as const, text })
+  const attachmentBlock = renderAttachmentBlock(rememberedAttachments)
+  const textWithAttachments = [text, attachmentBlock].filter(Boolean).join("\n")
+  parts.push({ type: "text" as const, text: textWithAttachments || text })
 
   // If no images resolved, return just text
   if (parts.length === 1) {

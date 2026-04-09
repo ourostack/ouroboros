@@ -17,7 +17,7 @@ export type { LogEvent, LogLevel } from "./index"
 export type { HabitFile, HabitStatus } from "../heart/habits/habit-parser"
 export type { AttentionItem } from "../arc/attention-types"
 export type { PendingMessage } from "../mind/pending"
-export type { TaskStatus } from "../repertoire/tasks/types"
+export type { TaskStatus } from "../arc/task-lifecycle"
 export type { RuntimeMetadata } from "../heart/daemon/runtime-metadata"
 export type { SessionActivityRecord } from "../heart/session-activity"
 

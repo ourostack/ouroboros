@@ -154,6 +154,49 @@ describe("guardInvocation — structural guardrails", () => {
     expect(result.allowed).toBe(false)
   })
 
+  // --- protected filenames (agent.json) ---
+
+  it("blocks write_file to agent.json", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const result = guardInvocation("write_file", { path: "/Users/test/AgentBundles/ouroboros.ouro/agent.json" }, { readPaths: new Set() })
+    expect(result.allowed).toBe(false)
+    if (!result.allowed) expect(result.reason).toMatch(/protected/i)
+  })
+
+  it("blocks edit_file to agent.json", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const result = guardInvocation("edit_file", { path: "/Users/test/AgentBundles/ouroboros.ouro/agent.json" }, { readPaths: new Set(["/Users/test/AgentBundles/ouroboros.ouro/agent.json"]) })
+    expect(result.allowed).toBe(false)
+    if (!result.allowed) expect(result.reason).toMatch(/protected/i)
+  })
+
+  it("blocks shell redirect to agent.json", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const result = guardInvocation("shell", { command: "echo {} > /Users/test/AgentBundles/ouroboros.ouro/agent.json" }, { readPaths: new Set() })
+    expect(result.allowed).toBe(false)
+    if (!result.allowed) expect(result.reason).toMatch(/protected/i)
+  })
+
+  it("allows read_file on agent.json (read-only tools bypass guardrails)", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const result = guardInvocation("read_file", { path: "/Users/test/AgentBundles/ouroboros.ouro/agent.json" }, { readPaths: new Set() })
+    expect(result.allowed).toBe(true)
+  })
+
+  it("does not block files with agent.json as substring (e.g. my-agent.json)", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const result = guardInvocation("write_file", { path: "/some/path/my-agent.json" }, { readPaths: new Set() })
+    // my-agent.json should NOT be blocked -- only exact basename "agent.json"
+    expect(result.allowed).toBe(true)
+  })
+
+  it("blocks bare agent.json path (no directory prefix)", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const result = guardInvocation("write_file", { path: "agent.json" }, { readPaths: new Set() })
+    expect(result.allowed).toBe(false)
+    if (!result.allowed) expect(result.reason).toMatch(/protected/i)
+  })
+
   // --- read-only tools always allowed ---
 
   it("read_file always allowed regardless of context", async () => {
