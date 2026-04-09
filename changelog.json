@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.306",
+      "changes": [
+        "refactor(arc): extract the shared task lifecycle grammar into `src/arc/task-lifecycle.ts` so ponder packets no longer depend on `src/repertoire/tasks`. `TaskStatus`, transition validation, and lifecycle rendering now live in one neutral seam that both arc packets and repertoire task docs consume, with direct regression coverage proving `src/arc/packets.ts` stays decoupled from `repertoire/`.",
+        "test(daemon): harden three daemon coverage tests (`daemon-stop-deadlock`, `daemon-agent-commands`, `daemon-boot-updates`) by stubbing the injected `outlookServerFactory` and using `mode: \"dev\"` where appropriate, eliminating hidden Outlook side-server startup from tests that only intend to exercise daemon command/socket behavior."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.305",
       "changes": [
         "feat(daemon): add sense-level liveness probes for hung webhook detection. New `/health` endpoint on BlueBubbles webhook server returns `{ status: \"ok\", uptime: N }` via GET/HEAD (localhost only, 405 for other methods). Generic `SenseProbe` interface in HealthMonitor runs probes alongside existing checks every 60s — failed probes produce critical results triggering auto-recovery restart. HTTP health probe factory `createHttpHealthProbe(name, port, timeoutMs)` makes reusable probes for any sense with an HTTP endpoint. BlueBubbles probe auto-registered in daemon-entry when BB sense config exists. Directly addresses the documented 70-minute Lobster outage where BB webhook server was hung but process was alive. New files: `http-health-probe.ts` + 3 test files. 26 new tests at 100% coverage on new code."
