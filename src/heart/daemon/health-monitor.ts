@@ -17,12 +17,33 @@ export class HealthMonitor {
   private readonly scheduler: HealthMonitorOptions["scheduler"]
   private readonly alertSink: (message: string) => Promise<void> | void
   private readonly diskUsagePercent: () => number
+  private intervalHandle: ReturnType<typeof setInterval> | null = null
 
   constructor(options: HealthMonitorOptions) {
     this.processManager = options.processManager
     this.scheduler = options.scheduler
     this.alertSink = options.alertSink ?? (() => undefined)
     this.diskUsagePercent = options.diskUsagePercent ?? (() => 0)
+  }
+
+  startPeriodicChecks(intervalMs: number): void {
+    if (this.intervalHandle !== null) return
+    emitNervesEvent({
+      level: "info",
+      component: "daemon",
+      event: "daemon.health_check_scheduled",
+      message: "periodic health checks started",
+      meta: { intervalMs },
+    })
+    this.intervalHandle = setInterval(() => {
+      void this.runChecks()
+    }, intervalMs)
+  }
+
+  stopPeriodicChecks(): void {
+    if (this.intervalHandle === null) return
+    clearInterval(this.intervalHandle)
+    this.intervalHandle = null
   }
 
   async runChecks(): Promise<DaemonHealthResult[]> {
