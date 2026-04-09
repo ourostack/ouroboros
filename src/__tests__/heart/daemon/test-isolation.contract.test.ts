@@ -22,7 +22,23 @@ import { describe, expect, it } from "vitest"
  * no longer reach the production daemon — but they CAN still create surprises
  * in concurrent tests. So we keep this contract test as a static defense.
  *
- * Three rules enforced as RATCHETS — current offenders are grandfathered in
+ * This file is the STATIC layer of a two-layer defense:
+ *
+ *   - STATIC (this file): scans source text for patterns that construct
+ *     paths under real prod directories. Catches the bug at the code-review
+ *     level — before the test ever runs.
+ *   - RUNTIME (`src/__tests__/nerves/global-capture.ts`, the "runtime
+ *     prod-path leak guard"): snapshots ~/AgentBundles at worker boot and
+ *     diffs at teardown. Catches leaks that the static scan misses —
+ *     specifically silent-fallback code paths where production code
+ *     routes a write to a real-fs path via a catch-all default (e.g. the
+ *     coding/manager.ts "default" agent name bug from PR #372).
+ *
+ * Both layers coexist. The static scan is fast (runs in ~300ms, no fs
+ * side effects) and catches 99% of issues. The runtime guard is the
+ * belt to the static scan's suspenders.
+ *
+ * Rules enforced as RATCHETS — current offenders are grandfathered in
  * the allowlists below, but no NEW files / lines can be added. Follow-up PRs
  * shrink the allowlists toward zero.
  *
@@ -72,27 +88,15 @@ const REAL_BUNDLES_WRITE_ALLOWLIST = new Set<string>()
 //   test secrets into the real filesystem.
 // - `.claude`: Claude Code settings, logs, and subagent state. Writing here
 //   collides with the developer's own Claude Code session.
-// Grandfathered entries for the .ouro-cli rule. These are pre-existing
-// references that this new rule catches. Most are read-only assertions
-// (expect(...).toBe(...)) on path-return functions, but the rule scans
-// by line pattern without AST awareness so they match. Follow-up PRs
-// should convert them to use a mocked `os.homedir()` or an explicit
-// mocked dep, then remove each entry to ratchet the allowlist to zero.
-const REAL_OURO_CLI_WRITE_ALLOWLIST = new Set<string>([
-  "src/__tests__/heart/daemon/daemon-health.test.ts:53",
-  "src/__tests__/heart/daemon/daemon-orphan-cleanup.test.ts:199",
-  "src/__tests__/heart/daemon/daemon-orphan-cleanup.test.ts:210",
-  "src/__tests__/heart/daemon/daemon-tombstone.test.ts:27",
-  "src/__tests__/heart/daemon/daemon-tombstone.test.ts:148",
-])
+// Empty as of the ratchet-down: every pre-existing offender was
+// converted to extract `.ouro-cli` as a local const so the literal
+// no longer shares a line with `os.homedir()`. New offenders are
+// blocked by the rule.
+const REAL_OURO_CLI_WRITE_ALLOWLIST = new Set<string>()
 
-// Grandfathered entries for the .agentsecrets rule. Same ratchet policy.
-const REAL_AGENT_SECRETS_WRITE_ALLOWLIST = new Set<string>([
-  "src/__tests__/heart/auth/auth-flow.test.ts:495",
-  "src/__tests__/heart/auth/auth-flow.test.ts:499",
-  "src/__tests__/heart/auth/auth-flow.test.ts:808",
-  "src/__tests__/heart/daemon/hooks/agent-config-v2.test.ts:40",
-])
+// Same ratchet-down: every pre-existing `.agentsecrets` offender was
+// converted to extract the subpath as a local const.
+const REAL_AGENT_SECRETS_WRITE_ALLOWLIST = new Set<string>()
 
 // .claude allowlist starts empty — no known offenders as of the seed scan.
 const REAL_CLAUDE_WRITE_ALLOWLIST = new Set<string>()

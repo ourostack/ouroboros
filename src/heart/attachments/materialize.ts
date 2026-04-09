@@ -1,0 +1,99 @@
+import * as path from "node:path"
+import { emitNervesEvent } from "../../nerves/runtime"
+import { getAgentRoot } from "../identity"
+import { normalizeImageForVision } from "./image-normalize"
+import { getRecentAttachment } from "./store"
+import { getAttachmentSourceAdapter } from "./sources"
+import type { AttachmentRecord, AttachmentVariant, MaterializedAttachment } from "./types"
+
+export interface NormalizeImageInput {
+  attachment: AttachmentRecord
+  sourcePath: string
+  agentName: string
+  agentRoot: string
+}
+
+export interface NormalizeImageOutput {
+  path: string
+  mimeType?: string
+  byteCount?: number
+}
+
+export interface MaterializeAttachmentOptions {
+  agentRoot?: string
+  variant?: AttachmentVariant
+  normalizeImage?: (input: NormalizeImageInput) => Promise<NormalizeImageOutput>
+}
+
+async function materializeOriginalAttachment(
+  agentName: string,
+  attachment: AttachmentRecord,
+  agentRoot: string,
+): Promise<MaterializedAttachment> {
+  const adapter = getAttachmentSourceAdapter(attachment.source)
+  const materialized = await adapter.materializeOriginal({ agentName, attachment, agentRoot })
+
+  emitNervesEvent({
+    component: "engine",
+    event: "engine.attachment_materialized",
+    message: "attachment materialization updated",
+    meta: {
+      attachmentId: attachment.id,
+      variant: "original",
+      source: attachment.source,
+    },
+  })
+
+  return materialized
+}
+
+export async function materializeAttachment(
+  agentName: string,
+  attachmentId: string,
+  options: MaterializeAttachmentOptions = {},
+): Promise<MaterializedAttachment> {
+  const agentRoot = options.agentRoot ?? getAgentRoot(agentName)
+  const variant = options.variant ?? "original"
+  const attachment = getRecentAttachment(agentName, attachmentId, agentRoot)
+  if (!attachment) {
+    throw new Error(`Attachment not found: ${attachmentId}`)
+  }
+
+  if (variant === "original") {
+    return await materializeOriginalAttachment(agentName, attachment, agentRoot)
+  }
+
+  if (attachment.kind !== "image") {
+    throw new Error(`Attachment ${attachmentId} is not an image and cannot produce a vision_safe variant`)
+  }
+
+  const original = await materializeOriginalAttachment(agentName, attachment, agentRoot)
+  const normalizeImage = options.normalizeImage ?? normalizeImageForVision
+
+  const normalized = await normalizeImage({
+    attachment,
+    sourcePath: original.path,
+    agentName,
+    agentRoot,
+  })
+
+  emitNervesEvent({
+    component: "engine",
+    event: "engine.attachment_materialized",
+    message: "attachment materialization updated",
+    meta: {
+      attachmentId: attachment.id,
+      variant: "vision_safe",
+      source: attachment.source,
+    },
+  })
+
+  return {
+    attachmentId: attachment.id,
+    variant: "vision_safe",
+    path: path.resolve(normalized.path),
+    displayName: attachment.displayName,
+    mimeType: normalized.mimeType ?? attachment.mimeType,
+    byteCount: normalized.byteCount,
+  }
+}

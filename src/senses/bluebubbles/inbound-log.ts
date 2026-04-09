@@ -60,6 +60,9 @@ export function recordBlueBubblesInbound(
   const filePath = getBlueBubblesInboundLogPath(agentName, event.chat.sessionKey)
   try {
     fs.mkdirSync(path.dirname(filePath), { recursive: true })
+    if (event.messageGuid.trim() && readEntries(filePath).some((entry) => entry.messageGuid === event.messageGuid)) {
+      return filePath
+    }
     fs.appendFileSync(
       filePath,
       JSON.stringify({

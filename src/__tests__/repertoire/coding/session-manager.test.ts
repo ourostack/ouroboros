@@ -21,7 +21,12 @@ class FakeProcess {
   }
 }
 
+// `agentName` is required here because the production fallback that used to
+// return "default" under vitest has been removed (it silently leaked writes
+// to `~/AgentBundles/default.ouro/state/coding/sessions.json`). Tests must
+// either mock `../../../heart/identity` or pass `agentName` explicitly.
 const noPersistence = {
+  agentName: "test-coding-agent",
   existsSync: () => false,
   readFileSync: () => "",
   writeFileSync: () => undefined,
