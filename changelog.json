@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.301",
+      "changes": [
+        "fix(daemon): add an injectable `statusWriter` seam to `DaemonProcessManager` so human-visible config-failure lines still default to stderr in production, but tests can route or silence them intentionally. Status-writer failures are now swallowed with a `daemon.status_writer_error` nerves event instead of breaking agent startup bookkeeping. `process-manager.test.ts` now passes a no-op writer in the snapshot-focused config-check tests that were leaking expected fixture noise into the full coverage log, and adds a regression test proving a throwing status writer does not prevent the crashed snapshot/fix hint from being recorded."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.300",
       "changes": [
         "test(bundle): cover `isFirstPushToRemote` branches via mocked child_process. Exported the function from `tools-bundle.ts` (previously private) and added `src/__tests__/repertoire/bundle-push-first-push.test.ts` with 5 unit tests that mock `execFileSync` to exercise all 3 code paths: (1) `symbolic-ref --short HEAD` failure → conservative true, (2) `ls-remote --heads` returns empty stdout → true (real first push, remote branch doesn't exist), (3) `ls-remote --heads` returns non-empty → false (subsequent push, remote branch exists), (4) `ls-remote` network failure → conservative true, (5) branch name correctly threaded to `ls-remote` args. Removed the `/* v8 ignore start/stop */` wrapper since all branches are now covered. The security contract (never return false when probe fails) is verified by tests 1 and 4. Also adds a cross-reference comment to the static test-isolation contract test documenting its relationship with the runtime prod-path leak guard in global-capture.ts."
