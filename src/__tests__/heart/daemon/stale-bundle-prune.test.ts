@@ -1,9 +1,23 @@
 import { describe, expect, it, vi, beforeEach } from "vitest"
 
 const emitNervesEventMock = vi.hoisted(() => vi.fn())
+const getAgentBundlesRootMock = vi.hoisted(() => vi.fn(() => "/default/AgentBundles"))
+const readdirSyncMock = vi.hoisted(() => vi.fn())
+const existsSyncMock = vi.hoisted(() => vi.fn())
+const rmSyncMock = vi.hoisted(() => vi.fn())
 
 vi.mock("../../../nerves/runtime", () => ({
   emitNervesEvent: emitNervesEventMock,
+}))
+
+vi.mock("../../../heart/identity", () => ({
+  getAgentBundlesRoot: getAgentBundlesRootMock,
+}))
+
+vi.mock("fs", () => ({
+  readdirSync: readdirSyncMock,
+  existsSync: existsSyncMock,
+  rmSync: rmSyncMock,
 }))
 
 import type { Dirent } from "fs"
@@ -143,5 +157,41 @@ describe("pruneStaleEphemeralBundles", () => {
 
     expect(result).toEqual([])
     expect(deps.rmSync).not.toHaveBeenCalled()
+  })
+
+  it("handles non-Error throw from rmSync", () => {
+    vi.mocked(deps.readdirSync).mockReturnValue([
+      makeDirent("bad.ouro", true),
+    ])
+    vi.mocked(deps.existsSync).mockReturnValue(false)
+    vi.mocked(deps.rmSync).mockImplementation(() => {
+      throw "string error" // eslint-disable-line no-throw-literal
+    })
+
+    const result = pruneStaleEphemeralBundles(deps)
+
+    expect(result).toEqual([])
+    expect(emitNervesEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: "warn",
+        event: "daemon.stale_bundle_prune_error",
+        meta: expect.objectContaining({ error: "string error" }),
+      }),
+    )
+  })
+
+  it("uses default fs and identity deps when none injected", () => {
+    readdirSyncMock.mockReturnValue([
+      makeDirent("stale.ouro", true),
+    ])
+    existsSyncMock.mockReturnValue(false)
+    rmSyncMock.mockReturnValue(undefined)
+
+    const result = pruneStaleEphemeralBundles()
+
+    expect(result).toEqual(["stale.ouro"])
+    expect(getAgentBundlesRootMock).toHaveBeenCalledTimes(1)
+    expect(readdirSyncMock).toHaveBeenCalledWith("/default/AgentBundles", { withFileTypes: true })
+    expect(rmSyncMock).toHaveBeenCalledWith("/default/AgentBundles/stale.ouro", { recursive: true, force: true })
   })
 })

@@ -75,6 +75,7 @@ import {
   formatMcpResponse,
 } from "./cli-render"
 import { readFirstBundleMetaVersion, createDefaultOuroCliDeps, defaultListDiscoveredAgents } from "./cli-defaults"
+import { pruneStaleEphemeralBundles } from "./stale-bundle-prune"
 
 // ── ensureDaemonRunning ──
 
@@ -952,6 +953,12 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       const fromStr = from ? ` (was ${from})` : ""
       const count = agents.length
       deps.writeStdout(`updated ${count} agent${count === 1 ? "" : "s"} to runtime ${to}${fromStr}`)
+    }
+
+    // ── stale bundle pruning ──
+    const prunedBundles = pruneStaleEphemeralBundles({ bundlesRoot: deps.bundlesRoot })
+    for (const name of prunedBundles) {
+      deps.writeStdout(`pruned stale bundle: ${name}`)
     }
 
     const daemonResult = await ensureDaemonRunning(deps)
