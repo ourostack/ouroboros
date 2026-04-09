@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.300",
+      "changes": [
+        "test(bundle): cover `isFirstPushToRemote` branches via mocked child_process. Exported the function from `tools-bundle.ts` (previously private) and added `src/__tests__/repertoire/bundle-push-first-push.test.ts` with 5 unit tests that mock `execFileSync` to exercise all 3 code paths: (1) `symbolic-ref --short HEAD` failure → conservative true, (2) `ls-remote --heads` returns empty stdout → true (real first push, remote branch doesn't exist), (3) `ls-remote --heads` returns non-empty → false (subsequent push, remote branch exists), (4) `ls-remote` network failure → conservative true, (5) branch name correctly threaded to `ls-remote` args. Removed the `/* v8 ignore start/stop */` wrapper since all branches are now covered. The security contract (never return false when probe fails) is verified by tests 1 and 4. Also adds a cross-reference comment to the static test-isolation contract test documenting its relationship with the runtime prod-path leak guard in global-capture.ts."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.299",
       "changes": [
         "chore(scripts): new `scripts/rebase-and-rebump.sh` automates the rebase-and-rebump dance when a PR loses the alpha-version race against a concurrently-merging sibling. Fetches origin/main, attempts merge, auto-resolves version-file conflicts (package.json, packages/ouro.bot/package.json, changelog.json, package-lock.json) by: computing next-version via `semver.inc()` against main's version (works for alpha/beta/rc/stable), writing both package.json files, extracting the user's changelog entry by content-diff (not version number, so same-version races are handled), renumbering it, and committing. Non-version conflicts bail cleanly. Uses `semver.inc()` so it survives the transition out of alpha."
