@@ -28,6 +28,7 @@ import { writeAgentProviderSelection, loadAgentSecrets } from "../heart/auth/aut
 import { deriveTempo } from "../heart/tempo"
 import { buildTemporalView } from "../heart/temporal-view"
 import { buildStartOfTurnPacket, renderStartOfTurnPacket, buildCapabilitiesSection } from "../heart/start-of-turn-packet"
+import { detectBundleState } from "../heart/bundle-state"
 import { preTurnPull, postTurnPush } from "../heart/sync"
 import { getSyncConfig } from "../heart/config"
 import { derivePresence, writePresence } from "../arc/presence"
@@ -487,6 +488,13 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     if (syncFailure) {
       startOfTurnPacket.syncFailure = syncFailure
     }
+    // Structured bundle state detection — surfaces discrete issues the
+    // agent can remediate via the bundle_* tools. Runs independently of
+    // syncFailure so the two signals coexist during the transition away
+    // from the legacy free-form syncFailure string. Always assigned; the
+    // packet renderer's empty-filter handles the empty-array case without
+    // a separate branch here.
+    startOfTurnPacket.bundleState = detectBundleState(agentRoot)
     const capabilities = buildCapabilitiesSection(agentRoot)
     if (capabilities) {
       startOfTurnPacket.capabilities = capabilities
