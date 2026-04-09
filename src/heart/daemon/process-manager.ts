@@ -49,6 +49,9 @@ export interface DaemonProcessManagerOptions {
   clearTimeoutFn?: (timer: unknown) => void
   existsSync?: (p: string) => boolean
   configCheck?: (agent: string) => { ok: boolean; error?: string; fix?: string }
+  /** Human-visible writer for daemon status lines such as config-check
+   *  failures. Defaults to stderr; tests can inject a quieter sink. */
+  statusWriter?: (text: string) => void
   /** Called after every snapshot mutation (start, exit, config-failure,
    *  recovery, etc.) so external observers (currently: the pulse writer)
    *  can react to state changes without polling. The callback is invoked
@@ -87,6 +90,7 @@ export class DaemonProcessManager {
   private readonly maxCooldownRetries: number
   private readonly existsSyncFn: ((p: string) => boolean) | null
   private readonly configCheckFn: ((agent: string) => { ok: boolean; error?: string; fix?: string }) | null
+  private readonly statusWriterFn: (text: string) => void
   private readonly onSnapshotChangeFn: ((snapshot: DaemonAgentSnapshot) => void) | null
 
   /**
@@ -112,6 +116,23 @@ export class DaemonProcessManager {
     }
   }
 
+  private writeStatus(agent: string, text: string): void {
+    try {
+      this.statusWriterFn(text)
+    } catch (error) {
+      emitNervesEvent({
+        level: "warn",
+        component: "daemon",
+        event: "daemon.status_writer_error",
+        message: "daemon status writer threw",
+        meta: {
+          agent,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      })
+    }
+  }
+
   constructor(options: DaemonProcessManagerOptions) {
     this.maxRestartsPerHour = options.maxRestartsPerHour ?? 10
     this.stabilityThresholdMs = options.stabilityThresholdMs ?? 60_000
@@ -125,6 +146,9 @@ export class DaemonProcessManager {
     this.clearTimeoutFn = options.clearTimeoutFn ?? ((timer) => clearTimeout(timer as NodeJS.Timeout))
     this.existsSyncFn = options.existsSync ?? null
     this.configCheckFn = options.configCheck ?? null
+    this.statusWriterFn = options.statusWriter ?? ((text) => {
+      process.stderr.write(text)
+    })
     this.onSnapshotChangeFn = options.onSnapshotChange ?? null
 
     for (const agent of options.agents) {
@@ -189,7 +213,7 @@ export class DaemonProcessManager {
           message: result.error ?? "agent config validation failed",
           meta: { agent, fix: result.fix ?? null },
         })
-        process.stderr.write(
+        this.writeStatus(agent,
           `[daemon] ${agent}: ${result.error}\n` +
           (result.fix ? `  Fix: ${result.fix}\n` : ""),
         )
