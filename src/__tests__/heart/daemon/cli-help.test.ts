@@ -318,3 +318,25 @@ describe("runOuroCli help execution", () => {
     expect(result).toContain("Lifecycle")
   })
 })
+
+// ── Unit 3a: "Did you mean?" in error path ──
+
+describe("parseOuroCommand typo suggestions", () => {
+  it("includes 'Did you mean' for close typo 'stpo'", () => {
+    emitNervesEvent({ component: "daemon", event: "cli_help_typo_test", message: "testing typo suggestions" })
+    expect(() => parseOuroCommand(["stpo"])).toThrow(/Did you mean 'stop'\?/)
+  })
+
+  it("includes 'Did you mean' for close typo 'statu'", () => {
+    expect(() => parseOuroCommand(["statu"])).toThrow(/Did you mean 'status'\?/)
+  })
+
+  it("does NOT include 'Did you mean' for distant unknown command", () => {
+    expect(() => parseOuroCommand(["xyzzy"])).toThrow(/Unknown command/)
+    try {
+      parseOuroCommand(["xyzzy"])
+    } catch (e: unknown) {
+      expect((e as Error).message).not.toContain("Did you mean")
+    }
+  })
+})
