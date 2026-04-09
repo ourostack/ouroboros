@@ -902,8 +902,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       /* v8 ignore stop */
       if (pendingReExec) {
         deps.reExecFromNewVersion!(args)
-      }
-      if (!pendingReExec) {
+      } else {
         deps.writeStdout("up to date.")
       }
     }
