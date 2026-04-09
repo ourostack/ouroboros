@@ -721,18 +721,19 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
         </Box>
       ) : (
         <Box>
-          <Text color={OURO.teal} bold>{") "}</Text>
-          {!input && queuedInputs.length > 0 ? (
-            <Text color={OURO.shadow}>{"Press up to edit queued messages"}</Text>
-          ) : (
-            <>
-              <Text color={OURO.bone}>{input.slice(0, cursorPos)}</Text>
-              {cursorVisible
-                ? <Text backgroundColor={OURO.scale} color="#000000">{input[cursorPos] ?? " "}</Text>
-                : <Text color={OURO.bone}>{input[cursorPos] ?? " "}</Text>}
-              <Text color={OURO.bone}>{input.slice(cursorPos + 1)}</Text>
-            </>
-          )}
+          <Text wrap="wrap">{(() => {
+            const prompt = `\x1b[1m\x1b[38;2;78;201;176m) \x1b[0m`
+            if (!input && queuedInputs.length > 0) {
+              return `${prompt}\x1b[38;2;112;131;115mPress up to edit queued messages\x1b[0m`
+            }
+            const beforeCursor = `\x1b[38;2;238;242;234m${input.slice(0, cursorPos)}\x1b[0m`
+            const cursorChar = input[cursorPos] ?? " "
+            const cursor = cursorVisible
+              ? `\x1b[48;2;47;143;78m\x1b[38;2;0;0;0m${cursorChar}\x1b[0m`
+              : `\x1b[38;2;238;242;234m${cursorChar}\x1b[0m`
+            const afterCursor = `\x1b[38;2;238;242;234m${input.slice(cursorPos + 1)}\x1b[0m`
+            return `${prompt}${beforeCursor}${cursor}${afterCursor}`
+          })()}</Text>
         </Box>
       )}
       {/* Bottom separator — full terminal width (no margin) */}
