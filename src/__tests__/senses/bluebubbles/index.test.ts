@@ -2366,6 +2366,33 @@ describe("BlueBubbles sense runtime", () => {
     expect(stringBoomRes.getBody()).toContain("repair string blew up")
   })
 
+  it("treats known guidless BlueBubbles chat state events as ignorable webhook noise", async () => {
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const handler = bluebubbles.createBlueBubblesWebhookHandler()
+
+    const req = createMockRequest(
+      "POST",
+      "/bluebubbles-webhook?password=secret-token",
+      {
+        type: "chat-read-status-changed",
+        data: {
+          chatGuid: "any;-;ari@mendelow.me",
+        },
+      },
+    )
+    const res = createMockResponse()
+    await handler(req as any, res.res as any)
+    await res.done
+
+    expect(res.res.statusCode).toBe(200)
+    expect(res.getBody()).toContain("\"reason\":\"ignored\"")
+    expect(mocks.repairEvent).not.toHaveBeenCalled()
+    const webhookErrors = mocks.emitNervesEvent.mock.calls.filter(
+      (call: unknown[]) => (call[0] as { event?: string })?.event === "senses.bluebubbles_webhook_error",
+    )
+    expect(webhookErrors).toHaveLength(0)
+  })
+
   it("starts an HTTP server on the configured BlueBubbles port", async () => {
     const bluebubbles = await import("../../../senses/bluebubbles")
     bluebubbles.startBlueBubblesApp()
