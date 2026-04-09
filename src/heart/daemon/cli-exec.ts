@@ -76,6 +76,8 @@ import {
   formatMcpResponse,
 } from "./cli-render"
 import { readFirstBundleMetaVersion, createDefaultOuroCliDeps, defaultListDiscoveredAgents } from "./cli-defaults"
+import { runDoctorChecks } from "./doctor"
+import { formatDoctorOutput } from "./cli-render-doctor"
 
 // ── ensureDaemonRunning ──
 
@@ -2028,9 +2030,27 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
   // ── doctor (local, no daemon socket needed) ──
   if (command.kind === "doctor") {
-    const message = "ouro doctor: not yet implemented"
-    deps.writeStdout(message)
-    return message
+    const doctorDeps = {
+      existsSync: (p: string) => fs.existsSync(p),
+      readFileSync: (p: string) => fs.readFileSync(p, "utf-8"),
+      readdirSync: (p: string) => fs.readdirSync(p),
+      statSync: (p: string) => fs.statSync(p),
+      checkSocketAlive: deps.checkSocketAlive,
+      socketPath: deps.socketPath,
+      bundlesRoot: deps.bundlesRoot ?? getAgentBundlesRoot(),
+      secretsRoot: deps.secretsRoot ?? path.join(os.homedir(), ".agentsecrets"),
+      homedir: os.homedir(),
+    }
+    const doctorResult = await runDoctorChecks(doctorDeps)
+    const output = formatDoctorOutput(doctorResult)
+    deps.writeStdout(output)
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.doctor_run",
+      message: "ouro doctor completed",
+      meta: { passed: doctorResult.summary.passed, warnings: doctorResult.summary.warnings, failed: doctorResult.summary.failed },
+    })
+    return output
   }
 
   const daemonCommand = toDaemonCommand(command)
