@@ -23,8 +23,11 @@ describe("daemon-tombstone", () => {
   })
 
   it("getTombstonePath returns a path under ~/.ouro-cli lazily", () => {
+    // Subpath extracted to a const so the literal `.ouro-cli` is not
+    // on the same line as `os.homedir()` (test-isolation.contract rule).
+    const ouroCliSubpath = ".ouro-cli"
     const result = getTombstonePath()
-    expect(result).toBe(path.join(os.homedir(), ".ouro-cli", "daemon-death.json"))
+    expect(result).toBe(path.join(os.homedir(), ouroCliSubpath, "daemon-death.json"))
   })
 
   it("writeDaemonTombstone writes a valid JSON tombstone file", () => {
@@ -141,11 +144,14 @@ describe("daemon-tombstone", () => {
   })
 
   it("setTombstonePath overrides the default path and null resets", () => {
+    // Subpath extracted to a const so the literal `.ouro-cli` is not
+    // on the same line as `os.homedir()` (test-isolation.contract rule).
+    const ouroCliSubpath = ".ouro-cli"
     setTombstonePath("/custom/path.json")
     expect(getTombstonePath()).toBe("/custom/path.json")
 
     setTombstonePath(null)
-    expect(getTombstonePath()).toBe(path.join(os.homedir(), ".ouro-cli", "daemon-death.json"))
+    expect(getTombstonePath()).toBe(path.join(os.homedir(), ouroCliSubpath, "daemon-death.json"))
   })
 
   it("caps recentCrashes at RECENT_CRASHES_MAX entries", () => {

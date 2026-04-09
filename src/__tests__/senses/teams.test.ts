@@ -1,7 +1,13 @@
 import * as fs from "fs"
+import * as os from "os"
+import * as path from "path"
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import type { ChannelCallbacks } from "../../heart/core"
 import { emitNervesEvent } from "../../nerves/runtime"
+
+const mockIdentityPaths = vi.hoisted(() => ({
+  agentRoot: "/tmp/mock-agent-root",
+}))
 
 vi.mock("../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn(),
@@ -21,8 +27,8 @@ vi.mock("../../heart/daemon/socket-client", () => ({
 vi.mock("../../heart/identity", () => ({
   getAgentName: vi.fn(() => "testagent"),
   getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/testagent/secrets.json"),
-  getAgentRoot: vi.fn(() => "/tmp/mock-agent-root"),
-  getAgentStateRoot: vi.fn(() => "/tmp/mock-agent-root/state"),
+  getAgentRoot: vi.fn(() => mockIdentityPaths.agentRoot),
+  getAgentStateRoot: vi.fn(() => path.join(mockIdentityPaths.agentRoot, "state")),
   resetAgentConfigCache: vi.fn(),
   loadAgentConfig: vi.fn(() => ({
     name: "testagent",
@@ -63,8 +69,12 @@ function aiLabeled(text: string) {
   })
 }
 
+beforeEach(() => {
+  mockIdentityPaths.agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-teams-test-"))
+})
+
 afterEach(() => {
-  fs.rmSync("/tmp/mock-agent-root", { recursive: true, force: true })
+  fs.rmSync(mockIdentityPaths.agentRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
 })
 
 // Tests for src/teams.ts Teams channel adapter.

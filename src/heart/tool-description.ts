@@ -76,7 +76,7 @@ const TOOL_DESCRIPTIONS: Record<string, DescriptionBuilder> = {
   query_session: (args) => {
     const mode = args.mode
     if (mode === "search") return `searching session for '${truncate(args.query || "", 30)}'...`
-    if (mode === "status") return "checking inner dialog status..."
+    if (mode === "status") return "checking inner session status..."
     return "checking session history..."
   },
   web_search: (args) => {
@@ -101,8 +101,8 @@ const TOOL_DESCRIPTIONS: Record<string, DescriptionBuilder> = {
 
   // Metacognitive (agent's inner life)
   ponder: (args) => {
-    const thought = args.thought
-    return thought ? `thinking about ${truncate(thought, 40)}...` : "thinking deeper..."
+    const objective = args.objective || args.thought
+    return objective ? `bookmarking ${truncate(objective, 40)}...` : "bookmarking deeper work..."
   },
   observe: () => null,
   claude: () => "reasoning...",

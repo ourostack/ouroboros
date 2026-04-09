@@ -1,19 +1,55 @@
-import { describe, it, expect, vi, beforeEach } from "vitest"
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { emitNervesEvent } from "../../../nerves/runtime"
 
-vi.mock("fs/promises", () => ({
-  readFile: vi.fn(),
+const testState = vi.hoisted(() => ({
+  agentRoot: "",
 }))
+
+vi.mock("../../../heart/identity", async () => {
+  const actual = await vi.importActual<typeof import("../../../heart/identity")>("../../../heart/identity")
+  return {
+    ...actual,
+    getAgentName: vi.fn(() => "testagent"),
+    getAgentRoot: vi.fn(() => testState.agentRoot),
+  }
+})
+
+vi.mock("fs/promises", async () => {
+  const actual = await vi.importActual<typeof import("fs/promises")>("fs/promises")
+  return {
+    ...actual,
+    readFile: vi.fn(),
+  }
+})
+
+const tempDirs: string[] = []
+
+function makeAgentRoot(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-image-paste-unit-"))
+  tempDirs.push(dir)
+  testState.agentRoot = dir
+  return dir
+}
 
 describe("image-paste utilities", () => {
   beforeEach(() => {
     vi.resetModules()
+    makeAgentRoot()
     emitNervesEvent({
       component: "senses",
       event: "senses.image_paste_test_start",
       message: "Image paste test started",
       meta: {},
     })
+  })
+
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   describe("IMAGE_EXTENSION_REGEX", () => {
@@ -237,10 +273,8 @@ describe("image-paste utilities", () => {
         type: "image_url",
         image_url: { url: `data:image/png;base64,${Buffer.from("fake-png-data").toString("base64")}` },
       })
-      expect(result[1]).toEqual({
-        type: "text",
-        text: "[Image #1] describe this",
-      })
+      expect(result[1]).toEqual(expect.objectContaining({ type: "text", text: expect.stringContaining("[Image #1] describe this") }))
+      expect(result[1].type === "text" ? result[1].text : "").toContain("[attachments]")
     })
 
     it("returns only text when all images fail to read", async () => {
@@ -330,7 +364,8 @@ describe("image-paste utilities", () => {
       // Should have 1 image_url (the good one) + 1 text
       expect(result).toHaveLength(2)
       expect(result[0].type).toBe("image_url")
-      expect(result[1]).toEqual({ type: "text", text: "[Image #1] and [Image #2]" })
+      expect(result[1]).toEqual(expect.objectContaining({ type: "text", text: expect.stringContaining("[Image #1] and [Image #2]") }))
+      expect(result[1].type === "text" ? result[1].text : "").toContain("[attachments]")
     })
   })
 })

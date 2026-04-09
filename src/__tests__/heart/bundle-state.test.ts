@@ -105,6 +105,112 @@ describe("detectBundleState", () => {
     }
   })
 
+  it("surfaces remote_push_failed when pending-sync classification is push_rejected", () => {
+    const tmp = createTmpBundle({ agentName: "bundle-state-push-rejected" })
+    try {
+      initGit(tmp.agentRoot)
+      execFileSync("git", ["remote", "add", "origin", "https://example.test/repo.git"], {
+        cwd: tmp.agentRoot,
+        stdio: "pipe",
+      })
+      makeInitialCommit(tmp.agentRoot)
+      fs.mkdirSync(path.join(tmp.agentRoot, "state"), { recursive: true })
+      fs.writeFileSync(
+        path.join(tmp.agentRoot, "state", "pending-sync.json"),
+        JSON.stringify({
+          error: "push rejected",
+          failedAt: new Date().toISOString(),
+          classification: "push_rejected",
+          conflictFiles: [],
+        }),
+        "utf-8",
+      )
+      const issues = detectBundleState(tmp.agentRoot)
+      expect(issues).toContain("pending_sync_exists")
+      expect(issues).toContain("remote_push_failed")
+      expect(issues).not.toContain("pull_rebase_conflict")
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
+  it("surfaces pull_rebase_conflict when pending-sync classification is pull_rebase_conflict", () => {
+    const tmp = createTmpBundle({ agentName: "bundle-state-rebase-conflict" })
+    try {
+      initGit(tmp.agentRoot)
+      execFileSync("git", ["remote", "add", "origin", "https://example.test/repo.git"], {
+        cwd: tmp.agentRoot,
+        stdio: "pipe",
+      })
+      makeInitialCommit(tmp.agentRoot)
+      fs.mkdirSync(path.join(tmp.agentRoot, "state"), { recursive: true })
+      fs.writeFileSync(
+        path.join(tmp.agentRoot, "state", "pending-sync.json"),
+        JSON.stringify({
+          error: "rebase left conflicts",
+          failedAt: new Date().toISOString(),
+          classification: "pull_rebase_conflict",
+          conflictFiles: ["journal/entry.md", "friends/ari.json"],
+        }),
+        "utf-8",
+      )
+      const issues = detectBundleState(tmp.agentRoot)
+      expect(issues).toContain("pending_sync_exists")
+      expect(issues).toContain("pull_rebase_conflict")
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
+  it("tolerates pending-sync without classification (backward-compat)", () => {
+    const tmp = createTmpBundle({ agentName: "bundle-state-legacy-pending" })
+    try {
+      initGit(tmp.agentRoot)
+      execFileSync("git", ["remote", "add", "origin", "https://example.test/repo.git"], {
+        cwd: tmp.agentRoot,
+        stdio: "pipe",
+      })
+      makeInitialCommit(tmp.agentRoot)
+      fs.mkdirSync(path.join(tmp.agentRoot, "state"), { recursive: true })
+      // Pre-alpha.288 schema: no classification field
+      fs.writeFileSync(
+        path.join(tmp.agentRoot, "state", "pending-sync.json"),
+        JSON.stringify({ error: "legacy", failedAt: new Date().toISOString() }),
+        "utf-8",
+      )
+      const issues = detectBundleState(tmp.agentRoot)
+      expect(issues).toContain("pending_sync_exists")
+      expect(issues).not.toContain("remote_push_failed")
+      expect(issues).not.toContain("pull_rebase_conflict")
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
+  it("tolerates malformed pending-sync.json", () => {
+    const tmp = createTmpBundle({ agentName: "bundle-state-malformed-pending" })
+    try {
+      initGit(tmp.agentRoot)
+      execFileSync("git", ["remote", "add", "origin", "https://example.test/repo.git"], {
+        cwd: tmp.agentRoot,
+        stdio: "pipe",
+      })
+      makeInitialCommit(tmp.agentRoot)
+      fs.mkdirSync(path.join(tmp.agentRoot, "state"), { recursive: true })
+      fs.writeFileSync(
+        path.join(tmp.agentRoot, "state", "pending-sync.json"),
+        "this is not valid json {{",
+        "utf-8",
+      )
+      const issues = detectBundleState(tmp.agentRoot)
+      expect(issues).toContain("pending_sync_exists")
+      expect(issues).not.toContain("remote_push_failed")
+      expect(issues).not.toContain("pull_rebase_conflict")
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
   it("returns multiple issues simultaneously when several conditions apply", () => {
     const tmp = createTmpBundle({ agentName: "bundle-state-multi" })
     try {

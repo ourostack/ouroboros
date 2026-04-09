@@ -342,6 +342,66 @@ describe("postTurnPush", () => {
     expect(pushCount).toBe(2)
   })
 
+  it("writes pending-sync with classification: push_rejected when the second push fails after a successful rebase", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sync-push-rejected-"))
+    let pushCount = 0
+    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
+      const argv = args as string[]
+      if (argv[0] === "status") return Buffer.from(" M file.json\n")
+      if (argv[0] === "remote") return Buffer.from("origin\n")
+      if (argv[0] === "push") {
+        pushCount++
+        throw new Error("rejected again")
+      }
+      if (argv[0] === "pull") return Buffer.from("")
+      return Buffer.from("")
+    })
+
+    const { postTurnPush } = await import("../../heart/sync")
+    const result = postTurnPush(tmpDir, defaultConfig)
+
+    expect(result.ok).toBe(false)
+    expect(pushCount).toBe(2) // first push + second push (both failed)
+    const pendingPath = path.join(tmpDir, "state", "pending-sync.json")
+    expect(fs.existsSync(pendingPath)).toBe(true)
+    const pending = JSON.parse(fs.readFileSync(pendingPath, "utf-8"))
+    expect(pending.classification).toBe("push_rejected")
+    expect(pending.conflictFiles).toEqual([])
+    expect(pending.error).toContain("rejected again")
+
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it("writes pending-sync with classification: pull_rebase_conflict when rebase surfaces merge conflicts", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sync-rebase-conflict-"))
+    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
+      const argv = args as string[]
+      if (argv[0] === "status" && argv[1] === "--porcelain" && argv.length === 2) {
+        return Buffer.from(" M file.json\n")
+      }
+      if (argv[0] === "status" && argv[1] === "--porcelain=v1") {
+        // Simulate unmerged files after rebase conflict
+        return Buffer.from("UU journal/entry.md\nUU friends/ari.json\n")
+      }
+      if (argv[0] === "remote") return Buffer.from("origin\n")
+      if (argv[0] === "push") throw new Error("push rejected")
+      if (argv[0] === "pull") throw new Error("rebase conflict")
+      return Buffer.from("")
+    })
+
+    const { postTurnPush } = await import("../../heart/sync")
+    const result = postTurnPush(tmpDir, defaultConfig)
+
+    expect(result.ok).toBe(false)
+    const pendingPath = path.join(tmpDir, "state", "pending-sync.json")
+    expect(fs.existsSync(pendingPath)).toBe(true)
+    const pending = JSON.parse(fs.readFileSync(pendingPath, "utf-8"))
+    expect(pending.classification).toBe("pull_rebase_conflict")
+    expect(pending.conflictFiles).toEqual(["journal/entry.md", "friends/ari.json"])
+
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
   it("writes pending-sync.json on second push failure", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sync-push-fail-"))
     vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {

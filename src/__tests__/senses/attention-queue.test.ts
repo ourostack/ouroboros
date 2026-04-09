@@ -218,6 +218,69 @@ describe("attention queue", () => {
       expect(queue[0].id).toBe("my-obligation-id")
     })
 
+    it("enriches items with linked packet metadata when available", () => {
+      const drained: PendingMessage[] = [
+        {
+          from: "test",
+          friendId: "self",
+          channel: "inner",
+          key: "dialog",
+          content: "think",
+          timestamp: 1000,
+          packetId: "pkt-1",
+          delegatedFrom: { friendId: "ari", channel: "bluebubbles", key: "chat-1" },
+          obligationId: "my-obligation-id",
+        },
+      ]
+
+      const queue = buildAttentionQueue({
+        drainedPending: drained,
+        outstandingObligations: [],
+        friendNameResolver: () => "Ari",
+        packetResolver: () => ({
+          id: "pkt-1",
+          kind: "harness_friction",
+          sop: "harness_friction_v1",
+          status: "drafting",
+          objective: "Fix image retry behavior",
+          summary: "Shared attachment repair work",
+          successCriteria: ["No more dead-ends"],
+          payload: {},
+          createdAt: 1,
+          updatedAt: 1,
+        }),
+      })
+
+      expect(queue[0].packetId).toBe("pkt-1")
+      expect(queue[0].packetKind).toBe("harness_friction")
+      expect(queue[0].packetObjective).toBe("Fix image retry behavior")
+    })
+
+    it("keeps a packet id even when the resolver cannot currently load the packet", () => {
+      const drained: PendingMessage[] = [
+        {
+          from: "test",
+          friendId: "self",
+          channel: "inner",
+          key: "dialog",
+          content: "think",
+          timestamp: 1000,
+          packetId: "pkt-missing",
+          delegatedFrom: { friendId: "ari", channel: "bluebubbles", key: "chat-1" },
+        },
+      ]
+
+      const queue = buildAttentionQueue({
+        drainedPending: drained,
+        outstandingObligations: [],
+        friendNameResolver: () => "Ari",
+        packetResolver: () => null,
+      })
+
+      expect(queue[0].packetId).toBe("pkt-missing")
+      expect(queue[0].packetKind).toBeUndefined()
+    })
+
     it("falls back to friendId when name unavailable", () => {
       const drained: PendingMessage[] = [
         {
@@ -357,6 +420,28 @@ describe("attention queue", () => {
       expect(summary).toContain("[def456]")
       expect(summary).toContain("Ben asked:")
       expect(summary).toContain("review the deployment plan")
+    })
+
+    it("prefers packet kind and objective when available", () => {
+      const items: AttentionItem[] = [
+        {
+          id: "pkt-1",
+          friendId: "ari",
+          friendName: "Ari",
+          channel: "bb",
+          key: "c1",
+          delegatedContent: "think about penguins",
+          packetId: "pkt-1",
+          packetKind: "harness_friction",
+          packetObjective: "Fix image retry behavior",
+          source: "drained",
+          timestamp: 1000,
+        },
+      ]
+
+      const summary = buildAttentionQueueSummary(items)
+      expect(summary).toContain("Ari -> harness_friction: Fix image retry behavior")
+      expect(summary).not.toContain("asked:")
     })
 
     it("returns empty string for empty queue", () => {

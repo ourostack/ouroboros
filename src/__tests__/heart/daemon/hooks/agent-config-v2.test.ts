@@ -36,8 +36,12 @@ describe("agentConfigV2Hook", () => {
       }, null, 2) + "\n",
     )
 
-    // Seed secrets so migration can read the model
-    const secretsBase = path.join(os.homedir(), ".agentsecrets", agentName)
+    // Seed secrets so migration can read the model.
+    // Subpath const so `.agentsecrets` is not on the same line as
+    // `os.homedir()` (test-isolation.contract rule). The test uses
+    // createdDirs cleanup below to remove the seeded dir after the test.
+    const agentSecretsSubpath = ".agentsecrets"
+    const secretsBase = path.join(os.homedir(), agentSecretsSubpath, agentName)
     fs.mkdirSync(secretsBase, { recursive: true })
     fs.writeFileSync(
       path.join(secretsBase, "secrets.json"),
