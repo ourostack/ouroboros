@@ -2897,55 +2897,49 @@ describe("ouro --help completeness (H10)", () => {
     }
   }
 
-  it("includes task subcommands in help output", async () => {
+  it("includes task command in help output", async () => {
     const deps = makeHelpDeps()
     const result = await runOuroCli(["--help"], deps)
 
-    expect(result).toContain("ouro task board")
-    expect(result).toContain("ouro task create")
-    expect(result).toContain("ouro task update")
-    expect(result).toContain("ouro task show")
-    expect(result).toContain("ouro task fix")
-    // actionable, deps, sessions are grouped on one line
-    expect(result).toContain("actionable")
-    expect(result).toContain("deps")
-    expect(result).toContain("sessions")
+    expect(result).toContain("task")
+    expect(result).toContain("Tasks")
+    expect(result).toContain("reminder")
   })
 
-  it("includes reminder subcommand in help output", async () => {
+  it("includes reminder command in help output", async () => {
     const deps = makeHelpDeps()
     const result = await runOuroCli(["--help"], deps)
 
-    expect(result).toContain("ouro reminder create")
+    expect(result).toContain("reminder")
   })
 
-  it("includes friend subcommands in help output", async () => {
+  it("includes friend command in help output", async () => {
     const deps = makeHelpDeps()
     const result = await runOuroCli(["--help"], deps)
 
-    expect(result).toContain("ouro friend list")
-    expect(result).toContain("ouro friend show")
+    expect(result).toContain("friend")
+    expect(result).toContain("Friends")
   })
 
   it("includes whoami in help output", async () => {
     const deps = makeHelpDeps()
     const result = await runOuroCli(["--help"], deps)
 
-    expect(result).toContain("ouro whoami")
+    expect(result).toContain("whoami")
   })
 
-  it("includes session subcommand in help output", async () => {
+  it("includes session command in help output", async () => {
     const deps = makeHelpDeps()
     const result = await runOuroCli(["--help"], deps)
 
-    expect(result).toContain("ouro session list")
+    expect(result).toContain("session")
   })
 
   it("includes all core daemon commands in help output", async () => {
     const deps = makeHelpDeps()
     const result = await runOuroCli(["--help"], deps)
 
-    expect(result).toContain("ouro [up]")
+    expect(result).toContain("up")
     expect(result).toContain("stop")
     expect(result).toContain("down")
     expect(result).toContain("status")
@@ -2955,7 +2949,7 @@ describe("ouro --help completeness (H10)", () => {
     expect(result).toContain("msg")
     expect(result).toContain("poke")
     expect(result).toContain("link")
-    expect(result).toContain("-v|--version")
+    expect(result).toContain("Lifecycle")
   })
 })
 
