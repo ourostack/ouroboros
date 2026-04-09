@@ -4,6 +4,7 @@ import { randomUUID } from "crypto";
 import { getAgentRoot } from "../heart/identity";
 import { emitNervesEvent } from "../nerves/runtime";
 import { cosineSimilarity } from "./associative-recall";
+import { detectSuspiciousContent } from "./diary-integrity";
 import { type EmbeddingProvider, createDefaultEmbeddingProvider } from "./embedding-provider";
 
 export interface DiaryStorePaths {
@@ -13,6 +14,14 @@ export interface DiaryStorePaths {
   dailyDir: string;
 }
 
+export interface DiaryEntryProvenance {
+  tool: string;
+  channel?: string;
+  friendId?: string;
+  friendName?: string;
+  trust?: string;
+}
+
 export interface DiaryEntry {
   id: string;
   text: string;
@@ -20,6 +29,7 @@ export interface DiaryEntry {
   createdAt: string;
   about?: string;
   embedding: number[];
+  provenance?: DiaryEntryProvenance;
 }
 
 export interface DiaryWriteResult {
@@ -38,6 +48,7 @@ export interface SaveDiaryEntryOptions {
   now?: () => Date;
   idFactory?: () => string;
   embeddingProvider?: EmbeddingProvider;
+  provenance?: DiaryEntryProvenance;
 }
 
 export interface EntityIndexEntry {
@@ -252,7 +263,23 @@ export async function saveDiaryEntry(options: SaveDiaryEntryOptions): Promise<Di
     about: options.about?.trim() || undefined,
     createdAt: (options.now ?? (() => new Date()))().toISOString(),
     embedding,
+    ...(options.provenance ? { provenance: options.provenance } : {}),
   };
+
+  const integrity = detectSuspiciousContent(text);
+  if (integrity.suspicious) {
+    emitNervesEvent({
+      level: "warn",
+      component: "mind",
+      event: "mind.diary_integrity_warning",
+      message: "suspicious content detected in diary entry",
+      meta: {
+        patterns: integrity.patterns,
+        textPreview: text.slice(0, 200),
+        entryId: fact.id,
+      },
+    });
+  }
 
   return appendEntriesWithDedup(stores, [fact], { semanticThreshold: SEMANTIC_DEDUP_THRESHOLD });
 }

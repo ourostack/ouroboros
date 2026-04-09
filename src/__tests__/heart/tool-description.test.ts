@@ -151,11 +151,15 @@ describe("humanReadableToolDescription", () => {
   describe("ponder", () => {
     it("returns fallback without thought", () => {
       expect(humanReadableToolDescription("ponder", {}))
-        .toBe("thinking deeper...")
+        .toBe("bookmarking deeper work...")
     })
     it("includes thought when provided", () => {
       expect(humanReadableToolDescription("ponder", { thought: "the auth approach" }))
-        .toBe("thinking about the auth approach...")
+        .toBe("bookmarking the auth approach...")
+    })
+    it("prefers objective when provided", () => {
+      expect(humanReadableToolDescription("ponder", { objective: "bulletproof screenshot recovery" }))
+        .toBe("bookmarking bulletproof screenshot recovery...")
     })
   })
 
@@ -289,7 +293,7 @@ describe("humanReadableToolDescription", () => {
 
     it("returns status text when mode is status", () => {
       expect(humanReadableToolDescription("query_session", { mode: "status" }))
-        .toBe("checking inner dialog status...")
+        .toBe("checking inner session status...")
     })
   })
 

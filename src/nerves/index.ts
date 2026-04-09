@@ -7,6 +7,7 @@ import * as zlib from "zlib"
 // lazily inside `getRuntimeLogger()`, and we only call `emitNervesEvent` from
 // inside `rotateIfNeeded` — never at module top level.
 import { emitNervesEvent } from "./runtime"
+import { redactLogEntry, redactString } from "./redact"
 
 export type LogLevel = "debug" | "info" | "warn" | "error"
 
@@ -328,6 +329,7 @@ export function createNdjsonFileSink(
       ? { maxSizeBytes: optionsOrMaxSize }
       : optionsOrMaxSize ?? {}
   const rotationCheckInterval = options.rotationCheckIntervalBytes ?? DEFAULT_ROTATION_CHECK_INTERVAL_BYTES
+  const verbose = process.env.OURO_LOG_VERBOSE === "1"
   const queue: string[] = []
   let flushing = false
   let bytesSinceCheck = 0
@@ -353,7 +355,9 @@ export function createNdjsonFileSink(
   }
 
   return (entry: LogEvent): void => {
-    const line = `${JSON.stringify(entry)}\n`
+    const line = verbose
+      ? `${JSON.stringify(entry)}\n`
+      : `${redactString(JSON.stringify(redactLogEntry(entry)))}\n`
     bytesSinceCheck += line.length
     queue.push(line)
     flush()
