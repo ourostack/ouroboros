@@ -871,10 +871,12 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
     // ── versioned CLI update check ──
     if (deps.checkForCliUpdate) {
+      deps.writeStdout("checking for updates...")
       let pendingReExec = false
       try {
         const updateResult = await deps.checkForCliUpdate()
         if (updateResult.available && updateResult.latestVersion) {
+          deps.writeStdout(`installing ${updateResult.latestVersion}...`)
           /* v8 ignore next -- fallback: getCurrentCliVersion always injected in tests @preserve */
           const currentVersion = linkedVersionBeforeUp ?? "unknown"
           await deps.installCliVersion!(updateResult.latestVersion)
@@ -900,6 +902,9 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       /* v8 ignore stop */
       if (pendingReExec) {
         deps.reExecFromNewVersion!(args)
+      }
+      if (!pendingReExec) {
+        deps.writeStdout("up to date.")
       }
     }
 
@@ -981,6 +986,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       deps.writeStdout(`updated ${count} agent${count === 1 ? "" : "s"} to runtime ${to}${fromStr}`)
     }
 
+    deps.writeStdout("starting daemon...")
     const daemonResult = await ensureDaemonRunning(deps)
     deps.writeStdout(daemonResult.message)
 
