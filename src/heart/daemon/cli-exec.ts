@@ -63,9 +63,12 @@ import type {
   WhoamiCliCommand,
   SessionCliCommand,
   ThoughtsCliCommand,
+  DoctorCliCommand,
+  HelpCliCommand,
 } from "./cli-types"
 import { parseOuroCommand } from "./cli-parse"
 import { isAgentProvider, usage } from "./cli-parse"
+import { getGroupedHelp, getCommandHelp } from "./cli-help"
 import {
   parseStatusPayload,
   formatDaemonStatusOutput,
@@ -76,6 +79,9 @@ import {
 } from "./cli-render"
 import { readFirstBundleMetaVersion, createDefaultOuroCliDeps, defaultListDiscoveredAgents } from "./cli-defaults"
 import { pollDaemonStartup } from "./startup-tui"
+import { pruneStaleEphemeralBundles } from "./stale-bundle-prune"
+import { runDoctorChecks } from "./doctor"
+import { formatDoctorOutput } from "./cli-render-doctor"
 
 // ── ensureDaemonRunning ──
 
@@ -241,7 +247,7 @@ async function verifyProviderCredentials(
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "outlook" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "outlook" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DoctorCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" }>): DaemonCommand {
   return command
 }
 
@@ -709,7 +715,7 @@ function resolveClonePath(
 
 export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefaultOuroCliDeps()): Promise<string> {
   if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) {
-    const text = usage()
+    const text = getGroupedHelp()
     deps.writeStdout(text)
     return text
   }
@@ -791,6 +797,28 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     meta: { kind: command.kind },
   })
 
+  if (command.kind === "help") {
+    const text = command.command
+      ? (getCommandHelp(command.command) ?? `Unknown command: ${command.command}\n\n${getGroupedHelp()}`)
+      : getGroupedHelp()
+    deps.writeStdout(text)
+    return text
+  }
+
+  if (command.kind === "bluebubbles.replay") {
+    const { replayBlueBubblesMessage, formatBlueBubblesReplayText } = await import("../../senses/bluebubbles/replay")
+    const replay = await replayBlueBubblesMessage({
+      agentName: command.agent,
+      messageGuid: command.messageGuid,
+      eventType: command.eventType,
+    })
+    const text = command.json
+      ? JSON.stringify(replay, null, 2)
+      : formatBlueBubblesReplayText(replay)
+    deps.writeStdout(text)
+    return text
+  }
+
   if (command.kind === "daemon.up") {
     // ── dev mode cleanup: delete dev-config.json so the wrapper stops dispatching to dev repo ──
     /* v8 ignore start -- dev-config cleanup: requires real filesystem state @preserve */
@@ -828,10 +856,12 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
     // ── versioned CLI update check ──
     if (deps.checkForCliUpdate) {
+      deps.writeStdout("checking for updates...")
       let pendingReExec = false
       try {
         const updateResult = await deps.checkForCliUpdate()
         if (updateResult.available && updateResult.latestVersion) {
+          deps.writeStdout(`installing ${updateResult.latestVersion}...`)
           /* v8 ignore next -- fallback: getCurrentCliVersion always injected in tests @preserve */
           const currentVersion = linkedVersionBeforeUp ?? "unknown"
           await deps.installCliVersion!(updateResult.latestVersion)
@@ -857,6 +887,8 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       /* v8 ignore stop */
       if (pendingReExec) {
         deps.reExecFromNewVersion!(args)
+      } else {
+        deps.writeStdout("up to date.")
       }
     }
 
@@ -938,6 +970,13 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       deps.writeStdout(`updated ${count} agent${count === 1 ? "" : "s"} to runtime ${to}${fromStr}`)
     }
 
+    // ── stale bundle pruning ──
+    const prunedBundles = pruneStaleEphemeralBundles({ bundlesRoot: deps.bundlesRoot })
+    for (const name of prunedBundles) {
+      deps.writeStdout(`pruned stale bundle: ${name}`)
+    }
+
+    deps.writeStdout("starting daemon...")
     const daemonResult = await ensureDaemonRunning(deps)
     deps.writeStdout(daemonResult.message)
 
@@ -2007,6 +2046,33 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     const message = `hatched ${hatchInput.agentName} at ${result.bundleRoot} using specialist identity ${result.selectedIdentity}; ${daemonResult.message}`
     deps.writeStdout(message)
     return message
+  }
+
+  // ── doctor (local, no daemon socket needed) ──
+  if (command.kind === "doctor") {
+    const doctorDeps = {
+      /* v8 ignore start -- thin fs wrappers tested via doctor.test.ts with injected deps @preserve */
+      existsSync: (p: string) => fs.existsSync(p),
+      readFileSync: (p: string) => fs.readFileSync(p, "utf-8"),
+      readdirSync: (p: string) => fs.readdirSync(p),
+      statSync: (p: string) => fs.statSync(p),
+      /* v8 ignore stop */
+      checkSocketAlive: deps.checkSocketAlive,
+      socketPath: deps.socketPath,
+      bundlesRoot: deps.bundlesRoot ?? getAgentBundlesRoot(),
+      secretsRoot: deps.secretsRoot ?? path.join(os.homedir(), ".agentsecrets"),
+      homedir: os.homedir(),
+    }
+    const doctorResult = await runDoctorChecks(doctorDeps)
+    const output = formatDoctorOutput(doctorResult)
+    deps.writeStdout(output)
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.doctor_run",
+      message: "ouro doctor completed",
+      meta: { passed: doctorResult.summary.passed, warnings: doctorResult.summary.warnings, failed: doctorResult.summary.failed },
+    })
+    return output
   }
 
   const daemonCommand = toDaemonCommand(command)

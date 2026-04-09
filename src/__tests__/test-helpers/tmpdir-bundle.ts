@@ -43,6 +43,12 @@ export interface TmpBundleHandle {
   secretsPath: string
   /** Removes both tmpdirs. Safe to call multiple times. */
   cleanup: () => void
+  /**
+   * True if this handle is shared across an entire describe block via
+   * `beforeAll`/`afterAll`. The leak guard's per-test `afterEach` skips
+   * shared handles — they're cleaned in `afterAll`, not after every test.
+   */
+  shared: boolean
 }
 
 export interface CreateTmpBundleOptions {
@@ -52,6 +58,17 @@ export interface CreateTmpBundleOptions {
   agentJson?: Record<string, unknown>
   /** Optional secrets.json contents to seed the secrets tmpdir. */
   secretsJson?: Record<string, unknown>
+  /**
+   * Set to `true` when the handle is created in a `beforeAll` hook and
+   * cleaned in `afterAll` — i.e. the bundle is shared by every test in
+   * the describe block. The leak guard's per-test `afterEach` will NOT
+   * count this handle as leaked; only `afterAll`/end-of-suite cleanup
+   * matters. Without this flag, a shared handle would be flagged as a
+   * leak after the first test runs (before `afterAll` fires), which is
+   * a false positive. Default: `false` (per-test handles, cleaned in
+   * the test body's `try/finally`).
+   */
+  shared?: boolean
 }
 
 const DEFAULT_AGENT_JSON: Record<string, unknown> = {
@@ -116,6 +133,7 @@ export function createTmpBundle(options: CreateTmpBundleOptions = {}): TmpBundle
     agentConfigPath,
     secretsRoot,
     secretsPath,
+    shared: options.shared ?? false,
     cleanup: (): void => {
       if (cleaned) return
       cleaned = true

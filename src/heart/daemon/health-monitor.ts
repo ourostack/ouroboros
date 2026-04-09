@@ -1,6 +1,11 @@
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { DaemonHealthResult } from "./daemon"
 
+export interface SenseProbe {
+  name: string
+  check: () => Promise<{ ok: boolean; detail?: string }>
+}
+
 export interface HealthMonitorOptions {
   processManager: {
     listAgentSnapshots: () => Array<{ name: string; status: string }>
@@ -10,6 +15,8 @@ export interface HealthMonitorOptions {
   }
   alertSink?: (message: string) => Promise<void> | void
   diskUsagePercent?: () => number
+  onCriticalAgent?: (agentName: string) => void
+  senseProbes?: SenseProbe[]
 }
 
 export class HealthMonitor {
@@ -17,12 +24,37 @@ export class HealthMonitor {
   private readonly scheduler: HealthMonitorOptions["scheduler"]
   private readonly alertSink: (message: string) => Promise<void> | void
   private readonly diskUsagePercent: () => number
+  private readonly onCriticalAgent: (agentName: string) => void
+  private readonly senseProbes: SenseProbe[]
+  private intervalHandle: ReturnType<typeof setInterval> | null = null
 
   constructor(options: HealthMonitorOptions) {
     this.processManager = options.processManager
     this.scheduler = options.scheduler
     this.alertSink = options.alertSink ?? (() => undefined)
     this.diskUsagePercent = options.diskUsagePercent ?? (() => 0)
+    this.onCriticalAgent = options.onCriticalAgent ?? (() => undefined)
+    this.senseProbes = options.senseProbes ?? []
+  }
+
+  startPeriodicChecks(intervalMs: number): void {
+    if (this.intervalHandle !== null) return
+    emitNervesEvent({
+      level: "info",
+      component: "daemon",
+      event: "daemon.health_check_scheduled",
+      message: "periodic health checks started",
+      meta: { intervalMs },
+    })
+    this.intervalHandle = setInterval(() => {
+      void this.runChecks()
+    }, intervalMs)
+  }
+
+  stopPeriodicChecks(): void {
+    if (this.intervalHandle === null) return
+    clearInterval(this.intervalHandle)
+    this.intervalHandle = null
   }
 
   async runChecks(): Promise<DaemonHealthResult[]> {
@@ -36,6 +68,20 @@ export class HealthMonitor {
         status: "critical",
         message: `non-running agents: ${unhealthy.map((item) => item.name).join(", ")}`,
       })
+      for (const agent of unhealthy) {
+        try {
+          emitNervesEvent({
+            level: "warn",
+            component: "daemon",
+            event: "daemon.health_check_recovery_attempted",
+            message: "triggering recovery restart for non-running agent",
+            meta: { agentName: agent.name, agentStatus: agent.status },
+          })
+          this.onCriticalAgent(agent.name)
+        } catch {
+          // Recovery is best-effort -- callback errors must not crash runChecks
+        }
+      }
     } else {
       results.push({ name: "agent-processes", status: "ok", message: "all managed agents running" })
     }
@@ -71,6 +117,31 @@ export class HealthMonitor {
         status: "ok",
         message: `disk usage healthy (${diskPercent}%)`,
       })
+    }
+
+    for (const probe of this.senseProbes) {
+      try {
+        const outcome = await probe.check()
+        if (outcome.ok) {
+          results.push({
+            name: `sense-probe:${probe.name}`,
+            status: "ok",
+            message: `${probe.name} healthy`,
+          })
+        } else {
+          results.push({
+            name: `sense-probe:${probe.name}`,
+            status: "critical",
+            message: `${probe.name} failed: ${outcome.detail ?? "unknown"}`,
+          })
+        }
+      } catch (error) {
+        results.push({
+          name: `sense-probe:${probe.name}`,
+          status: "critical",
+          message: `${probe.name} error: ${error instanceof Error ? error.message : String(error)}`,
+        })
+      }
     }
 
     for (const result of results) {

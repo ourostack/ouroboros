@@ -3,6 +3,9 @@ import {
   TASK_VALID_STATUSES,
   TASK_STATUS_TRANSITIONS,
   TASK_REQUIRED_TEMPLATE_FIELDS,
+  canonicalCollectionForTaskType,
+  isCanonicalTaskFilename,
+  normalizeTaskType,
   normalizeTaskStatus,
   validateTransition,
 } from "../../../repertoire/tasks/transitions"
@@ -129,6 +132,20 @@ describe("transitions — cancelled status", () => {
 })
 
 describe("transitions — required template fields", () => {
+  it("normalizes task types and maps them to canonical collections", () => {
+    expect(normalizeTaskType("ONE-SHOT")).toBe("one-shot")
+    expect(normalizeTaskType("ongoing")).toBe("ongoing")
+    expect(normalizeTaskType("habit")).toBeNull()
+    expect(canonicalCollectionForTaskType("one-shot")).toBe("one-shots")
+    expect(canonicalCollectionForTaskType("ongoing")).toBe("ongoing")
+  })
+
+  it("recognizes canonical task filenames", () => {
+    expect(isCanonicalTaskFilename("2026-04-09-1248-shared-task-lifecycle.md")).toBe(true)
+    expect(isCanonicalTaskFilename("shared-task-lifecycle.md")).toBe(false)
+    expect(isCanonicalTaskFilename(null)).toBe(false)
+  })
+
   it("includes kind in one-shot required fields", () => {
     emitNervesEvent({
       event: "repertoire.task_scan_start",

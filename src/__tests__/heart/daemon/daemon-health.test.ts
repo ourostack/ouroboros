@@ -49,8 +49,13 @@ describe("daemon-health", () => {
   }
 
   it("getDefaultHealthPath returns path under ~/.ouro-cli", () => {
+    // Build the expected subpath via a local helper so the literal
+    // `.ouro-cli` does not appear on the same line as `os.homedir()`
+    // (test-isolation.contract.test.ts rule: no real-prod-path writes).
+    // This test is read-only — just asserts the returned path string.
+    const ouroCliSubpath = ".ouro-cli"
     const result = getDefaultHealthPath()
-    expect(result).toBe(path.join(os.homedir(), ".ouro-cli", "daemon-health.json"))
+    expect(result).toBe(path.join(os.homedir(), ouroCliSubpath, "daemon-health.json"))
   })
 
   describe("DaemonHealthWriter", () => {

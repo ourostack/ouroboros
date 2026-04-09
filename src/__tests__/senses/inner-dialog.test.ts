@@ -31,6 +31,7 @@ const mockIndexJournalFiles = vi.fn(async () => 0)
 const mockReadJournalFiles = vi.fn(() => [])
 const mockReadHealth = vi.fn(() => null)
 const mockGetDefaultHealthPath = vi.fn(() => "/tmp/fake-health-path/daemon-health.json")
+const mockGetToolsForChannel = vi.fn()
 
 vi.mock("../../mind/prompt", () => ({
   buildSystem: (...args: any[]) => mockBuildSystem(...args),
@@ -119,6 +120,10 @@ vi.mock("../../heart/daemon/daemon-health", () => ({
   getDefaultHealthPath: (...args: any[]) => mockGetDefaultHealthPath(...args),
 }))
 
+vi.mock("../../repertoire/tools", () => ({
+  getToolsForChannel: (...args: any[]) => mockGetToolsForChannel(...args),
+}))
+
 import {
   buildInnerDialogBootstrapMessage,
   buildNonCanonicalCleanupNudge,
@@ -189,6 +194,11 @@ describe("inner dialog runtime", () => {
     mockReadJournalFiles.mockReset().mockReturnValue([])
     mockReadHealth.mockReset().mockReturnValue(null)
     mockGetDefaultHealthPath.mockReset().mockReturnValue("/tmp/fake-health-path/daemon-health.json")
+    mockGetToolsForChannel.mockReset().mockReturnValue([
+      { type: "function", function: { name: "read", description: "Read a file", parameters: {} } },
+      { type: "function", function: { name: "shell", description: "Run a shell command", parameters: {} } },
+      { type: "function", function: { name: "diary_write", description: "Write to diary", parameters: {} } },
+    ])
 
     // Default handleInboundTurn: simulate pipeline running agent and returning result.
     mockHandleInboundTurn.mockReset().mockImplementation(async (input: any) => {
@@ -2625,5 +2635,187 @@ describe("inner dialog runtime", () => {
     expect(routedFiles.length).toBe(1)
     const routedPayload = JSON.parse(fs.readFileSync(path.join(bluebubblesPendingDir, routedFiles[0]), "utf8"))
     expect(routedPayload.obligationId).toBe("1709900001-oblpreserve")
+  })
+
+  // ── Habit tool enforcement tests ──────────────────────────────────
+
+  it("restricts tools to only those declared in habit tools field", async () => {
+    const habitsDir = path.join(agentRoot, "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(habitsDir, "focused-habit.md"),
+      "---\ntitle: Focused Habit\ncadence: 1h\nstatus: active\nlastRun: 2026-03-06T11:00:00.000Z\ncreated: 2026-03-01\ntools:\n  - read\n  - shell\n---\n\nDo focused work.",
+      "utf8",
+    )
+
+    mockLoadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "assistant", content: "ready" },
+      ],
+    })
+    mockBuildHabitTurnMessage.mockReturnValueOnce("focused habit message")
+
+    await runInnerDialogTurn({
+      reason: "habit",
+      habitName: "focused-habit",
+      now: () => new Date("2026-03-06T12:05:00.000Z"),
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    const tools = input.runAgentOptions.tools
+    expect(tools).toBeDefined()
+    expect(tools).toHaveLength(2)
+    expect(tools.map((t: any) => t.function.name).sort()).toEqual(["read", "shell"])
+  })
+
+  it("silently excludes unknown tool names from habit tools field (fail closed)", async () => {
+    const habitsDir = path.join(agentRoot, "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(habitsDir, "partial-habit.md"),
+      "---\ntitle: Partial Habit\ncadence: 1h\nstatus: active\nlastRun: 2026-03-06T11:00:00.000Z\ncreated: 2026-03-01\ntools:\n  - read\n  - nonexistent_tool\n---\n\nDo partial work.",
+      "utf8",
+    )
+
+    mockLoadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "assistant", content: "ready" },
+      ],
+    })
+    mockBuildHabitTurnMessage.mockReturnValueOnce("partial habit message")
+
+    await runInnerDialogTurn({
+      reason: "habit",
+      habitName: "partial-habit",
+      now: () => new Date("2026-03-06T12:05:00.000Z"),
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    const tools = input.runAgentOptions.tools
+    expect(tools).toBeDefined()
+    expect(tools).toHaveLength(1)
+    expect(tools[0].function.name).toBe("read")
+  })
+
+  it("does not set runAgentOptions.tools when habit has no tools field (full repertoire)", async () => {
+    const habitsDir = path.join(agentRoot, "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(habitsDir, "open-habit.md"),
+      "---\ntitle: Open Habit\ncadence: 1h\nstatus: active\nlastRun: 2026-03-06T11:00:00.000Z\ncreated: 2026-03-01\n---\n\nDo anything needed.",
+      "utf8",
+    )
+
+    mockLoadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "assistant", content: "ready" },
+      ],
+    })
+    mockBuildHabitTurnMessage.mockReturnValueOnce("open habit message")
+
+    await runInnerDialogTurn({
+      reason: "habit",
+      habitName: "open-habit",
+      now: () => new Date("2026-03-06T12:05:00.000Z"),
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    expect(input.runAgentOptions.tools).toBeUndefined()
+  })
+
+  it("passes empty tools array when habit declares tools: [] (no tools)", async () => {
+    const habitsDir = path.join(agentRoot, "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(habitsDir, "silent-habit.md"),
+      "---\ntitle: Silent Habit\ncadence: 1h\nstatus: active\nlastRun: 2026-03-06T11:00:00.000Z\ncreated: 2026-03-01\ntools: []\n---\n\nThink quietly.",
+      "utf8",
+    )
+
+    mockLoadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "assistant", content: "ready" },
+      ],
+    })
+    mockBuildHabitTurnMessage.mockReturnValueOnce("silent habit message")
+
+    await runInnerDialogTurn({
+      reason: "habit",
+      habitName: "silent-habit",
+      now: () => new Date("2026-03-06T12:05:00.000Z"),
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    const tools = input.runAgentOptions.tools
+    expect(tools).toBeDefined()
+    expect(tools).toHaveLength(0)
+  })
+
+  it("emits habit.tools_restricted nerves event when habit has tools field", async () => {
+    const habitsDir = path.join(agentRoot, "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(habitsDir, "restricted-habit.md"),
+      "---\ntitle: Restricted Habit\ncadence: 1h\nstatus: active\nlastRun: 2026-03-06T11:00:00.000Z\ncreated: 2026-03-01\ntools:\n  - read\n  - shell\n---\n\nRestricted work.",
+      "utf8",
+    )
+
+    mockLoadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "assistant", content: "ready" },
+      ],
+    })
+    mockBuildHabitTurnMessage.mockReturnValueOnce("restricted habit message")
+
+    await runInnerDialogTurn({
+      reason: "habit",
+      habitName: "restricted-habit",
+      now: () => new Date("2026-03-06T12:05:00.000Z"),
+    })
+
+    const restrictedEvent = mockEmitNervesEvent.mock.calls.find(
+      (call: any[]) => call[0].event === "habit.tools_restricted",
+    )
+    expect(restrictedEvent).toBeDefined()
+    expect(restrictedEvent![0].component).toBe("senses")
+    expect(restrictedEvent![0].meta.habitName).toBe("restricted-habit")
+    expect(restrictedEvent![0].meta.declared).toEqual(["read", "shell"])
+    expect(restrictedEvent![0].meta.resolved).toEqual(["read", "shell"])
+  })
+
+  it("emits habit.tools_unrestricted nerves event when habit has no tools field", async () => {
+    const habitsDir = path.join(agentRoot, "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(habitsDir, "unrestricted-habit.md"),
+      "---\ntitle: Unrestricted Habit\ncadence: 1h\nstatus: active\nlastRun: 2026-03-06T11:00:00.000Z\ncreated: 2026-03-01\n---\n\nUnrestricted work.",
+      "utf8",
+    )
+
+    mockLoadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "assistant", content: "ready" },
+      ],
+    })
+    mockBuildHabitTurnMessage.mockReturnValueOnce("unrestricted habit message")
+
+    await runInnerDialogTurn({
+      reason: "habit",
+      habitName: "unrestricted-habit",
+      now: () => new Date("2026-03-06T12:05:00.000Z"),
+    })
+
+    const unrestrictedEvent = mockEmitNervesEvent.mock.calls.find(
+      (call: any[]) => call[0].event === "habit.tools_unrestricted",
+    )
+    expect(unrestrictedEvent).toBeDefined()
+    expect(unrestrictedEvent![0].component).toBe("senses")
+    expect(unrestrictedEvent![0].meta.habitName).toBe("unrestricted-habit")
   })
 })
