@@ -201,7 +201,7 @@ function Spinner({ phrasePool, elapsed }: {
 
   // Animate ring frames
   useEffect(() => {
-    const iv = setInterval(() => setFrame(f => (f + 1) % RING_FRAMES.length), 120)
+    const iv = setInterval(() => setFrame(f => (f + 1) % RING_FRAMES.length), 300)
     return () => clearInterval(iv)
   }, [])
 
