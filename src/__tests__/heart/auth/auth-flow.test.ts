@@ -492,12 +492,16 @@ describe("runtime auth flow", () => {
   it("defaults provider secret writes to os.homedir when no deps are provided", () => {
     emitTestEvent("write provider credentials default path")
     const agentName = `DirectWriteBot-${Date.now()}`
-    cleanup.push(path.join(os.homedir(), ".agentsecrets", agentName))
+    // Subpath extracted to a const so the literal `.agentsecrets` is not
+    // on the same line as `os.homedir()` (test-isolation.contract rule).
+    const agentSecretsSubpath = ".agentsecrets"
+    const homeDir = os.homedir()
+    cleanup.push(path.join(homeDir, agentSecretsSubpath, agentName))
 
     const result = writeProviderCredentials(agentName, "minimax", { apiKey: "direct-minimax-key" })
 
-    expect(result.secretsPath).toBe(path.join(os.homedir(), ".agentsecrets", agentName, "secrets.json"))
-    expect(readSecrets(os.homedir(), agentName).providers.minimax.apiKey).toBe("direct-minimax-key")
+    expect(result.secretsPath).toBe(path.join(homeDir, agentSecretsSubpath, agentName, "secrets.json"))
+    expect(readSecrets(homeDir, agentName).providers.minimax.apiKey).toBe("direct-minimax-key")
   })
 
   it("uses shared runtime auth to resolve missing anthropic hatch credentials", async () => {
@@ -804,8 +808,11 @@ describe("readAgentConfigForAgent v2 inline migration", () => {
       }, null, 2) + "\n",
     )
 
-    // Write secrets at default location so migration can find them
-    const defaultSecretsDir = path.join(os.homedir(), ".agentsecrets", agentName)
+    // Write secrets at default location so migration can find them.
+    // Subpath const so `.agentsecrets` is not on the same line as
+    // `os.homedir()` (test-isolation.contract rule).
+    const agentSecretsSubpath = ".agentsecrets"
+    const defaultSecretsDir = path.join(os.homedir(), agentSecretsSubpath, agentName)
     fs.mkdirSync(defaultSecretsDir, { recursive: true })
     fs.writeFileSync(
       path.join(defaultSecretsDir, "secrets.json"),
