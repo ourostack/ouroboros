@@ -90,12 +90,24 @@ jobs:
       - name: Run Coverage Gate
         run: npm run test:coverage
 
+      - name: Resolve Coverage Artifact Root
+        if: always()
+        run: |
+          COVERAGE_ARTIFACT_ROOT=$(node - <<'NODE'
+          const { tmpdir } = require('os')
+          const { join } = require('path')
+          console.log(join(tmpdir(), 'ouroboros-test-runs', 'ouroboros-agent-harness'))
+          NODE
+          )
+          echo "COVERAGE_ARTIFACT_ROOT=${COVERAGE_ARTIFACT_ROOT}" >> "$GITHUB_ENV"
+
       - name: Upload Coverage Gate Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: coverage-gate-artifacts
-          path: ${{ env.HOME }}/.agentstate/test-runs/ouroboros-agent-harness
+          path: ${{ env.COVERAGE_ARTIFACT_ROOT }}
+          if-no-files-found: ignore
 
   publish:
     needs: coverage
