@@ -131,6 +131,116 @@ describe("associative recall provenance display", () => {
     expect(content).not.toContain("trust=")
   })
 
+  it("renders [diary] prefix for entry with no provenance", async () => {
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "recall-prov-"))
+    const fact: DiaryEntry = {
+      id: "trust-self-1",
+      text: "self authored note",
+      source: "tool:diary_write",
+      createdAt: "2026-04-08T00:00:00.000Z",
+      embedding: [0.99, 0.01],
+    }
+    writeFactsWithProvenance(diaryRoot, [fact])
+
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "system", content: "base prompt" },
+      { role: "user", content: "self authored" },
+    ]
+
+    await injectAssociativeRecall(messages, { provider, diaryRoot, minScore: 0, topK: 1 })
+
+    const content = messages[0].content as string
+    expect(content).toContain("[diary] self authored note")
+    expect(content).not.toContain("[diary/external]")
+  })
+
+  it("renders [diary] prefix for entry with trusted (family) provenance", async () => {
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "recall-prov-"))
+    const fact: DiaryEntry = {
+      id: "trust-fam-1",
+      text: "family member said hello",
+      source: "tool:diary_write",
+      createdAt: "2026-04-08T00:00:00.000Z",
+      embedding: [0.99, 0.01],
+      provenance: {
+        tool: "diary_write",
+        channel: "bluebubbles",
+        friendId: "f-1",
+        friendName: "alice",
+        trust: "family",
+      },
+    }
+    writeFactsWithProvenance(diaryRoot, [fact])
+
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "system", content: "base prompt" },
+      { role: "user", content: "family member" },
+    ]
+
+    await injectAssociativeRecall(messages, { provider, diaryRoot, minScore: 0, topK: 1 })
+
+    const content = messages[0].content as string
+    expect(content).toContain("[diary] family member said hello")
+    expect(content).not.toContain("[diary/external]")
+  })
+
+  it("renders [diary/external] prefix for entry with external provenance", async () => {
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "recall-prov-"))
+    const fact: DiaryEntry = {
+      id: "trust-ext-1",
+      text: "stranger sent a link",
+      source: "tool:diary_write",
+      createdAt: "2026-04-08T00:00:00.000Z",
+      embedding: [0.99, 0.01],
+      provenance: {
+        tool: "diary_write",
+        channel: "teams",
+        friendId: "f-99",
+        friendName: "stranger",
+        trust: "stranger",
+      },
+    }
+    writeFactsWithProvenance(diaryRoot, [fact])
+
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "system", content: "base prompt" },
+      { role: "user", content: "stranger sent" },
+    ]
+
+    await injectAssociativeRecall(messages, { provider, diaryRoot, minScore: 0, topK: 1 })
+
+    const content = messages[0].content as string
+    expect(content).toContain("[diary/external] stranger sent a link")
+    expect(content).not.toMatch(/\[diary\] stranger sent/)
+  })
+
+  it("renders [diary] prefix for self provenance (inner channel, no friend)", async () => {
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "recall-prov-"))
+    const fact: DiaryEntry = {
+      id: "trust-inner-1",
+      text: "inner reflection note",
+      source: "tool:diary_write",
+      createdAt: "2026-04-08T00:00:00.000Z",
+      embedding: [0.99, 0.01],
+      provenance: {
+        tool: "diary_write",
+        channel: "inner",
+      },
+    }
+    writeFactsWithProvenance(diaryRoot, [fact])
+
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "system", content: "base prompt" },
+      { role: "user", content: "inner reflection" },
+    ]
+
+    await injectAssociativeRecall(messages, { provider, diaryRoot, minScore: 0, topK: 1 })
+
+    const content = messages[0].content as string
+    expect(content).toContain("[diary] inner reflection note")
+    expect(content).not.toContain("[diary/external]")
+  })
+
   it("renders only defined provenance fields (partial: channel only)", async () => {
     const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "recall-prov-"))
     const fact: DiaryEntry = {
