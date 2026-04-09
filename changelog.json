@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.291",
+      "changes": [
+        "fix(bluebubbles): dedupe inbound sidecar writes by `sessionKey/messageGuid`, ignore known guidless chat-state webhooks instead of 500ing, and add a first-class `ouro bluebubbles replay --agent <name> --message-guid <guid>` command for historical incident replay. The replay path defaults to `new-message`, surfaces state-only `updated-message` mutations with a retry hint, and keeps the real attachment handle visible for the original payload-bearing event.",
+        "test(daemon): close the replay/debug follow-up coverage gaps and harden `teams.test` cleanup by giving each test a unique temp agent root plus retried teardown, eliminating the `/tmp/mock-agent-root` race that could intermittently fail the full coverage gate."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.290",
       "changes": [
         "feat(attachments): ship first-class cross-sense attachments with stable `attachment:<source>:<id>` handles, shared materialization, shared image normalization, and generic attachment tools so images and files remain reachable even when the harness also provides derived summaries or normalized variants.",
