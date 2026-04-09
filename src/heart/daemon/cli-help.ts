@@ -29,9 +29,9 @@ export type CommandCategory =
 export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandCategory }> = {
   up: {
     category: "Lifecycle",
-    description: "Start the ouro daemon (default command)",
-    usage: "ouro [up]",
-    example: "ouro up",
+    description: "Start the ouro daemon (default command). Use --no-repair to skip interactive repair when agents are degraded.",
+    usage: "ouro [up] [--no-repair]",
+    example: "ouro up --no-repair",
   },
   stop: {
     category: "Lifecycle",
