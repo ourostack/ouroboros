@@ -59,6 +59,7 @@ vi.mock("../../heart/core", () => ({
   runAgent: vi.fn().mockResolvedValue({ usage: undefined }),
   getProvider: () => "azure",
   createSummarize: () => vi.fn(),
+  repairOrphanedToolCalls: vi.fn(),
 }))
 vi.mock("../../heart/config", () => ({
   sessionPath: vi.fn().mockReturnValue("/tmp/test-session.json"),
