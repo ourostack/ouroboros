@@ -30,4 +30,14 @@ describe("coverage workflow contract", () => {
     expect(workflow).not.toContain("uses: actions/setup-node@v4")
     expect(workflow).not.toContain("uses: actions/upload-artifact@v4")
   })
+
+  it("requires version bumps only for releasable src changes, not src test-only churn", () => {
+    const workflow = readFileSync(
+      join(process.cwd(), ".github", "workflows", "coverage.yml"),
+      "utf8",
+    )
+
+    expect(workflow).toContain('git diff --name-only "origin/${{ github.base_ref }}...HEAD" -- src/ ":(exclude)src/__tests__/**"')
+    expect(workflow).toContain("No releasable src/ changes detected — version bump not required")
+  })
 })
