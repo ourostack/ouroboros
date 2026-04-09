@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.285",
+      "changes": [
+        "feat(daemon): wire startPeriodicReconciliation() after scheduler.start() in daemon-entry.ts — prevents silent habit death when OS cron fails by giving the daemon a self-healing reconciliation loop.",
+        "feat(guardrails): protect agent.json from agent self-modification — closes a vector where prompt injection could alter the agent's own identity, provider, or model settings.",
+        "feat(habits): add tools field to HabitFile interface and habit-parser — habits can now declare tools: [read, web_fetch] in frontmatter. Schema-only; runtime enforcement ships in a follow-up PR."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.284",
       "changes": [
         "fix(tui): Ctrl+C safety net + spinner 120ms to 300ms."

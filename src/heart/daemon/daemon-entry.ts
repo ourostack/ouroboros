@@ -178,6 +178,7 @@ void daemon.start().then(() => {
       },
     })
     scheduler.start()
+    scheduler.startPeriodicReconciliation()
     scheduler.watchForChanges()
     habitSchedulers.push(scheduler)
   }
