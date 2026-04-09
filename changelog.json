@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.294",
+      "changes": [
+        "feat(mind): add integrity scanning for diary entries at write time. New detectSuspiciousContent() in src/mind/diary-integrity.ts checks entry text for prompt injection patterns (instruction framing, override language, role injection, boundary markers) before persisting. Detection emits a mind.diary_integrity_warning nerves event with matched pattern categories, text preview, and entry ID. Entries still save (flag, don't block) to avoid false-positive data loss. 41 unit tests + 4 integration tests with 100% coverage on new code."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.292",
       "changes": [
         "feat(mind): add structured provenance tracking to diary entries. New DiaryEntryProvenance interface records tool, channel (cli/teams/bluebubbles/inner/mcp), friend identity (id + name), and trust level (family/friend/acquaintance/stranger) at write time. diary_write handler automatically extracts provenance from ToolContext. Associative recall and recall tool render provenance fields when present. Fully backwards compatible — existing entries without provenance parse and display normally. 19 tests across 4 test files with 100% coverage on new code."
