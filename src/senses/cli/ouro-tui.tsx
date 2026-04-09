@@ -692,7 +692,7 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
     if (!key.ctrl && !key.meta && inputChar) {
       const before = inputRef.current.slice(0, cursorRef.current)
       const after = inputRef.current.slice(cursorRef.current)
-      updateInput(before + inputChar + after, cursorRef.current + 1)
+      updateInput(before + inputChar + after, cursorRef.current + inputChar.length)
       historyIdx.current = -1
     }
   })
