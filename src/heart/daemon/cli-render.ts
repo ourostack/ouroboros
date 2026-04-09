@@ -49,6 +49,9 @@ interface StatusWorkerRow {
   restartCount: number
   lastExitCode: number | null
   lastSignal: string | null
+  startedAt: string | null
+  errorReason: string | null
+  fixHint: string | null
 }
 
 interface StatusSyncRow {
@@ -155,6 +158,9 @@ export function parseStatusPayload(data: unknown): StatusPayload | null {
       restartCount,
       lastExitCode: numberField(row.lastExitCode) ?? null,
       lastSignal: stringField(row.lastSignal) ?? null,
+      startedAt: stringField(row.startedAt) ?? null,
+      errorReason: stringField(row.errorReason) ?? null,
+      fixHint: stringField(row.fixHint) ?? null,
     } satisfies StatusWorkerRow
   })
 
