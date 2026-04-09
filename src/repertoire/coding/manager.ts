@@ -53,14 +53,6 @@ export interface CodingSessionManagerOptions {
   agentName?: string
 }
 
-function safeAgentName(): string {
-  try {
-    return getAgentName()
-  } catch {
-    return "default"
-  }
-}
-
 function defaultStateFilePath(agentName: string): string {
   return path.join(getAgentRoot(agentName), "state", "coding", "sessions.json")
 }
@@ -224,7 +216,16 @@ export class CodingSessionManager {
     this.writeFileSync = options.writeFileSync ?? fs.writeFileSync
     this.mkdirSync = options.mkdirSync ?? fs.mkdirSync
     this.pidAlive = options.pidAlive ?? isPidAlive
-    this.agentName = options.agentName ?? safeAgentName()
+    // No silent fallback to "default" — if there's no agentName and no
+    // explicit option, getAgentName() throws. The previous `safeAgentName`
+    // helper fell back to "default" and ended up writing coding session
+    // state to `~/AgentBundles/default.ouro/state/coding/sessions.json` on
+    // every vitest run because the coding manager singleton constructs with
+    // `{}`. That leaked real-fs state into the developer's home directory
+    // on every coverage run. Production callers always pass via argv (see
+    // getAgentName); test callers must either pass `agentName` explicitly
+    // or mock `../../heart/identity`.
+    this.agentName = options.agentName ?? getAgentName()
     this.stateFilePath = options.stateFilePath ?? defaultStateFilePath(this.agentName)
     this.artifactDirPath = options.artifactDirPath
       ?? (options.stateFilePath ? path.dirname(options.stateFilePath) : defaultArtifactDirPath(this.agentName))

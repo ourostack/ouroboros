@@ -10,6 +10,59 @@ export interface SyncResult {
 }
 
 /**
+ * On-disk schema for `state/pending-sync.json`. Written when a post-turn
+ * push fails irrecoverably so the agent can see a structured signal on
+ * the next turn via bundle state detection.
+ *
+ * Backward compat: readers should tolerate entries without `classification`
+ * or `conflictFiles` (pre-alpha.289 schema) — they fall back to "unknown".
+ */
+export interface PendingSyncRecord {
+  error: string
+  failedAt: string
+  classification: "push_rejected" | "pull_rebase_conflict" | "unknown"
+  conflictFiles: string[]
+}
+
+function writePendingSync(
+  agentRoot: string,
+  error: string,
+  classification: PendingSyncRecord["classification"],
+  conflictFiles: string[],
+): void {
+  const pendingSyncPath = path.join(agentRoot, "state", "pending-sync.json")
+  fs.mkdirSync(path.join(agentRoot, "state"), { recursive: true })
+  const record: PendingSyncRecord = {
+    error,
+    failedAt: new Date().toISOString(),
+    classification,
+    conflictFiles,
+  }
+  fs.writeFileSync(pendingSyncPath, JSON.stringify(record, null, 2), "utf-8")
+}
+
+function collectRebaseConflictFiles(agentRoot: string): string[] {
+  try {
+    const output = execFileSync("git", ["status", "--porcelain=v1"], {
+      cwd: agentRoot,
+      stdio: "pipe",
+      timeout: 5000,
+    }).toString()
+    const files: string[] = []
+    for (const line of output.split("\n")) {
+      // Unmerged paths in porcelain v1 are prefixed with UU/AA/DD/AU/UA/DU/UD
+      if (/^(UU|AA|DD|AU|UA|DU|UD) /.test(line)) {
+        files.push(line.slice(3).trim())
+      }
+    }
+    return files
+  } catch {
+    /* v8 ignore next -- git status --porcelain failure inside a repo would require a corrupt repo @preserve */
+    return []
+  }
+}
+
+/**
  * Check whether the bundle is initialized as a git repo.
  * Used by both pre-turn pull and post-turn push to surface a clear,
  * actionable error when sync is enabled but the user never ran `git init`
@@ -213,40 +266,61 @@ export function postTurnPush(agentRoot: string, config: SyncConfig): SyncResult 
       })
     } catch {
       // Push rejected -- try pull-rebase-push
+      let rebaseError: string | null = null
       try {
         execFileSync("git", ["pull", "--rebase", config.remote], {
           cwd: agentRoot,
           stdio: "pipe",
           timeout: 30000,
         })
-        execFileSync("git", ["push", config.remote], {
-          cwd: agentRoot,
-          stdio: "pipe",
-          timeout: 30000,
-        })
-      } catch (retryErr) {
-        // Second failure -- write pending-sync.json
-        const retryError = retryErr instanceof Error ? retryErr.message : String(retryErr)
-        const pendingSyncPath = path.join(agentRoot, "state", "pending-sync.json")
-        fs.mkdirSync(path.join(agentRoot, "state"), { recursive: true })
-        fs.writeFileSync(
-          pendingSyncPath,
-          JSON.stringify({
-            error: retryError,
-            failedAt: new Date().toISOString(),
-          }, null, 2),
-          "utf-8",
-        )
-
-        emitNervesEvent({
-          component: "heart",
-          event: "heart.sync_push_error",
-          message: "post-turn push failed after retry",
-          meta: { agentRoot, error: retryError },
-        })
-
-        return { ok: false, error: retryError }
+      } catch (err) {
+        rebaseError = err instanceof Error ? err.message : String(err)
       }
+
+      if (rebaseError === null) {
+        try {
+          execFileSync("git", ["push", config.remote], {
+            cwd: agentRoot,
+            stdio: "pipe",
+            timeout: 30000,
+          })
+          // rebase + retry push both succeeded — fall through to success
+          emitNervesEvent({
+            component: "heart",
+            event: "heart.sync_push_end",
+            message: "post-turn push complete after rebase retry",
+            meta: { agentRoot, changedCount },
+          })
+          return { ok: true }
+        } catch (retryErr) {
+          // Second push rejected — remote advanced again during rebase
+          const retryError = retryErr instanceof Error ? retryErr.message : /* v8 ignore next -- defensive non-Error catch @preserve */ String(retryErr)
+          writePendingSync(agentRoot, retryError, "push_rejected", [])
+          emitNervesEvent({
+            component: "heart",
+            event: "heart.sync_push_error",
+            message: "post-turn push failed after retry: push_rejected",
+            meta: { agentRoot, error: retryError, classification: "push_rejected" },
+          })
+          return { ok: false, error: retryError }
+        }
+      }
+
+      // Rebase failed — detect conflict files via git status. Preserve
+      // the original rebase error message so callers see the real cause.
+      const conflictFiles = collectRebaseConflictFiles(agentRoot)
+      const classification: PendingSyncRecord["classification"] =
+        conflictFiles.length > 0 ? "pull_rebase_conflict" : "unknown"
+      writePendingSync(agentRoot, rebaseError, classification, conflictFiles)
+
+      emitNervesEvent({
+        component: "heart",
+        event: "heart.sync_push_error",
+        message: `post-turn push failed: ${classification}`,
+        meta: { agentRoot, error: rebaseError, classification, conflictFiles },
+      })
+
+      return { ok: false, error: rebaseError }
     }
 
     emitNervesEvent({

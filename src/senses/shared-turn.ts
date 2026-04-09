@@ -45,7 +45,7 @@ export interface RunSenseTurnOptions {
 export interface RunSenseTurnResult {
   /** The agent's text response (accumulated from onTextChunk). */
   response: string
-  /** True when the agent pondered — caller should tell the user to check back. */
+  /** Deprecated compatibility field. Ponder no longer implies outward deferral. */
   ponderDeferred: boolean
 }
 
@@ -124,7 +124,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   /* v8 ignore stop */
 
   // Run the pipeline
-  const result = await handleInboundTurn({
+  await handleInboundTurn({
     channel,
     sessionKey,
     capabilities,
@@ -157,14 +157,11 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     accumulateFriendTokens,
   })
 
-  // Detect ponder deferral
-  const ponderDeferred = result.turnOutcome === "pondered"
+  const ponderDeferred = false
 
   // Build response
   let finalResponse: string
-  if (ponderDeferred) {
-    finalResponse = "the agent is pondering this — check back shortly via check_response."
-  } else if (responseText.length === 0) {
+  if (responseText.length === 0) {
     // Agent settled but no text came through callbacks — check session transcript for the settle answer
     const postTurnSession = loadSession(sessPath)
     if (postTurnSession?.messages) {

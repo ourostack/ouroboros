@@ -490,8 +490,35 @@ describe("normalizeBlueBubblesEvent", () => {
     const result = normalizeBlueBubblesEvent(dmImagePayload)
 
     expect(result.kind).toBe("message")
-    expect(result.textForAgent).toContain("image attachment")
+    expect(result.textForAgent).toContain("[attachments]")
+    expect(result.textForAgent).toContain("attachment:bluebubbles:")
     expect(result.textForAgent).toContain("IMG_5045.heic.jpeg")
+  })
+
+  it("falls back to a simple attachment marker when no attachment has a guid", async () => {
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
+    const result = normalizeBlueBubblesEvent({
+      ...dmImagePayload,
+      data: {
+        ...dmImagePayload.data,
+        attachments: [{ transferName: "mystery.heic", totalBytes: 1234 }],
+      },
+    } as any)
+
+    expect(result.textForAgent).toContain("[attachment: mystery.heic]")
+  })
+
+  it("falls back to an unknown attachment marker when neither guid nor transfer name is available", async () => {
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
+    const result = normalizeBlueBubblesEvent({
+      ...dmImagePayload,
+      data: {
+        ...dmImagePayload.data,
+        attachments: [{}],
+      },
+    } as any)
+
+    expect(result.textForAgent).toBe("[attachment: unknown]")
   })
 
   it("preserves the attachment marker when text is present (B2 fix)", async () => {
@@ -526,7 +553,8 @@ describe("normalizeBlueBubblesEvent", () => {
     }
     const result = normalizeBlueBubblesEvent(payload)
     expect(result.textForAgent).toContain("check this out")
-    expect(result.textForAgent).toContain("image attachment")
+    expect(result.textForAgent).toContain("[attachments]")
+    expect(result.textForAgent).toContain("attachment:bluebubbles:att-guid-1")
     expect(result.textForAgent).toContain("IMG_9999.jpeg")
   })
 
@@ -556,7 +584,9 @@ describe("normalizeBlueBubblesEvent", () => {
     }
     const result = normalizeBlueBubblesEvent(payload)
     expect(result.textForAgent).toContain("here they are")
-    expect(result.textForAgent).toContain("image attachment")
+    expect(result.textForAgent).toContain("[attachments]")
+    expect(result.textForAgent).toContain("attachment:bluebubbles:a1")
+    expect(result.textForAgent).toContain("attachment:bluebubbles:a2")
   })
 
   it("text with URL preview balloon: keeps the link-preview marker (regression guard)", async () => {
@@ -596,7 +626,8 @@ describe("normalizeBlueBubblesEvent", () => {
     const result = normalizeBlueBubblesEvent(dmAudioPayload)
 
     expect(result.kind).toBe("message")
-    expect(result.textForAgent).toContain("audio attachment")
+    expect(result.textForAgent).toContain("[attachments]")
+    expect(result.textForAgent).toContain("attachment:bluebubbles:")
     expect(result.textForAgent).toContain("Audio Message.mp3.mp3")
   })
 
@@ -759,7 +790,8 @@ describe("normalizeBlueBubblesEvent", () => {
 
       expect(result.kind).toBe("message")
       expect(result.text).toBe("")
-      expect(result.textForAgent).toBe("[attachment]")
+      expect(result.textForAgent).toContain("[attachments]")
+      expect(result.textForAgent).toContain("attachment:bluebubbles:file-1")
       expect(result.chat.sessionKey).toBe("chat_identifier:unknown")
       expect(result.chat.sendTarget).toEqual({ kind: "chat_identifier", value: "unknown" })
       expect(result.sender.externalId).toBe("Slugger Device")

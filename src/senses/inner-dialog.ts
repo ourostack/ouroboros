@@ -7,6 +7,7 @@ import { getAgentName, getAgentRoot } from "../heart/identity"
 import { loadSession, postTurn, type UsageData } from "../mind/context"
 import { buildSystem } from "../mind/prompt"
 import { getSharedMcpManager } from "../repertoire/mcp-manager"
+import { getToolsForChannel } from "../repertoire/tools"
 import { findNonCanonicalBundlePaths } from "../mind/bundle-manifest"
 import {
   drainPending,
@@ -19,6 +20,7 @@ import {
 } from "../mind/pending"
 import { advanceReturnObligation, listActiveReturnObligations, findPendingObligationForOrigin, fulfillObligation } from "../arc/obligations"
 import { buildAttentionQueue, buildAttentionQueueSummary, type AttentionItem } from "./attention-queue"
+import { readPonderPacket } from "../arc/packets"
 import { getChannelCapabilities } from "../mind/friends/channel"
 import { enforceTrustGate } from "./trust-gate"
 import { accumulateFriendTokens } from "../mind/friends/tokens"
@@ -590,6 +592,8 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
 
   // ── Adapter concern: build user message ──────────────────────────
   let userContent: string
+  let habitTools: string[] | undefined
+  let habitParsedSuccessfully = false
 
   if (existingMessages.length === 0) {
     // Fresh session: bootstrap message with non-canonical cleanup nudge
@@ -624,6 +628,7 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
         habitBody = parsed.body || undefined
         habitTitle = parsed.title || habitName
         habitLastRun = parsed.lastRun
+        habitTools = parsed.tools
       } catch {
         // Habit file missing or unreadable
       }
@@ -632,6 +637,7 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
       if (habitBody === undefined && habitTitle === habitName) {
         userContent = `habit "${habitName}" could not be read (file not found or unreadable). check habits/${habitName}.md exists.`
       } else {
+        habitParsedSuccessfully = true
         // Unified path: gather context for ALL habits (heartbeat included)
         const obligations = listActiveReturnObligations(agentName)
         const nowMs = now().getTime()
@@ -691,6 +697,31 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
   const selfContext: ResolvedContext = { friend: selfFriend, channel: innerCapabilities }
 
   const mcpManager = await getSharedMcpManager() ?? undefined
+
+  // ── Habit tool enforcement ───────────────────────────────────────
+  let habitToolsResolved: OpenAI.ChatCompletionFunctionTool[] | undefined
+  if (habitTools !== undefined) {
+    const fullTools = getToolsForChannel(innerCapabilities)
+    habitToolsResolved = fullTools.filter((t) => habitTools!.includes(t.function.name))
+    emitNervesEvent({
+      event: "habit.tools_restricted",
+      component: "senses",
+      message: "habit running with restricted tools",
+      meta: {
+        habitName: options?.habitName,
+        declared: habitTools,
+        resolved: habitToolsResolved.map((t) => t.function.name),
+      },
+    })
+  } else if (reason === "habit" && options?.habitName && habitParsedSuccessfully) {
+    emitNervesEvent({
+      event: "habit.tools_unrestricted",
+      component: "senses",
+      message: "habit running with full tool repertoire",
+      meta: { habitName: options.habitName },
+    })
+  }
+
   const sessionLoader = {
     loadOrCreate: async () => {
       if (existingMessages.length > 0) {
@@ -747,6 +778,13 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
             return null
           }
         },
+        packetResolver: (packetId) => {
+          try {
+            return readPonderPacket(getAgentRoot(agentName), packetId)
+          } catch {
+            return null
+          }
+        },
       })
       const summary = buildAttentionQueueSummary(attentionQueue)
       return summary ? [summary] : []
@@ -756,6 +794,7 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
       traceId,
       toolChoiceRequired: true,
       mcpManager,
+      ...(habitToolsResolved !== undefined && { tools: habitToolsResolved }),
       toolContext: {
         signin: async () => undefined,
         delegatedOrigins: attentionQueue,
