@@ -17,6 +17,7 @@ export interface PendingMessage {
   key?: string
   content: string
   timestamp: number
+  packetId?: string
   delegatedFrom?: DelegatedFrom
   obligationStatus?: "pending" | "fulfilled"
   mode?: "reflect" | "plan" | "relay"

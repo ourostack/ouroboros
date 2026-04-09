@@ -4,17 +4,51 @@ export const ponderTool: OpenAI.ChatCompletionFunctionTool = {
   type: "function",
   function: {
     name: "ponder",
-    description: "i need to sit with this. from a conversation, takes the thread inward with a thought and a parting word. from inner dialog, keeps the wheel turning for another pass. must be the only tool call in the turn. Use when a question deserves more thought than this turn allows. Don't ponder trivial questions.",
+    description: "create or revise a typed ponder packet so i don't lose the plot while i keep working. use this for harness friction, research, or reflection that should survive the current turn. ponder does not end the turn, does not defer the response by itself, and may be followed by more tools before i settle or rest. Don't ponder trivial questions.",
     parameters: {
       type: "object",
       properties: {
+        action: {
+          type: "string",
+          enum: ["create", "revise"],
+          description: "create a new packet or revise an existing drafting packet.",
+        },
+        kind: {
+          type: "string",
+          enum: ["harness_friction", "research", "reflection"],
+          description: "the packet kind. determines the SOP the inner session should follow.",
+        },
+        packet_id: {
+          type: "string",
+          description: "required for action=revise. the packet to revise in place.",
+        },
+        follows_packet_id: {
+          type: "string",
+          description: "optional follow-up linkage when a new packet grows out of an earlier one.",
+        },
+        objective: {
+          type: "string",
+          description: "the durable objective for this packet.",
+        },
+        summary: {
+          type: "string",
+          description: "brief factual summary of the work object or friction being preserved.",
+        },
+        success_criteria: {
+          type: "string",
+          description: "newline-delimited success criteria bullets.",
+        },
+        payload_json: {
+          type: "string",
+          description: "JSON object string with packet-specific structured details. use {} when empty.",
+        },
         thought: {
           type: "string",
-          description: "the question or thread that needs more thought — brief framing, not analysis. required from a conversation, ignored from inner dialog.",
+          description: "deprecated compatibility field. legacy thought text is normalized into a reflection packet.",
         },
         say: {
           type: "string",
-          description: "what you say before going quiet — speak to what caught your attention, not just that something did. required from a conversation, ignored from inner dialog.",
+          description: "deprecated compatibility field. retained for migration only; it no longer controls deferral or silence.",
         },
       },
     },
@@ -56,11 +90,19 @@ export const restTool: OpenAI.ChatCompletionFunctionTool = {
   type: "function",
   function: {
     name: "rest",
-    description: "put this down for now — the wheel stops until the next heartbeat. must be the only tool call in the turn.",
+    description: "end an inner-session turn when i'm done thinking. rest remains the explicit terminal move for the inner session and must be the only tool call in the turn. on idle heartbeat turns, use status=HEARTBEAT_OK.",
     parameters: {
       type: "object",
-      properties: {},
+      properties: {
+        status: {
+          type: "string",
+          description: "optional rest status. use HEARTBEAT_OK when the heartbeat fires and there is nothing to do.",
+        },
+        note: {
+          type: "string",
+          description: "optional brief note about why i'm resting.",
+        },
+      },
     },
   },
 };
-

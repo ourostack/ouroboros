@@ -1483,7 +1483,7 @@ describe("runtimeInfoSection", () => {
     expect(result).toContain("process type: cli session")
   })
 
-  it("inner channel includes process type: inner dialog", async () => {
+  it("inner channel includes process type: inner session", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
@@ -1491,7 +1491,7 @@ describe("runtimeInfoSection", () => {
     const { runtimeInfoSection, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = runtimeInfoSection("inner")
-    expect(result).toContain("process type: inner dialog")
+    expect(result).toContain("process type: inner session")
   })
 
   it("teams channel includes process type: teams handler", async () => {
@@ -2748,7 +2748,7 @@ describe("buildSystem with context", () => {
     const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = await buildSystem("inner")
-    expect(result).toContain("this is my inner dialog. there is no one else here.")
+    expect(result).toContain("this is my inner session. there is no one else here.")
     expect(result).toContain("the messages that appear here are my own awareness surfacing")
     expect(result).toContain("i can think freely here")
   })
@@ -2795,7 +2795,7 @@ describe("buildSystem with context", () => {
     expect(result).not.toContain("delegation hint")
   })
 
-  it("buildSystem('inner') includes inner dialog loop orientation", async () => {
+  it("buildSystem('inner') includes inner session loop orientation", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
@@ -2804,6 +2804,10 @@ describe("buildSystem with context", () => {
     resetPsycheCache()
     const result = await buildSystem("inner")
     expect(result).toContain("when a thought is ready to share, i surface it outward")
+    expect(result).toContain("ponder creates or revises typed packets")
+    expect(result).toContain("HEARTBEAT_OK")
+    expect(result).toContain("## ponder packet sops")
+    expect(result).toContain("harness_friction")
     expect(result).toContain("think. journal. share. rest.")
   })
 
@@ -2815,7 +2819,7 @@ describe("buildSystem with context", () => {
     const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = await buildSystem("cli")
-    expect(result).not.toContain("this is my inner dialog. there is no one else here.")
+    expect(result).not.toContain("this is my inner session. there is no one else here.")
   })
 
   // --- A: Body map + self-evolution orientation ---

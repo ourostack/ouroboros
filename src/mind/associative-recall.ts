@@ -2,7 +2,8 @@ import type OpenAI from "openai"
 import * as fs from "fs"
 import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
-import { resolveDiaryRoot } from "./diary"
+import { resolveDiaryRoot, type DiaryEntryProvenance } from "./diary"
+import { classifyProvenanceTrust } from "./provenance-trust"
 import { type EmbeddingProvider, createDefaultEmbeddingProvider } from "./embedding-provider"
 
 // Re-export EmbeddingProvider so existing consumers don't break.
@@ -14,6 +15,7 @@ export interface DiaryEntryRecord {
   source: string
   createdAt: string
   embedding: number[]
+  provenance?: DiaryEntryProvenance
 }
 
 export interface RecalledFact extends DiaryEntryRecord {
@@ -211,8 +213,15 @@ export async function injectAssociativeRecall(
       }
 
       for (const fact of recalled) {
+        let meta = `score=${fact.score.toFixed(3)} source=${fact.source}`
+        if (fact.provenance) {
+          if (fact.provenance.channel) meta += ` channel=${fact.provenance.channel}`
+          if (fact.provenance.friendName) meta += ` friend=${fact.provenance.friendName}`
+          if (fact.provenance.trust) meta += ` trust=${fact.provenance.trust}`
+        }
+        const tag = classifyProvenanceTrust(fact.provenance) === "external" ? "diary/external" : "diary"
         resultLines.push({
-          text: `[diary] ${fact.text} [score=${fact.score.toFixed(3)} source=${fact.source}]`,
+          text: `[${tag}] ${fact.text} [${meta}]`,
           score: fact.score,
         })
       }

@@ -5,12 +5,12 @@ import { teamsToolDefinitions } from "./tools-teams";
 import { bluebubblesToolDefinitions } from "./tools-bluebubbles";
 import { adoSemanticToolDefinitions } from "./ado-semantic";
 import { githubToolDefinitions } from "./tools-github";
+import { bundleToolDefinitions } from "./tools-bundle";
 import type { ChannelCapabilities, ResolvedContext } from "../mind/friends/types";
 import { emitNervesEvent } from "../nerves/runtime";
 import type { ProviderCapability } from "../heart/core";
 import { guardInvocation } from "./guardrails";
 import { getAgentRoot } from "../heart/identity";
-import { getModelCapabilities } from "../heart/model-capabilities";
 import { surfaceToolDefinition } from "./tools-surface";
 import type { McpManager } from "./mcp-manager";
 import { mcpToolsAsDefinitions } from "./mcp-tools";
@@ -31,7 +31,7 @@ export type { ToolContext, ToolHandler, ToolDefinition } from "./tools-base";
 export { surfaceToolDef } from "./tools-surface";
 
 // All tool definitions in a single registry
-const allDefinitions: ToolDefinition[] = [...baseToolDefinitions, ...bluebubblesToolDefinitions, ...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions, surfaceToolDefinition];
+const allDefinitions: ToolDefinition[] = [...baseToolDefinitions, ...bluebubblesToolDefinitions, ...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions, ...bundleToolDefinitions, surfaceToolDefinition];
 
 // MCP tool definitions — populated each time getToolsForChannel() is called with an mcpManager.
 // Kept separate from allDefinitions so execTool can find them.
@@ -77,24 +77,17 @@ function filterByCapability(
 // Teams/integration tools are included only if their integration is in availableIntegrations.
 // When toolPreferences is provided, matching preferences are appended to tool descriptions.
 // When providerCapabilities is provided, tools with requiredCapability are filtered.
-// When chatModel is provided and has `vision: true` in ModelCapabilities, the
-// BlueBubbles-scoped `describe_image` tool is excluded (native image_url
-// pass-through makes the tool redundant). When chatModel is undefined the
-// tool IS included — the default errs toward more tools on an ambiguous caller.
 export function getToolsForChannel(
   capabilities?: ChannelCapabilities,
   toolPreferences?: Record<string, string>,
   _context?: Pick<ResolvedContext, "friend" | "channel">,
   providerCapabilities?: ReadonlySet<ProviderCapability>,
   mcpManager?: McpManager,
-  chatModel?: string,
+  _chatModel?: string,
 ): OpenAI.ChatCompletionFunctionTool[] {
   const baseTools = baseToolsForCapabilities();
-  const visionCapable = chatModel ? getModelCapabilities(chatModel).vision === true : false;
   const bluebubblesTools = capabilities?.channel === "bluebubbles"
-    ? bluebubblesToolDefinitions
-        .filter((d) => d.tool.function.name !== "describe_image" || !visionCapable)
-        .map((d) => d.tool)
+    ? bluebubblesToolDefinitions.map((d) => d.tool)
     : [];
 
   let result: OpenAI.ChatCompletionFunctionTool[];
