@@ -17,7 +17,7 @@ import type { FriendStore } from "../../mind/friends/store"
 import type { CheckForUpdateResult } from "../versioning/update-checker"
 
 export type OuroCliCommand =
-  | { kind: "daemon.up" }
+  | { kind: "daemon.up"; noRepair?: boolean }
   | { kind: "daemon.stop" }
   | { kind: "daemon.status" }
   | { kind: "daemon.logs" }

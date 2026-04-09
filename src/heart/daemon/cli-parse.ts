@@ -41,7 +41,7 @@ export function isAgentProvider(value: unknown): value is AgentProvider {
 export function usage(): string {
   return [
     "Usage:",
-    "  ouro [up]",
+    "  ouro [up] [--no-repair]",
     "  ouro dev [--repo-path <path>] [--clone [--clone-path <path>]]",
     "  ouro stop|down|status|logs|hatch",
     "  ouro outlook [--json]",
@@ -717,7 +717,10 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
     if (!hookAgent) throw new Error("hook requires --agent <name>")
     return { kind: "hook", event, agent: hookAgent }
   }
-  if (head === "up") return { kind: "daemon.up" }
+  if (head === "up") {
+    const noRepair = args.includes("--no-repair")
+    return noRepair ? { kind: "daemon.up", noRepair: true } : { kind: "daemon.up" }
+  }
   if (head === "dev") {
     const devArgs = args.slice(1)
     let repoPath: string | undefined
