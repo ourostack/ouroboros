@@ -8,6 +8,11 @@ vi.mock("../../../heart/provider-ping", () => ({
   pingProvider: vi.fn().mockResolvedValue({ ok: true }),
 }))
 
+// Mock startup-tui so ensureDaemonRunning doesn't poll a real socket
+vi.mock("../../../heart/daemon/startup-tui", () => ({
+  pollDaemonStartup: vi.fn(async () => ({ stable: [], degraded: [] })),
+}))
+
 import {
   createDefaultOuroCliDeps,
   discoverExistingCredentials,
