@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { HealthMonitor } from "../../../heart/daemon/health-monitor"
 
@@ -94,5 +94,74 @@ describe("HealthMonitor", () => {
       "[critical] agent-processes: non-running agents: ouroboros",
     )
     expect(alertSink).toHaveBeenNthCalledWith(2, "[critical] disk-space: disk usage critical (95%)")
+  })
+
+  describe("periodic scheduling", () => {
+    beforeEach(() => {
+      vi.useFakeTimers()
+    })
+
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    function createMonitor() {
+      return new HealthMonitor({
+        processManager: {
+          listAgentSnapshots: () => [{ name: "slugger", status: "running" }],
+        },
+        scheduler: {
+          listJobs: () => [{ id: "daily", lastRun: "2026-01-01T00:00:00Z" }],
+        },
+      })
+    }
+
+    it("calls runChecks on the specified interval", async () => {
+      const monitor = createMonitor()
+      const spy = vi.spyOn(monitor, "runChecks")
+
+      monitor.startPeriodicChecks(5000)
+      expect(spy).not.toHaveBeenCalled()
+
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(spy).toHaveBeenCalledTimes(1)
+
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(spy).toHaveBeenCalledTimes(2)
+
+      monitor.stopPeriodicChecks()
+    })
+
+    it("stopPeriodicChecks clears the interval", async () => {
+      const monitor = createMonitor()
+      const spy = vi.spyOn(monitor, "runChecks")
+
+      monitor.startPeriodicChecks(5000)
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(spy).toHaveBeenCalledTimes(1)
+
+      monitor.stopPeriodicChecks()
+
+      await vi.advanceTimersByTimeAsync(10000)
+      expect(spy).toHaveBeenCalledTimes(1)
+    })
+
+    it("calling startPeriodicChecks twice does not create duplicate intervals", async () => {
+      const monitor = createMonitor()
+      const spy = vi.spyOn(monitor, "runChecks")
+
+      monitor.startPeriodicChecks(5000)
+      monitor.startPeriodicChecks(5000)
+
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(spy).toHaveBeenCalledTimes(1)
+
+      monitor.stopPeriodicChecks()
+    })
+
+    it("stopPeriodicChecks is safe to call when not started", () => {
+      const monitor = createMonitor()
+      expect(() => monitor.stopPeriodicChecks()).not.toThrow()
+    })
   })
 })
