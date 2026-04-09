@@ -28,6 +28,12 @@ afterEach(() => {
 })
 
 describe("ponder packets", () => {
+  it("keeps packets decoupled from repertoire imports", () => {
+    const source = fs.readFileSync(path.join(__dirname, "../../arc/packets.ts"), "utf-8")
+
+    expect(source).not.toContain("../repertoire/")
+  })
+
   it("creates drafting packets with SOP and linked relationship fields", () => {
     const agentRoot = makeAgentRoot()
     const packet = createPonderPacket(agentRoot, {
