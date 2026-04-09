@@ -65,6 +65,23 @@ describe("ouro bluebubbles replay CLI parsing", () => {
     })
   })
 
+  it("ignores unknown trailing replay arguments after parsing known flags", () => {
+    expect(parseOuroCommand([
+      "bluebubbles",
+      "replay",
+      "--agent",
+      "slugger",
+      "--message-guid",
+      "message-guid",
+      "--mystery-flag",
+    ])).toEqual({
+      kind: "bluebubbles.replay",
+      agent: "slugger",
+      messageGuid: "message-guid",
+      eventType: "new-message",
+    })
+  })
+
   it("rejects malformed replay arguments", () => {
     expect(() => parseOuroCommand(["bluebubbles", "replay", "--agent", "slugger"])).toThrow("message-guid")
     expect(() => parseOuroCommand(["bluebubbles", "replay", "--message-guid", "guid"])).toThrow("--agent")
@@ -78,6 +95,10 @@ describe("ouro bluebubbles replay CLI parsing", () => {
       "--event-type",
       "not-real",
     ])).toThrow("new-message")
+  })
+
+  it("rejects unknown bluebubbles subcommands with usage guidance", () => {
+    expect(() => parseOuroCommand(["bluebubbles", "inspect"])).toThrow("Usage")
   })
 })
 

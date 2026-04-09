@@ -2393,6 +2393,19 @@ describe("BlueBubbles sense runtime", () => {
     expect(webhookErrors).toHaveLength(0)
   })
 
+  it("rethrows unexpected normalization failures from handleBlueBubblesEvent", async () => {
+    const bluebubbles = await import("../../../senses/bluebubbles")
+
+    await expect(
+      bluebubbles.handleBlueBubblesEvent({
+        type: "new-message",
+        data: {
+          text: "missing guid",
+        },
+      }),
+    ).rejects.toThrow("BlueBubbles payload is missing data.guid")
+  })
+
   it("starts an HTTP server on the configured BlueBubbles port", async () => {
     const bluebubbles = await import("../../../senses/bluebubbles")
     bluebubbles.startBlueBubblesApp()
