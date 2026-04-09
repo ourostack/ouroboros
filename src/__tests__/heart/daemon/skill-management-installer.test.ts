@@ -1,8 +1,20 @@
-import { describe, it, expect, vi, beforeEach } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 describe("ensureSkillManagement", () => {
+  let consoleLogSpy: ReturnType<typeof vi.spyOn> | null = null
+  let consoleErrorSpy: ReturnType<typeof vi.spyOn> | null = null
+
   beforeEach(() => {
     vi.resetModules()
+    consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {})
+    consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    consoleLogSpy?.mockRestore()
+    consoleErrorSpy?.mockRestore()
+    consoleLogSpy = null
+    consoleErrorSpy = null
   })
 
   function mockFs(opts: { existsSync?: (p: string) => boolean; readdirSync?: () => string[] }) {
