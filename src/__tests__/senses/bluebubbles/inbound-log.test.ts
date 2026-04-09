@@ -97,6 +97,28 @@ describe("BlueBubbles inbound log", () => {
     )
   })
 
+  it("dedupes repeated writes for the same sessionKey/messageGuid pair", async () => {
+    const {
+      getBlueBubblesInboundLogPath,
+      hasRecordedBlueBubblesInbound,
+      recordBlueBubblesInbound,
+    } = await import("../../../senses/bluebubbles/inbound-log")
+
+    const logPath = getBlueBubblesInboundLogPath("slugger", messageEvent.chat.sessionKey)
+    expect(recordBlueBubblesInbound("slugger", messageEvent, "webhook")).toBe(logPath)
+    expect(recordBlueBubblesInbound("slugger", messageEvent, "mutation-recovery")).toBe(logPath)
+
+    const lines = fs.readFileSync(logPath, "utf-8").trim().split("\n")
+    expect(lines).toHaveLength(1)
+    expect(JSON.parse(lines[0] ?? "{}")).toEqual(
+      expect.objectContaining({
+        messageGuid: "msg-1",
+        source: "webhook",
+      }),
+    )
+    expect(hasRecordedBlueBubblesInbound("slugger", messageEvent.chat.sessionKey, "msg-1")).toBe(true)
+  })
+
   it("treats malformed logs as empty and returns the target path when writes fail", async () => {
     const {
       getBlueBubblesInboundLogPath,

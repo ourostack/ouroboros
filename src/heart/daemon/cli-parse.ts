@@ -57,6 +57,7 @@ export function usage(): string {
     "  ouro habit list [--agent <name>]",
     "  ouro habit create [--agent <name>] <name> [--cadence <interval>]",
     "  ouro link <agent> --friend <id> --provider <provider> --external-id <external-id>",
+    "  ouro bluebubbles replay --agent <name> --message-guid <guid> [--event-type new-message|updated-message] [--json]",
     "  ouro task board [<status>] [--agent <name>]",
     "  ouro task create <title> [--type <type>] [--agent <name>]",
     "  ouro task update <id> <status> [--agent <name>]",
@@ -636,6 +637,51 @@ function parseSetupCommand(args: string[]): OuroCliCommand {
   return { kind: "setup", tool, agent }
 }
 
+function parseBlueBubblesCommand(args: string[]): OuroCliCommand {
+  const subcommand = args[0]
+  if (subcommand !== "replay") {
+    throw new Error(`Usage\n${usage()}`)
+  }
+
+  let agent: string | undefined
+  let messageGuid: string | undefined
+  let eventType: "new-message" | "updated-message" = "new-message"
+  let json = false
+
+  for (let i = 1; i < args.length; i += 1) {
+    if (args[i] === "--agent" && args[i + 1]) {
+      agent = args[++i]
+      continue
+    }
+    if (args[i] === "--message-guid" && args[i + 1]) {
+      messageGuid = args[++i]
+      continue
+    }
+    if (args[i] === "--event-type" && args[i + 1]) {
+      const candidate = args[++i]
+      if (candidate !== "new-message" && candidate !== "updated-message") {
+        throw new Error("bluebubbles replay --event-type must be new-message or updated-message")
+      }
+      eventType = candidate
+      continue
+    }
+    if (args[i] === "--json") {
+      json = true
+      continue
+    }
+  }
+
+  if (!agent) throw new Error("bluebubbles replay requires --agent <name>")
+  if (!messageGuid) throw new Error("bluebubbles replay requires --message-guid <guid>")
+  return {
+    kind: "bluebubbles.replay",
+    agent,
+    messageGuid,
+    eventType,
+    ...(json ? { json: true } : {}),
+  }
+}
+
 // ── Main dispatch ──
 
 export function parseOuroCommand(args: string[]): OuroCliCommand {
@@ -721,6 +767,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "mcp-serve") return parseMcpServeCommand(args.slice(1))
   if (head === "setup") return parseSetupCommand(args.slice(1))
   if (head === "doctor") return { kind: "doctor" }
+  if (head === "bluebubbles") return parseBlueBubblesCommand(args.slice(1))
 
   throw new Error(`Unknown command '${args.join(" ")}'.\n${usage()}`)
 }
