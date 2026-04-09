@@ -79,6 +79,9 @@ const DISPATCH_EXEMPT_PATTERNS = [
   // directory list). No runtime behavior — consumed by tools-bundle.ts
   // which owns the observability for bundle operations.
   "repertoire/bundle-templates",
+  // HTTP health probe: pure HTTP utility factory. The HealthMonitor caller
+  // owns observability via daemon.health_result events.
+  "daemon/http-health-probe",
 ]
 
 function isDispatchExempt(filePath: string): boolean {
