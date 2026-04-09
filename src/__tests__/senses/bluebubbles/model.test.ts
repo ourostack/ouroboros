@@ -490,7 +490,8 @@ describe("normalizeBlueBubblesEvent", () => {
     const result = normalizeBlueBubblesEvent(dmImagePayload)
 
     expect(result.kind).toBe("message")
-    expect(result.textForAgent).toContain("image attachment")
+    expect(result.textForAgent).toContain("[attachments]")
+    expect(result.textForAgent).toContain("attachment:bluebubbles:")
     expect(result.textForAgent).toContain("IMG_5045.heic.jpeg")
   })
 
@@ -526,7 +527,8 @@ describe("normalizeBlueBubblesEvent", () => {
     }
     const result = normalizeBlueBubblesEvent(payload)
     expect(result.textForAgent).toContain("check this out")
-    expect(result.textForAgent).toContain("image attachment")
+    expect(result.textForAgent).toContain("[attachments]")
+    expect(result.textForAgent).toContain("attachment:bluebubbles:att-guid-1")
     expect(result.textForAgent).toContain("IMG_9999.jpeg")
   })
 
@@ -556,7 +558,9 @@ describe("normalizeBlueBubblesEvent", () => {
     }
     const result = normalizeBlueBubblesEvent(payload)
     expect(result.textForAgent).toContain("here they are")
-    expect(result.textForAgent).toContain("image attachment")
+    expect(result.textForAgent).toContain("[attachments]")
+    expect(result.textForAgent).toContain("attachment:bluebubbles:a1")
+    expect(result.textForAgent).toContain("attachment:bluebubbles:a2")
   })
 
   it("text with URL preview balloon: keeps the link-preview marker (regression guard)", async () => {
