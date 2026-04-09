@@ -23,6 +23,10 @@ vi.mock("../../../heart/daemon/stale-bundle-prune", () => ({
   pruneStaleEphemeralBundles: (...a: any[]) => mocks.pruneStaleEphemeralBundles(...a),
 }))
 
+vi.mock("../../../heart/daemon/startup-tui", () => ({
+  pollDaemonStartup: vi.fn(async () => ({ stable: [], degraded: [] })),
+}))
+
 import { runOuroCli, type OuroCliDeps } from "../../../heart/daemon/daemon-cli"
 
 function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
