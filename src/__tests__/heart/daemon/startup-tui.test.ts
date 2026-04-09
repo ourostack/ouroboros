@@ -402,5 +402,71 @@ describe("startup-tui", () => {
       expect(allOutput).toContain("alpha")
       expect(allOutput).toContain("beta")
     })
+
+    it("returns empty result on timeout", async () => {
+      let callCount = 0
+      const deps = {
+        sendCommand: vi.fn(async () => { throw new Error("ECONNREFUSED") }),
+        socketPath: "/tmp/test.sock",
+        writeStdout: vi.fn(),
+        now: vi.fn(() => {
+          callCount++
+          // Exceed the 60s timeout on second call
+          return callCount <= 1 ? 0 : 61_000
+        }),
+        sleep: vi.fn(async () => {}),
+      }
+
+      const result = await pollDaemonStartup(deps)
+      expect(result.stable).toEqual([])
+      expect(result.degraded).toEqual([])
+    })
+
+    it("final summary omits error/fix lines for default messages", async () => {
+      const now = new Date("2026-04-09T12:00:10.000Z").getTime()
+      // errorReason/fixHint null -> assessStability fills defaults "unknown error"/"check daemon logs"
+      const payload = makePayload([
+        { agent: "alpha", status: "crashed", startedAt: null, errorReason: null, fixHint: null },
+      ])
+
+      const writes: string[] = []
+      const deps = {
+        sendCommand: vi.fn(async () => makeDaemonResponse(payload)),
+        socketPath: "/tmp/test.sock",
+        writeStdout: vi.fn((text: string) => writes.push(text)),
+        now: vi.fn(() => now),
+        sleep: vi.fn(async () => {}),
+      }
+
+      await pollDaemonStartup(deps)
+      const allOutput = writes.join("")
+      // Should NOT contain "error: unknown error" or "fix: check daemon logs"
+      // because renderFinalSummary suppresses default values
+      expect(allOutput).toContain("alpha")
+      expect(allOutput).toContain("degraded")
+      expect(allOutput).not.toContain("error: unknown error")
+      expect(allOutput).not.toContain("fix:   check daemon logs")
+    })
+
+    it("final summary includes custom error/fix lines", async () => {
+      const now = new Date("2026-04-09T12:00:10.000Z").getTime()
+      const payload = makePayload([
+        { agent: "alpha", status: "crashed", startedAt: null, errorReason: "bad config file", fixHint: "edit agent.json" },
+      ])
+
+      const writes: string[] = []
+      const deps = {
+        sendCommand: vi.fn(async () => makeDaemonResponse(payload)),
+        socketPath: "/tmp/test.sock",
+        writeStdout: vi.fn((text: string) => writes.push(text)),
+        now: vi.fn(() => now),
+        sleep: vi.fn(async () => {}),
+      }
+
+      await pollDaemonStartup(deps)
+      const allOutput = writes.join("")
+      expect(allOutput).toContain("bad config file")
+      expect(allOutput).toContain("edit agent.json")
+    })
   })
 })
