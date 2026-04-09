@@ -63,6 +63,7 @@ import type {
   WhoamiCliCommand,
   SessionCliCommand,
   ThoughtsCliCommand,
+  DoctorCliCommand,
 } from "./cli-types"
 import { parseOuroCommand } from "./cli-parse"
 import { isAgentProvider, usage } from "./cli-parse"
@@ -257,7 +258,7 @@ async function verifyProviderCredentials(
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "outlook" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "outlook" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DoctorCliCommand>): DaemonCommand {
   return command
 }
 
@@ -2021,6 +2022,13 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     }
 
     const message = `hatched ${hatchInput.agentName} at ${result.bundleRoot} using specialist identity ${result.selectedIdentity}; ${daemonResult.message}`
+    deps.writeStdout(message)
+    return message
+  }
+
+  // ── doctor (local, no daemon socket needed) ──
+  if (command.kind === "doctor") {
+    const message = "ouro doctor: not yet implemented"
     deps.writeStdout(message)
     return message
   }
