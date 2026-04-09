@@ -81,6 +81,7 @@ import { readFirstBundleMetaVersion, createDefaultOuroCliDeps, defaultListDiscov
 import { runDoctorChecks } from "./doctor"
 import { formatDoctorOutput } from "./cli-render-doctor"
 import { runInteractiveRepair } from "./interactive-repair"
+import { runAgenticRepair } from "./agentic-repair"
 import { pollDaemonStartup } from "./startup-tui"
 import { pruneStaleEphemeralBundles } from "./stale-bundle-prune"
 
@@ -997,7 +998,41 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
           meta: { degradedCount: daemonResult.stability.degraded.length },
         })
       } else {
-        await runInteractiveRepair(daemonResult.stability.degraded, {
+        await runAgenticRepair(daemonResult.stability.degraded, {
+          /* v8 ignore start -- production provider discovery wiring @preserve */
+          discoverWorkingProvider: async () => {
+            const { discoverWorkingProvider: discover } = await import("./provider-discovery")
+            const { discoverExistingCredentials } = await import("./cli-defaults")
+            const { pingProvider } = await import("../provider-ping")
+            return discover({
+              discoverExistingCredentials,
+              pingProvider: pingProvider as unknown as (provider: AgentProvider, config: Record<string, string>) => Promise<import("../provider-ping").PingResult>,
+              env: process.env as Record<string, string | undefined>,
+              secretsRoot: deps.secretsRoot ?? `${process.env["HOME"]}/.agentsecrets`,
+            })
+          },
+          createProviderRuntime: (provider, _credentials) => {
+            const { createProviderRegistry } = require("../core") as typeof import("../core")
+            const runtime = createProviderRegistry().resolve(provider)
+            if (!runtime) throw new Error(`failed to create runtime for ${provider}`)
+            return runtime
+          },
+          readDaemonLogsTail: () => {
+            try {
+              const fs = require("node:fs") as typeof import("node:fs")
+              const path = require("node:path") as typeof import("node:path")
+              const logsDir = path.join(process.env["HOME"] ?? "", ".agentstate", "daemon", "logs")
+              const files = fs.readdirSync(logsDir).filter((f: string) => f.endsWith(".log")).sort()
+              if (files.length === 0) return "(no daemon logs found)"
+              const lastLog = fs.readFileSync(path.join(logsDir, files[files.length - 1]!), "utf8")
+              const lines = lastLog.split("\n")
+              return lines.slice(-50).join("\n")
+            } catch {
+              return "(unable to read daemon logs)"
+            }
+          },
+          /* v8 ignore stop */
+          runInteractiveRepair,
           promptInput: deps.promptInput ?? (async () => "n"),
           writeStdout: deps.writeStdout,
           runAuthFlow: async (agent: string) => {
