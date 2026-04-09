@@ -136,7 +136,9 @@ export async function ensureDaemonRunning(deps: OuroCliDeps): Promise<EnsureDaem
     sendCommand: deps.sendCommand,
     socketPath: deps.socketPath,
     writeStdout: deps.writeStdout,
+    /* v8 ignore next -- thin wrapper: real Date.now() injected for testability @preserve */
     now: () => Date.now(),
+    /* v8 ignore next -- thin wrapper: real setTimeout injected for testability @preserve */
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
   })
 
