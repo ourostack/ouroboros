@@ -138,6 +138,25 @@ describe("diary_write handler provenance extraction", () => {
     expect(parsed.provenance).toBeUndefined()
   })
 
+  it("creates provenance with only tool when context has no channel or friend", async () => {
+    const handler = await getDiaryWriteHandler()
+    const ctx: Partial<ToolContext> = {
+      context: {} as unknown as ResolvedContext,
+    }
+
+    await handler({ entry: "test entry context no channel no friend" }, ctx as ToolContext)
+
+    const factsPath = path.join(agentRoot, "diary", "facts.jsonl")
+    const line = fs.readFileSync(factsPath, "utf8").trim()
+    const parsed = JSON.parse(line) as DiaryEntry
+    expect(parsed.provenance).toBeDefined()
+    expect(parsed.provenance!.tool).toBe("diary_write")
+    expect(parsed.provenance!.channel).toBeUndefined()
+    expect(parsed.provenance!.friendId).toBeUndefined()
+    expect(parsed.provenance!.friendName).toBeUndefined()
+    expect(parsed.provenance!.trust).toBeUndefined()
+  })
+
   it("always sets tool field to diary_write in provenance", async () => {
     const handler = await getDiaryWriteHandler()
     const friend = makeFriend({ id: "f-2", name: "bob", trustLevel: "stranger" })
