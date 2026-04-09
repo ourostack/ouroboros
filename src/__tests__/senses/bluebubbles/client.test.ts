@@ -12,6 +12,8 @@ vi.mock("../../../heart/identity", () => ({
     humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
     agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
   })),
+  getAgentName: () => "slugger",
+  getAgentRoot: () => "/tmp/AgentBundles/slugger.ouro",
   getAgentToolsRoot: () => "/tmp/AgentBundles/slugger.ouro/state/tools",
 }))
 
@@ -1471,7 +1473,7 @@ describe("BlueBubbles client", () => {
       expect.objectContaining({
         kind: "message",
         requiresRepair: false,
-        textForAgent: "[image attachment: IMG_5045.heic.jpeg (600x800)]",
+        textForAgent: expect.stringContaining("attachment:bluebubbles:image-1"),
         inputPartsForAgent: [
           {
             type: "image_url",
@@ -1574,10 +1576,10 @@ describe("BlueBubbles client", () => {
         kind: "message",
         requiresRepair: false,
         inputPartsForAgent: undefined,
-        textForAgent:
-          "[audio attachment: Audio Message.mp3]\n[voice note transcript: hello from audio]",
+        textForAgent: expect.stringContaining("[voice note transcript: hello from audio]"),
       }),
     )
+    expect(result.textForAgent).toContain("attachment:bluebubbles:audio-1")
     expect(hydrateBlueBubblesAttachments.mock.calls[0]?.[0]).toEqual([
       expect.objectContaining({ guid: "audio-1", mimeType: "audio/mp3", transferName: "Audio Message.mp3" }),
     ])
@@ -1676,10 +1678,11 @@ describe("BlueBubbles client", () => {
       expect.objectContaining({
         kind: "message",
         requiresRepair: false,
-        textForAgent: "[audio attachment: Audio Message.mp3]\n[voice note transcript: hello from codex]",
+        textForAgent: expect.stringContaining("[voice note transcript: hello from codex]"),
         inputPartsForAgent: undefined,
       }),
     )
+    expect(result.textForAgent).toContain("attachment:bluebubbles:audio-1")
     expect(hydrateBlueBubblesAttachments).toHaveBeenCalledWith(
       [{ guid: "audio-1", mimeType: "audio/mp3", transferName: "Audio Message.mp3" }],
       expect.any(Object),
@@ -1770,10 +1773,11 @@ describe("BlueBubbles client", () => {
       expect.objectContaining({
         kind: "message",
         requiresRepair: false,
-        textForAgent: "[audio attachment: Audio Message.mp3]\n[voice note transcript: hello from minimax]",
+        textForAgent: expect.stringContaining("[voice note transcript: hello from minimax]"),
         inputPartsForAgent: undefined,
       }),
     )
+    expect(result.textForAgent).toContain("attachment:bluebubbles:audio-1")
     expect(hydrateBlueBubblesAttachments).toHaveBeenCalledWith(
       [{ guid: "audio-1", mimeType: "audio/mp3", transferName: "Audio Message.mp3" }],
       expect.any(Object),
@@ -1862,10 +1866,10 @@ describe("BlueBubbles client", () => {
       expect.objectContaining({
         requiresRepair: false,
         inputPartsForAgent: undefined,
-        textForAgent:
-          "[attachment: file.pdf]\n[attachment hydration failed for file.pdf: socket reset]",
+        textForAgent: expect.stringContaining("[attachment hydration failed for file.pdf: socket reset]"),
       }),
     )
+    expect(result.textForAgent).toContain("attachment:bluebubbles:file-1")
   })
 
   it("appends hydrated media suffixes cleanly when the repaired agent text is empty", async () => {
@@ -1947,9 +1951,10 @@ describe("BlueBubbles client", () => {
     expect(result).toEqual(
       expect.objectContaining({
         requiresRepair: false,
-        textForAgent: "[audio attachment: Audio Message.mp3]\n[voice note transcript: hello]",
+        textForAgent: expect.stringContaining("[voice note transcript: hello]"),
       }),
     )
+    expect(result.textForAgent).toContain("attachment:bluebubbles:audio-1")
   })
 
   it("keeps generic OG-card fallback text when repair succeeds but no preview metadata is available", async () => {

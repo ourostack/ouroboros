@@ -19,9 +19,13 @@ vi.mock("../../../heart/identity", async () => {
   }
 })
 
-vi.mock("fs/promises", () => ({
-  readFile: vi.fn(),
-}))
+vi.mock("fs/promises", async () => {
+  const actual = await vi.importActual<typeof import("fs/promises")>("fs/promises")
+  return {
+    ...actual,
+    readFile: vi.fn(),
+  }
+})
 
 vi.mock("../../../heart/attachments/materialize", async () => {
   const actual = await vi.importActual<typeof import("../../../heart/attachments/materialize")>("../../../heart/attachments/materialize")
@@ -69,7 +73,13 @@ describe("Content block assembly", () => {
 
       expect(result).toHaveLength(2)
       expect(result[0].type).toBe("image_url")
-      expect(result[1]).toEqual({ type: "text", text: "[Image #1] describe this" })
+      expect(result[1]).toEqual(
+        expect.objectContaining({
+          type: "text",
+          text: expect.stringContaining("[Image #1] describe this"),
+        }),
+      )
+      expect(result[1].type === "text" ? result[1].text : "").toContain("[attachments]")
     })
 
     it("produces multiple image_url parts for multiple images", async () => {
@@ -86,7 +96,13 @@ describe("Content block assembly", () => {
       expect(result).toHaveLength(3) // 2 images + 1 text
       expect(result[0].type).toBe("image_url")
       expect(result[1].type).toBe("image_url")
-      expect(result[2]).toEqual({ type: "text", text: "[Image #1] and [Image #2]" })
+      expect(result[2]).toEqual(
+        expect.objectContaining({
+          type: "text",
+          text: expect.stringContaining("[Image #1] and [Image #2]"),
+        }),
+      )
+      expect(result[2].type === "text" ? result[2].text : "").toContain("[attachments]")
     })
 
     it("returns text-only when images map is empty (no image paste)", async () => {
@@ -138,7 +154,13 @@ describe("Content block assembly", () => {
       if (parts[0].type === "image_url") {
         expect(parts[0].image_url.url).toContain("data:image/png;base64,")
       }
-      expect(parts[1]).toEqual({ type: "text", text: "[Image #1] check this" })
+      expect(parts[1]).toEqual(
+        expect.objectContaining({
+          type: "text",
+          text: expect.stringContaining("[Image #1] check this"),
+        }),
+      )
+      expect(parts[1].type === "text" ? parts[1].text : "").toContain("[attachments]")
     })
 
     it("registers shared attachments and appends the attachment block to text", async () => {

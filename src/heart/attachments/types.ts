@@ -21,7 +21,7 @@ export interface AttachmentRecordBase {
 
 export interface BlueBubblesAttachmentRecord extends AttachmentRecordBase {
   source: "bluebubbles"
-  sourceData: BlueBubblesAttachmentSummary & { guid: string }
+  sourceData: BlueBubblesAttachmentSummary & { guid: string; localPath?: string }
 }
 
 export interface CliLocalFileAttachmentRecord extends AttachmentRecordBase {
@@ -84,6 +84,11 @@ function stableCliLocalFileId(filePath: string): string {
 export function buildBlueBubblesAttachmentRecord(
   summary: BlueBubblesAttachmentSummary,
   now = Date.now(),
+  options: {
+    localPath?: string
+    mimeType?: string
+    byteCount?: number
+  } = {},
 ): BlueBubblesAttachmentRecord {
   const guid = summary.guid?.trim()
   if (!guid) {
@@ -91,7 +96,7 @@ export function buildBlueBubblesAttachmentRecord(
   }
 
   const displayName = summary.transferName?.trim() || guid
-  const mimeType = summary.mimeType?.trim().toLowerCase() || undefined
+  const mimeType = options.mimeType?.trim().toLowerCase() || summary.mimeType?.trim().toLowerCase() || undefined
   const record: BlueBubblesAttachmentRecord = {
     id: buildAttachmentId("bluebubbles", guid),
     source: "bluebubbles",
@@ -99,12 +104,13 @@ export function buildBlueBubblesAttachmentRecord(
     kind: classifyAttachmentKind(mimeType, displayName),
     displayName,
     mimeType,
-    byteCount: summary.totalBytes,
+    byteCount: options.byteCount ?? summary.totalBytes,
     createdAt: now,
     lastSeenAt: now,
     sourceData: {
       ...summary,
       guid,
+      ...(options.localPath ? { localPath: path.resolve(options.localPath) } : {}),
     },
   }
   emitAttachmentTypeEvent("engine.attachment_record_built", {
