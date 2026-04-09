@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.313",
+      "changes": [
+        "feat(daemon): agentic repair flow with LLM diagnosis for degraded agents during `ouro up`. New `runAgenticRepair()` in `src/heart/daemon/agentic-repair.ts` wraps interactive repair with optional AI-powered diagnosis. Uses `discoverWorkingProvider()` to find a working LLM, then offers conversational diagnosis with degraded agent context and daemon log tail. Falls back to deterministic repair when no provider is available or user declines. Wired into cli-exec.ts replacing direct `runInteractiveRepair()` call. 12 new tests, 100% coverage on all branches.",
+        "feat(daemon): add `--no-repair` flag to `ouro up` — skips interactive/agentic repair and exits non-zero when degraded agents are detected. Useful for CI and scripted environments."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.312",
       "changes": [
         "feat(daemon): interactive repair flow for degraded agents during `ouro up`. New `runInteractiveRepair()` in `src/heart/daemon/interactive-repair.ts` examines each degraded agent's errorReason and fixHint to detect common issue patterns (missing credentials, config errors) and prompts the operator for inline repair. Credential issues offer to run `ouro auth <agent>` directly. Config errors surface the fix hint. Wired into the `daemon.up` handler after stability validation. 10 new tests, 100% coverage."
