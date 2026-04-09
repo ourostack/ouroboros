@@ -25,14 +25,14 @@ import { createOpenAICodexProviderRuntime } from "./providers/openai-codex";
 import { createGithubCopilotProviderRuntime } from "./providers/github-copilot";
 import type { SteeringFollowUpEffect } from "./turn-coordinator";
 import type { ActiveWorkFrame } from "./active-work";
-import type { DelegationDecision, DelegationReason } from "./delegation";
+import type { DelegationDecision } from "./delegation";
 import type { InnerJob } from "./daemon/thoughts";
-import { getInnerDialogPendingDir, queuePendingMessage } from "../mind/pending";
-import type { PendingMessage } from "../mind/pending";
 import { getAgentName, getAgentRoot } from "./identity";
 import { requestInnerWake } from "./daemon/socket-client";
-import { createObligation } from "../arc/obligations";
+import { createObligation, createReturnObligation, generateObligationId } from "../arc/obligations";
 import { createToolLoopState, detectToolLoop, recordToolOutcome } from "./tool-loop";
+import { createPonderPacket, findHarnessFrictionPacket, revisePonderPacket, type PonderPacket, type PonderPacketKind } from "../arc/packets";
+import { createToolFrictionLedger, rewriteToolResultForModel } from "./tool-friction";
 
 export type ProviderId = "azure" | "anthropic" | "minimax" | "openai-codex" | "github-copilot";
 
@@ -263,7 +263,6 @@ export type RunAgentOutcome =
   | "aborted"
   | "errored"
   | "observed"
-  | "pondered"
   | "rested";
 
 // Sole-call tools must be the only tool call in a turn. When they appear
@@ -271,62 +270,25 @@ export type RunAgentOutcome =
 const SOLE_CALL_REJECTION: Record<string, string> = {
   settle: "rejected: settle must be the only tool call. finish your work first, then call settle alone.",
   observe: "rejected: observe must be the only tool call. call observe alone when you want to stay silent.",
-  ponder: "rejected: ponder must be the only tool call. finish your other work first, then call ponder alone.",
   rest: "rejected: rest must be the only tool call. finish your work first, then call rest alone.",
 };
 
-const DELEGATION_REASON_PROSE_HANDOFF: Record<DelegationReason, string> = {
-  explicit_reflection: "something in the conversation called for reflection",
-  cross_session: "this touches other conversations",
-  bridge_state: "there's shared work spanning sessions",
-  task_state: "there are active tasks that relate to this",
-  non_fast_path_tool: "this needs tools beyond a simple reply",
-  unresolved_obligation: "there's an unresolved commitment from an earlier conversation",
-};
-
-function buildPonderHandoffPacket(params: {
-  topic: string
-  mode: "reflect" | "plan" | "relay"
-  delegationDecision?: DelegationDecision
-  currentSession?: { friendId: string; channel: string; key: string } | null
-  currentObligation?: string | null
-  outwardClosureRequired: boolean
-}): string {
-  const reasons = params.delegationDecision?.reasons ?? []
-  const reasonProse = reasons.length > 0
-    ? reasons.map((r) => DELEGATION_REASON_PROSE_HANDOFF[r]).join("; ")
-    : "this felt like it needed more thought"
-
-  const whoAsked = params.currentSession
-    ? params.currentSession.friendId
-    : "no one -- just thinking"
-
-  let holdingLine: string
-  if (params.outwardClosureRequired && params.currentSession) {
-    holdingLine = `i'm holding something for ${params.currentSession.friendId}`
-  } else {
-    holdingLine = "nothing -- just thinking"
-  }
-
-  return [
-    "## what i need to think about",
-    params.topic,
-    "",
-    "## why this came up",
-    reasonProse,
-    "",
-    "## who asked",
-    whoAsked,
-    "",
-    "## what i'm holding",
-    holdingLine,
-    "",
-    "## thinking mode",
-    params.mode,
-  ].join("\n")
-}
-
 type SettleIntent = "complete" | "blocked" | "direct_reply";
+
+type PonderAction = "create" | "revise";
+
+interface ParsedPonderArgs {
+  action?: PonderAction
+  kind?: PonderPacketKind
+  packet_id?: string
+  follows_packet_id?: string
+  objective?: string
+  summary?: string
+  success_criteria?: string
+  payload_json?: string
+  thought?: string
+  say?: string
+}
 
 function parseSettlePayload(argumentsText: string): { answer?: string; intent?: SettleIntent } {
   try {
@@ -347,6 +309,65 @@ function parseSettlePayload(argumentsText: string): { answer?: string; intent?: 
   } catch {
     return {};
   }
+}
+
+function parsePonderPayload(argumentsText: string): ParsedPonderArgs {
+  try {
+    const parsed = JSON.parse(argumentsText)
+    return parsed && typeof parsed === "object" ? parsed as ParsedPonderArgs : {}
+  } catch {
+    return {}
+  }
+}
+
+function parseSuccessCriteria(raw: string | undefined): string[] | null {
+  if (typeof raw !== "string") return null
+  const criteria = raw
+    .split("\n")
+    .map((line) => line.replace(/^\s*[-*]\s*/, "").trim())
+    .filter((line) => line.length > 0)
+  return criteria.length > 0 ? criteria : null
+}
+
+function parsePacketPayload(raw: string | undefined): Record<string, unknown> | null {
+  if (typeof raw !== "string") return null
+  try {
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null
+  } catch {
+    return null
+  }
+}
+
+function normalizeLegacyPonderArgs(parsed: ParsedPonderArgs): ParsedPonderArgs {
+  if (typeof parsed.thought !== "string" || parsed.thought.trim().length === 0) {
+    return parsed
+  }
+
+  return {
+    action: "create",
+    kind: "reflection",
+    objective: parsed.thought.trim(),
+    summary: typeof parsed.say === "string" ? parsed.say.trim() : "",
+    success_criteria: "- preserve the thread for later work",
+    payload_json: "{}",
+  }
+}
+
+function buildPonderResult(
+  packet: PonderPacket,
+  action: "created" | "revised",
+  returnObligationId: string | null,
+): string {
+  return JSON.stringify({
+    ok: true,
+    packet_id: packet.id,
+    action,
+    status: packet.status,
+    return_obligation_id: returnObligationId,
+  }, null, 2)
 }
 
 /** Returns true when a tool call queries external state (GitHub, npm registry). */
@@ -635,6 +656,7 @@ export async function runAgent(
   let sawBridgeManage = false;
   let sawExternalStateQuery = false;
   const toolLoopState = createToolLoopState();
+  const toolFrictionLedger = createToolFrictionLedger();
 
   // Prevent MaxListenersExceeded warning — each iteration adds a listener
   try { require("events").setMaxListeners(50, signal); } catch { /* unsupported */ }
@@ -884,129 +906,6 @@ export async function runAgent(
           continue;
         }
 
-        // Check for ponder sole call: intercept before tool execution
-        const isSolePonder = result.toolCalls.length === 1 && result.toolCalls[0].name === "ponder";
-        if (isSolePonder) {
-          let parsedArgs: { thought?: string; say?: string } = {};
-          try {
-            parsedArgs = JSON.parse(result.toolCalls[0].arguments);
-          } catch { /* ignore */ }
-          callbacks.onToolStart("ponder", parsedArgs as Record<string, string>);
-
-          const currentSession = (options?.toolContext as ToolContext | undefined)?.currentSession;
-          const isInnerChannel = currentSession?.friendId === "self" && currentSession?.channel === "inner";
-
-          if (!isInnerChannel) {
-            // Outer session: thought and say are required
-            const thought = typeof parsedArgs.thought === "string" ? parsedArgs.thought : undefined;
-            const say = typeof parsedArgs.say === "string" ? parsedArgs.say : undefined;
-            if (!thought || !say) {
-              callbacks.onToolEnd("ponder", summarizeArgs("ponder", parsedArgs as Record<string, string>), false);
-              messages.push(msg);
-              const errorMsg = "ponder requires both thought and say when called from a conversation. thought is what needs more thinking; say is what you tell them before going quiet.";
-              messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: errorMsg });
-              providerRuntime.appendToolOutput(result.toolCalls[0].id, errorMsg);
-              continue;
-            }
-
-            // Emit outward say text
-            callbacks.onClearText?.();
-            callbacks.onTextChunk(say);
-
-            // Build handoff packet and enqueue
-            const handoffContent = buildPonderHandoffPacket({
-              topic: thought,
-              mode: "reflect",
-              delegationDecision: options?.delegationDecision,
-              currentSession: currentSession ?? null,
-              currentObligation: options?.currentObligation ?? null,
-              outwardClosureRequired: options?.delegationDecision?.outwardClosureRequired ?? false,
-            });
-            const pendingDir = getInnerDialogPendingDir(getAgentName());
-            // Create obligation FIRST so we can attach its ID to the pending message
-            let createdObligationId: string | undefined;
-            if (currentSession) {
-              try {
-                const obligation = createObligation(getAgentRoot(), {
-                  origin: {
-                    friendId: currentSession.friendId,
-                    channel: currentSession.channel,
-                    key: currentSession.key,
-                  },
-                  content: thought,
-                })
-                createdObligationId = obligation.id;
-              } catch {
-                /* v8 ignore next -- defensive: obligation store write failure should not break ponder @preserve */
-              }
-            }
-            const envelope: PendingMessage = {
-              from: getAgentName(),
-              friendId: "self",
-              channel: "inner",
-              key: "dialog",
-              content: handoffContent,
-              timestamp: Date.now(),
-              ...(currentSession ? {
-                delegatedFrom: {
-                  friendId: currentSession.friendId,
-                  channel: currentSession.channel,
-                  key: currentSession.key,
-                },
-                obligationStatus: "pending" as const,
-                /* v8 ignore next -- defensive: createdObligationId is undefined only when obligation store write fails @preserve */
-                ...(createdObligationId ? { obligationId: createdObligationId } : {}),
-              } : {}),
-            };
-            queuePendingMessage(pendingDir, envelope);
-            try { await requestInnerWake(getAgentName()); } catch { /* daemon may not be running */ }
-
-            callbacks.onToolEnd("ponder", summarizeArgs("ponder", parsedArgs as Record<string, string>), true);
-            sawPonder = true;
-            messages.push(msg);
-            const ack = "(pondering)";
-            messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: ack });
-            providerRuntime.appendToolOutput(result.toolCalls[0].id, ack);
-
-            emitNervesEvent({
-              component: "engine",
-              event: "engine.pondered",
-              message: "pondering",
-              meta: { hasThought: true, hasSay: true, contentSnippet: thought.slice(0, 80) },
-            });
-          } else {
-            // Inner dialog: parameterless, enqueue synthetic pending WITHOUT delegatedFrom
-            const pendingDir = getInnerDialogPendingDir(getAgentName());
-            const envelope: PendingMessage = {
-              from: getAgentName(),
-              friendId: "self",
-              channel: "inner",
-              key: "dialog",
-              content: "continuing to think...",
-              timestamp: Date.now(),
-            };
-            queuePendingMessage(pendingDir, envelope);
-
-            callbacks.onToolEnd("ponder", summarizeArgs("ponder", parsedArgs as Record<string, string>), true);
-            sawPonder = true;
-            messages.push(msg);
-            const ack = "(pondering)";
-            messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: ack });
-            providerRuntime.appendToolOutput(result.toolCalls[0].id, ack);
-
-            emitNervesEvent({
-              component: "engine",
-              event: "engine.pondered",
-              message: "pondering from inner dialog",
-              meta: { inner: true },
-            });
-          }
-
-          outcome = "pondered";
-          done = true;
-          continue;
-        }
-
         // Check for rest sole call: intercept before tool execution
         const isSoleRest = result.toolCalls.length === 1 && result.toolCalls[0].name === "rest";
         if (isSoleRest) {
@@ -1034,7 +933,7 @@ export async function runAgent(
             component: "engine",
             event: "engine.rested",
             message: "resting until next heartbeat",
-            meta: {},
+            meta: { ...(typeof restArgs?.status === "string" ? { status: restArgs.status } : {}) },
           });
 
           outcome = "rested";
@@ -1061,6 +960,138 @@ export async function runAgent(
           }
           if (tc.name === "send_message" && args.friendId === "self") {
             sawSendMessageSelf = true;
+          }
+          if (tc.name === "ponder") {
+            const parsedArgs = normalizeLegacyPonderArgs(parsePonderPayload(tc.arguments));
+            const argSummary = summarizeArgs(tc.name, parsedArgs as Record<string, string>);
+            callbacks.onToolStart(tc.name, parsedArgs as Record<string, string>);
+            let toolResult: string;
+            let success = false;
+
+            try {
+              const action = parsedArgs.action ?? "create";
+              const currentSession = (augmentedToolContext ?? options?.toolContext)?.currentSession;
+              const currentOrigin = currentSession
+                ? { friendId: currentSession.friendId, channel: currentSession.channel, key: currentSession.key }
+                : undefined;
+              const isInnerChannel = currentOrigin?.friendId === "self" && currentOrigin?.channel === "inner";
+              const successCriteria = parseSuccessCriteria(parsedArgs.success_criteria);
+              const payload = parsePacketPayload(parsedArgs.payload_json);
+
+              let packet: PonderPacket;
+              let returnObligationId: string | null = null;
+              let resultAction: "created" | "revised" = "created";
+
+              if (action === "create") {
+                const kind = parsedArgs.kind;
+                const objective = typeof parsedArgs.objective === "string" ? parsedArgs.objective.trim() : "";
+                const summary = typeof parsedArgs.summary === "string" ? parsedArgs.summary.trim() : "";
+
+                if (!kind || !objective || !successCriteria || !payload) {
+                  throw new Error("ponder create requires kind, objective, success_criteria, and valid payload_json.")
+                }
+
+                const agentRoot = getAgentRoot();
+                let relatedObligationId: string | undefined;
+                if (currentOrigin && !isInnerChannel) {
+                  try {
+                    const obligation = createObligation(agentRoot, {
+                      origin: currentOrigin,
+                      content: objective,
+                    });
+                    relatedObligationId = obligation.id;
+                  } catch {
+                    relatedObligationId = undefined;
+                  }
+                }
+
+                const frictionSignature = kind === "harness_friction" && typeof payload.frictionSignature === "string"
+                  ? payload.frictionSignature
+                  : null;
+                const existing = frictionSignature && currentOrigin
+                  ? findHarnessFrictionPacket(agentRoot, currentOrigin, frictionSignature)
+                  : null;
+
+                if (existing) {
+                  resultAction = "revised";
+                  returnObligationId = existing.relatedReturnObligationId ?? null;
+                  packet = existing.status === "drafting"
+                    ? revisePonderPacket(agentRoot, existing.id, {
+                        kind,
+                        objective,
+                        summary,
+                        successCriteria,
+                        payload,
+                      })
+                    : existing;
+                } else {
+                  returnObligationId = generateObligationId(Date.now());
+                  packet = createPonderPacket(agentRoot, {
+                    kind,
+                    objective,
+                    summary,
+                    successCriteria,
+                    ...(currentOrigin ? { origin: currentOrigin } : {}),
+                    ...(relatedObligationId ? { relatedObligationId } : {}),
+                    relatedReturnObligationId: returnObligationId,
+                    ...(parsedArgs.follows_packet_id ? { followsPacketId: parsedArgs.follows_packet_id } : {}),
+                    payload,
+                  });
+
+                  createReturnObligation(getAgentName(), {
+                    id: returnObligationId,
+                    origin: currentOrigin ?? { friendId: "self", channel: "inner", key: "dialog" },
+                    status: "queued",
+                    delegatedContent: (summary || objective).length > 120 ? `${(summary || objective).slice(0, 117)}...` : (summary || objective),
+                    packetId: packet.id,
+                    createdAt: Date.now(),
+                  });
+                }
+              } else if (action === "revise") {
+                const packetId = typeof parsedArgs.packet_id === "string" ? parsedArgs.packet_id.trim() : "";
+                const kind = parsedArgs.kind;
+                const objective = typeof parsedArgs.objective === "string" ? parsedArgs.objective.trim() : "";
+                const summary = typeof parsedArgs.summary === "string" ? parsedArgs.summary.trim() : "";
+                if (!packetId || !kind || !objective || !successCriteria || !payload) {
+                  throw new Error("ponder revise requires packet_id, kind, objective, success_criteria, and valid payload_json.")
+                }
+                packet = revisePonderPacket(getAgentRoot(), packetId, {
+                  kind,
+                  objective,
+                  summary,
+                  successCriteria,
+                  payload,
+                });
+                returnObligationId = packet.relatedReturnObligationId ?? null;
+                resultAction = "revised";
+              } else {
+                throw new Error("ponder requires action=create or revise.")
+              }
+
+              try { await requestInnerWake(getAgentName()); } catch { /* daemon may not be running */ }
+              sawPonder = true;
+              toolResult = buildPonderResult(packet, resultAction, returnObligationId);
+              success = true;
+
+              emitNervesEvent({
+                component: "engine",
+                event: "engine.ponder_packet",
+                message: "ponder packet touched",
+                meta: {
+                  action: resultAction,
+                  packetId: packet.id,
+                  kind: packet.kind,
+                  status: packet.status,
+                },
+              });
+            } catch (error) {
+              toolResult = error instanceof Error ? error.message : String(error);
+            }
+
+            callbacks.onToolEnd(tc.name, argSummary, success);
+            messages.push({ role: "tool", tool_call_id: tc.id, content: toolResult });
+            providerRuntime.appendToolOutput(tc.id, toolResult);
+            continue;
           }
           /* v8 ignore next -- flag tested via truth-check integration tests @preserve */
           if (tc.name === "query_session") sawQuerySession = true;
@@ -1089,6 +1120,7 @@ export async function runAgent(
             toolResult = `error: ${e}`;
             success = false;
           }
+          toolResult = rewriteToolResultForModel(tc.name, toolResult, toolFrictionLedger);
           recordToolOutcome(toolLoopState, tc.name, args, toolResult, success);
           callbacks.onToolEnd(tc.name, buildToolResultSummary(tc.name, args, toolResult, success), success);
           messages.push({ role: "tool", tool_call_id: tc.id, content: toolResult });

@@ -1,5 +1,7 @@
 import OpenAI from "openai"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { renderAttachmentBlock } from "../../heart/attachments/render"
+import { buildBlueBubblesAttachmentRecord } from "../../heart/attachments/types"
 
 type JsonRecord = Record<string, unknown>
 
@@ -188,19 +190,17 @@ function extractAttachments(data: JsonRecord): BlueBubblesAttachmentSummary[] {
 
 function formatAttachmentText(attachments: BlueBubblesAttachmentSummary[]): string {
   if (attachments.length === 0) return ""
+
+  const renderable = attachments
+    .filter((attachment) => typeof attachment.guid === "string" && attachment.guid.trim().length > 0)
+    .map((attachment) => buildBlueBubblesAttachmentRecord(attachment))
+
+  if (renderable.length > 0) {
+    return renderAttachmentBlock(renderable)
+  }
+
   const [first] = attachments
-  const mime = first.mimeType ?? ""
-  const label = mime.startsWith("image/")
-    ? "image attachment"
-    : mime.startsWith("audio/")
-      ? "audio attachment"
-      : "attachment"
-  const name = first.transferName ? `: ${first.transferName}` : ""
-  const dimensions =
-    typeof first.width === "number" && typeof first.height === "number" && first.width > 0 && first.height > 0
-      ? ` (${first.width}x${first.height})`
-      : ""
-  return `[${label}${name}${dimensions}]`
+  return `[attachment: ${first.transferName?.trim() || "unknown"}]`
 }
 
 function formatMessageText(data: JsonRecord, attachments: BlueBubblesAttachmentSummary[]): string {

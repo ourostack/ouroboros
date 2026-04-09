@@ -2,6 +2,7 @@ import type { PendingMessage } from "../mind/pending"
 import type { ReturnObligation } from "../arc/obligations"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { AttentionItem } from "../arc/attention-types"
+import type { PonderPacket } from "../arc/packets"
 
 // Re-export for consumers that import from here
 export type { AttentionItem }
@@ -20,12 +21,25 @@ export interface BuildAttentionQueueInput {
   drainedPending: PendingMessage[]
   outstandingObligations: ReturnObligation[]
   friendNameResolver: (friendId: string) => string | null
+  packetResolver?: (packetId: string) => PonderPacket | null
 }
 
 export function buildAttentionQueue(input: BuildAttentionQueueInput): AttentionItem[] {
-  const { drainedPending, outstandingObligations, friendNameResolver } = input
+  const { drainedPending, outstandingObligations, friendNameResolver, packetResolver } = input
   const seen = new Set<string>()
   const items: AttentionItem[] = []
+
+  const enrichPacket = (packetId: string | undefined): Partial<AttentionItem> => {
+    if (!packetId || !packetResolver) return {}
+    const packet = packetResolver(packetId)
+    if (!packet) return { packetId }
+    return {
+      packetId,
+      packetKind: packet.kind,
+      packetObjective: packet.objective,
+      packetSummary: packet.summary,
+    }
+  }
 
   // Source 1: drained pending messages with delegatedFrom (current-turn delegations)
   for (const msg of drainedPending) {
@@ -44,6 +58,7 @@ export function buildAttentionQueue(input: BuildAttentionQueueInput): AttentionI
       ...(bridgeId ? { bridgeId } : {}),
       delegatedContent: msg.content,
       ...(msg.obligationId ? { obligationId: msg.obligationId } : {}),
+      ...enrichPacket(msg.packetId),
       source: "drained",
       timestamp: msg.timestamp,
     })
@@ -66,6 +81,7 @@ export function buildAttentionQueue(input: BuildAttentionQueueInput): AttentionI
       ...(bridgeId ? { bridgeId } : {}),
       delegatedContent: obligation.delegatedContent,
       obligationId: obligation.id,
+      ...enrichPacket(obligation.packetId),
       source: "obligation-recovery",
       timestamp: obligation.createdAt,
     })
@@ -108,6 +124,10 @@ export function buildAttentionQueueSummary(queue: AttentionItem[]): string {
 
   const lines = ["you're holding:"]
   for (const item of queue) {
+    if (item.packetKind && item.packetObjective) {
+      lines.push(`- [${item.id}] ${item.friendName} -> ${item.packetKind}: ${item.packetObjective}`)
+      continue
+    }
     const preview = item.delegatedContent.length > CONTENT_PREVIEW_MAX
       ? `${item.delegatedContent.slice(0, CONTENT_PREVIEW_MAX - 3)}...`
       : item.delegatedContent
