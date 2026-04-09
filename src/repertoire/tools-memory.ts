@@ -7,6 +7,7 @@ import { getAgentRoot } from "../heart/identity";
 import { emitNervesEvent } from "../nerves/runtime";
 import type { FriendRecord } from "../mind/friends/types";
 import { readDiaryEntries, saveDiaryEntry, searchDiaryEntries, type DiaryEntryProvenance } from "../mind/diary";
+import { classifyProvenanceTrust } from "../mind/provenance-trust";
 import { type JournalIndexEntry } from "../mind/associative-recall";
 import type { ToolDefinition } from "./tools-base";
 
@@ -149,7 +150,8 @@ export const memoryToolDefinitions: ToolDefinition[] = [
             if (fact.provenance.friendName) meta += `, friend=${fact.provenance.friendName}`;
             if (fact.provenance.trust) meta += `, trust=${fact.provenance.trust}`;
           }
-          resultLines.push(`[diary] ${fact.text} (${meta})`);
+          const tag = classifyProvenanceTrust(fact.provenance) === "external" ? "diary/external" : "diary";
+          resultLines.push(`[${tag}] ${fact.text} (${meta})`);
         }
 
         // Search journal index
