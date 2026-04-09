@@ -13,12 +13,14 @@ const {
   habitSchedulerStopMock,
   habitSchedulerWatchMock,
   habitSchedulerStopWatchMock,
+  habitSchedulerStartPeriodicReconciliationMock,
   habitSchedulerCtorHook,
 } = vi.hoisted(() => ({
   habitSchedulerStartMock: vi.fn(),
   habitSchedulerStopMock: vi.fn(),
   habitSchedulerWatchMock: vi.fn(),
   habitSchedulerStopWatchMock: vi.fn(),
+  habitSchedulerStartPeriodicReconciliationMock: vi.fn(),
   habitSchedulerCtorHook: vi.fn(),
 }))
 
@@ -36,6 +38,7 @@ vi.mock("../../../heart/habits/habit-scheduler", () => ({
     stop = habitSchedulerStopMock
     watchForChanges = habitSchedulerWatchMock
     stopWatching = habitSchedulerStopWatchMock
+    startPeriodicReconciliation = habitSchedulerStartPeriodicReconciliationMock
   },
 }))
 
@@ -80,6 +83,7 @@ describe("daemon entry error boundary — per-agent habit setup isolation", () =
     habitSchedulerStopMock.mockReset()
     habitSchedulerWatchMock.mockReset()
     habitSchedulerStopWatchMock.mockReset()
+    habitSchedulerStartPeriodicReconciliationMock.mockReset()
     habitSchedulerCtorHook.mockReset()
     migrateHabitsFromTaskSystemMock.mockReset()
     writeDaemonTombstoneMock.mockReset()
