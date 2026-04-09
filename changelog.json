@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.290",
+      "changes": [
+        "feat(mind): add structured provenance tracking to diary entries. New DiaryEntryProvenance interface records tool, channel (cli/teams/bluebubbles/inner/mcp), friend identity (id + name), and trust level (family/friend/acquaintance/stranger) at write time. diary_write handler automatically extracts provenance from ToolContext. Associative recall and recall tool render provenance fields when present. Fully backwards compatible — existing entries without provenance parse and display normally. 17 new tests across 4 test files with 100% coverage on new code."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.289",
       "changes": [
         "feat(senses): enforce per-habit tool restrictions during inner dialog turns. When a habit file declares a `tools` field in its frontmatter (e.g., `tools: [read, web_fetch, send_message]`), the inner dialog adapter now filters the full tool repertoire to only those declared tools before passing them to the turn runner. Habits without a `tools` field retain the full repertoire (backwards compatible). Fail-closed design: unknown tool names in the `tools` array are silently excluded rather than causing errors. Two nerves events provide observability: `habit.tools_restricted` (emitted with declared vs resolved tool lists) and `habit.tools_unrestricted` (emitted when a successfully-parsed habit runs with full repertoire). Existing guardrails (protected paths, destructive command blocking) still apply at execution time. 6 new test cases cover restriction, unknown tool exclusion, unrestricted event emission, no event on parse failure, tools passthrough to turn runner, and empty tools array behavior."
