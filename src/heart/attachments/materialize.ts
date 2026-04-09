@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises"
 import * as path from "node:path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { getAgentRoot } from "../identity"
+import { normalizeImageForVision } from "./image-normalize"
 import { getRecentAttachment } from "./store"
 import type { AttachmentRecord, AttachmentVariant, MaterializedAttachment } from "./types"
 
@@ -86,11 +87,9 @@ export async function materializeAttachment(
   }
 
   const original = await materializeOriginalAttachment(agentName, attachment, agentRoot)
-  if (!options.normalizeImage) {
-    throw new Error(`No image normalizer available for ${attachmentId}`)
-  }
+  const normalizeImage = options.normalizeImage ?? normalizeImageForVision
 
-  const normalized = await options.normalizeImage({
+  const normalized = await normalizeImage({
     attachment,
     sourcePath: original.path,
     agentName,
