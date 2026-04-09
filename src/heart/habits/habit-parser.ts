@@ -11,11 +11,27 @@ export interface HabitFile {
   status: HabitStatus
   lastRun: string | null
   created: string | null
+  tools: string[] | undefined
   body: string
 }
 
 function isHabitStatus(value: string): value is HabitStatus {
   return value === "active" || value === "paused"
+}
+
+function parseToolsField(raw: unknown): string[] | undefined {
+  if (raw === undefined || raw === null) return undefined
+  // YAML dash-list: parseFrontmatter returns unknown[]
+  if (Array.isArray(raw)) {
+    return raw.filter((item): item is string => typeof item === "string")
+  }
+  // Inline bracket format: parseFrontmatter returns string like "[a, b, c]"
+  if (typeof raw === "string" && raw.startsWith("[") && raw.endsWith("]")) {
+    const inner = raw.slice(1, -1)
+    if (inner.trim().length === 0) return []
+    return inner.split(",").map((s) => s.trim()).filter(Boolean)
+  }
+  return undefined
 }
 
 function extractFrontmatterAndBody(content: string): { frontmatter: Record<string, unknown>; body: string } | null {
@@ -53,6 +69,7 @@ export function parseHabitFile(content: string, filePath: string): HabitFile {
       status: "active",
       lastRun: null,
       created: null,
+      tools: undefined,
       body: content.trim(),
     }
   }
@@ -75,6 +92,8 @@ export function parseHabitFile(content: string, filePath: string): HabitFile {
   const rawCreated = frontmatter.created
   const created = typeof rawCreated === "string" && rawCreated.length > 0 ? rawCreated : null
 
+  const tools = parseToolsField(frontmatter.tools)
+
   return {
     name: stem,
     title,
@@ -82,12 +101,14 @@ export function parseHabitFile(content: string, filePath: string): HabitFile {
     status,
     lastRun,
     created,
+    tools,
     body,
   }
 }
 
 function formatFrontmatterValue(value: unknown): string {
   if (value === null || value === undefined) return "null"
+  if (Array.isArray(value)) return `[${value.join(", ")}]`
   return String(value)
 }
 

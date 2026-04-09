@@ -201,7 +201,7 @@ describe("parseHabitFile", () => {
 
     const result: HabitFile = parseHabitFile(content, "/bundles/agent.ouro/habits/shape-test.md")
     const keys = Object.keys(result).sort()
-    expect(keys).toEqual(["body", "cadence", "created", "lastRun", "name", "status", "title"])
+    expect(keys).toEqual(["body", "cadence", "created", "lastRun", "name", "status", "title", "tools"])
   })
 
   it("exports HabitStatus type correctly", () => {
