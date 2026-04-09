@@ -164,4 +164,75 @@ describe("HealthMonitor", () => {
       expect(() => monitor.stopPeriodicChecks()).not.toThrow()
     })
   })
+
+  describe("onCriticalAgent callback", () => {
+    it("invokes onCriticalAgent with agent names from critical agent-process results", async () => {
+      const onCriticalAgent = vi.fn()
+      const monitor = new HealthMonitor({
+        processManager: {
+          listAgentSnapshots: () => [
+            { name: "slugger", status: "stopped" },
+            { name: "ouroboros", status: "running" },
+          ],
+        },
+        scheduler: {
+          listJobs: () => [{ id: "daily", lastRun: "2026-01-01T00:00:00Z" }],
+        },
+        onCriticalAgent,
+      })
+
+      await monitor.runChecks()
+      expect(onCriticalAgent).toHaveBeenCalledTimes(1)
+      expect(onCriticalAgent).toHaveBeenCalledWith("slugger")
+    })
+
+    it("does not call onCriticalAgent when all agents are running (ok status)", async () => {
+      const onCriticalAgent = vi.fn()
+      const monitor = new HealthMonitor({
+        processManager: {
+          listAgentSnapshots: () => [{ name: "slugger", status: "running" }],
+        },
+        scheduler: {
+          listJobs: () => [{ id: "daily", lastRun: "2026-01-01T00:00:00Z" }],
+        },
+        onCriticalAgent,
+      })
+
+      await monitor.runChecks()
+      expect(onCriticalAgent).not.toHaveBeenCalled()
+    })
+
+    it("does not call onCriticalAgent for non-agent-process critical results like disk-space", async () => {
+      const onCriticalAgent = vi.fn()
+      const monitor = new HealthMonitor({
+        processManager: {
+          listAgentSnapshots: () => [{ name: "slugger", status: "running" }],
+        },
+        scheduler: {
+          listJobs: () => [{ id: "daily", lastRun: "2026-01-01T00:00:00Z" }],
+        },
+        diskUsagePercent: () => 95,
+        onCriticalAgent,
+      })
+
+      const results = await monitor.runChecks()
+      // disk-space is critical but should NOT trigger onCriticalAgent
+      expect(results.some((r) => r.name === "disk-space" && r.status === "critical")).toBe(true)
+      expect(onCriticalAgent).not.toHaveBeenCalled()
+    })
+
+    it("works without onCriticalAgent provided (default no-op)", async () => {
+      const monitor = new HealthMonitor({
+        processManager: {
+          listAgentSnapshots: () => [{ name: "slugger", status: "stopped" }],
+        },
+        scheduler: {
+          listJobs: () => [{ id: "daily", lastRun: "2026-01-01T00:00:00Z" }],
+        },
+      })
+
+      // Should not crash
+      await expect(monitor.runChecks()).resolves.toBeDefined()
+    })
+  })
 })
