@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.303",
+      "changes": [
+        "feat(cli): overhaul CLI help and error handling. `ouro --help` now shows commands grouped into 9 categories (Lifecycle, Agents, Chat, Tasks, Habits, Friends, Auth, Internal, System) instead of a flat wall of text. `ouro help <command>` and `ouro <command> --help` show per-command help with description, usage syntax, subcommands, and an example. Unknown commands get Levenshtein-based typo suggestions when distance <= 2 (e.g., `ouro stauts` -> `Did you mean 'status'?`). `ouro up` now prints progress messages: 'Checking for updates...' -> 'Installing <version>...' or 'Up to date.' -> 'Starting daemon...'. New command metadata registry in `src/heart/daemon/cli-help.ts` covers 32 commands. 50+ new tests at 100% coverage on all new code."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.302",
       "changes": [
         "feat(cli): add `ouro doctor` system health check command. New command runs 6 diagnostic categories — daemon (socket existence + responsiveness), agents (bundle discovery, agent.json validation for version/humanFacing/agentFacing/enabled), senses (BlueBubbles and Teams config presence and well-formedness), habits (launchd plist discovery, degraded state), security (secrets.json permissions, credential leak detection in agent.json), and disk (log size thresholds at 100MB warn / 500MB critical, bundle root existence). Output is a colored checklist with per-category grouping and a summary line. Works without daemon running — daemon checks fail gracefully while all other categories still execute, making it useful for cold diagnostics. 3 new files (doctor.ts, doctor-types.ts, cli-render-doctor.ts), 3 modified (cli-types.ts, cli-parse.ts, cli-exec.ts), 4 test files with 61 tests at 100% coverage on new code."
