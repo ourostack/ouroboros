@@ -1,5 +1,5 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs"
-import { tmpdir } from "os"
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs"
+import { homedir, tmpdir } from "os"
 import { dirname, join } from "path"
 import { afterAll, afterEach, beforeEach } from "vitest"
 
@@ -113,11 +113,17 @@ afterEach((ctx) => {
   }
 })
 
-// TmpBundle leak guard: any handle from `createTmpBundle()` that wasn't
-// cleaned up by the test's own try/finally gets forcibly cleaned here,
-// and a console.warn names the test that leaked it so the human can fix
-// the missing finally. This runs AFTER the pairing guard so the pairing
+// TmpBundle leak guard: any non-shared handle from `createTmpBundle()` that
+// wasn't cleaned up by the test's own try/finally gets forcibly cleaned
+// here, and a console.warn names the test that leaked it so the human can
+// fix the missing finally. This runs AFTER the pairing guard so the pairing
 // failure surfaces first if both trip on the same test.
+//
+// Handles created with `{ shared: true }` are intentionally long-lived for
+// the whole describe block (beforeAll → afterAll pattern). The guard skips
+// them — they'll be cleaned up by the describe's own afterAll hook, and a
+// separate end-of-suite check (see the tmpbundle contract test for shared
+// leaks) handles the case where afterAll was forgotten.
 //
 // Swallows cleanup errors intentionally (best-effort defense-in-depth,
 // not strict enforcement). The strict enforcement is the test-isolation
@@ -131,6 +137,7 @@ afterEach((ctx) => {
   // Snapshot the set before iterating — cleanup() mutates it.
   const snapshot = Array.from(handles)
   for (const handle of snapshot) {
+    if (handle.shared) continue // intentionally long-lived across the describe block
     leaked.push(handle.agentName)
     try { handle.cleanup() } catch { /* best effort */ }
   }
@@ -139,6 +146,76 @@ afterEach((ctx) => {
     console.warn(
       `[tmpbundle-leak-guard] test "${testName}" leaked ${leaked.length} TmpBundle handle(s) ` +
       `(${leaked.join(", ")}). Forcibly cleaned. Fix the missing try/finally in the test body.`,
+    )
+  }
+})
+
+// ---------- runtime prod-path leak guard ----------
+//
+// The text-based test-isolation contract in `test-isolation.contract.test.ts`
+// catches source-level writes to `~/AgentBundles`, `~/.ouro-cli`, etc. But
+// it cannot catch runtime leaks where production code routes a write to a
+// real-fs path via a silent fallback (e.g. the `safeAgentName()` → "default"
+// bug in coding/manager.ts that wrote `~/AgentBundles/default.ouro/state/
+// coding/sessions.json` on every coverage run until I fixed it in PR #372).
+// This runtime guard is the belt to the contract test's suspenders:
+//
+// 1. At worker boot, snapshot the entries in `~/AgentBundles`.
+// 2. At worker teardown (`afterAll` without a describe context — runs once
+//    per worker after every test in that worker), re-read the dir and
+//    compare.
+// 3. Any NEW entry that wasn't in the snapshot is a leak — force-remove it
+//    and emit a loud console.error naming the entry.
+//
+// This intentionally does NOT track modifications to existing entries
+// (slugger.ouro, ouroboros.ouro, etc. get legitimate writes from tests
+// that mock their paths into a tmpdir but still reference the real ~/AgentBundles
+// as a cwd for fs.existsSync probes). Only new top-level entries trigger
+// the guard.
+//
+// False-positive risk: if the developer runs a real `ouro` command in a
+// separate terminal during the test run and that command creates a new
+// agent bundle, the guard would delete it. Acceptable because (a) that
+// would be an unusual timing coincidence and (b) the warning names the
+// entry loudly so the human can recreate it.
+
+const AGENT_BUNDLES_ROOT = join(homedir(), "AgentBundles")
+
+function snapshotBundleRoot(): Set<string> {
+  try {
+    return new Set(readdirSync(AGENT_BUNDLES_ROOT))
+  } catch {
+    // ~/AgentBundles doesn't exist — snapshot is empty; afterAll will
+    // detect ANY entry that appears during the run as a new leak.
+    return new Set()
+  }
+}
+
+const _prodPathSnapshot = snapshotBundleRoot()
+
+afterAll(() => {
+  let current: string[]
+  try {
+    current = readdirSync(AGENT_BUNDLES_ROOT)
+  } catch {
+    return // dir still doesn't exist — nothing to check
+  }
+  const leaked: string[] = []
+  for (const entry of current) {
+    if (_prodPathSnapshot.has(entry)) continue
+    leaked.push(entry)
+    const full = join(AGENT_BUNDLES_ROOT, entry)
+    try { rmSync(full, { recursive: true, force: true }) } catch { /* best effort */ }
+  }
+  if (leaked.length > 0) {
+    // eslint-disable-next-line no-console
+    console.error(
+      `[prod-path-leak-guard] test run leaked ${leaked.length} new entries under ` +
+      `~/AgentBundles/: ${leaked.join(", ")}. Forcibly removed. ` +
+      `Find the production code path that routed a write to ~/AgentBundles without ` +
+      `a bundlesRoot override or a mocked fs — it's almost always a silent ` +
+      `agentName fallback to "default" or an un-mocked singleton (see PR #372 for ` +
+      `a prior example in src/repertoire/coding/manager.ts).`,
     )
   }
 })

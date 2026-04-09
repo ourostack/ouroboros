@@ -1,6 +1,35 @@
-import { afterEach, describe, expect, it, vi } from "vitest"
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+
+const testState = vi.hoisted(() => ({
+  agentRoot: "",
+}))
+
+vi.mock("../../../heart/identity", async () => {
+  const actual = await vi.importActual<typeof import("../../../heart/identity")>("../../../heart/identity")
+  return {
+    ...actual,
+    getAgentName: vi.fn(() => "testagent"),
+    getAgentRoot: vi.fn(() => testState.agentRoot),
+    getAgentToolsRoot: vi.fn(() => path.join(testState.agentRoot, "state", "tools")),
+  }
+})
 
 const originalFetch = global.fetch
+const tempDirs: string[] = []
+
+function makeAgentRoot(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bb-media-"))
+  tempDirs.push(dir)
+  testState.agentRoot = dir
+  return dir
+}
+
+beforeEach(() => {
+  makeAgentRoot()
+})
 
 afterEach(() => {
   global.fetch = originalFetch
@@ -9,6 +38,11 @@ afterEach(() => {
   vi.doUnmock("node:child_process")
   vi.doUnmock("node:fs/promises")
   vi.doUnmock("node:os")
+  vi.doUnmock("../../../heart/attachments/image-normalize")
+  vi.doUnmock("../../../nerves/runtime")
+  for (const dir of tempDirs.splice(0)) {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 describe("BlueBubbles media hydration", () => {
@@ -631,15 +665,21 @@ describe("BlueBubbles media hydration", () => {
     expect(fetchImpl).toHaveBeenCalledOnce()
     expect(modelFetchImpl).toHaveBeenCalledOnce()
     expect(execFile).toHaveBeenCalledWith("brew", ["install", "whisper-cpp"], expect.any(Object), expect.any(Function))
-    expect(mkdir).toHaveBeenCalledWith("/Users/test/AgentBundles/slugger.ouro/state/tools/whisper-cpp/models", { recursive: true })
-    expect(writeFile).toHaveBeenNthCalledWith(
-      1,
-      "/tmp/ouro-bb-audio-123/Voice Note.m4a",
+    expect(mkdir).toHaveBeenCalledWith(path.join(testState.agentRoot, "state", "tools", "whisper-cpp", "models"), { recursive: true })
+    expect(writeFile).toHaveBeenCalledWith(
+      path.join(
+        testState.agentRoot,
+        "state",
+        "attachments",
+        "materialized",
+        "bluebubbles",
+        "voice-guid",
+        "original.m4a",
+      ),
       Buffer.from("audio-bytes"),
     )
-    expect(writeFile).toHaveBeenNthCalledWith(
-      2,
-      "/Users/test/AgentBundles/slugger.ouro/state/tools/whisper-cpp/models/ggml-base.en.bin",
+    expect(writeFile).toHaveBeenCalledWith(
+      path.join(testState.agentRoot, "state", "tools", "whisper-cpp", "models", "ggml-base.en.bin"),
       Buffer.from("model-bytes"),
     )
     expect(execFile).toHaveBeenCalledWith(
@@ -652,7 +692,7 @@ describe("BlueBubbles media hydration", () => {
       "/opt/homebrew/opt/whisper-cpp/bin/whisper-cli",
       expect.arrayContaining([
         "-m",
-        "/Users/test/AgentBundles/slugger.ouro/state/tools/whisper-cpp/models/ggml-base.en.bin",
+        path.join(testState.agentRoot, "state", "tools", "whisper-cpp", "models", "ggml-base.en.bin"),
         "-f",
         "/tmp/ouro-bb-audio-123/Voice Note.wav",
       ]),
@@ -717,7 +757,7 @@ describe("BlueBubbles media hydration", () => {
     expect(execFile).not.toHaveBeenCalledWith("brew", ["install", "whisper-cpp"], expect.any(Object), expect.any(Function))
     expect(execFile).toHaveBeenCalledWith(
       "/opt/homebrew/opt/whisper-cpp/bin/whisper-cli",
-      expect.arrayContaining(["-m", "/Users/test/AgentBundles/slugger.ouro/state/tools/whisper-cpp/models/ggml-base.en.bin"]),
+      expect.arrayContaining(["-m", path.join(testState.agentRoot, "state", "tools", "whisper-cpp", "models", "ggml-base.en.bin")]),
       expect.any(Object),
       expect.any(Function),
     )
@@ -1644,12 +1684,25 @@ describe("BlueBubbles media hydration — capability-aware image routing", () =>
     expect(prompt).toContain('User message: "whats the flight number in the bottom right?"')
   })
 
-  it("unsupported format (gif) with non-vision chat model: skips VLM, emits vision_format_unsupported, injects text part", async () => {
+  it("non-vision chat model normalizes gif images before VLM describe instead of skipping them", async () => {
     vi.resetModules()
+    const agentRoot = makeAgentRoot()
+    const normalizedPath = path.join(agentRoot, "normalized-gif.jpg")
+    fs.writeFileSync(normalizedPath, "normalized-gif")
     const nervesMock = vi.fn()
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: nervesMock }))
+    const normalizeImageForVision = vi.fn().mockResolvedValue({
+      path: normalizedPath,
+      mimeType: "image/jpeg",
+      byteCount: 14,
+    })
+    vi.doMock("../../../heart/attachments/image-normalize", () => ({
+      MAX_ATTACHMENT_DOWNLOAD_BYTES_IMAGE: 32 * 1024 * 1024,
+      MAX_VLM_IMAGE_BYTES: 5 * 1024 * 1024,
+      normalizeImageForVision,
+    }))
     const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
-    const vlmDescribe = vi.fn(async () => "should not be called")
+    const vlmDescribe = vi.fn(async () => "gif normalized description")
     const result = await hydrateBlueBubblesAttachments(
       [{ guid: "g1", mimeType: "image/gif", transferName: "fun.gif" }],
       baseConfig(),
@@ -1660,29 +1713,73 @@ describe("BlueBubbles media hydration — capability-aware image routing", () =>
         vlmDescribe,
       },
     )
-    expect(vlmDescribe).not.toHaveBeenCalled()
+    expect(normalizeImageForVision).toHaveBeenCalled()
+    expect(vlmDescribe).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mimeType: "image/jpeg",
+        imageDataUrl: `data:image/jpeg;base64,${Buffer.from("normalized-gif").toString("base64")}`,
+      }),
+    )
     expect(result.inputParts).toEqual([
-      { type: "text", text: "[image attachment not shown: unsupported format image/gif]" },
+      { type: "text", text: "[image description: gif normalized description]" },
     ])
     const unsupported = nervesMock.mock.calls.find(
       (c) => c[0]?.event === "senses.bluebubbles_vision_format_unsupported",
     )
-    expect(unsupported).toBeDefined()
-    expect(unsupported?.[0].meta).toMatchObject({
-      mimeType: "image/gif",
-      transferName: "fun.gif",
-      attachmentGuid: "g1",
-      chatModel: "MiniMax-M2.5",
-    })
+    expect(unsupported).toBeUndefined()
     const hydrate = nervesMock.mock.calls.find(
       (c) => c[0]?.event === "senses.bluebubbles_media_hydrate" && c[0]?.meta?.attachmentGuid === "g1",
     )
     expect(hydrate?.[0].meta).toMatchObject({
       attachmentGuid: "g1",
-      mimeType: "image/gif",
-      hydrationPath: "skip-unsupported",
+      hydrationPath: "vlm-describe",
     })
-    vi.doUnmock("../../../nerves/runtime")
+  })
+
+  it("allows images above the old 8 MiB cap when they can be normalized", async () => {
+    vi.resetModules()
+    const agentRoot = makeAgentRoot()
+    const normalizedPath = path.join(agentRoot, "big-normalized.jpg")
+    fs.writeFileSync(normalizedPath, "normalized-large-image")
+    const normalizeImageForVision = vi.fn().mockResolvedValue({
+      path: normalizedPath,
+      mimeType: "image/jpeg",
+      byteCount: 22,
+    })
+    vi.doMock("../../../heart/attachments/image-normalize", () => ({
+      MAX_ATTACHMENT_DOWNLOAD_BYTES_IMAGE: 32 * 1024 * 1024,
+      MAX_VLM_IMAGE_BYTES: 5 * 1024 * 1024,
+      normalizeImageForVision,
+    }))
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
+    const vlmDescribe = vi.fn(async () => "large image description")
+    const result = await hydrateBlueBubblesAttachments(
+      [{
+        guid: "large-image",
+        mimeType: "image/tiff",
+        transferName: "poster.tiff",
+        totalBytes: 12 * 1024 * 1024,
+      }],
+      baseConfig(),
+      baseChannel(),
+      {
+        fetchImpl: vi.fn().mockResolvedValue(
+          new Response(Buffer.from("raw-tiff"), {
+            status: 200,
+            headers: { "content-type": "image/tiff" },
+          }),
+        ),
+        chatModel: "MiniMax-M2.5",
+        vlmDescribe,
+      },
+    )
+
+    expect(normalizeImageForVision).toHaveBeenCalled()
+    expect(vlmDescribe).toHaveBeenCalled()
+    expect(result.notices).toEqual([])
+    expect(result.inputParts).toEqual([
+      { type: "text", text: "[image description: large image description]" },
+    ])
   })
 
   it("unsupported format with vision-capable chat model: passes through as image_url, no unsupported event", async () => {
@@ -1951,10 +2048,22 @@ describe("BlueBubbles media hydration — capability-aware image routing", () =>
     vi.doUnmock("../../../nerves/runtime")
   })
 
-  it("non-vision chat model with missing content-type: routes through skip-unsupported", async () => {
+  it("non-vision chat model with missing content-type: still normalizes and describes the image", async () => {
     vi.resetModules()
+    const agentRoot = makeAgentRoot()
+    const normalizedPath = path.join(agentRoot, "missing-content-type.jpg")
+    fs.writeFileSync(normalizedPath, "normalized-no-content-type")
     const nervesMock = vi.fn()
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: nervesMock }))
+    vi.doMock("../../../heart/attachments/image-normalize", () => ({
+      MAX_ATTACHMENT_DOWNLOAD_BYTES_IMAGE: 32 * 1024 * 1024,
+      MAX_VLM_IMAGE_BYTES: 5 * 1024 * 1024,
+      normalizeImageForVision: vi.fn().mockResolvedValue({
+        path: normalizedPath,
+        mimeType: "image/jpeg",
+        byteCount: 26,
+      }),
+    }))
     const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
     // Attachment reports no mimeType and response has no content-type → image
     // detection still fires on extension (".png") but contentType is
@@ -1966,14 +2075,14 @@ describe("BlueBubbles media hydration — capability-aware image routing", () =>
       {
         fetchImpl: vi.fn().mockResolvedValue(new Response(Buffer.from("x"), { status: 200 })),
         chatModel: "MiniMax-M2.5",
-        vlmDescribe: vi.fn(),
+        vlmDescribe: vi.fn().mockResolvedValue("png without content-type"),
       },
     )
-    expect(result.inputParts[0]).toMatchObject({ type: "text" })
+    expect(result.inputParts).toEqual([{ type: "text", text: "[image description: png without content-type]" }])
     const unsupported = nervesMock.mock.calls.find(
       (c) => c[0]?.event === "senses.bluebubbles_vision_format_unsupported",
     )
-    expect(unsupported).toBeDefined()
+    expect(unsupported).toBeUndefined()
     vi.doUnmock("../../../nerves/runtime")
   })
 
@@ -2014,5 +2123,150 @@ describe("BlueBubbles media hydration — capability-aware image routing", () =>
     expect(result.inputParts).toEqual([
       { type: "text", text: expect.stringMatching(/image description failed/i) },
     ])
+  })
+
+  it("non-vision chat model with a non-persisted image: falls back cleanly instead of retrying the old dead path", async () => {
+    vi.resetModules()
+    vi.doMock("../../../heart/attachments/sources/bluebubbles", async () => {
+      const actual = await vi.importActual<typeof import("../../../heart/attachments/sources/bluebubbles")>(
+        "../../../heart/attachments/sources/bluebubbles",
+      )
+      return {
+        ...actual,
+        persistBlueBubblesAttachmentSource: vi.fn(async (_agentName: string, attachment: unknown) => attachment),
+      }
+    })
+
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
+    const vlmDescribe = vi.fn(async () => "should not be called")
+    const result = await hydrateBlueBubblesAttachments(
+      [{ guid: "g1", mimeType: "image/png", transferName: "pic.png" }],
+      baseConfig(),
+      baseChannel(),
+      {
+        fetchImpl: vi.fn().mockResolvedValue(pngResponse()),
+        chatModel: "MiniMax-M2.5",
+        vlmDescribe,
+      },
+    )
+
+    expect(vlmDescribe).not.toHaveBeenCalled()
+    expect(result.inputParts).toEqual([
+      { type: "text", text: "[image description failed: image attachment could not be persisted for normalization]" },
+    ])
+    vi.doUnmock("../../../heart/attachments/sources/bluebubbles")
+  })
+
+  it("non-vision chat model falls back to the persisted mime when normalization omits one", async () => {
+    vi.resetModules()
+    const agentRoot = makeAgentRoot()
+    const normalizedPath = path.join(agentRoot, "normalized-no-mime.jpg")
+    fs.writeFileSync(normalizedPath, "normalized-jpeg")
+    vi.doMock("../../../heart/attachments/image-normalize", () => ({
+      MAX_ATTACHMENT_DOWNLOAD_BYTES_IMAGE: 32 * 1024 * 1024,
+      MAX_VLM_IMAGE_BYTES: 5 * 1024 * 1024,
+      normalizeImageForVision: vi.fn().mockResolvedValue({
+        path: normalizedPath,
+        byteCount: 26,
+      }),
+    }))
+
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
+    const vlmDescribe = vi.fn(async () => "png fallback description")
+    await hydrateBlueBubblesAttachments(
+      [{ guid: "g1", mimeType: "image/png", transferName: "pic.png" }],
+      baseConfig(),
+      baseChannel(),
+      {
+        fetchImpl: vi.fn().mockResolvedValue(pngResponse()),
+        chatModel: "MiniMax-M2.5",
+        vlmDescribe,
+      },
+    )
+
+    expect(vlmDescribe).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mimeType: "image/png",
+        imageDataUrl: expect.stringContaining("data:image/png;base64,"),
+      }),
+    )
+    vi.doUnmock("../../../heart/attachments/image-normalize")
+  })
+
+  it("non-vision chat model falls back to image/jpeg when no mime survives normalization", async () => {
+    vi.resetModules()
+    const agentRoot = makeAgentRoot()
+    const normalizedPath = path.join(agentRoot, "normalized-default-mime.jpg")
+    fs.writeFileSync(normalizedPath, "normalized-jpeg")
+    vi.doMock("../../../heart/attachments/image-normalize", () => ({
+      MAX_ATTACHMENT_DOWNLOAD_BYTES_IMAGE: 32 * 1024 * 1024,
+      MAX_VLM_IMAGE_BYTES: 5 * 1024 * 1024,
+      normalizeImageForVision: vi.fn().mockResolvedValue({
+        path: normalizedPath,
+        byteCount: 26,
+      }),
+    }))
+
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
+    const vlmDescribe = vi.fn(async () => "jpeg fallback description")
+    await hydrateBlueBubblesAttachments(
+      [{ guid: "g1", transferName: "pic.png" }],
+      baseConfig(),
+      baseChannel(),
+      {
+        fetchImpl: vi.fn().mockResolvedValue(new Response(Buffer.from("png"), { status: 200 })),
+        chatModel: "MiniMax-M2.5",
+        vlmDescribe,
+      },
+    )
+
+    expect(vlmDescribe).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mimeType: "image/jpeg",
+        imageDataUrl: expect.stringContaining("data:image/jpeg;base64,"),
+      }),
+    )
+    vi.doUnmock("../../../heart/attachments/image-normalize")
+  })
+
+  it("non-vision chat model falls back cleanly when the remembered attachment record is not BlueBubbles-shaped", async () => {
+    vi.resetModules()
+    vi.doMock("../../../heart/attachments/store", async () => {
+      const actual = await vi.importActual<typeof import("../../../heart/attachments/store")>(
+        "../../../heart/attachments/store",
+      )
+      return {
+        ...actual,
+        rememberRecentAttachment: vi.fn(() => ({
+          id: "attachment:cli-local-file:fake",
+          source: "cli-local-file",
+          sourceId: "fake",
+          kind: "image",
+          displayName: "pic.png",
+          mimeType: "image/png",
+          byteCount: 3,
+          createdAt: 1,
+          lastSeenAt: 1,
+          sourceData: { path: "/tmp/fake.png" },
+        })),
+      }
+    })
+
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
+    const result = await hydrateBlueBubblesAttachments(
+      [{ guid: "g1", mimeType: "image/png", transferName: "pic.png" }],
+      baseConfig(),
+      baseChannel(),
+      {
+        fetchImpl: vi.fn().mockResolvedValue(pngResponse()),
+        chatModel: "MiniMax-M2.5",
+        vlmDescribe: vi.fn(),
+      },
+    )
+
+    expect(result.inputParts).toEqual([
+      { type: "text", text: "[image description failed: image attachment could not be persisted for normalization]" },
+    ])
+    vi.doUnmock("../../../heart/attachments/store")
   })
 })

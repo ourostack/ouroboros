@@ -18,14 +18,15 @@ describe("restTool definition", () => {
     const { restTool } = await import("../../repertoire/tools-base")
 
     expect(restTool.function.description).toBeTruthy()
-    expect(restTool.function.description).toContain("wheel")
+    expect(restTool.function.description).toContain("HEARTBEAT_OK")
   })
 
-  it("has no required parameters", async () => {
+  it("has optional heartbeat status parameters", async () => {
     const { restTool } = await import("../../repertoire/tools-base")
     const params = restTool.function.parameters as any
 
-    expect(params.properties).toEqual({})
+    expect(params.properties.status).toBeDefined()
+    expect(params.properties.note).toBeDefined()
     expect(params.required ?? []).toEqual([])
   })
 

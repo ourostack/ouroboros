@@ -67,6 +67,10 @@ vi.mock("../../../heart/versioning/ouro-version-manager", () => ({
   buildChangelogCommand: mocks.buildChangelogCommand,
 }))
 
+vi.mock("../../../heart/daemon/startup-tui", () => ({
+  pollDaemonStartup: vi.fn(async () => ({ stable: [], degraded: [] })),
+}))
+
 import { runOuroCli, type OuroCliDeps } from "../../../heart/daemon/daemon-cli"
 
 function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {

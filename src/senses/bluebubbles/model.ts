@@ -1,5 +1,7 @@
 import OpenAI from "openai"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { renderAttachmentBlock } from "../../heart/attachments/render"
+import { buildBlueBubblesAttachmentRecord } from "../../heart/attachments/sources/bluebubbles"
 
 type JsonRecord = Record<string, unknown>
 
@@ -75,6 +77,20 @@ export type BlueBubblesNormalizedMutation = {
 export type BlueBubblesNormalizedEvent =
   | BlueBubblesNormalizedMessage
   | BlueBubblesNormalizedMutation
+
+const IGNORABLE_GUIDLESS_EVENT_TYPES = new Set([
+  "chat-read-status-changed",
+])
+
+export class BlueBubblesIgnoredEventError extends Error {
+  readonly eventType: string
+
+  constructor(eventType: string, message: string) {
+    super(message)
+    this.name = "BlueBubblesIgnoredEventError"
+    this.eventType = eventType
+  }
+}
 
 function asRecord(value: unknown): JsonRecord | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -188,19 +204,17 @@ function extractAttachments(data: JsonRecord): BlueBubblesAttachmentSummary[] {
 
 function formatAttachmentText(attachments: BlueBubblesAttachmentSummary[]): string {
   if (attachments.length === 0) return ""
+
+  const renderable = attachments
+    .filter((attachment) => typeof attachment.guid === "string" && attachment.guid.trim().length > 0)
+    .map((attachment) => buildBlueBubblesAttachmentRecord(attachment))
+
+  if (renderable.length > 0) {
+    return renderAttachmentBlock(renderable)
+  }
+
   const [first] = attachments
-  const mime = first.mimeType ?? ""
-  const label = mime.startsWith("image/")
-    ? "image attachment"
-    : mime.startsWith("audio/")
-      ? "audio attachment"
-      : "attachment"
-  const name = first.transferName ? `: ${first.transferName}` : ""
-  const dimensions =
-    typeof first.width === "number" && typeof first.height === "number" && first.width > 0 && first.height > 0
-      ? ` (${first.width}x${first.height})`
-      : ""
-  return `[${label}${name}${dimensions}]`
+  return `[attachment: ${first.transferName?.trim() || "unknown"}]`
 }
 
 function formatMessageText(data: JsonRecord, attachments: BlueBubblesAttachmentSummary[]): string {
@@ -295,6 +309,12 @@ export function normalizeBlueBubblesEvent(payload: unknown): BlueBubblesNormaliz
       message: "ignored bluebubbles payload without guid",
       meta: { eventType },
     })
+    if (IGNORABLE_GUIDLESS_EVENT_TYPES.has(eventType)) {
+      throw new BlueBubblesIgnoredEventError(
+        eventType,
+        `Ignored BlueBubbles event '${eventType}' without data.guid`,
+      )
+    }
     throw new Error("BlueBubbles payload is missing data.guid")
   }
 

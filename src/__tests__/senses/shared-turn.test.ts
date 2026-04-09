@@ -199,23 +199,6 @@ function setupSettledTurn(text: string = "hello from the agent") {
   })
 }
 
-function setupPonderedTurn() {
-  mockHandleInboundTurn.mockImplementation(async (input: any) => {
-    const result: InboundTurnResult = {
-      resolvedContext: makeResolvedContext(),
-      gateResult: { allowed: true },
-      usage: { input_tokens: 100, output_tokens: 50, reasoning_tokens: 0, total_tokens: 150 },
-      turnOutcome: "pondered",
-      sessionPath: "/tmp/session.json",
-      messages: [
-        { role: "system", content: "system" },
-        { role: "user", content: "hi" },
-      ],
-    }
-    return result
-  })
-}
-
 // ── Tests ──────────────────────────────────────────────────────
 
 describe("runSenseTurn", () => {
@@ -238,8 +221,18 @@ describe("runSenseTurn", () => {
     expect(result.ponderDeferred).toBe(false)
   })
 
-  it("returns ponderDeferred=true when agent ponders", async () => {
-    setupPonderedTurn()
+  it("does not fabricate a deferral message when a turn has no callback text", async () => {
+    mockHandleInboundTurn.mockResolvedValue({
+      resolvedContext: makeResolvedContext(),
+      gateResult: { allowed: true },
+      usage: { input_tokens: 100, output_tokens: 50, reasoning_tokens: 0, total_tokens: 150 },
+      turnOutcome: "settled",
+      sessionPath: "/tmp/session.json",
+      messages: [
+        { role: "system", content: "system" },
+        { role: "user", content: "hi" },
+      ],
+    })
     const { runSenseTurn } = await import("../../senses/shared-turn")
     const result = await runSenseTurn({
       agentName: "test-agent",
@@ -248,8 +241,8 @@ describe("runSenseTurn", () => {
       friendId: "friend-1",
       userMessage: "think about this deeply",
     })
-    expect(result.ponderDeferred).toBe(true)
-    expect(result.response).toContain("ponder")
+    expect(result.ponderDeferred).toBe(false)
+    expect(result.response).not.toContain("check back shortly")
   })
 
   it("caps response at 50000 characters", async () => {

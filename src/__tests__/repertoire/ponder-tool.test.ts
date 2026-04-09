@@ -22,30 +22,33 @@ describe("ponderTool definition", () => {
     expect(ponderTool.function.description).not.toContain("descend")
   })
 
-  it("has thought as optional parameter", async () => {
+  it("has action and kind packet parameters", async () => {
+    const { ponderTool } = await import("../../repertoire/tools-base")
+    const params = ponderTool.function.parameters as any
+
+    expect(params.properties.action).toBeDefined()
+    expect(params.properties.kind).toBeDefined()
+    expect(params.properties.action.enum).toEqual(["create", "revise"])
+    expect(params.properties.kind.enum).toEqual(["harness_friction", "research", "reflection"])
+  })
+
+  it("has packet spec fields", async () => {
+    const { ponderTool } = await import("../../repertoire/tools-base")
+    const params = ponderTool.function.parameters as any
+
+    expect(params.properties.objective).toBeDefined()
+    expect(params.properties.summary).toBeDefined()
+    expect(params.properties.success_criteria).toBeDefined()
+    expect(params.properties.payload_json).toBeDefined()
+  })
+
+  it("keeps deprecated thought and say fields for migration", async () => {
     const { ponderTool } = await import("../../repertoire/tools-base")
     const params = ponderTool.function.parameters as any
 
     expect(params.properties.thought).toBeDefined()
-    expect(params.properties.thought.type).toBe("string")
-    // Both thought and say are OPTIONAL (inner dialog calls with no args)
-    expect(params.required ?? []).not.toContain("thought")
-  })
-
-  it("has say as optional parameter", async () => {
-    const { ponderTool } = await import("../../repertoire/tools-base")
-    const params = ponderTool.function.parameters as any
-
     expect(params.properties.say).toBeDefined()
-    expect(params.properties.say.type).toBe("string")
-    expect(params.required ?? []).not.toContain("say")
-  })
-
-  it("say parameter description mentions speaking to what caught attention", async () => {
-    const { ponderTool } = await import("../../repertoire/tools-base")
-    const params = ponderTool.function.parameters as any
-
-    expect(params.properties.say.description).toContain("what caught your attention")
+    expect(params.properties.say.description).toContain("migration")
   })
 
   it("does not have mode parameter", async () => {

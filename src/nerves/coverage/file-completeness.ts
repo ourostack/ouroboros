@@ -56,9 +56,10 @@ const DISPATCH_EXEMPT_PATTERNS = [
   "repertoire/tools-config",
   "repertoire/tools-base",
   // CLI sub-modules: cli-exec.ts is the router with emitNervesEvent calls;
-  // cli-parse and cli-render are pure functions with no side effects.
+  // cli-parse, cli-render, and cli-help are pure functions/data with no side effects.
   "daemon/cli-parse",
   "daemon/cli-render",
+  "daemon/cli-help",
   // Shared utility modules: pure helpers consumed by modules that own observability.
   "arc/json-store",
   "repertoire/api-client",
@@ -66,6 +67,27 @@ const DISPATCH_EXEMPT_PATTERNS = [
   "mind/embedding-provider",
   // Commerce utility module: error classes and pure helpers (no independent side effects).
   "repertoire/commerce-errors",
+  // Diary integrity: pure detection utility (pattern matching only). The caller
+  // (diary.ts saveDiaryEntry) owns observability via mind.diary_integrity_warning.
+  "mind/diary-integrity",
+  // Provenance trust: pure classification function (no side effects). Callers
+  // (associative-recall.ts, tools-memory.ts) own observability for recall results.
+  "mind/provenance-trust",
+  // Log redaction: pure utility consumed by the NDJSON sink (no independent side effects).
+  "nerves/redact",
+  // Bundle templates: pure constants (gitignore template string, PII
+  // directory list). No runtime behavior — consumed by tools-bundle.ts
+  // which owns the observability for bundle operations.
+  "repertoire/bundle-templates",
+  // HTTP health probe: pure HTTP utility factory. The HealthMonitor caller
+  // owns observability via daemon.health_result events.
+  "daemon/http-health-probe",
+  // Attachment helper modules: generic file-path/extension utilities and the
+  // source registry are pure support seams. The orchestrator/adapters that
+  // call them own the observability.
+  "heart/attachments/originals",
+  "heart/attachments/sources/index",
+  "heart/attachments/sources/cli-local-file",
 ]
 
 function isDispatchExempt(filePath: string): boolean {
