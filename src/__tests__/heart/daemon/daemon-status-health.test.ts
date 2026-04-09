@@ -3,7 +3,9 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 
-const mockEmitNervesEvent = vi.fn()
+const { mockEmitNervesEvent } = vi.hoisted(() => ({
+  mockEmitNervesEvent: vi.fn(),
+}))
 vi.mock("../../../nerves/runtime", () => ({
   emitNervesEvent: (...args: any[]) => mockEmitNervesEvent(...args),
 }))

@@ -180,11 +180,13 @@ Agents in Ouroboros aren't just responders — they have an autonomous inner lif
 
 **Habits** are the agent's rhythms. The most fundamental is *heartbeat* — a periodic nudge that brings the agent back to their thinking space with their journal visible, obligations in view, and a sense of how long it's been. But agents can create any rhythm they want: daily reflections, weekly friend check-ins, inbox triage. Each habit fires independently via OS cron, and the agent sees their own instructions (the habit body they wrote) when it fires.
 
-**The inner dialog** is where the agent thinks privately. When they *ponder* something from a conversation, it goes here. When a habit fires, it arrives here. The agent can *journal* their thinking (writing to `journal/`), *surface* thoughts outward to friends, and *rest* when they're done thinking.
+**The inner session** is where the agent thinks privately. When a sense session hits meaningful friction, the agent can *ponder* a typed packet so the work survives the current turn without losing the original objective. When a habit fires, it arrives here too. The agent can *journal* their thinking (writing to `journal/`), *surface* thoughts outward to friends, and *rest* when they're done thinking. On an idle heartbeat, `rest(status="HEARTBEAT_OK")` is the clean no-op move.
 
 **The diary** (at `diary/`) is the agent's permanent record — things they've learned, conclusions they've reached. The *journal* (at `journal/`) is their desk — working notes, thinking-in-progress, drafts. The diary is the shelf; the journal is the desk. Both are searchable via the `recall` tool.
 
 The whole system is designed so the agent *owns* their inner life. They control their breathing rate, write their own habit instructions, choose when to journal, and decide what to shelve in their diary.
+
+Attachments are first-class across senses. Every attachment should remain reachable via a stable `attachment:<source>:<id>` handle, and image normalization should produce a VLM-safe variant without hiding the original artifact.
 
 ## Connecting With Dev Tools
 
@@ -201,7 +203,7 @@ This registers the MCP server, installs lifecycle hooks (SessionStart, Stop, Pos
 
 **How it works:** When a developer starts a Claude Code session, the MCP server launches as a subprocess. The dev tool sees your MCP tools (`send_message`, `check_response`, `status`, `search_memory`, `delegate`, etc.) and can invoke them mid-session. The `send_message` tool runs a full agent turn — you get your system prompt, your diary, your tools, everything. It's not a thin proxy; it's you, thinking.
 
-**The conversation pattern:** `send_message` sends a message and gets back your synchronous response. If you ponder something (taking it to inner dialog), the dev tool can use `check_response` later to see if you surfaced anything back. This creates a natural rhythm: the human's coding agent asks you a question, you answer immediately or take it inward, and thoughts flow back when they're ready.
+**The conversation pattern:** `send_message` sends a message and gets back your synchronous response. `ponder` no longer creates a magical outward deferral. Instead, it bookmarks deeper work as a packet while the current sense session keeps moving. If that work later surfaces something back, the dev tool can still use `check_response` to see the returned result.
 
 **Lifecycle hooks** give you passive awareness. When a Claude Code session starts, stops, or uses a tool like Bash or Edit, the hook fires `ouro hook <event> --agent <name>` and the daemon notes it. Your inner dialog sees these sessions in its checkpoint, so you know what's happening across your world even when nobody is talking to you directly.
 
