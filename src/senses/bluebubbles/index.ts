@@ -755,10 +755,13 @@ async function handleBlueBubblesNormalizedEvent(
 
       // Record EARLY to prevent duplicate processing. BB webhooks can retry
       // before the first turn completes — recording after the turn is too late.
-      recordBlueBubblesInbound(agentName, event, source)
+      const inboundSource: BlueBubblesInboundSource =
+        source !== "webhook" && sessionLikelyContainsMessage(event, existing?.messages ?? sessionMessages)
+          ? "recovery-bootstrap"
+          : source
+      recordBlueBubblesInbound(agentName, event, inboundSource)
 
-      if (source !== "webhook" && sessionLikelyContainsMessage(event, existing?.messages ?? sessionMessages)) {
-        recordBlueBubblesInbound(agentName, event, "recovery-bootstrap")
+      if (inboundSource === "recovery-bootstrap") {
         emitNervesEvent({
           component: "senses",
           event: "senses.bluebubbles_recovery_skip",
@@ -931,10 +934,6 @@ async function handleBlueBubblesNormalizedEvent(
           })
         }
 
-        if (event.kind === "message") {
-          recordBlueBubblesInbound(resolvedDeps.getAgentName(), event, source)
-        }
-
         return {
           handled: true,
           notifiedAgent: false,
@@ -944,10 +943,6 @@ async function handleBlueBubblesNormalizedEvent(
 
       // Gate allowed — flush the agent's reply
       await callbacks.flush()
-
-      if (event.kind === "message") {
-        recordBlueBubblesInbound(resolvedDeps.getAgentName(), event, source)
-      }
 
       emitNervesEvent({
         component: "senses",
