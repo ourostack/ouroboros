@@ -85,6 +85,7 @@ function makeInteractiveRepairDeps(deps: AgenticRepairDeps): InteractiveRepairDe
   return {
     promptInput: deps.promptInput,
     writeStdout: deps.writeStdout,
+    /* v8 ignore next -- fallback no-op: tests always inject runAuthFlow; default is for production @preserve */
     runAuthFlow: deps.runAuthFlow ?? (async () => undefined),
   }
 }
@@ -105,7 +106,7 @@ async function tryAgenticDiagnosis(
     { role: "user", content: userMessage },
   ]
 
-  // No-op callbacks — we only care about the final content
+  /* v8 ignore start -- no-op callbacks: satisfy interface contract, never invoked by diagnostic call @preserve */
   const noopCallbacks = {
     onModelStart: () => {},
     onModelStreamStart: () => {},
@@ -115,6 +116,7 @@ async function tryAgenticDiagnosis(
     onToolEnd: () => {},
     onError: () => {},
   }
+  /* v8 ignore stop */
 
   const result = await runtime.streamTurn({
     messages,
