@@ -130,6 +130,10 @@ const RM_RECURSIVE_ALLOWLIST: Array<{ file: string; why: string }> = [
     file: "src/heart/daemon/cli-defaults.ts",
     why: "CLI self-setup temp dir cleanup: removes the temporary directory used during `ouro up` self-install after the new version is activated. Not agent-callable — runs inside createDefaultOuroCliDeps' setup path.",
   },
+  {
+    file: "src/heart/daemon/stale-bundle-prune.ts",
+    why: "Stale ephemeral bundle pruning: removes .ouro directories that have no agent.json during `ouro up`. Not agent-callable — runs inside the daemon.up handler before ensureDaemonRunning.",
+  },
 ]
 
 // Files that are themselves the enforcement layer for the rm-rf rule
