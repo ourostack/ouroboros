@@ -98,4 +98,25 @@ describe("recall tool handler provenance output", () => {
     expect(result).not.toContain("friend=")
     expect(result).not.toContain("trust=")
   })
+
+  it("renders provenance with only tool field (no channel, friend, or trust)", async () => {
+    const handler = await getRecallHandler()
+    writeFacts([{
+      id: "tool-only-1",
+      text: "minimal provenance entry",
+      source: "tool:diary_write",
+      createdAt: "2026-04-08T00:00:00.000Z",
+      embedding: [],
+      provenance: {
+        tool: "diary_write",
+      },
+    }])
+
+    const result = await handler({ query: "minimal provenance" })
+    expect(result).toContain("[diary] minimal provenance entry")
+    expect(result).toContain("source=tool:diary_write")
+    expect(result).not.toContain("channel=")
+    expect(result).not.toContain("friend=")
+    expect(result).not.toContain("trust=")
+  })
 })
