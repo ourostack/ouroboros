@@ -2045,6 +2045,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   // ── doctor (local, no daemon socket needed) ──
   if (command.kind === "doctor") {
     const doctorDeps = {
+      /* v8 ignore next 4 -- thin fs wrappers tested via doctor.test.ts with injected deps @preserve */
       existsSync: (p: string) => fs.existsSync(p),
       readFileSync: (p: string) => fs.readFileSync(p, "utf-8"),
       readdirSync: (p: string) => fs.readdirSync(p),
