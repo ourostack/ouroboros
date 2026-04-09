@@ -19,7 +19,6 @@ import { emitNervesEvent } from "../../nerves/runtime"
 const SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 const STABILITY_THRESHOLD_MS = 5_000
 const POLL_INTERVAL_MS = 500
-const MAX_POLL_MS = 60_000
 
 // ── ANSI helpers ──
 
@@ -172,24 +171,22 @@ export async function pollDaemonStartup(deps: PollDaemonStartupDeps): Promise<St
     const now = deps.now()
     const elapsed = now - startTime
 
-    if (elapsed > MAX_POLL_MS) {
-      emitNervesEvent({
-        level: "warn",
-        component: "daemon",
-        event: "daemon.startup_poll_timeout",
-        message: "startup polling timed out",
-        meta: { elapsedMs: elapsed },
-      })
-      // Timeout: treat any unresolved agents as degraded
-      return { stable: [], degraded: [] }
-    }
-
     let payload: StatusPayload | null = null
     try {
       const response = await deps.sendCommand(deps.socketPath, { kind: "daemon.status" })
       payload = parseStatusPayload(response.data)
     } catch {
-      // Socket not yet available — will retry after sleep
+      // Socket not yet available — show waiting message and retry
+      const elapsedSec = (elapsed / 1000).toFixed(1)
+      const frameIndex = Math.floor(elapsed / 100) % SPINNER_FRAMES.length
+      const spinner = SPINNER_FRAMES[frameIndex]
+      let output = ""
+      if (prevLineCount > 0) {
+        output += `\x1b[${prevLineCount}A`
+      }
+      output += `\x1b[2K${spinner} ${BOLD}waiting for daemon${RESET} ${DIM}(${elapsedSec}s)${RESET}\n`
+      deps.writeStdout(output)
+      prevLineCount = 1
     }
 
     if (payload) {
