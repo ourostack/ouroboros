@@ -1,7 +1,6 @@
 import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
-import type { TaskStatus } from "../repertoire/tasks/types"
-import { validateTransition } from "../repertoire/tasks/transitions"
+import { isTaskStatus, type TaskStatus, validateTransition } from "./task-lifecycle"
 import { generateTimestampId, readJsonDir, readJsonFile, writeJsonFile } from "./json-store"
 
 export type PonderPacketKind = "harness_friction" | "research" | "reflection"
@@ -67,17 +66,6 @@ function packetSop(kind: PonderPacketKind): PonderPacketSop {
     case "reflection":
       return "reflection_v1"
   }
-}
-
-function isTaskStatus(value: unknown): value is TaskStatus {
-  return value === "drafting"
-    || value === "processing"
-    || value === "validating"
-    || value === "collaborating"
-    || value === "paused"
-    || value === "blocked"
-    || value === "done"
-    || value === "cancelled"
 }
 
 function isPacketKind(value: unknown): value is PonderPacketKind {
