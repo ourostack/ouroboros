@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.286",
+      "changes": [
+        "feat(bundle): new `src/repertoire/tools-bundle.ts` registers 7 agent-callable tools for managing the bundle's own git state: `bundle_check_sync_status`, `bundle_init_git`, `bundle_add_remote`, `bundle_list_first_commit`, `bundle_do_first_commit`, `bundle_push`, `bundle_pull_rebase`. Each tool computes `bundleRoot = getAgentRoot()` once at the top and refuses any path argument that resolves outside — the security boundary is enforced via `assertInsideBundle(bundleRoot, rel)` which normalizes the path and requires either equality with bundleRoot or the `bundleRoot + sep` prefix. Destructive operations (init on an existing repo, add_remote on a configured remote, pull_rebase on a dirty tree) refuse by default and require an explicit `force` or `discard_changes` flag (Directive B layered refusal pattern). `bundle_do_first_commit` stages files via explicit enumeration (`git add -- <file1> <file2>`) and refuses an empty files array — Directive A: the agent must enumerate what it wants to delete or commit, not recursively blast. `bundle_push` returns structured `{ ok, error, kind }` where kind is 'rejected' | 'network' | 'auth' | 'unknown', classified from stderr. `bundle_pull_rebase` returns `{ kind: 'conflict', conflictFiles: [...] }` so the agent can walk the human through resolution. All 7 tools registered in the flat registry at `src/repertoire/tools.ts` line 34. 41 new unit tests cover happy paths, every refusal path, URL validation, security boundary escapes, push error classification, and dirty-tree handling."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.285",
       "changes": [
         "feat(daemon): wire startPeriodicReconciliation() after scheduler.start() in daemon-entry.ts — prevents silent habit death when OS cron fails by giving the daemon a self-healing reconciliation loop.",
