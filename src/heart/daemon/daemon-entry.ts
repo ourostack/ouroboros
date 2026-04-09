@@ -153,33 +153,44 @@ void daemon.start().then(() => {
   const osCronDeps = createRealOsCronDeps()
 
   for (const agent of managedAgents) {
-    const bundleRoot = path.join(bundlesRoot, `${agent}.ouro`)
-    const habitsDir = path.join(bundleRoot, "habits")
+    try {
+      const bundleRoot = path.join(bundlesRoot, `${agent}.ouro`)
+      const habitsDir = path.join(bundleRoot, "habits")
 
-    // Migrate old tasks/habits/ to habits/ at bundle root
-    migrateHabitsFromTaskSystem(bundleRoot)
+      // Migrate old tasks/habits/ to habits/ at bundle root
+      migrateHabitsFromTaskSystem(bundleRoot)
 
-    const osCronManager = new LaunchdCronManager(osCronDeps)
-    const scheduler = new HabitScheduler({
-      agent,
-      habitsDir,
-      osCronManager,
-      onHabitFire: (habitName) => {
-        processManager.sendToAgent(agent, { type: "habit", habitName })
-      },
-      deps: {
-        readdir: (dir) => fs.readdirSync(dir),
-        readFile: (p, enc) => fs.readFileSync(p, enc as BufferEncoding),
-        writeFile: (p, c, enc) => fs.writeFileSync(p, c, enc as BufferEncoding),
-        existsSync: (p) => fs.existsSync(p),
-        now: () => Date.now(),
-        ouroPath,
-        watch: (dir, cb) => fs.watch(dir, cb),
-      },
-    })
-    scheduler.start()
-    scheduler.watchForChanges()
-    habitSchedulers.push(scheduler)
+      const osCronManager = new LaunchdCronManager(osCronDeps)
+      const scheduler = new HabitScheduler({
+        agent,
+        habitsDir,
+        osCronManager,
+        onHabitFire: (habitName) => {
+          processManager.sendToAgent(agent, { type: "habit", habitName })
+        },
+        deps: {
+          readdir: (dir) => fs.readdirSync(dir),
+          readFile: (p, enc) => fs.readFileSync(p, enc as BufferEncoding),
+          writeFile: (p, c, enc) => fs.writeFileSync(p, c, enc as BufferEncoding),
+          existsSync: (p) => fs.existsSync(p),
+          now: () => Date.now(),
+          ouroPath,
+          watch: (dir, cb) => fs.watch(dir, cb),
+        },
+      })
+      scheduler.start()
+      scheduler.watchForChanges()
+      habitSchedulers.push(scheduler)
+    } catch (err: unknown) {
+      const error = err instanceof Error ? err : new Error(String(err))
+      emitNervesEvent({
+        level: "error",
+        component: "daemon",
+        event: "daemon.habit_setup_error",
+        message: `habit setup failed for agent ${agent}`,
+        meta: { agent, error: error.message },
+      })
+    }
   }
 /* v8 ignore start -- startup failure + signal handlers: call process.exit, untestable in vitest @preserve */
 }).catch(async (err: unknown) => {
