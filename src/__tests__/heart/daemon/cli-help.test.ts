@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { emitNervesEvent } from "../../../nerves/runtime"
 import {
   COMMAND_REGISTRY,
@@ -10,6 +10,8 @@ import {
   type CommandCategory,
 } from "../../../heart/daemon/cli-help"
 import { parseOuroCommand } from "../../../heart/daemon/cli-parse"
+import { runOuroCli } from "../../../heart/daemon/cli-exec"
+import type { OuroCliDeps } from "../../../heart/daemon/cli-types"
 
 // ── Unit 0a: Command metadata registry ──
 
@@ -262,5 +264,57 @@ describe("parseOuroCommand help handling", () => {
 
   it("parses 'status --help' as { kind: 'help', command: 'status' }", () => {
     expect(parseOuroCommand(["status", "--help"])).toEqual({ kind: "help", command: "status" })
+  })
+})
+
+// ── Unit 2c: runOuroCli help execution ──
+
+describe("runOuroCli help execution", () => {
+  function makeDeps(): OuroCliDeps {
+    return {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    }
+  }
+
+  it("ouro --help outputs grouped help", async () => {
+    emitNervesEvent({ component: "daemon", event: "cli_help_exec_test", message: "testing help execution" })
+    const deps = makeDeps()
+    const result = await runOuroCli(["--help"], deps)
+    expect(result).toContain("Lifecycle")
+    expect(result).toContain("Chat")
+    expect(deps.writeStdout).toHaveBeenCalledWith(result)
+  })
+
+  it("ouro -h outputs grouped help", async () => {
+    const deps = makeDeps()
+    const result = await runOuroCli(["-h"], deps)
+    expect(result).toContain("Lifecycle")
+  })
+
+  it("ouro help outputs grouped help via command routing", async () => {
+    const deps = makeDeps()
+    const result = await runOuroCli(["help"], deps)
+    expect(result).toContain("Lifecycle")
+    expect(result).toContain("Chat")
+  })
+
+  it("ouro help chat outputs per-command help for chat", async () => {
+    const deps = makeDeps()
+    const result = await runOuroCli(["help", "chat"], deps)
+    expect(result).toContain("chat")
+    expect(result).toContain(COMMAND_REGISTRY["chat"].description)
+  })
+
+  it("ouro help <unknown> outputs fallback grouped help", async () => {
+    const deps = makeDeps()
+    const result = await runOuroCli(["help", "xyzzy"], deps)
+    expect(result).toContain("Unknown command: xyzzy")
+    expect(result).toContain("Lifecycle")
   })
 })
