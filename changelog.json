@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.283",
+      "changes": [
+        "chore(housekeeping): clean up ~3600 leaked test secret dirs in `~/.agentsecrets/`. The auth CLI test suite was creating ephemeral agent secret dirs (auth-local-*, auth-store-*, auth-no-switch-*, etc.) without cleaning them up, accreting over weeks into thousands of orphaned entries. Also purged three non-test orphans (`testagent`, `model-reviews`, `config-model-facing-*`) that were leftovers from manual probe sessions. Only `slugger` and `ouroboros` — the two real agents on this machine — remain.",
+        "chore(housekeeping): remove orphan bundle stubs from `~/AgentBundles/` (default.ouro, thoughts-test-*, an empty `friends/` dir, and a .DS_Store). These were skeletal test leftovers with no real identity — the daemon was already filtering them out of `listEnabledBundleAgents`, so deletion is invisible to the runtime but stops confusing anyone inspecting the bundles directory.",
+        "chore(tests): replace the `outlookServer.stop` v8 ignore band-aid in `daemon.ts` with a proper test. `OuroDaemonOptions` gains an `outlookServerFactory` seam that lets tests inject an in-memory stub handle instead of binding port 6876 (which a running production daemon holds on dev machines, causing EADDRINUSE flakes). New `daemon-outlook-lifecycle.test.ts` covers the happy path (factory runs, stop is called), the error path (factory throws, daemon logs warn and keeps going, stop is a no-op), and the double-start guard. The default production factory path (`createDefaultOutlookServer` — wires the real `startOutlookHttpServer` with bundlesRoot + view builders) is v8-ignored because it only runs under real bind on port 6876; `startOutlookHttpServer` itself has full coverage in `outlook-http.test.ts`. Removed the redundant `if (!this.outlookServer)` wrapper in `startInner()` that was guarding against an unreachable retry scenario. `daemon.ts` now hits 100% statements / branches / functions / lines with zero port binding in the test suite.",
+        "chore(ci): tighten the wrapper publish-sync check timing. The version-bump check and wrapper-publish-sync check now run BEFORE the ~2+ minute coverage gate, not after. Previously, a contributor would wait for the full test suite to pass only to then see a 'version already published' error. Now the fast checks surface in under a minute, and coverage only runs once version/wrapper gates have cleared. Same checks, same logic — just reordered steps in `.github/workflows/coverage.yml`."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.282",
       "changes": [
         "feat(cli): crash-resilient sessions \u2014 saves after each tool result, repairs orphaned tool calls on resume."
