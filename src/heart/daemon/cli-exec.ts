@@ -64,9 +64,11 @@ import type {
   SessionCliCommand,
   ThoughtsCliCommand,
   DoctorCliCommand,
+  HelpCliCommand,
 } from "./cli-types"
 import { parseOuroCommand } from "./cli-parse"
 import { isAgentProvider, usage } from "./cli-parse"
+import { getGroupedHelp, getCommandHelp } from "./cli-help"
 import {
   parseStatusPayload,
   formatDaemonStatusOutput,
@@ -260,7 +262,7 @@ async function verifyProviderCredentials(
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "outlook" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DoctorCliCommand | { kind: "bluebubbles.replay" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "outlook" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DoctorCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" }>): DaemonCommand {
   return command
 }
 
@@ -728,7 +730,7 @@ function resolveClonePath(
 
 export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefaultOuroCliDeps()): Promise<string> {
   if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) {
-    const text = usage()
+    const text = getGroupedHelp()
     deps.writeStdout(text)
     return text
   }
@@ -809,6 +811,14 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     message: "ouro CLI command invoked",
     meta: { kind: command.kind },
   })
+
+  if (command.kind === "help") {
+    const text = command.command
+      ? (getCommandHelp(command.command) ?? `Unknown command: ${command.command}\n\n${getGroupedHelp()}`)
+      : getGroupedHelp()
+    deps.writeStdout(text)
+    return text
+  }
 
   if (command.kind === "bluebubbles.replay") {
     const { replayBlueBubblesMessage, formatBlueBubblesReplayText } = await import("../../senses/bluebubbles/replay")
