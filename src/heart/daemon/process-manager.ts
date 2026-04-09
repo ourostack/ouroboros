@@ -24,6 +24,15 @@ export interface DaemonAgentSnapshot {
   backoffMs: number
   lastExitCode: number | null
   lastSignal: string | null
+  /** Human-readable description of the most recent config-check failure
+   *  for this agent, or null when the most recent config check passed.
+   *  Populated by checkAgentConfig in startAgent; cleared when a later
+   *  startAgent call sees a passing check. Surfaced via the pulse so
+   *  sibling agents can read each other's broken state. */
+  errorReason: string | null
+  /** Actionable command/instruction to fix the config error, or null
+   *  when there is no current error. Same lifecycle as errorReason. */
+  fixHint: string | null
 }
 
 export interface DaemonProcessManagerOptions {
@@ -40,6 +49,12 @@ export interface DaemonProcessManagerOptions {
   clearTimeoutFn?: (timer: unknown) => void
   existsSync?: (p: string) => boolean
   configCheck?: (agent: string) => { ok: boolean; error?: string; fix?: string }
+  /** Called after every snapshot mutation (start, exit, config-failure,
+   *  recovery, etc.) so external observers (currently: the pulse writer)
+   *  can react to state changes without polling. The callback is invoked
+   *  synchronously after the mutation; if it throws, we swallow the error
+   *  to avoid breaking the lifecycle path. */
+  onSnapshotChange?: (snapshot: DaemonAgentSnapshot) => void
 }
 
 interface AgentRuntimeState {
@@ -72,6 +87,30 @@ export class DaemonProcessManager {
   private readonly maxCooldownRetries: number
   private readonly existsSyncFn: ((p: string) => boolean) | null
   private readonly configCheckFn: ((agent: string) => { ok: boolean; error?: string; fix?: string }) | null
+  private readonly onSnapshotChangeFn: ((snapshot: DaemonAgentSnapshot) => void) | null
+
+  /**
+   * Notify the snapshot-change observer (if registered). Swallows any
+   * errors from the observer so process lifecycle code never fails
+   * because the observer threw.
+   */
+  private notifySnapshotChange(snapshot: DaemonAgentSnapshot): void {
+    if (!this.onSnapshotChangeFn) return
+    try {
+      this.onSnapshotChangeFn(snapshot)
+    } catch (error) {
+      emitNervesEvent({
+        level: "warn",
+        component: "daemon",
+        event: "daemon.snapshot_change_observer_error",
+        message: "snapshot-change observer threw",
+        meta: {
+          agent: snapshot.name,
+          error: error instanceof Error ? error.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(error),
+        },
+      })
+    }
+  }
 
   constructor(options: DaemonProcessManagerOptions) {
     this.maxRestartsPerHour = options.maxRestartsPerHour ?? 10
@@ -86,6 +125,7 @@ export class DaemonProcessManager {
     this.clearTimeoutFn = options.clearTimeoutFn ?? ((timer) => clearTimeout(timer as NodeJS.Timeout))
     this.existsSyncFn = options.existsSync ?? null
     this.configCheckFn = options.configCheck ?? null
+    this.onSnapshotChangeFn = options.onSnapshotChange ?? null
 
     for (const agent of options.agents) {
       this.agents.set(agent.name, {
@@ -108,6 +148,8 @@ export class DaemonProcessManager {
           backoffMs: this.initialBackoffMs,
           lastExitCode: null,
           lastSignal: null,
+          errorReason: null,
+          fixHint: null,
         },
       })
     }
@@ -133,6 +175,13 @@ export class DaemonProcessManager {
       const result = this.configCheckFn(agent)
       if (!result.ok) {
         state.snapshot.status = "crashed"
+        // Surface the error and fix to the snapshot so sibling agents can
+        // read it via the pulse. Without this, the diagnosis stayed
+        // trapped in the nerves event and stderr — visible to humans
+        // running `ouro status` or grepping logs, but invisible to
+        // peer agents trying to coordinate around the broken state.
+        state.snapshot.errorReason = result.error ?? "agent config validation failed"
+        state.snapshot.fixHint = result.fix ?? null
         emitNervesEvent({
           level: "error",
           component: "daemon",
@@ -144,8 +193,15 @@ export class DaemonProcessManager {
           `[daemon] ${agent}: ${result.error}\n` +
           (result.fix ? `  Fix: ${result.fix}\n` : ""),
         )
+        this.notifySnapshotChange(state.snapshot)
         return
       }
+      // Config check passed — clear any prior error so the pulse stops
+      // reporting the broken state. This is the recovery path: the user
+      // fixed their secrets/config, the next startAgent attempt sees a
+      // valid config, and the pulse goes quiet.
+      state.snapshot.errorReason = null
+      state.snapshot.fixHint = null
     }
 
     const runCwd = getRepoRoot()
@@ -160,6 +216,7 @@ export class DaemonProcessManager {
         message: "agent entry script does not exist — cannot spawn. Run 'ouro daemon install' from the correct location.",
         meta: { agent, entryScript },
       })
+      this.notifySnapshotChange(state.snapshot)
       return
     }
 
@@ -187,6 +244,7 @@ export class DaemonProcessManager {
       message: "daemon started managed agent process",
       meta: { agent, pid: child.pid ?? null, cwd: runCwd },
     })
+    this.notifySnapshotChange(state.snapshot)
 
     /* v8 ignore start — child process error handler; requires real spawn to trigger */
     child.on("error", (err) => {
@@ -214,6 +272,7 @@ export class DaemonProcessManager {
     if (!state.process) {
       state.snapshot.status = "stopped"
       state.snapshot.pid = null
+      this.notifySnapshotChange(state.snapshot)
       return
     }
 
@@ -233,6 +292,7 @@ export class DaemonProcessManager {
         meta: { agent },
       })
     }
+    this.notifySnapshotChange(state.snapshot)
   }
 
   async restartAgent(agent: string): Promise<void> {
@@ -295,6 +355,7 @@ export class DaemonProcessManager {
       if (runDuration >= this.stabilityThresholdMs) {
         state.snapshot.backoffMs = this.initialBackoffMs
       }
+      this.notifySnapshotChange(state.snapshot)
       return
     }
 
@@ -309,6 +370,11 @@ export class DaemonProcessManager {
       state.fastCrashCount = state.fastCrashCount + 1
       if (state.fastCrashCount >= FAST_CRASH_MAX) {
         state.snapshot.status = "crashed"
+        // Capture the fast-crash diagnosis on the snapshot so it surfaces
+        // via the pulse. The error message is prescriptive: it tells the
+        // user (and their sibling agents) exactly what to do.
+        state.snapshot.errorReason = `agent crashed ${FAST_CRASH_MAX} times within ${FAST_CRASH_THRESHOLD_MS}ms of startup — likely a configuration issue (missing credentials, bad provider).`
+        state.snapshot.fixHint = `Fix the config and run \`ouro up\` to restart, or check daemon logs for the underlying error.`
         emitNervesEvent({
           level: "error",
           component: "daemon",
@@ -316,6 +382,7 @@ export class DaemonProcessManager {
           message: `agent crashed ${FAST_CRASH_MAX} times within ${FAST_CRASH_THRESHOLD_MS}ms of startup — likely a configuration issue (missing credentials, bad provider). Not retrying. Fix the config and run \`ouro up\` to restart.`,
           meta: { agent: state.config.name, fastCrashCount: state.fastCrashCount, avgRunDurationMs: runDuration },
         })
+        this.notifySnapshotChange(state.snapshot)
         return // Don't schedule cooldown recovery — this needs human/agent intervention
       }
     } else {
@@ -328,6 +395,8 @@ export class DaemonProcessManager {
 
     if (state.crashTimestamps.length > this.maxRestartsPerHour) {
       state.snapshot.status = "crashed"
+      state.snapshot.errorReason = `agent exceeded restart limit (${this.maxRestartsPerHour}/hr) — entering cooldown`
+      state.snapshot.fixHint = "investigate why the agent keeps crashing; cooldown will retry shortly"
       emitNervesEvent({
         level: "error",
         component: "daemon",
@@ -335,6 +404,7 @@ export class DaemonProcessManager {
         message: "managed agent exceeded restart limit and is marked crashed",
         meta: { agent: state.config.name, maxRestartsPerHour: this.maxRestartsPerHour },
       })
+      this.notifySnapshotChange(state.snapshot)
       this.scheduleCooldownRecovery(state)
       return
     }
@@ -348,6 +418,7 @@ export class DaemonProcessManager {
     state.restartTimer = this.setTimeoutFn(() => {
       void this.startAgent(state.config.name)
     }, waitMs)
+    this.notifySnapshotChange(state.snapshot)
   }
 
   private clearRestartTimer(state: AgentRuntimeState): void {

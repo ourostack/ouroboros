@@ -62,6 +62,83 @@ const TESTAGENT_NO_MOCK_ALLOWLIST = new Set<string>()
 // New offenders are blocked by the contract test below.
 const REAL_BUNDLES_WRITE_ALLOWLIST = new Set<string>()
 
+// Additional prod paths that tests must not construct write paths under.
+// Each has its own empty ratchet allowlist; new offenders are blocked.
+//
+// - `.ouro-cli`: version-manager state (installed versions, CurrentVersion
+//   symlink, daemon.pids, pulse.json, pulse-delivered.json). A test writing
+//   here can corrupt the developer's running daemon state.
+// - `.agentsecrets`: credential store per convention. Writing here leaks
+//   test secrets into the real filesystem.
+// - `.claude`: Claude Code settings, logs, and subagent state. Writing here
+//   collides with the developer's own Claude Code session.
+// Grandfathered entries for the .ouro-cli rule. These are pre-existing
+// references that this new rule catches. Most are read-only assertions
+// (expect(...).toBe(...)) on path-return functions, but the rule scans
+// by line pattern without AST awareness so they match. Follow-up PRs
+// should convert them to use a mocked `os.homedir()` or an explicit
+// mocked dep, then remove each entry to ratchet the allowlist to zero.
+const REAL_OURO_CLI_WRITE_ALLOWLIST = new Set<string>([
+  "src/__tests__/heart/daemon/daemon-health.test.ts:53",
+  "src/__tests__/heart/daemon/daemon-orphan-cleanup.test.ts:199",
+  "src/__tests__/heart/daemon/daemon-orphan-cleanup.test.ts:210",
+  "src/__tests__/heart/daemon/daemon-tombstone.test.ts:27",
+  "src/__tests__/heart/daemon/daemon-tombstone.test.ts:148",
+])
+
+// Grandfathered entries for the .agentsecrets rule. Same ratchet policy.
+const REAL_AGENT_SECRETS_WRITE_ALLOWLIST = new Set<string>([
+  "src/__tests__/heart/auth/auth-flow.test.ts:495",
+  "src/__tests__/heart/auth/auth-flow.test.ts:499",
+  "src/__tests__/heart/auth/auth-flow.test.ts:808",
+  "src/__tests__/heart/daemon/hooks/agent-config-v2.test.ts:40",
+])
+
+// .claude allowlist starts empty — no known offenders as of the seed scan.
+const REAL_CLAUDE_WRITE_ALLOWLIST = new Set<string>()
+
+// Production code (under `src/` but NOT `src/__tests__/`) that currently
+// uses `fs.rmSync(..., { recursive: true })` or shells out to `rm -rf`.
+// The policy: agent-callable code should enumerate files to delete rather
+// than recursively blasting a directory, because (a) it's safer under a
+// bug, (b) it gives the agent a chance to log what's being deleted, and
+// (c) the enumeration loop can be interrupted mid-flight without leaving
+// the filesystem in a half-deleted state.
+//
+// The callsites below are NOT agent-callable — they're deterministic
+// harness infrastructure (version pruning, adoption scaffolding, UTI
+// icon pipeline). They're allowlisted with a justification. New prod
+// callsites are blocked and must be added here with a comment.
+const RM_RECURSIVE_ALLOWLIST: Array<{ file: string; why: string }> = [
+  {
+    file: "src/heart/hatch/specialist-tools.ts",
+    why: "Adoption scaffolding: moves a scratch bundle into ~/AgentBundles atomically, then removes the staging source; rolls back on failure by removing the partially-materialized target. Not agent-callable — runs inside complete_adoption's transaction.",
+  },
+  {
+    file: "src/heart/versioning/ouro-version-manager.ts",
+    why: "CLI version pruning: removes stale ~/.ouro-cli/versions/<version>/node_modules trees during `ouro up`. Not agent-callable — runs inside the version manager's retention GC.",
+  },
+  {
+    file: "src/heart/versioning/ouro-uti.ts",
+    why: "macOS UTI icon pipeline: removes an intermediate iconset directory after `iconutil` has already produced the .icns. Not agent-callable — runs only during app registration.",
+  },
+  {
+    file: "src/heart/daemon/cli-defaults.ts",
+    why: "CLI self-setup temp dir cleanup: removes the temporary directory used during `ouro up` self-install after the new version is activated. Not agent-callable — runs inside createDefaultOuroCliDeps' setup path.",
+  },
+]
+
+// Files that are themselves the enforcement layer for the rm-rf rule
+// (shell guardrails, anti-destruction regex patterns, prompt copy that
+// tells the agent about the rule). These files INTENTIONALLY contain the
+// literal "rm -rf" because their purpose is to prevent it — scanning them
+// produces false positives.
+const RM_RULE_ENFORCEMENT_FILES = new Set<string>([
+  "src/repertoire/guardrails.ts",
+  "src/repertoire/shell-sessions.ts",
+  "src/mind/prompt.ts",
+])
+
 // Files allowed to call `__bypassVitestGuardForTests`. The bypass flag is
 // process-wide and can leak across concurrent test files in the same worker
 // (verified — caused a real daemon outage on 2026-04-08). The runtime guard
@@ -99,9 +176,22 @@ const OURO_DAEMON_INSTANTIATION_ALLOWLIST = new Set<string>([
   "src/__tests__/repertoire/mcp-wiring.test.ts",
   "src/__tests__/heart/daemon/daemon-mcp-commands.test.ts",
   "src/__tests__/heart/daemon/daemon-startup-sense-drain.test.ts",
+  // Pairing-regression test constructs OuroDaemon to exercise the new
+  // try/catch in start() that emits daemon.server_error on mid-startup
+  // throws. Can't be tested through a higher-level seam because the
+  // emission is inside the daemon's own error path. Uses mode: "dev" to
+  // skip update checker and a processManager that throws synthetically.
+  "src/__tests__/nerves/pairing-regression.test.ts",
+  // Exercises the Outlook HTTP server lifecycle via the injected
+  // outlookServerFactory seam. The real factory binds port 6876 which
+  // a running production daemon holds; DI lets tests use an in-memory
+  // stub and cover the try/catch/stop branches that were previously
+  // v8-ignored.
+  "src/__tests__/heart/daemon/daemon-outlook-lifecycle.test.ts",
 ])
 
 const TESTS_ROOT = join(process.cwd(), "src", "__tests__")
+const SRC_ROOT = join(process.cwd(), "src")
 
 function walkTestFiles(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -115,8 +205,94 @@ function walkTestFiles(dir: string, out: string[] = []): string[] {
   return out
 }
 
+/**
+ * Walk production source files under `src/` EXCLUDING `src/__tests__/`.
+ * Used by the no-recursive-rm contract rule: test helpers are allowed to
+ * clean up tmpdirs recursively, production code is not.
+ */
+function walkProdSourceFiles(dir: string, out: string[] = []): string[] {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name === "__tests__") continue
+    const full = join(dir, entry.name)
+    if (entry.isDirectory()) {
+      walkProdSourceFiles(full, out)
+    } else if (entry.isFile() && (entry.name.endsWith(".ts") || entry.name.endsWith(".tsx"))) {
+      // Skip .d.ts type declarations
+      if (entry.name.endsWith(".d.ts")) continue
+      // Skip .test.ts files that might live outside __tests__
+      if (entry.name.endsWith(".test.ts")) continue
+      out.push(full)
+    }
+  }
+  return out
+}
+
 function relPath(absolute: string): string {
   return relative(process.cwd(), absolute)
+}
+
+/**
+ * Shared implementation for the "no NEW test file constructs a write path
+ * under real ~/<prod-dir>" rule family. `dirName` is for error messages,
+ * `allowlist` is the per-rule ratchet set, `dirRegex` matches the quoted
+ * literal inside the candidate line (e.g. `/["']\.ouro-cli["']/`).
+ */
+function runProdPathCheck(
+  dirName: string,
+  allowlist: Set<string>,
+  dirRegex: RegExp,
+): void {
+  const allTests = walkTestFiles(TESTS_ROOT)
+  const newOffenders: Array<{ file: string; line: number; snippet: string }> = []
+  const stillFlagged = new Set<string>()
+
+  for (const file of allTests) {
+    // Skip this contract test (mentions the patterns in comments).
+    if (file.endsWith("test-isolation.contract.test.ts")) continue
+    // Skip the bundle-skeleton contract test which is read-only verification of real bundles.
+    if (file.endsWith("bundle-skeleton.contract.test.ts")) continue
+    // Skip identity tests which assert on path construction (read-only string compare).
+    if (file.endsWith("identity.test.ts")) continue
+    // Skip tests where fs is fully mocked at the file level — the path is just a string compare.
+    const content = readFileSync(file, "utf-8")
+    const fsIsMocked = /vi\.mock\(\s*["']fs["']/.test(content.slice(0, 2000))
+
+    const lines = content.split("\n")
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]!
+      if (/os\.homedir\(\)/.test(line) && dirRegex.test(line)) {
+        if (fsIsMocked) continue
+        const key = `${relPath(file)}:${i + 1}`
+        if (allowlist.has(key)) {
+          stillFlagged.add(key)
+          continue
+        }
+        newOffenders.push({ file: relPath(file), line: i + 1, snippet: line.trim() })
+      }
+    }
+  }
+
+  // Detect entries that no longer need grandfathering
+  const cleanedUp: string[] = []
+  for (const allowed of allowlist) {
+    if (!stillFlagged.has(allowed)) {
+      cleanedUp.push(allowed)
+    }
+  }
+
+  expect(newOffenders, [
+    `These NEW test file lines construct a path under the real ~/${dirName}`,
+    "without mocking fs. Use `os.tmpdir()` for the bundle root, or mock fs at the",
+    "top of the file with `vi.mock(\"fs\", () => ({ ... }))`.",
+    "",
+    ...newOffenders.map((o) => `  ${o.file}:${o.line}  ${o.snippet}`),
+  ].join("\n")).toEqual([])
+
+  expect(cleanedUp, [
+    `These lines were grandfathered into the ~/${dirName} allowlist but no longer`,
+    "match — either the line was fixed, the line numbers shifted, or the file was",
+    "deleted. Update the allowlist in test-isolation.contract.test.ts.",
+  ].join("\n")).toEqual([])
 }
 
 describe("test isolation contract", () => {
@@ -187,57 +363,35 @@ describe("test isolation contract", () => {
   })
 
   it("no NEW test file constructs a write path under real ~/AgentBundles", () => {
-    const allTests = walkTestFiles(TESTS_ROOT)
-    const newOffenders: Array<{ file: string; line: number; snippet: string }> = []
-    const stillFlagged = new Set<string>()
+    runProdPathCheck(
+      "AgentBundles",
+      REAL_BUNDLES_WRITE_ALLOWLIST,
+      /["']AgentBundles["']/,
+    )
+  })
 
-    for (const file of allTests) {
-      // Skip this contract test (mentions the pattern in comments).
-      if (file.endsWith("test-isolation.contract.test.ts")) continue
-      // Skip the bundle-skeleton contract test which is read-only verification of real bundles.
-      if (file.endsWith("bundle-skeleton.contract.test.ts")) continue
-      // Skip identity tests which assert on path construction (read-only string compare).
-      if (file.endsWith("identity.test.ts")) continue
-      // Skip tests where fs is fully mocked at the file level — the path is just a string compare.
-      const content = readFileSync(file, "utf-8")
-      const fsIsMocked = /vi\.mock\(\s*["']fs["']/.test(content.slice(0, 2000))
+  it("no NEW test file constructs a write path under real ~/.ouro-cli", () => {
+    runProdPathCheck(
+      ".ouro-cli",
+      REAL_OURO_CLI_WRITE_ALLOWLIST,
+      /["']\.ouro-cli["']/,
+    )
+  })
 
-      const lines = content.split("\n")
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i]!
-        if (/os\.homedir\(\)/.test(line) && /["']AgentBundles["']/.test(line)) {
-          if (fsIsMocked) continue
-          const key = `${relPath(file)}:${i + 1}`
-          if (REAL_BUNDLES_WRITE_ALLOWLIST.has(key)) {
-            stillFlagged.add(key)
-            continue
-          }
-          newOffenders.push({ file: relPath(file), line: i + 1, snippet: line.trim() })
-        }
-      }
-    }
+  it("no NEW test file constructs a write path under real ~/.agentsecrets", () => {
+    runProdPathCheck(
+      ".agentsecrets",
+      REAL_AGENT_SECRETS_WRITE_ALLOWLIST,
+      /["']\.agentsecrets["']/,
+    )
+  })
 
-    // Detect entries that no longer need grandfathering
-    const cleanedUp: string[] = []
-    for (const allowed of REAL_BUNDLES_WRITE_ALLOWLIST) {
-      if (!stillFlagged.has(allowed)) {
-        cleanedUp.push(allowed)
-      }
-    }
-
-    expect(newOffenders, [
-      "These NEW test file lines construct a path under the real ~/AgentBundles",
-      "without mocking fs. Use `os.tmpdir()` for the bundle root, or mock fs at the",
-      "top of the file with `vi.mock(\"fs\", () => ({ ... }))`.",
-      "",
-      ...newOffenders.map((o) => `  ${o.file}:${o.line}  ${o.snippet}`),
-    ].join("\n")).toEqual([])
-
-    expect(cleanedUp, [
-      "These lines were grandfathered into REAL_BUNDLES_WRITE_ALLOWLIST but no longer",
-      "match — either the line was fixed, the line numbers shifted, or the file was",
-      "deleted. Update the allowlist in test-isolation.contract.test.ts.",
-    ].join("\n")).toEqual([])
+  it("no NEW test file constructs a write path under real ~/.claude", () => {
+    runProdPathCheck(
+      ".claude",
+      REAL_CLAUDE_WRITE_ALLOWLIST,
+      /["']\.claude["']/,
+    )
   })
 
   it("only allowlisted files may call __bypassVitestGuardForTests", () => {
@@ -351,6 +505,77 @@ describe("test isolation contract", () => {
       "These files were grandfathered into OURO_DAEMON_INSTANTIATION_ALLOWLIST",
       "but no longer construct OuroDaemon. Remove them from the allowlist to",
       "ratchet the exception list down toward zero.",
+    ].join("\n")).toEqual([])
+  })
+
+  it("agent-callable production code must not use recursive rm (Directive A)", () => {
+    // Rule: production code under `src/` (NOT `src/__tests__/`) must not
+    // call `fs.rmSync(..., { recursive: true })` or shell out to `rm -rf`.
+    // The policy — "an agent must enumerate the files it wants to delete"
+    // — is about making deletion auditable, interruptible, and safer under
+    // a bug. It applies to code an LLM might execute through tools.
+    //
+    // Test helpers under `src/__tests__/` ARE allowed to recursively clean
+    // up tmpdirs (they're the ones ensuring isolation). Same for .test.ts
+    // files anywhere.
+    //
+    // Infrastructure that legitimately needs recursive removal (adoption
+    // rollback, version pruning, macOS UTI pipeline) goes on
+    // RM_RECURSIVE_ALLOWLIST with an explicit justification.
+    const prodFiles = walkProdSourceFiles(SRC_ROOT)
+    const patterns: Array<{ name: string; regex: RegExp }> = [
+      { name: "fs.rmSync(...) recursive: true", regex: /rmSync\s*\([^)]*recursive\s*:\s*true/ },
+      { name: "shell `rm -rf`", regex: /\brm\s+-rf\b/ },
+      { name: "shell `rm -fr`", regex: /\brm\s+-fr\b/ },
+      { name: "shell `rm --recursive --force`", regex: /\brm\s+--recursive\s+--force\b/ },
+    ]
+    const allowlistFiles = new Set(RM_RECURSIVE_ALLOWLIST.map((e) => e.file))
+    const stillMatched = new Set<string>()
+    const newOffenders: Array<{ file: string; line: number; snippet: string; pattern: string }> = []
+
+    for (const file of prodFiles) {
+      const rel = relPath(file)
+      // Skip files that are themselves the rm-rf enforcement layer.
+      if (RM_RULE_ENFORCEMENT_FILES.has(rel)) continue
+      const content = readFileSync(file, "utf-8")
+      const lines = content.split("\n")
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i]!
+        for (const { name, regex } of patterns) {
+          if (regex.test(line)) {
+            if (allowlistFiles.has(rel)) {
+              stillMatched.add(rel)
+              continue
+            }
+            newOffenders.push({ file: rel, line: i + 1, snippet: line.trim(), pattern: name })
+          }
+        }
+      }
+    }
+
+    // Detect allowlist entries that no longer need the exception
+    const cleanedUp: string[] = []
+    for (const { file } of RM_RECURSIVE_ALLOWLIST) {
+      if (!stillMatched.has(file)) {
+        cleanedUp.push(file)
+      }
+    }
+
+    expect(newOffenders, [
+      "These NEW production files use recursive rm. Agent-callable code must",
+      "enumerate files to delete rather than recursively blasting a directory.",
+      "Enumerate the entries with readdirSync, iterate, call fs.rmSync on each",
+      "single file, then fs.rmdirSync bottom-up. If this callsite is genuinely",
+      "infrastructure (not agent-callable), add it to RM_RECURSIVE_ALLOWLIST",
+      "in this contract test WITH a justification comment.",
+      "",
+      ...newOffenders.map((o) => `  ${o.file}:${o.line}  [${o.pattern}]  ${o.snippet}`),
+    ].join("\n")).toEqual([])
+
+    expect(cleanedUp, [
+      "These files were grandfathered into RM_RECURSIVE_ALLOWLIST but no longer",
+      "contain a recursive-rm pattern. Remove them from the allowlist to ratchet",
+      "the exception list down toward zero.",
     ].join("\n")).toEqual([])
   })
 })

@@ -21,6 +21,9 @@ import { LaunchdCronManager } from "./os-cron"
 import { writeDaemonTombstone } from "./daemon-tombstone"
 import * as os from "os"
 import { checkAgentConfig } from "./agent-config-check"
+import { flushPulse } from "./pulse"
+import { sendDaemonCommand } from "./socket-client"
+import { getPackageVersion } from "../../mind/bundle-manifest"
 
 function parseSocketPath(argv: string[]): string {
   const socketIndex = argv.indexOf("--socket")
@@ -72,6 +75,23 @@ const processManager = new DaemonProcessManager({
     const secretsRoot = path.join(os.homedir(), ".agentsecrets")
     return checkAgentConfig(agent, bundlesRoot, secretsRoot)
   },
+  /* v8 ignore start -- pulse flush wiring: integration code; flushPulse itself has full unit tests @preserve */
+  onSnapshotChange: () => {
+    flushPulse({
+      snapshots: processManager.listAgentSnapshots(),
+      bundlesRoot: getAgentBundlesRoot(),
+      daemonVersion: getPackageVersion(),
+      now: new Date(),
+      // Default I/O wired into pulse.ts (writePulse, readPulse, etc.)
+      // Wake recipient: send inner.wake over the daemon's own socket so
+      // the recipient agent runs an inner-dialog turn that picks up the
+      // pulse alert. Catch errors silently — pulse is best-effort.
+      fireInnerWake: (agent: string) => {
+        sendDaemonCommand(socketPath, { kind: "inner.wake", agent }).catch(() => {})
+      },
+    })
+  },
+  /* v8 ignore stop */
 })
 
 const scheduler = new TaskDrivenScheduler({
@@ -158,6 +178,7 @@ void daemon.start().then(() => {
       },
     })
     scheduler.start()
+    scheduler.startPeriodicReconciliation()
     scheduler.watchForChanges()
     habitSchedulers.push(scheduler)
   }

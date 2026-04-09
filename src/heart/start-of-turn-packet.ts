@@ -1,6 +1,7 @@
 import * as fs from "fs"
 import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
+import { type BundleStateIssue, renderBundleStateHint } from "./bundle-state"
 import { type TemporalView } from "./temporal-view"
 import { type TempoMode, TEMPO_BUDGETS, type TempoTokenBudget } from "./tempo"
 import { type EpisodeRecord } from "../arc/episodes"
@@ -18,6 +19,7 @@ export interface StartOfTurnPacket {
   tokenBudget: TempoTokenBudget
   assembledAt: string
   syncFailure?: string
+  bundleState?: BundleStateIssue[]
   capabilities?: string
 }
 
@@ -231,6 +233,11 @@ export function renderStartOfTurnPacket(packet: StartOfTurnPacket): string {
   // Assemble sections in priority order (highest priority first for budget allocation)
   // Each section is { label, content, priority } where lower priority number = truncated first
   const sections = [
+    // bundleState and syncFailure share the top remediation tier — both
+    // are actionable "fix your git" signals. bundleState is preferred
+    // because it's structured (array of enum values) while syncFailure is
+    // a legacy free-form string; both render when populated.
+    { label: "bundleState", content: renderBundleStateHint(packet.bundleState ?? []), priority: 7 },
     { label: "syncFailure", content: packet.syncFailure ?? "", priority: 7 },
     { label: "resume", content: packet.resumeHint, priority: 6 },
     { label: "obligations", content: packet.obligations, priority: 5 },
@@ -310,6 +317,9 @@ function formatSections(sections: Array<{ label: string; content: string }>): st
         break
       case "syncFailure":
         parts.push(`**Sync warning:** ${section.content}`)
+        break
+      case "bundleState":
+        parts.push(`**Bundle:** ${section.content}`)
         break
     }
   }

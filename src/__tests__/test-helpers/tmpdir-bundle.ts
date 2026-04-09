@@ -72,6 +72,21 @@ function uniqueAgentName(prefix: string): string {
   return `${prefix}-${process.pid}-${Date.now()}-${_counter}`
 }
 
+/**
+ * Live-handle registry. Every handle returned by `createTmpBundle` is
+ * registered here and deregistered on `cleanup()`. The global afterEach
+ * leak guard in `src/__tests__/nerves/global-capture.ts` iterates this
+ * set after each test and calls `cleanup()` on anything left behind,
+ * giving us a second line of defense against tests that forget their
+ * try/finally. Handles leaked this way also surface as a console.warn
+ * naming the test that leaked them.
+ */
+const _liveHandles = new Set<TmpBundleHandle>()
+
+export function __getLiveTmpBundleHandles(): ReadonlySet<TmpBundleHandle> {
+  return _liveHandles
+}
+
 export function createTmpBundle(options: CreateTmpBundleOptions = {}): TmpBundleHandle {
   const agentName = options.agentName ?? uniqueAgentName("test")
   const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), `ouro-tmp-bundles-`))
@@ -94,20 +109,22 @@ export function createTmpBundle(options: CreateTmpBundleOptions = {}): TmpBundle
   }
 
   let cleaned = false
-  const cleanup = (): void => {
-    if (cleaned) return
-    cleaned = true
-    try { fs.rmSync(bundlesRoot, { recursive: true, force: true }) } catch { /* best effort */ }
-    try { fs.rmSync(secretsRoot, { recursive: true, force: true }) } catch { /* best effort */ }
-  }
-
-  return {
+  const handle: TmpBundleHandle = {
     agentName,
     bundlesRoot,
     agentRoot,
     agentConfigPath,
     secretsRoot,
     secretsPath,
-    cleanup,
+    cleanup: (): void => {
+      if (cleaned) return
+      cleaned = true
+      try { fs.rmSync(bundlesRoot, { recursive: true, force: true }) } catch { /* best effort */ }
+      try { fs.rmSync(secretsRoot, { recursive: true, force: true }) } catch { /* best effort */ }
+      _liveHandles.delete(handle)
+    },
   }
+
+  _liveHandles.add(handle)
+  return handle
 }

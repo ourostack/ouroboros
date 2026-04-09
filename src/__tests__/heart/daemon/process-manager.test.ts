@@ -65,6 +65,131 @@ describe("daemon process manager", () => {
     expect(manager.getAgentSnapshot("ouroboros")?.status).toBe("stopped")
   })
 
+  it("notifies onSnapshotChange after startAgent succeeds", async () => {
+    const child = new MockChild()
+    spawn.mockReturnValue(child)
+    now.mockReturnValue(1_000)
+    const onSnapshotChange = vi.fn()
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+      onSnapshotChange,
+    })
+
+    await manager.startAgent("slugger")
+
+    // The startAgent path emits at least one snapshot change for the
+    // running state. Multiple emissions are fine — the writer dedups.
+    expect(onSnapshotChange).toHaveBeenCalled()
+    const lastCall = onSnapshotChange.mock.calls[onSnapshotChange.mock.calls.length - 1]
+    expect(lastCall?.[0].name).toBe("slugger")
+    expect(lastCall?.[0].status).toBe("running")
+  })
+
+  it("notifies onSnapshotChange when configCheck fails (sets errorReason and fixHint)", async () => {
+    const onSnapshotChange = vi.fn()
+    const configCheck = vi.fn().mockReturnValue({
+      ok: false,
+      error: "missing github-copilot creds",
+      fix: "run `ouro auth ouroboros --provider github-copilot`",
+    })
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+      configCheck,
+      onSnapshotChange,
+    })
+
+    await manager.startAgent("slugger")
+
+    expect(spawn).not.toHaveBeenCalled()
+    expect(onSnapshotChange).toHaveBeenCalled()
+    const snap = manager.getAgentSnapshot("slugger")
+    expect(snap?.status).toBe("crashed")
+    expect(snap?.errorReason).toBe("missing github-copilot creds")
+    expect(snap?.fixHint).toContain("ouro auth")
+  })
+
+  it("clears errorReason and fixHint when a later configCheck passes (recovery)", async () => {
+    const child = new MockChild()
+    spawn.mockReturnValue(child)
+    now.mockReturnValue(1_000)
+    const configCheck = vi.fn()
+      .mockReturnValueOnce({ ok: false, error: "broken", fix: "fix it" })
+      .mockReturnValueOnce({ ok: true })
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+      configCheck,
+    })
+
+    await manager.startAgent("slugger")
+    expect(manager.getAgentSnapshot("slugger")?.errorReason).toBe("broken")
+
+    await manager.startAgent("slugger")
+    expect(manager.getAgentSnapshot("slugger")?.errorReason).toBeNull()
+    expect(manager.getAgentSnapshot("slugger")?.fixHint).toBeNull()
+    expect(manager.getAgentSnapshot("slugger")?.status).toBe("running")
+  })
+
+  it("notifies onSnapshotChange after stopAgent", async () => {
+    const child = new MockChild()
+    spawn.mockReturnValue(child)
+    now.mockReturnValue(1_000)
+    const onSnapshotChange = vi.fn()
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+      onSnapshotChange,
+    })
+
+    await manager.startAgent("slugger")
+    onSnapshotChange.mockClear()
+    await manager.stopAgent("slugger")
+
+    expect(onSnapshotChange).toHaveBeenCalled()
+    const lastCall = onSnapshotChange.mock.calls[onSnapshotChange.mock.calls.length - 1]
+    expect(lastCall?.[0].name).toBe("slugger")
+    expect(lastCall?.[0].status).toBe("stopped")
+  })
+
+  it("swallows errors from onSnapshotChange so they don't break lifecycle code", async () => {
+    const child = new MockChild()
+    spawn.mockReturnValue(child)
+    now.mockReturnValue(1_000)
+    const onSnapshotChange = vi.fn().mockImplementation(() => {
+      throw new Error("observer exploded")
+    })
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+      onSnapshotChange,
+    })
+
+    await expect(manager.startAgent("slugger")).resolves.not.toThrow()
+    expect(manager.getAgentSnapshot("slugger")?.status).toBe("running")
+  })
+
   it("restarts crashed agents with exponential backoff", async () => {
     const first = new MockChild()
     const second = new MockChild()

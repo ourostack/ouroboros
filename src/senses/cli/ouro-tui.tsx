@@ -201,7 +201,7 @@ function Spinner({ phrasePool, elapsed }: {
 
   // Animate ring frames
   useEffect(() => {
-    const iv = setInterval(() => setFrame(f => (f + 1) % RING_FRAMES.length), 120)
+    const iv = setInterval(() => setFrame(f => (f + 1) % RING_FRAMES.length), 300)
     return () => clearInterval(iv)
   }, [])
 
@@ -446,21 +446,25 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
       historyIdx.current = -1
       return
     }
-    // Backspace / Delete: Ink 3.2 maps \x7f (macOS backspace) to key.delete,
-    // and \x08 to key.backspace. Both mean "delete backward" on macOS.
-    // Only \x1b[3~ (fn+Backspace) is true forward-delete — but Ink also maps
-    // it to key.delete. We treat key.backspace OR key.delete as backspace
-    // (since \x7f is the common case), and handle forward-delete via Ctrl+D.
+    // Backspace / Forward Delete:
+    // Ink 3.2 maps \x7f (macOS backspace) to key.delete (meta=false).
+    // Ink maps \x1b[3~ (fn+Delete / forward delete) to key.delete (meta=true,
+    // because \x1b prefix triggers meta detection).
+    // Ink maps \x08 (Ctrl+H style) to key.backspace.
+    // Distinguishing: key.meta differentiates fn+Delete from plain backspace.
+    if ((key.backspace || key.delete) && key.meta) {
+      // fn+Delete: forward delete
+      const result = handleForwardDelete(inputRef.current, cursorRef.current)
+      updateInput(result.text, result.cursorPos)
+      historyIdx.current = -1
+      return
+    }
     if (key.backspace || key.delete) {
+      // Plain backspace: delete backward
       if (cursorRef.current > 0) {
-        // Token-aware: check for image ref chip before cursor
         const chip = deleteTokenBefore(inputRef.current, cursorRef.current)
         if (chip) {
           updateInput(chip.text, chip.pos)
-        } else if (key.meta) {
-          // Option+Backspace: delete word (also pushes to kill ring)
-          const result = handleKillWordBack(inputRef.current, cursorRef.current, killRing)
-          updateInput(result.text, result.cursorPos)
         } else {
           const result = handleBackspace(inputRef.current, cursorRef.current)
           updateInput(result.text, result.cursorPos)
@@ -656,6 +660,22 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
       if (result) updateInput(result.text, result.cursorPos)
       return
     }
+    // Option+Backspace: Ink parses \x1b\x7f as meta=true, inputChar="" (empty because
+    // \x7f matches key.delete but the whole input was \x1b\x7f not \x7f).
+    // Signature: key.meta && !inputChar && !key.escape && !key.return
+    if (key.meta && !inputChar && !key.escape && !key.return && !key.tab) {
+      if (cursorRef.current > 0) {
+        const chip = deleteTokenBefore(inputRef.current, cursorRef.current)
+        if (chip) {
+          updateInput(chip.text, chip.pos)
+        } else {
+          const result = handleKillWordBack(inputRef.current, cursorRef.current, killRing)
+          updateInput(result.text, result.cursorPos)
+        }
+      }
+      historyIdx.current = -1
+      return
+    }
     // ─── Non-kill/non-yank keystroke resets ────────────────────────
     killRing.resetAccumulation()
     killRing.resetYankState()
@@ -690,9 +710,12 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
     if (escClass === "ignore") return
     // Regular character: insert at cursor position
     if (!key.ctrl && !key.meta && inputChar) {
+      // Strip ANSI escape codes and normalize \r to \n (SSH/paste compat)
+      const cleaned = inputChar.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "").replace(/\r\n?/g, "\n")
+      if (!cleaned) return
       const before = inputRef.current.slice(0, cursorRef.current)
       const after = inputRef.current.slice(cursorRef.current)
-      updateInput(before + inputChar + after, cursorRef.current + 1)
+      updateInput(before + cleaned + after, cursorRef.current + cleaned.length)
       historyIdx.current = -1
     }
   })
@@ -721,18 +744,19 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
         </Box>
       ) : (
         <Box>
-          <Text color={OURO.teal} bold>{") "}</Text>
-          {!input && queuedInputs.length > 0 ? (
-            <Text color={OURO.shadow}>{"Press up to edit queued messages"}</Text>
-          ) : (
-            <>
-              <Text color={OURO.bone}>{input.slice(0, cursorPos)}</Text>
-              {cursorVisible
-                ? <Text backgroundColor={OURO.scale} color="#000000">{input[cursorPos] ?? " "}</Text>
-                : <Text color={OURO.bone}>{input[cursorPos] ?? " "}</Text>}
-              <Text color={OURO.bone}>{input.slice(cursorPos + 1)}</Text>
-            </>
-          )}
+          <Text wrap="wrap">{(() => {
+            const prompt = `\x1b[1m\x1b[38;2;78;201;176m) \x1b[0m`
+            if (!input && queuedInputs.length > 0) {
+              return `${prompt}\x1b[38;2;112;131;115mPress up to edit queued messages\x1b[0m`
+            }
+            const beforeCursor = `\x1b[38;2;238;242;234m${input.slice(0, cursorPos)}\x1b[0m`
+            const cursorChar = input[cursorPos] ?? " "
+            const cursor = cursorVisible
+              ? `\x1b[48;2;47;143;78m\x1b[38;2;0;0;0m${cursorChar}\x1b[0m`
+              : `\x1b[38;2;238;242;234m${cursorChar}\x1b[0m`
+            const afterCursor = `\x1b[38;2;238;242;234m${input.slice(cursorPos + 1)}\x1b[0m`
+            return `${prompt}${beforeCursor}${cursor}${afterCursor}`
+          })()}</Text>
         </Box>
       )}
       {/* Bottom separator — full terminal width (no margin) */}
