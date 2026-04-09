@@ -66,6 +66,8 @@ const DISPATCH_EXEMPT_PATTERNS = [
   "mind/embedding-provider",
   // Commerce utility module: error classes and pure helpers (no independent side effects).
   "repertoire/commerce-errors",
+  // Log redaction: pure utility consumed by the NDJSON sink (no independent side effects).
+  "nerves/redact",
 ]
 
 function isDispatchExempt(filePath: string): boolean {
