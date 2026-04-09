@@ -159,10 +159,10 @@ function makeCallbacks(overrides: Partial<ChannelCallbacks> = {}): ChannelCallba
 }
 
 // Streams a rest tool call
-function restToolCallChunks() {
+function restToolCallChunks(args: Record<string, unknown> = {}) {
   return [
     makeChunk(undefined, [{ index: 0, id: "call_rest", function: { name: "rest", arguments: "" } }]),
-    makeChunk(undefined, [{ index: 0, function: { arguments: "{}" } }]),
+    makeChunk(undefined, [{ index: 0, function: { arguments: JSON.stringify(args) } }]),
   ]
 }
 
@@ -273,6 +273,30 @@ describe("rest tool in runAgent", () => {
     expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       component: "engine",
       event: "engine.rested",
+    }))
+  })
+
+  it("rest accepts HEARTBEAT_OK as a clean no-op status", async () => {
+    mockCreate.mockReturnValueOnce(makeStream(restToolCallChunks({ status: "HEARTBEAT_OK" })))
+
+    const callbacks = makeCallbacks()
+    const result = await runAgent(
+      [{ role: "user", content: "heartbeat" }],
+      callbacks,
+      "inner",
+      undefined,
+      {
+        toolContext: {
+          currentSession: { friendId: "self", channel: "inner", key: "dialog" },
+        },
+      },
+    )
+
+    expect(result.outcome).toBe("rested")
+    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      component: "engine",
+      event: "engine.rested",
+      meta: expect.objectContaining({ status: "HEARTBEAT_OK" }),
     }))
   })
 

@@ -495,6 +495,32 @@ describe("normalizeBlueBubblesEvent", () => {
     expect(result.textForAgent).toContain("IMG_5045.heic.jpeg")
   })
 
+  it("falls back to a simple attachment marker when no attachment has a guid", async () => {
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
+    const result = normalizeBlueBubblesEvent({
+      ...dmImagePayload,
+      data: {
+        ...dmImagePayload.data,
+        attachments: [{ transferName: "mystery.heic", totalBytes: 1234 }],
+      },
+    } as any)
+
+    expect(result.textForAgent).toContain("[attachment: mystery.heic]")
+  })
+
+  it("falls back to an unknown attachment marker when neither guid nor transfer name is available", async () => {
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
+    const result = normalizeBlueBubblesEvent({
+      ...dmImagePayload,
+      data: {
+        ...dmImagePayload.data,
+        attachments: [{}],
+      },
+    } as any)
+
+    expect(result.textForAgent).toBe("[attachment: unknown]")
+  })
+
   it("preserves the attachment marker when text is present (B2 fix)", async () => {
     const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
     const payload = {

@@ -2124,4 +2124,149 @@ describe("BlueBubbles media hydration — capability-aware image routing", () =>
       { type: "text", text: expect.stringMatching(/image description failed/i) },
     ])
   })
+
+  it("non-vision chat model with a non-persisted image: falls back cleanly instead of retrying the old dead path", async () => {
+    vi.resetModules()
+    vi.doMock("../../../heart/attachments/materialize", async () => {
+      const actual = await vi.importActual<typeof import("../../../heart/attachments/materialize")>(
+        "../../../heart/attachments/materialize",
+      )
+      return {
+        ...actual,
+        persistBlueBubblesAttachmentSource: vi.fn(async (_agentName: string, attachment: unknown) => attachment),
+      }
+    })
+
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
+    const vlmDescribe = vi.fn(async () => "should not be called")
+    const result = await hydrateBlueBubblesAttachments(
+      [{ guid: "g1", mimeType: "image/png", transferName: "pic.png" }],
+      baseConfig(),
+      baseChannel(),
+      {
+        fetchImpl: vi.fn().mockResolvedValue(pngResponse()),
+        chatModel: "MiniMax-M2.5",
+        vlmDescribe,
+      },
+    )
+
+    expect(vlmDescribe).not.toHaveBeenCalled()
+    expect(result.inputParts).toEqual([
+      { type: "text", text: "[image description failed: image attachment could not be persisted for normalization]" },
+    ])
+    vi.doUnmock("../../../heart/attachments/materialize")
+  })
+
+  it("non-vision chat model falls back to the persisted mime when normalization omits one", async () => {
+    vi.resetModules()
+    const agentRoot = makeAgentRoot()
+    const normalizedPath = path.join(agentRoot, "normalized-no-mime.jpg")
+    fs.writeFileSync(normalizedPath, "normalized-jpeg")
+    vi.doMock("../../../heart/attachments/image-normalize", () => ({
+      MAX_ATTACHMENT_DOWNLOAD_BYTES_IMAGE: 32 * 1024 * 1024,
+      MAX_VLM_IMAGE_BYTES: 5 * 1024 * 1024,
+      normalizeImageForVision: vi.fn().mockResolvedValue({
+        path: normalizedPath,
+        byteCount: 26,
+      }),
+    }))
+
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
+    const vlmDescribe = vi.fn(async () => "png fallback description")
+    await hydrateBlueBubblesAttachments(
+      [{ guid: "g1", mimeType: "image/png", transferName: "pic.png" }],
+      baseConfig(),
+      baseChannel(),
+      {
+        fetchImpl: vi.fn().mockResolvedValue(pngResponse()),
+        chatModel: "MiniMax-M2.5",
+        vlmDescribe,
+      },
+    )
+
+    expect(vlmDescribe).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mimeType: "image/png",
+        imageDataUrl: expect.stringContaining("data:image/png;base64,"),
+      }),
+    )
+    vi.doUnmock("../../../heart/attachments/image-normalize")
+  })
+
+  it("non-vision chat model falls back to image/jpeg when no mime survives normalization", async () => {
+    vi.resetModules()
+    const agentRoot = makeAgentRoot()
+    const normalizedPath = path.join(agentRoot, "normalized-default-mime.jpg")
+    fs.writeFileSync(normalizedPath, "normalized-jpeg")
+    vi.doMock("../../../heart/attachments/image-normalize", () => ({
+      MAX_ATTACHMENT_DOWNLOAD_BYTES_IMAGE: 32 * 1024 * 1024,
+      MAX_VLM_IMAGE_BYTES: 5 * 1024 * 1024,
+      normalizeImageForVision: vi.fn().mockResolvedValue({
+        path: normalizedPath,
+        byteCount: 26,
+      }),
+    }))
+
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
+    const vlmDescribe = vi.fn(async () => "jpeg fallback description")
+    await hydrateBlueBubblesAttachments(
+      [{ guid: "g1", transferName: "pic.png" }],
+      baseConfig(),
+      baseChannel(),
+      {
+        fetchImpl: vi.fn().mockResolvedValue(new Response(Buffer.from("png"), { status: 200 })),
+        chatModel: "MiniMax-M2.5",
+        vlmDescribe,
+      },
+    )
+
+    expect(vlmDescribe).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mimeType: "image/jpeg",
+        imageDataUrl: expect.stringContaining("data:image/jpeg;base64,"),
+      }),
+    )
+    vi.doUnmock("../../../heart/attachments/image-normalize")
+  })
+
+  it("non-vision chat model falls back cleanly when the remembered attachment record is not BlueBubbles-shaped", async () => {
+    vi.resetModules()
+    vi.doMock("../../../heart/attachments/store", async () => {
+      const actual = await vi.importActual<typeof import("../../../heart/attachments/store")>(
+        "../../../heart/attachments/store",
+      )
+      return {
+        ...actual,
+        rememberRecentAttachment: vi.fn(() => ({
+          id: "attachment:cli-local-file:fake",
+          source: "cli-local-file",
+          sourceId: "fake",
+          kind: "image",
+          displayName: "pic.png",
+          mimeType: "image/png",
+          byteCount: 3,
+          createdAt: 1,
+          lastSeenAt: 1,
+          sourceData: { path: "/tmp/fake.png" },
+        })),
+      }
+    })
+
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
+    const result = await hydrateBlueBubblesAttachments(
+      [{ guid: "g1", mimeType: "image/png", transferName: "pic.png" }],
+      baseConfig(),
+      baseChannel(),
+      {
+        fetchImpl: vi.fn().mockResolvedValue(pngResponse()),
+        chatModel: "MiniMax-M2.5",
+        vlmDescribe: vi.fn(),
+      },
+    )
+
+    expect(result.inputParts).toEqual([
+      { type: "text", text: "[image description failed: image attachment could not be persisted for normalization]" },
+    ])
+    vi.doUnmock("../../../heart/attachments/store")
+  })
 })

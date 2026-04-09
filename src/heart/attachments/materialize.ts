@@ -21,19 +21,14 @@ export interface NormalizeImageOutput {
   byteCount?: number
 }
 
+type PersistedBlueBubblesAttachmentRecord = BlueBubblesAttachmentRecord & {
+  sourceData: BlueBubblesAttachmentRecord["sourceData"] & { localPath: string }
+}
+
 export interface MaterializeAttachmentOptions {
   agentRoot?: string
   variant?: AttachmentVariant
   normalizeImage?: (input: NormalizeImageInput) => Promise<NormalizeImageOutput>
-}
-
-function emitMaterializeEvent(event: string, attachmentId: string, meta: Record<string, unknown>): void {
-  emitNervesEvent({
-    component: "engine",
-    event,
-    message: "attachment materialization updated",
-    meta: { attachmentId, ...meta },
-  })
 }
 
 async function ensureReadableFile(filePath: string): Promise<void> {
@@ -109,7 +104,7 @@ export async function persistBlueBubblesAttachmentSource(
     byteCount?: number
   },
   agentRoot = getAgentRoot(agentName),
-): Promise<BlueBubblesAttachmentRecord> {
+): Promise<PersistedBlueBubblesAttachmentRecord> {
   const targetPath = originalStoragePath(agentRoot, attachment, input.mimeType)
   await fs.mkdir(path.dirname(targetPath), { recursive: true })
   await fs.writeFile(targetPath, input.buffer)
@@ -130,12 +125,18 @@ export async function persistBlueBubblesAttachmentSource(
   updated.lastSeenAt = Date.now()
   rememberRecentAttachment(agentName, updated, agentRoot)
 
-  emitMaterializeEvent("engine.attachment_source_persisted", attachment.id, {
-    source: attachment.source,
-    mimeType: updated.mimeType,
+  emitNervesEvent({
+    component: "engine",
+    event: "engine.attachment_source_persisted",
+    message: "attachment materialization updated",
+    meta: {
+      attachmentId: attachment.id,
+      source: attachment.source,
+      mimeType: updated.mimeType,
+    },
   })
 
-  return updated
+  return updated as PersistedBlueBubblesAttachmentRecord
 }
 
 async function materializeOriginalAttachment(
@@ -148,9 +149,15 @@ async function materializeOriginalAttachment(
   switch (attachment.source) {
     case "cli-local-file": {
       await ensureReadableFile(attachment.sourceData.path)
-      emitMaterializeEvent("engine.attachment_materialized", attachment.id, {
-        variant: "original",
-        source: attachment.source,
+      emitNervesEvent({
+        component: "engine",
+        event: "engine.attachment_materialized",
+        message: "attachment materialization updated",
+        meta: {
+          attachmentId: attachment.id,
+          variant: "original",
+          source: attachment.source,
+        },
       })
       return {
         attachmentId: attachment.id,
@@ -165,9 +172,15 @@ async function materializeOriginalAttachment(
       const localPath = attachment.sourceData.localPath?.trim()
       if (localPath) {
         await ensureReadableFile(localPath)
-        emitMaterializeEvent("engine.attachment_materialized", attachment.id, {
-          variant: "original",
-          source: attachment.source,
+        emitNervesEvent({
+          component: "engine",
+          event: "engine.attachment_materialized",
+          message: "attachment materialization updated",
+          meta: {
+            attachmentId: attachment.id,
+            variant: "original",
+            source: attachment.source,
+          },
         })
         return buildOriginalMaterializedAttachment(attachment, localPath)
       }
@@ -190,14 +203,19 @@ async function materializeOriginalAttachment(
           },
           agentRoot,
         )
-        const persistedPath = updated.sourceData.localPath ?? fallbackPath
-        emitMaterializeEvent("engine.attachment_materialized", attachment.id, {
-          variant: "original",
-          source: attachment.source,
+        emitNervesEvent({
+          component: "engine",
+          event: "engine.attachment_materialized",
+          message: "attachment materialization updated",
+          meta: {
+            attachmentId: attachment.id,
+            variant: "original",
+            source: attachment.source,
+          },
         })
         return buildOriginalMaterializedAttachment(
           updated,
-          persistedPath,
+          updated.sourceData.localPath,
           downloaded.contentType ?? updated.mimeType,
           downloaded.buffer.length,
         )
@@ -236,9 +254,15 @@ export async function materializeAttachment(
     agentRoot,
   })
 
-  emitMaterializeEvent("engine.attachment_materialized", attachment.id, {
-    variant: "vision_safe",
-    source: attachment.source,
+  emitNervesEvent({
+    component: "engine",
+    event: "engine.attachment_materialized",
+    message: "attachment materialization updated",
+    meta: {
+      attachmentId: attachment.id,
+      variant: "vision_safe",
+      source: attachment.source,
+    },
   })
 
   return {

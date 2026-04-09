@@ -41,6 +41,11 @@ function parseLimit(raw: string | undefined): number | undefined {
   return parsed
 }
 
+function normalizeThrownReason(error: unknown): string {
+  const rendered = String(error)
+  return rendered.startsWith("Error: ") ? rendered.slice(7) : rendered
+}
+
 function attachmentNotFound(tool: string, attachmentId: string): string {
   const friction: ToolFrictionEnvelope = {
     kind: "local_repair",
@@ -206,7 +211,7 @@ export const attachmentToolDefinitions: ToolDefinition[] = [
         const materialized = await materializeAttachment(agentName, attachmentId, { variant })
         return okToolResult("materialize_attachment", materialized)
       } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error)
+        const reason = normalizeThrownReason(error)
         return normalizeMaterializeError("materialize_attachment", attachmentId, reason)
       }
     },
@@ -285,7 +290,7 @@ export const attachmentToolDefinitions: ToolDefinition[] = [
         })
         return description
       } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error)
+        const reason = normalizeThrownReason(error)
         return normalizeMaterializeError("describe_image", attachmentId, reason)
       }
     },

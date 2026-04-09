@@ -99,6 +99,54 @@ describe("attachment tool handlers", () => {
     expect(parsed.data[0]?.id).toContain("attachment:cli-local-file:")
   })
 
+  it("lists recent attachments without filters when kind is blank and limit is invalid", async () => {
+    const agentRoot = makeAgentRoot()
+    rememberRecentAttachment(
+      "testagent",
+      buildCliLocalFileAttachmentRecord({
+        path: "/tmp/screenshot.png",
+        mimeType: "image/png",
+        byteCount: 1234,
+      }),
+      agentRoot,
+    )
+
+    const tool = attachmentToolDefinitions.find((def) => def.tool.function.name === "list_recent_attachments")!
+    const parsed = JSON.parse(await tool.handler({ kind: "   ", limit: "0" }))
+
+    expect(parsed.ok).toBe(true)
+    expect(parsed.data).toHaveLength(1)
+  })
+
+  it("filters recent attachments by kind when requested", async () => {
+    const agentRoot = makeAgentRoot()
+    rememberRecentAttachment(
+      "testagent",
+      buildCliLocalFileAttachmentRecord({
+        path: "/tmp/screenshot.png",
+        mimeType: "image/png",
+        byteCount: 1234,
+      }),
+      agentRoot,
+    )
+    rememberRecentAttachment(
+      "testagent",
+      buildCliLocalFileAttachmentRecord({
+        path: "/tmp/report.pdf",
+        mimeType: "application/pdf",
+        byteCount: 4321,
+      }),
+      agentRoot,
+    )
+
+    const tool = attachmentToolDefinitions.find((def) => def.tool.function.name === "list_recent_attachments")!
+    const parsed = JSON.parse(await tool.handler({ kind: "image" }))
+
+    expect(parsed.ok).toBe(true)
+    expect(parsed.data).toHaveLength(1)
+    expect(parsed.data[0]?.kind).toBe("image")
+  })
+
   it("materializes attachments as JSON", async () => {
     const agentRoot = makeAgentRoot()
     const attachmentPath = writeFile(agentRoot, "capture.png", "png-bytes")
@@ -116,6 +164,52 @@ describe("attachment tool handlers", () => {
     expect(parsed.ok).toBe(true)
     expect(parsed.data.path).toBe(attachmentPath)
     expect(parsed.data.variant).toBe("original")
+  })
+
+  it("returns structured friction when materialize_attachment is missing an attachment id", async () => {
+    makeAgentRoot()
+    const tool = attachmentToolDefinitions.find((def) => def.tool.function.name === "materialize_attachment")!
+    const parsed = JSON.parse(await tool.handler({ variant: "original" }))
+
+    expect(parsed.ok).toBe(false)
+    expect(parsed.friction.kind).toBe("input_error")
+  })
+
+  it("returns a targeted friction envelope when vision_safe is requested for a non-image", async () => {
+    makeAgentRoot()
+    vi.spyOn(materializeModule, "materializeAttachment").mockRejectedValue(
+      new Error("Attachment attachment:cli-local-file:abc is not an image and cannot produce a vision_safe variant"),
+    )
+
+    const tool = attachmentToolDefinitions.find((def) => def.tool.function.name === "materialize_attachment")!
+    const parsed = JSON.parse(await tool.handler({ attachment_id: "attachment:cli-local-file:abc", variant: "vision_safe" }))
+
+    expect(parsed.ok).toBe(false)
+    expect(parsed.friction.kind).toBe("input_error")
+  })
+
+  it("returns retryable friction when materialization fails for a generic local reason", async () => {
+    makeAgentRoot()
+    vi.spyOn(materializeModule, "materializeAttachment").mockRejectedValue(new Error("disk path changed"))
+
+    const tool = attachmentToolDefinitions.find((def) => def.tool.function.name === "materialize_attachment")!
+    const parsed = JSON.parse(await tool.handler({ attachment_id: "attachment:cli-local-file:abc", variant: "vision_safe" }))
+
+    expect(parsed.ok).toBe(false)
+    expect(parsed.friction.kind).toBe("local_repair")
+    expect(parsed.friction.recoverability).toBe("retryable")
+  })
+
+  it("normalizes string-thrown materialization failures into retryable friction too", async () => {
+    makeAgentRoot()
+    vi.spyOn(materializeModule, "materializeAttachment").mockRejectedValue("disk path changed")
+
+    const tool = attachmentToolDefinitions.find((def) => def.tool.function.name === "materialize_attachment")!
+    const parsed = JSON.parse(await tool.handler({ attachment_id: "attachment:cli-local-file:abc", variant: "vision_safe" }))
+
+    expect(parsed.ok).toBe(false)
+    expect(parsed.friction.kind).toBe("local_repair")
+    expect(parsed.friction.summary).toBe("disk path changed")
   })
 
   it("describes images via attachment_id and vision-safe materialization", async () => {
@@ -155,6 +249,33 @@ describe("attachment tool handlers", () => {
     expect(result).toBe("booking confirmation screenshot")
   })
 
+  it("returns a blocker when MiniMax credentials are missing", async () => {
+    const agentRoot = makeAgentRoot()
+    const normalizedPath = writeFile(agentRoot, "normalized.jpg", "jpeg-bytes")
+    const attachment = buildCliLocalFileAttachmentRecord({
+      path: "/tmp/screenshot.tiff",
+      mimeType: "image/tiff",
+      byteCount: 100,
+    })
+    rememberRecentAttachment("testagent", attachment, agentRoot)
+
+    vi.spyOn(materializeModule, "materializeAttachment").mockResolvedValue({
+      attachmentId: attachment.id,
+      variant: "vision_safe",
+      path: normalizedPath,
+      displayName: "screenshot.tiff",
+      mimeType: "image/jpeg",
+      byteCount: 10,
+    })
+    vi.spyOn(configModule, "getMinimaxConfig").mockReturnValue({ apiKey: "" } as any)
+
+    const tool = attachmentToolDefinitions.find((def) => def.tool.function.name === "describe_image")!
+    const parsed = JSON.parse(await tool.handler({ attachment_id: attachment.id, prompt: "what is this?" }))
+
+    expect(parsed.ok).toBe(false)
+    expect(parsed.friction.kind).toBe("external_blocker")
+  })
+
   it("accepts attachment_guid as a compatibility alias", async () => {
     const agentRoot = makeAgentRoot()
     const normalizedPath = writeFile(agentRoot, "normalized.jpg", "jpeg-bytes")
@@ -185,6 +306,35 @@ describe("attachment tool handlers", () => {
     )
   })
 
+  it("defaults describe_image to image/jpeg when the materialized variant omits mimeType", async () => {
+    const agentRoot = makeAgentRoot()
+    const normalizedPath = writeFile(agentRoot, "normalized-no-mime.bin", "jpeg-ish")
+    const attachment = buildCliLocalFileAttachmentRecord({
+      path: "/tmp/screenshot.tiff",
+      mimeType: "image/tiff",
+      byteCount: 100,
+    })
+    rememberRecentAttachment("testagent", attachment, agentRoot)
+
+    vi.spyOn(materializeModule, "materializeAttachment").mockResolvedValue({
+      attachmentId: attachment.id,
+      variant: "vision_safe",
+      path: normalizedPath,
+      displayName: "screenshot.tiff",
+      byteCount: 10,
+    })
+    vi.mocked(minimaxVlmDescribe).mockResolvedValue("booking confirmation screenshot")
+
+    const tool = attachmentToolDefinitions.find((def) => def.tool.function.name === "describe_image")!
+    await tool.handler({ attachment_id: attachment.id, prompt: "what booking is this?" })
+
+    expect(minimaxVlmDescribe).toHaveBeenCalledWith(
+      expect.objectContaining({
+        imageDataUrl: expect.stringContaining("data:image/jpeg;base64,"),
+      }),
+    )
+  })
+
   it("returns a structured friction envelope when an attachment cannot be found", async () => {
     makeAgentRoot()
     const tool = attachmentToolDefinitions.find((def) => def.tool.function.name === "describe_image")!
@@ -199,5 +349,16 @@ describe("attachment tool handlers", () => {
         expect.objectContaining({ kind: "tool", tool: "list_recent_attachments" }),
       ]),
     )
+  })
+
+  it("returns input friction when describe_image is missing attachment id or prompt", async () => {
+    makeAgentRoot()
+    const tool = attachmentToolDefinitions.find((def) => def.tool.function.name === "describe_image")!
+
+    const missingId = JSON.parse(await tool.handler({ prompt: "what is this?" }))
+    expect(missingId.friction.kind).toBe("input_error")
+
+    const missingPrompt = JSON.parse(await tool.handler({ attachment_id: "attachment:cli-local-file:abc", prompt: "   " }))
+    expect(missingPrompt.friction.kind).toBe("input_error")
   })
 })

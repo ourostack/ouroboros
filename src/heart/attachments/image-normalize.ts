@@ -57,15 +57,6 @@ function materializedOutputDir(agentRoot: string, attachmentId: string): string 
   return path.join(agentRoot, "state", "attachments", "materialized", attachmentId.replace(/[:/]/g, "_"))
 }
 
-function emitNormalizeEvent(event: string, meta: Record<string, unknown>): void {
-  emitNervesEvent({
-    component: "engine",
-    event,
-    message: "attachment image normalization updated",
-    meta,
-  })
-}
-
 function execFileText(file: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(file, args, (error, stdout = "", stderr = "") => {
@@ -143,10 +134,15 @@ export async function normalizeImageForVision(
     && typeof originalByteCount === "number"
     && originalByteCount <= maxVlmBytes
   ) {
-    emitNormalizeEvent("engine.attachment_normalization_passthrough", {
+    emitNervesEvent({
+      component: "engine",
+      event: "engine.attachment_normalization_passthrough",
+      message: "attachment image normalization updated",
+      meta: {
       attachmentId: params.attachment.id,
       mimeType: originalMimeType,
       byteCount: originalByteCount,
+      },
     })
     return {
       path: path.resolve(params.sourcePath),
@@ -164,9 +160,14 @@ export async function normalizeImageForVision(
   try {
     probe = await probeImage({ sourcePath: workingSourcePath })
   } catch {
-    emitNormalizeEvent("engine.attachment_normalization_rasterize", {
-      attachmentId: params.attachment.id,
-      sourcePath: workingSourcePath,
+    emitNervesEvent({
+      component: "engine",
+      event: "engine.attachment_normalization_rasterize",
+      message: "attachment image normalization updated",
+      meta: {
+        attachmentId: params.attachment.id,
+        sourcePath: workingSourcePath,
+      },
     })
     workingSourcePath = await rasterizeWithQuickLook({
       sourcePath: workingSourcePath,
@@ -189,13 +190,18 @@ export async function normalizeImageForVision(
           ...(quality ? { quality } : {}),
         })
         if ((variant.byteCount ?? Number.POSITIVE_INFINITY) <= maxVlmBytes) {
-          emitNormalizeEvent("engine.attachment_normalization_succeeded", {
-            attachmentId: params.attachment.id,
-            sourceMimeType: originalMimeType ?? "unknown",
-            outputMimeType: variant.mimeType ?? `image/${targetFormat}`,
-            byteCount: variant.byteCount ?? null,
-            maxEdge,
-            quality: quality ?? null,
+          emitNervesEvent({
+            component: "engine",
+            event: "engine.attachment_normalization_succeeded",
+            message: "attachment image normalization updated",
+            meta: {
+              attachmentId: params.attachment.id,
+              sourceMimeType: originalMimeType ?? "unknown",
+              outputMimeType: variant.mimeType ?? `image/${targetFormat}`,
+              byteCount: variant.byteCount,
+              maxEdge,
+              quality: quality ?? null,
+            },
           })
           return variant
         }
@@ -203,11 +209,16 @@ export async function normalizeImageForVision(
     }
   }
 
-  emitNormalizeEvent("engine.attachment_normalization_failed", {
-    attachmentId: params.attachment.id,
-    sourceMimeType: originalMimeType ?? "unknown",
-    sourceByteCount: originalByteCount ?? null,
-    maxVlmBytes,
+  emitNervesEvent({
+    component: "engine",
+    event: "engine.attachment_normalization_failed",
+    message: "attachment image normalization updated",
+    meta: {
+      attachmentId: params.attachment.id,
+      sourceMimeType: originalMimeType ?? "unknown",
+      sourceByteCount: originalByteCount ?? null,
+      maxVlmBytes,
+    },
   })
   throw new Error(`Attachment ${params.attachment.id} could not be normalized under the VLM byte budget`)
 }

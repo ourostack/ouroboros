@@ -14,6 +14,7 @@ import {
   buildAttachmentId,
   buildBlueBubblesAttachmentRecord,
   buildCliLocalFileAttachmentRecord,
+  classifyAttachmentKind,
 } from "../../../heart/attachments/types"
 import { renderAttachmentBlock } from "../../../heart/attachments/render"
 
@@ -36,9 +37,39 @@ describe("attachment ids", () => {
     expect(buildAttachmentId("bluebubbles", "GUID-123")).toBe("attachment:bluebubbles:GUID-123")
     expect(buildAttachmentId("cli-local-file", "abc123")).toBe("attachment:cli-local-file:abc123")
   })
+
+  it("classifies document-ish files and rejects missing guids", () => {
+    const doc = buildCliLocalFileAttachmentRecord({
+      path: "/tmp/report",
+      displayName: "report.docx",
+    })
+    const binary = buildCliLocalFileAttachmentRecord({
+      path: "/tmp/blob",
+      displayName: "blob.bin",
+    })
+
+    expect(doc.kind).toBe("document")
+    expect(binary.kind).toBe("binary")
+    expect(classifyAttachmentKind()).toBe("unknown")
+    expect(() => buildBlueBubblesAttachmentRecord({ transferName: "missing-guid.jpg" } as any)).toThrow(
+      "BlueBubbles attachment guid is required",
+    )
+  })
 })
 
 describe("recent attachment store", () => {
+  it("returns an empty list when the persisted store is invalid or not an array", () => {
+    const agentRoot = makeAgentRoot()
+    const storePath = getRecentAttachmentsPath("slugger", agentRoot)
+    fs.mkdirSync(path.dirname(storePath), { recursive: true })
+
+    fs.writeFileSync(storePath, "{not json", "utf-8")
+    expect(readRecentAttachments("slugger", agentRoot)).toEqual([])
+
+    fs.writeFileSync(storePath, JSON.stringify({ nope: true }), "utf-8")
+    expect(readRecentAttachments("slugger", agentRoot)).toEqual([])
+  })
+
   it("persists attachments in newest-first order", () => {
     const agentRoot = makeAgentRoot()
     const first = buildBlueBubblesAttachmentRecord(

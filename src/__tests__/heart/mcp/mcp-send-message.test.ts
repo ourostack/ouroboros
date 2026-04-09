@@ -186,11 +186,11 @@ describe("MCP send_message tool", () => {
     expect(response.result.isError).toBeFalsy()
   })
 
-  it("send_message returns ponder deferral message", async () => {
+  it("send_message passes through the daemon response without synthesizing a deferral", async () => {
     mockSendDaemonCommand.mockResolvedValue({
       ok: true,
-      message: "the agent is pondering this — check back shortly via check_response.",
-      data: { ponderDeferred: true },
+      message: "i queued the deeper harness work and kept going on the live task.",
+      data: { ponderDeferred: false },
     })
 
     const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
@@ -220,7 +220,7 @@ describe("MCP send_message tool", () => {
     server.stop()
 
     const response = parseResponse(output)
-    expect(response.result.content[0].text).toContain("pondering")
+    expect(response.result.content[0].text).toContain("queued the deeper harness work")
   })
 
   it("send_message uses resolved session ID", async () => {

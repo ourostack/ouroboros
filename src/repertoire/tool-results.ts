@@ -28,35 +28,28 @@ export interface ToolFrictionEnvelope {
   suggested_next_actions: ToolSuggestedNextAction[]
 }
 
-function emitToolResultEvent(
-  event: string,
-  meta: Record<string, unknown>,
-  level: "info" | "warn" = "info",
-): void {
-  emitNervesEvent({
-    level,
-    component: "tools",
-    event,
-    message: "tool returned structured result",
-    meta,
-  })
-}
-
 export function okToolResult<T>(tool: string, data: T): string {
-  emitToolResultEvent("tool.structured_ok", { tool })
+  emitNervesEvent({
+    component: "tools",
+    event: "tool.structured_ok",
+    message: "tool returned structured result",
+    meta: { tool },
+  })
   return JSON.stringify({ ok: true, tool, data }, null, 2)
 }
 
 export function frictionToolResult(tool: string, friction: ToolFrictionEnvelope): string {
-  emitToolResultEvent(
-    "tool.structured_friction",
-    {
+  emitNervesEvent({
+    level: "warn",
+    component: "tools",
+    event: "tool.structured_friction",
+    message: "tool returned structured result",
+    meta: {
       tool,
       kind: friction.kind,
       recoverability: friction.recoverability,
       signature: friction.signature,
     },
-    "warn",
-  )
+  })
   return JSON.stringify({ ok: false, tool, friction }, null, 2)
 }

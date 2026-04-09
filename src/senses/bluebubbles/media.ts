@@ -378,7 +378,7 @@ export async function hydrateBlueBubblesAttachments(
             agentRoot,
           })
           const normalizedBuffer = await fs.readFile(normalized.path)
-          const normalizedMime = normalized.mimeType ?? persistedRecord.mimeType ?? mimeType
+          const normalizedMime = normalized.mimeType ?? persistedRecord.mimeType ?? "image/jpeg"
           const dataUrl = `data:${normalizedMime};base64,${normalizedBuffer.toString("base64")}`
           const description = await deps.vlmDescribe({
             prompt: buildVlmPrompt(deps.userText),
