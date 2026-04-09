@@ -6,7 +6,7 @@ import { getIntegrationsConfig } from "../heart/config";
 import { getAgentRoot } from "../heart/identity";
 import { emitNervesEvent } from "../nerves/runtime";
 import type { FriendRecord } from "../mind/friends/types";
-import { readDiaryEntries, saveDiaryEntry, searchDiaryEntries } from "../mind/diary";
+import { readDiaryEntries, saveDiaryEntry, searchDiaryEntries, type DiaryEntryProvenance } from "../mind/diary";
 import { type JournalIndexEntry } from "../mind/associative-recall";
 import type { ToolDefinition } from "./tools-base";
 
@@ -193,13 +193,29 @@ export const memoryToolDefinitions: ToolDefinition[] = [
         },
       },
     },
-    handler: async (a) => {
+    handler: async (a, ctx) => {
       const entry = (a.entry || "").trim();
       if (!entry) return "entry is required";
+
+      let provenance: DiaryEntryProvenance | undefined;
+      if (ctx?.context) {
+        const p: DiaryEntryProvenance = { tool: "diary_write" };
+        const channel = ctx.context.channel?.channel;
+        if (channel) p.channel = channel;
+        const friendId = ctx.context.friend?.id;
+        if (friendId) p.friendId = friendId;
+        const friendName = ctx.context.friend?.name;
+        if (friendName) p.friendName = friendName;
+        const trust = ctx.context.friend?.trustLevel;
+        if (trust) p.trust = trust;
+        provenance = p;
+      }
+
       const result = await saveDiaryEntry({
         text: entry,
         source: "tool:diary_write",
         about: typeof a.about === "string" ? a.about : undefined,
+        provenance,
       });
       return `saved diary entry (added=${result.added}, skipped=${result.skipped})`;
     },
