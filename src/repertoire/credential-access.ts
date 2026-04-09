@@ -15,6 +15,7 @@ import * as path from "node:path"
 import * as os from "node:os"
 import { execFile as execFileCb } from "node:child_process"
 import { emitNervesEvent } from "../nerves/runtime"
+import * as identity from "../heart/identity"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -536,15 +537,26 @@ export function ensureVaultDefaults(
 export function getCredentialStore(): CredentialStore {
   if (_store) return _store
 
-  let agentName: string
+  // Resolve identity up front. The previous implementation wrapped this call
+  // in a try/catch that silently fell back to `agentName = "default"`, which
+  // meant any test that hit getCredentialStore() without mocking identity
+  // silently constructed a BuiltInCredentialStore("default") routing writes
+  // to `~/AgentBundles/default.ouro/vault/` and `~/.agentsecrets/default/`.
+  // Same silent-leak class we just fixed in coding/manager.ts. No fallback:
+  // getAgentName() throws loudly if argv lacks --agent, which is correct for
+  // the only caller (production agents with a real identity). Uses the
+  // static ESM import above instead of `require("../heart/identity")` so
+  // `vi.mock("../heart/identity", ...)` in tests actually intercepts the
+  // call — require() bypasses vitest's module registry.
+  const agentName: string = identity.getAgentName()
+  const agentRoot = identity.getAgentRoot(agentName)
+
+  // Try to load vault config from agent.json + secrets.json. Only this block
+  // is defended with try/catch — bitwarden wiring can legitimately fail
+  // (missing vault config, no bw CLI, unreachable server) and the fallback
+  // to BuiltInCredentialStore is the intended behavior.
   let backend = "built-in"
   try {
-    // Dynamic import to avoid circular dependency at module level
-    const identity = require("../heart/identity")
-    agentName = identity.getAgentName()
-    const agentRoot = identity.getAgentRoot(agentName)
-
-    // Try to load vault config from agent.json + secrets.json
     const config = identity.loadAgentConfig?.()
 
     // Auto-configure vault defaults if missing
@@ -573,19 +585,19 @@ export function getCredentialStore(): CredentialStore {
     }
     /* v8 ignore stop */
   } catch {
-    agentName = "default"
+    // Bitwarden wiring failed — fall through to built-in store below.
   }
 
   /* v8 ignore next -- false branch only reachable when BitwardenCredentialStore was created above @preserve */
   if (!_store) {
-    _store = new BuiltInCredentialStore(agentName!)
+    _store = new BuiltInCredentialStore(agentName)
   }
 
   emitNervesEvent({
     event: "repertoire.credential_store_init",
     component: "repertoire",
     message: "credential store initialized",
-    meta: { backend, agentName: agentName! },
+    meta: { backend, agentName },
   })
 
   return _store

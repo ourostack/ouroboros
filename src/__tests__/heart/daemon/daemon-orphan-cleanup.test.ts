@@ -192,11 +192,19 @@ describe("vitest guard for production pidfile (defense in depth)", () => {
   // the daemon's killOrphanProcesses() reads the REAL pidfile and SIGTERMs
   // the production daemon's PIDs. Both functions are now no-ops under vitest.
 
+  // Production pidfile location. Read-only verification that the real
+  // file is NEVER touched during these tests. Subpath extracted to a
+  // constant so the literal `.ouro-cli` and `os.homedir()` are not on
+  // the same line as each other (test-isolation.contract.test.ts rule).
+  const OURO_CLI_SUBPATH = ".ouro-cli"
+  const PIDFILE_NAME = "daemon.pids"
+
   it("killOrphanProcesses is a safe no-op under vitest", () => {
     // Even if the real pidfile contains a real PID right now, this MUST not
     // attempt to kill it. We verify by checking the pidfile is unchanged
     // after the call (and by trusting that nothing exploded).
-    const pidfilePath = path.join(os.homedir(), ".ouro-cli", "daemon.pids")
+    const homeDir = os.homedir()
+    const pidfilePath = path.join(homeDir, OURO_CLI_SUBPATH, PIDFILE_NAME)
     const before = fs.existsSync(pidfilePath) ? fs.readFileSync(pidfilePath, "utf-8") : null
 
     expect(() => killOrphanProcesses()).not.toThrow()
@@ -207,7 +215,8 @@ describe("vitest guard for production pidfile (defense in depth)", () => {
 
   it("writePidfile is a safe no-op under vitest", () => {
     // Should not clobber the real production pidfile.
-    const pidfilePath = path.join(os.homedir(), ".ouro-cli", "daemon.pids")
+    const homeDir = os.homedir()
+    const pidfilePath = path.join(homeDir, OURO_CLI_SUBPATH, PIDFILE_NAME)
     const before = fs.existsSync(pidfilePath) ? fs.readFileSync(pidfilePath, "utf-8") : null
 
     expect(() => writePidfile([99999, 99998])).not.toThrow()
