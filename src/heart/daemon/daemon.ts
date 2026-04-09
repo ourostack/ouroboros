@@ -530,6 +530,26 @@ export class OuroDaemon {
       meta: { socketPath: this.socketPath },
     })
 
+    try {
+      await this.startInner()
+    } catch (err) {
+      // Emit a paired terminating event (`_error`) so the nerves audit's
+      // start_end_pairing rule is satisfied when startup throws mid-sequence
+      // and `stop()` (which emits `server_end`) is never called.
+      emitNervesEvent({
+        level: "error",
+        component: "daemon",
+        event: "daemon.server_error",
+        message: "daemon start failed",
+        meta: {
+          error: err instanceof Error ? err.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(err),
+        },
+      })
+      throw err
+    }
+  }
+
+  private async startInner(): Promise<void> {
     // Register update hooks and apply pending updates before starting agents
     registerUpdateHook(bundleMetaHook)
     registerUpdateHook(agentConfigV2Hook)

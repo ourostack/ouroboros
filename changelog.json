@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.276",
+      "changes": [
+        "fix(nerves): root-cause the `start_end_pairing` audit flake on `daemon.server_start`, `daemon.update_checker_start`, and `daemon.apply_pending_updates_start`. Three fixes: (1) `applyPendingUpdates` in `update-hooks.ts` now wraps its body in try/finally so `_end` always fires, including on the early returns for `!fs.existsSync(bundlesRoot)` and `readdirSync` throws that previously orphaned the `_start`. (2) `daemon.start()` now wraps the ~380-line startup body in a try/catch that emits `daemon.server_error` with the error message and rethrows — the audit's pairing rule accepts `_end` OR `_error` as a valid closure for a `_start`, so startup throws no longer orphan `server_start`. The body was extracted to a private `startInner()` method to keep the try/catch small and readable. (3) `startUpdateChecker` callers in the update-checker test suite were already paired via an `afterEach(stopUpdateChecker)`; audited and confirmed no new unpaired callers. Also adds a vitest `afterEach` pairing guard in `src/__tests__/nerves/global-capture.ts` that fails loudly on any orphaned lifecycle `_start` in a test's per-test event stream — scoped to the three lifecycle events above so it catches regressions without false-positiving on legitimate narrow-slice operational events like `repertoire.task_scan_start`. New `src/__tests__/nerves/pairing-regression.test.ts` locks in the contract with 5 tests (nonexistent-dir, readdirSync-throws, happy-path, startUpdateChecker-pair, daemon-start-throw). Three consecutive `npm run test:coverage` runs confirm zero flakes on the target events."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.275",
       "changes": [
         "fix(tui): backspace on macOS \u2014 Ink 3.2 maps \\x7f to key.delete not key.backspace."

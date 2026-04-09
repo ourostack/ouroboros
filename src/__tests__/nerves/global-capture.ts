@@ -1,7 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs"
 import { tmpdir } from "os"
 import { dirname, join } from "path"
-import { beforeEach, afterAll } from "vitest"
+import { afterAll, afterEach, beforeEach } from "vitest"
 
 import { registerGlobalLogSink, type LogEvent } from "../../nerves"
 
@@ -52,6 +52,64 @@ beforeEach((ctx) => {
   const suiteName = ctx.task.suite?.name ?? ""
   const testName = suiteName ? `${suiteName} > ${ctx.task.name}` : ctx.task.name
   pts.currentTest = testName
+})
+
+// Pairing guard: at the end of each test, walk the recorded per-test events
+// and fail loudly on any LIFECYCLE `_start` without a matching `_end`/`_error`.
+// This catches future regressions of the `start_end_pairing` nerves-audit rule
+// immediately in the failing test, instead of letting them bleed into the
+// post-run coverage gate as intermittent audit failures.
+//
+// Scope: only events that represent a process-scoped lifecycle — daemon
+// startup, update checker, apply-pending-updates. These are the three events
+// whose missing pairs caused intermittent audit failures in CI and whose
+// emitters must now emit a terminating `_end` or `_error` on every path
+// (including throws) by construction.
+//
+// Most nerves `_start` events in the codebase are NOT lifecycle — they mark
+// the beginning of a streaming operation that pairs with its own `_end` from
+// a code path a narrow unit test may never exercise (e.g.
+// `repertoire.task_scan_start`, `mind.step_start`). Guarding those here
+// would require every unit test to drive the full operation, which is not
+// the point of a unit test. So the guard is intentionally scoped to the
+// lifecycle events where the contract IS process-wide pairing.
+//
+// See also: src/nerves/coverage/audit-rules.ts `checkStartEndPairing` which
+// enforces the same rule at the post-run audit level.
+const LIFECYCLE_PAIRED_STARTS = new Set<string>([
+  "daemon.server_start",
+  "daemon.update_checker_start",
+  "daemon.apply_pending_updates_start",
+])
+
+afterEach((ctx) => {
+  const suiteName = ctx.task.suite?.name ?? ""
+  const testName = suiteName ? `${suiteName} > ${ctx.task.name}` : ctx.task.name
+  const events = pts.events.get(testName) ?? []
+  const orphans: string[] = []
+  for (const entry of events) {
+    if (!LIFECYCLE_PAIRED_STARTS.has(entry.event)) continue
+    const prefix = entry.event.slice(0, -"_start".length)
+    const endName = `${prefix}_end`
+    const errorName = `${prefix}_error`
+    const paired = events.some((e) => e.event === endName || e.event === errorName)
+    if (!paired) {
+      orphans.push(`${entry.component}:${entry.event}`)
+    }
+  }
+  // Drop the per-test event list so it does not leak into a sibling test —
+  // do this BEFORE throwing so a single orphaned test does not corrupt
+  // subsequent runs.
+  pts.events.delete(testName)
+  pts.currentTest = null
+  if (orphans.length > 0) {
+    const uniq = Array.from(new Set(orphans))
+    throw new Error(
+      `Orphaned lifecycle _start events (no _end or _error) in test "${testName}": ${uniq.join(", ")}. ` +
+      `Fix the teardown (e.g. ensure daemon.stop()/stopUpdateChecker() is called) — these lifecycle events ` +
+      `must always pair by construction, including when the operation throws.`,
+    )
+  }
 })
 
 // ---------- global ndjson capture ----------
