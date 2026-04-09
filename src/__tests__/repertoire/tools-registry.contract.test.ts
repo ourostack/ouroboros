@@ -120,6 +120,9 @@ describe("tool registry contract", () => {
     expect(names).toContain("get_friend_note");
     expect(names).toContain("list_skills");
     expect(names).toContain("load_skill");
+    expect(names).toContain("list_recent_attachments");
+    expect(names).toContain("materialize_attachment");
+    expect(names).toContain("describe_image");
     expect(names).toContain("claude");
     expect(names).toContain("coding_spawn");
     expect(names).toContain("coding_status");
@@ -176,7 +179,7 @@ describe("tool registry contract", () => {
     expect(names).toContain("flight_book");
     expect(names).toContain("flight_cancel");
 
-    // Exact count: 54 tools total (44 + 3 profile + 3 stripe + 4 flight)
-    expect(names).toHaveLength(54);
+    // Exact count: 57 tools total including the shared attachment and image recovery tools
+    expect(names).toHaveLength(57);
   });
 });

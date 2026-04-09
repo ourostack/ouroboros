@@ -4,22 +4,19 @@ import * as os from "node:os"
 import * as path from "node:path"
 import OpenAI from "openai"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { getAgentToolsRoot } from "../../heart/identity"
+import { getAgentName, getAgentRoot, getAgentToolsRoot } from "../../heart/identity"
 import { getModelCapabilities } from "../../heart/model-capabilities"
-import { rememberBlueBubblesAttachment } from "./attachment-cache"
+import { normalizeImageForVision } from "../../heart/attachments/image-normalize"
+import { rememberRecentAttachment } from "../../heart/attachments/store"
+import { buildBlueBubblesAttachmentRecord } from "../../heart/attachments/types"
+import { persistBlueBubblesAttachmentSource } from "../../heart/attachments/materialize"
 import type { BlueBubblesAttachmentSummary } from "./model"
-
-type BlueBubblesConfig = {
-  serverUrl: string
-  password: string
-  accountId: string
-}
-
-type BlueBubblesChannelConfig = {
-  port: number
-  webhookPath: string
-  requestTimeoutMs: number
-}
+import {
+  downloadBlueBubblesAttachment,
+  isBlueBubblesImageAttachment,
+  type BlueBubblesChannelConfig,
+  type BlueBubblesConfig,
+} from "./attachment-download"
 
 export interface BlueBubblesHydratedAttachments {
   inputParts: OpenAI.Chat.ChatCompletionContentPart[]
@@ -80,20 +77,8 @@ interface BlueBubblesMediaDeps {
 // Pin the exact wrapper strings so tests and code read from one source.
 export const VLM_TEXT_WRAPPERS = {
   description: (desc: string): string => `[image description: ${desc}]`,
-  unsupported: (mimeType: string): string =>
-    `[image attachment not shown: unsupported format ${mimeType}]`,
   failure: (reason: string): string => `[image description failed: ${reason}]`,
 } as const
-
-// VLM supported formats for the /v1/coding_plan/vlm endpoint. The client in
-// minimax-vlm.ts enforces the same set — this helper lets the sense skip the
-// call entirely and emit a clearer `vision_format_unsupported` event instead
-// of letting the VLM client throw.
-const VLM_SUPPORTED_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/webp"])
-
-function isSupportedVlmFormat(contentType: string): boolean {
-  return VLM_SUPPORTED_MIME_TYPES.has(contentType.toLowerCase())
-}
 
 // D3 prompt template. Included here (not templated out) because the contract
 // is load-bearing — see planning doc section D3 and AX-4.
@@ -102,9 +87,7 @@ function buildVlmPrompt(userText: string | undefined): string {
   return `User message: "${body}"\n\nDescribe this image in detail, focusing on anything relevant to what the user said above.\nInclude any text visible in the image verbatim.`
 }
 
-const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
 const AUDIO_EXTENSIONS = new Set([".mp3", ".wav", ".m4a", ".caf", ".ogg"])
-const IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif"])
 const AUDIO_EXTENSION_BY_CONTENT_TYPE: Record<string, string> = {
   "audio/wav": ".wav",
   "audio/x-wav": ".wav",
@@ -140,29 +123,8 @@ function whisperCppPaths(): { toolsDir: string; modelsDir: string; modelPath: st
   return { toolsDir, modelsDir, modelPath }
 }
 
-function buildBlueBubblesApiUrl(baseUrl: string, endpoint: string, password: string): string {
-  const root = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`
-  const url = new URL(endpoint.replace(/^\//, ""), root)
-  url.searchParams.set("password", password)
-  return url.toString()
-}
-
 function describeAttachment(attachment: BlueBubblesAttachmentSummary): string {
   return attachment.transferName?.trim() || attachment.guid?.trim() || "attachment"
-}
-
-function inferContentType(attachment: BlueBubblesAttachmentSummary, responseType?: string | null): string | undefined {
-  const normalizedResponseType = responseType?.split(";")[0]?.trim().toLowerCase()
-  if (normalizedResponseType) {
-    return normalizedResponseType
-  }
-  return attachment.mimeType?.trim().toLowerCase() || undefined
-}
-
-function isImageAttachment(attachment: BlueBubblesAttachmentSummary, contentType?: string): boolean {
-  if (contentType?.startsWith("image/")) return true
-  const extension = path.extname(attachment.transferName ?? "").toLowerCase()
-  return IMAGE_EXTENSIONS.has(extension)
 }
 
 function isAudioAttachment(attachment: BlueBubblesAttachmentSummary, contentType?: string): boolean {
@@ -332,52 +294,7 @@ async function transcribeAudioWithWhisperCpp(
   }
 }
 
-export async function downloadBlueBubblesAttachment(
-  attachment: BlueBubblesAttachmentSummary,
-  config: BlueBubblesConfig,
-  channelConfig: BlueBubblesChannelConfig,
-  fetchImpl: typeof fetch = fetch,
-): Promise<{ buffer: Buffer; contentType?: string }> {
-  return downloadAttachment(attachment, config, channelConfig, fetchImpl)
-}
-
-async function downloadAttachment(
-  attachment: BlueBubblesAttachmentSummary,
-  config: BlueBubblesConfig,
-  channelConfig: BlueBubblesChannelConfig,
-  fetchImpl: typeof fetch,
-): Promise<{ buffer: Buffer; contentType?: string }> {
-  const guid = attachment.guid?.trim()
-  if (!guid) {
-    throw new Error("attachment guid missing")
-  }
-  if (typeof attachment.totalBytes === "number" && attachment.totalBytes > MAX_ATTACHMENT_BYTES) {
-    throw new Error(`attachment exceeds ${MAX_ATTACHMENT_BYTES} byte limit`)
-  }
-
-  const url = buildBlueBubblesApiUrl(
-    config.serverUrl,
-    `/api/v1/attachment/${encodeURIComponent(guid)}/download`,
-    config.password,
-  )
-  const response = await fetchImpl(url, {
-    method: "GET",
-    signal: AbortSignal.timeout(channelConfig.requestTimeoutMs),
-  })
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`)
-  }
-
-  const buffer = Buffer.from(await response.arrayBuffer())
-  if (buffer.length > MAX_ATTACHMENT_BYTES) {
-    throw new Error(`attachment exceeds ${MAX_ATTACHMENT_BYTES} byte limit`)
-  }
-
-  return {
-    buffer,
-    contentType: inferContentType(attachment, response.headers.get("content-type")),
-  }
-}
+export { downloadBlueBubblesAttachment } from "./attachment-download"
 
 export async function hydrateBlueBubblesAttachments(
   attachments: BlueBubblesAttachmentSummary[],
@@ -392,21 +309,35 @@ export async function hydrateBlueBubblesAttachments(
   const preferAudioInput = deps.preferAudioInput ?? false
   const chatModel = deps.chatModel
   const visionCapable = chatModel ? getModelCapabilities(chatModel).vision === true : true
+  const agentName = getAgentName()
+  const agentRoot = getAgentRoot(agentName)
   const inputParts: OpenAI.Chat.ChatCompletionContentPart[] = []
   const transcriptAdditions: string[] = []
   const notices: string[] = []
 
   for (const attachment of attachments) {
     const name = describeAttachment(attachment)
-    // Remember every attachment we see — the describe_image agent tool looks
-    // up guids against this cache later to re-fetch bytes on demand.
-    rememberBlueBubblesAttachment(attachment)
+    const initialRecord = attachment.guid?.trim()
+      ? rememberRecentAttachment(agentName, buildBlueBubblesAttachmentRecord(attachment), agentRoot)
+      : null
     try {
-      const downloaded = await downloadAttachment(attachment, config, channelConfig, fetchImpl)
+      const downloaded = await downloadBlueBubblesAttachment(attachment, config, channelConfig, fetchImpl)
       const base64 = downloaded.buffer.toString("base64")
       const byteCount = downloaded.buffer.length
+      const persistedRecord = initialRecord && initialRecord.source === "bluebubbles"
+        ? await persistBlueBubblesAttachmentSource(
+            agentName,
+            initialRecord,
+            {
+              buffer: downloaded.buffer,
+              mimeType: downloaded.contentType,
+              byteCount,
+            },
+            agentRoot,
+          )
+        : null
 
-      if (isImageAttachment(attachment, downloaded.contentType)) {
+      if (isBlueBubblesImageAttachment(attachment, downloaded.contentType)) {
         const mimeType = downloaded.contentType ?? "application/octet-stream"
         if (visionCapable) {
           inputParts.push({
@@ -431,51 +362,29 @@ export async function hydrateBlueBubblesAttachments(
           continue
         }
 
-        // Non-vision chat model — try the VLM describe fallback.
-        if (!isSupportedVlmFormat(mimeType)) {
-          emitNervesEvent({
-            level: "warn",
-            component: "senses",
-            event: "senses.bluebubbles_vision_format_unsupported",
-            message: "bluebubbles vision format unsupported",
-            meta: {
-              mimeType,
-              transferName: attachment.transferName,
-              attachmentGuid: attachment.guid,
-              chatModel,
-            },
-          })
-          inputParts.push({
-            type: "text",
-            text: VLM_TEXT_WRAPPERS.unsupported(mimeType),
-          })
-          emitNervesEvent({
-            level: "warn",
-            component: "senses",
-            event: "senses.bluebubbles_media_hydrate",
-            message: "bluebubbles media hydrate",
-            meta: {
-              attachmentGuid: attachment.guid,
-              mimeType,
-              byteCount,
-              hydrationPath: "skip-unsupported",
-            },
-          })
-          continue
-        }
-
-        const dataUrl = `data:${mimeType};base64,${base64}`
         try {
           if (!deps.vlmDescribe) {
             throw new Error(
               "no VLM describer configured — wire a vlmDescribe dep or configure a vision-capable chat model",
             )
           }
+          if (!persistedRecord?.sourceData.localPath) {
+            throw new Error("image attachment could not be persisted for normalization")
+          }
+          const normalized = await normalizeImageForVision({
+            attachment: persistedRecord,
+            sourcePath: persistedRecord.sourceData.localPath,
+            agentName,
+            agentRoot,
+          })
+          const normalizedBuffer = await fs.readFile(normalized.path)
+          const normalizedMime = normalized.mimeType ?? persistedRecord.mimeType ?? "image/jpeg"
+          const dataUrl = `data:${normalizedMime};base64,${normalizedBuffer.toString("base64")}`
           const description = await deps.vlmDescribe({
             prompt: buildVlmPrompt(deps.userText),
             imageDataUrl: dataUrl,
             attachmentGuid: attachment.guid,
-            mimeType,
+            mimeType: normalizedMime,
             chatModel,
           })
           inputParts.push({
@@ -496,7 +405,7 @@ export async function hydrateBlueBubblesAttachments(
           message: "bluebubbles media hydrate",
           meta: {
             attachmentGuid: attachment.guid,
-            mimeType,
+            mimeType: persistedRecord?.mimeType ?? mimeType,
             byteCount,
             hydrationPath: "vlm-describe",
           },

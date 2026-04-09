@@ -14,6 +14,10 @@ export interface AttentionItem {
   bridgeId?: string
   delegatedContent: string
   obligationId?: string
+  packetId?: string
+  packetKind?: string
+  packetObjective?: string
+  packetSummary?: string
   source: "drained" | "obligation-recovery"
   timestamp: number
 }

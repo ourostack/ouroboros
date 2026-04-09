@@ -1,26 +1,6 @@
 import type OpenAI from "openai"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { ToolDefinition } from "./tools-base"
-import { getBlueBubblesChannelConfig, getBlueBubblesConfig, getMinimaxConfig } from "../heart/config"
-import { MINIMAX_PROVIDER_BASE_URL } from "../heart/providers/minimax"
-import { minimaxVlmDescribe } from "../heart/providers/minimax-vlm"
-import {
-  lookupBlueBubblesAttachment,
-} from "../senses/bluebubbles/attachment-cache"
-import { downloadBlueBubblesAttachment } from "../senses/bluebubbles/media"
-
-// AX-1: the tool description is the only instruction manual a future agent
-// gets. It must teach WHEN to reach for the tool and HOW to write a good
-// prompt. A type-signature-style "Describes an image." is a violation.
-const DESCRIBE_IMAGE_DESCRIPTION =
-  "Use this tool to look at an attachment the user sent, or to re-interrogate an image with a targeted question. " +
-  "The current chat model can't see images natively; this tool runs the image through a vision-language model (VLM) " +
-  "and returns a text description. " +
-  "Prefer targeted prompts (\"what's the flight number in the bottom-right?\") over generic ones (\"describe this image\") — " +
-  "you'll get better answers. " +
-  "Call this when the user sent a screenshot and you need to read text from it, verify a detail, or double-check something " +
-  "the ingestion-time auto-describe summary might have missed. " +
-  "The attachment_guid comes from the attachment marker in the user's most recent message."
 
 export const bluebubblesToolDefinitions: ToolDefinition[] = [
   {
@@ -112,99 +92,5 @@ export const bluebubblesToolDefinitions: ToolDefinition[] = [
       return "target must be one of: current_lane, top_level, thread."
     },
     summaryKeys: ["target", "threadOriginatorGuid"],
-  },
-  {
-    tool: {
-      type: "function",
-      function: {
-        name: "describe_image",
-        description: DESCRIBE_IMAGE_DESCRIPTION,
-        parameters: {
-          type: "object",
-          properties: {
-            attachment_guid: {
-              type: "string",
-              description:
-                "The guid of the attachment to describe. Usually pulled from the attachment marker in the user's most recent message.",
-            },
-            prompt: {
-              type: "string",
-              description:
-                "A targeted question about the image. Prefer specific prompts over generic ones — e.g. 'what's the flight number in the bottom-right?' gives better answers than 'describe this image'.",
-            },
-          },
-          required: ["attachment_guid", "prompt"],
-        },
-      },
-    } satisfies OpenAI.ChatCompletionFunctionTool,
-    handler: async (args) => {
-      const attachmentGuid = typeof args.attachment_guid === "string" ? args.attachment_guid.trim() : ""
-      const prompt = typeof args.prompt === "string" ? args.prompt.trim() : ""
-      if (!attachmentGuid) {
-        emitNervesEvent({
-          level: "warn",
-          component: "tools",
-          event: "tool.error",
-          message: "describe_image missing attachment_guid",
-          meta: {},
-        })
-        return "describe_image: attachment_guid is required — pass the guid from the inbound attachment marker and retry"
-      }
-      if (!prompt) {
-        emitNervesEvent({
-          level: "warn",
-          component: "tools",
-          event: "tool.error",
-          message: "describe_image missing prompt",
-          meta: {},
-        })
-        return "describe_image: prompt is required — supply a targeted question (e.g. 'what's the flight number in the bottom-right?') and retry"
-      }
-      const summary = lookupBlueBubblesAttachment(attachmentGuid)
-      if (!summary) {
-        emitNervesEvent({
-          level: "warn",
-          component: "tools",
-          event: "tool.error",
-          message: "describe_image attachment not found in cache",
-          meta: { attachmentGuid },
-        })
-        return `describe_image: no attachment with guid ${attachmentGuid} found in recent messages — ask the user to resend the image or verify the guid`
-      }
-      try {
-        const config = getBlueBubblesConfig()
-        const channelConfig = getBlueBubblesChannelConfig()
-        const downloaded = await downloadBlueBubblesAttachment(summary, config, channelConfig)
-        const mimeType = downloaded.contentType ?? summary.mimeType ?? "image/png"
-        const base64 = downloaded.buffer.toString("base64")
-        const dataUrl = `data:${mimeType};base64,${base64}`
-        const { apiKey } = getMinimaxConfig()
-        if (!apiKey) {
-          throw new Error(
-            "minimax API key not found in secrets.json — re-run credential setup or add a minimax key",
-          )
-        }
-        const description = await minimaxVlmDescribe({
-          apiKey,
-          prompt,
-          imageDataUrl: dataUrl,
-          baseURL: MINIMAX_PROVIDER_BASE_URL,
-          attachmentGuid,
-          mimeType,
-        })
-        return description
-      } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error)
-        emitNervesEvent({
-          level: "warn",
-          component: "tools",
-          event: "tool.error",
-          message: "describe_image failed",
-          meta: { attachmentGuid, reason },
-        })
-        return `describe_image failed: ${reason}`
-      }
-    },
-    summaryKeys: ["attachment_guid", "prompt"],
   },
 ]
