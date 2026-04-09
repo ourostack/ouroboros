@@ -48,5 +48,4 @@ describe("nerves rename contract", () => {
     expect(gateScript).not.toContain("runtime_hardening:")
     expect(gateScript).not.toContain('target: "runtime-hardening-audit"')
   })
-
 })
