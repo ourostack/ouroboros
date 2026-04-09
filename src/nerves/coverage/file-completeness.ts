@@ -70,6 +70,9 @@ const DISPATCH_EXEMPT_PATTERNS = [
   // Diary integrity: pure detection utility (pattern matching only). The caller
   // (diary.ts saveDiaryEntry) owns observability via mind.diary_integrity_warning.
   "mind/diary-integrity",
+  // Provenance trust: pure classification function (no side effects). Callers
+  // (associative-recall.ts, tools-memory.ts) own observability for recall results.
+  "mind/provenance-trust",
   // Log redaction: pure utility consumed by the NDJSON sink (no independent side effects).
   "nerves/redact",
   // Bundle templates: pure constants (gitignore template string, PII
