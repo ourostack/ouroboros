@@ -12,10 +12,10 @@ import {
 } from "../../../heart/attachments/store"
 import {
   buildAttachmentId,
-  buildBlueBubblesAttachmentRecord,
-  buildCliLocalFileAttachmentRecord,
   classifyAttachmentKind,
 } from "../../../heart/attachments/types"
+import { buildBlueBubblesAttachmentRecord } from "../../../heart/attachments/sources/bluebubbles"
+import { buildCliLocalFileAttachmentRecord } from "../../../heart/attachments/sources/cli-local-file"
 import { renderAttachmentBlock } from "../../../heart/attachments/render"
 
 const tempDirs: string[] = []

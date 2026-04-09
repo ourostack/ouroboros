@@ -82,6 +82,12 @@ const DISPATCH_EXEMPT_PATTERNS = [
   // HTTP health probe: pure HTTP utility factory. The HealthMonitor caller
   // owns observability via daemon.health_result events.
   "daemon/http-health-probe",
+  // Attachment helper modules: generic file-path/extension utilities and the
+  // source registry are pure support seams. The orchestrator/adapters that
+  // call them own the observability.
+  "heart/attachments/originals",
+  "heart/attachments/sources/index",
+  "heart/attachments/sources/cli-local-file",
 ]
 
 function isDispatchExempt(filePath: string): boolean {

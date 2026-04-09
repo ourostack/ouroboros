@@ -186,6 +186,26 @@ const cache = new Map()
       expect(result.exempt).toContain("src/heart/daemon/cli-render.ts")
     })
 
+    it("exempts pure attachment helper modules whose callers own observability", () => {
+      const files = new Map<string, string[]>([
+        ["src/heart/attachments/materialize.ts", ["engine:engine.attachment_materialized"]],
+      ])
+      const fileContents = new Map<string, string>([
+        ["src/heart/attachments/materialize.ts", 'emitNervesEvent({ component: "engine", event: "engine.attachment_materialized" })'],
+        ["src/heart/attachments/originals.ts", "export function originalStoragePath() {}"],
+        ["src/heart/attachments/sources/index.ts", "export function getAttachmentSourceAdapter() {}"],
+        ["src/heart/attachments/sources/cli-local-file.ts", "export function buildCliLocalFileAttachmentRecord() {}"],
+      ])
+
+      const result = checkFileCompleteness(files, fileContents)
+
+      expect(result.status).toBe("pass")
+      expect(result.missing).toHaveLength(0)
+      expect(result.exempt).toContain("src/heart/attachments/originals.ts")
+      expect(result.exempt).toContain("src/heart/attachments/sources/index.ts")
+      expect(result.exempt).toContain("src/heart/attachments/sources/cli-local-file.ts")
+    })
+
     it("returns pass when all files have events or are exempt", () => {
       const files = new Map<string, string[]>([
         ["src/a.ts", ["x:y"]],

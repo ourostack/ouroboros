@@ -2,6 +2,19 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.308",
+      "changes": [
+        "feat(daemon): extract shared `discoverWorkingProvider()` for unified provider discovery with ping validation. New function combines disk credential scanning (`~/.agentsecrets/`), env var scanning (`PROVIDER_CREDENTIALS` mapping), and `pingProvider()` validation into a single reusable path. Extracted `scanEnvVarCredentials()` from inline hatch logic for reuse. Disk credentials take priority over env vars for deduplication, and stale API keys are always caught via ping before returning a provider as working. 14 new tests covering both functions at 100% coverage."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.307",
+      "changes": [
+        "refactor(attachments): move source-specific attachment behavior behind a shared adapter seam. `src/heart/attachments/types.ts` and `materialize.ts` now stay generic, while BlueBubbles and CLI local-file record/original-materialization logic lives under `src/heart/attachments/sources/`. Added shared helper module `src/heart/attachments/originals.ts`, direct adapter coverage, and boundary regression tests so shared attachments remain first-class across senses without reintroducing BlueBubbles coupling. Stable `attachment:<source>:<id>` handles and the existing attachment tools/normalization flow are preserved.",
+        "test(daemon): harden `daemon-startup-sense-drain.test.ts` by exercising the startup pending-drain helper directly instead of booting the whole daemon for each case. This removes the full-suite timeout flake around unreadable pending entries while keeping the per-sense drain behavior fully covered."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.306",
       "changes": [
         "refactor(arc): extract the shared task lifecycle grammar into `src/arc/task-lifecycle.ts` so ponder packets no longer depend on `src/repertoire/tasks`. `TaskStatus`, transition validation, and lifecycle rendering now live in one neutral seam that both arc packets and repertoire task docs consume, with direct regression coverage proving `src/arc/packets.ts` stays decoupled from `repertoire/`.",
