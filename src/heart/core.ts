@@ -210,6 +210,8 @@ export interface ChannelCallbacks {
   onReasoningChunk(text: string): void;
   onToolStart(name: string, args: Record<string, string>): void;
   onToolEnd(name: string, summary: string, success: boolean): void;
+  /** Called after each tool result is pushed to messages. Use for incremental session persistence. */
+  onToolResult?(messages: OpenAI.ChatCompletionMessageParam[]): void;
   onError(error: Error, severity: "transient" | "terminal"): void;
   onKick?(): void;
   // Clear any buffered text accumulated during streaming. Called before emitting
@@ -1123,6 +1125,7 @@ export async function runAgent(
           callbacks.onToolEnd(tc.name, buildToolResultSummary(tc.name, args, toolResult, success), success);
           messages.push({ role: "tool", tool_call_id: tc.id, content: toolResult });
           providerRuntime.appendToolOutput(tc.id, toolResult);
+          callbacks.onToolResult?.(messages);
         }
       }
     } catch (e) {

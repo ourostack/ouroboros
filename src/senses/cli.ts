@@ -2,7 +2,7 @@ import OpenAI from "openai"
 import * as readline from "readline"
 import * as os from "os"
 import * as path from "path"
-import { runAgent, ChannelCallbacks, getProvider, createSummarize } from "../heart/core"
+import { runAgent, ChannelCallbacks, getProvider, createSummarize, repairOrphanedToolCalls } from "../heart/core"
 import { buildSystem } from "../mind/prompt"
 import { pickPhrase, getPhrases } from "../mind/phrases"
 import { formatKick, formatError } from "../mind/format"
@@ -965,6 +965,19 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
   if (agentName) setAgentName(agentName)
   const pasteDebounceMs = options?.pasteDebounceMs ?? 50
 
+  // Safety net: process-level SIGINT handler ensures Ctrl+C always exits,
+  // even when Ink's event loop is blocked by expensive renders.
+  /* v8 ignore start -- process signal handler @preserve */
+  let sigintCount = 0
+  const sigintHandler = () => {
+    sigintCount++
+    if (sigintCount >= 2) process.exit(1)
+  }
+  if (!options?._testInputSource) {
+    process.on("SIGINT", sigintHandler)
+  }
+  /* v8 ignore stop */
+
   // Register spinner hooks so log output clears the spinner before printing
   registerSpinnerHooks(pauseActiveSpinner, resumeActiveSpinner)
 
@@ -1018,6 +1031,9 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
     ? existing.messages
     : [{ role: "system", content: await buildSystem("cli", {}, resolvedContext) }]
 
+  // Repair any orphaned tool calls from a crash mid-turn
+  repairOrphanedToolCalls(sessionMessages)
+
   // Per-turn pipeline input: CLI capabilities and pending dir
   const cliCapabilities = getChannelCapabilities("cli")
   const currentAgentName = getAgentName()
@@ -1046,6 +1062,10 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
         /* v8 ignore start -- failover-aware callback wrapper: tested via pipeline integration @preserve */
         const failoverAwareCallbacks: typeof callbacks = {
           ...callbacks,
+          // Save session after each tool result for crash recovery
+          onToolResult: (turnMessages) => {
+            postTurn(turnMessages, sessPath, undefined, undefined, sessionState)
+          },
           onError: (error: Error, severity: "transient" | "terminal") => {
             if (severity === "terminal" && failoverState) {
               capturedTerminalError = error

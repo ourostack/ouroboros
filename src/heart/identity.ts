@@ -109,7 +109,7 @@ export const DEFAULT_AGENT_SENSES: AgentSensesConfig = {
   bluebubbles: { enabled: false },
 }
 
-function normalizeSenses(value: unknown, configFile: string): AgentSensesConfig {
+export function normalizeSenses(value: unknown, configFile: string): AgentSensesConfig {
   const defaults: AgentSensesConfig = {
     cli: { ...DEFAULT_AGENT_SENSES.cli },
     teams: { ...DEFAULT_AGENT_SENSES.teams },
@@ -477,26 +477,25 @@ export function loadAgentConfig(): AgentConfig {
   const rawProvider = parsed.provider
   const provider = isValidProvider(rawProvider) ? rawProvider : undefined
 
+  // Spread parsed first so any field present in AgentConfig is carried
+  // through by default, then explicitly override the fields that need
+  // validation or normalization. This eliminates the field-drop bug class
+  // that caused the `sync` block (and previously `shell`) to be silently
+  // omitted from the returned config. Regression-guarded by the
+  // Required<AgentConfig> contract test in identity-contract.test.ts.
   const config: AgentConfig = {
+    ...(parsed as unknown as AgentConfig),
     version,
     enabled,
-    ...(provider !== undefined ? { provider } : {}),
     humanFacing,
     agentFacing,
-    context: parsed.context as AgentConfig["context"] | undefined,
-    logging: parsed.logging as AgentConfig["logging"] | undefined,
     senses: normalizeSenses(parsed.senses, configFile),
-    mcpServers: parsed.mcpServers as Record<string, McpServerConfig> | undefined,
     phrases: parsed.phrases as AgentConfig["phrases"],
-    vault: parsed.vault as AgentConfig["vault"] | undefined,
-    // The sync block was missing from this hand-rolled object literal since
-    // it was added to AgentConfig. Result: `getSyncConfig()` always read
-    // `agentConfig.sync?.enabled ?? false` and always saw undefined, so the
-    // entire sync code path (preTurnPull / postTurnPush in pipeline.ts) was
-    // dead. The `ouro status` per-agent Git Sync display kept reporting
-    // "enabled" because it reads agent.json directly via `listBundleSyncRows`,
-    // not through loadAgentConfig — so the bug hid in plain sight for weeks.
-    sync: parsed.sync as AgentConfig["sync"] | undefined,
+  }
+  if (provider !== undefined) {
+    config.provider = provider
+  } else {
+    delete config.provider
   }
   emitNervesEvent({
     event: "identity.resolve",

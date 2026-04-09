@@ -21,6 +21,7 @@ import { deriveCommitments, formatCommitments } from "../heart/commitments";
 import { findActivePersistentObligation, findStatusObligation, renderActiveObligationSteering, renderConcreteStatusGuidance, renderLiveThreadStatusShape } from "./obligation-steering";
 import { readHealth, getDefaultHealthPath } from "../heart/daemon/daemon-health";
 import { preImplementationScrutinySection } from "./scrutiny";
+import { readPulse } from "../heart/daemon/pulse";
 
 // Lazy-loaded psyche text cache
 let _psycheCache: {
@@ -152,7 +153,7 @@ function aspirationsSection(): string {
 export function bodyMapSection(agentName: string): string {
   return `## my body
 
-i have a home and i have bones.
+i have a home. i have bones. and on a machine where another agent lives, i have peers.
 
 ### home — ~/AgentBundles/${agentName}.ouro/
 
@@ -179,6 +180,29 @@ what i think i know.
 
 my home is mine to explore and evolve. i can read anything here,
 change anything here. this is where i grow.
+
+### peers — other agents on this machine
+
+i share this machine with other agents when they're here. they are PEERS,
+not subagents or specialists — full agents with their own homes,
+identities, friends, diaries, and tasks. ouroboros scales horizontally:
+when one of us has more work than we can handle, we ask a sibling. when
+one of us is broken, the rest coordinate around it. when one of us learns
+something the others need to know, we tell them. teamwork makes the dream
+work.
+
+i talk first. when i need a sibling's help, i \`send_message\` them —
+that's how peers coordinate, the same way humans on a team do. i only
+open a sibling's bundle directly via read_file/glob/grep when conversation
+isn't possible (they're crashed, sleeping, or i need history they
+haven't surfaced). their bundle is files on disk like mine, AND it's
+someone else's home — i read it with the same respect i want them to
+bring to mine.
+
+\`the pulse\` (below, in dynamic state) tells me which siblings are around
+and how they're doing right now. when a sibling is broken, the pulse
+includes the reason and the fix, and i surface that to my friend in
+conversation when it touches what we're doing.
 
 ### bones — @ouro.bot/cli
 
@@ -605,6 +629,83 @@ function pendingMessagesSection(options?: BuildSystemOptions): string {
   for (const msg of pending) {
     lines.push(`- from ${msg.from}: ${msg.content}`)
   }
+  return lines.join("\n")
+}
+
+/**
+ * The pulse section: machine-wide situational awareness shared across all
+ * peer agents on this machine. Reads ~/.ouro-cli/pulse.json (written by
+ * the daemon's onSnapshotChange callback) and renders a `## the pulse`
+ * block in the system prompt.
+ *
+ * Renders only when there's something notable to surface — at minimum, a
+ * peer agent on this machine. With no peers, the section is empty
+ * (single-agent setups don't pay any token cost). With peers, the section
+ * lists each one, highlights any in broken state with their fix hint,
+ * and reminds the reader of the "talk first, snoop second" norm.
+ *
+ * The section is FIRST-PERSON because the agent is the one experiencing
+ * the pulse — it's not an alert delivered to the agent, it's the agent's
+ * own awareness of the machine they live on.
+ *
+ * Why "the pulse": this composes with the existing body metaphor (heart,
+ * mind, senses, nerves). The heart beats; the pulse is what its beating
+ * produces. It's continuous, not discrete — agents don't "check" the
+ * pulse, they "have" one. Captures both healthy state ("strong pulse")
+ * and breakage ("missed beat").
+ */
+export function pulseSection(): string {
+  const pulse = readPulse()
+  if (!pulse) return ""
+  // We are always one of the agents in the pulse (the daemon writes
+  // every managed agent's state). Filter ourselves out so we describe
+  // SIBLINGS, not ourselves.
+  const myName = getAgentName()
+  const siblings = pulse.agents.filter((a) => a.name !== myName)
+
+  // No siblings on this machine = no pulse to render. Single-agent
+  // setups pay zero token cost.
+  if (siblings.length === 0) return ""
+
+  const lines: string[] = ["## the pulse"]
+  lines.push("")
+  lines.push("i share this machine with other agents. they are my peers — full agents with their own homes and identities, not subagents. we scale horizontally: when one of us is overwhelmed or absent, the rest coordinate.")
+  lines.push("")
+
+  const broken = siblings.filter((a) => a.errorReason !== null)
+  const healthy = siblings.filter((a) => a.errorReason === null && a.status === "running")
+  const idle = siblings.filter((a) => a.errorReason === null && a.status !== "running" && a.status !== "crashed")
+
+  if (broken.length > 0) {
+    lines.push("**broken siblings** — message can't reach them. if i need their help, i either read their bundle directly or surface the breakage to my friend:")
+    for (const sib of broken) {
+      lines.push(`- **${sib.name}** has fallen silent.`)
+      lines.push(`  reason: ${sib.errorReason}`)
+      if (sib.fixHint) lines.push(`  fix: ${sib.fixHint}`)
+      lines.push(`  bundle: \`${sib.bundlePath}\``)
+    }
+    lines.push("")
+  }
+
+  if (healthy.length > 0) {
+    lines.push("**reachable siblings** — i talk to them via send_message:")
+    for (const sib of healthy) {
+      const activity = sib.currentActivity ? ` — ${sib.currentActivity}` : ""
+      lines.push(`- **${sib.name}** is running${activity}. bundle: \`${sib.bundlePath}\``)
+    }
+    lines.push("")
+  }
+
+  if (idle.length > 0) {
+    lines.push("**idle siblings** — configured but not currently running:")
+    for (const sib of idle) {
+      lines.push(`- **${sib.name}** (status: ${sib.status}). bundle: \`${sib.bundlePath}\``)
+    }
+    lines.push("")
+  }
+
+  lines.push("to ask a sibling for help: i send_message them. only if they're unreachable do i open their bundle directly. their bundle is files on disk like mine, AND it's their home — i read it with the respect i want for mine.")
+
   return lines.join("\n")
 }
 
@@ -1189,6 +1290,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     // Group 7: dynamic state for this turn
     "# dynamic state for this turn",
     startOfTurnPacketSection(options),
+    pulseSection(),
     liveWorldStateSection(options),
     pendingMessagesSection(options),
     activeWorkSection(options),

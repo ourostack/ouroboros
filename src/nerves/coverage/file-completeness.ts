@@ -66,6 +66,12 @@ const DISPATCH_EXEMPT_PATTERNS = [
   "mind/embedding-provider",
   // Commerce utility module: error classes and pure helpers (no independent side effects).
   "repertoire/commerce-errors",
+  // Log redaction: pure utility consumed by the NDJSON sink (no independent side effects).
+  "nerves/redact",
+  // Bundle templates: pure constants (gitignore template string, PII
+  // directory list). No runtime behavior — consumed by tools-bundle.ts
+  // which owns the observability for bundle operations.
+  "repertoire/bundle-templates",
 ]
 
 function isDispatchExempt(filePath: string): boolean {

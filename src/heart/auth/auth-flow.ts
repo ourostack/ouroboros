@@ -3,7 +3,7 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { getAgentBundlesRoot, getAgentSecretsPath, PROVIDER_CREDENTIALS, type AgentConfig, type AgentProvider } from "../identity"
+import { getAgentBundlesRoot, getAgentSecretsPath, normalizeSenses, PROVIDER_CREDENTIALS, type AgentConfig, type AgentProvider } from "../identity"
 import { migrateAgentConfigV1ToV2 } from "../migrate-config"
 import type { Facing } from "../../mind/friends/channel"
 import type { HatchCredentialsInput } from "../hatch/hatch-flow"
@@ -220,9 +220,19 @@ export function readAgentConfigForAgent(
     throw new Error(`agent.json at ${configPath} has unsupported provider '${String(parsed.provider)}'`)
   }
 
+  // Spread-with-validation: same pattern as loadAgentConfig to eliminate
+  // the unvalidated-pass-through bug class. The spread carries through
+  // every field present in parsed; senses goes through the same
+  // normalization as loadAgentConfig so the two entry points return
+  // equivalent configs for the same file.
+  const config: AgentConfig = {
+    ...(parsed as unknown as AgentConfig),
+    senses: normalizeSenses(parsed.senses, configPath),
+  }
+
   return {
     configPath,
-    config: parsed as unknown as AgentConfig,
+    config,
   }
 }
 
