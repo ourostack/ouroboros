@@ -397,6 +397,7 @@ describe("daemon CLI default dependency branches", () => {
       unlinkSync: vi.fn(),
       readFileSync: vi.fn(() => JSON.stringify({ version: "9.9.9" })),
       readdirSync: vi.fn(() => []),
+      rmSync: vi.fn(),
       openSync: vi.fn(() => 99),
       closeSync: vi.fn(),
     }))

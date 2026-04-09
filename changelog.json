@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.310",
+      "changes": [
+        "feat(daemon): auto-prune stale ephemeral bundles during `ouro up`. New `pruneStaleEphemeralBundles()` in `src/heart/daemon/stale-bundle-prune.ts` removes ephemeral bundle directories that have gone stale before the daemon starts, keeping the bundles root clean without manual intervention. Wired into the `daemon.up` handler before `ensureDaemonRunning()`. 100% branch coverage."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.309",
       "changes": [
         "security(deps): refresh the root transitive dependency graph to eliminate the remaining `npm audit` findings without changing source code. `package-lock.json` now pulls the safe versions for `axios` (1.15.0), `vite` (7.3.2), `picomatch` (2.3.2 / 4.0.4), `path-to-regexp` (0.1.13), `lodash` (4.18.1), `flatted` (3.4.2), `brace-expansion` (5.0.5), and `proxy-from-env` (2.1.0), bringing the root repo to zero known vulnerabilities on `npm audit --json`.",
