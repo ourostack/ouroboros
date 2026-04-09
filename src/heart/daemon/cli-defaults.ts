@@ -40,6 +40,7 @@ import {
 } from "../auth/auth-flow"
 import { isAgentProvider } from "./cli-parse"
 import type { OuroCliDeps, DiscoveredCredential } from "./cli-types"
+import { scanEnvVarCredentials } from "./provider-discovery"
 
 // ── Default implementations ──
 
@@ -274,26 +275,18 @@ export async function defaultRunSerpentGuide(): Promise<string | null> {
       azure: "",
     }
 
-    // Scan environment variables for API keys using the canonical descriptor
+    // Scan environment variables for API keys using the shared helper
+    const envCreds = scanEnvVarCredentials(process.env)
     const envDiscovered: Array<DiscoveredCredential & { envVar: string }> = []
-    for (const [provider, desc] of Object.entries(PROVIDER_CREDENTIALS) as Array<[AgentProvider, typeof PROVIDER_CREDENTIALS[AgentProvider]]>) {
-      const envCred: HatchCredentialsInput = {}
-      let firstEnvVar: string | undefined
-      for (const [envVar, credKey] of Object.entries(desc.envVars)) {
-        const value = process.env[envVar]
-        if (value) {
-          ;(envCred as Record<string, string>)[credKey] = value
-          if (!firstEnvVar) firstEnvVar = envVar
-        }
-      }
-      // Only register if at least one required field was found
-      const hasRequired = desc.required.some((key) => !!(envCred as Record<string, string>)[key])
-      if (hasRequired && firstEnvVar) {
-        const provCfg: Record<string, string> = { model: defaultModels[provider] }
-        if (provider === "azure" && envCred.deployment) provCfg.deployment = envCred.deployment
-        envDiscovered.push({ provider, agentName: "env", credentials: envCred, providerConfig: provCfg, envVar: firstEnvVar })
-        discovered.push({ provider, agentName: "env", credentials: envCred, providerConfig: provCfg })
-      }
+    for (const cred of envCreds) {
+      // Enrich with default model and first matching env var name (for display)
+      const desc = PROVIDER_CREDENTIALS[cred.provider]
+      const firstEnvVar = Object.entries(desc.envVars).find(([envVar]) => process.env[envVar])?.[0] ?? ""
+      const provCfg: Record<string, string> = { model: defaultModels[cred.provider], ...cred.providerConfig }
+      if (cred.provider === "azure" && (cred.credentials as Record<string, string>).deployment) provCfg.deployment = (cred.credentials as Record<string, string>).deployment
+      const enriched = { ...cred, providerConfig: provCfg }
+      envDiscovered.push({ ...enriched, envVar: firstEnvVar })
+      discovered.push(enriched)
     }
 
     if (discovered.length > 0) {
