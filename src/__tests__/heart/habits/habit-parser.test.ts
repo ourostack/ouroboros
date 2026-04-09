@@ -326,6 +326,74 @@ describe("parseHabitFile — tools field", () => {
     const result = parseHabitFile(content, "/bundles/agent.ouro/habits/ws-tools.md")
     expect(result.tools).toEqual(["read_file", "web_fetch"])
   })
+
+  it("treats tools: null as undefined", () => {
+    const content = [
+      "---",
+      "title: Null tools",
+      "cadence: 30m",
+      "status: active",
+      "tools: null",
+      "---",
+      "",
+      "Body.",
+    ].join("\n")
+
+    const result = parseHabitFile(content, "/bundles/agent.ouro/habits/null-tools.md")
+    expect(result.tools).toBeUndefined()
+  })
+
+  it("treats non-bracket string tools value as undefined", () => {
+    const content = [
+      "---",
+      "title: Bad tools",
+      "cadence: 30m",
+      "status: active",
+      "tools: just_a_string",
+      "---",
+      "",
+      "Body.",
+    ].join("\n")
+
+    const result = parseHabitFile(content, "/bundles/agent.ouro/habits/bad-tools.md")
+    expect(result.tools).toBeUndefined()
+  })
+
+  it("handles tools: [ ] (whitespace-only brackets) as empty array", () => {
+    const content = [
+      "---",
+      "title: WS brackets",
+      "cadence: 30m",
+      "status: active",
+      "tools: [ ]",
+      "---",
+      "",
+      "Body.",
+    ].join("\n")
+
+    const result = parseHabitFile(content, "/bundles/agent.ouro/habits/ws-brackets.md")
+    expect(result.tools).toEqual([])
+  })
+
+  it("filters non-string items from YAML dash-list tools", () => {
+    // parseFrontmatter returns items via parseScalar which converts "null" to null
+    const content = [
+      "---",
+      "title: Mixed tools",
+      "cadence: 30m",
+      "status: active",
+      "tools:",
+      "  - read_file",
+      "  - null",
+      "  - web_fetch",
+      "---",
+      "",
+      "Body.",
+    ].join("\n")
+
+    const result = parseHabitFile(content, "/bundles/agent.ouro/habits/mixed-tools.md")
+    expect(result.tools).toEqual(["read_file", "web_fetch"])
+  })
 })
 
 describe("renderHabitFile", () => {
