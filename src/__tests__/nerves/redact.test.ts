@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { SENSITIVE_KEYS, redactMeta } from "../../nerves/redact"
+import { SENSITIVE_KEYS, redactMeta, redactString } from "../../nerves/redact"
 
 describe("nerves/redact", () => {
   describe("redactMeta (structured key redaction)", () => {
@@ -72,6 +72,61 @@ describe("nerves/redact", () => {
       const original = JSON.parse(JSON.stringify(meta))
       redactMeta(meta)
       expect(meta).toEqual(original)
+    })
+  })
+
+  describe("redactString (regex fallback)", () => {
+    it("redacts Anthropic API keys", () => {
+      const input = "key is sk-ant-abc123_DEF"
+      const result = redactString(input)
+      expect(result).toBe("key is [REDACTED:anthropic_key]")
+    })
+
+    it("redacts OpenAI project keys", () => {
+      const input = "using sk-proj-xyz789_ABC"
+      const result = redactString(input)
+      expect(result).toBe("using [REDACTED:openai_key]")
+    })
+
+    it("redacts Bearer tokens", () => {
+      const input = "Authorization: Bearer eyJhbGci.payload.sig"
+      const result = redactString(input)
+      expect(result).toBe("Authorization: [REDACTED:bearer_token]")
+    })
+
+    it("redacts generic API key assignments", () => {
+      const input = "api_key=abc123def"
+      const result = redactString(input)
+      expect(result).toBe("[REDACTED:api_key_assignment]")
+    })
+
+    it("redacts URL token query param but preserves other params", () => {
+      const input = "https://api.example.com/data?token=abc123&other=ok"
+      const result = redactString(input)
+      expect(result).toBe("https://api.example.com/data[REDACTED:url_token]&other=ok")
+    })
+
+    it("redacts URL access_token query param", () => {
+      const input = "?access_token=xyz789"
+      const result = redactString(input)
+      expect(result).toBe("[REDACTED:url_token]")
+    })
+
+    it("redacts multiple patterns in one string", () => {
+      const input = "key=sk-ant-abc123 and Bearer eyJtoken.here.now"
+      const result = redactString(input)
+      expect(result).not.toContain("sk-ant-abc123")
+      expect(result).not.toContain("eyJtoken.here.now")
+    })
+
+    it("passes through strings with no sensitive content", () => {
+      const input = "just a normal log message with no secrets"
+      const result = redactString(input)
+      expect(result).toBe(input)
+    })
+
+    it("returns empty string for empty input", () => {
+      expect(redactString("")).toBe("")
     })
   })
 })
