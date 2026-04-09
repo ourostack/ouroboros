@@ -75,6 +75,7 @@ import {
   formatMcpResponse,
 } from "./cli-render"
 import { readFirstBundleMetaVersion, createDefaultOuroCliDeps, defaultListDiscoveredAgents } from "./cli-defaults"
+import { runInteractiveRepair } from "./interactive-repair"
 
 // ── ensureDaemonRunning ──
 
@@ -956,6 +957,21 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
     const daemonResult = await ensureDaemonRunning(deps)
     deps.writeStdout(daemonResult.message)
+
+    // Interactive repair for degraded agents (Unit 5)
+    if (daemonResult.stability?.degraded && daemonResult.stability.degraded.length > 0) {
+      await runInteractiveRepair(daemonResult.stability.degraded, {
+        promptInput: deps.promptInput ?? (async () => "n"),
+        writeStdout: deps.writeStdout,
+        runAuthFlow: async (agent: string) => {
+          const { config } = readAgentConfigForAgent(agent, deps.bundlesRoot)
+          const provider = config.humanFacing.provider
+          /* v8 ignore next -- tests always inject runAuthFlow; default is for production @preserve */
+          const authRunner = deps.runAuthFlow ?? (await import("../auth/auth-flow")).runRuntimeAuthFlow
+          await authRunner({ agentName: agent, provider, promptInput: deps.promptInput })
+        },
+      })
+    }
 
     // Persist boot startup AFTER daemon is running — bootstrap is safe now
     // because the daemon socket exists, so launchd's KeepAlive registers
