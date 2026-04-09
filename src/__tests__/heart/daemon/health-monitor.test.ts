@@ -395,6 +395,48 @@ describe("HealthMonitor", () => {
       )
     })
 
+    it("uses 'unknown' when a failed probe omits detail", async () => {
+      const monitor = new HealthMonitor({
+        ...createBaseOptions(),
+        senseProbes: [
+          {
+            name: "bb",
+            check: async () => ({ ok: false }),
+          },
+        ],
+      })
+
+      const results = await monitor.runChecks()
+      const probeResult = results.find((r) => r.name === "sense-probe:bb")
+      expect(probeResult).toEqual({
+        name: "sense-probe:bb",
+        status: "critical",
+        message: "bb failed: unknown",
+      })
+    })
+
+    it("handles non-Error thrown values from a probe", async () => {
+      const monitor = new HealthMonitor({
+        ...createBaseOptions(),
+        senseProbes: [
+          {
+            name: "bb",
+            check: async () => {
+              throw "string-error"
+            },
+          },
+        ],
+      })
+
+      const results = await monitor.runChecks()
+      const probeResult = results.find((r) => r.name === "sense-probe:bb")
+      expect(probeResult).toEqual({
+        name: "sense-probe:bb",
+        status: "critical",
+        message: "bb error: string-error",
+      })
+    })
+
     it("probe name appears prefixed with sense-probe: in result name field", async () => {
       const monitor = new HealthMonitor({
         ...createBaseOptions(),
