@@ -965,6 +965,19 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
   if (agentName) setAgentName(agentName)
   const pasteDebounceMs = options?.pasteDebounceMs ?? 50
 
+  // Safety net: process-level SIGINT handler ensures Ctrl+C always exits,
+  // even when Ink's event loop is blocked by expensive renders.
+  /* v8 ignore start -- process signal handler @preserve */
+  let sigintCount = 0
+  const sigintHandler = () => {
+    sigintCount++
+    if (sigintCount >= 2) process.exit(1)
+  }
+  if (!options?._testInputSource) {
+    process.on("SIGINT", sigintHandler)
+  }
+  /* v8 ignore stop */
+
   // Register spinner hooks so log output clears the spinner before printing
   registerSpinnerHooks(pauseActiveSpinner, resumeActiveSpinner)
 
