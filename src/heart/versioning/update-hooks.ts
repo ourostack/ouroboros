@@ -57,81 +57,83 @@ export async function applyPendingUpdates(bundlesRoot: string, currentVersion: s
     meta: { bundlesRoot, currentVersion },
   })
 
-  if (!fs.existsSync(bundlesRoot)) {
-    return summary
-  }
-
-  let entries: fs.Dirent[]
   try {
-    entries = fs.readdirSync(bundlesRoot, { withFileTypes: true })
-  } catch {
-    return summary
-  }
+    if (!fs.existsSync(bundlesRoot)) {
+      return summary
+    }
 
-  for (const entry of entries) {
-    if (!entry.isDirectory() || !entry.name.endsWith(".ouro")) continue
-
-    const agentRoot = path.join(bundlesRoot, entry.name)
-    let previousVersion: string | undefined
-
-    const metaPath = path.join(agentRoot, "bundle-meta.json")
+    let entries: fs.Dirent[]
     try {
-      if (fs.existsSync(metaPath)) {
-        const raw = fs.readFileSync(metaPath, "utf-8")
-        const meta = JSON.parse(raw) as BundleMeta
-        previousVersion = meta.runtimeVersion
+      entries = fs.readdirSync(bundlesRoot, { withFileTypes: true })
+    } catch {
+      return summary
+    }
 
-        if (previousVersion === currentVersion) {
-          continue
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !entry.name.endsWith(".ouro")) continue
+
+      const agentRoot = path.join(bundlesRoot, entry.name)
+      let previousVersion: string | undefined
+
+      const metaPath = path.join(agentRoot, "bundle-meta.json")
+      try {
+        if (fs.existsSync(metaPath)) {
+          const raw = fs.readFileSync(metaPath, "utf-8")
+          const meta = JSON.parse(raw) as BundleMeta
+          previousVersion = meta.runtimeVersion
+
+          if (previousVersion === currentVersion) {
+            continue
+          }
+
+          // Skip downgrades — only update forward
+          if (semver.valid(previousVersion) && semver.valid(currentVersion) && semver.gte(previousVersion, currentVersion)) {
+            emitNervesEvent({
+              component: "daemon",
+              event: "daemon.update_hook_skip_downgrade",
+              message: "skipping downgrade",
+              meta: { agentRoot, previousVersion, currentVersion },
+            })
+            continue
+          }
         }
+      } catch {
+        // Malformed or unreadable bundle-meta.json -- treat as needing update
+        previousVersion = undefined
+      }
 
-        // Skip downgrades — only update forward
-        if (semver.valid(previousVersion) && semver.valid(currentVersion) && semver.gte(previousVersion, currentVersion)) {
+      const ctx: UpdateHookContext = { agentRoot, currentVersion, previousVersion }
+
+      for (const hook of _hooks) {
+        try {
+          await hook(ctx)
+        } catch (err) {
           emitNervesEvent({
             component: "daemon",
-            event: "daemon.update_hook_skip_downgrade",
-            message: "skipping downgrade",
-            meta: { agentRoot, previousVersion, currentVersion },
+            event: "daemon.update_hook_error",
+            message: "update hook threw",
+            meta: {
+              agentRoot,
+              error: err instanceof Error ? err.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(err),
+            },
           })
-          continue
         }
       }
-    } catch {
-      // Malformed or unreadable bundle-meta.json -- treat as needing update
-      previousVersion = undefined
+
+      summary.updated.push({
+        agent: entry.name.replace(/\.ouro$/, ""),
+        from: previousVersion,
+        to: currentVersion,
+      })
     }
 
-    const ctx: UpdateHookContext = { agentRoot, currentVersion, previousVersion }
-
-    for (const hook of _hooks) {
-      try {
-        await hook(ctx)
-      } catch (err) {
-        emitNervesEvent({
-          component: "daemon",
-          event: "daemon.update_hook_error",
-          message: "update hook threw",
-          meta: {
-            agentRoot,
-            error: err instanceof Error ? err.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(err),
-          },
-        })
-      }
-    }
-
-    summary.updated.push({
-      agent: entry.name.replace(/\.ouro$/, ""),
-      from: previousVersion,
-      to: currentVersion,
+    return summary
+  } finally {
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.apply_pending_updates_end",
+      message: "pending updates applied",
+      meta: { bundlesRoot },
     })
   }
-
-  emitNervesEvent({
-    component: "daemon",
-    event: "daemon.apply_pending_updates_end",
-    message: "pending updates applied",
-    meta: { bundlesRoot },
-  })
-
-  return summary
 }
