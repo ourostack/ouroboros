@@ -277,4 +277,139 @@ describe("HealthMonitor", () => {
       expect(onCriticalAgent).toHaveBeenCalledWith("slugger")
     })
   })
+
+  describe("sense probes", () => {
+    function createBaseOptions() {
+      return {
+        processManager: {
+          listAgentSnapshots: () => [{ name: "slugger", status: "running" }],
+        },
+        scheduler: {
+          listJobs: () => [{ id: "daily", lastRun: "2026-01-01T00:00:00Z" }],
+        },
+      }
+    }
+
+    it("existing behavior is unchanged when no sense probes are configured", async () => {
+      const monitor = new HealthMonitor(createBaseOptions())
+
+      const results = await monitor.runChecks()
+      expect(results).toEqual([
+        { name: "agent-processes", status: "ok", message: "all managed agents running" },
+        { name: "cron-health", status: "ok", message: "cron jobs are healthy" },
+        { name: "disk-space", status: "ok", message: "disk usage healthy (0%)" },
+      ])
+    })
+
+    it("includes ok result for a probe that returns ok: true", async () => {
+      const monitor = new HealthMonitor({
+        ...createBaseOptions(),
+        senseProbes: [
+          {
+            name: "bluebubbles",
+            check: async () => ({ ok: true }),
+          },
+        ],
+      })
+
+      const results = await monitor.runChecks()
+      const probeResult = results.find((r) => r.name === "sense-probe:bluebubbles")
+      expect(probeResult).toEqual({
+        name: "sense-probe:bluebubbles",
+        status: "ok",
+        message: "bluebubbles healthy",
+      })
+    })
+
+    it("includes critical result and calls alertSink for a probe that returns ok: false", async () => {
+      const alertSink = vi.fn(async () => undefined)
+      const monitor = new HealthMonitor({
+        ...createBaseOptions(),
+        alertSink,
+        senseProbes: [
+          {
+            name: "bluebubbles",
+            check: async () => ({ ok: false, detail: "connection refused" }),
+          },
+        ],
+      })
+
+      const results = await monitor.runChecks()
+      const probeResult = results.find((r) => r.name === "sense-probe:bluebubbles")
+      expect(probeResult).toEqual({
+        name: "sense-probe:bluebubbles",
+        status: "critical",
+        message: "bluebubbles failed: connection refused",
+      })
+      expect(alertSink).toHaveBeenCalledWith(
+        "[critical] sense-probe:bluebubbles: bluebubbles failed: connection refused",
+      )
+    })
+
+    it("includes results from multiple probes", async () => {
+      const monitor = new HealthMonitor({
+        ...createBaseOptions(),
+        senseProbes: [
+          {
+            name: "bluebubbles",
+            check: async () => ({ ok: true }),
+          },
+          {
+            name: "teams",
+            check: async () => ({ ok: false, detail: "timeout" }),
+          },
+        ],
+      })
+
+      const results = await monitor.runChecks()
+      const bbResult = results.find((r) => r.name === "sense-probe:bluebubbles")
+      const teamsResult = results.find((r) => r.name === "sense-probe:teams")
+      expect(bbResult?.status).toBe("ok")
+      expect(teamsResult?.status).toBe("critical")
+    })
+
+    it("treats a throwing probe as critical with error message as detail", async () => {
+      const alertSink = vi.fn(async () => undefined)
+      const monitor = new HealthMonitor({
+        ...createBaseOptions(),
+        alertSink,
+        senseProbes: [
+          {
+            name: "bluebubbles",
+            check: async () => {
+              throw new Error("ECONNREFUSED")
+            },
+          },
+        ],
+      })
+
+      const results = await monitor.runChecks()
+      const probeResult = results.find((r) => r.name === "sense-probe:bluebubbles")
+      expect(probeResult).toEqual({
+        name: "sense-probe:bluebubbles",
+        status: "critical",
+        message: "bluebubbles error: ECONNREFUSED",
+      })
+      expect(alertSink).toHaveBeenCalledWith(
+        "[critical] sense-probe:bluebubbles: bluebubbles error: ECONNREFUSED",
+      )
+    })
+
+    it("probe name appears prefixed with sense-probe: in result name field", async () => {
+      const monitor = new HealthMonitor({
+        ...createBaseOptions(),
+        senseProbes: [
+          {
+            name: "my-custom-sense",
+            check: async () => ({ ok: true }),
+          },
+        ],
+      })
+
+      const results = await monitor.runChecks()
+      const probeResult = results.find((r) => r.name === "sense-probe:my-custom-sense")
+      expect(probeResult).toBeDefined()
+      expect(probeResult!.name).toBe("sense-probe:my-custom-sense")
+    })
+  })
 })
