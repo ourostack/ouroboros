@@ -20,6 +20,7 @@ import { getSharedMcpManager } from "../../repertoire/mcp-manager"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { BlueBubblesReplyTargetSelection } from "../../repertoire/tools-base"
 import {
+  BlueBubblesIgnoredEventError,
   normalizeBlueBubblesEvent,
   type BlueBubblesChatRef,
   type BlueBubblesNormalizedEvent,
@@ -103,7 +104,7 @@ export interface BlueBubblesHandleResult {
   handled: boolean
   notifiedAgent: boolean
   kind?: BlueBubblesNormalizedEvent["kind"]
-  reason?: "from_me" | "mutation_state_only" | "already_processed"
+  reason?: "from_me" | "mutation_state_only" | "already_processed" | "ignored"
 }
 
 interface RuntimeDeps {
@@ -755,10 +756,13 @@ async function handleBlueBubblesNormalizedEvent(
 
       // Record EARLY to prevent duplicate processing. BB webhooks can retry
       // before the first turn completes — recording after the turn is too late.
-      recordBlueBubblesInbound(agentName, event, source)
+      const inboundSource: BlueBubblesInboundSource =
+        source !== "webhook" && sessionLikelyContainsMessage(event, existing?.messages ?? sessionMessages)
+          ? "recovery-bootstrap"
+          : source
+      recordBlueBubblesInbound(agentName, event, inboundSource)
 
-      if (source !== "webhook" && sessionLikelyContainsMessage(event, existing?.messages ?? sessionMessages)) {
-        recordBlueBubblesInbound(agentName, event, "recovery-bootstrap")
+      if (inboundSource === "recovery-bootstrap") {
         emitNervesEvent({
           component: "senses",
           event: "senses.bluebubbles_recovery_skip",
@@ -931,10 +935,6 @@ async function handleBlueBubblesNormalizedEvent(
           })
         }
 
-        if (event.kind === "message") {
-          recordBlueBubblesInbound(resolvedDeps.getAgentName(), event, source)
-        }
-
         return {
           handled: true,
           notifiedAgent: false,
@@ -944,10 +944,6 @@ async function handleBlueBubblesNormalizedEvent(
 
       // Gate allowed — flush the agent's reply
       await callbacks.flush()
-
-      if (event.kind === "message") {
-        recordBlueBubblesInbound(resolvedDeps.getAgentName(), event, source)
-      }
 
       emitNervesEvent({
         component: "senses",
@@ -985,7 +981,27 @@ export async function handleBlueBubblesEvent(
 ): Promise<BlueBubblesHandleResult> {
   const resolvedDeps = { ...defaultDeps, ...deps }
   const client = resolvedDeps.createClient()
-  const normalized = normalizeBlueBubblesEvent(payload)
+  let normalized: BlueBubblesNormalizedEvent
+  try {
+    normalized = normalizeBlueBubblesEvent(payload)
+  } catch (error) {
+    if (error instanceof BlueBubblesIgnoredEventError) {
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.bluebubbles_event_skipped",
+        message: "skipped ignorable bluebubbles event",
+        meta: {
+          eventType: error.eventType,
+        },
+      })
+      return {
+        handled: true,
+        notifiedAgent: false,
+        reason: "ignored",
+      }
+    }
+    throw error
+  }
   // Pre-repair dedup: if we've already processed this messageGuid, skip the
   // repair+hydrate path entirely. Applies to BOTH `kind: "message"` AND
   // `kind: "mutation"` events — BlueBubbles often sends a `new-message`
