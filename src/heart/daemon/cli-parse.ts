@@ -78,6 +78,7 @@ export function usage(): string {
     "  ouro mcp call <server> <tool> [--args '{...}']",
     "  ouro rollback [<version>]",
     "  ouro versions",
+    "  ouro doctor",
   ].join("\n")
 }
 
@@ -719,6 +720,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "link") return parseLinkCommand(args.slice(1))
   if (head === "mcp-serve") return parseMcpServeCommand(args.slice(1))
   if (head === "setup") return parseSetupCommand(args.slice(1))
+  if (head === "doctor") return { kind: "doctor" }
 
   throw new Error(`Unknown command '${args.join(" ")}'.\n${usage()}`)
 }
