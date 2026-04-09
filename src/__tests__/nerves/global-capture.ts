@@ -4,6 +4,7 @@ import { dirname, join } from "path"
 import { afterAll, afterEach, beforeEach } from "vitest"
 
 import { registerGlobalLogSink, type LogEvent } from "../../nerves"
+import { __getLiveTmpBundleHandles } from "../test-helpers/tmpdir-bundle"
 
 const REPO_SLUG = "ouroboros-agent-harness"
 
@@ -108,6 +109,36 @@ afterEach((ctx) => {
       `Orphaned lifecycle _start events (no _end or _error) in test "${testName}": ${uniq.join(", ")}. ` +
       `Fix the teardown (e.g. ensure daemon.stop()/stopUpdateChecker() is called) — these lifecycle events ` +
       `must always pair by construction, including when the operation throws.`,
+    )
+  }
+})
+
+// TmpBundle leak guard: any handle from `createTmpBundle()` that wasn't
+// cleaned up by the test's own try/finally gets forcibly cleaned here,
+// and a console.warn names the test that leaked it so the human can fix
+// the missing finally. This runs AFTER the pairing guard so the pairing
+// failure surfaces first if both trip on the same test.
+//
+// Swallows cleanup errors intentionally (best-effort defense-in-depth,
+// not strict enforcement). The strict enforcement is the test-isolation
+// contract test that blocks real-path writes at the source level.
+afterEach((ctx) => {
+  const handles = __getLiveTmpBundleHandles()
+  if (handles.size === 0) return
+  const suiteName = ctx.task.suite?.name ?? ""
+  const testName = suiteName ? `${suiteName} > ${ctx.task.name}` : ctx.task.name
+  const leaked: string[] = []
+  // Snapshot the set before iterating — cleanup() mutates it.
+  const snapshot = Array.from(handles)
+  for (const handle of snapshot) {
+    leaked.push(handle.agentName)
+    try { handle.cleanup() } catch { /* best effort */ }
+  }
+  if (leaked.length > 0) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[tmpbundle-leak-guard] test "${testName}" leaked ${leaked.length} TmpBundle handle(s) ` +
+      `(${leaked.join(", ")}). Forcibly cleaned. Fix the missing try/finally in the test body.`,
     )
   }
 })
