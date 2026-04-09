@@ -11,11 +11,12 @@ vi.mock("../../../heart/daemon/agent-discovery", () => ({
   listEnabledBundleAgents: listEnabledBundleAgentsMock,
 }))
 
-const { habitSchedulerStartMock, habitSchedulerStopMock, habitSchedulerWatchMock, habitSchedulerStopWatchMock } = vi.hoisted(() => ({
+const { habitSchedulerStartMock, habitSchedulerStopMock, habitSchedulerWatchMock, habitSchedulerStopWatchMock, habitSchedulerStartPeriodicReconciliationMock } = vi.hoisted(() => ({
   habitSchedulerStartMock: vi.fn(),
   habitSchedulerStopMock: vi.fn(),
   habitSchedulerWatchMock: vi.fn(),
   habitSchedulerStopWatchMock: vi.fn(),
+  habitSchedulerStartPeriodicReconciliationMock: vi.fn(),
 }))
 
 const { migrateHabitsFromTaskSystemMock } = vi.hoisted(() => ({
@@ -29,6 +30,7 @@ vi.mock("../../../heart/habits/habit-scheduler", () => ({
     stop = habitSchedulerStopMock
     watchForChanges = habitSchedulerWatchMock
     stopWatching = habitSchedulerStopWatchMock
+    startPeriodicReconciliation = habitSchedulerStartPeriodicReconciliationMock
   },
 }))
 
@@ -65,6 +67,7 @@ describe("daemon entrypoint", () => {
     habitSchedulerStopMock.mockReset()
     habitSchedulerWatchMock.mockReset()
     habitSchedulerStopWatchMock.mockReset()
+    habitSchedulerStartPeriodicReconciliationMock.mockReset()
     migrateHabitsFromTaskSystemMock.mockReset()
     writeDaemonTombstoneMock.mockReset()
     vi.restoreAllMocks()
