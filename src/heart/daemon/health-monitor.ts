@@ -10,6 +10,7 @@ export interface HealthMonitorOptions {
   }
   alertSink?: (message: string) => Promise<void> | void
   diskUsagePercent?: () => number
+  onCriticalAgent?: (agentName: string) => void
 }
 
 export class HealthMonitor {
@@ -17,12 +18,35 @@ export class HealthMonitor {
   private readonly scheduler: HealthMonitorOptions["scheduler"]
   private readonly alertSink: (message: string) => Promise<void> | void
   private readonly diskUsagePercent: () => number
+  private readonly onCriticalAgent: (agentName: string) => void
+  private intervalHandle: ReturnType<typeof setInterval> | null = null
 
   constructor(options: HealthMonitorOptions) {
     this.processManager = options.processManager
     this.scheduler = options.scheduler
     this.alertSink = options.alertSink ?? (() => undefined)
     this.diskUsagePercent = options.diskUsagePercent ?? (() => 0)
+    this.onCriticalAgent = options.onCriticalAgent ?? (() => undefined)
+  }
+
+  startPeriodicChecks(intervalMs: number): void {
+    if (this.intervalHandle !== null) return
+    emitNervesEvent({
+      level: "info",
+      component: "daemon",
+      event: "daemon.health_check_scheduled",
+      message: "periodic health checks started",
+      meta: { intervalMs },
+    })
+    this.intervalHandle = setInterval(() => {
+      void this.runChecks()
+    }, intervalMs)
+  }
+
+  stopPeriodicChecks(): void {
+    if (this.intervalHandle === null) return
+    clearInterval(this.intervalHandle)
+    this.intervalHandle = null
   }
 
   async runChecks(): Promise<DaemonHealthResult[]> {
@@ -36,6 +60,20 @@ export class HealthMonitor {
         status: "critical",
         message: `non-running agents: ${unhealthy.map((item) => item.name).join(", ")}`,
       })
+      for (const agent of unhealthy) {
+        try {
+          emitNervesEvent({
+            level: "warn",
+            component: "daemon",
+            event: "daemon.health_check_recovery_attempted",
+            message: "triggering recovery restart for non-running agent",
+            meta: { agentName: agent.name, agentStatus: agent.status },
+          })
+          this.onCriticalAgent(agent.name)
+        } catch {
+          // Recovery is best-effort -- callback errors must not crash runChecks
+        }
+      }
     } else {
       results.push({ name: "agent-processes", status: "ok", message: "all managed agents running" })
     }
