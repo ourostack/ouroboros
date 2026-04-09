@@ -710,9 +710,12 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
     if (escClass === "ignore") return
     // Regular character: insert at cursor position
     if (!key.ctrl && !key.meta && inputChar) {
+      // Strip ANSI escape codes and normalize \r to \n (SSH/paste compat)
+      const cleaned = inputChar.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "").replace(/\r\n?/g, "\n")
+      if (!cleaned) return
       const before = inputRef.current.slice(0, cursorRef.current)
       const after = inputRef.current.slice(cursorRef.current)
-      updateInput(before + inputChar + after, cursorRef.current + inputChar.length)
+      updateInput(before + cleaned + after, cursorRef.current + cleaned.length)
       historyIdx.current = -1
     }
   })
