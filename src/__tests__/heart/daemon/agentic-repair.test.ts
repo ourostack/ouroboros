@@ -250,4 +250,53 @@ describe("runAgenticRepair", () => {
     expect(deps.runInteractiveRepair).toHaveBeenCalled()
     expect(emitNervesEvent).toHaveBeenCalled()
   })
+
+  it("does not display diagnosis header when LLM returns empty content", async () => {
+    const mockStreamTurn = vi.fn(async () => ({
+      content: "",
+      toolCalls: [],
+      outputItems: [],
+    }))
+    const degraded: DegradedAgent[] = [
+      { agent: "slugger", errorReason: "missing credentials", fixHint: "ouro auth slugger" },
+    ]
+    const deps = makeDeps({
+      promptInput: vi.fn(async () => "y"),
+      createProviderRuntime: vi.fn(() => ({
+        streamTurn: mockStreamTurn,
+      })),
+    })
+    const result = await runAgenticRepair(degraded, deps)
+    expect(result.usedAgentic).toBe(true)
+    // Should NOT display the diagnosis header/footer when content is empty
+    const writeStdoutMock = deps.writeStdout as ReturnType<typeof vi.fn>
+    const calls = writeStdoutMock.mock.calls.map((c: [string]) => c[0])
+    expect(calls).not.toContain("--- AI Diagnosis ---")
+    expect(emitNervesEvent).toHaveBeenCalled()
+  })
+
+  it("uses default runAuthFlow fallback when not provided in deps", async () => {
+    const degraded: DegradedAgent[] = [
+      { agent: "slugger", errorReason: "missing credentials", fixHint: "ouro auth slugger" },
+    ]
+    // Explicitly set runAuthFlow to undefined to trigger the ?? fallback
+    const deps: AgenticRepairDeps = {
+      discoverWorkingProvider: vi.fn(async () => null),
+      runInteractiveRepair: vi.fn(async (_degraded, repairDeps) => {
+        // Verify that a runAuthFlow function was provided even though we didn't inject one
+        expect(typeof repairDeps.runAuthFlow).toBe("function")
+        return { repairsAttempted: false }
+      }),
+      promptInput: vi.fn(async () => "n"),
+      writeStdout: vi.fn(),
+      createProviderRuntime: vi.fn(() => ({
+        streamTurn: vi.fn(async () => ({ content: "", toolCalls: [], outputItems: [] })),
+      })),
+      readDaemonLogsTail: vi.fn(() => ""),
+      runAuthFlow: undefined,
+    }
+    const result = await runAgenticRepair(degraded, deps)
+    expect(result).toEqual({ repairsAttempted: false, usedAgentic: false })
+    expect(emitNervesEvent).toHaveBeenCalled()
+  })
 })
