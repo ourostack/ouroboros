@@ -4,6 +4,8 @@ import {
   COMMAND_REGISTRY,
   getGroupedHelp,
   getCommandHelp,
+  levenshteinDistance,
+  suggestCommand,
   type CommandHelp,
   type CommandCategory,
 } from "../../../heart/daemon/cli-help"
@@ -164,5 +166,71 @@ describe("getCommandHelp()", () => {
     } finally {
       COMMAND_REGISTRY["up"].example = original
     }
+  })
+})
+
+// ── Unit 1a: Levenshtein distance + "did you mean?" ──
+
+describe("levenshteinDistance()", () => {
+  it("returns 0 for identical strings", () => {
+    emitNervesEvent({ component: "daemon", event: "cli_help_levenshtein_test", message: "testing levenshtein" })
+    expect(levenshteinDistance("stop", "stop")).toBe(0)
+  })
+
+  it("returns 1 for single character substitution", () => {
+    expect(levenshteinDistance("stop", "stap")).toBe(1)
+  })
+
+  it("returns 1 for single character insertion", () => {
+    expect(levenshteinDistance("stop", "stopp")).toBe(1)
+  })
+
+  it("returns 1 for single character deletion", () => {
+    expect(levenshteinDistance("stop", "sto")).toBe(1)
+  })
+
+  it("returns correct distance for transposition-like change", () => {
+    // "stpo" -> "stop" is 2 operations (transpose = delete + insert)
+    expect(levenshteinDistance("stpo", "stop")).toBeLessThanOrEqual(2)
+  })
+
+  it("returns string length when compared to empty string", () => {
+    expect(levenshteinDistance("", "stop")).toBe(4)
+    expect(levenshteinDistance("stop", "")).toBe(4)
+  })
+
+  it("returns 0 for two empty strings", () => {
+    expect(levenshteinDistance("", "")).toBe(0)
+  })
+
+  it("handles completely different strings", () => {
+    expect(levenshteinDistance("abc", "xyz")).toBe(3)
+  })
+})
+
+describe("suggestCommand()", () => {
+  it("suggests 'stop' for 'stpo'", () => {
+    emitNervesEvent({ component: "daemon", event: "cli_help_suggest_test", message: "testing suggestions" })
+    expect(suggestCommand("stpo")).toBe("stop")
+  })
+
+  it("suggests 'status' for 'statu'", () => {
+    expect(suggestCommand("statu")).toBe("status")
+  })
+
+  it("suggests 'logs' for 'lgs'", () => {
+    expect(suggestCommand("lgs")).toBe("logs")
+  })
+
+  it("returns null for input with no close match", () => {
+    expect(suggestCommand("xyzzy")).toBeNull()
+  })
+
+  it("returns null for empty input", () => {
+    expect(suggestCommand("")).toBeNull()
+  })
+
+  it("returns exact match command name for distance 0", () => {
+    expect(suggestCommand("stop")).toBe("stop")
   })
 })
