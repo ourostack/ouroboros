@@ -145,6 +145,7 @@ vi.mock("../../heart/core", () => ({
   buildSystem: (...a: any[]) => mocks.buildSystem(...a),
   getProvider: () => "azure",
   createSummarize: () => vi.fn(),
+  repairOrphanedToolCalls: vi.fn(),
 }))
 vi.mock("../../heart/config", () => ({
   sessionPath: (...a: any[]) => mocks.sessionPath(...a),
