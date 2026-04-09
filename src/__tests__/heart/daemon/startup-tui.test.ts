@@ -177,9 +177,18 @@ describe("startup-tui", () => {
         { agent: "alpha", status: "running", startedAt: "2026-04-09T12:00:00.000Z" },
         { agent: "beta", status: "starting", startedAt: null },
       ])
-      const output = renderStartupProgress(payload, 3000)
+      // Pass prevLineCount > 0 to trigger cursor-up (simulating a second render)
+      const output = renderStartupProgress(payload, 3000, 3)
       // Should contain cursor-up escape for in-place rendering
       expect(output).toMatch(/\x1b\[\d+A/)
+    })
+
+    it("does not include cursor-up on first render (prevLineCount=0)", () => {
+      const payload = makePayload([
+        { agent: "alpha", status: "running", startedAt: "2026-04-09T12:00:00.000Z" },
+      ])
+      const output = renderStartupProgress(payload, 1000)
+      expect(output).not.toMatch(/\x1b\[\d+A/)
     })
 
     it("includes line-clear escape codes", () => {

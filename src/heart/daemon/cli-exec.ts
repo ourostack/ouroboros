@@ -75,6 +75,7 @@ import {
   formatMcpResponse,
 } from "./cli-render"
 import { readFirstBundleMetaVersion, createDefaultOuroCliDeps, defaultListDiscoveredAgents } from "./cli-defaults"
+import { pollDaemonStartup } from "./startup-tui"
 
 // ── ensureDaemonRunning ──
 
@@ -123,39 +124,22 @@ export async function ensureDaemonRunning(deps: OuroCliDeps): Promise<EnsureDaem
   const started = await deps.startDaemonProcess(deps.socketPath)
   const pid = started.pid ?? "unknown"
 
-  // Verify the daemon actually comes up before reporting success
-  const verified = await verifyDaemonAlive(deps.checkSocketAlive, deps.socketPath)
-
-  /* v8 ignore start -- daemon liveness failure: requires real daemon crash timing @preserve */
-  if (!verified) {
-    return {
-      alreadyRunning: false,
-      message: `daemon spawned (pid ${pid}) but failed to respond within 10s — check \`ouro status\` or daemon logs`,
-    }
-  }
-  /* v8 ignore stop */
+  // Poll daemon status with real-time TUI progress until all agents
+  // are either stable (running 5s+) or definitively failed (crashed).
+  const stability = await pollDaemonStartup({
+    sendCommand: deps.sendCommand,
+    socketPath: deps.socketPath,
+    writeStdout: deps.writeStdout,
+    now: () => Date.now(),
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+  })
 
   return {
     alreadyRunning: false,
     message: `daemon started (pid ${pid})`,
+    stability,
   }
 }
-
-/* v8 ignore start -- daemon liveness poll: real socket timing untestable in vitest @preserve */
-async function verifyDaemonAlive(
-  checkSocketAlive: (socketPath: string) => Promise<boolean>,
-  socketPath: string,
-  maxWaitMs = 10_000,
-  pollIntervalMs = 500,
-): Promise<boolean> {
-  const deadline = Date.now() + maxWaitMs
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, pollIntervalMs))
-    if (await checkSocketAlive(socketPath)) return true
-  }
-  return false
-}
-/* v8 ignore stop */
 
 // ── GitHub Copilot model helpers ──
 
