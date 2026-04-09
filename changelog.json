@@ -2,10 +2,16 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.297",
+      "version": "0.1.0-alpha.298",
       "changes": [
         "fix(bluebubbles): dedupe inbound sidecar writes by `sessionKey/messageGuid`, ignore known guidless chat-state webhooks instead of 500ing, and add a first-class `ouro bluebubbles replay --agent <name> --message-guid <guid>` command for historical incident replay. The replay path defaults to `new-message`, surfaces state-only `updated-message` mutations with a retry hint, and keeps the real attachment handle visible for the original payload-bearing event.",
         "test(daemon): close the replay/debug follow-up coverage gaps and harden `teams.test` cleanup by giving each test a unique temp agent root plus retried teardown, eliminating the `/tmp/mock-agent-root` race that could intermittently fail the full coverage gate."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.297",
+      "changes": [
+        "feat(mind): add integrity scanning for diary entries at write time. New detectSuspiciousContent() in src/mind/diary-integrity.ts checks entry text for prompt injection patterns (instruction framing, override language, role injection, boundary markers) before persisting. Detection emits a mind.diary_integrity_warning nerves event with matched pattern categories, text preview, and entry ID. Entries still save (flag, don't block) to avoid false-positive data loss. 41 unit tests + 4 integration tests with 100% coverage on new code."
       ]
     },
     {
