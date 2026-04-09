@@ -56,6 +56,10 @@ function makeDaemon(socketPath: string) {
     listSenseRows: vi.fn(() => []),
     listManagedPids: vi.fn(() => []),
   }
+  const outlookServerFactory = vi.fn(async () => ({
+    origin: "http://127.0.0.1:0",
+    stop: vi.fn(async () => undefined),
+  }))
   return new OuroDaemon({
     socketPath,
     processManager,
@@ -63,6 +67,8 @@ function makeDaemon(socketPath: string) {
     healthMonitor,
     router,
     senseManager,
+    outlookServerFactory,
+    mode: "dev",
   } as any)
 }
 

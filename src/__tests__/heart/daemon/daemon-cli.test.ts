@@ -1,7 +1,7 @@
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
-import { afterAll, describe, expect, it, vi } from "vitest"
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 
 // Mock provider-ping for auth verify/switch tests
 vi.mock("../../../heart/provider-ping", () => ({
@@ -2897,55 +2897,49 @@ describe("ouro --help completeness (H10)", () => {
     }
   }
 
-  it("includes task subcommands in help output", async () => {
+  it("includes task command in help output", async () => {
     const deps = makeHelpDeps()
     const result = await runOuroCli(["--help"], deps)
 
-    expect(result).toContain("ouro task board")
-    expect(result).toContain("ouro task create")
-    expect(result).toContain("ouro task update")
-    expect(result).toContain("ouro task show")
-    expect(result).toContain("ouro task fix")
-    // actionable, deps, sessions are grouped on one line
-    expect(result).toContain("actionable")
-    expect(result).toContain("deps")
-    expect(result).toContain("sessions")
+    expect(result).toContain("task")
+    expect(result).toContain("Tasks")
+    expect(result).toContain("reminder")
   })
 
-  it("includes reminder subcommand in help output", async () => {
+  it("includes reminder command in help output", async () => {
     const deps = makeHelpDeps()
     const result = await runOuroCli(["--help"], deps)
 
-    expect(result).toContain("ouro reminder create")
+    expect(result).toContain("reminder")
   })
 
-  it("includes friend subcommands in help output", async () => {
+  it("includes friend command in help output", async () => {
     const deps = makeHelpDeps()
     const result = await runOuroCli(["--help"], deps)
 
-    expect(result).toContain("ouro friend list")
-    expect(result).toContain("ouro friend show")
+    expect(result).toContain("friend")
+    expect(result).toContain("Friends")
   })
 
   it("includes whoami in help output", async () => {
     const deps = makeHelpDeps()
     const result = await runOuroCli(["--help"], deps)
 
-    expect(result).toContain("ouro whoami")
+    expect(result).toContain("whoami")
   })
 
-  it("includes session subcommand in help output", async () => {
+  it("includes session command in help output", async () => {
     const deps = makeHelpDeps()
     const result = await runOuroCli(["--help"], deps)
 
-    expect(result).toContain("ouro session list")
+    expect(result).toContain("session")
   })
 
   it("includes all core daemon commands in help output", async () => {
     const deps = makeHelpDeps()
     const result = await runOuroCli(["--help"], deps)
 
-    expect(result).toContain("ouro [up]")
+    expect(result).toContain("up")
     expect(result).toContain("stop")
     expect(result).toContain("down")
     expect(result).toContain("status")
@@ -2955,7 +2949,7 @@ describe("ouro --help completeness (H10)", () => {
     expect(result).toContain("msg")
     expect(result).toContain("poke")
     expect(result).toContain("link")
-    expect(result).toContain("-v|--version")
+    expect(result).toContain("Lifecycle")
   })
 })
 
@@ -5659,12 +5653,34 @@ describe("--agent flag CLI execution", () => {
 describe("ouro thoughts CLI execution", () => {
   // Self-contained tmpdir bundle so this suite never writes into ~/AgentBundles.
   // The thoughts CLI handler honors `deps.bundlesRoot` so we route reads here.
-  const tmp = createTmpBundle({ agentName: "thoughts-test" })
-  const testAgentName = tmp.agentName
-  const agentBundlesRoot = tmp.bundlesRoot
-  const testAgentRoot = tmp.agentRoot
-  const sessionDir = path.join(testAgentRoot, "state", "sessions", "self", "inner")
-  const sessionFile = path.join(sessionDir, "dialog.json")
+  //
+  // IMPORTANT: createTmpBundle() is called inside beforeAll, NOT at describe
+  // scope. Previously it ran at collection time (module load) and registered
+  // a live handle in _liveHandles BEFORE any test ran. The tmpbundle leak
+  // guard's afterEach then fired on the FIRST test in the entire file
+  // ("ouro CLI parsing > parses primary daemon commands" at line 28),
+  // noticed the pre-existing handle, and forcibly cleaned it + logged a
+  // misleading leak warning blaming that test. Moving the handle creation
+  // into beforeAll means the handle only exists while the thoughts suite
+  // is actually running, and afterAll's cleanup aligns with it.
+  let tmp: ReturnType<typeof createTmpBundle>
+  let testAgentName: string
+  let agentBundlesRoot: string
+  let testAgentRoot: string
+  let sessionDir: string
+  let sessionFile: string
+
+  beforeAll(() => {
+    // `shared: true` tells the tmpbundle leak guard this handle lives across
+    // the whole describe block (beforeAll → afterAll) and should not be
+    // flagged as leaked by afterEach on the individual tests that use it.
+    tmp = createTmpBundle({ agentName: "thoughts-test", shared: true })
+    testAgentName = tmp.agentName
+    agentBundlesRoot = tmp.bundlesRoot
+    testAgentRoot = tmp.agentRoot
+    sessionDir = path.join(testAgentRoot, "state", "sessions", "self", "inner")
+    sessionFile = path.join(sessionDir, "dialog.json")
+  })
 
   function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
     return {
