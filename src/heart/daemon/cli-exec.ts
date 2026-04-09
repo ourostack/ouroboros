@@ -257,7 +257,7 @@ async function verifyProviderCredentials(
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "outlook" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "outlook" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | { kind: "bluebubbles.replay" }>): DaemonCommand {
   return command
 }
 
@@ -806,6 +806,20 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     message: "ouro CLI command invoked",
     meta: { kind: command.kind },
   })
+
+  if (command.kind === "bluebubbles.replay") {
+    const { replayBlueBubblesMessage, formatBlueBubblesReplayText } = await import("../../senses/bluebubbles/replay")
+    const replay = await replayBlueBubblesMessage({
+      agentName: command.agent,
+      messageGuid: command.messageGuid,
+      eventType: command.eventType,
+    })
+    const text = command.json
+      ? JSON.stringify(replay, null, 2)
+      : formatBlueBubblesReplayText(replay)
+    deps.writeStdout(text)
+    return text
+  }
 
   if (command.kind === "daemon.up") {
     // ── dev mode cleanup: delete dev-config.json so the wrapper stops dispatching to dev repo ──
