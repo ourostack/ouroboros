@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.278",
+      "changes": [
+        "fix(identity): spread-with-validation loader eliminates the field-drop bug class that caused #349 (silent `sync` drop). Two distinct structural bugs fixed, one in each agent.json loader: (1) `loadAgentConfig` in `src/heart/identity.ts` previously built the returned `AgentConfig` via a hand-rolled object literal that listed every field explicitly — any new field on `AgentConfig` that wasn't added to this literal got silently dropped. Root cause of #349. Refactored to a spread-then-override pattern: start with `{ ...parsed as AgentConfig }`, then explicitly override `version`, `enabled`, `humanFacing`, `agentFacing`, `senses`, `phrases` which need validation/normalization. The deprecated `provider` field is re-attached from the validated `rawProvider` check. (2) `readAgentConfigForAgent` in `src/heart/auth/auth-flow.ts` previously did `parsed as unknown as AgentConfig` which passed through ALL fields unconditionally (so no silent drops) but ALSO had zero per-field validation — any garbage in agent.json leaked into the returned config. Refactored to apply the same spread-with-validation pattern, reusing `normalizeSenses` (now exported from identity.ts). Both entry points now return equivalent configs for the same agent.json file. New `src/__tests__/heart/identity-fixture.ts` exports `FULL_AGENT_JSON satisfies DeepRequired<AgentConfig>` — a compile-time regression guard that fails to build if any new field is added to `AgentConfig` without updating the fixture. Two new test files: `identity-contract.test.ts` exercises `readAgentConfigForAgent` with `createTmpBundle`; `identity-load-contract.test.ts` exercises `loadAgentConfig` via `vi.mock(\"fs\")` (split to avoid the fs-mock-vs-real-fs conflict). 7 tests total."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.277",
       "changes": [
         "feat(pulse): multi-agent situational awareness for peer agents on the same machine. The harness scales horizontally — multiple peer agents share a machine, each with their own identity and bundle (the Bob model from We Are Legion / We Are Bob). Without explicit awareness, peer agents are isolated workers who don't even know each other exist. The pulse fixes that.",
