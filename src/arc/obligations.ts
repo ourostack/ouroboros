@@ -247,6 +247,7 @@ export interface ReturnObligation {
   }
   status: ReturnObligationStatus
   delegatedContent: string
+  packetId?: string
   createdAt: number
   startedAt?: number
   returnedAt?: number
