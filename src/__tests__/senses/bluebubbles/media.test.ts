@@ -666,13 +666,19 @@ describe("BlueBubbles media hydration", () => {
     expect(modelFetchImpl).toHaveBeenCalledOnce()
     expect(execFile).toHaveBeenCalledWith("brew", ["install", "whisper-cpp"], expect.any(Object), expect.any(Function))
     expect(mkdir).toHaveBeenCalledWith(path.join(testState.agentRoot, "state", "tools", "whisper-cpp", "models"), { recursive: true })
-    expect(writeFile).toHaveBeenNthCalledWith(
-      1,
-      "/tmp/ouro-bb-audio-123/Voice Note.m4a",
+    expect(writeFile).toHaveBeenCalledWith(
+      path.join(
+        testState.agentRoot,
+        "state",
+        "attachments",
+        "materialized",
+        "bluebubbles",
+        "voice-guid",
+        "original.m4a",
+      ),
       Buffer.from("audio-bytes"),
     )
-    expect(writeFile).toHaveBeenNthCalledWith(
-      2,
+    expect(writeFile).toHaveBeenCalledWith(
       path.join(testState.agentRoot, "state", "tools", "whisper-cpp", "models", "ggml-base.en.bin"),
       Buffer.from("model-bytes"),
     )
@@ -2042,10 +2048,22 @@ describe("BlueBubbles media hydration — capability-aware image routing", () =>
     vi.doUnmock("../../../nerves/runtime")
   })
 
-  it("non-vision chat model with missing content-type: routes through skip-unsupported", async () => {
+  it("non-vision chat model with missing content-type: still normalizes and describes the image", async () => {
     vi.resetModules()
+    const agentRoot = makeAgentRoot()
+    const normalizedPath = path.join(agentRoot, "missing-content-type.jpg")
+    fs.writeFileSync(normalizedPath, "normalized-no-content-type")
     const nervesMock = vi.fn()
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: nervesMock }))
+    vi.doMock("../../../heart/attachments/image-normalize", () => ({
+      MAX_ATTACHMENT_DOWNLOAD_BYTES_IMAGE: 32 * 1024 * 1024,
+      MAX_VLM_IMAGE_BYTES: 5 * 1024 * 1024,
+      normalizeImageForVision: vi.fn().mockResolvedValue({
+        path: normalizedPath,
+        mimeType: "image/jpeg",
+        byteCount: 26,
+      }),
+    }))
     const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
     // Attachment reports no mimeType and response has no content-type → image
     // detection still fires on extension (".png") but contentType is
@@ -2057,14 +2075,14 @@ describe("BlueBubbles media hydration — capability-aware image routing", () =>
       {
         fetchImpl: vi.fn().mockResolvedValue(new Response(Buffer.from("x"), { status: 200 })),
         chatModel: "MiniMax-M2.5",
-        vlmDescribe: vi.fn(),
+        vlmDescribe: vi.fn().mockResolvedValue("png without content-type"),
       },
     )
-    expect(result.inputParts[0]).toMatchObject({ type: "text" })
+    expect(result.inputParts).toEqual([{ type: "text", text: "[image description: png without content-type]" }])
     const unsupported = nervesMock.mock.calls.find(
       (c) => c[0]?.event === "senses.bluebubbles_vision_format_unsupported",
     )
-    expect(unsupported).toBeDefined()
+    expect(unsupported).toBeUndefined()
     vi.doUnmock("../../../nerves/runtime")
   })
 

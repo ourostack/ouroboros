@@ -600,7 +600,8 @@ describe("normalizeBlueBubblesEvent", () => {
     const result = normalizeBlueBubblesEvent(dmAudioPayload)
 
     expect(result.kind).toBe("message")
-    expect(result.textForAgent).toContain("audio attachment")
+    expect(result.textForAgent).toContain("[attachments]")
+    expect(result.textForAgent).toContain("attachment:bluebubbles:")
     expect(result.textForAgent).toContain("Audio Message.mp3.mp3")
   })
 
@@ -763,7 +764,8 @@ describe("normalizeBlueBubblesEvent", () => {
 
       expect(result.kind).toBe("message")
       expect(result.text).toBe("")
-      expect(result.textForAgent).toBe("[attachment]")
+      expect(result.textForAgent).toContain("[attachments]")
+      expect(result.textForAgent).toContain("attachment:bluebubbles:file-1")
       expect(result.chat.sessionKey).toBe("chat_identifier:unknown")
       expect(result.chat.sendTarget).toEqual({ kind: "chat_identifier", value: "unknown" })
       expect(result.sender.externalId).toBe("Slugger Device")
