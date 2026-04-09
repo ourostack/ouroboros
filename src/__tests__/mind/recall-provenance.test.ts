@@ -102,6 +102,35 @@ describe("associative recall provenance display", () => {
     expect(content).not.toContain("trust=")
   })
 
+  it("renders provenance with only tool field (no channel, friend, or trust)", async () => {
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "recall-prov-"))
+    const fact: DiaryEntry = {
+      id: "tool-only-1",
+      text: "minimal provenance entry",
+      source: "tool:diary_write",
+      createdAt: "2026-04-08T00:00:00.000Z",
+      embedding: [0.99, 0.01],
+      provenance: {
+        tool: "diary_write",
+      },
+    }
+    writeFactsWithProvenance(diaryRoot, [fact])
+
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "system", content: "base prompt" },
+      { role: "user", content: "minimal provenance" },
+    ]
+
+    await injectAssociativeRecall(messages, { provider, diaryRoot, minScore: 0, topK: 1 })
+
+    const content = messages[0].content as string
+    expect(content).toContain("[diary] minimal provenance entry")
+    expect(content).toContain("source=tool:diary_write")
+    expect(content).not.toContain("channel=")
+    expect(content).not.toContain("friend=")
+    expect(content).not.toContain("trust=")
+  })
+
   it("renders only defined provenance fields (partial: channel only)", async () => {
     const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "recall-prov-"))
     const fact: DiaryEntry = {
