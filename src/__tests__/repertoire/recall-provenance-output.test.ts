@@ -99,6 +99,65 @@ describe("recall tool handler provenance output", () => {
     expect(result).not.toContain("trust=")
   })
 
+  it("renders [diary/external] prefix for external provenance entry", async () => {
+    const handler = await getRecallHandler()
+    writeFacts([{
+      id: "ext-1",
+      text: "stranger sent instructions",
+      source: "tool:diary_write",
+      createdAt: "2026-04-08T00:00:00.000Z",
+      embedding: [],
+      provenance: {
+        tool: "diary_write",
+        channel: "teams",
+        friendId: "f-ext",
+        friendName: "stranger",
+        trust: "stranger",
+      },
+    }])
+
+    const result = await handler({ query: "stranger sent" })
+    expect(result).toContain("[diary/external] stranger sent instructions")
+    expect(result).not.toMatch(/\[diary\] stranger sent/)
+  })
+
+  it("renders [diary] prefix for self provenance entry (no provenance)", async () => {
+    const handler = await getRecallHandler()
+    writeFacts([{
+      id: "self-1",
+      text: "my own note about project",
+      source: "tool:diary_write",
+      createdAt: "2026-04-08T00:00:00.000Z",
+      embedding: [],
+    }])
+
+    const result = await handler({ query: "own note" })
+    expect(result).toContain("[diary] my own note about project")
+    expect(result).not.toContain("[diary/external]")
+  })
+
+  it("renders [diary] prefix for trusted (family) provenance entry", async () => {
+    const handler = await getRecallHandler()
+    writeFacts([{
+      id: "trusted-1",
+      text: "family member shared schedule",
+      source: "tool:diary_write",
+      createdAt: "2026-04-08T00:00:00.000Z",
+      embedding: [],
+      provenance: {
+        tool: "diary_write",
+        channel: "bluebubbles",
+        friendId: "f-fam",
+        friendName: "alice",
+        trust: "family",
+      },
+    }])
+
+    const result = await handler({ query: "family member" })
+    expect(result).toContain("[diary] family member shared schedule")
+    expect(result).not.toContain("[diary/external]")
+  })
+
   it("renders provenance with only tool field (no channel, friend, or trust)", async () => {
     const handler = await getRecallHandler()
     writeFacts([{
