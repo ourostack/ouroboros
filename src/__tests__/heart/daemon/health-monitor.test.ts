@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { HealthMonitor } from "../../../heart/daemon/health-monitor"
 
@@ -94,5 +94,187 @@ describe("HealthMonitor", () => {
       "[critical] agent-processes: non-running agents: ouroboros",
     )
     expect(alertSink).toHaveBeenNthCalledWith(2, "[critical] disk-space: disk usage critical (95%)")
+  })
+
+  describe("periodic scheduling", () => {
+    beforeEach(() => {
+      vi.useFakeTimers()
+    })
+
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    function createMonitor() {
+      return new HealthMonitor({
+        processManager: {
+          listAgentSnapshots: () => [{ name: "slugger", status: "running" }],
+        },
+        scheduler: {
+          listJobs: () => [{ id: "daily", lastRun: "2026-01-01T00:00:00Z" }],
+        },
+      })
+    }
+
+    it("calls runChecks on the specified interval", async () => {
+      const monitor = createMonitor()
+      const spy = vi.spyOn(monitor, "runChecks")
+
+      monitor.startPeriodicChecks(5000)
+      expect(spy).not.toHaveBeenCalled()
+
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(spy).toHaveBeenCalledTimes(1)
+
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(spy).toHaveBeenCalledTimes(2)
+
+      monitor.stopPeriodicChecks()
+    })
+
+    it("stopPeriodicChecks clears the interval", async () => {
+      const monitor = createMonitor()
+      const spy = vi.spyOn(monitor, "runChecks")
+
+      monitor.startPeriodicChecks(5000)
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(spy).toHaveBeenCalledTimes(1)
+
+      monitor.stopPeriodicChecks()
+
+      await vi.advanceTimersByTimeAsync(10000)
+      expect(spy).toHaveBeenCalledTimes(1)
+    })
+
+    it("calling startPeriodicChecks twice does not create duplicate intervals", async () => {
+      const monitor = createMonitor()
+      const spy = vi.spyOn(monitor, "runChecks")
+
+      monitor.startPeriodicChecks(5000)
+      monitor.startPeriodicChecks(5000)
+
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(spy).toHaveBeenCalledTimes(1)
+
+      monitor.stopPeriodicChecks()
+    })
+
+    it("stopPeriodicChecks is safe to call when not started", () => {
+      const monitor = createMonitor()
+      expect(() => monitor.stopPeriodicChecks()).not.toThrow()
+    })
+  })
+
+  describe("onCriticalAgent callback", () => {
+    it("invokes onCriticalAgent with agent names from critical agent-process results", async () => {
+      const onCriticalAgent = vi.fn()
+      const monitor = new HealthMonitor({
+        processManager: {
+          listAgentSnapshots: () => [
+            { name: "slugger", status: "stopped" },
+            { name: "ouroboros", status: "running" },
+          ],
+        },
+        scheduler: {
+          listJobs: () => [{ id: "daily", lastRun: "2026-01-01T00:00:00Z" }],
+        },
+        onCriticalAgent,
+      })
+
+      await monitor.runChecks()
+      expect(onCriticalAgent).toHaveBeenCalledTimes(1)
+      expect(onCriticalAgent).toHaveBeenCalledWith("slugger")
+    })
+
+    it("does not call onCriticalAgent when all agents are running (ok status)", async () => {
+      const onCriticalAgent = vi.fn()
+      const monitor = new HealthMonitor({
+        processManager: {
+          listAgentSnapshots: () => [{ name: "slugger", status: "running" }],
+        },
+        scheduler: {
+          listJobs: () => [{ id: "daily", lastRun: "2026-01-01T00:00:00Z" }],
+        },
+        onCriticalAgent,
+      })
+
+      await monitor.runChecks()
+      expect(onCriticalAgent).not.toHaveBeenCalled()
+    })
+
+    it("does not call onCriticalAgent for non-agent-process critical results like disk-space", async () => {
+      const onCriticalAgent = vi.fn()
+      const monitor = new HealthMonitor({
+        processManager: {
+          listAgentSnapshots: () => [{ name: "slugger", status: "running" }],
+        },
+        scheduler: {
+          listJobs: () => [{ id: "daily", lastRun: "2026-01-01T00:00:00Z" }],
+        },
+        diskUsagePercent: () => 95,
+        onCriticalAgent,
+      })
+
+      const results = await monitor.runChecks()
+      // disk-space is critical but should NOT trigger onCriticalAgent
+      expect(results.some((r) => r.name === "disk-space" && r.status === "critical")).toBe(true)
+      expect(onCriticalAgent).not.toHaveBeenCalled()
+    })
+
+    it("works without onCriticalAgent provided (default no-op)", async () => {
+      const monitor = new HealthMonitor({
+        processManager: {
+          listAgentSnapshots: () => [{ name: "slugger", status: "stopped" }],
+        },
+        scheduler: {
+          listJobs: () => [{ id: "daily", lastRun: "2026-01-01T00:00:00Z" }],
+        },
+      })
+
+      // Should not crash
+      await expect(monitor.runChecks()).resolves.toBeDefined()
+    })
+
+    it("calls onCriticalAgent for each non-running agent when multiple are down", async () => {
+      const onCriticalAgent = vi.fn()
+      const monitor = new HealthMonitor({
+        processManager: {
+          listAgentSnapshots: () => [
+            { name: "slugger", status: "crashed" },
+            { name: "ouroboros", status: "stopped" },
+            { name: "helper", status: "running" },
+          ],
+        },
+        scheduler: {
+          listJobs: () => [{ id: "daily", lastRun: "2026-01-01T00:00:00Z" }],
+        },
+        onCriticalAgent,
+      })
+
+      await monitor.runChecks()
+      expect(onCriticalAgent).toHaveBeenCalledTimes(2)
+      expect(onCriticalAgent).toHaveBeenCalledWith("slugger")
+      expect(onCriticalAgent).toHaveBeenCalledWith("ouroboros")
+    })
+
+    it("does not crash when onCriticalAgent callback throws", async () => {
+      const onCriticalAgent = vi.fn(() => {
+        throw new Error("restart failed")
+      })
+      const monitor = new HealthMonitor({
+        processManager: {
+          listAgentSnapshots: () => [{ name: "slugger", status: "stopped" }],
+        },
+        scheduler: {
+          listJobs: () => [{ id: "daily", lastRun: "2026-01-01T00:00:00Z" }],
+        },
+        onCriticalAgent,
+      })
+
+      // Should not throw, recovery is best-effort
+      const results = await monitor.runChecks()
+      expect(results[0]?.status).toBe("critical")
+      expect(onCriticalAgent).toHaveBeenCalledWith("slugger")
+    })
   })
 })
