@@ -1,19 +1,61 @@
-import { describe, it, expect, vi, beforeEach } from "vitest"
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { emitNervesEvent } from "../../../nerves/runtime"
+import { readRecentAttachments } from "../../../heart/attachments/store"
+import { materializeAttachment } from "../../../heart/attachments/materialize"
+
+const testState = vi.hoisted(() => ({
+  agentRoot: "",
+}))
+
+vi.mock("../../../heart/identity", async () => {
+  const actual = await vi.importActual<typeof import("../../../heart/identity")>("../../../heart/identity")
+  return {
+    ...actual,
+    getAgentName: vi.fn(() => "testagent"),
+    getAgentRoot: vi.fn(() => testState.agentRoot),
+  }
+})
 
 vi.mock("fs/promises", () => ({
   readFile: vi.fn(),
 }))
 
+vi.mock("../../../heart/attachments/materialize", async () => {
+  const actual = await vi.importActual<typeof import("../../../heart/attachments/materialize")>("../../../heart/attachments/materialize")
+  return {
+    ...actual,
+    materializeAttachment: vi.fn(),
+  }
+})
+
+const tempDirs: string[] = []
+
+function makeAgentRoot(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-image-paste-"))
+  tempDirs.push(dir)
+  testState.agentRoot = dir
+  return dir
+}
+
 describe("Content block assembly", () => {
   beforeEach(() => {
     vi.resetModules()
+    makeAgentRoot()
     emitNervesEvent({
       component: "senses",
       event: "senses.content_block_assembly_test_start",
       message: "Content block assembly test started",
       meta: {},
     })
+  })
+
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   describe("resolveImageContent integration", () => {
@@ -97,6 +139,34 @@ describe("Content block assembly", () => {
         expect(parts[0].image_url.url).toContain("data:image/png;base64,")
       }
       expect(parts[1]).toEqual({ type: "text", text: "[Image #1] check this" })
+    })
+
+    it("registers shared attachments and appends the attachment block to text", async () => {
+      const fs = await import("fs/promises")
+      vi.mocked(fs.readFile).mockResolvedValue(Buffer.from("png-bytes"))
+      vi.mocked(materializeAttachment).mockResolvedValue({
+        attachmentId: "attachment:cli-local-file:test",
+        variant: "vision_safe",
+        path: "/tmp/normalized.png",
+        displayName: "screenshot.png",
+        mimeType: "image/png",
+        byteCount: 9,
+      })
+      const { resolveImageContent } = await import("../../../senses/cli/image-paste")
+
+      const parts = await resolveImageContent("[Image #1] check this", new Map([[1, "/Users/foo/screenshot.png"]]))
+      const textPart = parts.find((part) => part.type === "text")
+      const attachments = readRecentAttachments("testagent", testState.agentRoot)
+
+      expect(textPart).toEqual(
+        expect.objectContaining({
+          type: "text",
+          text: expect.stringContaining("[attachments]"),
+        }),
+      )
+      expect(textPart?.type === "text" ? textPart.text : "").toContain("attachment:cli-local-file:")
+      expect(attachments).toHaveLength(1)
+      expect(attachments[0]?.id).toContain("attachment:cli-local-file:")
     })
   })
 })
