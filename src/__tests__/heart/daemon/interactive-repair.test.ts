@@ -142,6 +142,24 @@ describe("runInteractiveRepair", () => {
     expect(emitNervesEvent).toHaveBeenCalled()
   })
 
+  it("handles non-Error thrown from auth flow", async () => {
+    const deps = makeDeps({
+      promptInput: vi.fn(async () => "y"),
+      runAuthFlow: vi.fn(async () => {
+        throw "string-error"  // eslint-disable-line no-throw-literal
+      }),
+    })
+    const degraded: DegradedAgent[] = [
+      { agent: "agent1", errorReason: "missing credentials", fixHint: "ouro auth agent1" },
+    ]
+    const result = await runInteractiveRepair(degraded, deps)
+    expect(result).toEqual({ repairsAttempted: true })
+    expect(deps.writeStdout).toHaveBeenCalledWith(
+      expect.stringContaining("string-error"),
+    )
+    expect(emitNervesEvent).toHaveBeenCalled()
+  })
+
   it("treats Y (uppercase) as yes", async () => {
     const deps = makeDeps({
       promptInput: vi.fn(async () => "Y"),
