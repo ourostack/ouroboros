@@ -379,26 +379,41 @@ describe("tools-bundle", () => {
       expect(String(result.error)).toContain("no commits")
     })
 
-    it("classifies network errors correctly", async () => {
+    it("refuses first push without a confirmation token (Directive D)", async () => {
       initGit(tmp.agentRoot)
       addRemoteDirect(tmp.agentRoot, "https://unresolvable.test.invalid/repo.git")
       commitFile(tmp.agentRoot, "file.txt", "x", "init")
       const result = await invoke("bundle_push")
       expect(result.ok).toBe(false)
+      expect(result.kind).toBe("confirmation_required")
+      expect(String(result.error)).toContain("confirmation token")
+    })
+
+    it("proceeds past the token gate when a valid token is provided, then fails on network", async () => {
+      initGit(tmp.agentRoot)
+      addRemoteDirect(tmp.agentRoot, "https://unresolvable.test.invalid/repo.git")
+      commitFile(tmp.agentRoot, "file.txt", "x", "init")
+      // Get a real token via bundle_first_push_review
+      const review = await invoke("bundle_first_push_review")
+      const token = String(review.confirmationToken)
+      const result = await invoke("bundle_push", { confirmation_token: token })
+      expect(result.ok).toBe(false)
+      // Past the token gate — kind is now the network/auth/etc classification
       expect(["network", "auth", "unknown", "rejected"]).toContain(result.kind as string)
     })
 
-    it("accepts a custom remote argument", async () => {
+    it("accepts a custom remote argument (first push, with token)", async () => {
       initGit(tmp.agentRoot)
       execFileSync("git", ["remote", "add", "upstream", "https://unresolvable.test.invalid/repo.git"], {
         cwd: tmp.agentRoot,
         stdio: "pipe",
       })
       commitFile(tmp.agentRoot, "file.txt", "x", "init")
-      const result = await invoke("bundle_push", { remote: "upstream" })
+      // First-push gate: need a token even when using a custom remote
+      const review = await invoke("bundle_first_push_review")
+      const token = String(review.confirmationToken)
+      const result = await invoke("bundle_push", { remote: "upstream", confirmation_token: token })
       expect(result.ok).toBe(false)
-      // Success or failure here doesn't matter — we're just exercising the
-      // custom remote argument branch.
       expect(result.error).toBeDefined()
     })
   })

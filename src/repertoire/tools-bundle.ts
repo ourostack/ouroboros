@@ -35,12 +35,14 @@
  * calls `bundle_list_first_commit` and stages each entry individually.
  */
 import { execFileSync } from "child_process"
+import * as crypto from "crypto"
 import * as fs from "fs"
 import * as path from "path"
 import type { ToolDefinition, ToolHandler } from "./tools-base"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getAgentRoot } from "../heart/identity"
 import { detectBundleState } from "../heart/bundle-state"
+import { BUNDLE_GITIGNORE_TEMPLATE, PII_BUNDLE_DIRECTORIES } from "./bundle-templates"
 
 // ─── shared helpers ────────────────────────────────────────────────────
 
@@ -241,12 +243,14 @@ const initGitHandler: ToolHandler = (args) => {
     /* v8 ignore stop */
   }
 
-  // Write minimal .gitignore template if one doesn't already exist.
-  // PR 7 extends this with the full PII-safe template.
+  // Write the full .gitignore template if one doesn't already exist.
+  // See BUNDLE_GITIGNORE_TEMPLATE's design philosophy: functional blocks
+  // only (credentials, state, noise, build artifacts); PII is handled
+  // separately by bundle_first_push_review at first-push time.
   const gitignorePath = path.join(bundleRoot, ".gitignore")
   let gitignoreWritten = false
   if (!fs.existsSync(gitignorePath)) {
-    fs.writeFileSync(gitignorePath, "state/\n", "utf-8")
+    fs.writeFileSync(gitignorePath, BUNDLE_GITIGNORE_TEMPLATE, "utf-8")
     gitignoreWritten = true
   }
 
@@ -516,6 +520,192 @@ const doFirstCommitHandler: ToolHandler = (args) => {
   return finish(true, { commitSha, fileCount: filesToStage.length, message })
 }
 
+// ─── tool: bundle_first_push_review ────────────────────────────────────
+
+/**
+ * In-memory store of confirmation tokens issued by bundle_first_push_review.
+ * Each entry maps a token → { bundleRoot, createdAt }. bundle_push validates
+ * the token against this store on first-push attempts (detected via empty
+ * `git ls-remote --heads`). 15-minute TTL so stale tokens don't accumulate.
+ */
+interface ConfirmationTokenEntry {
+  bundleRoot: string
+  createdAt: number
+}
+
+const CONFIRMATION_TOKEN_TTL_MS = 15 * 60 * 1000
+const _confirmationTokens = new Map<string, ConfirmationTokenEntry>()
+
+function pruneExpiredTokens(now: number): void {
+  for (const [token, entry] of _confirmationTokens) {
+    if (now - entry.createdAt > CONFIRMATION_TOKEN_TTL_MS) {
+      _confirmationTokens.delete(token)
+    }
+  }
+}
+
+/** Test hook: lets unit tests inspect + clear the token store. */
+export function __getConfirmationTokenStore(): Map<string, ConfirmationTokenEntry> {
+  return _confirmationTokens
+}
+
+interface PiiCounts {
+  [dir: string]: number
+}
+
+function countFilesInDir(bundleRoot: string, relDir: string): number {
+  // Use `git ls-files --others --exclude-standard -- <dir>` to honor .gitignore.
+  const result = gitExec(bundleRoot, ["ls-files", "--others", "--exclude-standard", "--", relDir])
+  /* v8 ignore next -- git ls-files failure requires a corrupt repo @preserve */
+  if (result.code !== 0) return 0
+  return result.stdout.split("\n").filter((l) => l.trim().length > 0).length
+}
+
+interface ParsedGitHubRepo {
+  owner: string
+  repo: string
+}
+
+function parseGitHubUrl(url: string): ParsedGitHubRepo | null {
+  // https://github.com/owner/repo(.git)
+  const httpsMatch = url.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+?)(\.git)?$/)
+  if (httpsMatch) return { owner: httpsMatch[1]!, repo: httpsMatch[2]! }
+  // git@github.com:owner/repo(.git)
+  const sshMatch = url.match(/^git@github\.com:([^/]+)\/([^/]+?)(\.git)?$/)
+  if (sshMatch) return { owner: sshMatch[1]!, repo: sshMatch[2]! }
+  return null
+}
+
+type GitHubVisibility = "public" | "private" | "unknown"
+
+export interface FirstPushReviewDeps {
+  fetch?: typeof globalThis.fetch
+  now?: () => number
+}
+
+async function checkGitHubVisibility(
+  parsed: ParsedGitHubRepo,
+  fetchFn: typeof globalThis.fetch,
+): Promise<GitHubVisibility> {
+  const controller = new AbortController()
+  /* v8 ignore next -- 5-second timeout abort only fires if fetch takes longer than the test runner allows; the abort path is defensive @preserve */
+  const timer = setTimeout(() => controller.abort(), 5000)
+  try {
+    const res = await fetchFn(`https://api.github.com/repos/${parsed.owner}/${parsed.repo}`, {
+      signal: controller.signal,
+      headers: { Accept: "application/vnd.github+json" },
+    })
+    if (!res.ok) return "unknown"
+    const data = (await res.json()) as { private?: unknown }
+    if (data.private === true) return "private"
+    if (data.private === false) return "public"
+    /* v8 ignore next -- malformed GitHub API response (private field neither true nor false) is not practical to provoke @preserve */
+    return "unknown"
+  } catch {
+    return "unknown"
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+function makeFirstPushReviewHandler(deps: FirstPushReviewDeps = {}): ToolHandler {
+  return async () => {
+    const bundleRoot = getAgentRoot()
+    const fetchFn = deps.fetch ?? globalThis.fetch
+    const now = deps.now ?? Date.now
+
+    emitNervesEvent({
+      component: "repertoire",
+      event: "repertoire.bundle_first_push_review_start",
+      message: "reviewing bundle for first push",
+      meta: { bundleRoot },
+    })
+
+    const finish = (ok: boolean, payload: Record<string, unknown>): string => {
+      emitNervesEvent({
+        component: "repertoire",
+        event: "repertoire.bundle_first_push_review_end",
+        message: "bundle_first_push_review finished",
+        meta: { bundleRoot, ok, ...payload },
+      })
+      return json({ ok, ...payload })
+    }
+
+    if (!isGitRepo(bundleRoot)) {
+      return finish(false, { error: "bundle is not a git repo — run bundle_init_git first" })
+    }
+    const remotes = listRemotes(bundleRoot)
+    if (remotes.length === 0) {
+      return finish(false, { error: "no remote configured — run bundle_add_remote first" })
+    }
+    const remoteName = remotes[0]!
+    const remoteUrl = getRemoteUrl(bundleRoot, remoteName)
+    /* v8 ignore next 3 -- listRemotes returned a name but get-url failed; only possible under a git race @preserve */
+    if (!remoteUrl) {
+      return finish(false, { error: "could not resolve remote url" })
+    }
+
+    // Enumerate PII directory counts
+    const piiCounts: PiiCounts = {}
+    let totalPiiRecords = 0
+    for (const dir of PII_BUNDLE_DIRECTORIES) {
+      const dirPath = path.join(bundleRoot, dir)
+      if (!fs.existsSync(dirPath)) continue
+      const count = countFilesInDir(bundleRoot, dir)
+      if (count > 0) {
+        piiCounts[dir] = count
+        totalPiiRecords += count
+      }
+    }
+
+    // GitHub visibility probe
+    const parsedGitHub = parseGitHubUrl(remoteUrl)
+    let warningLevel: "public_github" | "private_github" | "generic" = "generic"
+    if (parsedGitHub) {
+      const visibility = await checkGitHubVisibility(parsedGitHub, fetchFn)
+      if (visibility === "public") warningLevel = "public_github"
+      else if (visibility === "private") warningLevel = "private_github"
+    }
+
+    // Build first-person warning text
+    const piiSummary = Object.entries(piiCounts)
+      .map(([dir, count]) => `${count} ${dir} record${count === 1 ? "" : "s"}`)
+      .join(", ")
+    const piiClause = piiSummary.length > 0
+      ? `my bundle contains personal data: ${piiSummary} (${totalPiiRecords} records total)`
+      : "my bundle has no PII directories populated yet"
+
+    let visibilityClause: string
+    if (warningLevel === "public_github") {
+      visibilityClause = `⚠️  ${remoteUrl} is a PUBLIC GitHub repo — anything i push will be visible to anyone. are you SURE you want to push PII to a public repo?`
+    } else if (warningLevel === "private_github") {
+      visibilityClause = `${remoteUrl} is a PRIVATE GitHub repo. still, confirm you want to push this data there.`
+    } else {
+      visibilityClause = `${remoteUrl} — i can't verify this remote's visibility. confirm the repo is private before i push PII.`
+    }
+
+    const warningText = `${piiClause}. ${visibilityClause}`
+
+    // Issue and store the confirmation token
+    const token = crypto.randomUUID()
+    const currentTime = now()
+    pruneExpiredTokens(currentTime)
+    _confirmationTokens.set(token, { bundleRoot, createdAt: currentTime })
+
+    return finish(true, {
+      warningLevel,
+      remoteUrl,
+      piiCounts,
+      totalPiiRecords,
+      warningText,
+      confirmRequired: true,
+      confirmationToken: token,
+    })
+  }
+}
+
+const firstPushReviewHandler = makeFirstPushReviewHandler()
+
 // ─── tool: bundle_push ─────────────────────────────────────────────────
 
 /* v8 ignore start -- push error classification branches require mocking git stderr from each failure mode; covered by a single network-failure integration test in the suite @preserve */
@@ -528,47 +718,135 @@ function classifyPushError(stderr: string): "rejected" | "network" | "auth" | "u
 }
 /* v8 ignore stop */
 
-const pushHandler: ToolHandler = (args) => {
-  const bundleRoot = getAgentRoot()
-  const remote = typeof args.remote === "string" && args.remote.length > 0 ? args.remote : "origin"
+/**
+ * Detect whether this is a first push to the remote.
+ *
+ * Returns true if the remote branch does not yet exist (bundle has local
+ * commits but has never been pushed). Also returns true — conservatively —
+ * when git fails to probe the remote (network unreachable, git error).
+ * The token requirement is a security gate; if we can't verify the remote
+ * state, we assume the worst and force the agent to get confirmation. An
+ * unreachable remote should NOT be a bypass vector.
+ */
+/* v8 ignore start -- isFirstPushToRemote has two branches that only differ when the remote is reachable; in the unit test environment all remotes are unreachable so we always hit the "return true on network failure" branch. The security contract (never return false when unsure) is covered by the refusal tests in bundle-first-push-review.test.ts @preserve */
+function isFirstPushToRemote(bundleRoot: string, remote: string): boolean {
+  const branchResult = gitExec(bundleRoot, ["symbolic-ref", "--short", "HEAD"])
+  if (branchResult.code !== 0) return true
+  const branch = branchResult.stdout.trim()
+  const lsRemote = gitExec(bundleRoot, ["ls-remote", "--heads", remote, branch], 10000)
+  if (lsRemote.code !== 0) return true
+  return lsRemote.stdout.trim().length === 0
+}
+/* v8 ignore stop */
 
-  emitNervesEvent({
-    component: "repertoire",
-    event: "repertoire.bundle_push_start",
-    message: "pushing bundle to remote",
-    meta: { bundleRoot, remote },
-  })
+function makePushHandler(deps: { now?: () => number } = {}): ToolHandler {
+  return (args) => {
+    const bundleRoot = getAgentRoot()
+    const remote = typeof args.remote === "string" && args.remote.length > 0 ? args.remote : "origin"
+    const confirmationToken = typeof (args as { confirmation_token?: unknown }).confirmation_token === "string"
+      ? (args as { confirmation_token: string }).confirmation_token
+      : undefined
+    const now = deps.now ?? Date.now
 
-  const finish = (ok: boolean, payload: Record<string, unknown>): string => {
     emitNervesEvent({
       component: "repertoire",
-      event: "repertoire.bundle_push_end",
-      message: "bundle_push finished",
-      meta: { bundleRoot, ok, ...payload },
+      event: "repertoire.bundle_push_start",
+      message: "pushing bundle to remote",
+      meta: { bundleRoot, remote },
     })
-    return json({ ok, ...payload })
-  }
 
-  if (!isGitRepo(bundleRoot)) {
-    return finish(false, { error: "bundle is not a git repo" })
-  }
-  const remotes = listRemotes(bundleRoot)
-  if (!remotes.includes(remote)) {
-    return finish(false, { error: `remote "${remote}" not configured — run bundle_add_remote first` })
-  }
-  if (!hasHead(bundleRoot)) {
-    return finish(false, { error: "bundle has no commits — run bundle_do_first_commit first" })
-  }
+    const finish = (ok: boolean, payload: Record<string, unknown>): string => {
+      emitNervesEvent({
+        component: "repertoire",
+        event: "repertoire.bundle_push_end",
+        message: "bundle_push finished",
+        meta: { bundleRoot, ok, ...payload },
+      })
+      return json({ ok, ...payload })
+    }
 
-  const push = gitExec(bundleRoot, ["push", remote, "HEAD"], 30000)
-  /* v8 ignore start -- push success branch requires a reachable remote, not practical to cover in unit tests; failure branch covered by network-failure test @preserve */
-  if (push.code === 0) {
-    return finish(true, { remote })
+    if (!isGitRepo(bundleRoot)) {
+      return finish(false, { error: "bundle is not a git repo" })
+    }
+    const remotes = listRemotes(bundleRoot)
+    if (!remotes.includes(remote)) {
+      return finish(false, { error: `remote "${remote}" not configured — run bundle_add_remote first` })
+    }
+    if (!hasHead(bundleRoot)) {
+      return finish(false, { error: "bundle has no commits — run bundle_do_first_commit first" })
+    }
+
+    // Directive D: first push to a remote requires the agent to have
+    // previously called bundle_first_push_review and obtained a
+    // confirmation token. This forces a PII-review gate between
+    // "bundle built locally" and "bundle contents on the internet".
+    const isFirstPush = isFirstPushToRemote(bundleRoot, remote)
+    /* v8 ignore next -- the !isFirstPush branch (subsequent push path) requires a reachable remote to test end-to-end; the path itself falls through to the git push below which is covered by the network-failure test @preserve */
+    if (isFirstPush) {
+      if (!confirmationToken) {
+        emitNervesEvent({
+          level: "warn",
+          component: "repertoire",
+          event: "repertoire.bundle_push_refused",
+          message: "bundle_push refused: first push requires confirmation token",
+          meta: { bundleRoot },
+        })
+        return finish(false, {
+          error: "refused: first push requires a confirmation token — call bundle_first_push_review, show the warning to the user, and pass the returned confirmationToken to bundle_push",
+          kind: "confirmation_required",
+        })
+      }
+      const currentTime = now()
+      pruneExpiredTokens(currentTime)
+      const entry = _confirmationTokens.get(confirmationToken)
+      if (!entry) {
+        emitNervesEvent({
+          level: "warn",
+          component: "repertoire",
+          event: "repertoire.bundle_push_refused",
+          message: "bundle_push refused: confirmation token invalid or expired",
+          meta: { bundleRoot },
+        })
+        return finish(false, {
+          error: "refused: confirmation token invalid or expired — call bundle_first_push_review again",
+          kind: "confirmation_required",
+        })
+      }
+      if (entry.bundleRoot !== bundleRoot) {
+        emitNervesEvent({
+          level: "warn",
+          component: "repertoire",
+          event: "repertoire.bundle_push_refused",
+          message: "bundle_push refused: confirmation token bound to a different bundle",
+          meta: { bundleRoot, tokenBundleRoot: entry.bundleRoot },
+        })
+        return finish(false, {
+          error: "refused: confirmation token was issued for a different bundle",
+          kind: "confirmation_required",
+        })
+      }
+      emitNervesEvent({
+        component: "repertoire",
+        event: "repertoire.bundle_push_first_push_confirmed",
+        message: "first push confirmed by valid token",
+        meta: { bundleRoot },
+      })
+      // One-shot: consume the token on successful validation.
+      _confirmationTokens.delete(confirmationToken)
+    }
+
+    const push = gitExec(bundleRoot, ["push", remote, "HEAD"], 30000)
+    /* v8 ignore start -- push success branch requires a reachable remote, not practical to cover in unit tests; failure branch covered by network-failure test @preserve */
+    if (push.code === 0) {
+      return finish(true, { remote, firstPush: isFirstPush })
+    }
+    /* v8 ignore stop */
+    const kind = classifyPushError(push.stderr)
+    return finish(false, { error: push.stderr.trim(), kind })
   }
-  /* v8 ignore stop */
-  const kind = classifyPushError(push.stderr)
-  return finish(false, { error: push.stderr.trim(), kind })
 }
+
+const pushHandler = makePushHandler()
 
 // ─── tool: bundle_pull_rebase ──────────────────────────────────────────
 
@@ -732,12 +1010,24 @@ export const bundleToolDefinitions: ToolDefinition[] = [
     tool: {
       type: "function",
       function: {
+        name: "bundle_first_push_review",
+        description: "Review my bundle for PII exposure before the first push to a new remote. Enumerates PII-bearing directories (friends, diary, journal, etc.) with per-directory counts, probes the remote URL for GitHub public/private visibility, and returns a first-person warning text I must show the human plus a confirmationToken I must pass to bundle_push on first push. Required before the first push to any new remote.",
+        parameters: { type: "object", properties: {} },
+      },
+    },
+    handler: firstPushReviewHandler,
+  },
+  {
+    tool: {
+      type: "function",
+      function: {
         name: "bundle_push",
-        description: "Push my bundle's HEAD to the configured remote. Returns a structured error with kind: 'rejected' | 'network' | 'auth' | 'unknown' on failure. Does NOT auto-rebase on rejection — use bundle_pull_rebase explicitly when needed.",
+        description: "Push my bundle's HEAD to the configured remote. On first push to a new remote, requires a confirmation_token from bundle_first_push_review (Directive D: human must acknowledge PII exposure before the bundle goes over the wire). Subsequent pushes ignore the token. Returns a structured error with kind: 'rejected' | 'network' | 'auth' | 'unknown' | 'confirmation_required' on failure. Does NOT auto-rebase on rejection — use bundle_pull_rebase explicitly when needed.",
         parameters: {
           type: "object",
           properties: {
             remote: { type: "string", description: "Remote name. Defaults to 'origin'." },
+            confirmation_token: { type: "string", description: "Opaque token from bundle_first_push_review. Required on the first push to a new remote; ignored on subsequent pushes." },
           },
         },
       },
