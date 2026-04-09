@@ -2,7 +2,7 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.301",
+      "version": "0.1.0-alpha.302",
       "changes": [
         "feat(cli): add `ouro doctor` system health check command. New command runs 6 diagnostic categories — daemon (socket existence + responsiveness), agents (bundle discovery, agent.json validation for version/humanFacing/agentFacing/enabled), senses (BlueBubbles and Teams config presence and well-formedness), habits (launchd plist discovery, degraded state), security (secrets.json permissions, credential leak detection in agent.json), and disk (log size thresholds at 100MB warn / 500MB critical, bundle root existence). Output is a colored checklist with per-category grouping and a summary line. Works without daemon running — daemon checks fail gracefully while all other categories still execute, making it useful for cold diagnostics. 3 new files (doctor.ts, doctor-types.ts, cli-render-doctor.ts), 3 modified (cli-types.ts, cli-parse.ts, cli-exec.ts), 4 test files with 61 tests at 100% coverage on new code."
       ]
