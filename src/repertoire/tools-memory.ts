@@ -143,7 +143,13 @@ export const memoryToolDefinitions: ToolDefinition[] = [
         // Search diary entries
         const hits = await searchDiaryEntries(query, readDiaryEntries());
         for (const fact of hits) {
-          resultLines.push(`[diary] ${fact.text} (source=${fact.source}, createdAt=${fact.createdAt})`);
+          let meta = `source=${fact.source}, createdAt=${fact.createdAt}`;
+          if (fact.provenance) {
+            if (fact.provenance.channel) meta += `, channel=${fact.provenance.channel}`;
+            if (fact.provenance.friendName) meta += `, friend=${fact.provenance.friendName}`;
+            if (fact.provenance.trust) meta += `, trust=${fact.provenance.trust}`;
+          }
+          resultLines.push(`[diary] ${fact.text} (${meta})`);
         }
 
         // Search journal index
