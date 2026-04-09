@@ -64,9 +64,11 @@ import type {
   SessionCliCommand,
   ThoughtsCliCommand,
   DoctorCliCommand,
+  HelpCliCommand,
 } from "./cli-types"
 import { parseOuroCommand } from "./cli-parse"
 import { isAgentProvider, usage } from "./cli-parse"
+import { getGroupedHelp, getCommandHelp } from "./cli-help"
 import {
   parseStatusPayload,
   formatDaemonStatusOutput,
@@ -260,7 +262,7 @@ async function verifyProviderCredentials(
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "outlook" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DoctorCliCommand | { kind: "bluebubbles.replay" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "outlook" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DoctorCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" }>): DaemonCommand {
   return command
 }
 
@@ -728,7 +730,7 @@ function resolveClonePath(
 
 export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefaultOuroCliDeps()): Promise<string> {
   if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) {
-    const text = usage()
+    const text = getGroupedHelp()
     deps.writeStdout(text)
     return text
   }
@@ -810,6 +812,14 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     meta: { kind: command.kind },
   })
 
+  if (command.kind === "help") {
+    const text = command.command
+      ? (getCommandHelp(command.command) ?? `Unknown command: ${command.command}\n\n${getGroupedHelp()}`)
+      : getGroupedHelp()
+    deps.writeStdout(text)
+    return text
+  }
+
   if (command.kind === "bluebubbles.replay") {
     const { replayBlueBubblesMessage, formatBlueBubblesReplayText } = await import("../../senses/bluebubbles/replay")
     const replay = await replayBlueBubblesMessage({
@@ -861,10 +871,12 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
     // ── versioned CLI update check ──
     if (deps.checkForCliUpdate) {
+      deps.writeStdout("checking for updates...")
       let pendingReExec = false
       try {
         const updateResult = await deps.checkForCliUpdate()
         if (updateResult.available && updateResult.latestVersion) {
+          deps.writeStdout(`installing ${updateResult.latestVersion}...`)
           /* v8 ignore next -- fallback: getCurrentCliVersion always injected in tests @preserve */
           const currentVersion = linkedVersionBeforeUp ?? "unknown"
           await deps.installCliVersion!(updateResult.latestVersion)
@@ -890,6 +902,8 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       /* v8 ignore stop */
       if (pendingReExec) {
         deps.reExecFromNewVersion!(args)
+      } else {
+        deps.writeStdout("up to date.")
       }
     }
 
@@ -971,6 +985,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       deps.writeStdout(`updated ${count} agent${count === 1 ? "" : "s"} to runtime ${to}${fromStr}`)
     }
 
+    deps.writeStdout("starting daemon...")
     const daemonResult = await ensureDaemonRunning(deps)
     deps.writeStdout(daemonResult.message)
 
