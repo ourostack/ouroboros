@@ -136,6 +136,10 @@ export interface SessionEntry {
 export interface EnsureDaemonResult {
   alreadyRunning: boolean
   message: string
+  stability?: {
+    stable: string[]
+    degraded: Array<{ agent: string; errorReason: string; fixHint: string }>
+  }
 }
 
 export interface GithubCopilotModel {
