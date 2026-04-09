@@ -300,4 +300,32 @@ describe("daemon entry error boundary — per-agent habit setup isolation", () =
     // process.exit should NOT have been called
     expect(process.exit).not.toHaveBeenCalled()
   })
+
+  it("handles non-Error throws by converting to string in the error metadata", async () => {
+    vi.resetModules()
+    listEnabledBundleAgentsMock.mockReturnValue(["stringbot"])
+
+    // Throw a raw string instead of an Error object
+    habitSchedulerCtorHook.mockImplementation(() => {
+      throw "raw string failure"  // eslint-disable-line no-throw-literal
+    })
+
+    const { emitNervesEvent } = setupDaemonMocks()
+    vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
+
+    await import("../../../heart/daemon/daemon-entry")
+    await new Promise((r) => setTimeout(r, 50))
+
+    expect(emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: "error",
+        component: "daemon",
+        event: "daemon.habit_setup_error",
+        meta: expect.objectContaining({
+          agent: "stringbot",
+          error: "raw string failure",
+        }),
+      }),
+    )
+  })
 })
