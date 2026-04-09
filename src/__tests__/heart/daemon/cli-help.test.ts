@@ -153,4 +153,16 @@ describe("getCommandHelp()", () => {
       expect(result).toContain(COMMAND_REGISTRY["chat"].example)
     }
   })
+
+  it("omits example section when example is undefined", () => {
+    // Temporarily remove example to test the branch
+    const original = COMMAND_REGISTRY["up"].example
+    delete (COMMAND_REGISTRY["up"] as Record<string, unknown>).example
+    try {
+      const result = getCommandHelp("up")!
+      expect(result).not.toContain("Example:")
+    } finally {
+      COMMAND_REGISTRY["up"].example = original
+    }
+  })
 })
