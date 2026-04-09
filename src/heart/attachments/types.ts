@@ -42,17 +42,13 @@ export interface MaterializedAttachment {
   byteCount?: number
 }
 
-function emitAttachmentTypeEvent(event: string, meta: Record<string, unknown>): void {
+export function buildAttachmentId(source: AttachmentSourceKind, stableId: string): string {
   emitNervesEvent({
     component: "engine",
-    event,
+    event: "engine.attachment_id_built",
     message: "attachment record helper invoked",
-    meta,
+    meta: { source },
   })
-}
-
-export function buildAttachmentId(source: AttachmentSourceKind, stableId: string): string {
-  emitAttachmentTypeEvent("engine.attachment_id_built", { source })
   return `attachment:${source}:${stableId}`
 }
 
@@ -113,9 +109,14 @@ export function buildBlueBubblesAttachmentRecord(
       ...(options.localPath ? { localPath: path.resolve(options.localPath) } : {}),
     },
   }
-  emitAttachmentTypeEvent("engine.attachment_record_built", {
-    source: "bluebubbles",
-    kind: record.kind,
+  emitNervesEvent({
+    component: "engine",
+    event: "engine.attachment_record_built",
+    message: "attachment record helper invoked",
+    meta: {
+      source: "bluebubbles",
+      kind: record.kind,
+    },
   })
   return record
 }
@@ -147,9 +148,14 @@ export function buildCliLocalFileAttachmentRecord(
       path: resolvedPath,
     },
   }
-  emitAttachmentTypeEvent("engine.attachment_record_built", {
-    source: "cli-local-file",
-    kind: record.kind,
+  emitNervesEvent({
+    component: "engine",
+    event: "engine.attachment_record_built",
+    message: "attachment record helper invoked",
+    meta: {
+      source: "cli-local-file",
+      kind: record.kind,
+    },
   })
   return record
 }

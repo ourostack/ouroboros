@@ -30,7 +30,7 @@ export function readRecentAttachments(agentName: string, agentRoot = getAgentRoo
       message: "failed to read recent attachments store",
       meta: {
         path: targetPath,
-        reason: error instanceof Error ? error.message : String(error),
+        reason: String(error),
       },
     })
     return []

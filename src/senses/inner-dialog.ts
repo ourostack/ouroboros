@@ -19,6 +19,7 @@ import {
 } from "../mind/pending"
 import { advanceReturnObligation, listActiveReturnObligations, findPendingObligationForOrigin, fulfillObligation } from "../arc/obligations"
 import { buildAttentionQueue, buildAttentionQueueSummary, type AttentionItem } from "./attention-queue"
+import { readPonderPacket } from "../arc/packets"
 import { getChannelCapabilities } from "../mind/friends/channel"
 import { enforceTrustGate } from "./trust-gate"
 import { accumulateFriendTokens } from "../mind/friends/tokens"
@@ -743,6 +744,13 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
             const raw = fs.readFileSync(path.join(getAgentRoot(agentName), "friends", friendId + ".json"), "utf-8")
             const parsed = JSON.parse(raw)
             return typeof parsed.name === "string" ? parsed.name : null
+          } catch {
+            return null
+          }
+        },
+        packetResolver: (packetId) => {
+          try {
+            return readPonderPacket(getAgentRoot(agentName), packetId)
           } catch {
             return null
           }
