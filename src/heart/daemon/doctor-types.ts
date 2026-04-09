@@ -1,8 +1,8 @@
 /**
  * Type definitions for the `ouro doctor` system health check.
  *
- * These types describe the structure of health check results:
- * individual checks, grouped categories, and the aggregated result.
+ * Describes the structure of health check results: individual checks,
+ * grouped categories, and the aggregated result.
  */
 
 /** Result status for a single health check. */
