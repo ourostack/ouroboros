@@ -78,6 +78,20 @@ export type BlueBubblesNormalizedEvent =
   | BlueBubblesNormalizedMessage
   | BlueBubblesNormalizedMutation
 
+const IGNORABLE_GUIDLESS_EVENT_TYPES = new Set([
+  "chat-read-status-changed",
+])
+
+export class BlueBubblesIgnoredEventError extends Error {
+  readonly eventType: string
+
+  constructor(eventType: string, message: string) {
+    super(message)
+    this.name = "BlueBubblesIgnoredEventError"
+    this.eventType = eventType
+  }
+}
+
 function asRecord(value: unknown): JsonRecord | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as JsonRecord
@@ -295,6 +309,12 @@ export function normalizeBlueBubblesEvent(payload: unknown): BlueBubblesNormaliz
       message: "ignored bluebubbles payload without guid",
       meta: { eventType },
     })
+    if (IGNORABLE_GUIDLESS_EVENT_TYPES.has(eventType)) {
+      throw new BlueBubblesIgnoredEventError(
+        eventType,
+        `Ignored BlueBubbles event '${eventType}' without data.guid`,
+      )
+    }
     throw new Error("BlueBubbles payload is missing data.guid")
   }
 

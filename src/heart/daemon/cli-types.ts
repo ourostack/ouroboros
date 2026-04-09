@@ -66,6 +66,7 @@ export type OuroCliCommand =
   | { kind: "habit.list"; agent?: string }
   | { kind: "habit.create"; agent?: string; name: string; cadence?: string }
   | { kind: "habit.poke"; agent: string; habitName: string }
+  | { kind: "bluebubbles.replay"; agent: string; messageGuid: string; eventType: "new-message" | "updated-message"; json?: boolean }
 
 export interface OuroCliDeps {
   socketPath: string
