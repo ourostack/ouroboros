@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.301",
+      "changes": [
+        "feat(cli): add `ouro doctor` system health check command. New command runs 6 diagnostic categories — daemon (socket existence + responsiveness), agents (bundle discovery, agent.json validation for version/humanFacing/agentFacing/enabled), senses (BlueBubbles and Teams config presence and well-formedness), habits (launchd plist discovery, degraded state), security (secrets.json permissions, credential leak detection in agent.json), and disk (log size thresholds at 100MB warn / 500MB critical, bundle root existence). Output is a colored checklist with per-category grouping and a summary line. Works without daemon running — daemon checks fail gracefully while all other categories still execute, making it useful for cold diagnostics. 3 new files (doctor.ts, doctor-types.ts, cli-render-doctor.ts), 3 modified (cli-types.ts, cli-parse.ts, cli-exec.ts), 4 test files with 61 tests at 100% coverage on new code."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.300",
       "changes": [
         "test(bundle): cover `isFirstPushToRemote` branches via mocked child_process. Exported the function from `tools-bundle.ts` (previously private) and added `src/__tests__/repertoire/bundle-push-first-push.test.ts` with 5 unit tests that mock `execFileSync` to exercise all 3 code paths: (1) `symbolic-ref --short HEAD` failure → conservative true, (2) `ls-remote --heads` returns empty stdout → true (real first push, remote branch doesn't exist), (3) `ls-remote --heads` returns non-empty → false (subsequent push, remote branch exists), (4) `ls-remote` network failure → conservative true, (5) branch name correctly threaded to `ls-remote` args. Removed the `/* v8 ignore start/stop */` wrapper since all branches are now covered. The security contract (never return false when probe fails) is verified by tests 1 and 4. Also adds a cross-reference comment to the static test-isolation contract test documenting its relationship with the runtime prod-path leak guard in global-capture.ts."
