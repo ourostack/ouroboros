@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.312",
+      "changes": [
+        "feat(daemon): interactive repair flow for degraded agents during `ouro up`. New `runInteractiveRepair()` in `src/heart/daemon/interactive-repair.ts` examines each degraded agent's errorReason and fixHint to detect common issue patterns (missing credentials, config errors) and prompts the operator for inline repair. Credential issues offer to run `ouro auth <agent>` directly. Config errors surface the fix hint. Wired into the `daemon.up` handler after stability validation. 10 new tests, 100% coverage."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.311",
       "changes": [
         "feat(daemon): rich startup TUI for `ouro up` with real-time per-agent progress and stability validation. Replaces the old blind 10s socket poll with `pollDaemonStartup()` which renders an in-place ANSI display (spinner, per-worker status lines, elapsed time) and waits until every agent is either stable (running 5s+) or definitively failed (crashed). Extended the daemon status pipeline to flow `errorReason`, `fixHint`, and `startedAt` from process-manager through to client-side types. Returns structured `{ stable, degraded }` result for downstream repair flows. 33 new tests, 100% coverage on startup-tui.ts."
