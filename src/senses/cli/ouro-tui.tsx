@@ -446,21 +446,25 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
       historyIdx.current = -1
       return
     }
-    // Backspace / Delete: Ink 3.2 maps \x7f (macOS backspace) to key.delete,
-    // and \x08 to key.backspace. Both mean "delete backward" on macOS.
-    // Only \x1b[3~ (fn+Backspace) is true forward-delete — but Ink also maps
-    // it to key.delete. We treat key.backspace OR key.delete as backspace
-    // (since \x7f is the common case), and handle forward-delete via Ctrl+D.
+    // Backspace / Forward Delete:
+    // Ink 3.2 maps \x7f (macOS backspace) to key.delete (meta=false).
+    // Ink maps \x1b[3~ (fn+Delete / forward delete) to key.delete (meta=true,
+    // because \x1b prefix triggers meta detection).
+    // Ink maps \x08 (Ctrl+H style) to key.backspace.
+    // Distinguishing: key.meta differentiates fn+Delete from plain backspace.
+    if ((key.backspace || key.delete) && key.meta) {
+      // fn+Delete: forward delete
+      const result = handleForwardDelete(inputRef.current, cursorRef.current)
+      updateInput(result.text, result.cursorPos)
+      historyIdx.current = -1
+      return
+    }
     if (key.backspace || key.delete) {
+      // Plain backspace: delete backward
       if (cursorRef.current > 0) {
-        // Token-aware: check for image ref chip before cursor
         const chip = deleteTokenBefore(inputRef.current, cursorRef.current)
         if (chip) {
           updateInput(chip.text, chip.pos)
-        } else if (key.meta) {
-          // Option+Backspace: delete word (also pushes to kill ring)
-          const result = handleKillWordBack(inputRef.current, cursorRef.current, killRing)
-          updateInput(result.text, result.cursorPos)
         } else {
           const result = handleBackspace(inputRef.current, cursorRef.current)
           updateInput(result.text, result.cursorPos)
