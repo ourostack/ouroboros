@@ -232,6 +232,54 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   },
 }
 
+// ── Levenshtein distance ──
+
+export function levenshteinDistance(a: string, b: string): number {
+  if (a.length === 0) return b.length
+  if (b.length === 0) return a.length
+
+  const matrix: number[][] = []
+
+  for (let i = 0; i <= a.length; i++) {
+    matrix[i] = [i]
+  }
+  for (let j = 0; j <= b.length; j++) {
+    matrix[0][j] = j
+  }
+
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1
+      matrix[i][j] = Math.min(
+        matrix[i - 1][j] + 1,      // deletion
+        matrix[i][j - 1] + 1,      // insertion
+        matrix[i - 1][j - 1] + cost, // substitution
+      )
+    }
+  }
+
+  return matrix[a.length][b.length]
+}
+
+// ── Command suggestion ──
+
+export function suggestCommand(input: string): string | null {
+  if (!input) return null
+
+  let bestMatch: string | null = null
+  let bestDistance = Infinity
+
+  for (const name of Object.keys(COMMAND_REGISTRY)) {
+    const distance = levenshteinDistance(input, name)
+    if (distance < bestDistance) {
+      bestDistance = distance
+      bestMatch = name
+    }
+  }
+
+  return bestDistance <= 2 ? bestMatch : null
+}
+
 // ── Category display order ──
 
 const CATEGORY_ORDER: CommandCategory[] = [
