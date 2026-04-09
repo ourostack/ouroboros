@@ -1,5 +1,20 @@
 import { describe, expect, it, vi } from "vitest"
 
+// Mock heart/identity so the CodingSessionManager constructor doesn't throw
+// when tests don't pass an explicit `agentName`. The production "default"
+// fallback was removed because it silently leaked writes to
+// `~/AgentBundles/default.ouro/state/coding/sessions.json` under vitest.
+vi.mock("../../../heart/identity", async () => {
+  const actual = await vi.importActual<typeof import("../../../heart/identity")>(
+    "../../../heart/identity",
+  )
+  return {
+    ...actual,
+    getAgentName: vi.fn(() => "test-coding-agent"),
+    getAgentRoot: vi.fn(() => "/tmp/test-coding-agent.ouro"),
+  }
+})
+
 import { CodingSessionManager } from "../../../repertoire/coding/manager"
 
 class FakeStream {
@@ -88,7 +103,7 @@ describe("coding session manager persistence", () => {
     }
     expect(parsed.sequence).toBe(1)
     expect(parsed.records[0].request.sessionId).toBe("coding-001")
-    expect(parsed.records[0].request.parentAgent).toBe("default")
+    expect(parsed.records[0].request.parentAgent).toBe("test-coding-agent")
     expect(parsed.records[0].session.artifactPath).toBe("/tmp/coding-001.md")
     expect(parsed.records[0].session.checkpoint).toBeNull()
 

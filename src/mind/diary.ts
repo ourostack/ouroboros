@@ -13,6 +13,14 @@ export interface DiaryStorePaths {
   dailyDir: string;
 }
 
+export interface DiaryEntryProvenance {
+  tool: string;
+  channel?: string;
+  friendId?: string;
+  friendName?: string;
+  trust?: string;
+}
+
 export interface DiaryEntry {
   id: string;
   text: string;
@@ -20,6 +28,7 @@ export interface DiaryEntry {
   createdAt: string;
   about?: string;
   embedding: number[];
+  provenance?: DiaryEntryProvenance;
 }
 
 export interface DiaryWriteResult {
@@ -38,6 +47,7 @@ export interface SaveDiaryEntryOptions {
   now?: () => Date;
   idFactory?: () => string;
   embeddingProvider?: EmbeddingProvider;
+  provenance?: DiaryEntryProvenance;
 }
 
 export interface EntityIndexEntry {
@@ -252,6 +262,7 @@ export async function saveDiaryEntry(options: SaveDiaryEntryOptions): Promise<Di
     about: options.about?.trim() || undefined,
     createdAt: (options.now ?? (() => new Date()))().toISOString(),
     embedding,
+    ...(options.provenance ? { provenance: options.provenance } : {}),
   };
 
   return appendEntriesWithDedup(stores, [fact], { semanticThreshold: SEMANTIC_DEDUP_THRESHOLD });
