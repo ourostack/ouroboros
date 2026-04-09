@@ -11,6 +11,7 @@ import type { Facing } from "../../mind/friends/channel"
 import type { TrustLevel } from "../../mind/friends/types"
 import type { HatchCredentialsInput } from "../hatch/hatch-flow"
 import type { OuroCliCommand } from "./cli-types"
+import { suggestCommand } from "./cli-help"
 
 // ── Shared helpers ──
 
@@ -688,6 +689,16 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   const [head, second] = args
   if (!head) return { kind: "daemon.up" }
 
+  // ── help command ──
+  if (head === "help") {
+    return second ? { kind: "help", command: second } : { kind: "help" }
+  }
+
+  // ── per-command --help ──
+  if (args.includes("--help")) {
+    return { kind: "help", command: head }
+  }
+
   if (head === "--agent" && second) {
     return parseOuroCommand(args.slice(2))
   }
@@ -769,5 +780,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "doctor") return { kind: "doctor" }
   if (head === "bluebubbles") return parseBlueBubblesCommand(args.slice(1))
 
-  throw new Error(`Unknown command '${args.join(" ")}'.\n${usage()}`)
+  const suggestion = suggestCommand(head)
+  const hint = suggestion ? ` Did you mean '${suggestion}'?` : ""
+  throw new Error(`Unknown command '${args.join(" ")}'.${hint}\n${usage()}`)
 }

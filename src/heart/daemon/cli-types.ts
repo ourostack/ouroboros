@@ -68,6 +68,7 @@ export type OuroCliCommand =
   | { kind: "habit.poke"; agent: string; habitName: string }
   | { kind: "doctor" }
   | { kind: "bluebubbles.replay"; agent: string; messageGuid: string; eventType: "new-message" | "updated-message"; json?: boolean }
+  | { kind: "help"; command?: string }
 
 export interface OuroCliDeps {
   socketPath: string
@@ -186,3 +187,4 @@ export type HabitLocalCliCommand = Extract<OuroCliCommand, { kind: "habit.list" 
 export type McpListCliCommand = Extract<OuroCliCommand, { kind: "mcp.list" }>
 export type McpCallCliCommand = Extract<OuroCliCommand, { kind: "mcp.call" }>
 export type DoctorCliCommand = Extract<OuroCliCommand, { kind: "doctor" }>
+export type HelpCliCommand = Extract<OuroCliCommand, { kind: "help" }>
