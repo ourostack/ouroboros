@@ -66,6 +66,9 @@ const DISPATCH_EXEMPT_PATTERNS = [
   "mind/embedding-provider",
   // Commerce utility module: error classes and pure helpers (no independent side effects).
   "repertoire/commerce-errors",
+  // Diary integrity: pure detection utility (pattern matching only). The caller
+  // (diary.ts saveDiaryEntry) owns observability via mind.diary_integrity_warning.
+  "mind/diary-integrity",
   // Log redaction: pure utility consumed by the NDJSON sink (no independent side effects).
   "nerves/redact",
   // Bundle templates: pure constants (gitignore template string, PII
