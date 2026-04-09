@@ -28,6 +28,7 @@ import { rememberRecentAttachment } from "../../heart/attachments/store"
 import { buildCliLocalFileAttachmentRecord } from "../../heart/attachments/types"
 import * as materializeModule from "../../heart/attachments/materialize"
 import { minimaxVlmDescribe } from "../../heart/providers/minimax-vlm"
+import * as configModule from "../../heart/config"
 
 const tempDirs: string[] = []
 
@@ -47,6 +48,7 @@ function writeFile(dir: string, name: string, content: string): string {
 beforeEach(() => {
   vi.resetAllMocks()
   testState.agentRoot = ""
+  vi.spyOn(configModule, "getMinimaxConfig").mockReturnValue({ apiKey: "test-key" })
 })
 
 afterEach(() => {
