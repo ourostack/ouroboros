@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.290",
+      "changes": [
+        "feat(attachments): ship first-class cross-sense attachments with stable `attachment:<source>:<id>` handles, shared materialization, shared image normalization, and generic attachment tools so images and files remain reachable even when the harness also provides derived summaries or normalized variants.",
+        "feat(mind): replace `ponder` deferral semantics with typed `ponder packets`, linked `ReturnObligation`s, shared friction escalation, and `rest(status=\"HEARTBEAT_OK\")` so the inner session can preserve repair work without losing the original user objective."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.289",
       "changes": [
         "feat(senses): enforce per-habit tool restrictions during inner dialog turns. When a habit file declares a `tools` field in its frontmatter (e.g., `tools: [read, web_fetch, send_message]`), the inner dialog adapter now filters the full tool repertoire to only those declared tools before passing them to the turn runner. Habits without a `tools` field retain the full repertoire (backwards compatible). Fail-closed design: unknown tool names in the `tools` array are silently excluded rather than causing errors. Two nerves events provide observability: `habit.tools_restricted` (emitted with declared vs resolved tool lists) and `habit.tools_unrestricted` (emitted when a successfully-parsed habit runs with full repertoire). Existing guardrails (protected paths, destructive command blocking) still apply at execution time. 6 new test cases cover restriction, unknown tool exclusion, unrestricted event emission, no event on parse failure, tools passthrough to turn runner, and empty tools array behavior."
