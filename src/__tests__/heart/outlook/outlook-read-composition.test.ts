@@ -5,8 +5,8 @@ describe("outlook read composition root", () => {
     const root = await import("../../../heart/outlook/outlook-read")
     const agentMachine = await import("../../../heart/outlook/readers/agent-machine")
     const sessions = await import("../../../heart/outlook/readers/sessions")
-    const runtime = await import("../../../heart/outlook/readers/runtime")
-    const continuity = await import("../../../heart/outlook/readers/continuity")
+    const runtime = await import("../../../heart/outlook/readers/runtime-readers")
+    const continuity = await import("../../../heart/outlook/readers/continuity-readers")
 
     expect(root.readOutlookAgentState).toBe(agentMachine.readOutlookAgentState)
     expect(root.readOutlookMachineState).toBe(agentMachine.readOutlookMachineState)

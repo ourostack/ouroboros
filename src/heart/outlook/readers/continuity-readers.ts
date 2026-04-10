@@ -20,6 +20,29 @@ import {
   type OutlookSelfFixView,
 } from "../outlook-types"
 
+function sortOpenObligations(obligations: ReturnType<typeof readObligations>) {
+  const statusPriority: Record<string, number> = {
+    returning: 0,
+    collaborating: 1,
+    in_progress: 2,
+    delegated: 3,
+    accepted: 4,
+    pending: 5,
+  }
+
+  return obligations
+    .map((obligation) => ({
+      obligation,
+      priority: statusPriority[obligation.status] ?? 99,
+      updatedMs: new Date(obligation.updatedAt ?? obligation.createdAt).getTime(),
+    }))
+    .sort((a, b) => {
+      if (a.priority !== b.priority) return a.priority - b.priority
+      return b.updatedMs - a.updatedMs
+    })
+    .map((entry) => entry.obligation)
+}
+
 export function readOutlookContinuity(agentRoot: string, agentName: string): OutlookContinuityView {
   const self = readPresence(agentRoot, agentName)
   const peers = readPeerPresence(agentRoot)
@@ -64,22 +87,7 @@ export function readOrientationView(agentRoot: string, agentName: string): Outlo
     obligations = []
   }
   const openObligations = obligations.filter(isOpenObligation)
-
-  const statusPriority: Record<string, number> = {
-    returning: 0,
-    collaborating: 1,
-    in_progress: 2,
-    delegated: 3,
-    accepted: 4,
-    pending: 5,
-  }
-  const sorted = [...openObligations].sort((a, b) => {
-    const sp = (statusPriority[a.status] ?? 99) - (statusPriority[b.status] ?? 99)
-    if (sp !== 0) return sp
-    const aMs = new Date(a.updatedAt ?? a.createdAt).getTime()
-    const bMs = new Date(b.updatedAt ?? b.createdAt).getTime()
-    return bMs - aMs
-  })
+  const sorted = sortOpenObligations(openObligations)
   const primary = sorted[0] ?? null
 
   let sessions: ReturnType<typeof listSessionActivity> = []
@@ -152,22 +160,7 @@ export function readObligationDetailView(agentRoot: string): OutlookObligationDe
     obligations = []
   }
   const openObligations = obligations.filter(isOpenObligation)
-
-  const statusPriority: Record<string, number> = {
-    returning: 0,
-    collaborating: 1,
-    in_progress: 2,
-    delegated: 3,
-    accepted: 4,
-    pending: 5,
-  }
-  const sorted = [...openObligations].sort((a, b) => {
-    const sp = (statusPriority[a.status] ?? 99) - (statusPriority[b.status] ?? 99)
-    if (sp !== 0) return sp
-    const aMs = new Date(a.updatedAt ?? a.createdAt).getTime()
-    const bMs = new Date(b.updatedAt ?? b.createdAt).getTime()
-    return bMs - aMs
-  })
+  const sorted = sortOpenObligations(openObligations)
   const primary = sorted[0] ?? null
 
   const items: OutlookObligationDetailItem[] = openObligations.map((ob) => ({
@@ -179,7 +172,7 @@ export function readObligationDetailView(agentRoot: string): OutlookObligationDe
     origin: ob.origin ?? null,
     currentSurface: ob.currentSurface ? { kind: ob.currentSurface.kind, label: ob.currentSurface.label } : null,
     meaning: ob.meaning ? { waitingOn: ob.meaning.waitingOn?.detail ?? null } : null,
-    isPrimary: primary ? ob.id === primary.id : false,
+    isPrimary: ob.id === primary!.id,
   }))
 
   let primarySelectionReason: string | null = null
@@ -271,9 +264,7 @@ export function readSelfFixView(agentRoot: string): OutlookSelfFixView {
     tasks = []
   }
 
-  const selfFixTasks = tasks.filter((t) =>
-    t.title.toLowerCase().includes("fix") || t.title.toLowerCase().includes("self-fix"),
-  )
+  const selfFixTasks = tasks.filter((t) => t.title.toLowerCase().includes("fix"))
 
   if (selfFixTasks.length === 0) {
     return { active: false, currentStep: null, steps: [] }
