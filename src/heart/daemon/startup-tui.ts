@@ -45,9 +45,14 @@ export interface StabilityAssessment {
 export interface PollDaemonStartupDeps {
   sendCommand: (socketPath: string, command: DaemonCommand) => Promise<DaemonResponse>
   socketPath: string
-  writeStdout: (text: string) => void
+  /** Raw write — must NOT append newlines (use process.stdout.write, not console.log). */
+  writeRaw: (text: string) => void
   now: () => number
   sleep: (ms: number) => Promise<void>
+  /** PID of the spawned daemon process. Used to detect early death. */
+  daemonPid: number | null
+  /** Check if a PID is still alive. */
+  isProcessAlive?: (pid: number) => boolean
   /** Read the latest daemon log event message (tail ndjson). Returns null if unavailable. */
   readLatestDaemonEvent?: () => string | null
 }
@@ -92,10 +97,6 @@ export function assessStability(payload: StatusPayload, now: number): StabilityA
 /**
  * Build an ANSI string for in-place terminal display during polling.
  * Uses cursor-up and line-clear escapes to overwrite previous output.
- *
- * @param payload  Current daemon status
- * @param elapsed  Milliseconds since polling started
- * @param prevLineCount  Number of lines written in the previous render (0 on first)
  */
 export function renderStartupProgress(
   payload: StatusPayload,
@@ -106,11 +107,9 @@ export function renderStartupProgress(
   const spinner = SPINNER_FRAMES[frameIndex]
   const lines: string[] = []
 
-  // Header line
   const elapsedSec = (elapsed / 1000).toFixed(1)
   lines.push(`${spinner} ${BOLD}waiting for agents${RESET} ${DIM}(${elapsedSec}s)${RESET}`)
 
-  // Per-worker status lines
   for (const worker of payload.workers) {
     const statusColor = worker.status === "running" ? GREEN
       : worker.status === "crashed" ? RED
@@ -119,7 +118,32 @@ export function renderStartupProgress(
     lines.push(`  ${worker.agent}/${worker.worker}: ${statusText}`)
   }
 
-  // Build output with cursor-up to overwrite previous lines
+  let output = ""
+  if (prevLineCount > 0) {
+    output += `\x1b[${prevLineCount}A`
+  }
+  for (const line of lines) {
+    output += `\x1b[2K${line}\n`
+  }
+  return output
+}
+
+/**
+ * Render a pre-socket status line showing what the daemon is doing.
+ */
+export function renderWaitingForDaemon(
+  elapsed: number,
+  latestEvent: string | null,
+  prevLineCount = 0,
+): string {
+  const elapsedSec = (elapsed / 1000).toFixed(1)
+  const frameIndex = Math.floor(elapsed / 100) % SPINNER_FRAMES.length
+  const spinner = SPINNER_FRAMES[frameIndex]
+  const lines: string[] = []
+  lines.push(`${spinner} ${BOLD}waiting for daemon${RESET} ${DIM}(${elapsedSec}s)${RESET}`)
+  if (latestEvent) {
+    lines.push(`  ${DIM}${latestEvent}${RESET}`)
+  }
   let output = ""
   if (prevLineCount > 0) {
     output += `\x1b[${prevLineCount}A`
@@ -157,16 +181,20 @@ function renderFinalSummary(result: StartupResult): string {
 /**
  * Poll the daemon's status socket until all agents are stable or definitively
  * failed, rendering real-time progress to the terminal.
+ *
+ * Detects daemon process death: if the spawned PID is no longer alive and the
+ * socket never came up, reports the failure immediately instead of spinning.
  */
 export async function pollDaemonStartup(deps: PollDaemonStartupDeps): Promise<StartupResult> {
   const startTime = deps.now()
   let prevLineCount = 0
+  const isAlive = deps.isProcessAlive ?? defaultIsProcessAlive
 
   emitNervesEvent({
     component: "daemon",
     event: "daemon.startup_poll_start",
     message: "beginning startup stability polling",
-    meta: { socketPath: deps.socketPath },
+    meta: { socketPath: deps.socketPath, daemonPid: deps.daemonPid },
   })
 
   while (true) {
@@ -178,31 +206,40 @@ export async function pollDaemonStartup(deps: PollDaemonStartupDeps): Promise<St
       const response = await deps.sendCommand(deps.socketPath, { kind: "daemon.status" })
       payload = parseStatusPayload(response.data)
     } catch {
-      // Socket not yet available — show what the daemon is doing from its log
-      const elapsedSec = (elapsed / 1000).toFixed(1)
-      const frameIndex = Math.floor(elapsed / 100) % SPINNER_FRAMES.length
-      const spinner = SPINNER_FRAMES[frameIndex]
+      // Socket not yet available — check if the daemon process is still alive
+      if (deps.daemonPid !== null && !isAlive(deps.daemonPid)) {
+        const latestEvent = deps.readLatestDaemonEvent?.() ?? null
+        const errorMsg = latestEvent ?? "daemon process died during startup"
+        emitNervesEvent({
+          level: "error",
+          component: "daemon",
+          event: "daemon.startup_process_died",
+          message: "daemon process died before socket came up",
+          meta: { pid: deps.daemonPid, lastEvent: latestEvent },
+        })
+        // Clear the waiting line
+        if (prevLineCount > 0) {
+          let clear = `\x1b[${prevLineCount}A`
+          for (let i = 0; i < prevLineCount; i++) clear += `\x1b[2K\n`
+          deps.writeRaw(clear)
+        }
+        return {
+          stable: [],
+          degraded: [{ agent: "daemon", errorReason: errorMsg, fixHint: "check daemon logs or run `ouro doctor`" }],
+        }
+      }
+
+      // Show what the daemon is doing from its log
       const latestEvent = deps.readLatestDaemonEvent?.() ?? null
-      const lines: string[] = []
-      lines.push(`${spinner} ${BOLD}waiting for daemon${RESET} ${DIM}(${elapsedSec}s)${RESET}`)
-      if (latestEvent) {
-        lines.push(`  ${DIM}${latestEvent}${RESET}`)
-      }
-      let output = ""
-      if (prevLineCount > 0) {
-        output += `\x1b[${prevLineCount}A`
-      }
-      for (const line of lines) {
-        output += `\x1b[2K${line}\n`
-      }
-      deps.writeStdout(output)
-      prevLineCount = lines.length
+      const output = renderWaitingForDaemon(elapsed, latestEvent, prevLineCount)
+      deps.writeRaw(output)
+      prevLineCount = latestEvent ? 2 : 1
     }
 
     if (payload) {
       const output = renderStartupProgress(payload, elapsed, prevLineCount)
-      deps.writeStdout(output)
-      prevLineCount = payload.workers.length + 1 // header + per-worker lines
+      deps.writeRaw(output)
+      prevLineCount = payload.workers.length + 1
 
       const assessment = assessStability(payload, now)
       if (assessment.resolved) {
@@ -210,9 +247,8 @@ export async function pollDaemonStartup(deps: PollDaemonStartupDeps): Promise<St
           stable: assessment.stable,
           degraded: assessment.degraded,
         }
-        // Clear progress lines and render final summary
         const summary = renderFinalSummary(result)
-        deps.writeStdout(summary)
+        deps.writeRaw(summary)
 
         emitNervesEvent({
           component: "daemon",
@@ -231,3 +267,14 @@ export async function pollDaemonStartup(deps: PollDaemonStartupDeps): Promise<St
     await deps.sleep(POLL_INTERVAL_MS)
   }
 }
+
+/* v8 ignore start -- process liveness check: uses real process.kill(0), tested via deployment @preserve */
+function defaultIsProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+/* v8 ignore stop */
