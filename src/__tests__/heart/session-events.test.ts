@@ -1034,4 +1034,139 @@ describe("session events", () => {
 
     expect(updated.projection.eventIds).toEqual(["evt-000001", "evt-000002", "evt-000003"])
   })
+
+  describe("ingress timestamps", () => {
+    it("stampIngressTime sets and getIngressTime reads back an ISO timestamp", async () => {
+      const { stampIngressTime, getIngressTime } = await import("../../heart/session-events")
+      const msg = { role: "user" as const, content: "hello" }
+      stampIngressTime(msg)
+      const result = getIngressTime(msg)
+      expect(result).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    })
+
+    it("getIngressTime returns null for unstamped message", async () => {
+      const { getIngressTime } = await import("../../heart/session-events")
+      const msg = { role: "user" as const, content: "hello" }
+      expect(getIngressTime(msg)).toBeNull()
+    })
+
+    it("user message with _ingressAt uses it as observedAt in buildCanonicalSessionEnvelope", async () => {
+      const { buildCanonicalSessionEnvelope, getIngressTime, stampIngressTime } = await import("../../heart/session-events")
+      const ingressTime = "2026-04-01T10:00:00.000Z"
+      const batchTime = "2026-04-01T10:05:00.000Z"
+      const userMsg: OpenAI.ChatCompletionMessageParam = { role: "user", content: "test" }
+      ;(userMsg as Record<string, unknown>)._ingressAt = ingressTime
+
+      const envelope = buildCanonicalSessionEnvelope({
+        existing: null,
+        previousMessages: [],
+        currentMessages: [userMsg],
+        trimmedMessages: [userMsg],
+        recordedAt: batchTime,
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      const userEvent = envelope.events.find((e) => e.role === "user")!
+      expect(userEvent.time.observedAt).toBe(ingressTime)
+      expect(userEvent.time.recordedAt).toBe(batchTime)
+      expect(userEvent.time.observedAtSource).toBe("ingest")
+    })
+
+    it("user message without _ingressAt falls back to recordedAt for observedAt", async () => {
+      const { buildCanonicalSessionEnvelope } = await import("../../heart/session-events")
+      const batchTime = "2026-04-01T10:05:00.000Z"
+      const userMsg: OpenAI.ChatCompletionMessageParam = { role: "user", content: "test" }
+
+      const envelope = buildCanonicalSessionEnvelope({
+        existing: null,
+        previousMessages: [],
+        currentMessages: [userMsg],
+        trimmedMessages: [userMsg],
+        recordedAt: batchTime,
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      const userEvent = envelope.events.find((e) => e.role === "user")!
+      expect(userEvent.time.observedAt).toBe(batchTime)
+    })
+
+    it("assistant message ignores _ingressAt", async () => {
+      const { buildCanonicalSessionEnvelope } = await import("../../heart/session-events")
+      const ingressTime = "2026-04-01T10:00:00.000Z"
+      const batchTime = "2026-04-01T10:05:00.000Z"
+      const assistantMsg: OpenAI.ChatCompletionMessageParam = { role: "assistant", content: "reply" }
+      ;(assistantMsg as Record<string, unknown>)._ingressAt = ingressTime
+
+      const envelope = buildCanonicalSessionEnvelope({
+        existing: null,
+        previousMessages: [],
+        currentMessages: [{ role: "user", content: "hi" }, assistantMsg],
+        trimmedMessages: [{ role: "user", content: "hi" }, assistantMsg],
+        recordedAt: batchTime,
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      const assistantEvent = envelope.events.find((e) => e.role === "assistant")!
+      expect(assistantEvent.time.observedAt).toBe(batchTime)
+      expect(assistantEvent.time.authoredAt).toBe(batchTime)
+    })
+
+    it("two user messages with different ingress times in one batch produce distinct observedAt", async () => {
+      const { buildCanonicalSessionEnvelope } = await import("../../heart/session-events")
+      const batchTime = "2026-04-01T10:05:00.000Z"
+      const msg1: OpenAI.ChatCompletionMessageParam = { role: "user", content: "first" }
+      const msg2: OpenAI.ChatCompletionMessageParam = { role: "user", content: "second" }
+      ;(msg1 as Record<string, unknown>)._ingressAt = "2026-04-01T10:00:00.000Z"
+      ;(msg2 as Record<string, unknown>)._ingressAt = "2026-04-01T10:02:00.000Z"
+
+      const envelope = buildCanonicalSessionEnvelope({
+        existing: null,
+        previousMessages: [],
+        currentMessages: [msg1, { role: "assistant", content: "ack" }, msg2],
+        trimmedMessages: [msg1, { role: "assistant", content: "ack" }, msg2],
+        recordedAt: batchTime,
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      const userEvents = envelope.events.filter((e) => e.role === "user")
+      expect(userEvents).toHaveLength(2)
+      expect(userEvents[0]!.time.observedAt).toBe("2026-04-01T10:00:00.000Z")
+      expect(userEvents[1]!.time.observedAt).toBe("2026-04-01T10:02:00.000Z")
+      expect(userEvents[0]!.time.recordedAt).toBe(batchTime)
+      expect(userEvents[1]!.time.recordedAt).toBe(batchTime)
+    })
+
+    it("annotateMessageTimestamps uses per-message observedAt for user events", async () => {
+      const { buildCanonicalSessionEnvelope, annotateMessageTimestamps, projectProviderMessages } = await import("../../heart/session-events")
+      const msg1: OpenAI.ChatCompletionMessageParam = { role: "user", content: "first" }
+      ;(msg1 as Record<string, unknown>)._ingressAt = "2026-04-01T10:00:00.000Z"
+      const batchTime = "2026-04-01T10:05:00.000Z"
+
+      const envelope = buildCanonicalSessionEnvelope({
+        existing: null,
+        previousMessages: [],
+        currentMessages: [msg1, { role: "assistant", content: "reply" }],
+        trimmedMessages: [msg1, { role: "assistant", content: "reply" }],
+        recordedAt: batchTime,
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      const projected = projectProviderMessages(envelope)
+      // nowMs = 10 minutes after the ingress time
+      const nowMs = Date.parse("2026-04-01T10:10:00.000Z")
+      const annotated = annotateMessageTimestamps(envelope, projected, nowMs)
+      // User message should show 10m (from ingress time), not 5m (from batch time)
+      expect((annotated[0] as any).content).toMatch(/\[-10m\]/)
+    })
+  })
 })

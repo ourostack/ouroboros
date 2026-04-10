@@ -12,6 +12,7 @@ import type { ChannelCallbacks } from "../heart/core"
 import { runAgent } from "../heart/core"
 import { getAgentRoot } from "../heart/identity"
 import { sessionPath } from "../heart/config"
+import { stampIngressTime } from "../heart/session-events"
 import { loadSession } from "../mind/context"
 import { buildSystem } from "../mind/prompt"
 import { getChannelCapabilities } from "../mind/friends/channel"
@@ -124,11 +125,13 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   /* v8 ignore stop */
 
   // Run the pipeline
+  const userMsg: ChatCompletionMessageParam = { role: "user", content: userMessage }
+  stampIngressTime(userMsg)
   await handleInboundTurn({
     channel,
     sessionKey,
     capabilities,
-    messages: [{ role: "user", content: userMessage }],
+    messages: [userMsg],
     callbacks,
     /* v8 ignore start — delegation wrappers; pipeline integration tested separately */
     friendResolver: { resolve: () => resolver.resolve() },

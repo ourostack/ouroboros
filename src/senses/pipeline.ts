@@ -31,7 +31,7 @@ import { buildStartOfTurnPacket, renderStartOfTurnPacket, buildCapabilitiesSecti
 import { detectBundleState } from "../heart/bundle-state"
 import { preTurnPull, postTurnPush } from "../heart/sync"
 import { getSyncConfig } from "../heart/config"
-import { describeCurrentSessionTiming, type SessionEvent } from "../heart/session-events"
+import { describeCurrentSessionTiming, stampIngressTime, type SessionEvent } from "../heart/session-events"
 import { derivePresence, writePresence } from "../arc/presence"
 import { emitEpisode } from "../arc/episodes"
 import { buildTurnContext } from "../heart/turn-context"
@@ -451,6 +451,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
 
   // Append user messages from the inbound turn
   for (const msg of input.messages) {
+    stampIngressTime(msg)
     sessionMessages.push(msg)
   }
 

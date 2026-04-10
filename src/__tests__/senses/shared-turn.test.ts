@@ -285,7 +285,8 @@ describe("runSenseTurn", () => {
       userMessage: "what is 2+2?",
     })
     const input = mockHandleInboundTurn.mock.calls[0][0]
-    expect(input.messages).toEqual([{ role: "user", content: "what is 2+2?" }])
+    expect(input.messages).toMatchObject([{ role: "user", content: "what is 2+2?" }])
+    expect(input.messages[0]._ingressAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
   })
 
   it("drains pending messages before turn", async () => {
