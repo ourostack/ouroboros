@@ -5,7 +5,7 @@ import { getAgentRoot } from "../../heart/identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { BlueBubblesNormalizedMessage } from "./model"
 
-export type BlueBubblesInboundSource = "webhook" | "mutation-recovery" | "recovery-bootstrap"
+export type BlueBubblesInboundSource = "webhook" | "mutation-recovery" | "recovery-bootstrap" | "upstream-catchup"
 
 type BlueBubblesInboundLogEntry = {
   recordedAt: string
