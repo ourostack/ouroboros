@@ -34,39 +34,52 @@ function formatTranscriptTimestamp(msg: TranscriptMessage): string {
   }).format(new Date(transcriptTimestamp(msg)))
 }
 
-export function SessionsTab({ agentName, focus, onFocusConsumed, deskPrefs }: { agentName: string; focus?: string; onFocusConsumed?: () => void; deskPrefs?: Record<string, unknown> | null }) {
+export function SessionsTab({ agentName, focus, onFocusConsumed, deskPrefs, refreshGeneration }: { agentName: string; focus?: string; onFocusConsumed?: () => void; deskPrefs?: Record<string, unknown> | null; refreshGeneration: number }) {
   const nav = useNavigate()
   const [inventory, setInventory] = useState<SessionInventory | null>(null)
   const [expandedKey, setExpandedKey] = useState<string | null>(null)
   const [transcript, setTranscript] = useState<Transcript | null>(null)
   const [loading, setLoading] = useState(false)
+  const transcriptRequestRef = useRef<string | null>(null)
 
   useEffect(() => {
-    fetchJson<SessionInventory>(`/agents/${encodeURIComponent(agentName)}/sessions`).then((data) => {
-      setInventory(data)
-      if (focus) {
-        loadTranscript(focus)
-        onFocusConsumed?.()
-      }
-    })
-  }, [agentName, focus])
+    fetchJson<SessionInventory>(`/agents/${encodeURIComponent(agentName)}/sessions`).then(setInventory)
+  }, [agentName, refreshGeneration])
 
-  function loadTranscript(sessionKey: string) {
-    if (expandedKey === sessionKey) {
-      setExpandedKey(null)
-      setTranscript(null)
-      return
-    }
-    setExpandedKey(sessionKey)
+  useEffect(() => {
+    if (!focus) return
+    transcriptRequestRef.current = null
+    setExpandedKey(focus)
     setTranscript(null)
     setLoading(true)
-    const [fId, ch, k] = sessionKey.split("/")
+    onFocusConsumed?.()
+  }, [agentName, focus, onFocusConsumed])
+
+  useEffect(() => {
+    if (!expandedKey) return
+    const requestKey = `${expandedKey}:${refreshGeneration}`
+    if (transcriptRequestRef.current === requestKey) return
+    transcriptRequestRef.current = requestKey
+    setLoading(true)
+    const [fId, ch, k] = expandedKey.split("/")
     fetchJson<Transcript>(
       `/agents/${encodeURIComponent(agentName)}/sessions/${encodeURIComponent(fId!)}/${encodeURIComponent(ch!)}/${encodeURIComponent(k!)}`
     )
       .then(setTranscript)
       .catch(() => setTranscript(null))
       .finally(() => setLoading(false))
+  }, [agentName, expandedKey, refreshGeneration, focus])
+
+  function loadTranscript(sessionKey: string) {
+    if (expandedKey === sessionKey) {
+      setExpandedKey(null)
+      setTranscript(null)
+      transcriptRequestRef.current = null
+      return
+    }
+    setExpandedKey(sessionKey)
+    setTranscript(null)
+    setLoading(true)
   }
 
   const starredFriends = new Set(((deskPrefs as any)?.starredFriends ?? []) as string[])
