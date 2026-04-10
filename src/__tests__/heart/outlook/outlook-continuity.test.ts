@@ -62,7 +62,7 @@ describe("outlook continuity read", () => {
     mockReadActiveCares.mockReturnValue(cares)
     mockReadRecentEpisodes.mockReturnValue(episodes)
 
-    const { readOutlookContinuity } = await import("../../../heart/outlook/outlook-read")
+    const { readOutlookContinuity } = await import("../../../heart/outlook/readers/continuity-readers")
     const result = readOutlookContinuity("/mock/agent-root", "ouroboros")
 
     expect(result.presence.self).toEqual(selfPresence)
@@ -77,7 +77,7 @@ describe("outlook continuity read", () => {
     mockReadActiveCares.mockReturnValue([])
     mockReadRecentEpisodes.mockReturnValue([])
 
-    const { readOutlookContinuity } = await import("../../../heart/outlook/outlook-read")
+    const { readOutlookContinuity } = await import("../../../heart/outlook/readers/continuity-readers")
     const result = readOutlookContinuity("/mock/agent-root", "ouroboros")
 
     expect(result.presence.self).toBeNull()
