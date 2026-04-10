@@ -405,6 +405,7 @@ interface DaemonStatusPayload {
 interface SocketIdentity {
   dev: number
   ino: number
+  ctimeMs: number
 }
 
 function readSocketIdentity(socketPath: string): SocketIdentity | null {
@@ -413,6 +414,7 @@ function readSocketIdentity(socketPath: string): SocketIdentity | null {
     return {
       dev: stats.dev,
       ino: stats.ino,
+      ctimeMs: stats.ctimeMs,
     }
   } catch {
     return null
@@ -421,7 +423,7 @@ function readSocketIdentity(socketPath: string): SocketIdentity | null {
 
 function sameSocketIdentity(left: SocketIdentity | null, right: SocketIdentity | null): boolean {
   if (!left || !right) return false
-  return left.dev === right.dev && left.ino === right.ino
+  return left.dev === right.dev && left.ino === right.ino && left.ctimeMs === right.ctimeMs
 }
 
 function buildWorkerRows(
@@ -1024,8 +1026,8 @@ export class OuroDaemon {
     if (sameSocketIdentity(this.socketIdentity, currentSocketIdentity)) {
       fs.unlinkSync(this.socketPath)
     } else if (socketPathExists) {
-      const expectedSocketIdentity = { dev: null, ino: null, ...this.socketIdentity }
-      const actualSocketIdentity = { dev: null, ino: null, ...currentSocketIdentity }
+      const expectedSocketIdentity = { dev: null, ino: null, ctimeMs: null, ...this.socketIdentity }
+      const actualSocketIdentity = { dev: null, ino: null, ctimeMs: null, ...currentSocketIdentity }
       emitNervesEvent({
         level: "warn",
         component: "daemon",
@@ -1035,8 +1037,10 @@ export class OuroDaemon {
           socketPath: this.socketPath,
           expectedDev: expectedSocketIdentity.dev,
           expectedIno: expectedSocketIdentity.ino,
+          expectedCtimeMs: expectedSocketIdentity.ctimeMs,
           actualDev: actualSocketIdentity.dev,
           actualIno: actualSocketIdentity.ino,
+          actualCtimeMs: actualSocketIdentity.ctimeMs,
         },
       })
     }
