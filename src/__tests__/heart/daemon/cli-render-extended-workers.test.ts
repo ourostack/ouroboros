@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { emitNervesEvent } from "../../../nerves/runtime"
-import { parseStatusPayload } from "../../../heart/daemon/cli-render"
+import { formatDaemonStatusOutput, parseStatusPayload } from "../../../heart/daemon/cli-render"
 
 /** Minimal valid overview for parseStatusPayload */
 function makeOverview(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -142,5 +142,25 @@ describe("parseStatusPayload extended worker fields", () => {
       errorReason: "bad config",
       fixHint: "edit agent.json",
     }))
+  })
+
+  it("renders crashed worker error and fix hints in daemon status output", () => {
+    const output = formatDaemonStatusOutput({
+      ok: true,
+      data: {
+        overview: makeOverview({ health: "warn" }),
+        workers: [makeWorkerRow({
+          status: "crashed",
+          pid: null,
+          errorReason: "secrets.json for 'ouroboros' is missing providers.github-copilot section",
+          fixHint: "Run 'ouro auth ouroboros' to configure github-copilot credentials.",
+        })],
+        senses: [],
+      },
+    }, "fallback")
+
+    expect(output).toContain("crashed")
+    expect(output).toContain("error: secrets.json for 'ouroboros' is missing providers.github-copilot section")
+    expect(output).toContain("fix:   Run 'ouro auth ouroboros' to configure github-copilot credentials.")
   })
 })

@@ -1221,6 +1221,9 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         deps.writeStdout("degraded agents:")
         for (const d of daemonResult.stability.degraded) {
           deps.writeStdout(`  ${d.agent}: ${d.errorReason}`)
+          if (d.fixHint) {
+            deps.writeStdout(`    fix: ${d.fixHint}`)
+          }
         }
         emitNervesEvent({
           level: "warn",

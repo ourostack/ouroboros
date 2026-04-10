@@ -8,7 +8,12 @@ export interface SenseProbe {
 
 export interface HealthMonitorOptions {
   processManager: {
-    listAgentSnapshots: () => Array<{ name: string; status: string }>
+    listAgentSnapshots: () => Array<{
+      name: string
+      status: string
+      errorReason?: string | null
+      fixHint?: string | null
+    }>
   }
   scheduler: {
     listJobs: () => Array<{ id: string; lastRun: string | null }>
@@ -63,10 +68,17 @@ export class HealthMonitor {
     const snapshots = this.processManager.listAgentSnapshots()
     const unhealthy = snapshots.filter((snapshot) => snapshot.status !== "running")
     if (unhealthy.length > 0) {
+      const unhealthySummary = unhealthy.map((item) => {
+        const detail = [
+          item.errorReason ?? null,
+          item.fixHint ? `fix: ${item.fixHint}` : null,
+        ].filter((part): part is string => part !== null).join("; ")
+        return detail.length > 0 ? `${item.name} (${detail})` : item.name
+      }).join(", ")
       results.push({
         name: "agent-processes",
         status: "critical",
-        message: `non-running agents: ${unhealthy.map((item) => item.name).join(", ")}`,
+        message: `non-running agents: ${unhealthySummary}`,
       })
       for (const agent of unhealthy) {
         try {
@@ -75,7 +87,12 @@ export class HealthMonitor {
             component: "daemon",
             event: "daemon.health_check_recovery_attempted",
             message: "triggering recovery restart for non-running agent",
-            meta: { agentName: agent.name, agentStatus: agent.status },
+            meta: {
+              agentName: agent.name,
+              agentStatus: agent.status,
+              errorReason: agent.errorReason ?? null,
+              fixHint: agent.fixHint ?? null,
+            },
           })
           this.onCriticalAgent(agent.name)
         } catch {
