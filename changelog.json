@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.318",
+      "changes": [
+        "fix(daemon): make `ouro up` wait for real startup stability before reporting success. The CLI now stays attached through ordered startup phases, requires sustained socket liveness plus fresh current-boot health evidence, retries once when startup loses the socket, and surfaces recent daemon log context on failure instead of claiming the daemon started.",
+        "fix(daemon): harden socket ownership and recoverable bootstrap behavior. An older daemon shutdown no longer unlinks a newer daemon's rebound socket path, and recoverable habit bootstrap failures now degrade with actionable `habit_setup_error` and `bootstrap_degraded` guidance instead of taking the whole daemon down."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.316",
       "changes": [
         "feat(daemon): unified progress TUI for ouro up lifecycle. New UpProgress accumulated-checklist renderer replaces disconnected writeStdout calls with a cohesive progress display showing completed phases with checkmarks and active phase with spinner. In-place ANSI overwrite in TTY mode, static lines in non-TTY (CI/pipes). Wired into daemon.up handler for all phases: update check, system setup, agent updates, bundle pruning, daemon start. Emits nerves events for each phase completion."
