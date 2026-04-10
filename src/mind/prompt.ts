@@ -463,19 +463,20 @@ function providerSection(channel?: Channel): string {
 function dateSection(): string {
   const now = new Date()
   const fmt = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/Los_Angeles",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
+    timeZoneName: "short",
   })
   const parts = Object.fromEntries(
     fmt.formatToParts(now).map((p) => [p.type, p.value]),
   )
-  const pacific = `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute} PT`
-  return `current date and time: ${pacific}`
+  /* v8 ignore next -- Intl hour-24 bug only triggers at midnight @preserve */
+  const hour = parts.hour === "24" ? "00" : parts.hour
+  return `current date and time: ${parts.year}-${parts.month}-${parts.day} ${hour}:${parts.minute} ${parts.timeZoneName}`
 }
 
 function toolsSection(channel: Channel, options?: BuildSystemOptions, context?: ResolvedContext): string {
