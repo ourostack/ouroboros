@@ -831,7 +831,7 @@ describe("BlueBubbles client", () => {
     )
 
     await expect(client.checkHealth()).rejects.toThrow(
-      "BlueBubbles upstream health check failed (503): connection refused",
+      "BlueBubbles upstream returned HTTP 503 at http://bluebubbles.local. Check the BlueBubbles app/server logs and confirm the upstream API is healthy. Raw error: connection refused",
     )
   })
 
@@ -857,7 +857,62 @@ describe("BlueBubbles client", () => {
     )
 
     await expect(client.checkHealth()).rejects.toThrow(
-      "BlueBubbles upstream health check failed (502): unknown",
+      "BlueBubbles upstream returned HTTP 502 at http://bluebubbles.local. Check the BlueBubbles app/server logs and confirm the upstream API is healthy. Raw error: unknown",
+    )
+  })
+
+  it("surfaces network health probe failures with an actionable serverUrl fix path", async () => {
+    global.fetch = vi.fn().mockRejectedValue(new Error("fetch failed")) as typeof fetch
+
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+
+    await expect(client.checkHealth()).rejects.toThrow(
+      "Cannot reach BlueBubbles at http://bluebubbles.local. Check `bluebubbles.serverUrl`, confirm the BlueBubbles app/API is running, and verify this machine can reach it. Raw error: fetch failed",
+    )
+    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "warn",
+      event: "senses.bluebubbles_healthcheck_error",
+      meta: expect.objectContaining({
+        serverUrl: "http://bluebubbles.local",
+        reason: "fetch failed",
+        classification: "network-error",
+      }),
+    }))
+  })
+
+  it("surfaces auth health probe failures with a password fix path", async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response("unauthorized", { status: 401 }),
+    ) as typeof fetch
+
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+
+    await expect(client.checkHealth()).rejects.toThrow(
+      "BlueBubbles auth failed at http://bluebubbles.local (HTTP 401). Check `bluebubbles.password` in secrets.json and confirm the server accepts it. Raw error: unauthorized",
     )
   })
 
