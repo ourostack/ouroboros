@@ -416,7 +416,8 @@ function readSocketIdentity(socketPath: string): SocketIdentity | null {
 }
 
 function sameSocketIdentity(left: SocketIdentity | null, right: SocketIdentity | null): boolean {
-  return !!left && !!right && left.dev === right.dev && left.ino === right.ino
+  if (!left || !right) return false
+  return left.dev === right.dev && left.ino === right.ino
 }
 
 function buildWorkerRows(
@@ -1017,6 +1018,8 @@ export class OuroDaemon {
     if (sameSocketIdentity(this.socketIdentity, currentSocketIdentity)) {
       fs.unlinkSync(this.socketPath)
     } else if (socketPathExists) {
+      const expectedSocketIdentity = { dev: null, ino: null, ...this.socketIdentity }
+      const actualSocketIdentity = { dev: null, ino: null, ...currentSocketIdentity }
       emitNervesEvent({
         level: "warn",
         component: "daemon",
@@ -1024,10 +1027,10 @@ export class OuroDaemon {
         message: "skipped daemon socket cleanup because the socket path no longer belongs to this daemon",
         meta: {
           socketPath: this.socketPath,
-          expectedDev: this.socketIdentity?.dev ?? null,
-          expectedIno: this.socketIdentity?.ino ?? null,
-          actualDev: currentSocketIdentity?.dev ?? null,
-          actualIno: currentSocketIdentity?.ino ?? null,
+          expectedDev: expectedSocketIdentity.dev,
+          expectedIno: expectedSocketIdentity.ino,
+          actualDev: actualSocketIdentity.dev,
+          actualIno: actualSocketIdentity.ino,
         },
       })
     }
