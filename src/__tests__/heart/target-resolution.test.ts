@@ -371,4 +371,46 @@ describe("listTargetSessionCandidates", () => {
     expect(candidates[1]?.snapshot).toBe("recent focus: session transcript unavailable")
     expect(formatTargetSessionCandidates([])).toBe("")
   })
+
+  it("prefers friend-facing recency over mtime-fallback when delivery priority is otherwise tied", async () => {
+    const { listTargetSessionCandidates } = await loadTargetResolutionModule()
+    const root = makeTempDir()
+    const sessionsDir = path.join(root, "state", "sessions")
+    const friendsDir = path.join(root, "friends")
+
+    writeJson(path.join(friendsDir, "friend-facing.json"), { name: "Friend Facing" })
+    writeJson(path.join(friendsDir, "friend-mtime.json"), { name: "Mtime Fallback" })
+    writeJson(path.join(sessionsDir, "friend-facing", "cli", "chat-a.json"), {
+      state: { lastFriendActivityAt: recentIso(15) },
+      messages: [{ role: "user", content: "older but explicitly friend-facing" }],
+    })
+    writeJson(path.join(sessionsDir, "friend-mtime", "cli", "chat-b.json"), {
+      messages: [],
+    })
+
+    const store = new InMemoryFriendStore([
+      makeFriend({
+        id: "friend-facing",
+        name: "Friend Facing",
+        trustLevel: "friend",
+      }),
+      makeFriend({
+        id: "friend-mtime",
+        name: "Mtime Fallback",
+        trustLevel: "friend",
+      }),
+    ])
+
+    const candidates = await listTargetSessionCandidates({
+      sessionsDir,
+      friendsDir,
+      agentName: "slugger",
+      friendStore: store,
+    })
+
+    expect(candidates.map((candidate) => `${candidate.friendId}:${candidate.activitySource}`)).toEqual([
+      "friend-facing:friend-facing",
+      "friend-mtime:mtime-fallback",
+    ])
+  })
 })

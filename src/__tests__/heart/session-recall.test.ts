@@ -6,6 +6,10 @@ vi.mock("fs", () => ({
 
 import * as fs from "fs"
 
+function stripRecallMetadata(text: string): string {
+  return text.replace(/\[[^\]]*\|\s*(system|user|assistant|tool)\s*\|\s*evt-\d+\]\s*/g, "[$1] ")
+}
+
 describe("session-recall", () => {
   beforeEach(() => {
     vi.resetModules()
@@ -34,14 +38,14 @@ describe("session-recall", () => {
       messageCount: 2,
     })
 
-    expect(result).toMatchObject({
-      kind: "ok",
-      transcript: "[user] latest user question\n[assistant] latest assistant answer",
-      summary: "[user] latest user question\n[assistant] latest assistant answer",
-      snapshot: expect.stringContaining("recent focus:"),
-    })
-    expect(result.kind === "ok" ? result.snapshot : "").toContain("latest user question")
-    expect(result.kind === "ok" ? result.snapshot : "").not.toContain("oldest question")
+    expect(result.kind).toBe("ok")
+    if (result.kind === "ok") {
+      expect(stripRecallMetadata(result.transcript)).toBe("[user] latest user question\n[assistant] latest assistant answer")
+      expect(stripRecallMetadata(result.summary)).toBe("[user] latest user question\n[assistant] latest assistant answer")
+      expect(result.snapshot).toContain("recent focus:")
+      expect(result.snapshot).toContain("latest user question")
+      expect(result.snapshot).not.toContain("oldest question")
+    }
   })
 
   it("uses trust-aware summarization instructions for non-self recall", async () => {
@@ -123,11 +127,11 @@ describe("session-recall", () => {
       messageCount: 20,
     })
 
-    expect(result).toMatchObject({
-      kind: "ok",
-      transcript: "[user] hello\n[assistant] hi",
-      summary: "[user] hello\n[assistant] hi",
-    })
+    expect(result.kind).toBe("ok")
+    if (result.kind === "ok") {
+      expect(stripRecallMetadata(result.transcript)).toBe("[user] hello\n[assistant] hi")
+      expect(stripRecallMetadata(result.summary)).toBe("[user] hello\n[assistant] hi")
+    }
   })
 
   it("normalizes structured content arrays into transcript text", async () => {
@@ -164,11 +168,11 @@ describe("session-recall", () => {
       messageCount: 20,
     })
 
-    expect(result).toMatchObject({
-      kind: "ok",
-      transcript: "[user] think about penguins\n[assistant] formal little blokes",
-      summary: "[user] think about penguins\n[assistant] formal little blokes",
-    })
+    expect(result.kind).toBe("ok")
+    if (result.kind === "ok") {
+      expect(stripRecallMetadata(result.transcript)).toBe("[user] think about penguins\n[assistant] formal little blokes")
+      expect(stripRecallMetadata(result.summary)).toBe("[user] think about penguins\n[assistant] formal little blokes")
+    }
   })
 
   it("normalizes invalid roles and ignores non-array object content without inventing extra text", async () => {
@@ -189,12 +193,12 @@ describe("session-recall", () => {
       messageCount: 20,
     })
 
-    expect(result).toMatchObject({
-      kind: "ok",
-      transcript: "[] should be ignored because role is invalid",
-      summary: "[] should be ignored because role is invalid",
-    })
-    expect(result.kind === "ok" ? result.transcript : "").not.toContain("not an array")
+    expect(result.kind).toBe("ok")
+    if (result.kind === "ok") {
+      expect(stripRecallMetadata(result.transcript)).toBe("[user] should be ignored because role is invalid")
+      expect(stripRecallMetadata(result.summary)).toBe("[user] should be ignored because role is invalid")
+      expect(result.transcript).not.toContain("not an array")
+    }
   })
 
   it("ignores malformed non-object session entries while keeping valid messages", async () => {
@@ -216,11 +220,11 @@ describe("session-recall", () => {
       messageCount: 20,
     })
 
-    expect(result).toMatchObject({
-      kind: "ok",
-      transcript: "[user] keep the real message",
-      summary: "[user] keep the real message",
-    })
+    expect(result.kind).toBe("ok")
+    if (result.kind === "ok") {
+      expect(stripRecallMetadata(result.transcript)).toBe("[user] keep the real message")
+      expect(stripRecallMetadata(result.summary)).toBe("[user] keep the real message")
+    }
   })
 
   it("clips long summaries and latest-turn previews in the snapshot", async () => {
@@ -251,6 +255,29 @@ describe("session-recall", () => {
     expect(snapshot).toContain("latest user: ")
     expect(snapshot).toContain("latest assistant: ")
     expect(snapshot).toContain("…")
+  })
+
+  it("builds snapshots without a latest-user line when the visible transcript is assistant-only", async () => {
+    const { recallSession } = await import("../../heart/session-recall")
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+      version: 1,
+      messages: [
+        { role: "assistant", content: "i surfaced this note from inner dialog" },
+      ],
+    }))
+
+    const result = await recallSession({
+      sessionPath: "/mock/agent-root/state/sessions/friend-1/cli/session.json",
+      friendId: "friend-1",
+      channel: "cli",
+      key: "session",
+      messageCount: 20,
+    })
+
+    expect(result.kind).toBe("ok")
+    const snapshot = result.kind === "ok" ? result.snapshot : ""
+    expect(snapshot).toContain("latest assistant: i surfaced this note from inner dialog")
+    expect(snapshot).not.toContain("latest user:")
   })
 
   it("returns missing when a history search cannot read the session file", async () => {
@@ -295,9 +322,9 @@ describe("session-recall", () => {
     const ok = result.kind === "ok" ? result : null
     expect(ok?.snapshot).toContain('history query: "billing"')
     expect(ok?.matches).toHaveLength(2)
-    expect(ok?.matches[0]).toContain("[assistant] yes, looking now")
-    expect(ok?.matches[0]).toContain("[user] the billing fix looked shaky earlier")
-    expect(ok?.matches[0]).toContain("[assistant] the billing fix is merged and stable now")
+    expect(stripRecallMetadata(ok?.matches[0] ?? "")).toContain("[assistant] yes, looking now")
+    expect(stripRecallMetadata(ok?.matches[0] ?? "")).toContain("[user] the billing fix looked shaky earlier")
+    expect(stripRecallMetadata(ok?.matches[0] ?? "")).toContain("[assistant] the billing fix is merged and stable now")
   })
 
   it("returns a no-match search result with the latest turn context", async () => {
@@ -417,7 +444,7 @@ describe("session-recall", () => {
     })
 
     expect(result.kind).toBe("ok")
-    expect(result.kind === "ok" ? result.matches : []).toEqual([
+    expect((result.kind === "ok" ? result.matches : []).map(stripRecallMetadata)).toEqual([
       "[user] hello there\n[assistant] billing is green now\n[user] hello there",
     ])
   })

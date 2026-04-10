@@ -1,9 +1,20 @@
 import type OpenAI from "openai"
 import { getContextConfig } from "../heart/config"
+import {
+  appendSyntheticAssistantEvent,
+  buildCanonicalSessionEnvelope,
+  loadSessionEnvelopeFile,
+  projectProviderMessages,
+  sanitizeProviderMessages,
+  type SessionEnvelope,
+  type SessionEvent,
+} from "../heart/session-events"
 import { emitNervesEvent } from "../nerves/runtime"
 import * as fs from "fs"
 import * as path from "path"
 import { estimateTokensForMessages } from "./token-estimate"
+
+export { migrateToolNames, repairSessionMessages, validateSessionMessages } from "../heart/session-events"
 
 export interface UsageData {
   input_tokens: number
@@ -19,6 +30,7 @@ export interface SessionContinuityState {
 
 export interface SessionData {
   messages: OpenAI.ChatCompletionMessageParam[]
+  events: SessionEvent[]
   lastUsage?: UsageData
   state?: SessionContinuityState
 }
@@ -186,135 +198,17 @@ export function trimMessages(
  * user → assistant (with optional tool calls/results) → user → assistant...
  * Never assistant → assistant without a user in between.
  */
-export function validateSessionMessages(messages: OpenAI.ChatCompletionMessageParam[]): string[] {
-  const violations: string[] = []
-  let prevNonToolRole: string | null = null
-  let prevAssistantHadToolCalls = false
-  let sawToolResultSincePrevAssistant = false
-
-  for (let i = 0; i < messages.length; i++) {
-    const msg = messages[i]
-    if (msg.role === "system") continue
-
-    if (msg.role === "tool") {
-      sawToolResultSincePrevAssistant = true
-      continue
-    }
-
-    if (msg.role === "assistant" && prevNonToolRole === "assistant") {
-      // assistant → tool(s) → assistant is valid (tool call flow)
-      if (!(prevAssistantHadToolCalls && sawToolResultSincePrevAssistant)) {
-        violations.push(`back-to-back assistant at index ${i}`)
-      }
-    }
-
-    prevAssistantHadToolCalls = msg.role === "assistant" && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0
-    sawToolResultSincePrevAssistant = false
-    prevNonToolRole = msg.role
+function denormalizeContinuityState(state: { mustResolveBeforeHandoff: boolean; lastFriendActivityAt: string | null }): SessionContinuityState | undefined {
+  if (!state.mustResolveBeforeHandoff && typeof state.lastFriendActivityAt !== "string") return undefined
+  return {
+    ...(state.mustResolveBeforeHandoff ? { mustResolveBeforeHandoff: true } : {}),
+    ...(typeof state.lastFriendActivityAt === "string" ? { lastFriendActivityAt: state.lastFriendActivityAt } : {}),
   }
-
-  return violations
 }
 
-/**
- * Repairs session invariant violations by merging consecutive assistant messages.
- */
-export function repairSessionMessages(messages: OpenAI.ChatCompletionMessageParam[]): OpenAI.ChatCompletionMessageParam[] {
-  const violations = validateSessionMessages(messages)
-  if (violations.length === 0) return messages
-
-  const result: OpenAI.ChatCompletionMessageParam[] = []
-  for (const msg of messages) {
-    if (msg.role === "assistant" && result.length > 0) {
-      const prev = result[result.length - 1]
-      if (prev.role === "assistant" && !("tool_calls" in prev)) {
-        const prevContent = typeof prev.content === "string" ? prev.content : ""
-        const curContent = typeof msg.content === "string" ? msg.content : ""
-        ;(prev as OpenAI.ChatCompletionAssistantMessageParam).content = `${prevContent}\n\n${curContent}`
-        continue
-      }
-    }
-    result.push(msg)
-  }
-
-  emitNervesEvent({
-    level: "info",
-    event: "mind.session_invariant_repair",
-    component: "mind",
-    message: "repaired session invariant violations",
-    meta: { violations },
-  })
-
-  return result
-}
-
-function stripOrphanedToolResults(messages: OpenAI.ChatCompletionMessageParam[]): OpenAI.ChatCompletionMessageParam[] {
-  const validCallIds = new Set<string>()
-  for (const msg of messages) {
-    if (msg.role !== "assistant" || !Array.isArray(msg.tool_calls)) continue
-    for (const toolCall of msg.tool_calls) validCallIds.add(toolCall.id)
-  }
-
-  let removed = 0
-  const repaired = messages.filter((msg) => {
-    if (msg.role !== "tool") return true
-    const keep = validCallIds.has(msg.tool_call_id)
-    if (!keep) removed++
-    return keep
-  })
-
-  if (removed > 0) {
-    emitNervesEvent({
-      level: "info",
-      event: "mind.session_orphan_tool_result_repair",
-      component: "mind",
-      message: "removed orphaned tool results from session history",
-      meta: { removed },
-    })
-  }
-
-  return repaired
-}
-
-// Tool renames that have shipped. Old names in session history confuse the
-// model into calling tools that no longer exist. Applied on session load so
-// the transcript uses the current vocabulary.
-const TOOL_NAME_MIGRATIONS: Record<string, string> = {
-  final_answer: "settle",
-  no_response: "observe",
-  go_inward: "ponder",
-  descend: "ponder",
-  memory_save: "diary_write",
-  memory_search: "recall",
-}
-
-export function migrateToolNames(messages: OpenAI.ChatCompletionMessageParam[]): OpenAI.ChatCompletionMessageParam[] {
-  let migrated = 0
-  const result = messages.map((msg) => {
-    if (msg.role !== "assistant" || !Array.isArray(msg.tool_calls) || msg.tool_calls.length === 0) return msg
-    let changed = false
-    const updatedCalls = msg.tool_calls.map((tc) => {
-      if (tc.type !== "function") return tc
-      const newName = TOOL_NAME_MIGRATIONS[tc.function.name]
-      if (!newName) return tc
-      changed = true
-      migrated++
-      return { ...tc, function: { ...tc.function, name: newName } }
-    })
-    return changed ? { ...msg, tool_calls: updatedCalls } : msg
-  })
-
-  if (migrated > 0) {
-    emitNervesEvent({
-      level: "info",
-      event: "mind.session_tool_name_migration",
-      component: "mind",
-      message: "migrated deprecated tool names in session history",
-      meta: { migrated },
-    })
-  }
-
-  return result
+function writeSessionEnvelope(filePath: string, envelope: SessionEnvelope): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true })
+  fs.writeFileSync(filePath, JSON.stringify(envelope, null, 2))
 }
 
 export function saveSession(
@@ -323,43 +217,33 @@ export function saveSession(
   lastUsage?: UsageData,
   state?: SessionContinuityState,
 ): void {
-  const violations = validateSessionMessages(messages)
-  if (violations.length > 0) {
-    emitNervesEvent({
-      level: "info",
-      event: "mind.session_invariant_violation",
-      component: "mind",
-      message: "session invariant violated on save",
-      meta: { path: filePath, violations },
-    })
-    messages = repairSessionMessages(messages)
-  }
-  messages = stripOrphanedToolResults(messages)
-  fs.mkdirSync(path.dirname(filePath), { recursive: true })
-  const envelope: {
-    version: number
-    messages: OpenAI.ChatCompletionMessageParam[]
-    lastUsage?: UsageData
-    state?: SessionContinuityState
-  } = { version: 1, messages }
-  if (lastUsage) envelope.lastUsage = lastUsage
-  if (state?.mustResolveBeforeHandoff === true || typeof state?.lastFriendActivityAt === "string") {
-    envelope.state = {
-      ...(state?.mustResolveBeforeHandoff === true ? { mustResolveBeforeHandoff: true } : {}),
-      ...(typeof state?.lastFriendActivityAt === "string" ? { lastFriendActivityAt: state.lastFriendActivityAt } : {}),
-    }
-  }
-  fs.writeFileSync(filePath, JSON.stringify(envelope, null, 2))
+  const existing = loadSessionEnvelopeFile(filePath)
+  const previousMessages = existing ? projectProviderMessages(existing) : []
+  const sanitized = sanitizeProviderMessages(messages)
+  const envelope = buildCanonicalSessionEnvelope({
+    existing,
+    previousMessages,
+    currentMessages: sanitized,
+    trimmedMessages: sanitized,
+    recordedAt: new Date().toISOString(),
+    lastUsage: lastUsage ?? null,
+    state,
+    projectionBasis: {
+      maxTokens: null,
+      contextMargin: null,
+      inputTokens: lastUsage?.input_tokens ?? null,
+    },
+  })
+  writeSessionEnvelope(filePath, envelope)
 }
 
 export function appendSyntheticAssistantMessage(filePath: string, content: string): boolean {
   try {
     if (!fs.existsSync(filePath)) return false
-    const raw = fs.readFileSync(filePath, "utf-8")
-    const data = JSON.parse(raw)
-    if (data.version !== 1 || !Array.isArray(data.messages)) return false
-    data.messages.push({ role: "assistant", content })
-    fs.writeFileSync(filePath, JSON.stringify(data, null, 2))
+    const envelope = loadSessionEnvelopeFile(filePath)
+    if (!envelope) return false
+    const updated = appendSyntheticAssistantEvent(envelope, content, new Date().toISOString())
+    writeSessionEnvelope(filePath, updated)
     emitNervesEvent({
       component: "mind",
       event: "mind.session_synthetic_message_appended",
@@ -374,36 +258,14 @@ export function appendSyntheticAssistantMessage(filePath: string, content: strin
 
 export function loadSession(filePath: string): SessionData | null {
   try {
-    const raw = fs.readFileSync(filePath, "utf-8")
-    const data = JSON.parse(raw)
-    if (data.version !== 1) return null
-    let messages: OpenAI.ChatCompletionMessageParam[] = data.messages
-    const violations = validateSessionMessages(messages)
-    if (violations.length > 0) {
-      emitNervesEvent({
-        level: "info",
-        event: "mind.session_invariant_violation",
-        component: "mind",
-        message: "session invariant violated on load",
-        meta: { path: filePath, violations },
-      })
-      messages = repairSessionMessages(messages)
+    const envelope = loadSessionEnvelopeFile(filePath)
+    if (!envelope) return null
+    return {
+      messages: projectProviderMessages(envelope),
+      events: envelope.events,
+      lastUsage: envelope.lastUsage ?? undefined,
+      state: denormalizeContinuityState(envelope.state),
     }
-    messages = stripOrphanedToolResults(messages)
-    messages = migrateToolNames(messages)
-    const rawState = data?.state && typeof data.state === "object" && data.state !== null
-      ? data.state as { mustResolveBeforeHandoff?: unknown; lastFriendActivityAt?: unknown }
-      : undefined
-    const state = rawState && (
-      rawState.mustResolveBeforeHandoff === true
-      || typeof rawState.lastFriendActivityAt === "string"
-    )
-      ? {
-        ...(rawState.mustResolveBeforeHandoff === true ? { mustResolveBeforeHandoff: true } : {}),
-        ...(typeof rawState.lastFriendActivityAt === "string" ? { lastFriendActivityAt: rawState.lastFriendActivityAt } : {}),
-      }
-      : undefined
-    return { messages, lastUsage: data.lastUsage, state }
   } catch {
     return null
   }
@@ -416,9 +278,10 @@ export function postTurn(
   hooks?: PostTurnHooks,
   state?: SessionContinuityState,
 ): void {
+  const preTrimMessages = [...messages]
   if (hooks?.beforeTrim) {
     try {
-      hooks.beforeTrim([...messages])
+      hooks.beforeTrim(preTrimMessages)
     } catch (error) {
       emitNervesEvent({
         level: "warn",
@@ -432,9 +295,26 @@ export function postTurn(
     }
   }
   const { maxTokens, contextMargin } = getContextConfig()
-  const trimmed = trimMessages(messages, maxTokens, contextMargin, usage?.input_tokens)
+  const currentMessages = sanitizeProviderMessages(messages)
+  const trimmed = trimMessages(currentMessages, maxTokens, contextMargin, usage?.input_tokens)
   messages.splice(0, messages.length, ...trimmed)
-  saveSession(sessPath, messages, usage, state)
+  const existing = loadSessionEnvelopeFile(sessPath)
+  const previousMessages = existing ? projectProviderMessages(existing) : []
+  const envelope = buildCanonicalSessionEnvelope({
+    existing,
+    previousMessages,
+    currentMessages,
+    trimmedMessages: trimmed,
+    recordedAt: new Date().toISOString(),
+    lastUsage: usage ?? null,
+    state,
+    projectionBasis: {
+      maxTokens,
+      contextMargin,
+      inputTokens: usage?.input_tokens ?? null,
+    },
+  })
+  writeSessionEnvelope(sessPath, envelope)
 }
 
 export function deleteSession(filePath: string): void {

@@ -88,6 +88,10 @@ const DISPATCH_EXEMPT_PATTERNS = [
   "heart/attachments/originals",
   "heart/attachments/sources/index",
   "heart/attachments/sources/cli-local-file",
+  // Browser-safe Outlook contract helpers: shared types/formatting helpers
+  // consumed by server readers and the UI. Outlook read/render modules own
+  // the observability for these projections.
+  "heart/outlook/outlook-types",
 ]
 
 function isDispatchExempt(filePath: string): boolean {

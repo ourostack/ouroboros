@@ -2,6 +2,7 @@ import * as fs from "fs"
 import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
 import { sanitizeKey } from "./config"
+import { deriveSessionChronology, loadSessionEnvelopeFile } from "./session-events"
 
 export interface SessionActivityRecord {
   friendId: string
@@ -12,6 +13,9 @@ export interface SessionActivityRecord {
   lastActivityAt: string
   lastActivityMs: number
   activitySource: "friend-facing" | "mtime-fallback"
+  lastInboundAt: string | null
+  lastOutboundAt: string | null
+  unansweredInboundCount: number
 }
 
 export interface SessionActivityQuery {
@@ -40,7 +44,14 @@ function resolveFriendName(friendId: string, friendsDir: string, agentName: stri
   }
 }
 
-function parseFriendActivity(sessionPath: string): { lastActivityMs: number; lastActivityAt: string; activitySource: "friend-facing" | "mtime-fallback" } | null {
+function parseFriendActivity(sessionPath: string): {
+  lastActivityMs: number
+  lastActivityAt: string
+  activitySource: "friend-facing" | "mtime-fallback"
+  lastInboundAt: string | null
+  lastOutboundAt: string | null
+  unansweredInboundCount: number
+} | null {
   let mtimeMs: number
   try {
     mtimeMs = fs.statSync(sessionPath).mtimeMs
@@ -48,28 +59,44 @@ function parseFriendActivity(sessionPath: string): { lastActivityMs: number; las
     return null
   }
 
-  try {
-    const raw = fs.readFileSync(sessionPath, "utf-8")
-    const parsed = JSON.parse(raw) as { state?: { lastFriendActivityAt?: unknown } }
-    const explicit = parsed?.state?.lastFriendActivityAt
-    if (typeof explicit === "string") {
-      const parsedMs = Date.parse(explicit)
-      if (Number.isFinite(parsedMs)) {
-        return {
-          lastActivityMs: parsedMs,
-          lastActivityAt: new Date(parsedMs).toISOString(),
-          activitySource: "friend-facing",
-        }
+  const envelope = loadSessionEnvelopeFile(sessionPath)
+  const chronology = envelope ? deriveSessionChronology(envelope.events) : null
+  const explicit = envelope?.state.lastFriendActivityAt
+  if (typeof explicit === "string") {
+    const parsedMs = Date.parse(explicit)
+    if (Number.isFinite(parsedMs)) {
+      return {
+        lastActivityMs: parsedMs,
+        lastActivityAt: new Date(parsedMs).toISOString(),
+        activitySource: "friend-facing",
+        lastInboundAt: chronology?.lastInboundAt ?? null,
+        lastOutboundAt: chronology?.lastOutboundAt ?? null,
+        unansweredInboundCount: chronology?.unansweredInboundCount ?? 0,
       }
     }
-  } catch {
-    // fall back to file mtime below
+  }
+
+  if (chronology?.lastInboundAt) {
+    const parsedMs = Date.parse(chronology.lastInboundAt)
+    if (Number.isFinite(parsedMs)) {
+      return {
+        lastActivityMs: parsedMs,
+        lastActivityAt: new Date(parsedMs).toISOString(),
+        activitySource: "friend-facing",
+        lastInboundAt: chronology.lastInboundAt,
+        lastOutboundAt: chronology.lastOutboundAt,
+        unansweredInboundCount: chronology.unansweredInboundCount,
+      }
+    }
   }
 
   return {
     lastActivityMs: mtimeMs,
     lastActivityAt: new Date(mtimeMs).toISOString(),
     activitySource: "mtime-fallback",
+    lastInboundAt: chronology?.lastInboundAt ?? null,
+    lastOutboundAt: chronology?.lastOutboundAt ?? null,
+    unansweredInboundCount: chronology?.unansweredInboundCount ?? 0,
   }
 }
 
@@ -147,6 +174,9 @@ export function listSessionActivity(query: SessionActivityQuery): SessionActivit
           lastActivityAt: activity.lastActivityAt,
           lastActivityMs: activity.lastActivityMs,
           activitySource: activity.activitySource,
+          lastInboundAt: activity.lastInboundAt,
+          lastOutboundAt: activity.lastOutboundAt,
+          unansweredInboundCount: activity.unansweredInboundCount,
         })
       }
     }
