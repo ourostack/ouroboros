@@ -19,6 +19,21 @@ function mockReadFileToolResult(content: string, matcher: RegExp = /\.txt$/) {
   })
 }
 
+function interceptFatalProviderInit() {
+  const mockExit = vi.spyOn(process, "exit").mockImplementation((() => {
+    throw new Error("process.exit called")
+  }) as any)
+  const mockError = vi.spyOn(console, "error").mockImplementation(() => {})
+  return {
+    mockExit,
+    mockError,
+    restore() {
+      mockExit.mockRestore()
+      mockError.mockRestore()
+    },
+  }
+}
+
 // Mock fs and child_process before importing core
 vi.mock("fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("fs")>()
