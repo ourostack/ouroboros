@@ -51,6 +51,7 @@
     "url": "https://github.com/ouroborosbot/ouroboros"
   },
   "devDependencies": {
+    "@testing-library/react": "^16.3.2",
     "@types/semver": "^7.7.1",
     "@vitest/coverage-v8": "^4.0.18",
     "eslint": "^10.0.2",
@@ -58,5 +59,11 @@
     "typescript": "^5.7.0",
     "typescript-eslint": "^8.56.1",
     "vitest": "^4.0.18"
+  },
+  "overrides": {
+    "@testing-library/react": {
+      "react": "$react",
+      "@types/react": "$@types/react"
+    }
   }
 }
