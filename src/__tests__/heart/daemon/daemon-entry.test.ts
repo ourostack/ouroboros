@@ -59,6 +59,14 @@ vi.mock("../../../heart/daemon/daemon-tombstone", () => ({
   writeDaemonTombstone: writeDaemonTombstoneMock,
 }))
 
+vi.mock("../../../heart/config", () => ({
+  getBlueBubblesChannelConfig: vi.fn(() => ({
+    port: 18790,
+    webhookPath: "/bluebubbles-webhook",
+    requestTimeoutMs: 30000,
+  })),
+}))
+
 describe("daemon entrypoint", () => {
   afterEach(() => {
     listEnabledBundleAgentsMock.mockReset()
@@ -163,10 +171,12 @@ describe("daemon entrypoint", () => {
       ok: false,
       message: "unknown scheduled job: nightly",
     })
-    await expect(daemonOptions.healthMonitor.runChecks()).resolves.toEqual([
+    const healthResults = await daemonOptions.healthMonitor.runChecks()
+    expect(healthResults).toEqual([
       { name: "agent-processes", status: "critical", message: "non-running agents: slugger" },
       { name: "cron-health", status: "ok", message: "cron jobs are healthy" },
       { name: "disk-space", status: "ok", message: "disk usage healthy (0%)" },
+      expect.objectContaining({ name: "sense-probe:bluebubbles", status: "critical" }),
     ])
     await expect(daemonOptions.router.send({
       from: "slugger",

@@ -381,12 +381,13 @@ describe("pipeline continuity integration", () => {
       await handleInboundTurn(input)
       expect(mockBuildStartOfTurnPacket).toHaveBeenCalledWith(
         mockView,
-        {
+        expect.objectContaining({
           canonicalObligations: {
             primary: expect.objectContaining({ id: "ob-pipeline" }),
             all: expect.arrayContaining([expect.objectContaining({ id: "ob-pipeline" })]),
           },
-        },
+          currentSessionTiming: "",
+        }),
       )
     })
 

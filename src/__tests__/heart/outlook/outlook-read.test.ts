@@ -850,18 +850,93 @@ describe("outlook deep readers", () => {
       expect(transcript).not.toBeNull()
       expect(transcript!.friendName).toBe("Ari")
       expect(transcript!.messageCount).toBe(5)
-      expect(transcript!.messages[0]).toEqual({
-        index: 0, role: "system", content: "You are a helpful agent.",
+      expect(transcript!.messages[0]).toMatchObject({
+        id: "evt-000001",
+        sequence: 1,
+        role: "system",
+        content: "You are a helpful agent.",
       })
       expect(transcript!.messages[2]).toMatchObject({
-        index: 2, role: "assistant", content: null,
-        tool_calls: [{ id: "tc-1", type: "function", function: { name: "run_tests", arguments: '{"suite":"unit"}' } }],
+        id: "evt-000003",
+        sequence: 3,
+        role: "assistant",
+        content: null,
+        toolCalls: [{ id: "tc-1", type: "function", function: { name: "run_tests", arguments: '{"suite":"unit"}' } }],
       })
       expect(transcript!.messages[3]).toMatchObject({
-        index: 3, role: "tool", content: "All 42 tests passed.", tool_call_id: "tc-1",
+        id: "evt-000004",
+        sequence: 4,
+        role: "tool",
+        content: "All 42 tests passed.",
+        toolCallId: "tc-1",
       })
       expect(transcript!.lastUsage!.total_tokens).toBe(250)
       expect(transcript!.continuity!.mustResolveBeforeHandoff).toBe(false)
+    })
+
+    it("surfaces visible per-message timing from canonical session events", async () => {
+      const bundlesRoot = makeBundleRoot()
+      const alphaRoot = path.join(bundlesRoot, "alpha.ouro")
+      writeAgentConfig(alphaRoot)
+      writeJson(path.join(alphaRoot, "friends", "friend-1.json"), { name: "Ari" })
+      writeJson(path.join(alphaRoot, "state", "sessions", "friend-1", "cli", "session.json"), {
+        version: 2,
+        events: [
+          {
+            id: "evt-000001",
+            sequence: 1,
+            role: "user",
+            content: "hello",
+            name: null,
+            toolCallId: null,
+            toolCalls: [],
+            attachments: [],
+            time: {
+              authoredAt: null,
+              authoredAtSource: "unknown",
+              observedAt: "2026-04-09T17:40:00.000Z",
+              observedAtSource: "ingest",
+              recordedAt: "2026-04-09T17:40:00.000Z",
+              recordedAtSource: "save",
+            },
+            relations: {
+              replyToEventId: null,
+              threadRootEventId: null,
+              references: [],
+              toolCallId: null,
+              supersedesEventId: null,
+              redactsEventId: null,
+            },
+            provenance: {
+              captureKind: "live",
+              legacyVersion: null,
+              sourceMessageIndex: null,
+            },
+          },
+        ],
+        projection: {
+          eventIds: ["evt-000001"],
+          trimmed: false,
+          maxTokens: 80000,
+          contextMargin: 20,
+          inputTokens: null,
+          projectedAt: "2026-04-09T17:40:00.000Z",
+        },
+        lastUsage: null,
+        state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: "2026-04-09T17:40:00.000Z" },
+      })
+
+      const { readSessionTranscript } = await import("../../../heart/outlook/outlook-read")
+      const transcript = readSessionTranscript("alpha", "friend-1", "cli", "session", { bundlesRoot })
+
+      expect(transcript).not.toBeNull()
+      expect(transcript!.messages[0]).toMatchObject({
+        id: "evt-000001",
+        time: {
+          observedAt: "2026-04-09T17:40:00.000Z",
+          recordedAt: "2026-04-09T17:40:00.000Z",
+        },
+      })
     })
 
     it("returns null for nonexistent sessions", async () => {

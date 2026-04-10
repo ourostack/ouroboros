@@ -18,7 +18,7 @@ import type { CheckForUpdateResult } from "../versioning/update-checker"
 import type { DaemonHealthState } from "./daemon-health"
 
 export type OuroCliCommand =
-  | { kind: "daemon.up" }
+  | { kind: "daemon.up"; noRepair?: boolean }
   | { kind: "daemon.stop" }
   | { kind: "daemon.status" }
   | { kind: "daemon.logs" }
@@ -67,7 +67,9 @@ export type OuroCliCommand =
   | { kind: "habit.list"; agent?: string }
   | { kind: "habit.create"; agent?: string; name: string; cadence?: string }
   | { kind: "habit.poke"; agent: string; habitName: string }
+  | { kind: "doctor" }
   | { kind: "bluebubbles.replay"; agent: string; messageGuid: string; eventType: "new-message" | "updated-message"; json?: boolean }
+  | { kind: "help"; command?: string }
 
 export interface OuroCliDeps {
   socketPath: string
@@ -145,6 +147,10 @@ export interface SessionEntry {
 export interface EnsureDaemonResult {
   alreadyRunning: boolean
   message: string
+  stability?: {
+    stable: string[]
+    degraded: Array<{ agent: string; errorReason: string; fixHint: string }>
+  }
 }
 
 export interface GithubCopilotModel {
@@ -195,3 +201,5 @@ export type HookCliCommand = Extract<OuroCliCommand, { kind: "hook" }>
 export type HabitLocalCliCommand = Extract<OuroCliCommand, { kind: "habit.list" } | { kind: "habit.create" }>
 export type McpListCliCommand = Extract<OuroCliCommand, { kind: "mcp.list" }>
 export type McpCallCliCommand = Extract<OuroCliCommand, { kind: "mcp.call" }>
+export type DoctorCliCommand = Extract<OuroCliCommand, { kind: "doctor" }>
+export type HelpCliCommand = Extract<OuroCliCommand, { kind: "help" }>

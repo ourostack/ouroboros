@@ -728,8 +728,14 @@ function classifyPushError(stderr: string): "rejected" | "network" | "auth" | "u
  * state, we assume the worst and force the agent to get confirmation. An
  * unreachable remote should NOT be a bypass vector.
  */
-/* v8 ignore start -- isFirstPushToRemote has two branches that only differ when the remote is reachable; in the unit test environment all remotes are unreachable so we always hit the "return true on network failure" branch. The security contract (never return false when unsure) is covered by the refusal tests in bundle-first-push-review.test.ts @preserve */
-function isFirstPushToRemote(bundleRoot: string, remote: string): boolean {
+/**
+ * Exported for direct unit testing in bundle-push-first-push.test.ts.
+ * The integration tests use unreachable remotes so they always hit the
+ * network-failure branch. The unit tests mock child_process to exercise
+ * the successful-probe branches (empty stdout = first push, non-empty
+ * = subsequent push, symbolic-ref failure = conservative true).
+ */
+export function isFirstPushToRemote(bundleRoot: string, remote: string): boolean {
   const branchResult = gitExec(bundleRoot, ["symbolic-ref", "--short", "HEAD"])
   if (branchResult.code !== 0) return true
   const branch = branchResult.stdout.trim()
@@ -737,7 +743,6 @@ function isFirstPushToRemote(bundleRoot: string, remote: string): boolean {
   if (lsRemote.code !== 0) return true
   return lsRemote.stdout.trim().length === 0
 }
-/* v8 ignore stop */
 
 function makePushHandler(deps: { now?: () => number } = {}): ToolHandler {
   return (args) => {
