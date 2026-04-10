@@ -1,3 +1,5 @@
+import * as fs from "fs"
+import * as path from "path"
 import { describe, expect, it, vi } from "vitest"
 
 import { emitNervesEvent } from "../../../nerves/runtime"
@@ -33,6 +35,10 @@ vi.mock("../../../nerves/runtime", () => ({
 
 import { runOuroCli } from "../../../heart/daemon/daemon-cli"
 import type { OuroCliDeps } from "../../../heart/daemon/cli-types"
+
+const PACKAGE_VERSION = JSON.parse(
+  fs.readFileSync(path.join(process.cwd(), "package.json"), "utf-8"),
+) as { version: string }
 
 function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
   return {
@@ -105,6 +111,57 @@ describe("--no-repair flag: daemon.up handler", () => {
     expect(allOutput).toContain("helper: stopped")
     expect(allOutput).toContain("fix: run ouro auth slugger")
     expect(allOutput).toMatch(/degrad/i)
+  })
+
+  it("ouro up --no-repair reports degraded agents when the daemon is already running", async () => {
+    emitNervesEvent({ component: "daemon", event: "daemon.no_repair_existing_degraded_test", message: "test" })
+    const promptInput = vi.fn(async () => "y")
+    const writeStdout = vi.fn()
+    mocks.pollDaemonStartup.mockResolvedValueOnce({
+      stable: ["slugger"],
+      degraded: [
+        { agent: "ouroboros", errorReason: "missing github-copilot provider", fixHint: "run ouro auth ouroboros" },
+      ],
+    })
+
+    const deps = makeDeps({
+      promptInput,
+      writeStdout,
+      checkSocketAlive: vi.fn(async () => true),
+      sendCommand: vi.fn(async () => ({
+        ok: true,
+        data: {
+          overview: {
+            daemon: "running",
+            health: "warn",
+            socketPath: "/tmp/ouro-test.sock",
+            outlookUrl: "unavailable",
+            version: PACKAGE_VERSION.version,
+            lastUpdated: "unknown",
+            repoRoot: "unknown",
+            configFingerprint: "unknown",
+            workerCount: 0,
+            senseCount: 0,
+            entryPath: "unknown",
+            mode: "production",
+          },
+          senses: [],
+          workers: [],
+        },
+      })),
+    })
+
+    await runOuroCli(["up", "--no-repair"], deps)
+
+    expect(promptInput).not.toHaveBeenCalled()
+    expect(mocks.pollDaemonStartup).toHaveBeenCalledWith(expect.objectContaining({
+      daemonPid: null,
+      socketPath: "/tmp/ouro-test.sock",
+    }))
+    const allOutput = writeStdout.mock.calls.map((c: any[]) => c[0]).join("\n")
+    expect(allOutput).toContain("daemon already running (/tmp/ouro-test.sock)")
+    expect(allOutput).toContain("ouroboros: missing github-copilot provider")
+    expect(allOutput).toContain("fix: run ouro auth ouroboros")
   })
 
   it("ouro up (no flag) with degraded agents enters interactive repair", async () => {

@@ -22,6 +22,8 @@ export interface DaemonRuntimeSyncDeps {
 export interface DaemonRuntimeSyncResult {
   alreadyRunning: boolean
   message: string
+  verifyStartupStatus?: boolean
+  startedPid?: number | null
 }
 
 /* v8 ignore start -- daemon liveness poll: real socket timing untestable in vitest @preserve */
@@ -200,6 +202,8 @@ export async function ensureCurrentDaemonRuntime(
         message: includesVersionDrift
           ? `restarted stale daemon from ${runningVersion} to ${deps.localVersion} (pid ${pid})${suffix}`
           : `restarted drifted daemon (${driftSummary}) (pid ${pid})${suffix}`,
+        verifyStartupStatus: verified,
+        startedPid: started.pid ?? null,
       }
       emitNervesEvent({
         component: "daemon",
@@ -274,6 +278,8 @@ export async function ensureCurrentDaemonRuntime(
   const result = {
     alreadyRunning: true,
     message: `daemon already running (${deps.socketPath})`,
+    verifyStartupStatus: true,
+    startedPid: null,
   }
   emitNervesEvent({
     component: "daemon",

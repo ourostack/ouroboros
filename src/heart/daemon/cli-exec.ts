@@ -100,53 +100,6 @@ interface DaemonStartupFailure {
 }
 
 export async function ensureDaemonRunning(deps: OuroCliDeps): Promise<EnsureDaemonResult> {
-  const alive = await deps.checkSocketAlive(deps.socketPath)
-  if (alive) {
-    const localRuntime = getRuntimeMetadata()
-    let runningRuntimePromise: Promise<{
-      version: string
-      lastUpdated: string
-      repoRoot: string
-      configFingerprint: string
-    }> | null = null
-    const fetchRunningRuntimeMetadata = async () => {
-      runningRuntimePromise ??= (async () => {
-        const status = await deps.sendCommand(deps.socketPath, { kind: "daemon.status" })
-        const payload = parseStatusPayload(status.data)
-        return {
-          version: payload?.overview.version ?? "unknown",
-          lastUpdated: payload?.overview.lastUpdated ?? "unknown",
-          repoRoot: payload?.overview.repoRoot ?? "unknown",
-          configFingerprint: payload?.overview.configFingerprint ?? "unknown",
-        }
-      })()
-      return runningRuntimePromise
-    }
-
-    return ensureCurrentDaemonRuntime({
-      socketPath: deps.socketPath,
-      localVersion: localRuntime.version,
-      localLastUpdated: localRuntime.lastUpdated,
-      localRepoRoot: localRuntime.repoRoot,
-      localConfigFingerprint: localRuntime.configFingerprint,
-      fetchRunningVersion: async () => (await fetchRunningRuntimeMetadata()).version,
-      fetchRunningRuntimeMetadata,
-      stopDaemon: async () => {
-        await deps.sendCommand(deps.socketPath, { kind: "daemon.stop" })
-      },
-      cleanupStaleSocket: deps.cleanupStaleSocket,
-      startDaemonProcess: deps.startDaemonProcess,
-      checkSocketAlive: deps.checkSocketAlive,
-    })
-  }
-
-  const retryLimit = deps.startupRetryLimit ?? DEFAULT_DAEMON_STARTUP_RETRY_LIMIT
-  let lastFailure: DaemonStartupFailure = {
-    reason: "daemon failed before the startup monitor recorded a failure",
-    retryable: false,
-  }
-  let lastPid: number | null = null
-
   const readLatestDaemonStartupEvent = () => {
     try {
       // The daemon writes structured events to daemon.ndjson in the first
@@ -183,6 +136,77 @@ export async function ensureDaemonRunning(deps: OuroCliDeps): Promise<EnsureDaem
     }
     return null
   }
+
+  const alive = await deps.checkSocketAlive(deps.socketPath)
+  if (alive) {
+    const localRuntime = getRuntimeMetadata()
+    let runningRuntimePromise: Promise<{
+      version: string
+      lastUpdated: string
+      repoRoot: string
+      configFingerprint: string
+    }> | null = null
+    const fetchRunningRuntimeMetadata = async () => {
+      runningRuntimePromise ??= (async () => {
+        const status = await deps.sendCommand(deps.socketPath, { kind: "daemon.status" })
+        const payload = parseStatusPayload(status.data)
+        return {
+          version: payload?.overview.version ?? "unknown",
+          lastUpdated: payload?.overview.lastUpdated ?? "unknown",
+          repoRoot: payload?.overview.repoRoot ?? "unknown",
+          configFingerprint: payload?.overview.configFingerprint ?? "unknown",
+        }
+      })()
+      return runningRuntimePromise
+    }
+
+    const runtimeResult = await ensureCurrentDaemonRuntime({
+      socketPath: deps.socketPath,
+      localVersion: localRuntime.version,
+      localLastUpdated: localRuntime.lastUpdated,
+      localRepoRoot: localRuntime.repoRoot,
+      localConfigFingerprint: localRuntime.configFingerprint,
+      fetchRunningVersion: async () => (await fetchRunningRuntimeMetadata()).version,
+      fetchRunningRuntimeMetadata,
+      stopDaemon: async () => {
+        await deps.sendCommand(deps.socketPath, { kind: "daemon.stop" })
+      },
+      cleanupStaleSocket: deps.cleanupStaleSocket,
+      startDaemonProcess: deps.startDaemonProcess,
+      checkSocketAlive: deps.checkSocketAlive,
+    })
+    if (!runtimeResult.verifyStartupStatus) {
+      return runtimeResult
+    }
+
+    const stability = await pollDaemonStartup({
+      sendCommand: deps.sendCommand,
+      socketPath: deps.socketPath,
+      daemonPid: runtimeResult.startedPid ?? null,
+      /* v8 ignore next -- thin wrapper: raw process.stdout.write for ANSI cursor control @preserve */
+      writeRaw: (text) => process.stdout.write(text),
+      /* v8 ignore next -- thin wrapper: real Date.now() injected for testability @preserve */
+      now: () => Date.now(),
+      /* v8 ignore next -- thin wrapper: real setTimeout injected for testability @preserve */
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      /* v8 ignore start -- daemon log tail + pid check: reads real filesystem, tested via deployment @preserve */
+      readLatestDaemonEvent: readLatestDaemonStartupEvent,
+      /* v8 ignore stop */
+    })
+
+    return {
+      alreadyRunning: runtimeResult.alreadyRunning,
+      message: runtimeResult.message,
+      stability,
+    }
+  }
+
+  const retryLimit = deps.startupRetryLimit ?? DEFAULT_DAEMON_STARTUP_RETRY_LIMIT
+  let lastFailure: DaemonStartupFailure = {
+    reason: "daemon failed before the startup monitor recorded a failure",
+    retryable: false,
+  }
+  let lastPid: number | null = null
 
   for (let attempt = 0; attempt <= retryLimit; attempt += 1) {
     deps.reportDaemonStartupPhase?.("starting daemon...")
