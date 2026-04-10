@@ -7,6 +7,7 @@ import { buildSystem } from "../mind/prompt"
 import { pickPhrase, getPhrases } from "../mind/phrases"
 import { formatKick, formatError } from "../mind/format"
 import { sessionPath } from "../heart/config"
+import { stampIngressTime } from "../heart/session-events"
 import { loadSession, deleteSession, postTurn } from "../mind/context"
 import { getPendingDir, drainDeferredReturns, drainPending, type PendingMessage } from "../mind/pending"
 import type { UsageData } from "../mind/context"
@@ -894,7 +895,9 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
           const userContent = contentParts
             ? contentParts
             : (prefix ? `${prefix}\n\n${input}` : input)
-          messages.push({ role: "user", content: userContent as any })
+          const userMsg = { role: "user" as const, content: userContent as any }
+          stampIngressTime(userMsg)
+          messages.push(userMsg)
           const traceId = createTraceId()
           result = await runAgent(messages, cliCallbacks, options.skipSystemPromptRefresh ? undefined : "cli", currentAbort.signal, {
             toolChoiceRequired: getEffectiveToolChoiceRequired(),
