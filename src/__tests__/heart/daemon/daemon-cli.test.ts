@@ -3589,6 +3589,176 @@ describe("ensureDaemonRunning", () => {
     expect(deps.startDaemonProcess).toHaveBeenCalledWith("/tmp/ouro-test.sock")
   })
 
+  it("waits for startup stability plus fresh current-boot health and retries once when the first boot loses its socket", async () => {
+    const { ensureDaemonRunning } = await import("../../../heart/daemon/daemon-cli")
+
+    let nowMs = Date.parse("2026-04-10T05:02:36.000Z")
+    let currentAttempt = 0
+    let pollCount = 0
+
+    const startDaemonProcess = vi.fn(async () => {
+      currentAttempt += 1
+      pollCount = 0
+      return { pid: currentAttempt === 1 ? 5184 : 5683 }
+    })
+    const checkSocketAlive = vi.fn(async () => {
+      if (currentAttempt === 0) return false
+      pollCount += 1
+      if (currentAttempt === 1) return pollCount === 1
+      return true
+    })
+    const readHealthState = vi.fn(() => {
+      if (currentAttempt === 1) {
+        return {
+          status: "ok",
+          mode: "normal",
+          pid: 32096,
+          startedAt: "2026-04-09T10:40:31.091Z",
+          uptimeSeconds: 64839,
+          safeMode: null,
+          degraded: [],
+          agents: {},
+          habits: {},
+        }
+      }
+      return {
+        status: "ok",
+        mode: "normal",
+        pid: 5683,
+        startedAt: new Date(nowMs).toISOString(),
+        uptimeSeconds: 0,
+        safeMode: null,
+        degraded: [],
+        agents: {},
+        habits: {},
+      }
+    })
+    const readHealthUpdatedAt = vi.fn(() => (currentAttempt === 1 ? nowMs - 60_000 : nowMs))
+    const sleep = vi.fn(async (ms: number) => {
+      nowMs += ms
+    })
+
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(),
+      startDaemonProcess,
+      writeStdout: vi.fn(),
+      checkSocketAlive,
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      healthFilePath: "/tmp/ouro-health.json",
+      readHealthState,
+      readHealthUpdatedAt,
+      readRecentDaemonLogLines: vi.fn(() => [
+        "2026-04-10T05:02:39.000Z warn daemon: startup lost socket before stabilizing",
+      ]),
+      sleep,
+      now: () => nowMs,
+      startupPollIntervalMs: 5,
+      startupStabilityWindowMs: 15,
+      startupTimeoutMs: 60,
+    } as OuroCliDeps & {
+      readHealthState: typeof readHealthState
+      readHealthUpdatedAt: typeof readHealthUpdatedAt
+      readRecentDaemonLogLines: () => string[]
+      sleep: typeof sleep
+      now: () => number
+      startupPollIntervalMs: number
+      startupStabilityWindowMs: number
+      startupTimeoutMs: number
+    }
+
+    const result = await ensureDaemonRunning(deps)
+
+    expect(result.alreadyRunning).toBe(false)
+    expect(result.message).toContain("daemon started")
+    expect(result.message).toContain("5683")
+    expect(startDaemonProcess).toHaveBeenCalledTimes(2)
+    expect(deps.cleanupStaleSocket).toHaveBeenCalledTimes(2)
+    expect(readHealthState).toHaveBeenCalled()
+  })
+
+  it("returns startup failure with recent daemon log context when the retry also fails to stabilize", async () => {
+    const { ensureDaemonRunning } = await import("../../../heart/daemon/daemon-cli")
+
+    let nowMs = Date.parse("2026-04-10T05:02:36.000Z")
+    let currentAttempt = 0
+    let pollCount = 0
+
+    const startDaemonProcess = vi.fn(async () => {
+      currentAttempt += 1
+      pollCount = 0
+      return { pid: currentAttempt === 1 ? 5184 : 5683 }
+    })
+    const checkSocketAlive = vi.fn(async () => {
+      if (currentAttempt === 0) return false
+      pollCount += 1
+      return pollCount === 1
+    })
+    const sleep = vi.fn(async (ms: number) => {
+      nowMs += ms
+    })
+
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(),
+      startDaemonProcess,
+      writeStdout: vi.fn(),
+      checkSocketAlive,
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      healthFilePath: "/tmp/ouro-health.json",
+      readHealthState: vi.fn(() => ({
+        status: "ok",
+        mode: "normal",
+        pid: 32096,
+        startedAt: "2026-04-09T10:40:31.091Z",
+        uptimeSeconds: 64839,
+        safeMode: null,
+        degraded: [],
+        agents: {},
+        habits: {},
+      })),
+      readHealthUpdatedAt: vi.fn(() => nowMs - 60_000),
+      readRecentDaemonLogLines: vi.fn(() => [
+        "2026-04-10T05:02:39.000Z warn daemon: startup lost socket before stabilizing",
+        "2026-04-10T05:02:39.100Z error daemon: stale shutdown unlinked active socket",
+      ]),
+      sleep,
+      now: () => nowMs,
+      startupPollIntervalMs: 5,
+      startupStabilityWindowMs: 15,
+      startupTimeoutMs: 60,
+    } as OuroCliDeps & {
+      readHealthState: () => {
+        status: string
+        mode: string
+        pid: number
+        startedAt: string
+        uptimeSeconds: number
+        safeMode: null
+        degraded: []
+        agents: Record<string, never>
+        habits: Record<string, never>
+      }
+      readHealthUpdatedAt: () => number
+      readRecentDaemonLogLines: () => string[]
+      sleep: typeof sleep
+      now: () => number
+      startupPollIntervalMs: number
+      startupStabilityWindowMs: number
+      startupTimeoutMs: number
+    }
+
+    const result = await ensureDaemonRunning(deps)
+
+    expect(result.alreadyRunning).toBe(false)
+    expect(result.message).toContain("failed to stabilize")
+    expect(result.message).toContain("stale shutdown unlinked active socket")
+    expect(result.message).not.toContain("daemon started")
+    expect(startDaemonProcess).toHaveBeenCalledTimes(2)
+  })
+
   it("formats unknown pid when startDaemonProcess returns null pid", async () => {
     const { ensureDaemonRunning } = await import("../../../heart/daemon/daemon-cli")
 
@@ -5796,6 +5966,76 @@ describe("ouro thoughts CLI execution", () => {
     const calls = (deps.writeStdout as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[0])
     expect(calls.some((c: string) => c.includes("following"))).toBe(true)
     expect(result).toContain("boot")
+  })
+})
+
+describe("ouro up startup progress", () => {
+  it("prints ordered startup phase output before reporting daemon success", async () => {
+    let nowMs = Date.parse("2026-04-10T05:02:36.000Z")
+    const writeStdout = vi.fn()
+    const sleep = vi.fn(async (ms: number) => {
+      nowMs += ms
+    })
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 5683 })),
+      writeStdout,
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      healthFilePath: "/tmp/ouro-health.json",
+      readHealthState: vi.fn(() => ({
+        status: "ok",
+        mode: "normal",
+        pid: 5683,
+        startedAt: new Date(nowMs).toISOString(),
+        uptimeSeconds: 0,
+        safeMode: null,
+        degraded: [],
+        agents: {},
+        habits: {},
+      })),
+      readHealthUpdatedAt: vi.fn(() => nowMs),
+      readRecentDaemonLogLines: vi.fn(() => []),
+      sleep,
+      now: () => nowMs,
+      startupPollIntervalMs: 5,
+      startupStabilityWindowMs: 15,
+      startupTimeoutMs: 60,
+    } as OuroCliDeps & {
+      readHealthState: () => {
+        status: string
+        mode: string
+        pid: number
+        startedAt: string
+        uptimeSeconds: number
+        safeMode: null
+        degraded: []
+        agents: Record<string, never>
+        habits: Record<string, never>
+      }
+      readHealthUpdatedAt: () => number
+      readRecentDaemonLogLines: () => string[]
+      sleep: typeof sleep
+      now: () => number
+      startupPollIntervalMs: number
+      startupStabilityWindowMs: number
+      startupTimeoutMs: number
+    }
+
+    const result = await runOuroCli(["up"], deps)
+    const lines = writeStdout.mock.calls.map((call: unknown[]) => String(call[0]))
+    const startIndex = lines.indexOf("starting daemon...")
+    const socketIndex = lines.indexOf("waiting for daemon socket...")
+    const healthIndex = lines.indexOf("verifying daemon health...")
+    const stableIndex = lines.findIndex((line) => line.includes("daemon started (pid 5683)"))
+
+    expect(result).toContain("daemon started")
+    expect(startIndex).toBeGreaterThanOrEqual(0)
+    expect(socketIndex).toBeGreaterThan(startIndex)
+    expect(healthIndex).toBeGreaterThan(socketIndex)
+    expect(stableIndex).toBeGreaterThan(healthIndex)
   })
 })
 
