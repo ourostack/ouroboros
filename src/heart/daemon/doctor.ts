@@ -14,6 +14,9 @@ import type {
   DoctorSummary,
 } from "./doctor-types"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { probeBlueBubblesHealth } from "./bluebubbles-health-diagnostics"
+
+const DEFAULT_BLUEBUBBLES_REQUEST_TIMEOUT_MS = 30_000
 
 // ── Category checkers ──
 
@@ -49,6 +52,30 @@ export async function checkDaemon(deps: DoctorDeps): Promise<DoctorCategory> {
 function discoverAgents(deps: DoctorDeps): string[] {
   if (!deps.existsSync(deps.bundlesRoot)) return []
   return deps.readdirSync(deps.bundlesRoot).filter((name) => name.endsWith(".ouro"))
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
+function textField(record: Record<string, unknown> | null | undefined, key: string): string {
+  const value = record?.[key]
+  return typeof value === "string" ? value.trim() : ""
+}
+
+function numberField(record: Record<string, unknown> | null | undefined, key: string, fallback: number): number {
+  const value = record?.[key]
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback
+}
+
+function readJsonObject(deps: DoctorDeps, filePath: string): Record<string, unknown> | null {
+  try {
+    return asRecord(JSON.parse(deps.readFileSync(filePath)) as unknown)
+  } catch {
+    return null
+  }
 }
 
 export function checkAgents(deps: DoctorDeps): DoctorCategory {
@@ -109,11 +136,12 @@ export function checkAgents(deps: DoctorDeps): DoctorCategory {
   return { name: "Agents", checks }
 }
 
-export function checkSenses(deps: DoctorDeps): DoctorCategory {
+export async function checkSenses(deps: DoctorDeps): Promise<DoctorCategory> {
   const checks: DoctorCheck[] = []
   const agents = discoverAgents(deps)
 
   for (const agentDir of agents) {
+    const agentName = agentDir.replace(/\.ouro$/, "")
     const configPath = `${deps.bundlesRoot}/${agentDir}/agent.json`
     if (!deps.existsSync(configPath)) continue
 
@@ -148,6 +176,65 @@ export function checkSenses(deps: DoctorDeps): DoctorCategory {
           status: "pass",
           detail: senseObj.enabled ? "enabled" : "disabled",
         })
+      }
+
+      if (sense === "bluebubbles" && senseObj.enabled === true) {
+        const secretsPath = `${deps.secretsRoot}/${agentName}/secrets.json`
+        if (!deps.existsSync(secretsPath)) {
+          checks.push({
+            label: `${agentDir} bluebubbles config`,
+            status: "fail",
+            detail: "missing secrets.json",
+          })
+          continue
+        }
+
+        const secrets = readJsonObject(deps, secretsPath)
+        if (!secrets) {
+          checks.push({
+            label: `${agentDir} bluebubbles config`,
+            status: "fail",
+            detail: "secrets.json unparseable",
+          })
+          continue
+        }
+
+        const bluebubbles = asRecord(secrets.bluebubbles)
+        const bluebubblesChannel = asRecord(secrets.bluebubblesChannel)
+        const serverUrl = textField(bluebubbles, "serverUrl")
+        const password = textField(bluebubbles, "password")
+        const missing: string[] = []
+        if (!serverUrl) missing.push("bluebubbles.serverUrl")
+        if (!password) missing.push("bluebubbles.password")
+
+        if (missing.length > 0) {
+          checks.push({
+            label: `${agentDir} bluebubbles config`,
+            status: "fail",
+            detail: `missing ${missing.join("/")}`,
+          })
+          continue
+        }
+
+        checks.push({
+          label: `${agentDir} bluebubbles config`,
+          status: "pass",
+          detail: serverUrl,
+        })
+
+        if (deps.fetchImpl) {
+          const probe = await probeBlueBubblesHealth({
+            serverUrl,
+            password,
+            requestTimeoutMs: numberField(bluebubblesChannel, "requestTimeoutMs", DEFAULT_BLUEBUBBLES_REQUEST_TIMEOUT_MS),
+            fetchImpl: deps.fetchImpl,
+          })
+          checks.push({
+            label: `${agentDir} bluebubbles upstream`,
+            status: probe.ok ? "pass" : "fail",
+            detail: probe.detail,
+          })
+        }
       }
     }
   }

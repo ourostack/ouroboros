@@ -302,12 +302,12 @@ describe("checkAgents", () => {
     expect(cat.checks[0].detail).toContain("version")
   })
 
-  it("skips agent.json that does not exist during senses check", () => {
+  it("skips agent.json that does not exist during senses check", async () => {
     const deps = createMockDeps({
       existsSync: existsFor(["/tmp/bundles"]),
       readdirSync: readdirFor({ "/tmp/bundles": ["noconfig.ouro"] }),
     })
-    const cat = checkSenses(deps)
+    const cat = await checkSenses(deps)
     // Should produce a fallback warning since no senses were found
     expect(cat.checks[0].status).toBe("warn")
   })
@@ -337,7 +337,7 @@ describe("checkAgents", () => {
 // ── Senses checks ──
 
 describe("checkSenses", () => {
-  it("passes for well-formed senses config", () => {
+  it("passes for well-formed senses config", async () => {
     const config = JSON.stringify({
       senses: {
         cli: { enabled: true },
@@ -345,32 +345,46 @@ describe("checkSenses", () => {
         bluebubbles: { enabled: true },
       },
     })
-    const deps = createMockDeps({
-      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/test.ouro/agent.json"]),
-      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
-      readFileSync: readFileFor({ "/tmp/bundles/test.ouro/agent.json": config }),
+    const secrets = JSON.stringify({
+      bluebubbles: { serverUrl: "http://bluebubbles.local", password: "pw" },
     })
-    const cat = checkSenses(deps)
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/agent.json",
+        "/tmp/secrets/test/secrets.json",
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/test.ouro/agent.json": config,
+        "/tmp/secrets/test/secrets.json": secrets,
+      }),
+    })
+    const cat = await checkSenses(deps)
     expect(cat.name).toBe("Senses")
-    expect(cat.checks).toHaveLength(3)
+    expect(cat.checks).toHaveLength(4)
     expect(cat.checks.every((c) => c.status === "pass")).toBe(true)
     expect(cat.checks[0].detail).toBe("enabled")
     expect(cat.checks[1].detail).toBe("disabled")
+    expect(cat.checks[3]).toEqual(expect.objectContaining({
+      label: "test.ouro bluebubbles config",
+      detail: "http://bluebubbles.local",
+    }))
   })
 
-  it("warns when senses config is missing", () => {
+  it("warns when senses config is missing", async () => {
     const config = JSON.stringify({ version: 2 })
     const deps = createMockDeps({
       existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/test.ouro/agent.json"]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
       readFileSync: readFileFor({ "/tmp/bundles/test.ouro/agent.json": config }),
     })
-    const cat = checkSenses(deps)
+    const cat = await checkSenses(deps)
     expect(cat.checks[0].status).toBe("warn")
     expect(cat.checks[0].detail).toContain("no senses config")
   })
 
-  it("fails when sense entry is malformed (not an object)", () => {
+  it("fails when sense entry is malformed (not an object)", async () => {
     const config = JSON.stringify({
       senses: { cli: "not-an-object" },
     })
@@ -379,12 +393,12 @@ describe("checkSenses", () => {
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
       readFileSync: readFileFor({ "/tmp/bundles/test.ouro/agent.json": config }),
     })
-    const cat = checkSenses(deps)
+    const cat = await checkSenses(deps)
     expect(cat.checks[0].status).toBe("fail")
     expect(cat.checks[0].detail).toContain("malformed")
   })
 
-  it("warns when sense entry is missing enabled boolean", () => {
+  it("warns when sense entry is missing enabled boolean", async () => {
     const config = JSON.stringify({
       senses: { cli: { port: 3000 } },
     })
@@ -393,33 +407,33 @@ describe("checkSenses", () => {
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
       readFileSync: readFileFor({ "/tmp/bundles/test.ouro/agent.json": config }),
     })
-    const cat = checkSenses(deps)
+    const cat = await checkSenses(deps)
     expect(cat.checks[0].status).toBe("warn")
     expect(cat.checks[0].detail).toContain("missing enabled")
   })
 
-  it("warns when no agents have senses config", () => {
+  it("warns when no agents have senses config", async () => {
     const deps = createMockDeps({
       existsSync: existsFor(["/tmp/bundles"]),
       readdirSync: readdirFor({ "/tmp/bundles": [] }),
     })
-    const cat = checkSenses(deps)
+    const cat = await checkSenses(deps)
     expect(cat.checks[0].status).toBe("warn")
     expect(cat.checks[0].detail).toContain("no agents")
   })
 
-  it("fails when agent.json is unparseable for senses check", () => {
+  it("fails when agent.json is unparseable for senses check", async () => {
     const deps = createMockDeps({
       existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/test.ouro/agent.json"]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
       readFileSync: readFileFor({ "/tmp/bundles/test.ouro/agent.json": "BROKEN" }),
     })
-    const cat = checkSenses(deps)
+    const cat = await checkSenses(deps)
     expect(cat.checks[0].status).toBe("fail")
     expect(cat.checks[0].detail).toContain("unparseable")
   })
 
-  it("handles null sense entry", () => {
+  it("handles null sense entry", async () => {
     const config = JSON.stringify({
       senses: { cli: null },
     })
@@ -428,9 +442,185 @@ describe("checkSenses", () => {
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
       readFileSync: readFileFor({ "/tmp/bundles/test.ouro/agent.json": config }),
     })
-    const cat = checkSenses(deps)
+    const cat = await checkSenses(deps)
     expect(cat.checks[0].status).toBe("fail")
     expect(cat.checks[0].detail).toContain("malformed")
+  })
+
+  it("actively probes enabled BlueBubbles upstreams and surfaces actionable failures", async () => {
+    const config = JSON.stringify({
+      senses: {
+        bluebubbles: { enabled: true },
+      },
+    })
+    const secrets = JSON.stringify({
+      bluebubbles: {
+        serverUrl: "http://bluebubbles.local",
+        password: "pw",
+      },
+      bluebubblesChannel: {
+        requestTimeoutMs: 1234,
+      },
+    })
+    const fetchImpl = vi.fn().mockRejectedValue(new Error("fetch failed"))
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/agent.json",
+        "/tmp/secrets/test/secrets.json",
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/test.ouro/agent.json": config,
+        "/tmp/secrets/test/secrets.json": secrets,
+      }),
+      fetchImpl,
+    })
+
+    const cat = await checkSenses(deps)
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://bluebubbles.local/api/v1/message/count?password=pw",
+      expect.objectContaining({
+        method: "GET",
+        signal: expect.any(AbortSignal),
+      }),
+    )
+    expect(cat.checks).toContainEqual(expect.objectContaining({
+      label: "test.ouro bluebubbles upstream",
+      status: "fail",
+      detail: expect.stringContaining("Cannot reach BlueBubbles at http://bluebubbles.local"),
+    }))
+    expect(cat.checks).toContainEqual(expect.objectContaining({
+      label: "test.ouro bluebubbles upstream",
+      detail: expect.stringContaining("Check `bluebubbles.serverUrl`"),
+    }))
+  })
+
+  it("passes enabled BlueBubbles upstream checks when the server responds", async () => {
+    const config = JSON.stringify({
+      senses: {
+        bluebubbles: { enabled: true },
+      },
+    })
+    const secrets = JSON.stringify({
+      bluebubbles: {
+        serverUrl: "http://bluebubbles.local",
+        password: "pw",
+      },
+    })
+    const fetchImpl = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }))
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/agent.json",
+        "/tmp/secrets/test/secrets.json",
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/test.ouro/agent.json": config,
+        "/tmp/secrets/test/secrets.json": secrets,
+      }),
+      fetchImpl,
+    })
+
+    const cat = await checkSenses(deps)
+
+    expect(cat.checks).toContainEqual(expect.objectContaining({
+      label: "test.ouro bluebubbles upstream",
+      status: "pass",
+      detail: "upstream reachable",
+    }))
+  })
+
+  it("fails enabled BlueBubbles config checks before probing when secrets fields are missing", async () => {
+    const config = JSON.stringify({
+      senses: {
+        bluebubbles: { enabled: true },
+      },
+    })
+    const secrets = JSON.stringify({
+      bluebubbles: {
+        serverUrl: "",
+      },
+    })
+    const fetchImpl = vi.fn()
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/agent.json",
+        "/tmp/secrets/test/secrets.json",
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/test.ouro/agent.json": config,
+        "/tmp/secrets/test/secrets.json": secrets,
+      }),
+      fetchImpl,
+    })
+
+    const cat = await checkSenses(deps)
+
+    expect(fetchImpl).not.toHaveBeenCalled()
+    expect(cat.checks).toContainEqual(expect.objectContaining({
+      label: "test.ouro bluebubbles config",
+      status: "fail",
+      detail: "missing bluebubbles.serverUrl/bluebubbles.password",
+    }))
+  })
+
+  it("fails enabled BlueBubbles config checks when secrets.json is missing", async () => {
+    const config = JSON.stringify({
+      senses: {
+        bluebubbles: { enabled: true },
+      },
+    })
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/agent.json",
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/test.ouro/agent.json": config }),
+      fetchImpl: vi.fn(),
+    })
+
+    const cat = await checkSenses(deps)
+
+    expect(cat.checks).toContainEqual(expect.objectContaining({
+      label: "test.ouro bluebubbles config",
+      status: "fail",
+      detail: "missing secrets.json",
+    }))
+  })
+
+  it("fails enabled BlueBubbles config checks when secrets.json is unparseable", async () => {
+    const config = JSON.stringify({
+      senses: {
+        bluebubbles: { enabled: true },
+      },
+    })
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/agent.json",
+        "/tmp/secrets/test/secrets.json",
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/test.ouro/agent.json": config,
+        "/tmp/secrets/test/secrets.json": "not json",
+      }),
+      fetchImpl: vi.fn(),
+    })
+
+    const cat = await checkSenses(deps)
+
+    expect(cat.checks).toContainEqual(expect.objectContaining({
+      label: "test.ouro bluebubbles config",
+      status: "fail",
+      detail: "secrets.json unparseable",
+    }))
   })
 })
 

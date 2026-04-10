@@ -53,6 +53,8 @@ export interface DoctorDeps {
   statSync: (p: string) => { mode: number; size: number }
   /** Check whether the daemon socket is alive. */
   checkSocketAlive: (socketPath: string) => Promise<boolean>
+  /** Optional fetch implementation used for active network diagnostics. */
+  fetchImpl?: typeof fetch
   /** Path to the daemon socket. */
   socketPath: string
   /** Root directory containing `<agent>.ouro` bundles (e.g., ~/AgentBundles). */
