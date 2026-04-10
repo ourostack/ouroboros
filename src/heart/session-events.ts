@@ -560,6 +560,48 @@ export function projectProviderMessages(envelope: SessionEnvelope): OpenAI.ChatC
     }))
 }
 
+/**
+ * Annotate user and assistant messages with a relative time offset tag.
+ * System and tool messages are untouched.
+ */
+export function annotateMessageTimestamps(
+  envelope: SessionEnvelope,
+  messages: OpenAI.ChatCompletionMessageParam[],
+  nowMs = Date.now(),
+): OpenAI.ChatCompletionMessageParam[] {
+  const eventIds = envelope.projection.eventIds.length > 0
+    ? envelope.projection.eventIds
+    : envelope.events.map((event) => event.id)
+  const byId = new Map(envelope.events.map((event) => [event.id, event] as const))
+  const events = eventIds
+    .map((id) => byId.get(id))
+    .filter((event): event is SessionEvent => Boolean(event))
+
+  return messages.map((msg, i) => {
+    const event = events[i]
+    if (!event) return msg
+    if (event.role !== "user" && event.role !== "assistant") return msg
+    const ts = bestEventTimestamp(event)
+    const elapsed = nowMs - Date.parse(ts)
+    if (elapsed < 0) return msg
+    const tag = elapsed < 60000 ? "[just now]" : `[-${formatElapsedCompact(elapsed)}]`
+    if (typeof msg.content === "string" && msg.content.length > 0) {
+      return { ...msg, content: `${tag} ${msg.content}` }
+    }
+    return msg
+  })
+}
+
+/** Compact elapsed format for message annotations: "3m", "2h", "1d". */
+function formatElapsedCompact(ms: number): string {
+  const minutes = Math.max(1, Math.floor(ms / 60000))
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h`
+  const days = Math.floor(hours / 24)
+  return `${days}d`
+}
+
 export function bestEventTimestamp(event: SessionEvent): string {
   return event.time.authoredAt ?? event.time.observedAt ?? event.time.recordedAt
 }
