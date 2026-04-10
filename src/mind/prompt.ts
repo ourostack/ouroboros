@@ -461,8 +461,21 @@ function providerSection(channel?: Channel): string {
 }
 
 function dateSection(): string {
-  const today = new Date().toISOString().slice(0, 10);
-  return `current date: ${today}`;
+  const now = new Date()
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  })
+  const parts = Object.fromEntries(
+    fmt.formatToParts(now).map((p) => [p.type, p.value]),
+  )
+  const pacific = `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute} PT`
+  return `current date and time: ${pacific}`
 }
 
 function toolsSection(channel: Channel, options?: BuildSystemOptions, context?: ResolvedContext): string {

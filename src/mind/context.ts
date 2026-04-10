@@ -1,6 +1,7 @@
 import type OpenAI from "openai"
 import { getContextConfig } from "../heart/config"
 import {
+  annotateMessageTimestamps,
   appendSyntheticAssistantEvent,
   buildCanonicalSessionEnvelope,
   loadSessionEnvelopeFile,
@@ -261,7 +262,7 @@ export function loadSession(filePath: string): SessionData | null {
     const envelope = loadSessionEnvelopeFile(filePath)
     if (!envelope) return null
     return {
-      messages: projectProviderMessages(envelope),
+      messages: annotateMessageTimestamps(envelope, projectProviderMessages(envelope)),
       events: envelope.events,
       lastUsage: envelope.lastUsage ?? undefined,
       state: denormalizeContinuityState(envelope.state),
