@@ -195,16 +195,28 @@ jobs:
         run: |
           LOCAL=$(node -p "require('./package.json').version")
 
-          CLI_ALPHA=$(npm view "@ouro.bot/cli@alpha" version 2>/dev/null || echo "")
-          if [ "$CLI_ALPHA" != "$LOCAL" ]; then
-            echo "::error::@ouro.bot/cli@alpha points at ${CLI_ALPHA:-missing}, expected ${LOCAL}"
-            exit 1
-          fi
+          verify_tag() {
+            package_ref="$1"
+            expected="$2"
 
-          WRAPPER_LATEST=$(npm view "ouro.bot@latest" version 2>/dev/null || echo "")
-          if [ "$WRAPPER_LATEST" != "$LOCAL" ]; then
-            echo "::error::ouro.bot@latest points at ${WRAPPER_LATEST:-missing}, expected ${LOCAL}"
-            exit 1
-          fi
+            for attempt in 1 2 3 4 5 6; do
+              actual=$(npm view "$package_ref" version 2>/dev/null || echo "")
+              if [ "$actual" = "$expected" ]; then
+                echo "${package_ref} verified at ${expected}"
+                return 0
+              fi
+
+              if [ "$attempt" != "6" ]; then
+                echo "${package_ref} points at ${actual:-missing}, expected ${expected}; retrying after npm propagation delay"
+                sleep 10
+              fi
+            done
+
+            echo "::error::${package_ref} points at ${actual:-missing}, expected ${expected}"
+            return 1
+          }
+
+          verify_tag "@ouro.bot/cli@alpha" "$LOCAL"
+          verify_tag "ouro.bot@latest" "$LOCAL"
 
           echo "supported npm dist-tags verified for ${LOCAL}"
