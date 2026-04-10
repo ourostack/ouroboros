@@ -131,7 +131,10 @@ export async function ensureDaemonRunning(deps: OuroCliDeps): Promise<EnsureDaem
   }
 
   const retryLimit = deps.startupRetryLimit ?? DEFAULT_DAEMON_STARTUP_RETRY_LIMIT
-  let lastFailure: DaemonStartupFailure | null = null
+  let lastFailure: DaemonStartupFailure = {
+    reason: "daemon failed before the startup monitor recorded a failure",
+    retryable: false,
+  }
   let lastPid: number | null = null
 
   for (let attempt = 0; attempt <= retryLimit; attempt += 1) {
@@ -177,8 +180,6 @@ function hasFreshCurrentBootHealthSignal(
   bootStartedAtMs: number,
   pid: number | null,
 ): boolean {
-  if (!hasStartupHealthMonitor(deps)) return false
-
   const healthState = deps.readHealthState!(deps.healthFilePath!)
   if (!healthState) return false
 
@@ -201,11 +202,11 @@ function hasFreshCurrentBootHealthSignal(
 
 function formatDaemonStartupFailureMessage(
   pid: number | null,
-  failure: DaemonStartupFailure | null,
+  failure: DaemonStartupFailure,
   deps: OuroCliDeps,
 ): string {
   const lines = [
-    `daemon spawned (pid ${pid ?? "unknown"}) but failed to stabilize: ${failure?.reason ?? "unknown startup failure"}`,
+    `daemon spawned (pid ${pid ?? "unknown"}) but failed to stabilize: ${failure.reason}`,
   ]
   const recentLogLines = deps.readRecentDaemonLogLines?.(DEFAULT_DAEMON_STARTUP_LOG_LINES) ?? []
   if (recentLogLines.length > 0) {

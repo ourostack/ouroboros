@@ -55,6 +55,10 @@ describe("daemon CLI default dependency branches", () => {
         getAgentDaemonLogsDir: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logs"),
         getAgentDaemonLoggingConfigPath: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logging.json"),
       }))
+      vi.doMock("../../../heart/daemon/daemon-health", () => ({
+        getDefaultHealthPath: () => "/tmp/daemon-health.json",
+        readHealth: vi.fn(() => null),
+      }))
       vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
 
       const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
@@ -279,6 +283,10 @@ describe("daemon CLI default dependency branches", () => {
       getAgentDaemonLogsDir: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logs",
       getAgentDaemonLoggingConfigPath: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logging.json",
     }))
+    vi.doMock("../../../heart/daemon/daemon-health", () => ({
+      getDefaultHealthPath: () => "/tmp/daemon-health.json",
+      readHealth: vi.fn(() => null),
+    }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
     vi.doMock("fs", () => ({
       existsSync: vi.fn(() => false),
@@ -321,6 +329,10 @@ describe("daemon CLI default dependency branches", () => {
       getAgentBundlesRoot: () => "/mock/AgentBundles",
       getAgentDaemonLogsDir: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logs",
       getAgentDaemonLoggingConfigPath: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logging.json",
+    }))
+    vi.doMock("../../../heart/daemon/daemon-health", () => ({
+      getDefaultHealthPath: () => "/tmp/daemon-health.json",
+      readHealth: vi.fn(() => null),
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
     vi.doMock("fs", () => ({
@@ -366,6 +378,10 @@ describe("daemon CLI default dependency branches", () => {
       getAgentDaemonLogsDir: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logs",
       getAgentDaemonLoggingConfigPath: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logging.json",
     }))
+    vi.doMock("../../../heart/daemon/daemon-health", () => ({
+      getDefaultHealthPath: () => "/tmp/daemon-health.json",
+      readHealth: vi.fn(() => null),
+    }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
     vi.doMock("fs", () => ({ existsSync: vi.fn(() => false), unlinkSync: vi.fn() }))
 
@@ -390,6 +406,10 @@ describe("daemon CLI default dependency branches", () => {
       getAgentBundlesRoot: () => "/mock/AgentBundles",
       getAgentDaemonLogsDir: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logs",
       getAgentDaemonLoggingConfigPath: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logging.json",
+    }))
+    vi.doMock("../../../heart/daemon/daemon-health", () => ({
+      getDefaultHealthPath: () => "/tmp/daemon-health.json",
+      readHealth: vi.fn(() => null),
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
     vi.doMock("fs", () => ({
@@ -421,6 +441,12 @@ describe("daemon CLI default dependency branches", () => {
       cleanupStaleSocket: vi.fn(),
       getCurrentCliVersion: () => null,
       detectMode: () => "production" as const,
+      healthFilePath: undefined,
+      readHealthState: undefined,
+      readHealthUpdatedAt: undefined,
+      startupPollIntervalMs: 5,
+      startupTimeoutMs: 20,
+      startupRetryLimit: 0,
     })
     expect(result).toContain("daemon started")
     expect(consoleLog).toHaveBeenCalled()
@@ -1278,5 +1304,112 @@ describe("daemon CLI default dependency branches", () => {
       "/tmp/daemon.sock",
       expect.objectContaining({ kind: "hatch.start" }),
     )
+  })
+
+  it("wires default startup health and daemon-log helpers into the CLI deps", async () => {
+    vi.resetModules()
+
+    const readHealth = vi.fn(() => ({
+      status: "ok",
+      mode: "normal",
+      pid: 123,
+      startedAt: "2026-04-10T05:02:36.000Z",
+      uptimeSeconds: 1,
+      safeMode: null,
+      degraded: [],
+      agents: {},
+      habits: {},
+    }))
+    const discoverLogFiles = vi.fn(() => ["/tmp/daemon.ndjson"])
+    const readLastLines = vi.fn(() => ['{"level":"warn","component":"daemon","event":"daemon.startup","message":"socket lost"}'])
+    const formatLogLine = vi.fn((line: string) => `formatted:${line}`)
+    const statSync = vi.fn(() => ({ mtimeMs: 4242 }))
+
+    vi.doMock("net", () => ({ createConnection: vi.fn() }))
+    vi.doMock("child_process", () => ({ spawn: vi.fn() }))
+    vi.doMock("fs", async () => {
+      const actual = await vi.importActual<typeof import("fs")>("fs")
+      return {
+        ...actual,
+        statSync,
+        existsSync: vi.fn(() => false),
+        unlinkSync: vi.fn(),
+        readdirSync: vi.fn(() => []),
+      }
+    })
+    vi.doMock("../../../heart/daemon/daemon-health", () => ({
+      getDefaultHealthPath: () => "/tmp/daemon-health.json",
+      readHealth,
+    }))
+    vi.doMock("../../../heart/daemon/log-tailer", () => ({
+      discoverLogFiles,
+      readLastLines,
+      formatLogLine,
+    }))
+    vi.doMock("../../../heart/identity", () => ({
+      getRepoRoot: () => "/mock/repo",
+      getAgentBundlesRoot: () => "/mock/AgentBundles",
+      getAgentDaemonLogsDir: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logs",
+      getAgentDaemonLoggingConfigPath: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logging.json",
+    }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+
+    const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+    const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+    expect(deps.healthFilePath).toBe("/tmp/daemon-health.json")
+    expect(deps.readHealthState?.("/tmp/daemon-health.json")).toEqual(expect.objectContaining({
+      pid: 123,
+      status: "ok",
+    }))
+    expect(deps.readHealthUpdatedAt?.("/tmp/daemon-health.json")).toBe(4242)
+    expect(deps.readRecentDaemonLogLines?.(5)).toEqual([
+      'formatted:{"level":"warn","component":"daemon","event":"daemon.startup","message":"socket lost"}',
+    ])
+    expect(deps.startupPollIntervalMs).toBe(250)
+    expect(deps.startupStabilityWindowMs).toBe(1_500)
+    expect(deps.startupTimeoutMs).toBe(10_000)
+    expect(deps.startupRetryLimit).toBe(1)
+    await expect(deps.sleep?.(0)).resolves.toBeUndefined()
+  })
+
+  it("returns null for health mtime when the health file cannot be stat'ed", async () => {
+    vi.resetModules()
+
+    vi.doMock("net", () => ({ createConnection: vi.fn() }))
+    vi.doMock("child_process", () => ({ spawn: vi.fn() }))
+    vi.doMock("fs", async () => {
+      const actual = await vi.importActual<typeof import("fs")>("fs")
+      return {
+        ...actual,
+        statSync: vi.fn(() => {
+          throw new Error("missing")
+        }),
+        existsSync: vi.fn(() => false),
+        unlinkSync: vi.fn(),
+        readdirSync: vi.fn(() => []),
+      }
+    })
+    vi.doMock("../../../heart/daemon/daemon-health", () => ({
+      getDefaultHealthPath: () => "/tmp/daemon-health.json",
+      readHealth: vi.fn(() => null),
+    }))
+    vi.doMock("../../../heart/daemon/log-tailer", () => ({
+      discoverLogFiles: vi.fn(() => []),
+      readLastLines: vi.fn(() => []),
+      formatLogLine: vi.fn((line: string) => line),
+    }))
+    vi.doMock("../../../heart/identity", () => ({
+      getRepoRoot: () => "/mock/repo",
+      getAgentBundlesRoot: () => "/mock/AgentBundles",
+      getAgentDaemonLogsDir: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logs",
+      getAgentDaemonLoggingConfigPath: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logging.json",
+    }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+
+    const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+    const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+    expect(deps.readHealthUpdatedAt?.("/tmp/daemon-health.json")).toBeNull()
   })
 })
