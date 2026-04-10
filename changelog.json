@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.322",
+      "changes": [
+        "fix(bluebubbles): share BlueBubbles health diagnostics between runtime status and doctor so fetch, malformed URL, auth, and upstream server failures produce actionable repair guidance instead of a bare `fetch failed`.",
+        "fix(doctor): actively probe enabled BlueBubbles upstreams, validate `bluebubbles.serverUrl` and `bluebubbles.password`, and report exactly whether config, reachability, auth, or upstream health needs repair."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.321",
       "changes": [
         "refactor(outlook): split `src/heart/outlook/outlook-read.ts` into focused reader modules for agent/machine state, sessions, runtime views, continuity views, and shared helpers while keeping the exported Outlook read API stable through a small composition root.",
