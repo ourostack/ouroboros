@@ -1,6 +1,11 @@
-import * as fs from "fs"
 import type { TrustLevel } from "../mind/friends/types"
 import { emitNervesEvent } from "../nerves/runtime"
+import {
+  extractEventText,
+  formatSessionEventTimestamp,
+  loadSessionEnvelopeFile,
+  type SessionEvent,
+} from "./session-events"
 
 export interface SessionRecallOptions {
   sessionPath: string
@@ -20,7 +25,7 @@ export type SessionRecallResult =
     transcript: string
     summary: string
     snapshot: string
-    tailMessages: Array<{ role: string; content: string }>
+    tailMessages: Array<{ id: string; role: string; content: string; timestamp: string }>
   }
 
 export interface SessionSearchOptions {
@@ -47,31 +52,14 @@ export type SessionSearchResult =
     matches: string[]
   }
 
-function normalizeContent(content: unknown): string {
-  if (typeof content === "string") return content
-  if (!Array.isArray(content)) return ""
-
-  return content
-    .map((part) => (
-      part && typeof part === "object" && "type" in part && (part as { type?: unknown }).type === "text" && "text" in part
-        ? String((part as { text?: unknown }).text ?? "")
-        : ""
-    ))
-    .filter((text) => text.length > 0)
-    .join("")
-}
-
-function normalizeSessionMessages(messages: unknown): Array<{ role: string; content: string }> {
-  if (!Array.isArray(messages)) return []
-
-  return messages
-    .map((message) => {
-      const record = message && typeof message === "object" ? message as { role?: unknown; content?: unknown } : {}
-      return {
-        role: typeof record.role === "string" ? record.role : "",
-        content: normalizeContent(record.content),
-      }
-    })
+function normalizeSessionMessages(events: SessionEvent[]): Array<{ id: string; role: string; content: string; timestamp: string }> {
+  return events
+    .map((event) => ({
+      id: event.id,
+      role: event.role,
+      content: extractEventText(event),
+      timestamp: formatSessionEventTimestamp(event),
+    }))
     .filter((message) => message.role !== "system" && message.content.length > 0)
 }
 
@@ -88,7 +76,7 @@ function clip(text: string, limit = 160): string {
   return compact.length > limit ? compact.slice(0, limit - 1) + "…" : compact
 }
 
-function buildSnapshot(summary: string, tailMessages: Array<{ role: string; content: string }>): string {
+function buildSnapshot(summary: string, tailMessages: Array<{ id: string; role: string; content: string; timestamp: string }>): string {
   const lines = [`recent focus: ${clip(summary, 240)}`]
   const latestUser = [...tailMessages].reverse().find((message) => message.role === "user")?.content
   const latestAssistant = [...tailMessages].reverse().find((message) => message.role === "assistant")?.content
@@ -105,7 +93,7 @@ function buildSnapshot(summary: string, tailMessages: Array<{ role: string; cont
 
 function buildSearchSnapshot(
   query: string,
-  messages: Array<{ role: string; content: string }>,
+  messages: Array<{ id: string; role: string; content: string; timestamp: string }>,
   includeLatestTurn = true,
 ): string {
   const lines = [`history query: "${clip(query, 120)}"`]
@@ -125,14 +113,14 @@ function buildSearchSnapshot(
   return lines.join("\n")
 }
 function buildSearchExcerpts(
-  messages: Array<{ role: string; content: string }>,
+  messages: Array<{ id: string; role: string; content: string; timestamp: string }>,
   query: string,
   maxMatches: number,
 ): string[] {
   const normalizedQuery = query.trim().toLowerCase()
   if (!normalizedQuery) return []
 
-  const candidates: Array<{ excerpt: string; score: number; index: number }> = []
+  const candidates: Array<{ excerpt: string; signature: string; score: number; index: number }> = []
   let lastMatchIndex = -2
 
   for (let i = 0; i < messages.length; i++) {
@@ -144,6 +132,10 @@ function buildSearchExcerpts(
     const end = Math.min(messages.length, i + 2)
     const excerpt = messages
       .slice(start, end)
+      .map((message) => `[${message.timestamp} | ${message.role} | ${message.id}] ${clip(message.content, 200)}`)
+      .join("\n")
+    const signature = messages
+      .slice(start, end)
       .map((message) => `[${message.role}] ${clip(message.content, 200)}`)
       .join("\n")
     const score = messages
@@ -151,15 +143,15 @@ function buildSearchExcerpts(
       .filter((message) => message.content.toLowerCase().includes(normalizedQuery))
       .length
 
-    candidates.push({ excerpt, score, index: i })
+    candidates.push({ excerpt, signature, score, index: i })
   }
 
   const seen = new Set<string>()
   return candidates
     .sort((a, b) => b.score - a.score || a.index - b.index)
     .filter((candidate) => {
-      if (seen.has(candidate.excerpt)) return false
-      seen.add(candidate.excerpt)
+      if (seen.has(candidate.signature)) return false
+      seen.add(candidate.signature)
       return true
     })
     .slice(0, maxMatches)
@@ -179,22 +171,16 @@ export async function recallSession(options: SessionRecallOptions): Promise<Sess
     },
   })
 
-  let raw: string
-  try {
-    raw = fs.readFileSync(options.sessionPath, "utf-8")
-  } catch {
-    return { kind: "missing" }
-  }
-
-  const parsed = JSON.parse(raw) as { messages?: Array<{ role?: unknown; content?: unknown }> }
-  const tailMessages = normalizeSessionMessages(parsed.messages).slice(-options.messageCount)
+  const envelope = loadSessionEnvelopeFile(options.sessionPath)
+  if (!envelope) return { kind: "missing" }
+  const tailMessages = normalizeSessionMessages(envelope.events).slice(-options.messageCount)
 
   if (tailMessages.length === 0) {
     return { kind: "empty" }
   }
 
   const transcript = tailMessages
-    .map((message) => `[${message.role}] ${message.content}`)
+    .map((message) => `[${message.timestamp} | ${message.role} | ${message.id}] ${message.content}`)
     .join("\n")
 
   const summary = options.summarize
@@ -227,15 +213,9 @@ export async function searchSessionTranscript(options: SessionSearchOptions): Pr
     },
   })
 
-  let raw: string
-  try {
-    raw = fs.readFileSync(options.sessionPath, "utf-8")
-  } catch {
-    return { kind: "missing" }
-  }
-
-  const parsed = JSON.parse(raw) as { messages?: Array<{ role?: unknown; content?: unknown }> }
-  const messages = normalizeSessionMessages(parsed.messages)
+  const envelope = loadSessionEnvelopeFile(options.sessionPath)
+  if (!envelope) return { kind: "missing" }
+  const messages = normalizeSessionMessages(envelope.events)
 
   if (messages.length === 0) {
     return { kind: "empty" }

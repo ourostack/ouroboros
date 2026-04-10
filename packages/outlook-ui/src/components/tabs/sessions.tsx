@@ -3,49 +3,35 @@ import { Badge } from "../../catalyst/badge"
 import { fetchJson, relTime, truncate } from "../../api"
 import { classifyToolCall, type ClassifiedToolCall } from "../../tools"
 import { useNavigate } from "../../navigation"
-
-interface SessionItem {
-  friendId: string
-  friendName: string
-  channel: string
-  key: string
-  messageCount: number
-  lastActivityAt: string
-  replyState: "needs-reply" | "on-hold" | "monitoring" | "idle"
-  lastUsage: { total_tokens: number } | null
-  continuity: { mustResolveBeforeHandoff: boolean } | null
-  latestUserExcerpt: string | null
-  latestAssistantExcerpt: string | null
-  estimatedTokens: number | null
-}
-
-interface SessionInventory {
-  totalCount: number
-  activeCount: number
-  staleCount: number
-  items: SessionItem[]
-}
-
-interface TranscriptMessage {
-  index: number
-  role: string
-  content: string | null
-  name?: string
-  tool_call_id?: string
-  tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }>
-}
-
-interface Transcript {
-  messageCount: number
-  messages: TranscriptMessage[]
-  lastUsage: { input_tokens: number; output_tokens: number; total_tokens: number } | null
-}
+import type {
+  OutlookSessionInventory as SessionInventory,
+  OutlookSessionInventoryItem as SessionItem,
+  OutlookSessionTranscript as Transcript,
+  OutlookTranscriptMessage as TranscriptMessage,
+} from "../../../../../src/heart/outlook/outlook-types"
+import {
+  getOutlookTranscriptMessageText,
+  getOutlookTranscriptTimestamp,
+} from "../../../../../src/heart/outlook/outlook-types"
 
 const REPLY_STATE_BADGE: Record<string, { color: "red" | "yellow" | "lime" | "zinc"; label: string }> = {
   "needs-reply": { color: "red", label: "needs reply" },
   "on-hold": { color: "yellow", label: "on hold" },
   "monitoring": { color: "zinc", label: "monitoring" },
   "idle": { color: "zinc", label: "idle" },
+}
+
+function transcriptTimestamp(msg: TranscriptMessage): string {
+  return getOutlookTranscriptTimestamp(msg)
+}
+
+function formatTranscriptTimestamp(msg: TranscriptMessage): string {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(transcriptTimestamp(msg)))
 }
 
 export function SessionsTab({ agentName, focus, onFocusConsumed, deskPrefs }: { agentName: string; focus?: string; onFocusConsumed?: () => void; deskPrefs?: Record<string, unknown> | null }) {
@@ -223,7 +209,7 @@ function TranscriptView({ messages, usage }: { messages: TranscriptMessage[]; us
 
   const toolResultMap = new Map<string, TranscriptMessage>()
   for (const m of conversation) {
-    if (m.role === "tool" && m.tool_call_id) toolResultMap.set(m.tool_call_id, m)
+    if (m.role === "tool" && m.toolCallId) toolResultMap.set(m.toolCallId, m)
   }
 
   return (
@@ -242,16 +228,17 @@ function TranscriptView({ messages, usage }: { messages: TranscriptMessage[]; us
             {showSystem ? "▼" : "▶"} system context ({system.length})
           </button>
           {showSystem && system.map((m) => (
-            <div key={m.index} className="mt-2 max-h-60 overflow-y-auto rounded bg-ouro-void/40 p-2 text-xs text-ouro-shadow whitespace-pre-wrap break-words">
-              {m.content}
+            <div key={m.id} className="mt-2 max-h-60 overflow-y-auto rounded bg-ouro-void/40 p-2 text-xs text-ouro-shadow whitespace-pre-wrap break-words">
+              <p className="mb-1 font-mono text-[9px] text-ouro-shadow/70">{formatTranscriptTimestamp(m)}</p>
+              {getOutlookTranscriptMessageText(m)}
             </div>
           ))}
         </div>
       )}
       {conversation.map((m) => {
         if (m.role === "tool") return null
-        if (m.role === "user") return <UserBubble key={m.index} msg={m} />
-        if (m.role === "assistant") return <AgentBubble key={m.index} msg={m} toolResults={toolResultMap} />
+        if (m.role === "user") return <UserBubble key={m.id} msg={m} />
+        if (m.role === "assistant") return <AgentBubble key={m.id} msg={m} toolResults={toolResultMap} />
         return null
       })}
     </div>
@@ -259,21 +246,24 @@ function TranscriptView({ messages, usage }: { messages: TranscriptMessage[]; us
 }
 
 function UserBubble({ msg }: { msg: TranscriptMessage }) {
+  const text = getOutlookTranscriptMessageText(msg)
   return (
     <div className="flex justify-start py-1">
       <div className="max-w-[85%] sm:max-w-[75%] rounded-2xl rounded-bl-sm bg-ouro-moss/25 px-3.5 py-2 ring-1 ring-ouro-moss/15">
         <div className="flex items-center gap-2 mb-0.5">
           <p className="font-mono text-[9px] uppercase tracking-wider text-ouro-gold/70">user</p>
-          <span className="font-mono text-[9px] text-ouro-shadow/40">#{msg.index}</span>
+          <span className="font-mono text-[9px] text-ouro-shadow/40">#{msg.sequence}</span>
+          <span className="font-mono text-[9px] text-ouro-shadow/60">{formatTranscriptTimestamp(msg)}</span>
         </div>
-        <p className="text-sm leading-relaxed text-ouro-bone whitespace-pre-wrap break-words">{msg.content}</p>
+        <p className="text-sm leading-relaxed text-ouro-bone whitespace-pre-wrap break-words">{text}</p>
       </div>
     </div>
   )
 }
 
 function AgentBubble({ msg, toolResults }: { msg: TranscriptMessage; toolResults: Map<string, TranscriptMessage> }) {
-  const classified = (msg.tool_calls ?? []).map(classifyToolCall)
+  const text = getOutlookTranscriptMessageText(msg)
+  const classified = (msg.toolCalls ?? []).map(classifyToolCall)
   const mechanism = classified.filter((c) => c.kind !== "action")
   const actions = classified.filter((c) => c.kind === "action")
 
@@ -284,7 +274,10 @@ function AgentBubble({ msg, toolResults }: { msg: TranscriptMessage; toolResults
       bubbles.push(
         <div key={call.id} className="flex justify-end py-1">
           <div className="max-w-[85%] sm:max-w-[75%] rounded-2xl rounded-br-sm bg-ouro-glow/8 px-3.5 py-2 ring-1 ring-ouro-glow/12">
-            <p className="font-mono text-[9px] uppercase tracking-wider text-ouro-glow/70 mb-0.5">agent</p>
+            <div className="mb-0.5 flex items-center gap-2">
+              <p className="font-mono text-[9px] uppercase tracking-wider text-ouro-glow/70">agent</p>
+              <span className="font-mono text-[9px] text-ouro-shadow/60">{formatTranscriptTimestamp(msg)}</span>
+            </div>
             <p className="text-sm leading-relaxed text-ouro-bone whitespace-pre-wrap break-words">{call.deliveredText}</p>
             {call.metadata && call.metadata !== "complete" && (
               <p className="mt-1 font-mono text-[9px] text-ouro-shadow">intent: {call.metadata}</p>
@@ -296,7 +289,10 @@ function AgentBubble({ msg, toolResults }: { msg: TranscriptMessage; toolResults
       bubbles.push(
         <div key={call.id} className="flex justify-end py-1">
           <div className="max-w-[85%] sm:max-w-[75%] rounded-2xl rounded-br-sm bg-ouro-glow/8 px-3.5 py-2 ring-1 ring-ouro-glow/12">
-            <p className="font-mono text-[9px] uppercase tracking-wider text-ouro-glow/70 mb-0.5">agent</p>
+            <div className="mb-0.5 flex items-center gap-2">
+              <p className="font-mono text-[9px] uppercase tracking-wider text-ouro-glow/70">agent</p>
+              <span className="font-mono text-[9px] text-ouro-shadow/60">{formatTranscriptTimestamp(msg)}</span>
+            </div>
             {call.deliveredText && (
               <p className="text-sm leading-relaxed text-ouro-bone whitespace-pre-wrap break-words">{call.deliveredText}</p>
             )}
@@ -313,7 +309,10 @@ function AgentBubble({ msg, toolResults }: { msg: TranscriptMessage; toolResults
       bubbles.push(
         <div key={call.id} className="flex justify-end py-1">
           <div className="max-w-[85%] sm:max-w-[75%] rounded-2xl rounded-br-sm bg-ouro-scale/12 px-3.5 py-2 ring-1 ring-ouro-scale/15">
-            <p className="font-mono text-[9px] uppercase tracking-wider text-ouro-glow/70 mb-0.5">surfaced</p>
+            <div className="mb-0.5 flex items-center gap-2">
+              <p className="font-mono text-[9px] uppercase tracking-wider text-ouro-glow/70">surfaced</p>
+              <span className="font-mono text-[9px] text-ouro-shadow/60">{formatTranscriptTimestamp(msg)}</span>
+            </div>
             <p className="text-sm leading-relaxed text-ouro-bone whitespace-pre-wrap break-words">{call.deliveredText}</p>
             {call.metadata && <p className="mt-1 font-mono text-[9px] text-ouro-shadow">→ {call.metadata}</p>}
           </div>
@@ -327,12 +326,15 @@ function AgentBubble({ msg, toolResults }: { msg: TranscriptMessage; toolResults
   }
 
   // Regular assistant content without mechanism tools
-  if (msg.content && mechanism.length === 0) {
+  if (text && mechanism.length === 0) {
     bubbles.push(
-      <div key={`${msg.index}-content`} className="flex justify-end py-1">
+      <div key={`${msg.id}-content`} className="flex justify-end py-1">
         <div className="max-w-[85%] sm:max-w-[75%] rounded-2xl rounded-br-sm bg-ouro-glow/8 px-3.5 py-2 ring-1 ring-ouro-glow/12">
-          <p className="font-mono text-[9px] uppercase tracking-wider text-ouro-glow/70 mb-0.5">agent</p>
-          <p className="text-sm leading-relaxed text-ouro-bone whitespace-pre-wrap break-words">{msg.content}</p>
+          <div className="mb-0.5 flex items-center gap-2">
+            <p className="font-mono text-[9px] uppercase tracking-wider text-ouro-glow/70">agent</p>
+            <span className="font-mono text-[9px] text-ouro-shadow/60">{formatTranscriptTimestamp(msg)}</span>
+          </div>
+          <p className="text-sm leading-relaxed text-ouro-bone whitespace-pre-wrap break-words">{text}</p>
         </div>
       </div>
     )
@@ -341,7 +343,7 @@ function AgentBubble({ msg, toolResults }: { msg: TranscriptMessage; toolResults
   // Action tool calls
   if (actions.length > 0) {
     bubbles.push(
-      <div key={`${msg.index}-tools`} className="flex justify-end py-1">
+      <div key={`${msg.id}-tools`} className="flex justify-end py-1">
         <div className="max-w-[85%] sm:max-w-[75%] space-y-1">
           {actions.map((call) => <ToolChip key={call.id} call={call} result={toolResults.get(call.id)} />)}
         </div>
@@ -354,6 +356,7 @@ function AgentBubble({ msg, toolResults }: { msg: TranscriptMessage; toolResults
 
 function ToolChip({ call, result }: { call: ClassifiedToolCall; result?: TranscriptMessage }) {
   const [open, setOpen] = useState(false)
+  const resultText = result ? getOutlookTranscriptMessageText(result) : null
   return (
     <button
       onClick={() => setOpen(!open)}
@@ -374,7 +377,7 @@ function ToolChip({ call, result }: { call: ClassifiedToolCall; result?: Transcr
             <div className="mt-1.5 border-t border-ouro-moss/15 pt-1.5">
               <Badge>result</Badge>
               <pre className="mt-1 max-h-32 overflow-y-auto rounded bg-ouro-void/40 p-1.5 font-mono text-[11px] text-ouro-mist whitespace-pre-wrap break-words">
-                {result.content}
+                {resultText}
               </pre>
             </div>
           )}

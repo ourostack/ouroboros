@@ -437,6 +437,46 @@ describe("buildSessionSummary", () => {
     const result = buildSessionSummary({ sessionsDir, friendsDir, agentName: "slugger" })
     expect(result.indexOf("Ari/cli/session")).toBeLessThan(result.indexOf("Sam/cli/session"))
   })
+
+  it("renders inbound, outbound, and waiting badges from temporal session activity", async () => {
+    vi.resetModules()
+    vi.doMock("../../heart/session-activity", async () => {
+      const actual = await vi.importActual<typeof import("../../heart/session-activity")>("../../heart/session-activity")
+      return {
+        ...actual,
+        listSessionActivity: vi.fn(() => [{
+          friendId: "friend-1",
+          friendName: "Ari",
+          channel: "cli",
+          key: "session",
+          sessionPath: "/mock/sessions/friend-1/cli/session.json",
+          lastActivityAt: "2026-04-09T10:58:00.000Z",
+          lastActivityMs: Date.parse("2026-04-09T10:58:00.000Z"),
+          activitySource: "friend-facing" as const,
+          lastInboundAt: "2026-04-09T10:58:00.000Z",
+          lastOutboundAt: "2026-04-09T10:55:00.000Z",
+          unansweredInboundCount: 2,
+        }]),
+      }
+    })
+
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-04-09T11:00:00.000Z"))
+
+    try {
+      const { buildSessionSummary } = await import("../../mind/prompt")
+      const result = buildSessionSummary({
+        sessionsDir: "/mock/sessions",
+        friendsDir: "/mock/friends",
+        agentName: "slugger",
+      })
+
+      expect(result).toContain("Ari/cli/session (in 2m ago · out 5m ago · 2 waiting)")
+    } finally {
+      nowSpy.mockRestore()
+      vi.doUnmock("../../heart/session-activity")
+      vi.resetModules()
+    }
+  })
 })
 
 describe("buildSessionSummary: currentSession option", () => {

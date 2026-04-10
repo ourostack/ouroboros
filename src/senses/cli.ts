@@ -1026,6 +1026,7 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
   // Load existing session or start fresh
   const existing = loadSession(sessPath)
   let sessionState = existing?.state
+  let sessionEvents = existing?.events ?? []
   const mcpManager = await getSharedMcpManager() ?? undefined
   const sessionMessages: OpenAI.ChatCompletionMessageParam[] = existing?.messages && existing.messages.length > 0
     ? existing.messages
@@ -1050,6 +1051,7 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
       _testInputSource: options?._testInputSource,
       onAsyncAssistantMessage: async (messages, _assistantMessage) => {
         postTurn(messages, sessPath, undefined, undefined, sessionState)
+        sessionEvents = loadSession(sessPath)?.events ?? sessionEvents
       },
       runTurn: async (messages, userInput, callbacks, signal, toolContext, userContent) => {
         // Run the full per-turn pipeline: resolve -> gate -> session -> drain -> runAgent -> postTurn -> tokens
@@ -1090,6 +1092,7 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
               messages,
               sessionPath: sessPath,
               state: sessionState,
+              events: sessionEvents,
             }),
           },
           pendingDir,
@@ -1111,6 +1114,7 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
           postTurn: (turnMessages, sessionPathArg, usage, hooks, state) => {
             postTurn(turnMessages, sessionPathArg, usage, hooks, state)
             sessionState = state
+            sessionEvents = loadSession(sessionPathArg)?.events ?? sessionEvents
           },
           accumulateFriendTokens,
           signal,

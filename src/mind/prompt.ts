@@ -108,8 +108,19 @@ export function buildSessionSummary(options: SessionSummaryOptions): string {
 
   const lines: string[] = ["## active sessions"]
   for (const entry of entries) {
-    const ago = formatTimeAgo(now - entry.lastActivityMs)
-    lines.push(`- ${entry.friendName}/${entry.channel}/${entry.key} (last: ${ago})`)
+    const parts: string[] = []
+    if (entry.lastInboundAt) {
+      parts.push(`in ${formatTimeAgo(now - Date.parse(entry.lastInboundAt))}`)
+    } else {
+      parts.push(`last ${formatTimeAgo(now - entry.lastActivityMs)}`)
+    }
+    if (entry.lastOutboundAt) {
+      parts.push(`out ${formatTimeAgo(now - Date.parse(entry.lastOutboundAt))}`)
+    }
+    if (entry.unansweredInboundCount > 0) {
+      parts.push(`${entry.unansweredInboundCount} waiting`)
+    }
+    lines.push(`- ${entry.friendName}/${entry.channel}/${entry.key} (${parts.join(" · ")})`)
   }
 
   return lines.join("\n")
