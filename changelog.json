@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.325",
+      "changes": [
+        "fix(daemon): make `ouro up` run the same startup stability/status poll for already-running current daemons and successful stale-daemon restarts, so degraded workers are summarized with their repair hints instead of returning with only `daemon already running` or `restarted stale daemon`."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.324",
       "changes": [
         "fix(daemon): surface crashed worker error reasons and fix hints in `ouro status`, `ouro up --no-repair`, health-monitor alerts, and daemon-health snapshots so configuration failures point to the exact repair command instead of a bare warn/crashed state.",

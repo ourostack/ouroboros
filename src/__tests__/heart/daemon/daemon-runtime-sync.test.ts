@@ -18,6 +18,8 @@ describe("ensureCurrentDaemonRuntime", () => {
     expect(result).toEqual({
       alreadyRunning: true,
       message: "daemon already running (/tmp/ouro-test.sock)",
+      verifyStartupStatus: true,
+      startedPid: null,
     })
     expect(deps.stopDaemon).not.toHaveBeenCalled()
     expect(deps.startDaemonProcess).not.toHaveBeenCalled()
@@ -36,6 +38,8 @@ describe("ensureCurrentDaemonRuntime", () => {
     const result = await ensureCurrentDaemonRuntime(deps)
 
     expect(result.alreadyRunning).toBe(false)
+    expect(result.verifyStartupStatus).toBe(true)
+    expect(result.startedPid).toBe(777)
     expect(result.message).toContain("restarted stale daemon")
     expect(result.message).toContain("0.1.0-alpha.6")
     expect(result.message).toContain("0.1.0-alpha.20")
@@ -66,6 +70,8 @@ describe("ensureCurrentDaemonRuntime", () => {
     const result = await ensureCurrentDaemonRuntime(deps)
 
     expect(result.alreadyRunning).toBe(false)
+    expect(result.verifyStartupStatus).toBe(true)
+    expect(result.startedPid).toBe(777)
     expect(deps.stopDaemon).toHaveBeenCalledTimes(1)
     expect(deps.cleanupStaleSocket).toHaveBeenCalledWith("/tmp/ouro-test.sock")
     expect(deps.startDaemonProcess).toHaveBeenCalledWith("/tmp/ouro-test.sock")
@@ -93,6 +99,8 @@ describe("ensureCurrentDaemonRuntime", () => {
     const result = await ensureCurrentDaemonRuntime(deps)
 
     expect(result.alreadyRunning).toBe(false)
+    expect(result.verifyStartupStatus).toBe(true)
+    expect(result.startedPid).toBe(777)
     expect(deps.stopDaemon).toHaveBeenCalledTimes(1)
     expect(deps.cleanupStaleSocket).toHaveBeenCalledWith("/tmp/ouro-test.sock")
     expect(deps.startDaemonProcess).toHaveBeenCalledWith("/tmp/ouro-test.sock")
@@ -116,6 +124,8 @@ describe("ensureCurrentDaemonRuntime", () => {
     const result = await ensureCurrentDaemonRuntime(deps)
 
     expect(result.alreadyRunning).toBe(false)
+    expect(result.verifyStartupStatus).toBe(true)
+    expect(result.startedPid).toBe(777)
     expect(deps.stopDaemon).toHaveBeenCalledTimes(1)
     expect(deps.cleanupStaleSocket).toHaveBeenCalledWith("/tmp/ouro-test.sock")
     expect(deps.startDaemonProcess).toHaveBeenCalledWith("/tmp/ouro-test.sock")
@@ -135,6 +145,8 @@ describe("ensureCurrentDaemonRuntime", () => {
     const result = await ensureCurrentDaemonRuntime(deps)
 
     expect(result.alreadyRunning).toBe(false)
+    expect(result.verifyStartupStatus).toBe(true)
+    expect(result.startedPid).toBe(777)
     expect(deps.fetchRunningVersion).toHaveBeenCalledTimes(1)
     expect(deps.stopDaemon).toHaveBeenCalledTimes(1)
     expect(deps.cleanupStaleSocket).toHaveBeenCalledWith("/tmp/ouro-test.sock")
@@ -159,6 +171,8 @@ describe("ensureCurrentDaemonRuntime", () => {
     const result = await ensureCurrentDaemonRuntime(deps)
 
     expect(result.alreadyRunning).toBe(false)
+    expect(result.verifyStartupStatus).toBe(true)
+    expect(result.startedPid).toBe(null)
     expect(result.message).toContain("pid unknown")
   })
 
@@ -175,6 +189,8 @@ describe("ensureCurrentDaemonRuntime", () => {
     const result = await ensureCurrentDaemonRuntime(deps)
 
     expect(result.alreadyRunning).toBe(false)
+    expect(result.verifyStartupStatus).toBe(true)
+    expect(result.startedPid).toBe(null)
     expect(result.message).toContain("pid unknown")
   })
 
