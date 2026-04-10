@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.318",
+      "changes": [
+        "fix(daemon): prevent startup crash when getBlueBubblesChannelConfig is called without --agent context",
+        "fix(mind): use system timezone instead of hardcoded PT in dateSection"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.317",
       "changes": [
         "feat(mind): annotate conversation messages with relative timestamps. Messages now include human-readable time deltas (e.g., '2 hours ago') in prompt context, giving the model temporal awareness of conversation flow.",
@@ -31,7 +38,7 @@
       "version": "0.1.0-alpha.313",
       "changes": [
         "feat(daemon): agentic repair flow with LLM diagnosis for degraded agents during `ouro up`. New `runAgenticRepair()` in `src/heart/daemon/agentic-repair.ts` wraps interactive repair with optional AI-powered diagnosis. Uses `discoverWorkingProvider()` to find a working LLM, then offers conversational diagnosis with degraded agent context and daemon log tail. Falls back to deterministic repair when no provider is available or user declines. Wired into cli-exec.ts replacing direct `runInteractiveRepair()` call. 12 new tests, 100% coverage on all branches.",
-        "feat(daemon): add `--no-repair` flag to `ouro up` — skips interactive/agentic repair and exits non-zero when degraded agents are detected. Useful for CI and scripted environments."
+        "feat(daemon): add `--no-repair` flag to `ouro up` \u2014 skips interactive/agentic repair and exits non-zero when degraded agents are detected. Useful for CI and scripted environments."
       ]
     },
     {
@@ -82,13 +89,13 @@
     {
       "version": "0.1.0-alpha.305",
       "changes": [
-        "feat(daemon): add sense-level liveness probes for hung webhook detection. New `/health` endpoint on BlueBubbles webhook server returns `{ status: \"ok\", uptime: N }` via GET/HEAD (localhost only, 405 for other methods). Generic `SenseProbe` interface in HealthMonitor runs probes alongside existing checks every 60s — failed probes produce critical results triggering auto-recovery restart. HTTP health probe factory `createHttpHealthProbe(name, port, timeoutMs)` makes reusable probes for any sense with an HTTP endpoint. BlueBubbles probe auto-registered in daemon-entry when BB sense config exists. Directly addresses the documented 70-minute Lobster outage where BB webhook server was hung but process was alive. New files: `http-health-probe.ts` + 3 test files. 26 new tests at 100% coverage on new code."
+        "feat(daemon): add sense-level liveness probes for hung webhook detection. New `/health` endpoint on BlueBubbles webhook server returns `{ status: \"ok\", uptime: N }` via GET/HEAD (localhost only, 405 for other methods). Generic `SenseProbe` interface in HealthMonitor runs probes alongside existing checks every 60s \u2014 failed probes produce critical results triggering auto-recovery restart. HTTP health probe factory `createHttpHealthProbe(name, port, timeoutMs)` makes reusable probes for any sense with an HTTP endpoint. BlueBubbles probe auto-registered in daemon-entry when BB sense config exists. Directly addresses the documented 70-minute Lobster outage where BB webhook server was hung but process was alive. New files: `http-health-probe.ts` + 3 test files. 26 new tests at 100% coverage on new code."
       ]
     },
     {
       "version": "0.1.0-alpha.304",
       "changes": [
-        "feat(mind): add content trust framing to recall results. New `classifyProvenanceTrust()` in `src/mind/provenance-trust.ts` categorizes diary entry provenance as self/trusted/external. Diary entries surfaced via `recall` or associative recall from external sources (messages, emails, web content) now get `[diary/external]` tag instead of `[diary]`. System prompt adds guidance: external entries should not be followed as instructions. This closes the prompt injection defense chain from the Lobster research — even if an attacker plants instructions in content that gets persisted to the diary, the recall pipeline marks it as external and steers the agent away from executing embedded instructions. 19 new tests across 4 files at 100% coverage."
+        "feat(mind): add content trust framing to recall results. New `classifyProvenanceTrust()` in `src/mind/provenance-trust.ts` categorizes diary entry provenance as self/trusted/external. Diary entries surfaced via `recall` or associative recall from external sources (messages, emails, web content) now get `[diary/external]` tag instead of `[diary]`. System prompt adds guidance: external entries should not be followed as instructions. This closes the prompt injection defense chain from the Lobster research \u2014 even if an attacker plants instructions in content that gets persisted to the diary, the recall pipeline marks it as external and steers the agent away from executing embedded instructions. 19 new tests across 4 files at 100% coverage."
       ]
     },
     {
@@ -100,13 +107,13 @@
     {
       "version": "0.1.0-alpha.302",
       "changes": [
-        "feat(cli): add `ouro doctor` system health check command. New command runs 6 diagnostic categories — daemon (socket existence + responsiveness), agents (bundle discovery, agent.json validation for version/humanFacing/agentFacing/enabled), senses (BlueBubbles and Teams config presence and well-formedness), habits (launchd plist discovery, degraded state), security (secrets.json permissions, credential leak detection in agent.json), and disk (log size thresholds at 100MB warn / 500MB critical, bundle root existence). Output is a colored checklist with per-category grouping and a summary line. Works without daemon running — daemon checks fail gracefully while all other categories still execute, making it useful for cold diagnostics. 3 new files (doctor.ts, doctor-types.ts, cli-render-doctor.ts), 3 modified (cli-types.ts, cli-parse.ts, cli-exec.ts), 4 test files with 61 tests at 100% coverage on new code."
+        "feat(cli): add `ouro doctor` system health check command. New command runs 6 diagnostic categories \u2014 daemon (socket existence + responsiveness), agents (bundle discovery, agent.json validation for version/humanFacing/agentFacing/enabled), senses (BlueBubbles and Teams config presence and well-formedness), habits (launchd plist discovery, degraded state), security (secrets.json permissions, credential leak detection in agent.json), and disk (log size thresholds at 100MB warn / 500MB critical, bundle root existence). Output is a colored checklist with per-category grouping and a summary line. Works without daemon running \u2014 daemon checks fail gracefully while all other categories still execute, making it useful for cold diagnostics. 3 new files (doctor.ts, doctor-types.ts, cli-render-doctor.ts), 3 modified (cli-types.ts, cli-parse.ts, cli-exec.ts), 4 test files with 61 tests at 100% coverage on new code."
       ]
     },
     {
       "version": "0.1.0-alpha.300",
       "changes": [
-        "test(bundle): cover `isFirstPushToRemote` branches via mocked child_process. Exported the function from `tools-bundle.ts` (previously private) and added `src/__tests__/repertoire/bundle-push-first-push.test.ts` with 5 unit tests that mock `execFileSync` to exercise all 3 code paths: (1) `symbolic-ref --short HEAD` failure → conservative true, (2) `ls-remote --heads` returns empty stdout → true (real first push, remote branch doesn't exist), (3) `ls-remote --heads` returns non-empty → false (subsequent push, remote branch exists), (4) `ls-remote` network failure → conservative true, (5) branch name correctly threaded to `ls-remote` args. Removed the `/* v8 ignore start/stop */` wrapper since all branches are now covered. The security contract (never return false when probe fails) is verified by tests 1 and 4. Also adds a cross-reference comment to the static test-isolation contract test documenting its relationship with the runtime prod-path leak guard in global-capture.ts."
+        "test(bundle): cover `isFirstPushToRemote` branches via mocked child_process. Exported the function from `tools-bundle.ts` (previously private) and added `src/__tests__/repertoire/bundle-push-first-push.test.ts` with 5 unit tests that mock `execFileSync` to exercise all 3 code paths: (1) `symbolic-ref --short HEAD` failure \u2192 conservative true, (2) `ls-remote --heads` returns empty stdout \u2192 true (real first push, remote branch doesn't exist), (3) `ls-remote --heads` returns non-empty \u2192 false (subsequent push, remote branch exists), (4) `ls-remote` network failure \u2192 conservative true, (5) branch name correctly threaded to `ls-remote` args. Removed the `/* v8 ignore start/stop */` wrapper since all branches are now covered. The security contract (never return false when probe fails) is verified by tests 1 and 4. Also adds a cross-reference comment to the static test-isolation contract test documenting its relationship with the runtime prod-path leak guard in global-capture.ts."
       ]
     },
     {
@@ -131,35 +138,35 @@
     {
       "version": "0.1.0-alpha.296",
       "changes": [
-        "feat(sync): pending-sync.json classification + bundleState enrichment. `postTurnPush` in `src/heart/sync.ts` now distinguishes between a push that was rejected AFTER a successful rebase retry (`classification: push_rejected`) and a rebase that itself failed with merge conflicts (`classification: pull_rebase_conflict`, with conflictFiles populated from `git status --porcelain=v1` UU/AA/DD/AU/UA/DU/UD markers). The `PendingSyncRecord` interface is exported from `sync.ts` so downstream readers can type-check. `detectBundleState` in `src/heart/bundle-state.ts` gained `remote_push_failed` and `pull_rebase_conflict` issue cases that are added alongside `pending_sync_exists` when the classification field is present. Readers tolerate pending-sync.json without a classification field (pre-alpha.296 schema) or with malformed JSON — both fall back to the plain `pending_sync_exists` signal. 4 new bundle-state tests (push_rejected, pull_rebase_conflict, legacy schema, malformed JSON) and 2 new sync tests (second-push-fails-after-rebase-success, rebase-leaves-merge-conflicts). Completes the Directive D remediation signal plumbing started in alpha.281.",
-        "feat(prompt): bundle self-management guidance in `bodyMapSection` (`src/mind/prompt.ts`). New `### git sync — i own my bundle's git state` subsection documents the full detect → init → add_remote → list_first_commit → review with friend → do_first_commit → first_push_review → confirm → push workflow in first-person voice, plus the remediation paths for `remote_push_failed` (pull_rebase) and `pull_rebase_conflict` (walk the friend through conflicts). Added after `### home` and before `### peers` so the flow reads naturally with the rest of the body metaphor."
+        "feat(sync): pending-sync.json classification + bundleState enrichment. `postTurnPush` in `src/heart/sync.ts` now distinguishes between a push that was rejected AFTER a successful rebase retry (`classification: push_rejected`) and a rebase that itself failed with merge conflicts (`classification: pull_rebase_conflict`, with conflictFiles populated from `git status --porcelain=v1` UU/AA/DD/AU/UA/DU/UD markers). The `PendingSyncRecord` interface is exported from `sync.ts` so downstream readers can type-check. `detectBundleState` in `src/heart/bundle-state.ts` gained `remote_push_failed` and `pull_rebase_conflict` issue cases that are added alongside `pending_sync_exists` when the classification field is present. Readers tolerate pending-sync.json without a classification field (pre-alpha.296 schema) or with malformed JSON \u2014 both fall back to the plain `pending_sync_exists` signal. 4 new bundle-state tests (push_rejected, pull_rebase_conflict, legacy schema, malformed JSON) and 2 new sync tests (second-push-fails-after-rebase-success, rebase-leaves-merge-conflicts). Completes the Directive D remediation signal plumbing started in alpha.281.",
+        "feat(prompt): bundle self-management guidance in `bodyMapSection` (`src/mind/prompt.ts`). New `### git sync \u2014 i own my bundle's git state` subsection documents the full detect \u2192 init \u2192 add_remote \u2192 list_first_commit \u2192 review with friend \u2192 do_first_commit \u2192 first_push_review \u2192 confirm \u2192 push workflow in first-person voice, plus the remediation paths for `remote_push_failed` (pull_rebase) and `pull_rebase_conflict` (walk the friend through conflicts). Added after `### home` and before `### peers` so the flow reads naturally with the rest of the body metaphor."
       ]
     },
     {
       "version": "0.1.0-alpha.295",
       "changes": [
-        "chore(tests): ratchet down REAL_OURO_CLI_WRITE_ALLOWLIST and REAL_AGENT_SECRETS_WRITE_ALLOWLIST to empty. Nine pre-existing test lines that shared a `.ouro-cli` or `.agentsecrets` literal with `os.homedir()` on the same line were each refactored to extract the subpath as a local const — the test-isolation.contract.test.ts rule scans line-by-line for the pattern and the const extraction preserves identical runtime behavior while passing the check. Affected: daemon-health.test.ts (1), daemon-orphan-cleanup.test.ts (2 — also factored common constants OURO_CLI_SUBPATH + PIDFILE_NAME), daemon-tombstone.test.ts (2), auth-flow.test.ts (3 — the default-location write test + the v1 migration test), daemon/hooks/agent-config-v2.test.ts (1). Both allowlists are now empty so any new offender is blocked by the contract test."
+        "chore(tests): ratchet down REAL_OURO_CLI_WRITE_ALLOWLIST and REAL_AGENT_SECRETS_WRITE_ALLOWLIST to empty. Nine pre-existing test lines that shared a `.ouro-cli` or `.agentsecrets` literal with `os.homedir()` on the same line were each refactored to extract the subpath as a local const \u2014 the test-isolation.contract.test.ts rule scans line-by-line for the pattern and the const extraction preserves identical runtime behavior while passing the check. Affected: daemon-health.test.ts (1), daemon-orphan-cleanup.test.ts (2 \u2014 also factored common constants OURO_CLI_SUBPATH + PIDFILE_NAME), daemon-tombstone.test.ts (2), auth-flow.test.ts (3 \u2014 the default-location write test + the v1 migration test), daemon/hooks/agent-config-v2.test.ts (1). Both allowlists are now empty so any new offender is blocked by the contract test."
       ]
     },
     {
       "version": "0.1.0-alpha.293",
       "changes": [
-        "chore(tests): three test-isolation fixes bundled as chain D1 from the follow-up investigation after PR #372 (default.ouro leak). (1) Remove the `agentName = \"default\"` catch fallback in `src/repertoire/credential-access.ts` getCredentialStore() — same silent-leak class as coding/manager.ts, would have routed BuiltInCredentialStore writes to `~/AgentBundles/default.ouro/vault/` and `~/.agentsecrets/default/` on any test hit that didn't mock identity. Hoisted `getAgentName()` out of the outer try/catch so it throws loudly; the remaining try/catch now only guards the bitwarden store wiring (the only code path that has a legitimate fall-through to built-in). Also switched from `require(\"../heart/identity\")` inside the function body to a static ESM import at the top of the file — require() bypasses vitest's module registry so `vi.mock(\"../heart/identity\", ...)` was silently not applying to the old dynamic require; the static import finally lets the existing test mocks intercept. Tests in credential-access.test.ts that had been accidentally leaning on the default fallback now hit the real mock as intended.",
-        "chore(tests): fix the tmpbundle leak guard false-positive on daemon-cli.test.ts. The guard was firing on \"ouro CLI parsing > parses primary daemon commands\" every run, but the real cause was `createTmpBundle` being called at describe-scope inside the \"ouro thoughts CLI execution\" suite (line 5662) — synchronous describe callbacks run during test collection, so the handle landed in _liveHandles before ANY test ran. The first afterEach hook (on the first test in the file) then noticed the dangling handle and blamed it. Fix: moved the createTmpBundle call into a beforeAll hook and tagged it `{ shared: true }` so the handle only exists while the thoughts suite is actually running, with afterAll cleanup aligned to it.",
+        "chore(tests): three test-isolation fixes bundled as chain D1 from the follow-up investigation after PR #372 (default.ouro leak). (1) Remove the `agentName = \"default\"` catch fallback in `src/repertoire/credential-access.ts` getCredentialStore() \u2014 same silent-leak class as coding/manager.ts, would have routed BuiltInCredentialStore writes to `~/AgentBundles/default.ouro/vault/` and `~/.agentsecrets/default/` on any test hit that didn't mock identity. Hoisted `getAgentName()` out of the outer try/catch so it throws loudly; the remaining try/catch now only guards the bitwarden store wiring (the only code path that has a legitimate fall-through to built-in). Also switched from `require(\"../heart/identity\")` inside the function body to a static ESM import at the top of the file \u2014 require() bypasses vitest's module registry so `vi.mock(\"../heart/identity\", ...)` was silently not applying to the old dynamic require; the static import finally lets the existing test mocks intercept. Tests in credential-access.test.ts that had been accidentally leaning on the default fallback now hit the real mock as intended.",
+        "chore(tests): fix the tmpbundle leak guard false-positive on daemon-cli.test.ts. The guard was firing on \"ouro CLI parsing > parses primary daemon commands\" every run, but the real cause was `createTmpBundle` being called at describe-scope inside the \"ouro thoughts CLI execution\" suite (line 5662) \u2014 synchronous describe callbacks run during test collection, so the handle landed in _liveHandles before ANY test ran. The first afterEach hook (on the first test in the file) then noticed the dangling handle and blamed it. Fix: moved the createTmpBundle call into a beforeAll hook and tagged it `{ shared: true }` so the handle only exists while the thoughts suite is actually running, with afterAll cleanup aligned to it.",
         "chore(tests): extend the tmpbundle leak guard with a `shared: true` opt-in. `TmpBundleHandle` gains a `shared` field, `CreateTmpBundleOptions.shared` defaults to false, and the per-test leak guard in `src/__tests__/nerves/global-capture.ts` now skips shared handles (they're cleaned in afterAll, not after every test). Prevents the class of false positive exposed by the daemon-cli.test.ts fix above.",
-        "chore(tests): new runtime prod-path leak guard in `src/__tests__/nerves/global-capture.ts`. Snapshots `~/AgentBundles` entries at worker boot, diffs at worker teardown (afterAll without describe context runs once per worker), force-removes any new entries, and emits a loud console.error naming them. Text-based contract tests can't catch runtime leaks where production code routes a write via a silent fallback (exactly the bug class PR #372 fixed in coding/manager.ts). This runtime guard is the belt to the contract test's suspenders — would have caught the default.ouro leak in the first run instead of requiring my investigation chain."
+        "chore(tests): new runtime prod-path leak guard in `src/__tests__/nerves/global-capture.ts`. Snapshots `~/AgentBundles` entries at worker boot, diffs at worker teardown (afterAll without describe context runs once per worker), force-removes any new entries, and emits a loud console.error naming them. Text-based contract tests can't catch runtime leaks where production code routes a write via a silent fallback (exactly the bug class PR #372 fixed in coding/manager.ts). This runtime guard is the belt to the contract test's suspenders \u2014 would have caught the default.ouro leak in the first run instead of requiring my investigation chain."
       ]
     },
     {
       "version": "0.1.0-alpha.292",
       "changes": [
-        "feat(mind): add structured provenance tracking to diary entries. New DiaryEntryProvenance interface records tool, channel (cli/teams/bluebubbles/inner/mcp), friend identity (id + name), and trust level (family/friend/acquaintance/stranger) at write time. diary_write handler automatically extracts provenance from ToolContext. Associative recall and recall tool render provenance fields when present. Fully backwards compatible — existing entries without provenance parse and display normally. 19 tests across 4 test files with 100% coverage on new code."
+        "feat(mind): add structured provenance tracking to diary entries. New DiaryEntryProvenance interface records tool, channel (cli/teams/bluebubbles/inner/mcp), friend identity (id + name), and trust level (family/friend/acquaintance/stranger) at write time. diary_write handler automatically extracts provenance from ToolContext. Associative recall and recall tool render provenance fields when present. Fully backwards compatible \u2014 existing entries without provenance parse and display normally. 19 tests across 4 test files with 100% coverage on new code."
       ]
     },
     {
       "version": "0.1.0-alpha.291",
       "changes": [
-        "fix(coding): eliminate silent `~/AgentBundles/default.ouro` real-fs leak in the coding session manager. Root cause: `src/repertoire/coding/manager.ts` had a `safeAgentName()` helper that caught `getAgentName()` throws (which happens in vitest because there's no `--agent` in argv) and silently fell back to `\"default\"`. Combined with `src/repertoire/coding/index.ts:8` constructing the singleton as `new CodingSessionManager({})` (no options — real fs, no agentName), every vitest run that called `getCodingSessionManager()` followed by `resetCodingSessionManager()` triggered `shutdown()` → `persistState()` → `fs.mkdirSync('~/AgentBundles/default.ouro/state/coding', { recursive: true })` + `fs.writeFileSync('.../sessions.json', ...)`. This wrote real files under the developer's home directory on every coverage-gate run. The observable symptom was `~/AgentBundles/default.ouro/` reappearing minutes after `rm -rf` — PR B's housekeeping cleanup couldn't stick. Fix: deleted `safeAgentName()` and made the constructor's `agentName` default call `getAgentName()` directly, so construction fails loudly in vitest when identity isn't mocked. Updated `index.test.ts` to mock both `../../../heart/identity` and `fs` so the singleton can be tested without touching real disk. Updated `session-manager.test.ts`, `session-manager-branches.test.ts`, and `session-manager-persistence.test.ts` to either inline `agentName: \"test-coding-agent\"` in `noPersistence` or mock `../../../heart/identity` at file top. One persistence test assertion updated from `parentAgent === \"default\"` to `\"test-coding-agent\"`. Full coverage gate passes, 171 coding tests pass, `~/AgentBundles/default.ouro` stays deleted across 3 consecutive coverage-gate runs."
+        "fix(coding): eliminate silent `~/AgentBundles/default.ouro` real-fs leak in the coding session manager. Root cause: `src/repertoire/coding/manager.ts` had a `safeAgentName()` helper that caught `getAgentName()` throws (which happens in vitest because there's no `--agent` in argv) and silently fell back to `\"default\"`. Combined with `src/repertoire/coding/index.ts:8` constructing the singleton as `new CodingSessionManager({})` (no options \u2014 real fs, no agentName), every vitest run that called `getCodingSessionManager()` followed by `resetCodingSessionManager()` triggered `shutdown()` \u2192 `persistState()` \u2192 `fs.mkdirSync('~/AgentBundles/default.ouro/state/coding', { recursive: true })` + `fs.writeFileSync('.../sessions.json', ...)`. This wrote real files under the developer's home directory on every coverage-gate run. The observable symptom was `~/AgentBundles/default.ouro/` reappearing minutes after `rm -rf` \u2014 PR B's housekeeping cleanup couldn't stick. Fix: deleted `safeAgentName()` and made the constructor's `agentName` default call `getAgentName()` directly, so construction fails loudly in vitest when identity isn't mocked. Updated `index.test.ts` to mock both `../../../heart/identity` and `fs` so the singleton can be tested without touching real disk. Updated `session-manager.test.ts`, `session-manager-branches.test.ts`, and `session-manager-persistence.test.ts` to either inline `agentName: \"test-coding-agent\"` in `noPersistence` or mock `../../../heart/identity` at file top. One persistence test assertion updated from `parentAgent === \"default\"` to `\"test-coding-agent\"`. Full coverage gate passes, 171 coding tests pass, `~/AgentBundles/default.ouro` stays deleted across 3 consecutive coverage-gate runs."
       ]
     },
     {
@@ -178,27 +185,27 @@
     {
       "version": "0.1.0-alpha.288",
       "changes": [
-        "feat(bundle): full `.gitignore` template + first-push PII review workflow + confirmation-token gate on `bundle_push`. Completes the agent-manages-its-own-bundle chain (PRs 5 + 6 + 7). (1) New `src/repertoire/bundle-templates.ts` exports `BUNDLE_GITIGNORE_TEMPLATE` — a curated gitignore that handles functional cases only (runtime state, credentials, editor/OS noise, build artifacts) and explicitly does NOT block PII. The design philosophy is baked into the file's top-comment: bundles are inherently full of PII (friends/, diary/, journal/, psyche/, arc/, facts/, family/, travel/) and blocking those via gitignore would defeat the bundle's purpose. PII is handled at first-push time by a separate safety layer instead. Also exports `PII_BUNDLE_DIRECTORIES` as the canonical list of PII-bearing top-level dirs. (2) `bundle_init_git` now writes the full template instead of the minimal `state/`-only placeholder from PR 6. (3) New `bundle_first_push_review` tool enumerates existing PII directories with per-directory file counts (honoring `.gitignore` via `git ls-files --others --exclude-standard`), probes the remote URL for GitHub public/private visibility via an unauthenticated `fetch` to `https://api.github.com/repos/{owner}/{repo}` with a 5-second timeout, and generates a first-person warning text — `warningLevel: 'public_github' | 'private_github' | 'generic'`. The tool issues a `confirmationToken` (crypto.randomUUID) stored in a module-level Map with a 15-minute TTL and returns it in the payload. (4) `bundle_push` updated to accept an optional `confirmation_token` parameter: on first-push attempts (detected via `git ls-remote --heads <remote> <branch>` empty — or, conservatively, when that probe fails to reach the remote), the handler requires a valid token that was issued for the SAME bundleRoot and has not expired. Missing, invalid, wrong-bundle, or expired token returns `kind: 'confirmation_required'`. On successful validation, the token is consumed (one-shot). This is the Directive D PII-review gate: the agent cannot push a bundle to the internet without the human explicitly acknowledging the PII payload first. 17 new tests cover the template, PII counting with empty and populated directories, GitHub public/private/404/network-error/malformed-response paths, URL parsing for gitlab/self-hosted/github, token storage + TTL expiry, and every token-gating refusal path in bundle_push. Bundle-templates.ts is added to the file-completeness exempt list since it's a pure constants module (design: `tools-bundle.ts` owns the observability for bundle operations)."
+        "feat(bundle): full `.gitignore` template + first-push PII review workflow + confirmation-token gate on `bundle_push`. Completes the agent-manages-its-own-bundle chain (PRs 5 + 6 + 7). (1) New `src/repertoire/bundle-templates.ts` exports `BUNDLE_GITIGNORE_TEMPLATE` \u2014 a curated gitignore that handles functional cases only (runtime state, credentials, editor/OS noise, build artifacts) and explicitly does NOT block PII. The design philosophy is baked into the file's top-comment: bundles are inherently full of PII (friends/, diary/, journal/, psyche/, arc/, facts/, family/, travel/) and blocking those via gitignore would defeat the bundle's purpose. PII is handled at first-push time by a separate safety layer instead. Also exports `PII_BUNDLE_DIRECTORIES` as the canonical list of PII-bearing top-level dirs. (2) `bundle_init_git` now writes the full template instead of the minimal `state/`-only placeholder from PR 6. (3) New `bundle_first_push_review` tool enumerates existing PII directories with per-directory file counts (honoring `.gitignore` via `git ls-files --others --exclude-standard`), probes the remote URL for GitHub public/private visibility via an unauthenticated `fetch` to `https://api.github.com/repos/{owner}/{repo}` with a 5-second timeout, and generates a first-person warning text \u2014 `warningLevel: 'public_github' | 'private_github' | 'generic'`. The tool issues a `confirmationToken` (crypto.randomUUID) stored in a module-level Map with a 15-minute TTL and returns it in the payload. (4) `bundle_push` updated to accept an optional `confirmation_token` parameter: on first-push attempts (detected via `git ls-remote --heads <remote> <branch>` empty \u2014 or, conservatively, when that probe fails to reach the remote), the handler requires a valid token that was issued for the SAME bundleRoot and has not expired. Missing, invalid, wrong-bundle, or expired token returns `kind: 'confirmation_required'`. On successful validation, the token is consumed (one-shot). This is the Directive D PII-review gate: the agent cannot push a bundle to the internet without the human explicitly acknowledging the PII payload first. 17 new tests cover the template, PII counting with empty and populated directories, GitHub public/private/404/network-error/malformed-response paths, URL parsing for gitlab/self-hosted/github, token storage + TTL expiry, and every token-gating refusal path in bundle_push. Bundle-templates.ts is added to the file-completeness exempt list since it's a pure constants module (design: `tools-bundle.ts` owns the observability for bundle operations)."
       ]
     },
     {
       "version": "0.1.0-alpha.287",
       "changes": [
-        "feat(nerves): add two-layer log redaction to the NDJSON sink. Structured key-based redaction strips sensitive fields (passwords, tokens, API keys, auth headers) from event meta objects before serialization. Regex fallback catches secrets in serialized strings that bypass structured checks (Anthropic keys, OpenAI keys, Bearer tokens, URL token params). Redacted values are replaced with `[REDACTED:key_name]` markers that preserve debugging context without exposing secrets. Redaction happens at the sink level only — in-memory events retain full data for runtime use. `OURO_LOG_VERBOSE=1` env var disables redaction for active debugging sessions. New `src/nerves/redact.ts` module with 38 tests across 3 test files including a 10-case golden corpus covering nested objects, mixed safe/secret fields, and realistic key patterns."
+        "feat(nerves): add two-layer log redaction to the NDJSON sink. Structured key-based redaction strips sensitive fields (passwords, tokens, API keys, auth headers) from event meta objects before serialization. Regex fallback catches secrets in serialized strings that bypass structured checks (Anthropic keys, OpenAI keys, Bearer tokens, URL token params). Redacted values are replaced with `[REDACTED:key_name]` markers that preserve debugging context without exposing secrets. Redaction happens at the sink level only \u2014 in-memory events retain full data for runtime use. `OURO_LOG_VERBOSE=1` env var disables redaction for active debugging sessions. New `src/nerves/redact.ts` module with 38 tests across 3 test files including a 10-case golden corpus covering nested objects, mixed safe/secret fields, and realistic key patterns."
       ]
     },
     {
       "version": "0.1.0-alpha.286",
       "changes": [
-        "feat(bundle): new `src/repertoire/tools-bundle.ts` registers 7 agent-callable tools for managing the bundle's own git state: `bundle_check_sync_status`, `bundle_init_git`, `bundle_add_remote`, `bundle_list_first_commit`, `bundle_do_first_commit`, `bundle_push`, `bundle_pull_rebase`. Each tool computes `bundleRoot = getAgentRoot()` once at the top and refuses any path argument that resolves outside — the security boundary is enforced via `assertInsideBundle(bundleRoot, rel)` which normalizes the path and requires either equality with bundleRoot or the `bundleRoot + sep` prefix. Destructive operations (init on an existing repo, add_remote on a configured remote, pull_rebase on a dirty tree) refuse by default and require an explicit `force` or `discard_changes` flag (Directive B layered refusal pattern). `bundle_do_first_commit` stages files via explicit enumeration (`git add -- <file1> <file2>`) and refuses an empty files array — Directive A: the agent must enumerate what it wants to delete or commit, not recursively blast. `bundle_push` returns structured `{ ok, error, kind }` where kind is 'rejected' | 'network' | 'auth' | 'unknown', classified from stderr. `bundle_pull_rebase` returns `{ kind: 'conflict', conflictFiles: [...] }` so the agent can walk the human through resolution. All 7 tools registered in the flat registry at `src/repertoire/tools.ts` line 34. 41 new unit tests cover happy paths, every refusal path, URL validation, security boundary escapes, push error classification, and dirty-tree handling."
+        "feat(bundle): new `src/repertoire/tools-bundle.ts` registers 7 agent-callable tools for managing the bundle's own git state: `bundle_check_sync_status`, `bundle_init_git`, `bundle_add_remote`, `bundle_list_first_commit`, `bundle_do_first_commit`, `bundle_push`, `bundle_pull_rebase`. Each tool computes `bundleRoot = getAgentRoot()` once at the top and refuses any path argument that resolves outside \u2014 the security boundary is enforced via `assertInsideBundle(bundleRoot, rel)` which normalizes the path and requires either equality with bundleRoot or the `bundleRoot + sep` prefix. Destructive operations (init on an existing repo, add_remote on a configured remote, pull_rebase on a dirty tree) refuse by default and require an explicit `force` or `discard_changes` flag (Directive B layered refusal pattern). `bundle_do_first_commit` stages files via explicit enumeration (`git add -- <file1> <file2>`) and refuses an empty files array \u2014 Directive A: the agent must enumerate what it wants to delete or commit, not recursively blast. `bundle_push` returns structured `{ ok, error, kind }` where kind is 'rejected' | 'network' | 'auth' | 'unknown', classified from stderr. `bundle_pull_rebase` returns `{ kind: 'conflict', conflictFiles: [...] }` so the agent can walk the human through resolution. All 7 tools registered in the flat registry at `src/repertoire/tools.ts` line 34. 41 new unit tests cover happy paths, every refusal path, URL validation, security boundary escapes, push error classification, and dirty-tree handling."
       ]
     },
     {
       "version": "0.1.0-alpha.285",
       "changes": [
-        "feat(daemon): wire startPeriodicReconciliation() after scheduler.start() in daemon-entry.ts — prevents silent habit death when OS cron fails by giving the daemon a self-healing reconciliation loop.",
-        "feat(guardrails): protect agent.json from agent self-modification — closes a vector where prompt injection could alter the agent's own identity, provider, or model settings.",
-        "feat(habits): add tools field to HabitFile interface and habit-parser — habits can now declare tools: [read, web_fetch] in frontmatter. Schema-only; runtime enforcement ships in a follow-up PR."
+        "feat(daemon): wire startPeriodicReconciliation() after scheduler.start() in daemon-entry.ts \u2014 prevents silent habit death when OS cron fails by giving the daemon a self-healing reconciliation loop.",
+        "feat(guardrails): protect agent.json from agent self-modification \u2014 closes a vector where prompt injection could alter the agent's own identity, provider, or model settings.",
+        "feat(habits): add tools field to HabitFile interface and habit-parser \u2014 habits can now declare tools: [read, web_fetch] in frontmatter. Schema-only; runtime enforcement ships in a follow-up PR."
       ]
     },
     {
@@ -210,29 +217,29 @@
     {
       "version": "0.1.0-alpha.283",
       "changes": [
-        "chore(housekeeping): clean up ~3600 leaked test secret dirs in `~/.agentsecrets/`. The auth CLI test suite was creating ephemeral agent secret dirs (auth-local-*, auth-store-*, auth-no-switch-*, etc.) without cleaning them up, accreting over weeks into thousands of orphaned entries. Also purged three non-test orphans (`testagent`, `model-reviews`, `config-model-facing-*`) that were leftovers from manual probe sessions. Only `slugger` and `ouroboros` — the two real agents on this machine — remain.",
-        "chore(housekeeping): remove orphan bundle stubs from `~/AgentBundles/` (default.ouro, thoughts-test-*, an empty `friends/` dir, and a .DS_Store). These were skeletal test leftovers with no real identity — the daemon was already filtering them out of `listEnabledBundleAgents`, so deletion is invisible to the runtime but stops confusing anyone inspecting the bundles directory.",
-        "chore(tests): replace the `outlookServer.stop` v8 ignore band-aid in `daemon.ts` with a proper test. `OuroDaemonOptions` gains an `outlookServerFactory` seam that lets tests inject an in-memory stub handle instead of binding port 6876 (which a running production daemon holds on dev machines, causing EADDRINUSE flakes). New `daemon-outlook-lifecycle.test.ts` covers the happy path (factory runs, stop is called), the error path (factory throws, daemon logs warn and keeps going, stop is a no-op), and the double-start guard. The default production factory path (`createDefaultOutlookServer` — wires the real `startOutlookHttpServer` with bundlesRoot + view builders) is v8-ignored because it only runs under real bind on port 6876; `startOutlookHttpServer` itself has full coverage in `outlook-http.test.ts`. Removed the redundant `if (!this.outlookServer)` wrapper in `startInner()` that was guarding against an unreachable retry scenario. `daemon.ts` now hits 100% statements / branches / functions / lines with zero port binding in the test suite.",
-        "chore(ci): tighten the wrapper publish-sync check timing. The version-bump check and wrapper-publish-sync check now run BEFORE the ~2+ minute coverage gate, not after. Previously, a contributor would wait for the full test suite to pass only to then see a 'version already published' error. Now the fast checks surface in under a minute, and coverage only runs once version/wrapper gates have cleared. Same checks, same logic — just reordered steps in `.github/workflows/coverage.yml`."
+        "chore(housekeeping): clean up ~3600 leaked test secret dirs in `~/.agentsecrets/`. The auth CLI test suite was creating ephemeral agent secret dirs (auth-local-*, auth-store-*, auth-no-switch-*, etc.) without cleaning them up, accreting over weeks into thousands of orphaned entries. Also purged three non-test orphans (`testagent`, `model-reviews`, `config-model-facing-*`) that were leftovers from manual probe sessions. Only `slugger` and `ouroboros` \u2014 the two real agents on this machine \u2014 remain.",
+        "chore(housekeeping): remove orphan bundle stubs from `~/AgentBundles/` (default.ouro, thoughts-test-*, an empty `friends/` dir, and a .DS_Store). These were skeletal test leftovers with no real identity \u2014 the daemon was already filtering them out of `listEnabledBundleAgents`, so deletion is invisible to the runtime but stops confusing anyone inspecting the bundles directory.",
+        "chore(tests): replace the `outlookServer.stop` v8 ignore band-aid in `daemon.ts` with a proper test. `OuroDaemonOptions` gains an `outlookServerFactory` seam that lets tests inject an in-memory stub handle instead of binding port 6876 (which a running production daemon holds on dev machines, causing EADDRINUSE flakes). New `daemon-outlook-lifecycle.test.ts` covers the happy path (factory runs, stop is called), the error path (factory throws, daemon logs warn and keeps going, stop is a no-op), and the double-start guard. The default production factory path (`createDefaultOutlookServer` \u2014 wires the real `startOutlookHttpServer` with bundlesRoot + view builders) is v8-ignored because it only runs under real bind on port 6876; `startOutlookHttpServer` itself has full coverage in `outlook-http.test.ts`. Removed the redundant `if (!this.outlookServer)` wrapper in `startInner()` that was guarding against an unreachable retry scenario. `daemon.ts` now hits 100% statements / branches / functions / lines with zero port binding in the test suite.",
+        "chore(ci): tighten the wrapper publish-sync check timing. The version-bump check and wrapper-publish-sync check now run BEFORE the ~2+ minute coverage gate, not after. Previously, a contributor would wait for the full test suite to pass only to then see a 'version already published' error. Now the fast checks surface in under a minute, and coverage only runs once version/wrapper gates have cleared. Same checks, same logic \u2014 just reordered steps in `.github/workflows/coverage.yml`."
       ]
     },
     {
       "version": "0.1.0-alpha.282",
       "changes": [
-        "feat(cli): crash-resilient sessions — saves after each tool result, repairs orphaned tool calls on resume."
+        "feat(cli): crash-resilient sessions \u2014 saves after each tool result, repairs orphaned tool calls on resume."
       ]
     },
     {
       "version": "0.1.0-alpha.281",
       "changes": [
-        "feat(bundle): new `src/heart/bundle-state.ts` module exports `detectBundleState(agentRoot)` which returns a structured `BundleStateIssue[]` describing git-level problems the agent can remediate. Enum cases: `not_a_git_repo`, `no_remote_configured`, `first_commit_never_happened`, `pending_sync_exists`. Detection never throws — every git call is wrapped in try/catch so a broken bundle degrades to a clear signal rather than crashing the turn pipeline. Also exports `renderBundleStateHint(issues)` which produces first-person remediation guidance (per the memory rule) that tells the agent to call `bundle_check_sync_status` and the `bundle_*` tools shipping in a follow-up PR.",
-        "feat(bundle): `StartOfTurnPacket` gains an optional `bundleState?: BundleStateIssue[]` field, populated by the senses pipeline in `handleInboundTurn` at packet assembly time. Renders via a new `case \"bundleState\":` branch in `formatSections` with the `**Bundle:**` prefix, at the same priority tier as the legacy `syncFailure` free-form string (priority 7, truncated last). The two signals coexist during the transition — `syncFailure` is still emitted by sync.ts for humans, while `bundleState` is the structured form the agent pattern-matches on. Deferred to follow-up: `pending-sync.json` schema extension with `classification` / `conflictFiles` so sync.ts can distinguish push-rejected from pull-rebase-conflict."
+        "feat(bundle): new `src/heart/bundle-state.ts` module exports `detectBundleState(agentRoot)` which returns a structured `BundleStateIssue[]` describing git-level problems the agent can remediate. Enum cases: `not_a_git_repo`, `no_remote_configured`, `first_commit_never_happened`, `pending_sync_exists`. Detection never throws \u2014 every git call is wrapped in try/catch so a broken bundle degrades to a clear signal rather than crashing the turn pipeline. Also exports `renderBundleStateHint(issues)` which produces first-person remediation guidance (per the memory rule) that tells the agent to call `bundle_check_sync_status` and the `bundle_*` tools shipping in a follow-up PR.",
+        "feat(bundle): `StartOfTurnPacket` gains an optional `bundleState?: BundleStateIssue[]` field, populated by the senses pipeline in `handleInboundTurn` at packet assembly time. Renders via a new `case \"bundleState\":` branch in `formatSections` with the `**Bundle:**` prefix, at the same priority tier as the legacy `syncFailure` free-form string (priority 7, truncated last). The two signals coexist during the transition \u2014 `syncFailure` is still emitted by sync.ts for humans, while `bundleState` is the structured form the agent pattern-matches on. Deferred to follow-up: `pending-sync.json` schema extension with `classification` / `conflictFiles` so sync.ts can distinguish push-rejected from pull-rebase-conflict."
       ]
     },
     {
       "version": "0.1.0-alpha.280",
       "changes": [
-        "chore(tests): prod-path isolation ratchet + tmpBundle leak guard + no-rm-rf contract. Extends `src/__tests__/heart/daemon/test-isolation.contract.test.ts` with three new rules and adds a runtime leak guard. (1) Three new prod-path block rules mirror the existing ~/AgentBundles check: no test file may construct a write path under `~/.ouro-cli`, `~/.agentsecrets`, or `~/.claude` without mocking fs. Each rule has its own empty-seeded ratchet allowlist (except `.ouro-cli` and `.agentsecrets` which are seeded with the pre-existing offenders that this rule newly catches — follow-up PRs can convert those to mocked-fs and ratchet down). The path-scan loop is factored into a shared `runProdPathCheck` helper. (2) New Directive-A contract rule: agent-callable production code under `src/` (excluding `src/__tests__/`) must not call `fs.rmSync(..., { recursive: true })` or shell out to `rm -rf` / `rm -fr` / `rm --recursive --force`. The rule is about making deletion auditable and interruptible: an agent should enumerate the files it wants to delete instead of recursively blasting a directory. Four legitimate infrastructure callsites are on `RM_RECURSIVE_ALLOWLIST` with explicit justifications: specialist-tools.ts (adoption rollback), ouro-version-manager.ts (CLI version pruning), ouro-uti.ts (macOS icon pipeline), cli-defaults.ts (self-setup temp dir). Three files that are themselves the rm-rf enforcement layer (guardrails.ts, shell-sessions.ts, prompt.ts) are in `RM_RULE_ENFORCEMENT_FILES` and skipped by the scan since they contain the literal \"rm -rf\" only as regex patterns or prompt strings designed to BLOCK the call. (3) `createTmpBundle` in `src/__tests__/test-helpers/tmpdir-bundle.ts` now tracks live handles in a module-level `_liveHandles: Set<TmpBundleHandle>`. `cleanup()` removes the handle from the set; a new `__getLiveTmpBundleHandles()` export returns a readonly view. (4) `src/__tests__/nerves/global-capture.ts` adds a global vitest `afterEach` leak guard that iterates `__getLiveTmpBundleHandles` and calls `cleanup()` on any remaining handles, logging a `console.warn` naming the test that leaked them. Runs AFTER the pairing guard from alpha.276 so pairing failures surface first. Both guards co-exist cleanly."
+        "chore(tests): prod-path isolation ratchet + tmpBundle leak guard + no-rm-rf contract. Extends `src/__tests__/heart/daemon/test-isolation.contract.test.ts` with three new rules and adds a runtime leak guard. (1) Three new prod-path block rules mirror the existing ~/AgentBundles check: no test file may construct a write path under `~/.ouro-cli`, `~/.agentsecrets`, or `~/.claude` without mocking fs. Each rule has its own empty-seeded ratchet allowlist (except `.ouro-cli` and `.agentsecrets` which are seeded with the pre-existing offenders that this rule newly catches \u2014 follow-up PRs can convert those to mocked-fs and ratchet down). The path-scan loop is factored into a shared `runProdPathCheck` helper. (2) New Directive-A contract rule: agent-callable production code under `src/` (excluding `src/__tests__/`) must not call `fs.rmSync(..., { recursive: true })` or shell out to `rm -rf` / `rm -fr` / `rm --recursive --force`. The rule is about making deletion auditable and interruptible: an agent should enumerate the files it wants to delete instead of recursively blasting a directory. Four legitimate infrastructure callsites are on `RM_RECURSIVE_ALLOWLIST` with explicit justifications: specialist-tools.ts (adoption rollback), ouro-version-manager.ts (CLI version pruning), ouro-uti.ts (macOS icon pipeline), cli-defaults.ts (self-setup temp dir). Three files that are themselves the rm-rf enforcement layer (guardrails.ts, shell-sessions.ts, prompt.ts) are in `RM_RULE_ENFORCEMENT_FILES` and skipped by the scan since they contain the literal \"rm -rf\" only as regex patterns or prompt strings designed to BLOCK the call. (3) `createTmpBundle` in `src/__tests__/test-helpers/tmpdir-bundle.ts` now tracks live handles in a module-level `_liveHandles: Set<TmpBundleHandle>`. `cleanup()` removes the handle from the set; a new `__getLiveTmpBundleHandles()` export returns a readonly view. (4) `src/__tests__/nerves/global-capture.ts` adds a global vitest `afterEach` leak guard that iterates `__getLiveTmpBundleHandles` and calls `cleanup()` on any remaining handles, logging a `console.warn` naming the test that leaked them. Runs AFTER the pairing guard from alpha.276 so pairing failures surface first. Both guards co-exist cleanly."
       ]
     },
     {
@@ -244,16 +251,16 @@
     {
       "version": "0.1.0-alpha.278",
       "changes": [
-        "fix(identity): spread-with-validation loader eliminates the field-drop bug class that caused #349 (silent `sync` drop). Two distinct structural bugs fixed, one in each agent.json loader: (1) `loadAgentConfig` in `src/heart/identity.ts` previously built the returned `AgentConfig` via a hand-rolled object literal that listed every field explicitly — any new field on `AgentConfig` that wasn't added to this literal got silently dropped. Root cause of #349. Refactored to a spread-then-override pattern: start with `{ ...parsed as AgentConfig }`, then explicitly override `version`, `enabled`, `humanFacing`, `agentFacing`, `senses`, `phrases` which need validation/normalization. The deprecated `provider` field is re-attached from the validated `rawProvider` check. (2) `readAgentConfigForAgent` in `src/heart/auth/auth-flow.ts` previously did `parsed as unknown as AgentConfig` which passed through ALL fields unconditionally (so no silent drops) but ALSO had zero per-field validation — any garbage in agent.json leaked into the returned config. Refactored to apply the same spread-with-validation pattern, reusing `normalizeSenses` (now exported from identity.ts). Both entry points now return equivalent configs for the same agent.json file. New `src/__tests__/heart/identity-fixture.ts` exports `FULL_AGENT_JSON satisfies DeepRequired<AgentConfig>` — a compile-time regression guard that fails to build if any new field is added to `AgentConfig` without updating the fixture. Two new test files: `identity-contract.test.ts` exercises `readAgentConfigForAgent` with `createTmpBundle`; `identity-load-contract.test.ts` exercises `loadAgentConfig` via `vi.mock(\"fs\")` (split to avoid the fs-mock-vs-real-fs conflict). 7 tests total."
+        "fix(identity): spread-with-validation loader eliminates the field-drop bug class that caused #349 (silent `sync` drop). Two distinct structural bugs fixed, one in each agent.json loader: (1) `loadAgentConfig` in `src/heart/identity.ts` previously built the returned `AgentConfig` via a hand-rolled object literal that listed every field explicitly \u2014 any new field on `AgentConfig` that wasn't added to this literal got silently dropped. Root cause of #349. Refactored to a spread-then-override pattern: start with `{ ...parsed as AgentConfig }`, then explicitly override `version`, `enabled`, `humanFacing`, `agentFacing`, `senses`, `phrases` which need validation/normalization. The deprecated `provider` field is re-attached from the validated `rawProvider` check. (2) `readAgentConfigForAgent` in `src/heart/auth/auth-flow.ts` previously did `parsed as unknown as AgentConfig` which passed through ALL fields unconditionally (so no silent drops) but ALSO had zero per-field validation \u2014 any garbage in agent.json leaked into the returned config. Refactored to apply the same spread-with-validation pattern, reusing `normalizeSenses` (now exported from identity.ts). Both entry points now return equivalent configs for the same agent.json file. New `src/__tests__/heart/identity-fixture.ts` exports `FULL_AGENT_JSON satisfies DeepRequired<AgentConfig>` \u2014 a compile-time regression guard that fails to build if any new field is added to `AgentConfig` without updating the fixture. Two new test files: `identity-contract.test.ts` exercises `readAgentConfigForAgent` with `createTmpBundle`; `identity-load-contract.test.ts` exercises `loadAgentConfig` via `vi.mock(\"fs\")` (split to avoid the fs-mock-vs-real-fs conflict). 7 tests total."
       ]
     },
     {
       "version": "0.1.0-alpha.277",
       "changes": [
-        "feat(pulse): multi-agent situational awareness for peer agents on the same machine. The harness scales horizontally — multiple peer agents share a machine, each with their own identity and bundle (the Bob model from We Are Legion / We Are Bob). Without explicit awareness, peer agents are isolated workers who don't even know each other exist. The pulse fixes that.",
+        "feat(pulse): multi-agent situational awareness for peer agents on the same machine. The harness scales horizontally \u2014 multiple peer agents share a machine, each with their own identity and bundle (the Bob model from We Are Legion / We Are Bob). Without explicit awareness, peer agents are isolated workers who don't even know each other exist. The pulse fixes that.",
         "feat(pulse): new `src/heart/daemon/pulse.ts` module. Daemon writes `~/.ouro-cli/pulse.json` whenever any managed agent's snapshot changes (status, errorReason, fixHint, etc.). Each entry includes name, bundle path, status, last-seen-at, errorReason+fixHint when broken, alertId for at-most-once delivery tracking, and currentActivity (read from each agent's `state/sessions/self/inner/runtime.json` when running). Pure helpers `buildPulseState`, `findNovelBrokenAgents`, `findRecoveredAgents`, `pickWakeRecipient`, `flushPulse`, `readAgentActivity`, `buildAlertId`, `buildRecoveryAlertId`, `pruneDeliveredState` exported for unit coverage; I/O wrappers `writePulse`, `readPulse`, `writeDeliveredState`, `readDeliveredState` use injectable deps.",
         "feat(pulse): both passive AND active surfacing. Passive: every agent's prompt assembly renders a `## the pulse` section in Group 7 (dynamic state) showing siblings grouped into broken / reachable / idle buckets. Self-excluded so each agent describes its peers, not itself. Renders nothing on single-agent machines (zero token cost). Active: when a sibling newly breaks (or recovers), the daemon fires `inner.wake` on the most-recently-active running agent so the user finds out within seconds rather than next-time-they-talk-to-someone. Persistent at-most-once delivery via `~/.ouro-cli/pulse-delivered.json` so daemon restarts don't re-page.",
-        "feat(pulse): horizontal-scaling norm in bodyMapSection. New `### peers` subsection teaches the agent the Bob model directly: 'i talk first. when i need a sibling's help, i `send_message` them — that's how peers coordinate, the same way humans on a team do. i only open a sibling's bundle directly via read_file/glob/grep when conversation isn't possible (they're crashed, sleeping, or i need history they haven't surfaced).' Direct declarative voice — no hedging, no soft modal verbs.",
+        "feat(pulse): horizontal-scaling norm in bodyMapSection. New `### peers` subsection teaches the agent the Bob model directly: 'i talk first. when i need a sibling's help, i `send_message` them \u2014 that's how peers coordinate, the same way humans on a team do. i only open a sibling's bundle directly via read_file/glob/grep when conversation isn't possible (they're crashed, sleeping, or i need history they haven't surfaced).' Direct declarative voice \u2014 no hedging, no soft modal verbs.",
         "feat(daemon): `DaemonAgentSnapshot` gains `errorReason` and `fixHint` fields, populated by `checkAgentConfig` results in `startAgent` (set on failure, cleared on recovery). Cleared error fields are how the recovery wake fires: when a previously-broken agent transitions to running with `errorReason: null`, `findRecoveredAgents` flags it.",
         "feat(daemon): `DaemonProcessManager` gains `onSnapshotChange` callback option. Called after every snapshot mutation (start, exit, config-fail, recovery, restart-exhausted). Errors from the observer are swallowed so lifecycle code never breaks because the observer threw. The daemon-entry registers a callback that calls `flushPulse` to update the pulse state and fire wakes.",
         "feat(daemon): wake recipient picker (`pickWakeRecipient`) chooses the most-recently-active running sibling. Excludes the broken agent itself, non-running siblings, and siblings that have never been seen alive. Returns null when no eligible recipient exists, in which case the alert is still marked delivered to avoid spam on subsequent flushes."
@@ -262,80 +269,80 @@
     {
       "version": "0.1.0-alpha.276",
       "changes": [
-        "fix(nerves): root-cause the `start_end_pairing` audit flake on `daemon.server_start`, `daemon.update_checker_start`, and `daemon.apply_pending_updates_start`. Three fixes: (1) `applyPendingUpdates` in `update-hooks.ts` now wraps its body in try/finally so `_end` always fires, including on the early returns for `!fs.existsSync(bundlesRoot)` and `readdirSync` throws that previously orphaned the `_start`. (2) `daemon.start()` now wraps the ~380-line startup body in a try/catch that emits `daemon.server_error` with the error message and rethrows — the audit's pairing rule accepts `_end` OR `_error` as a valid closure for a `_start`, so startup throws no longer orphan `server_start`. The body was extracted to a private `startInner()` method to keep the try/catch small and readable. (3) `startUpdateChecker` callers in the update-checker test suite were already paired via an `afterEach(stopUpdateChecker)`; audited and confirmed no new unpaired callers. Also adds a vitest `afterEach` pairing guard in `src/__tests__/nerves/global-capture.ts` that fails loudly on any orphaned lifecycle `_start` in a test's per-test event stream — scoped to the three lifecycle events above so it catches regressions without false-positiving on legitimate narrow-slice operational events like `repertoire.task_scan_start`. New `src/__tests__/nerves/pairing-regression.test.ts` locks in the contract with 5 tests (nonexistent-dir, readdirSync-throws, happy-path, startUpdateChecker-pair, daemon-start-throw). Three consecutive `npm run test:coverage` runs confirm zero flakes on the target events."
+        "fix(nerves): root-cause the `start_end_pairing` audit flake on `daemon.server_start`, `daemon.update_checker_start`, and `daemon.apply_pending_updates_start`. Three fixes: (1) `applyPendingUpdates` in `update-hooks.ts` now wraps its body in try/finally so `_end` always fires, including on the early returns for `!fs.existsSync(bundlesRoot)` and `readdirSync` throws that previously orphaned the `_start`. (2) `daemon.start()` now wraps the ~380-line startup body in a try/catch that emits `daemon.server_error` with the error message and rethrows \u2014 the audit's pairing rule accepts `_end` OR `_error` as a valid closure for a `_start`, so startup throws no longer orphan `server_start`. The body was extracted to a private `startInner()` method to keep the try/catch small and readable. (3) `startUpdateChecker` callers in the update-checker test suite were already paired via an `afterEach(stopUpdateChecker)`; audited and confirmed no new unpaired callers. Also adds a vitest `afterEach` pairing guard in `src/__tests__/nerves/global-capture.ts` that fails loudly on any orphaned lifecycle `_start` in a test's per-test event stream \u2014 scoped to the three lifecycle events above so it catches regressions without false-positiving on legitimate narrow-slice operational events like `repertoire.task_scan_start`. New `src/__tests__/nerves/pairing-regression.test.ts` locks in the contract with 5 tests (nonexistent-dir, readdirSync-throws, happy-path, startUpdateChecker-pair, daemon-start-throw). Three consecutive `npm run test:coverage` runs confirm zero flakes on the target events."
       ]
     },
     {
       "version": "0.1.0-alpha.275",
       "changes": [
-        "fix(tui): backspace on macOS — Ink 3.2 maps \\x7f to key.delete not key.backspace."
+        "fix(tui): backspace on macOS \u2014 Ink 3.2 maps \\x7f to key.delete not key.backspace."
       ]
     },
     {
       "version": "0.1.0-alpha.274",
       "changes": [
         "feat(nerves): daemon log rotation is now 25 MB x 5 gzipped generations instead of 50 MB x 2 uncompressed, dropping peak disk per stream from ~150 MB to ~30 MB. `createNdjsonFileSink` and `rotateIfNeeded` in `src/nerves/index.ts` accept an options object `{ maxSizeBytes, maxGenerations, compress, rotationCheckIntervalBytes }` (with number-form backcompat for the old positional API). Rotation uses a rename-then-gzip pattern so active writers can keep their fd alive while the renamed file gets compressed. Legacy uncompressed `.1.ndjson`/`.2.ndjson` files from the old scheme are tolerated and gzip-migrated on first rotation. Lifecycle emits paired `nerves.rotation_start` / `nerves.rotation_end` events with a shared trace_id, plus `nerves.rotation_error` on failure via a completion-flag try/catch.",
-        "feat(log-tailer): `ouro logs` can now read rotated `.ndjson.gz` generations, so `--lines N` spans across historical files. `discoverLogFiles` matches both `.ndjson` and `.ndjson.gz`, parses filenames into (streamBase, rank) tuples, and sorts chronologically (oldest generation first, active last). A new internal `readNdjsonFileContents` helper dispatches to `zlib.gunzipSync` for `.gz` paths while preserving the DI-stubbed plain-file path for existing tests. Follow mode only watches the active stream — gzipped generations are historical by definition and never tailed.",
-        "feat(logs-prune): new `ouro logs prune` subcommand applies the active rotation policy to every oversized `.ndjson` file in the agent daemon logs directory. Idempotent — a second run on a compliant dir is a no-op. Concurrent-writer-safe because it delegates to `rotateIfNeeded`'s rename-then-gzip pattern (no locking needed). Emits paired `nerves.logs_prune_start` / `nerves.logs_prune_end` with `nerves.logs_prune_error` on failure. Prints `compacted N file(s), freed M bytes` to stdout. New module `src/heart/daemon/logs-prune.ts` exports `pruneDaemonLogs(options)`; the CLI wire-up adds a `daemon.logs.prune` command kind across cli-types/cli-parse/cli-exec and a `pruneDaemonLogs` dep to `createDefaultOuroCliDeps`.",
+        "feat(log-tailer): `ouro logs` can now read rotated `.ndjson.gz` generations, so `--lines N` spans across historical files. `discoverLogFiles` matches both `.ndjson` and `.ndjson.gz`, parses filenames into (streamBase, rank) tuples, and sorts chronologically (oldest generation first, active last). A new internal `readNdjsonFileContents` helper dispatches to `zlib.gunzipSync` for `.gz` paths while preserving the DI-stubbed plain-file path for existing tests. Follow mode only watches the active stream \u2014 gzipped generations are historical by definition and never tailed.",
+        "feat(logs-prune): new `ouro logs prune` subcommand applies the active rotation policy to every oversized `.ndjson` file in the agent daemon logs directory. Idempotent \u2014 a second run on a compliant dir is a no-op. Concurrent-writer-safe because it delegates to `rotateIfNeeded`'s rename-then-gzip pattern (no locking needed). Emits paired `nerves.logs_prune_start` / `nerves.logs_prune_end` with `nerves.logs_prune_error` on failure. Prints `compacted N file(s), freed M bytes` to stdout. New module `src/heart/daemon/logs-prune.ts` exports `pruneDaemonLogs(options)`; the CLI wire-up adds a `daemon.logs.prune` command kind across cli-types/cli-parse/cli-exec and a `pruneDaemonLogs` dep to `createDefaultOuroCliDeps`.",
         "fix(launchd): drop the stale `StandardErrorPath` plist key that pointed at `ouro-daemon-stderr.log`. The file grew to 366 MB in the wild because the daemon stopped writing to it (the nerves ndjson pipeline has been the source of truth for diagnostics since the nerves layer landed) but nothing ever removed the plist key, so launchd kept the path registered and occasional process-level stderr still dripped in. Removing the key lets launchd forward stray stderr to the system log forwarder where the OS rotates it. The 366 MB orphaned file on disk at `~/AgentBundles/slugger.ouro/state/daemon/logs/ouro-daemon-stderr.log` is safe to delete manually and is flagged in the PR summary for user cleanup.",
-        "refactor(runtime-logging,cli-logging): every `createNdjsonFileSink` call site now passes an explicit `{ maxSizeBytes, maxGenerations, compress }` options object. No callsite silently relies on the old 50 MB default — the policy is visible at each wire-up point. This also removes the `/* v8 ignore */` around the rotation trigger in the sink's flush() loop; tests now exercise it directly via the new `rotationCheckIntervalBytes` option."
+        "refactor(runtime-logging,cli-logging): every `createNdjsonFileSink` call site now passes an explicit `{ maxSizeBytes, maxGenerations, compress }` options object. No callsite silently relies on the old 50 MB default \u2014 the policy is visible at each wire-up point. This also removes the `/* v8 ignore */` around the rotation trigger in the sink's flush() loop; tests now exercise it directly via the new `rotationCheckIntervalBytes` option."
       ]
     },
     {
       "version": "0.1.0-alpha.273",
       "changes": [
-        "feat(version-manager): auto-prune old CLI versions during activate. The user observed `~/.ouro-cli/versions/` accumulating every CLI version they'd ever installed (alpha.85 from 2026-03-20 onward, ~100MB+ of dead node_modules trees) because nothing ever GCed. New `pruneOldVersions(retain=5, deps?)` walks `~/.ouro-cli/versions/`, sorts by alpha-suffix numerically, and deletes everything outside the retention window — except always preserves (a) the currently-active version (CurrentVersion symlink target), and (b) the previous version (previous symlink target), so `ouro rollback` stays one command away. Wired into `cli-defaults.ts` via `ensureCurrentVersionInstalled` and `activateCliVersion` — every successful version activation self-prunes. New helpers `compareCliVersions(a, b)` and `selectVersionsToPrune(installed, protected, retain)` are pure and exported for direct unit coverage. 9 new tests covering version comparison, retention selection, current/previous protection, partial-failure handling, missing-symlink fallback, and non-directory entry filtering.",
-        "test(contract): new OURO_DAEMON_INSTANTIATION_ALLOWLIST in test-isolation.contract.test.ts flags any new test file that constructs `new OuroDaemon(...)` outside the 11 grandfathered files. Constructing a real daemon and calling start() runs killOrphanProcesses() and writePidfile() against the production pidfile at ~/.ouro-cli/daemon.pids. The runtime guards added in #346 short-circuit those functions under vitest, but if a future change to start() adds a NEW production-state side-effect, the existing 11 tests would silently exercise it. The contract test forces conscious review of each new file taking this shape — same defense-in-depth pattern as BYPASS_USE_ALLOWLIST in alpha.265."
+        "feat(version-manager): auto-prune old CLI versions during activate. The user observed `~/.ouro-cli/versions/` accumulating every CLI version they'd ever installed (alpha.85 from 2026-03-20 onward, ~100MB+ of dead node_modules trees) because nothing ever GCed. New `pruneOldVersions(retain=5, deps?)` walks `~/.ouro-cli/versions/`, sorts by alpha-suffix numerically, and deletes everything outside the retention window \u2014 except always preserves (a) the currently-active version (CurrentVersion symlink target), and (b) the previous version (previous symlink target), so `ouro rollback` stays one command away. Wired into `cli-defaults.ts` via `ensureCurrentVersionInstalled` and `activateCliVersion` \u2014 every successful version activation self-prunes. New helpers `compareCliVersions(a, b)` and `selectVersionsToPrune(installed, protected, retain)` are pure and exported for direct unit coverage. 9 new tests covering version comparison, retention selection, current/previous protection, partial-failure handling, missing-symlink fallback, and non-directory entry filtering.",
+        "test(contract): new OURO_DAEMON_INSTANTIATION_ALLOWLIST in test-isolation.contract.test.ts flags any new test file that constructs `new OuroDaemon(...)` outside the 11 grandfathered files. Constructing a real daemon and calling start() runs killOrphanProcesses() and writePidfile() against the production pidfile at ~/.ouro-cli/daemon.pids. The runtime guards added in #346 short-circuit those functions under vitest, but if a future change to start() adds a NEW production-state side-effect, the existing 11 tests would silently exercise it. The contract test forces conscious review of each new file taking this shape \u2014 same defense-in-depth pattern as BYPASS_USE_ALLOWLIST in alpha.265."
       ]
     },
     {
       "version": "0.1.0-alpha.272",
       "changes": [
-        "fix(daemon): the daemon's periodic update checker can now actually auto-update itself. The `onUpdate` callback in `daemon.ts` invoked `performStagedRestart` which (a) ran `npm install -g @ouro.bot/cli@{version}` to install to the global node prefix, and (b) tried to find the new code via `node -e \"console.log(require.resolve('@ouro.bot/cli/package.json'))\"` which depends on the daemon process's NODE_PATH. Neither path was actually reachable from the daemon process running out of `~/.ouro-cli/versions/{version}/...`, so every auto-update attempt bailed at `daemon.staged_restart_path_failed` (\"could not resolve new code path\") and the daemon never updated itself. The user had to manually run `ouro up` to pick up new versions. Fix: switch the staged restart to use the version-managed installer (same one the CLI's `up` flow uses) — `installVersion(version)` puts files at `~/.ouro-cli/versions/{version}/node_modules/@ouro.bot/cli` (deterministic, computable), then `activateVersion(version)` flips the CurrentVersion symlink so the next user-driven `ouro up` sees the same version the daemon is running. `performStagedRestart` gained an optional `installNewVersion` dep that production callers inject; the legacy `npm install -g` fallback path is preserved for tests. Two new regression tests in `staged-restart.test.ts`.",
+        "fix(daemon): the daemon's periodic update checker can now actually auto-update itself. The `onUpdate` callback in `daemon.ts` invoked `performStagedRestart` which (a) ran `npm install -g @ouro.bot/cli@{version}` to install to the global node prefix, and (b) tried to find the new code via `node -e \"console.log(require.resolve('@ouro.bot/cli/package.json'))\"` which depends on the daemon process's NODE_PATH. Neither path was actually reachable from the daemon process running out of `~/.ouro-cli/versions/{version}/...`, so every auto-update attempt bailed at `daemon.staged_restart_path_failed` (\"could not resolve new code path\") and the daemon never updated itself. The user had to manually run `ouro up` to pick up new versions. Fix: switch the staged restart to use the version-managed installer (same one the CLI's `up` flow uses) \u2014 `installVersion(version)` puts files at `~/.ouro-cli/versions/{version}/node_modules/@ouro.bot/cli` (deterministic, computable), then `activateVersion(version)` flips the CurrentVersion symlink so the next user-driven `ouro up` sees the same version the daemon is running. `performStagedRestart` gained an optional `installNewVersion` dep that production callers inject; the legacy `npm install -g` fallback path is preserved for tests. Two new regression tests in `staged-restart.test.ts`.",
         "fix(cli): `ouro up` no longer prints the 'ouro updated to ...' message twice during npx invocations. Three independent paths can detect a CLI version change: (1) `checkForCliUpdate` finds a newer version on npm and re-execs (cross-process print), (2) `ensureCurrentVersionInstalled` flips the CurrentVersion symlink during `performSystemSetup` because the running package version is newer than what the symlink pointed at (path 2, in-process), (3) `bundle-meta.json`'s stored runtime version differs from the running version (path 3, in-process fallback). Path 3's existing guard `linkedVersionBeforeUp !== currentVersion` correctly skipped path 3 when path 1 had already printed in a different process, but did NOT catch the case where path 2 fired in the same process. Verified live on 2026-04-08: `npx --yes @ouro.bot/cli@alpha up` printed the message twice. Fix: track an in-process `printedUpdateMessage` flag set by path 2; path 3 checks it before printing. Path 3 still acts as a fallback when path 2 didn't fire. New regression test in `daemon-cli-update-flow.test.ts` simulates the npx scenario and asserts exactly one print.",
-        "fix(hooks): Claude Code lifecycle hooks (`ouro hook session-start|stop|post-tool-use`) now short-circuit when the daemon socket file doesn't exist, instead of attempting `sendDaemonCommand` and logging two ENOENT errors per hook fire (one for `message.send`, one for `inner.wake`). Every Claude Code event during a daemon-down window was producing noisy `connect ENOENT /tmp/ouroboros-daemon.sock` entries in `ouro.ndjson`, which made it hard to read logs around outages. The hook is best-effort by design — dropping notifications when the daemon is down is correct behavior; we just don't want to log spam about it. New nerves event `daemon.hook_skipped_no_socket` (info level) when the short-circuit fires."
+        "fix(hooks): Claude Code lifecycle hooks (`ouro hook session-start|stop|post-tool-use`) now short-circuit when the daemon socket file doesn't exist, instead of attempting `sendDaemonCommand` and logging two ENOENT errors per hook fire (one for `message.send`, one for `inner.wake`). Every Claude Code event during a daemon-down window was producing noisy `connect ENOENT /tmp/ouroboros-daemon.sock` entries in `ouro.ndjson`, which made it hard to read logs around outages. The hook is best-effort by design \u2014 dropping notifications when the daemon is down is correct behavior; we just don't want to log spam about it. New nerves event `daemon.hook_skipped_no_socket` (info level) when the short-circuit fires."
       ]
     },
     {
       "version": "0.1.0-alpha.271",
       "changes": [
-        "fix(daemon): unblock daemon.stop deadlock that hung `ouro up` after a CLI auto-update. When the running daemon's version drifted from the local CLI version, `ensureDaemonRunning` would send `daemon.stop` over the socket, the daemon's command handler would `await this.stop()`, and `stop()` would `await server.close()`. server.close() resolves only after every open connection has closed — but the calling client's connection was the ONE thing keeping the server open: its `flushResponse()` was awaiting THIS function call. Both processes sat in kevent forever. Verified live on 2026-04-08: alpha.268 daemon hung at `daemon.server_end` log line for 5+ minutes after a fresh alpha.270 ouro process sent daemon.stop, and the alpha.270 ouro process hung waiting for the response. The deadlock had existed since the original `await server.close()` line was added (2026-03-05) but was masked for weeks by the half-close behavior in socket-client: the client called `client.end()` after writing its command, which (with `allowHalfOpen: false`) caused node to auto-tear-down the server's writable side, incidentally unblocking server.close() before the response was sent. The fix in #303/#334/#339 (which removed `client.end()` and switched to `allowHalfOpen: true` to stop dropping long-running responses like agent.senseTurn) accidentally exposed the underlying deadlock. Fix: don't `await` server.close() in stop() — just fire it. Once stop() returns, the daemon.stop case returns its response, flushResponse calls connection.end(response), the connection closes, and server.close()'s pending callback fires asynchronously. Includes a new daemon-stop-deadlock.test.ts that uses real net sockets to drive daemon.stop and asserts the response comes back within 2s — the test fails (24s timeout) without the fix and passes (110ms) with it."
+        "fix(daemon): unblock daemon.stop deadlock that hung `ouro up` after a CLI auto-update. When the running daemon's version drifted from the local CLI version, `ensureDaemonRunning` would send `daemon.stop` over the socket, the daemon's command handler would `await this.stop()`, and `stop()` would `await server.close()`. server.close() resolves only after every open connection has closed \u2014 but the calling client's connection was the ONE thing keeping the server open: its `flushResponse()` was awaiting THIS function call. Both processes sat in kevent forever. Verified live on 2026-04-08: alpha.268 daemon hung at `daemon.server_end` log line for 5+ minutes after a fresh alpha.270 ouro process sent daemon.stop, and the alpha.270 ouro process hung waiting for the response. The deadlock had existed since the original `await server.close()` line was added (2026-03-05) but was masked for weeks by the half-close behavior in socket-client: the client called `client.end()` after writing its command, which (with `allowHalfOpen: false`) caused node to auto-tear-down the server's writable side, incidentally unblocking server.close() before the response was sent. The fix in #303/#334/#339 (which removed `client.end()` and switched to `allowHalfOpen: true` to stop dropping long-running responses like agent.senseTurn) accidentally exposed the underlying deadlock. Fix: don't `await` server.close() in stop() \u2014 just fire it. Once stop() returns, the daemon.stop case returns its response, flushResponse calls connection.end(response), the connection closes, and server.close()'s pending callback fires asynchronously. Includes a new daemon-stop-deadlock.test.ts that uses real net sockets to drive daemon.stop and asserts the response comes back within 2s \u2014 the test fails (24s timeout) without the fix and passes (110ms) with it."
       ]
     },
     {
       "version": "0.1.0-alpha.270",
       "changes": [
-        "feat(daemon): `ouro status` now shows a new `Agents` section listing every discovered bundle with its enabled/disabled state. Previously disabled agents were completely invisible in status — the Senses/Workers/Git Sync sections only iterate managed (enabled) bundles, so a bundle with `\"enabled\": false` in agent.json left no trace in the output. New helper `listAllBundleAgents()` in `agent-discovery.ts` walks the bundles root and returns `{ name, enabled }` for every `<name>.ouro` with a parseable agent.json, and `listEnabledBundleAgents()` now delegates to it. Daemon status payload carries a new `agents: BundleAgentRow[]` field (backward-compat optional in the parser). The stopped-daemon renderer also reads bundles directly from disk so the Agents section works when the daemon is down."
+        "feat(daemon): `ouro status` now shows a new `Agents` section listing every discovered bundle with its enabled/disabled state. Previously disabled agents were completely invisible in status \u2014 the Senses/Workers/Git Sync sections only iterate managed (enabled) bundles, so a bundle with `\"enabled\": false` in agent.json left no trace in the output. New helper `listAllBundleAgents()` in `agent-discovery.ts` walks the bundles root and returns `{ name, enabled }` for every `<name>.ouro` with a parseable agent.json, and `listEnabledBundleAgents()` now delegates to it. Daemon status payload carries a new `agents: BundleAgentRow[]` field (backward-compat optional in the parser). The stopped-daemon renderer also reads bundles directly from disk so the Agents section works when the daemon is down."
       ]
     },
     {
       "version": "0.1.0-alpha.269",
       "changes": [
-        "fix(prompt): revert alpha.267 over-engineering and correct the two targeted additions. The existing contextSection already contained the 'save to disk or lose it' teaching ('my conversation memory is ephemeral -- it resets between sessions. anything i learn about my friend, i save with save_friend_note so future me remembers.'), and toolContractsSection already told agents to call save_friend_note/diary_write before responding. alpha.267 added a third block in memoryJudgementSection about 'not just remembering between sessions' which was redundant and misplaced (memoryJudgementSection sits under 'my tools & capabilities' alongside tool routing heuristics, not nature-of-self content). That block is reverted. What alpha.267 got right and this PR keeps: (a) bodyMapSection guidance that standard folders are a floor, not a ceiling — bundles can have custom top-level folders (slugger's travel/ was the motivating example) — with a nudge to try the file-listing tool on the bundle root BEFORE falling back to recall, and (b) a diary-routing bullet that flags bundle-layout discoveries as worth persisting. Both had errors corrected here: alpha.267 told agents to use `list_directory` but the actual tool is `glob` (with a pattern like `*/`), and it said 'write a diary note like bundle-layout.md' but diary/ is a jsonl fact store queried via recall, not a directory of .md files — the corrected bullet says 'save the fact with diary_write'."
+        "fix(prompt): revert alpha.267 over-engineering and correct the two targeted additions. The existing contextSection already contained the 'save to disk or lose it' teaching ('my conversation memory is ephemeral -- it resets between sessions. anything i learn about my friend, i save with save_friend_note so future me remembers.'), and toolContractsSection already told agents to call save_friend_note/diary_write before responding. alpha.267 added a third block in memoryJudgementSection about 'not just remembering between sessions' which was redundant and misplaced (memoryJudgementSection sits under 'my tools & capabilities' alongside tool routing heuristics, not nature-of-self content). That block is reverted. What alpha.267 got right and this PR keeps: (a) bodyMapSection guidance that standard folders are a floor, not a ceiling \u2014 bundles can have custom top-level folders (slugger's travel/ was the motivating example) \u2014 with a nudge to try the file-listing tool on the bundle root BEFORE falling back to recall, and (b) a diary-routing bullet that flags bundle-layout discoveries as worth persisting. Both had errors corrected here: alpha.267 told agents to use `list_directory` but the actual tool is `glob` (with a pattern like `*/`), and it said 'write a diary note like bundle-layout.md' but diary/ is a jsonl fact store queried via recall, not a directory of .md files \u2014 the corrected bullet says 'save the fact with diary_write'."
       ]
     },
     {
       "version": "0.1.0-alpha.268",
       "changes": [
-        "fix(identity): `loadAgentConfig` now preserves the `sync` block from agent.json. The hand-rolled object literal that constructs the typed `AgentConfig` was missing `sync` from its field list, so `agentConfig.sync` was always `undefined`, `getSyncConfig()` always returned `enabled: false`, and the entire sync code path (`preTurnPull` / `postTurnPush` in `pipeline.ts`) was dead from the moment the field was added to the type. The bug hid for weeks because `ouro status` reads `agent.json` directly via `listBundleSyncRows`, not through `loadAgentConfig` — so the per-agent Git Sync display correctly showed `enabled origin → ...` while sync did literally nothing. Slugger accumulated 5+ days of dirty files and zero `sync: post-turn update` commits before this surfaced. Also adds 3 regression tests asserting the sync block round-trips through `loadAgentConfig` (full block, partial block, missing block). The first two would have caught the original bug; without them future field additions to `AgentConfig` could repeat the pattern."
+        "fix(identity): `loadAgentConfig` now preserves the `sync` block from agent.json. The hand-rolled object literal that constructs the typed `AgentConfig` was missing `sync` from its field list, so `agentConfig.sync` was always `undefined`, `getSyncConfig()` always returned `enabled: false`, and the entire sync code path (`preTurnPull` / `postTurnPush` in `pipeline.ts`) was dead from the moment the field was added to the type. The bug hid for weeks because `ouro status` reads `agent.json` directly via `listBundleSyncRows`, not through `loadAgentConfig` \u2014 so the per-agent Git Sync display correctly showed `enabled origin \u2192 ...` while sync did literally nothing. Slugger accumulated 5+ days of dirty files and zero `sync: post-turn update` commits before this surfaced. Also adds 3 regression tests asserting the sync block round-trips through `loadAgentConfig` (full block, partial block, missing block). The first two would have caught the original bug; without them future field additions to `AgentConfig` could repeat the pattern."
       ]
     },
     {
       "version": "0.1.0-alpha.267",
       "changes": [
-        "fix(prompt): teach agents that they do NOT 'just remember' things between sessions. Observed failure mode: slugger spent a recall scan searching diary/journal for a `travel/` folder that was right at the bundle root, then concluded 'i should know my own folder structure next time' and refused to persist the discovery because 'that's just me knowing my own home.' That is impossible — next session is a blank slate. The agent conflated in-session realizations with persistent knowledge. Three prompt changes fix this: (1) bodyMapSection now explicitly states that standard folders are a floor, bundles MAY have custom top-level folders created by the friend over time, and the agent should `list_directory` the bundle root BEFORE reaching for `recall` when something might be in a custom location. (2) memoryJudgementSection opens with an always-on reminder that the agent does not 'just remember' anything between sessions — every session carries only (a) the prompt, (b) what's on disk, (c) what tools observe this turn — and that thoughts like 'i should know this next time' or 'i'll look there first in the future' are CUES to write a concrete diary/friend-note RIGHT NOW. Future me cannot inherit resolutions, only files. (3) memoryJudgementSection's diary-routing rules now explicitly call out bundle-layout discoveries as a thing worth persisting (e.g. to a `bundle-layout.md` diary note). Includes 3 new tests locking the directives into place so future prompt edits cannot silently drop them."
+        "fix(prompt): teach agents that they do NOT 'just remember' things between sessions. Observed failure mode: slugger spent a recall scan searching diary/journal for a `travel/` folder that was right at the bundle root, then concluded 'i should know my own folder structure next time' and refused to persist the discovery because 'that's just me knowing my own home.' That is impossible \u2014 next session is a blank slate. The agent conflated in-session realizations with persistent knowledge. Three prompt changes fix this: (1) bodyMapSection now explicitly states that standard folders are a floor, bundles MAY have custom top-level folders created by the friend over time, and the agent should `list_directory` the bundle root BEFORE reaching for `recall` when something might be in a custom location. (2) memoryJudgementSection opens with an always-on reminder that the agent does not 'just remember' anything between sessions \u2014 every session carries only (a) the prompt, (b) what's on disk, (c) what tools observe this turn \u2014 and that thoughts like 'i should know this next time' or 'i'll look there first in the future' are CUES to write a concrete diary/friend-note RIGHT NOW. Future me cannot inherit resolutions, only files. (3) memoryJudgementSection's diary-routing rules now explicitly call out bundle-layout discoveries as a thing worth persisting (e.g. to a `bundle-layout.md` diary note). Includes 3 new tests locking the directives into place so future prompt edits cannot silently drop them."
       ]
     },
     {
       "version": "0.1.0-alpha.266",
       "changes": [
-        "fix(daemon): vitest guard for production pidfile (~/.ouro-cli/daemon.pids). The pidfile path is hardcoded with no DI seam, so when a test creates a real OuroDaemon instance and calls start(), the daemon's killOrphanProcesses() reads the REAL pidfile, ps-verifies the PIDs, and SIGTERMs the production daemon's PIDs. Verified live: alpha.265 daemon (PID 64988) was killed 93s after startup by `npx vitest run` invoking daemon.start() in 6 different test files. SIGTERM forensics added in alpha.265 captured the death (parentPid=1, parentCommand=/sbin/launchd) but the killer hint was misleading — the real culprit was the production-pidfile leak. Fix: killOrphanProcesses() and writePidfile() now short-circuit under vitest with warn-level nerves events. Tests that need to verify these functions' behavior continue to use the extracted pure helpers (parseOrphanPidsFromPs, filterPidfilePidsToActualOrphans). New unit tests verify the pidfile is unchanged after no-op calls. Same defense-in-depth pattern as the alpha.265 socket-client hardening — production-side state being touched from tests is now physically impossible from a vitest worker."
+        "fix(daemon): vitest guard for production pidfile (~/.ouro-cli/daemon.pids). The pidfile path is hardcoded with no DI seam, so when a test creates a real OuroDaemon instance and calls start(), the daemon's killOrphanProcesses() reads the REAL pidfile, ps-verifies the PIDs, and SIGTERMs the production daemon's PIDs. Verified live: alpha.265 daemon (PID 64988) was killed 93s after startup by `npx vitest run` invoking daemon.start() in 6 different test files. SIGTERM forensics added in alpha.265 captured the death (parentPid=1, parentCommand=/sbin/launchd) but the killer hint was misleading \u2014 the real culprit was the production-pidfile leak. Fix: killOrphanProcesses() and writePidfile() now short-circuit under vitest with warn-level nerves events. Tests that need to verify these functions' behavior continue to use the extracted pure helpers (parseOrphanPidsFromPs, filterPidfilePidsToActualOrphans). New unit tests verify the pidfile is unchanged after no-op calls. Same defense-in-depth pattern as the alpha.265 socket-client hardening \u2014 production-side state being touched from tests is now physically impossible from a vitest worker."
       ]
     },
     {
       "version": "0.1.0-alpha.265",
       "changes": [
-        "fix(daemon): bulletproof vitest socket leak + SIGTERM forensics. Hardens the socket-client vitest guard so production daemon socket calls (DEFAULT_DAEMON_SOCKET_PATH = /tmp/ouroboros-daemon.sock) are unconditionally blocked under vitest, regardless of __bypassVitestGuardForTests state. Cross-file leaks via the globalThis bypass flag (process-wide, leaks across concurrent test files in the same vitest worker) can no longer reach the production daemon. Test files that legitimately exercise the real socket-client transport against synthetic test socket paths (/tmp/daemon.sock) continue to work. Background: a daemon outage on 2026-04-08 was traced to a 14-call burst of leaked `inner.wake testagent` errors, signature of vitest test runs hammering the production socket — same pattern as 1,460 historical daemon log entries.",
+        "fix(daemon): bulletproof vitest socket leak + SIGTERM forensics. Hardens the socket-client vitest guard so production daemon socket calls (DEFAULT_DAEMON_SOCKET_PATH = /tmp/ouroboros-daemon.sock) are unconditionally blocked under vitest, regardless of __bypassVitestGuardForTests state. Cross-file leaks via the globalThis bypass flag (process-wide, leaks across concurrent test files in the same vitest worker) can no longer reach the production daemon. Test files that legitimately exercise the real socket-client transport against synthetic test socket paths (/tmp/daemon.sock) continue to work. Background: a daemon outage on 2026-04-08 was traced to a 14-call burst of leaked `inner.wake testagent` errors, signature of vitest test runs hammering the production socket \u2014 same pattern as 1,460 historical daemon log entries.",
         "feat(daemon): SIGTERM/SIGINT tombstone forensics. New writeDaemonTombstone path captures process.ppid, parent command via `ps -p <ppid> -o command=`, and a filtered process snapshot (only node/vitest/ouro/kill lines) at signal-driven death time. Adds a killerHint heuristic: launchd parent reparenting suggests `launchctl bootout`/KeepAlive thrash; vitest worker presence suggests test cleanup; pkill/killall presence is an explicit kill. Forensics field is parsed by readDaemonTombstone and included in the daemon.tombstone_written nerves event meta. Also caps recentCrashes at 100 entries (was 12,265 from a March 31 thrash loop).",
         "test(daemon): contract test BYPASS_USE_ALLOWLIST flags any new file calling __bypassVitestGuardForTests outside the two known-good test files (socket-client.test.ts and daemon-cli-defaults.test.ts). Prevents future regressions of the cross-file leak vector."
       ]
@@ -343,7 +350,7 @@
     {
       "version": "0.1.0-alpha.264",
       "changes": [
-        "fix(bluebubbles): dedup `updated-message` webhooks BEFORE running repair+hydrate+VLM. BlueBubbles routinely sends a `new-message` webhook for a fresh message, then follows up seconds later with one or more `updated-message` webhooks for delivery/read status. The BB sense's `repairEvent` path promotes updated-message events with recoverable content back to `message` kind, which re-runs the full hydration pipeline — including a second MiniMax VLM describe call on the same image. Verified live on 2026-04-08T00:58Z: two sequential VLM describes for attachment guid 317E37EB-..., 13.7s + 14.0s each, for the exact same 291KB JPEG, triggered by a `new-message` followed 3s later by an `updated-message` for the same guid. The downstream `handleBlueBubblesNormalizedEvent` dedup check was firing correctly but too late (after the expensive VLM round-trip). Fix: add a pre-repair dedup check in `handleBlueBubblesEvent` that consults the inbound sidecar by messageGuid and short-circuits before calling `client.repairEvent(...)`. New nerves event `senses.bluebubbles_repair_skipped_duplicate` at warn level for observability."
+        "fix(bluebubbles): dedup `updated-message` webhooks BEFORE running repair+hydrate+VLM. BlueBubbles routinely sends a `new-message` webhook for a fresh message, then follows up seconds later with one or more `updated-message` webhooks for delivery/read status. The BB sense's `repairEvent` path promotes updated-message events with recoverable content back to `message` kind, which re-runs the full hydration pipeline \u2014 including a second MiniMax VLM describe call on the same image. Verified live on 2026-04-08T00:58Z: two sequential VLM describes for attachment guid 317E37EB-..., 13.7s + 14.0s each, for the exact same 291KB JPEG, triggered by a `new-message` followed 3s later by an `updated-message` for the same guid. The downstream `handleBlueBubblesNormalizedEvent` dedup check was firing correctly but too late (after the expensive VLM round-trip). Fix: add a pre-repair dedup check in `handleBlueBubblesEvent` that consults the inbound sidecar by messageGuid and short-circuits before calling `client.repairEvent(...)`. New nerves event `senses.bluebubbles_repair_skipped_duplicate` at warn level for observability."
       ]
     },
     {
@@ -355,28 +362,28 @@
     {
       "version": "0.1.0-alpha.262",
       "changes": [
-        "test(daemon): inject explicit `vi.mock(\"...heart/daemon/socket-client\", ...)` blocks into all 40 grandfathered test files in `TESTAGENT_NO_MOCK_ALLOWLIST`. The runtime guard in `socket-client.ts` already prevents real socket leaks under vitest, but the explicit mocks let those tests assert call counts cleanly and shrink the contract-test allowlist to zero. Both the testagent and the bundle-write allowlists in `test-isolation.contract.test.ts` are now empty Sets — any new offender fails the build."
+        "test(daemon): inject explicit `vi.mock(\"...heart/daemon/socket-client\", ...)` blocks into all 40 grandfathered test files in `TESTAGENT_NO_MOCK_ALLOWLIST`. The runtime guard in `socket-client.ts` already prevents real socket leaks under vitest, but the explicit mocks let those tests assert call counts cleanly and shrink the contract-test allowlist to zero. Both the testagent and the bundle-write allowlists in `test-isolation.contract.test.ts` are now empty Sets \u2014 any new offender fails the build."
       ]
     },
     {
       "version": "0.1.0-alpha.261",
       "changes": [
-        "feat(tui): full input parity with Claude Code — kill ring, emacs nav, Home/End, Ctrl+D, forward delete, Esc history, bracketed paste, clipboard image, token deletion, chip navigation. 156 new tests."
+        "feat(tui): full input parity with Claude Code \u2014 kill ring, emacs nav, Home/End, Ctrl+D, forward delete, Esc history, bracketed paste, clipboard image, token deletion, chip navigation. 156 new tests."
       ]
     },
     {
       "version": "0.1.0-alpha.260",
       "changes": [
-        "fix(daemon): MCP bridge empty-response bug for long-running commands. `sendDaemonCommand` and `checkDaemonSocketAlive` were calling `client.end()` immediately after writing, which half-closed the TCP connection. The daemon server's `net.createServer()` uses the default `allowHalfOpen: false`, so when it saw the client's FIN it auto-closed its own writable side — and any response the server tried to write after processing a long-running command (like `agent.senseTurn`, which runs a full LLM turn) was dropped on the floor. Verified via direct socket repro: with `client.end()`, `agent.senseTurn` returned empty in ~149ms; without it, the same call returned a real response in ~5.8s. This was a silent regression of the fix in #303 (commit `253e4b1f` titled \"socket half-close fix\" actually *added* the half-close back). Fix: drop the `client.end()` calls from both sites AND set `allowHalfOpen: true` on the daemon's `net.createServer(...)` as defense-in-depth so future clients calling `end()` don't silently break again.",
-        "fix(daemon): tighten pidfile trust — `killOrphanProcesses` now verifies each pidfile PID is an actual orphan (PPID reparented to init/PID 1) before SIGTERMing it. Previously a polluted pidfile (written by a crashed daemon whose PIDs have since been reused by the OS for unrelated processes) could cause mass-kill of unrelated apps. New exported helper `filterPidfilePidsToActualOrphans` provides direct unit coverage.",
+        "fix(daemon): MCP bridge empty-response bug for long-running commands. `sendDaemonCommand` and `checkDaemonSocketAlive` were calling `client.end()` immediately after writing, which half-closed the TCP connection. The daemon server's `net.createServer()` uses the default `allowHalfOpen: false`, so when it saw the client's FIN it auto-closed its own writable side \u2014 and any response the server tried to write after processing a long-running command (like `agent.senseTurn`, which runs a full LLM turn) was dropped on the floor. Verified via direct socket repro: with `client.end()`, `agent.senseTurn` returned empty in ~149ms; without it, the same call returned a real response in ~5.8s. This was a silent regression of the fix in #303 (commit `253e4b1f` titled \"socket half-close fix\" actually *added* the half-close back). Fix: drop the `client.end()` calls from both sites AND set `allowHalfOpen: true` on the daemon's `net.createServer(...)` as defense-in-depth so future clients calling `end()` don't silently break again.",
+        "fix(daemon): tighten pidfile trust \u2014 `killOrphanProcesses` now verifies each pidfile PID is an actual orphan (PPID reparented to init/PID 1) before SIGTERMing it. Previously a polluted pidfile (written by a crashed daemon whose PIDs have since been reused by the OS for unrelated processes) could cause mass-kill of unrelated apps. New exported helper `filterPidfilePidsToActualOrphans` provides direct unit coverage.",
         "fix(daemon, repertoire): rename six `_stop` nerves events to `_end` so they pair correctly with their `_start` counterparts under the nerves audit's start/end pairing rule. Affected: `daemon.thoughts_follow_stop`, `daemon.server_stop`, `daemon.update_checker_stop`, `daemon.mcp_server_stop`, `daemon.habit_scheduler_stop`, `mcp.manager_stop`. The naming was semantically fine (`stop` pairs with `start`), but the audit specifically looks for `_end`/`_error` suffixes. Was producing intermittent audit failures whenever any test run exercised these teardown paths (seen today as flakes on `daemon-socket-errors.test.ts` and `MarkdownStreamer` tests).",
-        "fix(providers): drop the harness-imposed MiniMax VLM timeout entirely. Previously the module defaulted to a 60-second AbortSignal; E2E validation of the BB image fix hit a real VLM request that took >60s to return (same bytes returned in 9.5s on the immediate retry). Raising to 120s would have been arbitrary too — the correct answer, per the same reasoning as PR #322 for LLM providers, is to not impose a harness ceiling at all. When `timeoutMs` isn't provided, `fetch()` now runs without an AbortSignal and undici's own defaults (headersTimeout + bodyTimeout, both 5 minutes) are the ceiling. Callers that want a tighter bound can still pass an explicit `timeoutMs`. The AbortError path is kept for that case, and the error message adapts to say \"underlying stack default\" when there was no harness-set value."
+        "fix(providers): drop the harness-imposed MiniMax VLM timeout entirely. Previously the module defaulted to a 60-second AbortSignal; E2E validation of the BB image fix hit a real VLM request that took >60s to return (same bytes returned in 9.5s on the immediate retry). Raising to 120s would have been arbitrary too \u2014 the correct answer, per the same reasoning as PR #322 for LLM providers, is to not impose a harness ceiling at all. When `timeoutMs` isn't provided, `fetch()` now runs without an AbortSignal and undici's own defaults (headersTimeout + bodyTimeout, both 5 minutes) are the ceiling. Callers that want a tighter bound can still pass an explicit `timeoutMs`. The AbortError path is kept for that case, and the error message adapts to say \"underlying stack default\" when there was no harness-set value."
       ]
     },
     {
       "version": "0.1.0-alpha.259",
       "changes": [
-        "fix(daemon): SIGINT and SIGTERM now ALWAYS write a tombstone before exiting, instead of silently skipping when `_gracefulShutdown` was set. The previous behavior made signal-driven shutdowns invisible in `~/.ouro-cli/daemon-death.json` — launchd policy decisions, the OOM killer, manual `kill`, and `killOrphanProcesses` from a sibling daemon all looked identical to a clean exit. After a real outage where the user's daemon kept dying with a tombstone from a week earlier, this restores observability: every signal-driven exit now records `reason: \"sigint\"` or `reason: \"sigterm\"` with timestamp + recentCrashes accumulator. The catch-all `process.on('exit')` handler also no longer short-circuits on graceful shutdown."
+        "fix(daemon): SIGINT and SIGTERM now ALWAYS write a tombstone before exiting, instead of silently skipping when `_gracefulShutdown` was set. The previous behavior made signal-driven shutdowns invisible in `~/.ouro-cli/daemon-death.json` \u2014 launchd policy decisions, the OOM killer, manual `kill`, and `killOrphanProcesses` from a sibling daemon all looked identical to a clean exit. After a real outage where the user's daemon kept dying with a tombstone from a week earlier, this restores observability: every signal-driven exit now records `reason: \"sigint\"` or `reason: \"sigterm\"` with timestamp + recentCrashes accumulator. The catch-all `process.on('exit')` handler also no longer short-circuits on graceful shutdown."
       ]
     },
     {
@@ -390,14 +397,14 @@
     {
       "version": "0.1.0-alpha.257",
       "changes": [
-        "test(daemon): convert all `daemon-cli.test.ts` auth/thoughts/config tests to use `os.tmpdir()` via the new `createTmpBundle()` helper. Previously these tests wrote real bundles to `~/AgentBundles/auth-local-${Date.now()}.ouro` etc., relying on `try/finally` cleanup that doesn't fire on test interruption — leaking bundle directories into the developer's home and inflating noise on the running daemon. The `REAL_BUNDLES_WRITE_ALLOWLIST` ratchet in `test-isolation.contract.test.ts` is now empty.",
+        "test(daemon): convert all `daemon-cli.test.ts` auth/thoughts/config tests to use `os.tmpdir()` via the new `createTmpBundle()` helper. Previously these tests wrote real bundles to `~/AgentBundles/auth-local-${Date.now()}.ouro` etc., relying on `try/finally` cleanup that doesn't fire on test interruption \u2014 leaking bundle directories into the developer's home and inflating noise on the running daemon. The `REAL_BUNDLES_WRITE_ALLOWLIST` ratchet in `test-isolation.contract.test.ts` is now empty.",
         "fix(daemon/cli-exec): plumb `bundlesRoot` and `secretsRoot` deps through the auth.run / auth.verify / auth.switch / config.model / config.models / thoughts handlers so tests can route reads/writes to a tmpdir without monkey-patching the identity module. Production code paths still default to `getAgentBundlesRoot()` and `~/.agentsecrets`."
       ]
     },
     {
       "version": "0.1.0-alpha.256",
       "changes": [
-        "fix(tui): cursor renders as inverse character (not inserted block) — matches standard terminal cursor behavior.",
+        "fix(tui): cursor renders as inverse character (not inserted block) \u2014 matches standard terminal cursor behavior.",
         "fix(tui): Alt+Enter via ESC-timing (50ms window) instead of raw stdin handler that interfered with arrow keys.",
         "fix(tui): image path regex now matches backslash-escaped spaces from macOS drag-drop."
       ]
@@ -406,20 +413,20 @@
       "version": "0.1.0-alpha.255",
       "changes": [
         "feat(tui): session resume shows last messages as regular chat (no dimmed preview) with teal resume banner in header.",
-        "feat(tui): image/file drag-and-drop — detects image paths in pasted text, reads to base64, inserts [Image #N] references, sends as image_url content blocks to model.",
+        "feat(tui): image/file drag-and-drop \u2014 detects image paths in pasted text, reads to base64, inserts [Image #N] references, sends as image_url content blocks to model.",
         "refactor(tui): removed custom history-* roles and addSessionHistory (KISS/DRY)."
       ]
     },
     {
       "version": "0.1.0-alpha.254",
       "changes": [
-        "fix(daemon): orphan-cleanup fallback no longer kills processes from sibling harness instances. On startup, `killOrphanProcesses` scans `ps` for harness entry points (`agent-entry.js`, `daemon-entry.js`, `bluebubbles/entry.js`, `teams-entry.js`) and SIGTERMs them when the pidfile is missing. Previously any matching process was fair game, so a vitest-driven harness run from a sibling worktree (or a parallel Claude Code session running the coverage gate) would terminate the production daemon's children, triggering cascading graceful shutdowns and making production slugger unavailable for seconds-to-minutes at a time. Now the fallback only flags true orphans — processes whose PPID has been reparented to init (PID 1). Sibling daemons' live-parented children are left alone. New exported helper `parseOrphanPidsFromPs` isolates the filter for direct unit coverage. Complements the test-isolation guard shipped in alpha.253 (#333): that PR stopped tests from SENDING `inner.wake testagent` commands into the production socket; this PR stops the production daemon from SIGTERMing test-spawned child processes during its own startup."
+        "fix(daemon): orphan-cleanup fallback no longer kills processes from sibling harness instances. On startup, `killOrphanProcesses` scans `ps` for harness entry points (`agent-entry.js`, `daemon-entry.js`, `bluebubbles/entry.js`, `teams-entry.js`) and SIGTERMs them when the pidfile is missing. Previously any matching process was fair game, so a vitest-driven harness run from a sibling worktree (or a parallel Claude Code session running the coverage gate) would terminate the production daemon's children, triggering cascading graceful shutdowns and making production slugger unavailable for seconds-to-minutes at a time. Now the fallback only flags true orphans \u2014 processes whose PPID has been reparented to init (PID 1). Sibling daemons' live-parented children are left alone. New exported helper `parseOrphanPidsFromPs` isolates the filter for direct unit coverage. Complements the test-isolation guard shipped in alpha.253 (#333): that PR stopped tests from SENDING `inner.wake testagent` commands into the production socket; this PR stops the production daemon from SIGTERMing test-spawned child processes during its own startup."
       ]
     },
     {
       "version": "0.1.0-alpha.253",
       "changes": [
-        "fix(daemon): test-isolation guard — stop tests from leaking real `inner.wake` commands into the running daemon. A pattern in 36+ test files mocks `getAgentName` to the literal `\"testagent\"` but does NOT mock `socket-client`, so any code path through pondering / rest / coding feedback fires a real socket connection at /tmp/ouroboros-daemon.sock with `inner.wake testagent`. The daemon errored on every command (`Unknown managed agent 'testagent'`) and at flood volumes that contributed to a real outage on the developer's machine. The fix is in `socket-client.ts` itself: detect vitest via `process.argv` (no env vars) and convert all socket operations into safe no-ops. Tests that legitimately exercise the real transport (socket-client.test.ts, daemon-cli-defaults.test.ts) opt out of the guard via a new `__bypassVitestGuardForTests()` setter that lives on globalThis to survive `vi.resetModules()`. New nerves events: `daemon.socket_command_test_blocked`, `daemon.inner_wake_test_blocked`.",
+        "fix(daemon): test-isolation guard \u2014 stop tests from leaking real `inner.wake` commands into the running daemon. A pattern in 36+ test files mocks `getAgentName` to the literal `\"testagent\"` but does NOT mock `socket-client`, so any code path through pondering / rest / coding feedback fires a real socket connection at /tmp/ouroboros-daemon.sock with `inner.wake testagent`. The daemon errored on every command (`Unknown managed agent 'testagent'`) and at flood volumes that contributed to a real outage on the developer's machine. The fix is in `socket-client.ts` itself: detect vitest via `process.argv` (no env vars) and convert all socket operations into safe no-ops. Tests that legitimately exercise the real transport (socket-client.test.ts, daemon-cli-defaults.test.ts) opt out of the guard via a new `__bypassVitestGuardForTests()` setter that lives on globalThis to survive `vi.resetModules()`. New nerves events: `daemon.socket_command_test_blocked`, `daemon.inner_wake_test_blocked`.",
         "test(contract): new test-isolation contract test ratchets two anti-patterns: (1) test files using `name: \"testagent\"` without mocking socket-client, and (2) test files constructing write paths under the real `~/AgentBundles` via `os.homedir()`. Existing offenders are grandfathered in two allowlists; new offenders fail the build. Follow-up PRs shrink the allowlists toward zero."
       ]
     },
@@ -432,7 +439,7 @@
     {
       "version": "0.1.0-alpha.251",
       "changes": [
-        "fix(bluebubbles): images sent via iMessage now reach the model — adds capability-gated image hydration with a MiniMax VLM fallback. Reasoning MiniMax chat models (M2/M2.1/M2.5/M2.7) silently drop OpenAI-style `image_url` content parts, so previously slugger answered image questions from fabricated context. Now, when the active chat model lacks the new `vision: true` capability flag, inbound screenshots are auto-described at ingestion via `/v1/coding_plan/vlm` and the description text replaces the `image_url` part before the turn reaches the model. Vision-capable models (claude-opus/sonnet-4-6, gpt-5.4, MiniMax-Text-01, MiniMax-VL-01) continue to see images natively via pass-through.",
+        "fix(bluebubbles): images sent via iMessage now reach the model \u2014 adds capability-gated image hydration with a MiniMax VLM fallback. Reasoning MiniMax chat models (M2/M2.1/M2.5/M2.7) silently drop OpenAI-style `image_url` content parts, so previously slugger answered image questions from fabricated context. Now, when the active chat model lacks the new `vision: true` capability flag, inbound screenshots are auto-described at ingestion via `/v1/coding_plan/vlm` and the description text replaces the `image_url` part before the turn reaches the model. Vision-capable models (claude-opus/sonnet-4-6, gpt-5.4, MiniMax-Text-01, MiniMax-VL-01) continue to see images natively via pass-through.",
         "feat(tools): new `describe_image` agent tool registered into the BlueBubbles tool set when the chat model lacks vision. Lets the agent re-interrogate an attachment with a targeted prompt (e.g. 'what's the flight number in the bottom-right?') after ingestion. Backed by a bounded in-memory attachment cache populated during hydration; handler re-downloads bytes and calls the same VLM client.",
         "fix(bluebubbles): `formatMessageText` now preserves the attachment marker when a message has BOTH text and attachments (B2). Previously the marker was dropped whenever text was present, hiding attachments from the agent's view of the message.",
         "feat(heart): `ModelCapabilities` gains `vision?: boolean` and `audio?: boolean` flags (B4). Vision rows populated for claude-opus-4-6, claude-sonnet-4-6, claude-opus-4.6, claude-sonnet-4.6, gpt-5.4, MiniMax-Text-01, MiniMax-VL-01. M2.1/M2.5/M2.7 intentionally left unset.",
@@ -442,7 +449,7 @@
     {
       "version": "0.1.0-alpha.250",
       "changes": [
-        "fix(sync): surface 'bundle is not a git repo' as an actionable error instead of silently failing. Previously, enabling `sync.enabled` on a bundle that had never been `git init`'d produced a generic `git status` failure buried in nerves logs; the agent saw nothing in its start-of-turn packet and the user saw nothing in `ouro status`. Now: (1) `preTurnPull` and `postTurnPush` detect the missing `.git` directory before touching git and return an actionable error with the bundle path and the `git init` hint; (2) this error propagates via `ctx.syncFailure` into the agent's Sync warning, so the agent can offer to run `git init` or just do it; (3) `ouro status` shows a red `error` state with `not a git repo — run \\`git init\\` to enable sync` next to the offending bundle. New nerves event: `heart.sync_not_a_repo`."
+        "fix(sync): surface 'bundle is not a git repo' as an actionable error instead of silently failing. Previously, enabling `sync.enabled` on a bundle that had never been `git init`'d produced a generic `git status` failure buried in nerves logs; the agent saw nothing in its start-of-turn packet and the user saw nothing in `ouro status`. Now: (1) `preTurnPull` and `postTurnPush` detect the missing `.git` directory before touching git and return an actionable error with the bundle path and the `git init` hint; (2) this error propagates via `ctx.syncFailure` into the agent's Sync warning, so the agent can offer to run `git init` or just do it; (3) `ouro status` shows a red `error` state with `not a git repo \u2014 run \\`git init\\` to enable sync` next to the offending bundle. New nerves event: `heart.sync_not_a_repo`."
       ]
     },
     {
@@ -455,8 +462,8 @@
     {
       "version": "0.1.0-alpha.248",
       "changes": [
-        "feat(daemon): `ouro status` Git Sync now resolves and shows the actual remote URL via `git remote get-url`. Three states: `origin → git@github.com:me/foo.git` when the remote resolves, `local only` when sync is enabled but no remote is configured, `disabled` when sync is off. Previously you had to `cd` into the bundle and run `git remote -v` to find out where it pushes.",
-        "fix(heart/sync): `preTurnPull` now skips the pull when no git remote is configured, mirroring the existing `postTurnPush` behavior. Closes the half-implemented 'no-remote sync' (local-only commit log) story — previously, enabling sync without a remote produced a `syncFailure` on every turn from the failing `git pull` call."
+        "feat(daemon): `ouro status` Git Sync now resolves and shows the actual remote URL via `git remote get-url`. Three states: `origin \u2192 git@github.com:me/foo.git` when the remote resolves, `local only` when sync is enabled but no remote is configured, `disabled` when sync is off. Previously you had to `cd` into the bundle and run `git remote -v` to find out where it pushes.",
+        "fix(heart/sync): `preTurnPull` now skips the pull when no git remote is configured, mirroring the existing `postTurnPush` behavior. Closes the half-implemented 'no-remote sync' (local-only commit log) story \u2014 previously, enabling sync without a remote produced a `syncFailure` on every turn from the failing `git pull` call."
       ]
     },
     {
@@ -468,7 +475,7 @@
     {
       "version": "0.1.0-alpha.246",
       "changes": [
-        "feat(tui): session resume display — shows summary line + last 3 exchanges dimmed when reconnecting to existing session."
+        "feat(tui): session resume display \u2014 shows summary line + last 3 exchanges dimmed when reconnecting to existing session."
       ]
     },
     {
@@ -480,58 +487,58 @@
     {
       "version": "0.1.0-alpha.244",
       "changes": [
-        "refactor(sync): git-status-based bundle sync — postTurnPush discovers dirty files via `git status --porcelain` instead of broken explicit trackSyncWrite tracking (only 3/9 writers used it). Removed dead infrastructure. Remote push optional and non-fatal.",
-        "feat(tui): queued input steer — messages typed while agent is thinking appear dimmed above input area. UP/ESC pops all queued messages back into input for editing. Placeholder hint. Multiple messages supported, each sent as separate turn.",
+        "refactor(sync): git-status-based bundle sync \u2014 postTurnPush discovers dirty files via `git status --porcelain` instead of broken explicit trackSyncWrite tracking (only 3/9 writers used it). Removed dead infrastructure. Remote push optional and non-fatal.",
+        "feat(tui): queued input steer \u2014 messages typed while agent is thinking appear dimmed above input area. UP/ESC pops all queued messages back into input for editing. Placeholder hint. Multiple messages supported, each sent as separate turn.",
         "chore: deleted legacy InkCliApp adapter (776 lines dead code)."
       ]
     },
     {
       "version": "0.1.0-alpha.243",
       "changes": [
-        "fix(daemon): per-agent Git Sync in `ouro status` — was always showing `disabled` regardless of any agent's `agent.json`, because the daemon process has no argv-derived agent identity so `getSyncConfig()` fell into its catch. Status payload now carries a per-agent `sync` array (one row per enabled bundle) rendered as its own section like Senses and Workers, instead of a single global field on the overview block."
+        "fix(daemon): per-agent Git Sync in `ouro status` \u2014 was always showing `disabled` regardless of any agent's `agent.json`, because the daemon process has no argv-derived agent identity so `getSyncConfig()` fell into its catch. Status payload now carries a per-agent `sync` array (one row per enabled bundle) rendered as its own section like Senses and Workers, instead of a single global field on the overview block."
       ]
     },
     {
       "version": "0.1.0-alpha.241",
       "changes": [
-        "feat: commerce bootstrap — bw CLI lazy-install, vault auto-config, resolver coverage"
+        "feat: commerce bootstrap \u2014 bw CLI lazy-install, vault auto-config, resolver coverage"
       ]
     },
     {
       "version": "0.1.0-alpha.242",
       "changes": [
-        "fix(friends): stable local CLI identity — dropped hostname from external ID (was `username@hostname`, now just `username`). macOS hostname instability (`Mac` vs `Aris-MacBook-Pro.local`) was creating duplicate friend records with separate sessions and trust levels.",
-        "feat(friends): migration fallback — FriendResolver now searches for old `username@*` format IDs when exact match fails, linking new stable ID to existing friend record.",
-        "fix(heart): retry-everything-except-blocklist policy — the SDK 'Request timed out.' error from MiniMax (and other providers) was reaching slugger as a terminal failure because neither the generic isTransientError detector nor the per-provider classifier recognized it. Replaced the two-layer transient detection with a small blocklist (HTTP 400/401/403/404/422 + classifications auth-failure/usage-limit). Default policy now retries every other error.",
-        "fix(heart/providers): drop the 30s OpenAI/Anthropic SDK timeout from all five providers (anthropic, azure, github-copilot, minimax, openai-codex). The SDK timeout caps the entire stream lifetime, so 30s killed any reasoning model mid-generation. SDK defaults (≈10min) are sane.",
+        "fix(friends): stable local CLI identity \u2014 dropped hostname from external ID (was `username@hostname`, now just `username`). macOS hostname instability (`Mac` vs `Aris-MacBook-Pro.local`) was creating duplicate friend records with separate sessions and trust levels.",
+        "feat(friends): migration fallback \u2014 FriendResolver now searches for old `username@*` format IDs when exact match fails, linking new stable ID to existing friend record.",
+        "fix(heart): retry-everything-except-blocklist policy \u2014 the SDK 'Request timed out.' error from MiniMax (and other providers) was reaching slugger as a terminal failure because neither the generic isTransientError detector nor the per-provider classifier recognized it. Replaced the two-layer transient detection with a small blocklist (HTTP 400/401/403/404/422 + classifications auth-failure/usage-limit). Default policy now retries every other error.",
+        "fix(heart/providers): drop the 30s OpenAI/Anthropic SDK timeout from all five providers (anthropic, azure, github-copilot, minimax, openai-codex). The SDK timeout caps the entire stream lifetime, so 30s killed any reasoning model mid-generation. SDK defaults (\u224810min) are sane.",
         "refactor(heart/providers): consolidate duplicated isNetworkError + classifyXxxError scaffolding into a shared `error-classification.ts` module. Each provider now delegates via `classifyHttpError(err, overrides)` and only carries its own provider-specific quirks (Anthropic 529, Codex usage-limit message detection)."
       ]
     },
     {
       "version": "0.1.0-alpha.238",
       "changes": [
-        "feat: pretty `ouro status` — ANSI colored output with box-drawing header, status dots, grouped senses/workers by agent. Added git sync info to overview.",
-        "fix: socket half-close — sendDaemonCommand now calls client.end() after writing, preventing intermittent connection hangs.",
-        "refactor: config tiers — replaced numeric T1/T2/T3 with `self` (agent-configurable) and `managed` (harness-only). All config keys are now agent-writable except `version` and `enabled`. mcpServers promoted to self.",
-        "refactor: removed confirmation system — deleted propose_config tool, confirmationRequired/confirmationAlwaysRequired/onConfirmAction from core, all tool definitions, and Teams sense. Was only wired up on Teams, silently failed everywhere else. -1,361 lines."
+        "feat: pretty `ouro status` \u2014 ANSI colored output with box-drawing header, status dots, grouped senses/workers by agent. Added git sync info to overview.",
+        "fix: socket half-close \u2014 sendDaemonCommand now calls client.end() after writing, preventing intermittent connection hangs.",
+        "refactor: config tiers \u2014 replaced numeric T1/T2/T3 with `self` (agent-configurable) and `managed` (harness-only). All config keys are now agent-writable except `version` and `enabled`. mcpServers promoted to self.",
+        "refactor: removed confirmation system \u2014 deleted propose_config tool, confirmationRequired/confirmationAlwaysRequired/onConfirmAction from core, all tool definitions, and Teams sense. Was only wired up on Teams, silently failed everywhere else. -1,361 lines."
       ]
     },
     {
       "version": "0.1.0-alpha.235",
       "changes": [
-        "fix: MCP tool double-prefix — tools already prefixed by server name no longer get a redundant second prefix in the unified registry.",
-        "feat: Open-Meteo zero-auth weather — replaced OpenWeatherMap with Open-Meteo forecast + geocoding API. Weather now works without any API key or credential provisioning.",
-        "feat: expanded ISO/FIPS divergence table — 21 new entries for correct travel advisory resolution across all major divergent country codes.",
-        "fix: BitwardenCredentialStore retry logic — exponential backoff with configurable retries for transient bw CLI failures, plus bw-not-installed error.",
+        "fix: MCP tool double-prefix \u2014 tools already prefixed by server name no longer get a redundant second prefix in the unified registry.",
+        "feat: Open-Meteo zero-auth weather \u2014 replaced OpenWeatherMap with Open-Meteo forecast + geocoding API. Weather now works without any API key or credential provisioning.",
+        "feat: expanded ISO/FIPS divergence table \u2014 21 new entries for correct travel advisory resolution across all major divergent country codes.",
+        "fix: BitwardenCredentialStore retry logic \u2014 exponential backoff with configurable retries for transient bw CLI failures, plus bw-not-installed error.",
         "chore: travel MCP packages (Duffel, Expedia) status confirmed GitHub-only, not published to npm."
       ]
     },
     {
       "version": "0.1.0-alpha.233",
       "changes": [
-        "feat: first-class MCP tools — MCP tools now appear in the agent tool list directly (no shell indirection). Agent can call browser_navigate, browser_click etc. as native tools.",
-        "fix: daemon MCP pre-init poisoned singleton — removed eager getSharedMcpManager() at daemon startup that cached null before agent identity was set.",
-        "fix: removed dead mcpManager field from BuildSystemOptions — MCP manager now flows through runAgentOptions.",
+        "feat: first-class MCP tools \u2014 MCP tools now appear in the agent tool list directly (no shell indirection). Agent can call browser_navigate, browser_click etc. as native tools.",
+        "fix: daemon MCP pre-init poisoned singleton \u2014 removed eager getSharedMcpManager() at daemon startup that cached null before agent identity was set.",
+        "fix: removed dead mcpManager field from BuildSystemOptions \u2014 MCP manager now flows through runAgentOptions.",
         "fix: MCP tool results filter to text-only content types.",
         "includes: vault integration, travel advisory fix, credential access layer, HKDF-Expand crypto fix."
       ]
@@ -539,21 +546,21 @@
     {
       "version": "0.1.0-alpha.232",
       "changes": [
-        "feat: first-class MCP tools — MCP server tools now appear in the agent's active tool list (e.g. browser_navigate, duffel_search_flights) and are callable directly by the model, eliminating fragile shell indirection",
+        "feat: first-class MCP tools \u2014 MCP server tools now appear in the agent's active tool list (e.g. browser_navigate, duffel_search_flights) and are callable directly by the model, eliminating fragile shell indirection",
         "feat: mcpToolsAsDefinitions() converts McpManager tools to ToolDefinition objects with {server}_{tool} naming",
-        "feat: first-class MCP trust gating — mcpServerName on GuardContext enables per-server trust rules (browser blocked for acquaintance, blocked in group chat)",
-        "refactor: removed mcpToolsSection() from system prompt — MCP tools no longer need prompt documentation",
+        "feat: first-class MCP trust gating \u2014 mcpServerName on GuardContext enables per-server trust rules (browser blocked for acquaintance, blocked in group chat)",
+        "refactor: removed mcpToolsSection() from system prompt \u2014 MCP tools no longer need prompt documentation",
         "fix: execTool, isConfirmationRequired, summarizeArgs now check combined native+MCP registry"
       ]
     },
     {
       "version": "0.1.0-alpha.231",
       "changes": [
-        "fix: defense-in-depth group chat blocking for proactive BB delivery — sendProactiveBlueBubblesMessageToSession now rejects group chat keys (;+;) unless intent is explicit_cross_chat (bridge/delegation responses). All upper-layer paths (surface tool, send_message tool, inner-dialog delegation) now filter to DM sessions only for proactive outreach, and pass explicit_cross_chat intent for bridge/delegation returns where group responses are legitimate.",
+        "fix: defense-in-depth group chat blocking for proactive BB delivery \u2014 sendProactiveBlueBubblesMessageToSession now rejects group chat keys (;+;) unless intent is explicit_cross_chat (bridge/delegation responses). All upper-layer paths (surface tool, send_message tool, inner-dialog delegation) now filter to DM sessions only for proactive outreach, and pass explicit_cross_chat intent for bridge/delegation returns where group responses are legitimate.",
         "fix: travel advisory now resolves ISO codes that differ from FIPS (ES -> Spain, not El Salvador)",
         "fix: MCP bridge sense now includes MCP tool descriptions in system prompt (browser tools visible)",
         "fix: removed confirmationRequired from credential_store/credential_delete (trust gating sufficient)",
-        "feat: vault integration — Bitwarden/Vaultwarden account creation with PBKDF2/HKDF/AES-256-CBC crypto",
+        "feat: vault integration \u2014 Bitwarden/Vaultwarden account creation with PBKDF2/HKDF/AES-256-CBC crypto",
         "feat: vault_setup tool for one-time vault provisioning (family trust gated)",
         "feat: BitwardenCredentialStore wrapping bw CLI for agent-owned vault access"
       ]
@@ -567,20 +574,20 @@
     {
       "version": "0.1.0-alpha.229",
       "changes": [
-        "fix: BB session key resolution prefers DM (;-;) over group chat (;+;) — alphabetical sort put group chats first, causing proactive messages to land in group chats instead of personal DMs",
+        "fix: BB session key resolution prefers DM (;-;) over group chat (;+;) \u2014 alphabetical sort put group chats first, causing proactive messages to land in group chats instead of personal DMs",
         "chore: remove temporary debug traces (send-message-debug.log, friends.get_called event)"
       ]
     },
     {
       "version": "0.1.0-alpha.227",
       "changes": [
-        "fix: direct filesystem name resolution in sendProactiveBlueBubblesMessageToSession — bypass store.get()/listAll() with raw fs reads on friends directory when store lookup fails"
+        "fix: direct filesystem name resolution in sendProactiveBlueBubblesMessageToSession \u2014 bypass store.get()/listAll() with raw fs reads on friends directory when store lookup fails"
       ]
     },
     {
       "version": "0.1.0-alpha.226",
       "changes": [
-        "fix(daemon): set agent name before senseTurn so MCP messages resolve identity — setAgentName() is now called at the top of the senseTurn handler, before any downstream code that depends on agent identity (loadAgentConfig, getAgentSecretsPath, etc.)"
+        "fix(daemon): set agent name before senseTurn so MCP messages resolve identity \u2014 setAgentName() is now called at the top of the senseTurn handler, before any downstream code that depends on agent identity (loadAgentConfig, getAgentSecretsPath, etc.)"
       ]
     },
     {
@@ -592,7 +599,7 @@
     {
       "version": "0.1.0-alpha.224",
       "changes": [
-        "fix: FileFriendStore.get() now resolves friend names — when UUID lookup fails, scans the friends directory for a name match. This is the deepest possible layer for name resolution, ensuring it works regardless of which tool or code path calls store.get()."
+        "fix: FileFriendStore.get() now resolves friend names \u2014 when UUID lookup fails, scans the friends directory for a name match. This is the deepest possible layer for name resolution, ensuring it works regardless of which tool or code path calls store.get()."
       ]
     },
     {
@@ -604,127 +611,127 @@
     {
       "version": "0.1.0-alpha.222",
       "changes": [
-        "debug: add diagnostic nerves events to proactive BB delivery — name resolution in both tools-session.ts and sendProactiveBlueBubblesMessageToSession now emit events showing friend count, names, resolution success/failure, and errors. Temporary diagnostics to identify why name→UUID resolution isn't working in production."
+        "debug: add diagnostic nerves events to proactive BB delivery \u2014 name resolution in both tools-session.ts and sendProactiveBlueBubblesMessageToSession now emit events showing friend count, names, resolution success/failure, and errors. Temporary diagnostics to identify why name\u2192UUID resolution isn't working in production."
       ]
     },
     {
       "version": "0.1.0-alpha.221",
       "changes": [
-        "fix: BB proactive send resolves friend by name when UUID lookup fails — sendProactiveBlueBubblesMessageToSession now falls back to store.listAll() name matching when store.get() returns null. This handles agents passing friend names instead of UUIDs, bypassing the upstream resolution that wasn't working in all contexts."
+        "fix: BB proactive send resolves friend by name when UUID lookup fails \u2014 sendProactiveBlueBubblesMessageToSession now falls back to store.listAll() name matching when store.get() returns null. This handles agents passing friend names instead of UUIDs, bypassing the upstream resolution that wasn't working in all contexts."
       ]
     },
     {
       "version": "0.1.0-alpha.220",
       "changes": [
-        "fix: send_message BB session key resolution — agents don't know the real BB session key (e.g. 'chat_any;-;ari@mendelow.me'), so they pass the default 'session'. buildChatRefForSessionKey failed on this fake key, returning missing_target. Now auto-resolves the real BB session key from the sessions directory when the default key is used."
+        "fix: send_message BB session key resolution \u2014 agents don't know the real BB session key (e.g. 'chat_any;-;ari@mendelow.me'), so they pass the default 'session'. buildChatRefForSessionKey failed on this fake key, returning missing_target. Now auto-resolves the real BB session key from the sessions directory when the default key is used."
       ]
     },
     {
       "version": "0.1.0-alpha.219",
       "changes": [
-        "fix: proactive message delivery — three bugs fixed. (1) surface tool now resolves friend names to UUIDs by scanning friends directory. (2) send_message tool also resolves friend names to UUIDs. (3) deliverCrossChatMessage no longer immediately queues generic_outreach — it now attempts delivery when a deliverer is available, with the deliverer's own trust checks still gating actual sends. Previously, any proactive send from inner dialog was silently queued without attempting delivery."
+        "fix: proactive message delivery \u2014 three bugs fixed. (1) surface tool now resolves friend names to UUIDs by scanning friends directory. (2) send_message tool also resolves friend names to UUIDs. (3) deliverCrossChatMessage no longer immediately queues generic_outreach \u2014 it now attempts delivery when a deliverer is available, with the deliverer's own trust checks still gating actual sends. Previously, any proactive send from inner dialog was silently queued without attempting delivery."
       ]
     },
     {
       "version": "0.1.0-alpha.218",
       "changes": [
-        "fix: surface tool now resolves friend names to UUIDs — agents pass friend names but sessions are stored under UUID directories. Added name-to-UUID resolution by scanning the friends directory when the friendId doesn't match a session directory."
+        "fix: surface tool now resolves friend names to UUIDs \u2014 agents pass friend names but sessions are stored under UUID directories. Added name-to-UUID resolution by scanning the friends directory when the friendId doesn't match a session directory."
       ]
     },
     {
       "version": "0.1.0-alpha.217",
       "changes": [
-        "feat: Bitwarden vault client (bw CLI wrapper) with credential gateway — BitwardenClient class with SDK-first/CLI-fallback, singleton accessor, nerves events on all operations. Raw secrets never enter model context.",
-        "feat: vault tools (vault_get, vault_store, vault_list, vault_delete) with trust gating — read ops require friend+, write/delete require family-only. Destructive operations require confirmation.",
-        "feat: stealth browser MCP configuration with trust gating — Playwright MCP auto-provisions when configured, browser tools appear in agent tool list. Trust-gated to CLI and trusted 1:1 only (group chat blocked).",
-        "feat: travel API tools (weather_lookup, travel_advisory, geocode_search) — native weather via OpenWeatherMap + vault-backed API key, State Dept RSS feed for advisories, geocoding via Nominatim. All friend+ trust-gated.",
-        "feat: credential gateway (vaultKey on apiRequest()) — automatic secret injection from vault into HTTP headers at call time, keeping credentials out of model context entirely.",
+        "feat: Bitwarden vault client (bw CLI wrapper) with credential gateway \u2014 BitwardenClient class with SDK-first/CLI-fallback, singleton accessor, nerves events on all operations. Raw secrets never enter model context.",
+        "feat: vault tools (vault_get, vault_store, vault_list, vault_delete) with trust gating \u2014 read ops require friend+, write/delete require family-only. Destructive operations require confirmation.",
+        "feat: stealth browser MCP configuration with trust gating \u2014 Playwright MCP auto-provisions when configured, browser tools appear in agent tool list. Trust-gated to CLI and trusted 1:1 only (group chat blocked).",
+        "feat: travel API tools (weather_lookup, travel_advisory, geocode_search) \u2014 native weather via OpenWeatherMap + vault-backed API key, State Dept RSS feed for advisories, geocoding via Nominatim. All friend+ trust-gated.",
+        "feat: credential gateway (vaultKey on apiRequest()) \u2014 automatic secret injection from vault into HTTP headers at call time, keeping credentials out of model context entirely.",
         "feat: travel-planning and browser-navigation skills"
       ]
     },
     {
       "version": "0.1.0-alpha.216",
       "changes": [
-        "fix: surface tool proactive BB delivery masked by newer MCP/CLI sessions — findFreshestFriendSession picked the single freshest session regardless of channel, so an MCP or CLI session being newer than the BB session caused the BB proactive path to be skipped entirely. Now scans all friend sessions, attempts BB delivery first on any BB session, then falls back to queuing on the freshest non-inner session."
+        "fix: surface tool proactive BB delivery masked by newer MCP/CLI sessions \u2014 findFreshestFriendSession picked the single freshest session regardless of channel, so an MCP or CLI session being newer than the BB session caused the BB proactive path to be skipped entirely. Now scans all friend sessions, attempts BB delivery first on any BB session, then falls back to queuing on the freshest non-inner session."
       ]
     },
     {
       "version": "0.1.0-alpha.215",
       "changes": [
-        "fix: surface tool proactive delivery no longer gated by 24-hour session threshold — findFreshestFriendSession was called with activeOnly:true, filtering out sessions older than 24h even when the agent explicitly wants to send a proactive message. Both the bridge path and direct path now find any session regardless of age. Proactive BB delivery and trust checks still apply."
+        "fix: surface tool proactive delivery no longer gated by 24-hour session threshold \u2014 findFreshestFriendSession was called with activeOnly:true, filtering out sessions older than 24h even when the agent explicitly wants to send a proactive message. Both the bridge path and direct path now find any session regardless of age. Proactive BB delivery and trust checks still apply."
       ]
     },
     {
       "version": "0.1.0-alpha.214",
       "changes": [
-        "fix: daemon death diagnostics — createStderrSink() bypassed EPIPE-safe default in createTerminalSink(), causing uncaught EPIPE crashes when daemon runs detached. Removed redundant unsafe default so the existing try-catch fires.",
-        "fix: daemon tombstone now covers all exit paths — unhandledRejection writes tombstone with full error+stack (was just a warn log, but Node 15+ terminates on these). Added process.on('exit') catch-all for any unanticipated exit. SIGINT/SIGTERM marked graceful to avoid false positives. _lastKnownCause threads real error through to exit handler."
+        "fix: daemon death diagnostics \u2014 createStderrSink() bypassed EPIPE-safe default in createTerminalSink(), causing uncaught EPIPE crashes when daemon runs detached. Removed redundant unsafe default so the existing try-catch fires.",
+        "fix: daemon tombstone now covers all exit paths \u2014 unhandledRejection writes tombstone with full error+stack (was just a warn log, but Node 15+ terminates on these). Added process.on('exit') catch-all for any unanticipated exit. SIGINT/SIGTERM marked graceful to avoid false positives. _lastKnownCause threads real error through to exit handler."
       ]
     },
     {
       "version": "0.1.0-alpha.213",
       "changes": [
-        "cleanup: remove vestigial subagents/ directory and package.json files entry (content already in ouroboros-skills repo). Remove backward-compat re-exports from heart/core.ts (tools, execTool, summarizeArgs, getToolsForChannel, streamChatCompletion, streamResponsesApi, toResponsesInput, toResponsesTools, buildSystem, Channel, hasToolIntent — no consumers used them). Update ARCHITECTURE.md, README.md, and CONTRIBUTING.md to reflect the full audit restructuring: new arc/ subsystem, heart/ topic subdirectories, split tool modules, BlueBubbles directory, scopes list."
+        "cleanup: remove vestigial subagents/ directory and package.json files entry (content already in ouroboros-skills repo). Remove backward-compat re-exports from heart/core.ts (tools, execTool, summarizeArgs, getToolsForChannel, streamChatCompletion, streamResponsesApi, toResponsesInput, toResponsesTools, buildSystem, Channel, hasToolIntent \u2014 no consumers used them). Update ARCHITECTURE.md, README.md, and CONTRIBUTING.md to reflect the full audit restructuring: new arc/ subsystem, heart/ topic subdirectories, split tool modules, BlueBubbles directory, scopes list."
       ]
     },
     {
       "version": "0.1.0-alpha.212",
       "changes": [
-        "refactor: consolidate BlueBubbles sense into senses/bluebubbles/ directory — move 9 flat files (bluebubbles.ts, bluebubbles-client.ts, bluebubbles-model.ts, bluebubbles-media.ts, bluebubbles-inbound-log.ts, bluebubbles-mutation-log.ts, bluebubbles-runtime-state.ts, bluebubbles-session-cleanup.ts, bluebubbles-entry.ts) into senses/bluebubbles/ with shorter names (index.ts, client.ts, model.ts, etc.). All imports updated across 20+ files including test files, sense-manager, daemon, and package.json."
+        "refactor: consolidate BlueBubbles sense into senses/bluebubbles/ directory \u2014 move 9 flat files (bluebubbles.ts, bluebubbles-client.ts, bluebubbles-model.ts, bluebubbles-media.ts, bluebubbles-inbound-log.ts, bluebubbles-mutation-log.ts, bluebubbles-runtime-state.ts, bluebubbles-session-cleanup.ts, bluebubbles-entry.ts) into senses/bluebubbles/ with shorter names (index.ts, client.ts, model.ts, etc.). All imports updated across 20+ files including test files, sense-manager, daemon, and package.json."
       ]
     },
     {
       "version": "0.1.0-alpha.211",
       "changes": [
-        "refactor: extract duplicated patterns into shared utilities — mind/embedding-provider.ts (shared OpenAI embedding client from diary + associative-recall), arc/json-store.ts (shared JSON file CRUD from obligations + cares + intentions), repertoire/api-client.ts (shared HTTP request helper from graph + ado + github clients). M12 (channel callback factory) skipped: CLI and Teams streaming implementations are too different for clean abstraction."
+        "refactor: extract duplicated patterns into shared utilities \u2014 mind/embedding-provider.ts (shared OpenAI embedding client from diary + associative-recall), arc/json-store.ts (shared JSON file CRUD from obligations + cares + intentions), repertoire/api-client.ts (shared HTTP request helper from graph + ado + github clients). M12 (channel callback factory) skipped: CLI and Teams streaming implementations are too different for clean abstraction."
       ]
     },
     {
       "version": "0.1.0-alpha.210",
       "changes": [
-        "refactor: create src/arc/ subsystem — extract durable continuity state (obligations, cares, episodes, intentions, presence, attention-types) from heart/ and mind/ into dedicated arc/ module. arc/ owns the agent's continuity state, distinct from engine mechanics (heart) and cognition (mind). All imports updated across 40+ files."
+        "refactor: create src/arc/ subsystem \u2014 extract durable continuity state (obligations, cares, episodes, intentions, presence, attention-types) from heart/ and mind/ into dedicated arc/ module. arc/ owns the agent's continuity state, distinct from engine mechanics (heart) and cognition (mind). All imports updated across 40+ files."
       ]
     },
     {
       "version": "0.1.0-alpha.209",
       "changes": [
-        "refactor: restructure daemon/ directory — move outlook files to heart/outlook/, habit files to heart/habits/, hatch/specialist files to heart/hatch/, versioning/update files to heart/versioning/, auth-flow to heart/auth/, mcp-server to heart/mcp/. daemon/ reduced from 60 to 36 core daemon-lifecycle files."
+        "refactor: restructure daemon/ directory \u2014 move outlook files to heart/outlook/, habit files to heart/habits/, hatch/specialist files to heart/hatch/, versioning/update files to heart/versioning/, auth-flow to heart/auth/, mcp-server to heart/mcp/. daemon/ reduced from 60 to 36 core daemon-lifecycle files."
       ]
     },
     {
       "version": "0.1.0-alpha.208",
       "changes": [
-        "refactor: split daemon-cli.ts (3,630 lines) into 5 focused modules — cli-types (command/deps types), cli-parse (argument parsing), cli-render (output formatting), cli-exec (command execution router), cli-defaults (production dependency wiring). daemon-cli.ts reduced to 42-line re-export shim."
+        "refactor: split daemon-cli.ts (3,630 lines) into 5 focused modules \u2014 cli-types (command/deps types), cli-parse (argument parsing), cli-render (output formatting), cli-exec (command execution router), cli-defaults (production dependency wiring). daemon-cli.ts reduced to 42-line re-export shim."
       ]
     },
     {
       "version": "0.1.0-alpha.207",
       "changes": [
-        "refactor: split tools-base.ts (1,912 lines) into 9 category modules — tools-files, tools-shell, tools-memory, tools-bridge, tools-session, tools-continuity, tools-flow, tools-surface, tools-config. Surface tool handler extracted from tools.ts to tools-surface.ts."
+        "refactor: split tools-base.ts (1,912 lines) into 9 category modules \u2014 tools-files, tools-shell, tools-memory, tools-bridge, tools-session, tools-continuity, tools-flow, tools-surface, tools-config. Surface tool handler extracted from tools.ts to tools-surface.ts."
       ]
     },
     {
       "version": "0.1.0-alpha.206",
       "changes": [
-        "feat: capability discovery and tiered self-configuration — config registry with tier-aware metadata (T1 self-service, T2 proposal, T3 operator-only), read_config tool with topic-filtered discovery, update_config tool for T1 immediate changes, propose_config tool for T2 operator-approval flow, version-change surfacing in start-of-turn packet via buildCapabilitiesSection"
+        "feat: capability discovery and tiered self-configuration \u2014 config registry with tier-aware metadata (T1 self-service, T2 proposal, T3 operator-only), read_config tool with topic-filtered discovery, update_config tool for T1 immediate changes, propose_config tool for T2 operator-approval flow, version-change surfacing in start-of-turn packet via buildCapabilitiesSection"
       ]
     },
     {
       "version": "0.1.0-alpha.205",
       "changes": [
-        "refactor: enforce subsystem boundaries — eliminate all heart/ and nerves/ static imports from senses/, move AttentionItem type to heart/, surfaceToolDef to repertoire/, SteeringFollowUpEffect to heart/turn-coordinator, inline BlueBubbles runtime state reader in daemon"
+        "refactor: enforce subsystem boundaries \u2014 eliminate all heart/ and nerves/ static imports from senses/, move AttentionItem type to heart/, surfaceToolDef to repertoire/, SteeringFollowUpEffect to heart/turn-coordinator, inline BlueBubbles runtime state reader in daemon"
       ]
     },
     {
       "version": "0.1.0-alpha.204",
       "changes": [
-        "refactor: introduce TurnContext snapshot — centralize state assembly from pipeline.ts into buildTurnContext(), thread pre-read state through prompt assembly to eliminate ad-hoc filesystem reads"
+        "refactor: introduce TurnContext snapshot \u2014 centralize state assembly from pipeline.ts into buildTurnContext(), thread pre-read state through prompt assembly to eliminate ad-hoc filesystem reads"
       ]
     },
     {
       "version": "0.1.0-alpha.203",
       "changes": [
-        "refactor: unify obligation systems — mind/obligations.ts merged into heart/obligations.ts with prefixed ReturnObligation API"
+        "refactor: unify obligation systems \u2014 mind/obligations.ts merged into heart/obligations.ts with prefixed ReturnObligation API"
       ]
     },
     {
@@ -740,7 +747,7 @@
     {
       "version": "0.1.0-alpha.201",
       "changes": [
-        "fix: don't launchctl bootstrap after daemon start — was starting competing daemon that killed the first"
+        "fix: don't launchctl bootstrap after daemon start \u2014 was starting competing daemon that killed the first"
       ]
     },
     {
@@ -762,7 +769,7 @@
     {
       "version": "0.1.0-alpha.197",
       "changes": [
-        "fix(daemon): validate agent config before spawn — skips agents with missing credentials instead of crash-looping"
+        "fix(daemon): validate agent config before spawn \u2014 skips agents with missing credentials instead of crash-looping"
       ]
     },
     {
@@ -781,20 +788,20 @@
     {
       "version": "0.1.0-alpha.194",
       "changes": [
-        "fix(daemon): self-spawn restart — no longer relies on launchd KeepAlive for staged restarts",
-        "fix(daemon): error boundary with circuit breaker — uncaught exceptions logged and survived, exits only after 10+ in 60s",
+        "fix(daemon): self-spawn restart \u2014 no longer relies on launchd KeepAlive for staged restarts",
+        "fix(daemon): error boundary with circuit breaker \u2014 uncaught exceptions logged and survived, exits only after 10+ in 60s",
         "fix(daemon): EPIPE suppression in uncaughtException handler",
         "fix(daemon): 5-second force-exit timeouts on all shutdown paths",
         "feat: human-facing and agent-facing provider configs",
         "fix(auth): always refresh codex OAuth token, responses API verification",
-        "feat: Outlook visibility — orientation, obligations, changes, self-fix, memory decisions, route migration to /"
+        "feat: Outlook visibility \u2014 orientation, obligations, changes, self-fix, memory decisions, route migration to /"
       ]
     },
     {
       "version": "0.1.0-alpha.192",
       "changes": [
-        "refactor: canonical obligations — ActiveWorkFrame as single source of truth for prompt sections",
-        "feat(mcp): dynamic server add/remove — agents can manage MCP servers without daemon restart"
+        "refactor: canonical obligations \u2014 ActiveWorkFrame as single source of truth for prompt sections",
+        "feat(mcp): dynamic server add/remove \u2014 agents can manage MCP servers without daemon restart"
       ]
     },
     {
@@ -806,13 +813,13 @@
     {
       "version": "0.1.0-alpha.176",
       "changes": [
-        "feat(mcp): dynamic MCP server add/remove — agents can add/remove MCP servers in agent.json without daemon restart"
+        "feat(mcp): dynamic MCP server add/remove \u2014 agents can add/remove MCP servers in agent.json without daemon restart"
       ]
     },
     {
       "version": "0.1.0-alpha.175",
       "changes": [
-        "fix(daemon): launchd KeepAlive for crash recovery — auto-restarts on crash",
+        "fix(daemon): launchd KeepAlive for crash recovery \u2014 auto-restarts on crash",
         "fix(daemon): orphan killer excludes MCP server processes",
         "fix(daemon): health file writer wired into daemon-entry",
         "fix(engine): auth-failure errors include actionable guidance"
@@ -821,50 +828,50 @@
     {
       "version": "0.1.0-alpha.174",
       "changes": [
-        "feat(outlook): keyboard shortcuts — 1-7 for tabs, Esc to collapse",
-        "feat(outlook): obligation origin cards — clickable visual chain from who asked through which channel"
+        "feat(outlook): keyboard shortcuts \u2014 1-7 for tabs, Esc to collapse",
+        "feat(outlook): obligation origin cards \u2014 clickable visual chain from who asked through which channel"
       ]
     },
     {
       "version": "0.1.0-alpha.173",
       "changes": [
-        "feat(outlook): sessions grouped by person — same friend across multiple channels shown together with person header"
+        "feat(outlook): sessions grouped by person \u2014 same friend across multiple channels shown together with person header"
       ]
     },
     {
       "version": "0.1.0-alpha.172",
       "changes": [
-        "feat(outlook): inner dialog landmark navigation — jump to surfaces, rests, delegations",
+        "feat(outlook): inner dialog landmark navigation \u2014 jump to surfaces, rests, delegations",
         "feat(outlook): active coding sessions shown on Overview dashboard",
-        "feat(outlook): habit confidence indicators — on schedule, overdue, never fired"
+        "feat(outlook): habit confidence indicators \u2014 on schedule, overdue, never fired"
       ]
     },
     {
       "version": "0.1.0-alpha.171",
       "changes": [
-        "feat(outlook): session state at a glance — last inbound/outbound shown on each session row",
-        "feat(outlook): habit confidence — on schedule / overdue / never fired indicators"
+        "feat(outlook): session state at a glance \u2014 last inbound/outbound shown on each session row",
+        "feat(outlook): habit confidence \u2014 on schedule / overdue / never fired indicators"
       ]
     },
     {
       "version": "0.1.0-alpha.170",
       "changes": [
-        "feat(outlook): needs-me triage — action now vs stale sections, dismiss buttons, return-ready highlighting",
-        "fix(outlook): return-ready obligation detection — highlights results ready but not returned"
+        "feat(outlook): needs-me triage \u2014 action now vs stale sections, dismiss buttons, return-ready highlighting",
+        "fix(outlook): return-ready obligation detection \u2014 highlights results ready but not returned"
       ]
     },
     {
       "version": "0.1.0-alpha.169",
       "changes": [
-        "fix(outlook): desk prefs wiring — carrying block, constellations, starred friends now load in production",
-        "feat(outlook): obligation dismiss — agents can clear stale obligations from needs-me queue",
+        "fix(outlook): desk prefs wiring \u2014 carrying block, constellations, starred friends now load in production",
+        "feat(outlook): obligation dismiss \u2014 agents can clear stale obligations from needs-me queue",
         "fix: default minimax model updated to MiniMax-M2.7"
       ]
     },
     {
       "version": "0.1.0-alpha.168",
       "changes": [
-        "fix(outlook): content area matches sidebar background — consistent dark surface"
+        "fix(outlook): content area matches sidebar background \u2014 consistent dark surface"
       ]
     },
     {
@@ -876,31 +883,31 @@
     {
       "version": "0.1.0-alpha.166",
       "changes": [
-        "fix(outlook): add dark class to html root — fixes white/blank page in production"
+        "fix(outlook): add dark class to html root \u2014 fixes white/blank page in production"
       ]
     },
     {
       "version": "0.1.0-alpha.165",
       "changes": [
-        "fix(daemon): dont launchctl bootstrap during ouro up — write plist only, prevents competing daemon process"
+        "fix(daemon): dont launchctl bootstrap during ouro up \u2014 write plist only, prevents competing daemon process"
       ]
     },
     {
       "version": "0.1.0-alpha.164",
       "changes": [
-        "fix(daemon): keep /dev/null fds open until parent exits — fixes ouro up daemon crash"
+        "fix(daemon): keep /dev/null fds open until parent exits \u2014 fixes ouro up daemon crash"
       ]
     },
     {
       "version": "0.1.0-alpha.163",
       "changes": [
-        "fix(daemon): redirect detached spawn stdio to /dev/null — fixes ouro up daemon crash"
+        "fix(daemon): redirect detached spawn stdio to /dev/null \u2014 fixes ouro up daemon crash"
       ]
     },
     {
       "version": "0.1.0-alpha.162",
       "changes": [
-        "fix(daemon): handle EPIPE in detached daemon — suppress pipe errors when parent exits after ouro up"
+        "fix(daemon): handle EPIPE in detached daemon \u2014 suppress pipe errors when parent exits after ouro up"
       ]
     },
     {
@@ -913,10 +920,10 @@
     {
       "version": "0.1.0-alpha.160",
       "changes": [
-        "feat(outlook): total inspectability expansion — 14 API endpoints, session x-ray, obligation chain tracing, coding deep inspection, attention/pending queue, bridge inventory, habit triage, memory/journal, friend economics, SSE live updates",
-        "feat(outlook): React SPA with Catalyst UI — sidebar layout, 7-tab agent inspector, chat bubble transcripts with mechanism-tool awareness, hash URL routing",
-        "feat(outlook): agent desk customization — carrying block, pinned constellations, tab ordering, starred friends, status line, closure memory, needs-me urgency queue",
-        "feat(outlook): nerves observation layer — shared typed readers, eliminates bespoke type mirrors",
+        "feat(outlook): total inspectability expansion \u2014 14 API endpoints, session x-ray, obligation chain tracing, coding deep inspection, attention/pending queue, bridge inventory, habit triage, memory/journal, friend economics, SSE live updates",
+        "feat(outlook): React SPA with Catalyst UI \u2014 sidebar layout, 7-tab agent inspector, chat bubble transcripts with mechanism-tool awareness, hash URL routing",
+        "feat(outlook): agent desk customization \u2014 carrying block, pinned constellations, tab ordering, starred friends, status line, closure memory, needs-me urgency queue",
+        "feat(outlook): nerves observation layer \u2014 shared typed readers, eliminates bespoke type mirrors",
         "fix(auth): ouro auth for openai-codex always refreshes token, provider verification uses correct endpoint",
         "fix(daemon): use OUTLOOK_DEFAULT_PORT (6876) for Outlook server"
       ]
@@ -934,12 +941,12 @@
     {
       "version": "0.1.0-alpha.158",
       "changes": [
-        "Task scanner v2: explicit identity via kind: task field. Scanner only parses files that declare themselves as task cards — doing docs, planning docs, and artifacts silently skipped. Eliminates 184 false parse errors on real bundles.",
+        "Task scanner v2: explicit identity via kind: task field. Scanner only parses files that declare themselves as task cards \u2014 doing docs, planning docs, and artifacts silently skipped. Eliminates 184 false parse errors on real bundles.",
         "Typed issue model: every scanner issue has a code, description, proposed fix, confidence (safe/needs_review), and category (live/migration). Replaces flat parseErrors/invalidFilenames arrays.",
         "Board health line: compact board shows health: clean or health: 1 live, 10 migration. Live vs migration split prevents cleanup noise from looking like breakage.",
         "Fix command: ouro task fix (dry-run), ouro task fix --safe (apply deterministic fixes), ouro task fix <id> (inspect/apply individual issues). Currently auto-fixes schema-missing-kind.",
         "Cancelled status: new terminal state reachable from any active status. Auto-archives with work directory, hidden from active board view.",
-        "Derived child_tasks: computed at scan time from parent_task links. child_tasks removed from authored schema — no more hand-maintained stale arrays.",
+        "Derived child_tasks: computed at scan time from parent_task links. child_tasks removed from authored schema \u2014 no more hand-maintained stale arrays.",
         "Work directory awareness: same-stem directories detected and listed on TaskFile (hasWorkDir, workDirFiles). Scanner never descends into them.",
         "Collection root clutter detection: non-task support docs at collection root summarized as one aggregated migration issue per collection.",
         "Root-only scanning: flat directory reads replace recursive walks. Faster and correct."
@@ -948,7 +955,7 @@
     {
       "version": "0.1.0-alpha.157",
       "changes": [
-        "Habit turns as awareness: unified buildHabitTurnMessage replaces contextual-heartbeat. Continuity-first format (checkpoint leads, not elapsed time). Same format for all habits — no heartbeat special-casing.",
+        "Habit turns as awareness: unified buildHabitTurnMessage replaces contextual-heartbeat. Continuity-first format (checkpoint leads, not elapsed time). Same format for all habits \u2014 no heartbeat special-casing.",
         "First beat experience: new habits get \"your [Title] is alive. this is its first breath\" on first fire.",
         "Fix: reconcile() now fires new/overdue habits immediately (was start()-only). New habits created via write_file fire within seconds.",
         "Rhythm awareness across all channels: rhythmStatusSection() in system prompt shows heartbeat health in every conversation.",
@@ -974,10 +981,10 @@
     {
       "version": "0.1.0-alpha.154",
       "changes": [
-        "feat: clean tool status messages — human-readable by default, /debug toggle",
+        "feat: clean tool status messages \u2014 human-readable by default, /debug toggle",
         "humanReadableToolDescription derives from tool name+args, not hardcoded map",
-        "Shared tool activity callbacks (DRY) — senses only provide render function",
-        "Slash command handling moved to pipeline — all senses get /debug for free",
+        "Shared tool activity callbacks (DRY) \u2014 senses only provide render function",
+        "Slash command handling moved to pipeline \u2014 all senses get /debug for free",
         "BlueBubbles: one clean iMessage per tool, not raw shared work: processing"
       ]
     },
@@ -1074,7 +1081,7 @@
       "version": "0.1.0-alpha.142",
       "changes": [
         "Surface tool fulfills heart obligations on successful routing: findPendingObligationForOrigin + fulfillObligation called after inner obligation advance, wrapped in try/catch.",
-        "New fulfillHeartObligation callback on HandleSurfaceInput — origin-based lookup independent of inner obligationId.",
+        "New fulfillHeartObligation callback on HandleSurfaceInput \u2014 origin-based lookup independent of inner obligationId.",
         "ouro inner status command: reads runtime.json, journal dir, heartbeat cadence, attention count. Shows last turn, status, heartbeat health, journal listing, held thoughts."
       ]
     },
@@ -1114,21 +1121,21 @@
     {
       "version": "0.1.0-alpha.138",
       "changes": [
-        "Memory renamed to diary: memory.ts → diary.ts, MemoryFact → DiaryEntry, memory_save → diary_write, memory_search → recall. All types, functions, events, and variables renamed throughout.",
+        "Memory renamed to diary: memory.ts \u2192 diary.ts, MemoryFact \u2192 DiaryEntry, memory_save \u2192 diary_write, memory_search \u2192 recall. All types, functions, events, and variables renamed throughout.",
         "Diary path: diary/ (top-level) replaces psyche/memory/. Schema-2 migration copies files; legacy fallback removed.",
         "Journal workspace: journal/ directory for freeform thinking-in-progress. Agent writes with write_file, system reads for heartbeat context.",
         "Unified recall tool: searches both diary entries and journal files. Results tagged [diary] or [journal].",
         "Journal embeddings: file-level embeddings indexed during heartbeat via journal/.index.json sidecar.",
         "Journal section in inner dialog system prompt: index of up to 10 most recently modified journal files with name, recency, and first-line preview.",
         "Metacognitive framing updated: diary (record), journal (workspace), ponder/rest vocabulary, morning briefing encouragement.",
-        "Session migration: memory_save → diary_write, memory_search → recall added to migrateToolNames()."
+        "Session migration: memory_save \u2192 diary_write, memory_search \u2192 recall added to migrateToolNames()."
       ]
     },
     {
       "version": "0.1.0-alpha.137",
       "changes": [
         "ouro dev auto-discovers existing repo at ~/Projects/ouroboros or prompts for clone path.",
-        "ouro dev never clones without user consent — prompts in interactive mode, errors in non-interactive.",
+        "ouro dev never clones without user consent \u2014 prompts in interactive mode, errors in non-interactive.",
         "ouro dev --repo-path errors clearly when the specified path has no repo."
       ]
     },
@@ -1166,7 +1173,7 @@
     {
       "version": "0.1.0-alpha.133",
       "changes": [
-        "Inner return obligations: delegated inner dialog work now tracks a ReturnObligation through queued → running → returned/deferred lifecycle.",
+        "Inner return obligations: delegated inner dialog work now tracks a ReturnObligation through queued \u2192 running \u2192 returned/deferred lifecycle.",
         "Exact-origin routing: inner dialog completions route back to the session that delegated the work, not just the freshest active session.",
         "Active work frame surfaces pending inner return obligations so the agent knows what's outstanding."
       ]
@@ -1214,14 +1221,14 @@
     {
       "version": "0.1.0-alpha.126",
       "changes": [
-        "Fixed Anthropic tool_choice incompatibility with thinking — uses auto instead of any when thinking is enabled.",
+        "Fixed Anthropic tool_choice incompatibility with thinking \u2014 uses auto instead of any when thinking is enabled.",
         "auth verify and auth switch now use pingProvider for real API verification instead of format-only checks. auth switch verifies credentials work before switching."
       ]
     },
     {
       "version": "0.1.0-alpha.125",
       "changes": [
-        "Fixed Anthropic tool_choice incompatibility with thinking — uses auto instead of any when thinking is enabled.",
+        "Fixed Anthropic tool_choice incompatibility with thinking \u2014 uses auto instead of any when thinking is enabled.",
         "auth verify and auth switch now use pingProvider for real API verification instead of format-only checks. auth switch verifies credentials work before switching."
       ]
     },
@@ -1260,7 +1267,7 @@
     {
       "version": "0.1.0-alpha.120",
       "changes": [
-        "Daemon startup now kills ALL orphaned ouro processes (daemons AND agents) from previous instances — fixes stale-version processes handling requests after every update.",
+        "Daemon startup now kills ALL orphaned ouro processes (daemons AND agents) from previous instances \u2014 fixes stale-version processes handling requests after every update.",
         "Failover error messages no longer contain raw JSON API response bodies. Error messages are sanitized at the source and the failover summary uses clean classification labels only."
       ]
     },
@@ -1300,10 +1307,10 @@
       "changes": [
         "Fix: Default runtime logger is now silent (no stderr sink) so nerves events emitted before logger configuration no longer interleave with the CLI spinner animation.",
         "Fix: MCP server connect failures now include the command name, args, and a hint to check agent.json mcpServers configuration. Retry-exhaustion messages also identify the failing command.",
-        "Verification: StreamingWordWrapper integration in CLI chat confirmed working — wraps at word boundaries during streaming output.",
+        "Verification: StreamingWordWrapper integration in CLI chat confirmed working \u2014 wraps at word boundaries during streaming output.",
         "When a model provider fails mid-conversation (auth error, usage limit, outage), the harness now classifies the error, pings alternative configured providers, and surfaces validated failover options to the user in-channel. Reply 'switch to <provider>' to continue on a working provider.",
         "Each provider now has a `classifyError` method that distinguishes auth failures, usage/subscription limits, rate limits, server errors, and network errors. The old auth guidance wrappers are replaced by this unified classification system.",
-        "New `pingProvider` function makes a real heartbeat completion call to verify provider credentials and quota are live — no more format-only checks.",
+        "New `pingProvider` function makes a real heartbeat completion call to verify provider credentials and quota are live \u2014 no more format-only checks.",
         "Provider factories now accept optional config parameters, enabling credential injection for health inventory pings without touching disk config."
       ]
     },
@@ -1438,7 +1445,7 @@
     {
       "version": "0.1.0-alpha.94",
       "changes": [
-        "Fix stale CurrentVersion symlink not healing during `ouro up` — the daemon now detects and repairs dangling version symlinks before reading the active version.",
+        "Fix stale CurrentVersion symlink not healing during `ouro up` \u2014 the daemon now detects and repairs dangling version symlinks before reading the active version.",
         "Fix homedir regression in daemon-cli-defaults test and cover changelog-null branch."
       ]
     },
@@ -1532,14 +1539,14 @@
     {
       "version": "0.1.0-alpha.80",
       "changes": [
-        "Bootstrap package (npx ouro.bot) now installs into ~/.ouro-cli/ versioned layout directly. No more silent npx updates — every install and update is logged. Cleans up old ~/.local/bin/ouro wrapper."
+        "Bootstrap package (npx ouro.bot) now installs into ~/.ouro-cli/ versioned layout directly. No more silent npx updates \u2014 every install and update is logged. Cleans up old ~/.local/bin/ouro wrapper."
       ]
     },
     {
       "version": "0.1.0-alpha.79",
       "changes": [
         "New: Versioned CLI directory layout (~/.ouro-cli/) replaces npx-based ouro wrapper. Explicit version management, rollback support, and deterministic updates.",
-        "New: `ouro up` now checks the registry for newer CLI versions, installs them into ~/.ouro-cli/versions/, activates via symlink flip, and re-execs — no more silent npx downloads.",
+        "New: `ouro up` now checks the registry for newer CLI versions, installs them into ~/.ouro-cli/versions/, activates via symlink flip, and re-execs \u2014 no more silent npx downloads.",
         "New: `ouro rollback [<version>]` swaps CurrentVersion/previous symlinks, stops the daemon. With a version arg, installs if needed then activates.",
         "New: `ouro versions` lists cached CLI versions with * current and (previous) markers.",
         "Migration: On first run, old ~/.local/bin/ouro wrapper is removed, old PATH entry cleaned from shell profile, new ~/.ouro-cli/bin added to PATH.",
@@ -1561,10 +1568,10 @@
     {
       "version": "0.1.0-alpha.76",
       "changes": [
-        "Fix: CLI chat terminal logging now filters to warn/error only — info-level nerves logs go to ndjson file only, keeping the interactive TUI clean.",
+        "Fix: CLI chat terminal logging now filters to warn/error only \u2014 info-level nerves logs go to ndjson file only, keeping the interactive TUI clean.",
         "Fix: Streamed model output now wraps at word boundaries instead of mid-word. A new StreamingWordWrapper buffers partial lines and breaks at spaces when approaching terminal width.",
         "New: `ouro up` now prints 'ouro updated to <version> (was <previous>)' when npx downloads a newer CLI binary, separate from the agent bundle update message.",
-        "Fix: Spinner/log interleave verified — terminal sink reads pause/resume hooks at call time, not creation time, so the filterSink wrapper in CLI logging does not break spinner coordination."
+        "Fix: Spinner/log interleave verified \u2014 terminal sink reads pause/resume hooks at call time, not creation time, so the filterSink wrapper in CLI logging does not break spinner coordination."
       ]
     },
     {
@@ -1616,7 +1623,7 @@
     {
       "version": "0.1.0-alpha.69",
       "changes": [
-        "Generic MCP client: ouroboros agents can now connect to any MCP server (e.g., agency mcp ado, agency mcp mail) configured in agent.json. Zero new dependencies — pure JSON-RPC over stdio.",
+        "Generic MCP client: ouroboros agents can now connect to any MCP server (e.g., agency mcp ado, agency mcp mail) configured in agent.json. Zero new dependencies \u2014 pure JSON-RPC over stdio.",
         "New `ouro mcp list` and `ouro mcp call` CLI commands route through the daemon socket to persistent MCP connections, so agents use shared server instances instead of spawning fresh ones per call.",
         "MCP tools are injected into the agent's system prompt on startup, so agents know what external capabilities are available without a discovery step.",
         "Trust manifest: `mcp list` requires acquaintance trust, `mcp call` requires friend trust."
@@ -1625,7 +1632,7 @@
     {
       "version": "0.1.0-alpha.68",
       "changes": [
-        "New no_response tool lets agents stay silent in group chats when the moment doesn't call for a reply — reactions, side conversations, and tapbacks no longer trigger unwanted responses.",
+        "New no_response tool lets agents stay silent in group chats when the moment doesn't call for a reply \u2014 reactions, side conversations, and tapbacks no longer trigger unwanted responses.",
         "Group chat participation prompt teaches agents to be intentional participants, comfortable with silence, and to prefer reactions over full text replies when appropriate.",
         "System prompt includes --agent flag in all ouro CLI examples for non-daemon deployments. Azure startup symlinks ouro CLI into /usr/local/bin."
       ]
@@ -1639,7 +1646,7 @@
     {
       "version": "0.1.0-alpha.65",
       "changes": [
-        "Tool permissions overhauled: channel-level blocking removed, all tools now visible on all channels. Guardrails are invocation-level with two layers — structural (edit-requires-read, destructive pattern blocking, protected paths) always on for everyone, and trust-level (ouro CLI per-subcommand trust manifest, general CLI allowlists, bundle-scoped writes) for untrusted contexts.",
+        "Tool permissions overhauled: channel-level blocking removed, all tools now visible on all channels. Guardrails are invocation-level with two layers \u2014 structural (edit-requires-read, destructive pattern blocking, protected paths) always on for everyone, and trust-level (ouro CLI per-subcommand trust manifest, general CLI allowlists, bundle-scoped writes) for untrusted contexts.",
         "New `ouro changelog` CLI subcommand reads changelog.json and supports `--from <version>` for delta filtering, so agents can introspect their own update history on any channel.",
         "Compound shell commands (&&, ;, |, $()) are blocked for untrusted users to prevent smuggling dangerous operations behind safe prefixes.",
         "Azure App Service deployment migrated from zip-deploy to npm-based harness install with persistent agent bundle and managed identity auth."
@@ -1786,9 +1793,9 @@
       "changes": [
         "Inner dialog now knows which task triggered it: taskId flows from daemon poke through the worker into the turn, and the agent gets the full task file content instead of a generic heartbeat prompt.",
         "Inner dialog boot message includes aspirations and state summary instead of a vacuous placeholder, so the agent wakes up with context about what matters and what's happening.",
-        "Vestigial `drainInbox` removed from inner dialog — pipeline already handles pending drain correctly.",
+        "Vestigial `drainInbox` removed from inner dialog \u2014 pipeline already handles pending drain correctly.",
         "Inner dialog nerves events now include assistant response preview, tool call names, token usage, and taskId for meaningful observability.",
-        "`ouro thoughts` command reads and formats inner dialog session turns with `--last`, `--json`, `--follow`, and `--agent` flags — humans can now see what the agent has been thinking.",
+        "`ouro thoughts` command reads and formats inner dialog session turns with `--last`, `--json`, `--follow`, and `--agent` flags \u2014 humans can now see what the agent has been thinking.",
         "`readTaskFile` searches collection subdirectories (one-shots, ongoing, habits) since the scheduler sends bare task stems without collection prefixes.",
         "`ouro reminder create` accepts `--requester` to track who requested a reminder for notification round-trip.",
         "Response extraction handles `tool_choice=required` models by falling back to `final_answer` tool call arguments when assistant message content is empty."
@@ -1818,25 +1825,25 @@
     {
       "version": "0.1.0-alpha.42",
       "changes": [
-        "Associative recall now skips corrupt JSONL lines instead of crashing — matches the resilient pattern already used in memory.ts."
+        "Associative recall now skips corrupt JSONL lines instead of crashing \u2014 matches the resilient pattern already used in memory.ts."
       ]
     },
     {
       "version": "0.1.0-alpha.41",
       "changes": [
-        "JSONL readers (memory facts, inter-agent inbox) now skip corrupt lines instead of crashing — partial writes from crashes no longer lose all data.",
+        "JSONL readers (memory facts, inter-agent inbox) now skip corrupt lines instead of crashing \u2014 partial writes from crashes no longer lose all data.",
         "Inter-agent message router now parses before clearing the inbox file, and preserves unparsed lines so corrupt messages are not silently lost.",
-        "Inner-dialog checkpoint derivation no longer crashes on all-whitespace assistant content — returns fallback checkpoint instead.",
+        "Inner-dialog checkpoint derivation no longer crashes on all-whitespace assistant content \u2014 returns fallback checkpoint instead.",
         "Update checker interval now catches and logs errors from the onUpdate callback instead of silently swallowing them."
       ]
     },
     {
       "version": "0.1.0-alpha.40",
       "changes": [
-        "Removed dead backward-compat re-exports from core.ts (tools, streaming, prompt, kicks) — consumers already import from the canonical modules.",
+        "Removed dead backward-compat re-exports from core.ts (tools, streaming, prompt, kicks) \u2014 consumers already import from the canonical modules.",
         "Removed dead exports: baseToolHandlers, teamsToolHandlers, teamsTools, __internal (token-estimate), TASK_STEM_PATTERN, checkAndRecord403 no-op and METHOD_TO_ACTION.",
         "Consolidated duplicate sanitizeKey (config.ts + bluebubbles-mutation-log.ts) and slugify (hatch-flow.ts + tasks/index.ts) into shared exports from config.ts.",
-        "Replaced all as-any casts in source with proper TypeScript narrowing or Record<string, unknown> — only 2 SDK-required casts remain.",
+        "Replaced all as-any casts in source with proper TypeScript narrowing or Record<string, unknown> \u2014 only 2 SDK-required casts remain.",
         "Removed unnecessary as-unknown-as casts on readdirSync (4 locations) and spawner double-cast.",
         "Cleaned up commented-out kick detection code, stale TODOs, misplaced imports, and unused type imports."
       ]
@@ -1844,9 +1851,9 @@
     {
       "version": "0.1.0-alpha.39",
       "changes": [
-        "All senses now route through a shared per-turn pipeline — friend resolution, trust gate, session load, pending drain, agent turn, post-turn, and token accumulation happen in one place instead of four.",
+        "All senses now route through a shared per-turn pipeline \u2014 friend resolution, trust gate, session load, pending drain, agent turn, post-turn, and token accumulation happen in one place instead of four.",
         "Trust gate is now channel-aware: open senses (iMessage) enforce stranger/acquaintance rules, closed senses (Teams) trust the org, local and internal always pass through.",
-        "Tool access and prompt restrictions use a single shared isTrustedLevel check — no more scattered family/friend comparisons that could drift apart.",
+        "Tool access and prompt restrictions use a single shared isTrustedLevel check \u2014 no more scattered family/friend comparisons that could drift apart.",
         "Pending messages now inject correctly into multimodal content (image attachments no longer silently drop pending messages).",
         "ouro reminder create supports --agent flag, matching every other identity-scoped CLI command."
       ]
@@ -1854,11 +1861,11 @@
     {
       "version": "0.1.0-alpha.38",
       "changes": [
-        "You now have a proper body map — understanding of your home (bundle) and bones (harness), what each directory is for, and how to modify your own configuration.",
+        "You now have a proper body map \u2014 understanding of your home (bundle) and bones (harness), what each directory is for, and how to modify your own configuration.",
         "Inner dialog is now genuine internal monologue with metacognitive framing, not a second CLI session. Heartbeat and bootstrap messages read as first-person awareness.",
         "Cross-session communication works end-to-end: inner dialog thoughts surface as [inner thought: ...] in conversations, messages to yourself route to inner dialog, and you can proactively reach out to friends via iMessage and Teams.",
         "Tool audit: removed wrapper tools (git_commit, gh_cli, get_current_time, list_directory), added surgical tools (edit_file, glob, grep, read_file with offset/limit), consolidated 7 task tools + schedule_reminder + friend tools into ouro CLI commands.",
-        "You now understand why certain tools are restricted in certain contexts — trust level and shared channels each have independent, explained gates.",
+        "You now understand why certain tools are restricted in certain contexts \u2014 trust level and shared channels each have independent, explained gates.",
         "ouro friend link/unlink commands handle orphan cleanup when linking external identities, merging duplicate friend records intelligently.",
         "During onboarding, the adoption specialist can collect phone number and Teams handle to create an initial friend record with contact info."
       ]
