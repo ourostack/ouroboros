@@ -267,6 +267,56 @@ describe("UpProgress", () => {
       expect(output).toBeDefined()
     })
 
+    it("clears leftover lines when current render has fewer lines than previous", () => {
+      const progress = new UpProgress({ write: vi.fn(), isTTY: true })
+      // Build up 3 lines: 2 completed + 1 active
+      progress.startPhase("a")
+      progress.completePhase("a", "done")
+      progress.startPhase("b")
+      progress.completePhase("b", "done")
+      progress.startPhase("c")
+      // Render with 3 lines (2 completed + 1 spinner)
+      progress.render(1000)
+      // Complete c and render again — now only 3 completed lines, no spinner
+      progress.completePhase("c", "done")
+      const output = progress.render(2000)
+      // cursor-up should reference previous line count
+      expect(output).toContain("\x1b[3A")
+    })
+
+    it("end() with an active phase in TTY mode writes final output", () => {
+      const write = vi.fn()
+      const progress = new UpProgress({ write, isTTY: true })
+      progress.startPhase("daemon")
+      // Render once to set prevLineCount
+      progress.render(1000)
+      progress.end()
+      // end() should have called write with the final state (without the spinner)
+      expect(write).toHaveBeenCalled()
+      const lastCall = write.mock.calls[write.mock.calls.length - 1][0] as string
+      // The spinner phase should be gone since end() clears currentPhase
+      expect(lastCall).not.toMatch(/\d+\.\d+s/)
+    })
+
+    it("end() in non-TTY mode does not write", () => {
+      const write = vi.fn()
+      const progress = new UpProgress({ write, isTTY: false })
+      progress.startPhase("test")
+      progress.completePhase("test")
+      write.mockClear()
+      progress.end()
+      // end() in non-TTY should not write anything extra
+      expect(write).not.toHaveBeenCalled()
+    })
+
+    it("startPhase in non-TTY mode does not write", () => {
+      const write = vi.fn()
+      const progress = new UpProgress({ write, isTTY: false })
+      progress.startPhase("test")
+      // startPhase alone should not produce output in non-TTY
+      expect(write).not.toHaveBeenCalled()
+    })
+
     it("accumulated phases render in order", () => {
       const progress = new UpProgress({ write: vi.fn(), isTTY: true })
       progress.startPhase("alpha")

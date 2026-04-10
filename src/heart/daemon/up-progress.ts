@@ -48,7 +48,9 @@ export class UpProgress {
   private ended = false
 
   constructor(options?: UpProgressOptions) {
+    /* v8 ignore next -- thin wrapper: raw process.stdout.write for ANSI cursor control @preserve */
     this.write = options?.write ?? ((text: string) => process.stdout.write(text))
+    /* v8 ignore next -- thin wrapper: real isTTY check injected for testability @preserve */
     this.isTTY = options?.isTTY ?? (process.stdout.isTTY === true)
   }
 
