@@ -23,6 +23,7 @@ function makePayload(workers: Array<{
       daemon: "running",
       health: "ok",
       socketPath: "/tmp/test.sock",
+        daemonPid: 12345,
       outlookUrl: "http://localhost:6876",
       version: "0.1.0-alpha.1",
       lastUpdated: "2026-04-09T12:00:00Z",
@@ -222,7 +223,8 @@ describe("startup-tui", () => {
       const deps = {
         sendCommand: vi.fn(async () => makeDaemonResponse(payload)),
         socketPath: "/tmp/test.sock",
-        writeStdout: vi.fn(),
+        daemonPid: 12345,
+        writeRaw: vi.fn(),
         now: vi.fn(() => now),
         sleep: vi.fn(async () => {}),
       }
@@ -248,7 +250,8 @@ describe("startup-tui", () => {
       const deps = {
         sendCommand: vi.fn(async () => makeDaemonResponse(stablePayload)),
         socketPath: "/tmp/test.sock",
-        writeStdout: vi.fn(),
+        daemonPid: 12345,
+        writeRaw: vi.fn(),
         now: vi.fn(() => {
           callCount++
           // First call: 2s after start; second call: 6s after start
@@ -272,7 +275,8 @@ describe("startup-tui", () => {
       const deps = {
         sendCommand: vi.fn(async () => makeDaemonResponse(payload)),
         socketPath: "/tmp/test.sock",
-        writeStdout: vi.fn(),
+        daemonPid: 12345,
+        writeRaw: vi.fn(),
         now: vi.fn(() => now),
         sleep: vi.fn(async () => {}),
       }
@@ -300,9 +304,11 @@ describe("startup-tui", () => {
           return makeDaemonResponse(payload)
         }),
         socketPath: "/tmp/test.sock",
-        writeStdout: vi.fn(),
+        daemonPid: 12345,
+        writeRaw: vi.fn(),
         now: vi.fn(() => now),
         sleep: vi.fn(async () => {}),
+        isProcessAlive: vi.fn(() => true),
       }
 
       const result = await pollDaemonStartup(deps)
@@ -320,7 +326,8 @@ describe("startup-tui", () => {
       const deps = {
         sendCommand: vi.fn(async () => makeDaemonResponse(payload)),
         socketPath: "/tmp/test.sock",
-        writeStdout: vi.fn(),
+        daemonPid: 12345,
+        writeRaw: vi.fn(),
         now: vi.fn(() => now),
         sleep: vi.fn(async () => {}),
       }
@@ -347,7 +354,8 @@ describe("startup-tui", () => {
       const deps = {
         sendCommand: vi.fn(async () => makeDaemonResponse(payload)),
         socketPath: "/tmp/test.sock",
-        writeStdout: vi.fn(),
+        daemonPid: 12345,
+        writeRaw: vi.fn(),
         now: vi.fn(() => now),
         sleep: vi.fn(async () => {}),
       }
@@ -370,7 +378,8 @@ describe("startup-tui", () => {
       const deps = {
         sendCommand: vi.fn(async () => makeDaemonResponse(payload)),
         socketPath: "/tmp/test.sock",
-        writeStdout: vi.fn((text: string) => writes.push(text)),
+        daemonPid: 12345,
+        writeRaw: vi.fn((text: string) => writes.push(text)),
         now: vi.fn(() => now),
         sleep: vi.fn(async () => {}),
       }
@@ -391,7 +400,8 @@ describe("startup-tui", () => {
       const deps = {
         sendCommand: vi.fn(async () => makeDaemonResponse(payload)),
         socketPath: "/tmp/test.sock",
-        writeStdout: vi.fn((text: string) => writes.push(text)),
+        daemonPid: 12345,
+        writeRaw: vi.fn((text: string) => writes.push(text)),
         now: vi.fn(() => now),
         sleep: vi.fn(async () => {}),
       }
@@ -416,9 +426,11 @@ describe("startup-tui", () => {
           ]))
         }),
         socketPath: "/tmp/test.sock",
-        writeStdout: vi.fn((text: string) => writes.push(text)),
+        daemonPid: 12345,
+        writeRaw: vi.fn((text: string) => writes.push(text)),
         now: vi.fn(() => 5_000),
         sleep: vi.fn(async () => {}),
+        isProcessAlive: vi.fn(() => true),
         readLatestDaemonEvent: vi.fn(() => "starting auto-start agents"),
       }
 
@@ -442,9 +454,11 @@ describe("startup-tui", () => {
           ]))
         }),
         socketPath: "/tmp/test.sock",
-        writeStdout: vi.fn((text: string) => writes.push(text)),
+        daemonPid: 12345,
+        writeRaw: vi.fn((text: string) => writes.push(text)),
         now: vi.fn(() => 5_000),
         sleep: vi.fn(async () => {}),
+        isProcessAlive: vi.fn(() => true),
         readLatestDaemonEvent: vi.fn(() => null),
       }
 
@@ -465,9 +479,11 @@ describe("startup-tui", () => {
           ]))
         }),
         socketPath: "/tmp/test.sock",
-        writeStdout: vi.fn((text: string) => writes.push(text)),
+        daemonPid: 12345,
+        writeRaw: vi.fn((text: string) => writes.push(text)),
         now: vi.fn(() => 5_000),
         sleep: vi.fn(async () => {}),
+        isProcessAlive: vi.fn(() => true),
       }
 
       const result = await pollDaemonStartup(deps)
@@ -486,7 +502,8 @@ describe("startup-tui", () => {
       const deps = {
         sendCommand: vi.fn(async () => makeDaemonResponse(payload)),
         socketPath: "/tmp/test.sock",
-        writeStdout: vi.fn((text: string) => writes.push(text)),
+        daemonPid: 12345,
+        writeRaw: vi.fn((text: string) => writes.push(text)),
         now: vi.fn(() => now),
         sleep: vi.fn(async () => {}),
       }
@@ -511,7 +528,8 @@ describe("startup-tui", () => {
       const deps = {
         sendCommand: vi.fn(async () => makeDaemonResponse(payload)),
         socketPath: "/tmp/test.sock",
-        writeStdout: vi.fn((text: string) => writes.push(text)),
+        daemonPid: 12345,
+        writeRaw: vi.fn((text: string) => writes.push(text)),
         now: vi.fn(() => now),
         sleep: vi.fn(async () => {}),
       }
@@ -520,6 +538,92 @@ describe("startup-tui", () => {
       const allOutput = writes.join("")
       expect(allOutput).toContain("bad config file")
       expect(allOutput).toContain("edit agent.json")
+    })
+
+    it("detects daemon process death and returns immediately", async () => {
+      const writes: string[] = []
+      const deps = {
+        sendCommand: vi.fn(async () => { throw new Error("ECONNREFUSED") }),
+        socketPath: "/tmp/test.sock",
+        daemonPid: 99999,
+        writeRaw: vi.fn((text: string) => writes.push(text)),
+        now: vi.fn(() => 5_000),
+        sleep: vi.fn(async () => {}),
+        isProcessAlive: vi.fn(() => false),
+        readLatestDaemonEvent: vi.fn(() => "daemon entrypoint failed"),
+      }
+
+      const result = await pollDaemonStartup(deps)
+      expect(result.stable).toEqual([])
+      expect(result.degraded).toHaveLength(1)
+      expect(result.degraded[0]!.agent).toBe("daemon")
+      expect(result.degraded[0]!.errorReason).toBe("daemon entrypoint failed")
+    })
+
+    it("detects daemon death after rendering waiting lines (clears output)", async () => {
+      let callCount = 0
+      const writes: string[] = []
+      const deps = {
+        sendCommand: vi.fn(async () => { throw new Error("ECONNREFUSED") }),
+        socketPath: "/tmp/test.sock",
+        daemonPid: 99999,
+        writeRaw: vi.fn((text: string) => writes.push(text)),
+        now: vi.fn(() => 5_000),
+        sleep: vi.fn(async () => {}),
+        isProcessAlive: vi.fn(() => {
+          callCount++
+          // Alive on first check, dead on second
+          return callCount <= 1
+        }),
+        readLatestDaemonEvent: vi.fn(() => "starting agents"),
+      }
+
+      const result = await pollDaemonStartup(deps)
+      expect(result.degraded[0]!.agent).toBe("daemon")
+      // Should have rendered "waiting for daemon" first, then cleared it
+      expect(writes.some((w) => w.includes("waiting for daemon"))).toBe(true)
+      // Clear sequence contains cursor-up
+      expect(writes.some((w) => w.includes("\x1b["))).toBe(true)
+    })
+
+    it("detects daemon death with no log event available", async () => {
+      const deps = {
+        sendCommand: vi.fn(async () => { throw new Error("ECONNREFUSED") }),
+        socketPath: "/tmp/test.sock",
+        daemonPid: 99999,
+        writeRaw: vi.fn(),
+        now: vi.fn(() => 5_000),
+        sleep: vi.fn(async () => {}),
+        isProcessAlive: vi.fn(() => false),
+        readLatestDaemonEvent: vi.fn(() => null),
+      }
+
+      const result = await pollDaemonStartup(deps)
+      expect(result.degraded[0]!.errorReason).toBe("daemon process died during startup")
+    })
+
+    it("continues polling when daemon pid is null (unknown)", async () => {
+      let callCount = 0
+      const deps = {
+        sendCommand: vi.fn(async () => {
+          callCount++
+          if (callCount <= 1) throw new Error("ECONNREFUSED")
+          return makeDaemonResponse(makePayload([
+            { agent: "alpha", status: "crashed", startedAt: null, errorReason: "x", fixHint: "y" },
+          ]))
+        }),
+        socketPath: "/tmp/test.sock",
+        daemonPid: null,
+        writeRaw: vi.fn(),
+        now: vi.fn(() => 5_000),
+        sleep: vi.fn(async () => {}),
+        isProcessAlive: vi.fn(() => false),
+      }
+
+      const result = await pollDaemonStartup(deps)
+      // Should NOT trigger death detection when pid is null
+      expect(result.degraded).toHaveLength(1)
+      expect(result.degraded[0]!.agent).toBe("alpha")
     })
   })
 })

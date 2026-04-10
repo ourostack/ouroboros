@@ -137,23 +137,34 @@ export async function ensureDaemonRunning(deps: OuroCliDeps): Promise<EnsureDaem
   const stability = await pollDaemonStartup({
     sendCommand: deps.sendCommand,
     socketPath: deps.socketPath,
-    writeStdout: deps.writeStdout,
+    daemonPid: started.pid ?? null,
+    /* v8 ignore next -- thin wrapper: raw process.stdout.write for ANSI cursor control @preserve */
+    writeRaw: (text) => process.stdout.write(text),
     /* v8 ignore next -- thin wrapper: real Date.now() injected for testability @preserve */
     now: () => Date.now(),
     /* v8 ignore next -- thin wrapper: real setTimeout injected for testability @preserve */
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
-    /* v8 ignore start -- daemon log tail: reads real filesystem, tested via deployment @preserve */
+    /* v8 ignore start -- daemon log tail + pid check: reads real filesystem, tested via deployment @preserve */
     readLatestDaemonEvent: () => {
       try {
-        const agents = fs.readdirSync(getAgentBundlesRoot()).filter((d) => d.endsWith(".ouro"))
+        // The daemon writes structured events to daemon.ndjson in the first
+        // agent bundle's state/daemon/logs/ directory. Read the last line to
+        // surface what it's currently doing (e.g., "starting auto-start agents").
+        const bundlesRoot = getAgentBundlesRoot()
+        if (!fs.existsSync(bundlesRoot)) return null
+        const agents = fs.readdirSync(bundlesRoot).filter((d) => d.endsWith(".ouro"))
         for (const agent of agents) {
-          const logPath = path.join(getAgentBundlesRoot(), agent, "state", "daemon", "logs", "daemon.ndjson")
+          const logPath = path.join(bundlesRoot, agent, "state", "daemon", "logs", "daemon.ndjson")
           if (!fs.existsSync(logPath)) continue
-          const buf = Buffer.alloc(2048)
+          const stat = fs.statSync(logPath)
+          if (stat.size === 0) continue
+          // Only read logs from the last 30 seconds (daemon just started)
+          const mtime = stat.mtimeMs
+          if (Date.now() - mtime > 30_000) continue
+          const buf = Buffer.alloc(4096)
           const fd = fs.openSync(logPath, "r")
-          const stat = fs.fstatSync(fd)
-          const readFrom = Math.max(0, stat.size - 2048)
-          fs.readSync(fd, buf, 0, 2048, readFrom)
+          const readFrom = Math.max(0, stat.size - 4096)
+          fs.readSync(fd, buf, 0, 4096, readFrom)
           fs.closeSync(fd)
           const lines = buf.toString("utf-8").trim().split("\n").filter(Boolean)
           const last = lines[lines.length - 1]
