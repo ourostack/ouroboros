@@ -31,6 +31,8 @@ import { listEnabledBundleAgents } from "./agent-discovery"
 import { getPackageVersion } from "../../mind/bundle-manifest"
 import { syncGlobalOuroBotWrapper as defaultSyncGlobalOuroBotWrapper } from "../versioning/ouro-bot-global-installer"
 import { pruneDaemonLogs as defaultPruneDaemonLogs } from "./logs-prune"
+import { readHealth, getDefaultHealthPath } from "./daemon-health"
+import { discoverLogFiles, formatLogLine, readLastLines } from "./log-tailer"
 import { writeLaunchAgentPlist } from "./launchd"
 import { DEFAULT_DAEMON_SOCKET_PATH, sendDaemonCommand, checkDaemonSocketAlive } from "./socket-client"
 import { listSessionActivity } from "../session-activity"
@@ -91,6 +93,27 @@ function defaultCleanupStaleSocket(socketPath: string): void {
   if (fs.existsSync(socketPath)) {
     fs.unlinkSync(socketPath)
   }
+}
+
+function defaultReadHealthUpdatedAt(healthPath: string): number | null {
+  try {
+    return fs.statSync(healthPath).mtimeMs
+  } catch {
+    return null
+  }
+}
+
+function defaultReadRecentDaemonLogLines(lines = 10): string[] {
+  const files = discoverLogFiles({})
+  const recentLines: string[] = []
+  for (const file of files) {
+    recentLines.push(...readLastLines(file, lines, fs.readFileSync))
+  }
+  return recentLines.slice(-lines).map((line) => formatLogLine(line))
+}
+
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 function defaultFallbackPendingMessage(command: Extract<import("./daemon").DaemonCommand, { kind: "message.send" }>): string {
@@ -470,6 +493,16 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     checkSocketAlive: checkDaemonSocketAlive,
     cleanupStaleSocket: defaultCleanupStaleSocket,
     fallbackPendingMessage: defaultFallbackPendingMessage,
+    healthFilePath: getDefaultHealthPath(),
+    readHealthState: readHealth,
+    readHealthUpdatedAt: defaultReadHealthUpdatedAt,
+    readRecentDaemonLogLines: defaultReadRecentDaemonLogLines,
+    sleep: defaultSleep,
+    now: () => Date.now(),
+    startupPollIntervalMs: 250,
+    startupStabilityWindowMs: 1_500,
+    startupTimeoutMs: 10_000,
+    startupRetryLimit: 1,
     listDiscoveredAgents: defaultListDiscoveredAgents,
     runHatchFlow: defaultRunHatchFlow,
     promptInput: defaultPromptInput,

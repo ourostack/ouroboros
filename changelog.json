@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.320",
+      "changes": [
+        "fix(daemon): make `ouro up` wait for real startup stability before reporting success. The CLI now stays attached through ordered startup phases, requires sustained socket liveness plus fresh current-boot health evidence, retries once when startup loses the socket, and surfaces recent daemon log context on failure instead of claiming the daemon started.",
+        "fix(daemon): harden socket ownership and recoverable bootstrap behavior. An older daemon shutdown no longer unlinks a newer daemon's rebound socket path, and recoverable habit bootstrap failures now degrade with actionable `habit_setup_error` and `bootstrap_degraded` guidance instead of taking the whole daemon down.",
+        "fix(testing): declare @testing-library/dom in outlook-ui devDependencies so coverage-gate installs match the package's actual React Testing Library requirements."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.319",
       "changes": [
         "fix(heart): use true per-message ingress time for session event timestamps instead of batch-save time"

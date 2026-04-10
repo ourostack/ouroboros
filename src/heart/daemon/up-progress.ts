@@ -66,6 +66,15 @@ export class UpProgress {
   }
 
   /**
+   * Emit a one-line status breadcrumb in non-TTY mode without affecting the
+   * accumulated checklist state. Used for daemon startup sub-steps.
+   */
+  announceStep(label: string): void {
+    if (this.isTTY) return
+    this.write(label)
+  }
+
+  /**
    * Mark the current phase as done. In non-TTY mode, immediately writes
    * a static line. Emits a nerves event for observability.
    */

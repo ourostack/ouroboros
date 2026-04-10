@@ -1,9 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
+import * as fs from "fs"
 import * as net from "net"
 import * as os from "os"
 import * as path from "path"
 
 import { OuroDaemon } from "../../../heart/daemon/daemon"
+import { setRuntimeLogger } from "../../../nerves/runtime"
+
+vi.mock("fs", { spy: true })
 
 /**
  * Regression test for the daemon.stop deadlock observed live on
@@ -31,7 +35,12 @@ function tmpSocketPath(name: string): string {
   return path.join(os.tmpdir(), `${name}-${Date.now()}-${Math.random().toString(16).slice(2)}.sock`)
 }
 
-function makeDaemon(socketPath: string) {
+function makeDaemon(
+  socketPath: string,
+  options?: {
+    outlookServerFactory?: () => Promise<{ stop: () => Promise<void> }>
+  },
+) {
   const processManager = {
     listAgentSnapshots: vi.fn(() => []),
     startAutoStartAgents: vi.fn(async () => undefined),
@@ -67,12 +76,25 @@ function makeDaemon(socketPath: string) {
     healthMonitor,
     router,
     senseManager,
-    outlookServerFactory,
+    outlookServerFactory: options?.outlookServerFactory,
     mode: "dev",
   } as any)
 }
 
-async function sendDaemonStopOverRealSocket(socketPath: string, timeoutMs: number): Promise<{ raw: string; endedAt: number }> {
+async function waitForSocketPathState(socketPath: string, exists: boolean, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (fs.existsSync(socketPath) === exists) return
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  throw new Error(`socket path ${exists ? "did not appear" : "did not disappear"} within ${timeoutMs}ms`)
+}
+
+async function sendDaemonCommandOverRealSocket(
+  socketPath: string,
+  command: Record<string, unknown>,
+  timeoutMs: number,
+): Promise<{ raw: string; endedAt: number }> {
   return new Promise((resolve, reject) => {
     const startedAt = Date.now()
     const client = net.createConnection(socketPath)
@@ -83,7 +105,7 @@ async function sendDaemonStopOverRealSocket(socketPath: string, timeoutMs: numbe
     }, timeoutMs)
 
     client.on("connect", () => {
-      client.write(JSON.stringify({ kind: "daemon.stop" }) + "\n")
+      client.write(JSON.stringify(command) + "\n")
     })
     client.on("data", (chunk) => {
       raw += chunk.toString("utf-8")
@@ -99,21 +121,31 @@ async function sendDaemonStopOverRealSocket(socketPath: string, timeoutMs: numbe
   })
 }
 
+async function sendDaemonStopOverRealSocket(socketPath: string, timeoutMs: number): Promise<{ raw: string; endedAt: number }> {
+  return sendDaemonCommandOverRealSocket(socketPath, { kind: "daemon.stop" }, timeoutMs)
+}
+
 describe("daemon.stop deadlock regression", () => {
-  let daemon: OuroDaemon | null = null
+  let daemons: OuroDaemon[] = []
   let socketPath: string
+  let releaseBlockedOutlookStop: (() => void) | null = null
 
   afterEach(async () => {
-    if (daemon) {
+    releaseBlockedOutlookStop?.()
+    releaseBlockedOutlookStop = null
+    setRuntimeLogger(null)
+    vi.restoreAllMocks()
+    for (const daemon of daemons.reverse()) {
       // Best-effort: if a test left the daemon up, try to stop it.
       try { await daemon.stop() } catch { /* already stopped */ }
-      daemon = null
     }
+    daemons = []
   })
 
   it("daemon.stop sent over a real socket completes within 2s and does not deadlock", async () => {
     socketPath = tmpSocketPath("daemon-stop-deadlock")
-    daemon = makeDaemon(socketPath)
+    const daemon = makeDaemon(socketPath)
+    daemons.push(daemon)
     await daemon.start()
 
     // Send daemon.stop and wait for the server to close the connection.
@@ -133,7 +165,8 @@ describe("daemon.stop deadlock regression", () => {
     // Mirrors the real `ouro up` flow: it sends daemon.status to detect
     // version drift, then daemon.stop to replace the running daemon.
     socketPath = tmpSocketPath("daemon-status-then-stop")
-    daemon = makeDaemon(socketPath)
+    const daemon = makeDaemon(socketPath)
+    daemons.push(daemon)
     await daemon.start()
 
     // First: status request, completes normally.
@@ -151,5 +184,94 @@ describe("daemon.stop deadlock regression", () => {
     // Then: stop request, must not deadlock.
     const stopResult = await sendDaemonStopOverRealSocket(socketPath, 2_000)
     expect(stopResult.endedAt).toBeLessThan(2_000)
+  })
+
+  it("removes the socket path when this daemon still owns it during stop", async () => {
+    socketPath = tmpSocketPath("daemon-stop-owned-socket")
+    const daemon = makeDaemon(socketPath)
+    daemons.push(daemon)
+    fs.writeFileSync(socketPath, "owned-daemon-socket", "utf-8")
+    const stats = fs.lstatSync(socketPath)
+    ;(daemon as any).socketIdentity = { dev: stats.dev, ino: stats.ino, ctimeMs: stats.ctimeMs }
+
+    await daemon.stop()
+
+    expect(fs.existsSync(socketPath)).toBe(false)
+  })
+
+  it("an older daemon stop path does not unlink a replacement path entry after releasing the original socket", async () => {
+    socketPath = tmpSocketPath("daemon-stop-socket-race")
+
+    let markOutlookStopBlocked: (() => void) | null = null
+    const outlookStopBlocked = new Promise<void>((resolve) => {
+      markOutlookStopBlocked = resolve
+    })
+    const daemonA = makeDaemon(socketPath, {
+      outlookServerFactory: async () => ({
+        stop: async () => {
+          await new Promise<void>((resolve) => {
+            releaseBlockedOutlookStop = resolve
+            markOutlookStopBlocked?.()
+          })
+        },
+      }),
+    })
+    daemons.push(daemonA)
+    await daemonA.start()
+
+    const daemonAStop = daemonA.stop()
+    await outlookStopBlocked
+    await waitForSocketPathState(socketPath, false, 2_000)
+
+    // The bug is pathname ownership, not socket protocol. Once daemon A has
+    // released the original socket path, any newer entry at the same pathname
+    // must be preserved. Using a plain file makes the race deterministic while
+    // still proving the old daemon is deleting a path it no longer owns.
+    fs.writeFileSync(socketPath, "replacement-daemon-socket", "utf-8")
+    expect(fs.existsSync(socketPath)).toBe(true)
+    const replacementStats = fs.lstatSync(socketPath)
+
+    const warn = vi.fn()
+    setRuntimeLogger({
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn,
+      error: vi.fn(),
+    })
+
+    releaseBlockedOutlookStop?.()
+    releaseBlockedOutlookStop = null
+    await daemonAStop
+
+    expect(fs.existsSync(socketPath)).toBe(true)
+    expect(fs.readFileSync(socketPath, "utf-8")).toBe("replacement-daemon-socket")
+    expect(warn).toHaveBeenCalledWith(expect.objectContaining({
+      event: "daemon.socket_cleanup_skipped",
+      meta: expect.objectContaining({
+        socketPath,
+        actualDev: replacementStats.dev,
+        actualIno: replacementStats.ino,
+        actualCtimeMs: replacementStats.ctimeMs,
+      }),
+    }))
+  })
+
+  it("still starts when capturing socket identity throws", async () => {
+    socketPath = tmpSocketPath("daemon-start-socket-identity-failure")
+    const daemon = makeDaemon(socketPath)
+    daemons.push(daemon)
+
+    const originalLstatSync = fs.lstatSync
+    vi.spyOn(fs, "lstatSync").mockImplementation(((targetPath: fs.PathLike, options?: fs.StatOptions & { bigint?: false }) => {
+      if (String(targetPath) === socketPath) {
+        throw new Error("simulated socket identity read failure")
+      }
+      return originalLstatSync(targetPath, options)
+    }) as typeof fs.lstatSync)
+
+    await daemon.start()
+
+    const statusResult = await sendDaemonCommandOverRealSocket(socketPath, { kind: "daemon.status" }, 2_000)
+    expect(statusResult.raw).toContain('"ok":true')
   })
 })
