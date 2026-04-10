@@ -165,10 +165,14 @@ export async function ensureDaemonRunning(deps: OuroCliDeps): Promise<EnsureDaem
         if (Date.now() - mtime > 30_000) continue
         const buf = Buffer.alloc(4096)
         const fd = fs.openSync(logPath, "r")
-        const readFrom = Math.max(0, stat.size - 4096)
-        fs.readSync(fd, buf, 0, 4096, readFrom)
-        fs.closeSync(fd)
-        const lines = buf.toString("utf-8").trim().split("\n").filter(Boolean)
+        let bytesRead = 0
+        try {
+          const readFrom = Math.max(0, stat.size - 4096)
+          bytesRead = fs.readSync(fd, buf, 0, 4096, readFrom)
+        } finally {
+          fs.closeSync(fd)
+        }
+        const lines = buf.subarray(0, bytesRead).toString("utf-8").trim().split("\n").filter(Boolean)
         const last = lines[lines.length - 1]
         if (!last) continue
         const parsed = JSON.parse(last)
@@ -292,7 +296,6 @@ async function waitForDaemonStartup(
   const useHealthMonitor = hasStartupHealthMonitor(deps)
   let stableSinceMs: number | null = null
   let sawSocket = false
-  let announcedHealthCheck = false
 
   if (!useHealthMonitor) {
     const verified = await verifyDaemonAlive(
@@ -327,10 +330,7 @@ async function waitForDaemonStartup(
     if (!sawSocket) {
       sawSocket = true
       stableSinceMs = now()
-      if (!announcedHealthCheck) {
-        deps.reportDaemonStartupPhase?.("verifying daemon health...")
-        announcedHealthCheck = true
-      }
+      deps.reportDaemonStartupPhase?.("verifying daemon health...")
     }
 
     if (!hasFreshCurrentBootHealthSignal(deps, options.bootStartedAtMs, options.pid)) {
