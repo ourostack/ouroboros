@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.314",
+      "changes": [
+        "fix(daemon): remove 60s startup TUI timeout and show progress while socket is unavailable. `pollDaemonStartup()` now waits indefinitely until all agents are stable or failed, instead of timing out after 60s and falsely reporting degraded status. Added 'waiting for daemon' spinner with elapsed time and latest daemon log event while the socket is not yet available."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.313",
       "changes": [
         "feat(daemon): agentic repair flow with LLM diagnosis for degraded agents during `ouro up`. New `runAgenticRepair()` in `src/heart/daemon/agentic-repair.ts` wraps interactive repair with optional AI-powered diagnosis. Uses `discoverWorkingProvider()` to find a working LLM, then offers conversational diagnosis with degraded agent context and daemon log tail. Falls back to deterministic repair when no provider is available or user declines. Wired into cli-exec.ts replacing direct `runInteractiveRepair()` call. 12 new tests, 100% coverage on all branches.",
