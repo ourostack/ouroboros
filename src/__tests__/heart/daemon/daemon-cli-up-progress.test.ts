@@ -6,6 +6,11 @@ const mocks = vi.hoisted(() => ({
   applyPendingUpdates: vi.fn(async () => ({ updated: [] })),
   registerUpdateHook: vi.fn(),
   pruneStaleEphemeralBundles: vi.fn(() => [] as string[]),
+  upProgressStartPhase: vi.fn(),
+  upProgressCompletePhase: vi.fn(),
+  upProgressEnd: vi.fn(),
+  upProgressRender: vi.fn(() => ""),
+  UpProgressConstructor: vi.fn(),
 }))
 
 vi.mock("../../../heart/versioning/update-hooks", () => ({
@@ -27,6 +32,18 @@ vi.mock("../../../heart/daemon/startup-tui", () => ({
   pollDaemonStartup: vi.fn(async () => ({ stable: [], degraded: [] })),
 }))
 
+vi.mock("../../../heart/daemon/up-progress", () => ({
+  UpProgress: class MockUpProgress {
+    constructor(...args: any[]) {
+      mocks.UpProgressConstructor(...args)
+    }
+    startPhase = mocks.upProgressStartPhase
+    completePhase = mocks.upProgressCompletePhase
+    end = mocks.upProgressEnd
+    render = mocks.upProgressRender
+  },
+}))
+
 import { runOuroCli, type OuroCliDeps } from "../../../heart/daemon/daemon-cli"
 
 function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
@@ -42,9 +59,22 @@ function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
   }
 }
 
-describe("ouro up: progress messages", () => {
-  it("prints 'checking for updates...' before update check", async () => {
+describe("ouro up: UpProgress integration", () => {
+  it("emits at least one nerves event", () => {
     emitNervesEvent({ component: "daemon", event: "daemon.cli_up_progress_test", message: "testing up progress" })
+  })
+
+  it("creates an UpProgress instance during daemon.up", async () => {
+    mocks.UpProgressConstructor.mockClear()
+    const deps = makeDeps()
+
+    await runOuroCli(["up"], deps)
+
+    expect(mocks.UpProgressConstructor).toHaveBeenCalled()
+  })
+
+  it("calls startPhase('update check') before update check", async () => {
+    mocks.upProgressStartPhase.mockClear()
     const deps = makeDeps({
       checkForCliUpdate: vi.fn(async () => ({ available: false })),
       getCurrentCliVersion: vi.fn(() => "0.1.0-alpha.80"),
@@ -52,11 +82,87 @@ describe("ouro up: progress messages", () => {
 
     await runOuroCli(["up"], deps)
 
-    expect(deps.writeStdout).toHaveBeenCalledWith("checking for updates...")
+    expect(mocks.upProgressStartPhase).toHaveBeenCalledWith("update check")
   })
 
-  it("prints 'installing <version>...' when update is available", async () => {
+  it("calls completePhase('update check', 'up to date') when no update available", async () => {
+    mocks.upProgressCompletePhase.mockClear()
+    const deps = makeDeps({
+      checkForCliUpdate: vi.fn(async () => ({ available: false })),
+      getCurrentCliVersion: vi.fn(() => "0.1.0-alpha.80"),
+    })
+
+    await runOuroCli(["up"], deps)
+
+    expect(mocks.upProgressCompletePhase).toHaveBeenCalledWith("update check", "up to date")
+  })
+
+  it("calls completePhase with version when update is installed", async () => {
+    mocks.upProgressCompletePhase.mockClear()
     const reExec = vi.fn(() => { throw new Error("__REEXEC__") }) as unknown as (args: string[]) => never
+    const deps = makeDeps({
+      checkForCliUpdate: vi.fn(async () => ({ available: true, latestVersion: "0.1.0-alpha.90" })),
+      installCliVersion: vi.fn(async () => {}),
+      activateCliVersion: vi.fn(),
+      getCurrentCliVersion: vi.fn(() => "0.1.0-alpha.80"),
+      reExecFromNewVersion: reExec,
+    })
+
+    // end() must be called before re-exec
+    mocks.upProgressEnd.mockClear()
+    await expect(runOuroCli(["up"], deps)).rejects.toThrow("__REEXEC__")
+
+    expect(mocks.upProgressCompletePhase).toHaveBeenCalledWith(
+      "update check",
+      expect.stringContaining("0.1.0-alpha.90"),
+    )
+    expect(mocks.upProgressEnd).toHaveBeenCalled()
+  })
+
+  it("calls startPhase('system setup') for system setup phase", async () => {
+    mocks.upProgressStartPhase.mockClear()
+    const deps = makeDeps()
+
+    await runOuroCli(["up"], deps)
+
+    expect(mocks.upProgressStartPhase).toHaveBeenCalledWith("system setup")
+  })
+
+  it("calls completePhase('system setup') after system setup", async () => {
+    mocks.upProgressCompletePhase.mockClear()
+    const deps = makeDeps()
+
+    await runOuroCli(["up"], deps)
+
+    expect(mocks.upProgressCompletePhase).toHaveBeenCalledWith("system setup")
+  })
+
+  it("calls startPhase('starting daemon') for daemon start", async () => {
+    mocks.upProgressStartPhase.mockClear()
+    const deps = makeDeps()
+
+    await runOuroCli(["up"], deps)
+
+    expect(mocks.upProgressStartPhase).toHaveBeenCalledWith("starting daemon")
+  })
+
+  it("calls end() before pollDaemonStartup takes over", async () => {
+    mocks.upProgressEnd.mockClear()
+    const deps = makeDeps()
+
+    await runOuroCli(["up"], deps)
+
+    expect(mocks.upProgressEnd).toHaveBeenCalled()
+  })
+
+  it("calls end() before re-exec", async () => {
+    mocks.upProgressEnd.mockClear()
+    const endCallOrder: string[] = []
+    mocks.upProgressEnd.mockImplementation(() => endCallOrder.push("end"))
+    const reExec = vi.fn(() => {
+      endCallOrder.push("reexec")
+      throw new Error("__REEXEC__")
+    }) as unknown as (args: string[]) => never
     const deps = makeDeps({
       checkForCliUpdate: vi.fn(async () => ({ available: true, latestVersion: "0.1.0-alpha.90" })),
       installCliVersion: vi.fn(async () => {}),
@@ -67,10 +173,95 @@ describe("ouro up: progress messages", () => {
 
     await expect(runOuroCli(["up"], deps)).rejects.toThrow("__REEXEC__")
 
-    expect(deps.writeStdout).toHaveBeenCalledWith("installing 0.1.0-alpha.90...")
+    expect(endCallOrder.indexOf("end")).toBeLessThan(endCallOrder.indexOf("reexec"))
   })
 
-  it("prints 'up to date.' when no update available", async () => {
+  it("calls end() before repair prompts (--no-repair path)", async () => {
+    mocks.upProgressEnd.mockClear()
+    const deps = makeDeps({
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
+      startDaemonProcess: vi.fn(async () => ({ pid: 123 })),
+    })
+
+    // Make pollDaemonStartup return degraded agents
+    const { pollDaemonStartup } = await import("../../../heart/daemon/startup-tui")
+    vi.mocked(pollDaemonStartup).mockResolvedValueOnce({
+      stable: [],
+      degraded: [{ agent: "test", errorReason: "bad", fixHint: "fix it" }],
+    })
+
+    await runOuroCli(["up", "--no-repair"], deps)
+
+    expect(mocks.upProgressEnd).toHaveBeenCalled()
+  })
+
+  it("reports pruned bundles via completePhase", async () => {
+    mocks.upProgressCompletePhase.mockClear()
+    mocks.pruneStaleEphemeralBundles.mockReturnValueOnce(["stale.ouro", "dead.ouro"])
+    const deps = makeDeps()
+
+    await runOuroCli(["up"], deps)
+
+    expect(mocks.upProgressCompletePhase).toHaveBeenCalledWith(
+      "bundle cleanup",
+      expect.stringContaining("2"),
+    )
+  })
+
+  it("reports singular pruned bundle without trailing s", async () => {
+    mocks.upProgressCompletePhase.mockClear()
+    mocks.pruneStaleEphemeralBundles.mockReturnValueOnce(["stale.ouro"])
+    const deps = makeDeps()
+
+    await runOuroCli(["up"], deps)
+
+    expect(mocks.upProgressCompletePhase).toHaveBeenCalledWith(
+      "bundle cleanup",
+      "pruned 1 stale bundle",
+    )
+  })
+
+  it("reports agent updates via completePhase", async () => {
+    mocks.upProgressCompletePhase.mockClear()
+    mocks.applyPendingUpdates.mockResolvedValueOnce({
+      updated: [
+        { agent: "alpha", from: "0.1.0-alpha.80", to: "0.1.0-alpha.90" },
+        { agent: "beta", from: "0.1.0-alpha.80", to: "0.1.0-alpha.90" },
+      ],
+    })
+    const deps = makeDeps()
+
+    await runOuroCli(["up"], deps)
+
+    expect(mocks.upProgressCompletePhase).toHaveBeenCalledWith(
+      "agent updates",
+      expect.stringContaining("2"),
+    )
+  })
+
+  it("reports singular agent update without trailing s", async () => {
+    mocks.upProgressCompletePhase.mockClear()
+    mocks.applyPendingUpdates.mockResolvedValueOnce({
+      updated: [
+        { agent: "alpha", from: "0.1.0-alpha.80", to: "0.1.0-alpha.90" },
+      ],
+    })
+    const deps = makeDeps()
+
+    await runOuroCli(["up"], deps)
+
+    expect(mocks.upProgressCompletePhase).toHaveBeenCalledWith(
+      "agent updates",
+      "1 agent to runtime 0.1.0-alpha.90 (was 0.1.0-alpha.80)",
+    )
+  })
+
+  it("progress phases appear in correct order", async () => {
+    const phaseOrder: string[] = []
+    mocks.upProgressStartPhase.mockImplementation((label: string) => phaseOrder.push(`start:${label}`))
+    mocks.upProgressCompletePhase.mockImplementation((label: string) => phaseOrder.push(`complete:${label}`))
+    mocks.upProgressEnd.mockImplementation(() => phaseOrder.push("end"))
+
     const deps = makeDeps({
       checkForCliUpdate: vi.fn(async () => ({ available: false })),
       getCurrentCliVersion: vi.fn(() => "0.1.0-alpha.80"),
@@ -78,28 +269,20 @@ describe("ouro up: progress messages", () => {
 
     await runOuroCli(["up"], deps)
 
-    expect(deps.writeStdout).toHaveBeenCalledWith("up to date.")
+    const updateCheckStart = phaseOrder.indexOf("start:update check")
+    const updateCheckComplete = phaseOrder.indexOf("complete:update check")
+    const systemSetupStart = phaseOrder.indexOf("start:system setup")
+    const daemonStart = phaseOrder.indexOf("start:starting daemon")
+    const end = phaseOrder.indexOf("end")
+
+    expect(updateCheckStart).toBeGreaterThanOrEqual(0)
+    expect(updateCheckComplete).toBeGreaterThan(updateCheckStart)
+    expect(systemSetupStart).toBeGreaterThan(updateCheckComplete)
+    expect(daemonStart).toBeGreaterThan(systemSetupStart)
+    expect(end).toBeGreaterThan(daemonStart)
   })
 
-  it("prints 'starting daemon...' before starting the daemon", async () => {
-    const deps = makeDeps()
-
-    await runOuroCli(["up"], deps)
-
-    expect(deps.writeStdout).toHaveBeenCalledWith("starting daemon...")
-  })
-
-  it("prints pruned stale bundle names", async () => {
-    mocks.pruneStaleEphemeralBundles.mockReturnValueOnce(["stale.ouro", "dead.ouro"])
-    const deps = makeDeps()
-
-    await runOuroCli(["up"], deps)
-
-    expect(deps.writeStdout).toHaveBeenCalledWith("pruned stale bundle: stale.ouro")
-    expect(deps.writeStdout).toHaveBeenCalledWith("pruned stale bundle: dead.ouro")
-  })
-
-  it("progress messages appear in correct order", async () => {
+  it("does not call writeStdout for progress messages (checking/starting/up to date)", async () => {
     const deps = makeDeps({
       checkForCliUpdate: vi.fn(async () => ({ available: false })),
       getCurrentCliVersion: vi.fn(() => "0.1.0-alpha.80"),
@@ -108,14 +291,8 @@ describe("ouro up: progress messages", () => {
     await runOuroCli(["up"], deps)
 
     const calls = (deps.writeStdout as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0] as string)
-    const checkingIdx = calls.indexOf("checking for updates...")
-    const upToDateIdx = calls.indexOf("up to date.")
-    const startingIdx = calls.indexOf("starting daemon...")
-
-    expect(checkingIdx).toBeGreaterThanOrEqual(0)
-    expect(upToDateIdx).toBeGreaterThanOrEqual(0)
-    expect(startingIdx).toBeGreaterThanOrEqual(0)
-    expect(checkingIdx).toBeLessThan(upToDateIdx)
-    expect(upToDateIdx).toBeLessThan(startingIdx)
+    expect(calls).not.toContain("checking for updates...")
+    expect(calls).not.toContain("up to date.")
+    expect(calls).not.toContain("starting daemon...")
   })
 })
