@@ -216,6 +216,7 @@ describe("trimMessages", () => {
 describe("saveSession", () => {
   beforeEach(() => {
     vi.resetModules()
+    vi.mocked(fs.readFileSync).mockReset()
     vi.mocked(fs.writeFileSync).mockReset()
     vi.mocked(fs.mkdirSync).mockReset()
   })
@@ -229,10 +230,22 @@ describe("saveSession", () => {
     saveSession("/tmp/test-session.json", msgs)
 
     expect(fs.mkdirSync).toHaveBeenCalledWith("/tmp", { recursive: true })
-    expect(fs.writeFileSync).toHaveBeenCalledWith(
-      "/tmp/test-session.json",
-      JSON.stringify({ version: 1, messages: msgs }, null, 2),
-    )
+    const written = JSON.parse(vi.mocked(fs.writeFileSync).mock.calls[0]![1] as string)
+    expect(written).toMatchObject({
+      version: 2,
+      projection: {
+        eventIds: ["evt-000001", "evt-000002"],
+        trimmed: false,
+      },
+      lastUsage: null,
+      state: {
+        mustResolveBeforeHandoff: false,
+        lastFriendActivityAt: null,
+      },
+    })
+    expect(written.events).toHaveLength(2)
+    expect(written.events[0]).toMatchObject({ id: "evt-000001", role: "system", content: "sys" })
+    expect(written.events[1]).toMatchObject({ id: "evt-000002", role: "user", content: "hi" })
   })
 
   it("creates parent directories recursively", async () => {
@@ -252,10 +265,9 @@ describe("saveSession", () => {
     const usage = { input_tokens: 100, output_tokens: 50, reasoning_tokens: 10, total_tokens: 150 }
     saveSession("/tmp/session.json", msgs, usage)
 
-    expect(fs.writeFileSync).toHaveBeenCalledWith(
-      "/tmp/session.json",
-      JSON.stringify({ version: 1, messages: msgs, lastUsage: usage }, null, 2),
-    )
+    const written = JSON.parse(vi.mocked(fs.writeFileSync).mock.calls[0]![1] as string)
+    expect(written.lastUsage).toEqual(usage)
+    expect(written.projection.inputTokens).toBe(100)
   })
 
   it("omits lastUsage from envelope when not provided", async () => {
@@ -264,7 +276,7 @@ describe("saveSession", () => {
 
     const written = vi.mocked(fs.writeFileSync).mock.calls[0][1] as string
     const parsed = JSON.parse(written)
-    expect(parsed.lastUsage).toBeUndefined()
+    expect(parsed.lastUsage).toBeNull()
   })
 
   it("writes persisted continuity state when mustResolveBeforeHandoff is true", async () => {
@@ -275,14 +287,11 @@ describe("saveSession", () => {
 
     ;(saveSession as any)("/tmp/session.json", msgs, undefined, { mustResolveBeforeHandoff: true })
 
-    expect(fs.writeFileSync).toHaveBeenCalledWith(
-      "/tmp/session.json",
-      JSON.stringify(
-        { version: 1, messages: msgs, state: { mustResolveBeforeHandoff: true } },
-        null,
-        2,
-      ),
-    )
+    const parsed = JSON.parse(vi.mocked(fs.writeFileSync).mock.calls[0]![1] as string)
+    expect(parsed.state).toEqual({
+      mustResolveBeforeHandoff: true,
+      lastFriendActivityAt: null,
+    })
   })
 
   it("omits persisted continuity state when mustResolveBeforeHandoff is false", async () => {
@@ -293,10 +302,11 @@ describe("saveSession", () => {
 
     ;(saveSession as any)("/tmp/session.json", msgs, undefined, { mustResolveBeforeHandoff: false })
 
-    expect(fs.writeFileSync).toHaveBeenCalledWith(
-      "/tmp/session.json",
-      JSON.stringify({ version: 1, messages: msgs }, null, 2),
-    )
+    const parsed = JSON.parse(vi.mocked(fs.writeFileSync).mock.calls[0]![1] as string)
+    expect(parsed.state).toEqual({
+      mustResolveBeforeHandoff: false,
+      lastFriendActivityAt: null,
+    })
   })
 
   it("persists lastFriendActivityAt without forcing mustResolveBeforeHandoff", async () => {
@@ -309,14 +319,11 @@ describe("saveSession", () => {
       lastFriendActivityAt: "2026-03-13T20:00:00.000Z",
     })
 
-    expect(fs.writeFileSync).toHaveBeenCalledWith(
-      "/tmp/session.json",
-      JSON.stringify(
-        { version: 1, messages: msgs, state: { lastFriendActivityAt: "2026-03-13T20:00:00.000Z" } },
-        null,
-        2,
-      ),
-    )
+    const parsed = JSON.parse(vi.mocked(fs.writeFileSync).mock.calls[0]![1] as string)
+    expect(parsed.state).toEqual({
+      mustResolveBeforeHandoff: false,
+      lastFriendActivityAt: "2026-03-13T20:00:00.000Z",
+    })
   })
 
   it("persists both mustResolveBeforeHandoff and lastFriendActivityAt together", async () => {
@@ -330,21 +337,11 @@ describe("saveSession", () => {
       lastFriendActivityAt: "2026-03-13T20:00:00.000Z",
     })
 
-    expect(fs.writeFileSync).toHaveBeenCalledWith(
-      "/tmp/session.json",
-      JSON.stringify(
-        {
-          version: 1,
-          messages: msgs,
-          state: {
-            mustResolveBeforeHandoff: true,
-            lastFriendActivityAt: "2026-03-13T20:00:00.000Z",
-          },
-        },
-        null,
-        2,
-      ),
-    )
+    const parsed = JSON.parse(vi.mocked(fs.writeFileSync).mock.calls[0]![1] as string)
+    expect(parsed.state).toEqual({
+      mustResolveBeforeHandoff: true,
+      lastFriendActivityAt: "2026-03-13T20:00:00.000Z",
+    })
   })
 
   it("repairs back-to-back assistant messages on save", async () => {
@@ -359,10 +356,78 @@ describe("saveSession", () => {
 
     const written = vi.mocked(fs.writeFileSync).mock.calls[0][1] as string
     const parsed = JSON.parse(written)
-    // Should have merged the two assistant messages
-    expect(parsed.messages).toHaveLength(3)
-    expect(parsed.messages[2].content).toContain("first")
-    expect(parsed.messages[2].content).toContain("second")
+    expect(parsed.events).toHaveLength(3)
+    expect(parsed.events[2].content).toContain("first")
+    expect(parsed.events[2].content).toContain("second")
+  })
+
+  it("appends onto an existing canonical envelope instead of rewriting ids from scratch", async () => {
+    const { saveSession } = await import("../../mind/context")
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+      version: 2,
+      events: [
+        {
+          id: "evt-000001",
+          sequence: 1,
+          role: "system",
+          content: "sys",
+          name: null,
+          toolCallId: null,
+          toolCalls: [],
+          attachments: [],
+          time: {
+            authoredAt: "2026-04-09T17:20:00.000Z",
+            authoredAtSource: "local",
+            observedAt: "2026-04-09T17:20:00.000Z",
+            observedAtSource: "local",
+            recordedAt: "2026-04-09T17:20:00.000Z",
+            recordedAtSource: "save",
+          },
+          relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null },
+          provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+        },
+        {
+          id: "evt-000002",
+          sequence: 2,
+          role: "user",
+          content: "hello",
+          name: null,
+          toolCallId: null,
+          toolCalls: [],
+          attachments: [],
+          time: {
+            authoredAt: null,
+            authoredAtSource: "unknown",
+            observedAt: "2026-04-09T17:21:00.000Z",
+            observedAtSource: "ingest",
+            recordedAt: "2026-04-09T17:21:00.000Z",
+            recordedAtSource: "save",
+          },
+          relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null },
+          provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+        },
+      ],
+      projection: {
+        eventIds: ["evt-000001", "evt-000002"],
+        trimmed: false,
+        maxTokens: null,
+        contextMargin: null,
+        inputTokens: null,
+        projectedAt: "2026-04-09T17:21:00.000Z",
+      },
+      lastUsage: null,
+      state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+    }))
+
+    saveSession("/tmp/session.json", [
+      { role: "system", content: "sys" },
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "new answer" },
+    ])
+
+    const parsed = JSON.parse(vi.mocked(fs.writeFileSync).mock.calls[0][1] as string)
+    expect(parsed.events.map((event: any) => event.id)).toEqual(["evt-000001", "evt-000002", "evt-000003"])
+    expect(parsed.projection.eventIds).toEqual(["evt-000001", "evt-000002", "evt-000003"])
   })
 
   it("emits auto-healed save repairs below warning level", async () => {
@@ -410,8 +475,8 @@ describe("saveSession", () => {
 
     const written = vi.mocked(fs.writeFileSync).mock.calls[0][1] as string
     const parsed = JSON.parse(written)
-    expect(parsed.messages).toHaveLength(3)
-    expect(parsed.messages.some((msg: any) => msg.role === "tool")).toBe(false)
+    expect(parsed.events).toHaveLength(3)
+    expect(parsed.events.some((msg: any) => msg.role === "tool")).toBe(false)
   })
 
   it("preserves valid tool call/result pairs on save", async () => {
@@ -431,9 +496,9 @@ describe("saveSession", () => {
 
     const written = vi.mocked(fs.writeFileSync).mock.calls[0][1] as string
     const parsed = JSON.parse(written)
-    expect(parsed.messages).toHaveLength(4)
-    expect(parsed.messages[2].tool_calls?.[0]?.id).toBe("call-1")
-    expect(parsed.messages[3]).toEqual({ role: "tool", tool_call_id: "call-1", content: "ok" })
+    expect(parsed.events).toHaveLength(4)
+    expect(parsed.events[2].toolCalls?.[0]?.id).toBe("call-1")
+    expect(parsed.events[3]).toMatchObject({ role: "tool", toolCallId: "call-1", content: "ok" })
   })
 })
 
@@ -453,7 +518,40 @@ describe("loadSession", () => {
       JSON.stringify({ version: 1, messages: msgs, lastUsage: usage }),
     )
     const result = loadSession("/tmp/session.json")
-    expect(result).toEqual({ messages: msgs, lastUsage: usage })
+    expect(result).toMatchObject({ messages: msgs, lastUsage: usage, state: undefined })
+    expect(result!.events).toHaveLength(2)
+  })
+
+  it("returns canonical events alongside projected messages when loading a legacy v1 file", async () => {
+    const { loadSession } = await import("../../mind/context")
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        version: 1,
+        messages: [
+          { role: "system", content: "sys" },
+          { role: "user", content: "hello" },
+          { role: "assistant", content: "hi" },
+        ],
+      }),
+    )
+
+    const result = loadSession("/tmp/session.json")
+    expect(result).not.toBeNull()
+    expect(result!.events).toHaveLength(3)
+    expect(result!.events[1]).toMatchObject({
+      id: "evt-000002",
+      role: "user",
+      time: expect.objectContaining({
+        authoredAt: null,
+        observedAt: null,
+        recordedAt: expect.any(String),
+      }),
+    })
+    expect(result!.messages).toEqual([
+      { role: "system", content: "sys" },
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "hi" },
+    ])
   })
 
   it("returns lastUsage: undefined when not present in saved file", async () => {
@@ -463,7 +561,8 @@ describe("loadSession", () => {
       JSON.stringify({ version: 1, messages: msgs }),
     )
     const result = loadSession("/tmp/session.json")
-    expect(result).toEqual({ messages: msgs, lastUsage: undefined })
+    expect(result).toMatchObject({ messages: msgs, lastUsage: undefined, state: undefined })
+    expect(result!.events).toHaveLength(1)
   })
 
   it("returns persisted continuity state when the saved envelope has a boolean mustResolveBeforeHandoff", async () => {
@@ -473,7 +572,7 @@ describe("loadSession", () => {
       JSON.stringify({ version: 1, messages: msgs, state: { mustResolveBeforeHandoff: true } }),
     )
     const result = loadSession("/tmp/session.json")
-    expect(result).toEqual({ messages: msgs, lastUsage: undefined, state: { mustResolveBeforeHandoff: true } })
+    expect(result).toMatchObject({ messages: msgs, lastUsage: undefined, state: { mustResolveBeforeHandoff: true } })
   })
 
   it("ignores malformed optional continuity state instead of rejecting the session", async () => {
@@ -483,7 +582,7 @@ describe("loadSession", () => {
       JSON.stringify({ version: 1, messages: msgs, state: { mustResolveBeforeHandoff: "yes please" } }),
     )
     const result = loadSession("/tmp/session.json")
-    expect(result).toEqual({ messages: msgs, lastUsage: undefined, state: undefined })
+    expect(result).toMatchObject({ messages: msgs, lastUsage: undefined, state: undefined })
   })
 
   it("returns persisted lastFriendActivityAt without requiring mustResolveBeforeHandoff", async () => {
@@ -497,7 +596,7 @@ describe("loadSession", () => {
       }),
     )
     const result = loadSession("/tmp/session.json")
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       messages: msgs,
       lastUsage: undefined,
       state: { lastFriendActivityAt: "2026-03-13T20:00:00.000Z" },
@@ -518,7 +617,7 @@ describe("loadSession", () => {
       }),
     )
     const result = loadSession("/tmp/session.json")
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       messages: msgs,
       lastUsage: undefined,
       state: { mustResolveBeforeHandoff: true },
@@ -555,6 +654,41 @@ describe("loadSession", () => {
       throw new Error("EPERM")
     })
     expect(loadSession("/tmp/noperm.json")).toBeNull()
+  })
+
+  it("returns null when projecting a loaded envelope throws unexpectedly", async () => {
+    vi.resetModules()
+    vi.doMock("../../heart/session-events", async () => {
+      const actual = await vi.importActual<typeof import("../../heart/session-events")>("../../heart/session-events")
+      return {
+        ...actual,
+        loadSessionEnvelopeFile: vi.fn(() => ({
+          version: 2 as const,
+          events: [],
+          projection: {
+            eventIds: [],
+            trimmed: false,
+            maxTokens: null,
+            contextMargin: null,
+            inputTokens: null,
+            projectedAt: null,
+          },
+          lastUsage: null,
+          state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+        })),
+        projectProviderMessages: vi.fn(() => {
+          throw new Error("projection exploded")
+        }),
+      }
+    })
+
+    try {
+      const { loadSession } = await import("../../mind/context")
+      expect(loadSession("/tmp/project-bad.json")).toBeNull()
+    } finally {
+      vi.doUnmock("../../heart/session-events")
+      vi.resetModules()
+    }
   })
 
   it("repairs back-to-back assistant messages on load", async () => {
@@ -675,6 +809,7 @@ describe("deleteSession", () => {
 describe("postTurn", () => {
   beforeEach(() => {
     vi.resetModules()
+    vi.mocked(fs.readFileSync).mockReset()
     vi.mocked(fs.writeFileSync).mockReset()
     vi.mocked(fs.mkdirSync).mockReset()
   })
@@ -769,8 +904,8 @@ describe("postTurn", () => {
     postTurn(messages, "/tmp/sess.json", usage)
 
     const written = JSON.parse(vi.mocked(fs.writeFileSync).mock.calls[0][1] as string)
-    expect(written.version).toBe(1)
-    expect(written.messages).toEqual(messages)
+    expect(written.version).toBe(2)
+    expect(written.projection.eventIds).toHaveLength(messages.length)
     expect(written.lastUsage).toEqual(usage)
   })
 
@@ -874,6 +1009,81 @@ describe("postTurn", () => {
       ),
     ).not.toThrow()
     expect(fs.writeFileSync).toHaveBeenCalledTimes(1)
+  })
+
+  it("reuses existing canonical event ids when postTurn writes an updated session", async () => {
+    const { getContextConfig } = await import("../../heart/config")
+    vi.mocked(getContextConfig).mockReturnValue({ maxTokens: 80000, contextMargin: 20 })
+
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+      version: 2,
+      events: [
+        {
+          id: "evt-000001",
+          sequence: 1,
+          role: "system",
+          content: "sys",
+          name: null,
+          toolCallId: null,
+          toolCalls: [],
+          attachments: [],
+          time: {
+            authoredAt: "2026-04-09T17:20:00.000Z",
+            authoredAtSource: "local",
+            observedAt: "2026-04-09T17:20:00.000Z",
+            observedAtSource: "local",
+            recordedAt: "2026-04-09T17:20:00.000Z",
+            recordedAtSource: "save",
+          },
+          relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null },
+          provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+        },
+        {
+          id: "evt-000002",
+          sequence: 2,
+          role: "user",
+          content: "hello",
+          name: null,
+          toolCallId: null,
+          toolCalls: [],
+          attachments: [],
+          time: {
+            authoredAt: null,
+            authoredAtSource: "unknown",
+            observedAt: "2026-04-09T17:21:00.000Z",
+            observedAtSource: "ingest",
+            recordedAt: "2026-04-09T17:21:00.000Z",
+            recordedAtSource: "save",
+          },
+          relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null },
+          provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+        },
+      ],
+      projection: {
+        eventIds: ["evt-000001", "evt-000002"],
+        trimmed: false,
+        maxTokens: 80000,
+        contextMargin: 20,
+        inputTokens: null,
+        projectedAt: "2026-04-09T17:21:00.000Z",
+      },
+      lastUsage: null,
+      state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+    }))
+
+    const { postTurn } = await import("../../mind/context")
+    const messages: any[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "new answer" },
+    ]
+    const usage = { input_tokens: 50000, output_tokens: 10, reasoning_tokens: 0, total_tokens: 50010 }
+
+    postTurn(messages, "/tmp/sess.json", usage)
+
+    const parsed = JSON.parse(vi.mocked(fs.writeFileSync).mock.calls[0][1] as string)
+    expect(parsed.events.map((event: any) => event.id)).toEqual(["evt-000001", "evt-000002", "evt-000003"])
+    expect(parsed.projection.eventIds).toEqual(["evt-000001", "evt-000002", "evt-000003"])
   })
 })
 
@@ -1017,8 +1227,8 @@ describe("appendSyntheticAssistantMessage", () => {
     const result = appendSyntheticAssistantMessage("/mock/session.json", "[surfaced from inner dialog] my reflection")
     expect(result).toBe(true)
     const written = JSON.parse(vi.mocked(fs.writeFileSync).mock.calls[0][1] as string)
-    expect(written.messages).toHaveLength(3)
-    expect(written.messages[2]).toEqual({ role: "assistant", content: "[surfaced from inner dialog] my reflection" })
+    expect(written.events).toHaveLength(3)
+    expect(written.events[2]).toMatchObject({ role: "assistant", content: "[surfaced from inner dialog] my reflection" })
   })
 
   it("returns false for non-existent file", async () => {
@@ -1039,6 +1249,19 @@ describe("appendSyntheticAssistantMessage", () => {
     vi.mocked(fs.existsSync).mockReturnValue(true)
     vi.mocked(fs.readFileSync).mockImplementation(() => { throw new Error("bad json") })
     expect(appendSyntheticAssistantMessage("/mock/bad.json", "test")).toBe(false)
+  })
+
+  it("returns false when rewriting the session file throws unexpectedly", async () => {
+    const { appendSyntheticAssistantMessage } = await import("../../mind/context")
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+      version: 1,
+      messages: [{ role: "user", content: "hello" }],
+    }))
+    vi.mocked(fs.writeFileSync).mockImplementation(() => {
+      throw new Error("disk full")
+    })
+    expect(appendSyntheticAssistantMessage("/mock/write-fails.json", "test")).toBe(false)
   })
 })
 
@@ -1100,7 +1323,10 @@ describe("migrateToolNames", () => {
       { role: "assistant", tool_calls: [] },
     ]
     const migrated = migrateToolNames(messages)
-    expect(migrated).toEqual(messages)
+    expect(migrated).toEqual([
+      { role: "assistant", content: "just text" },
+      { role: "assistant", content: null, tool_calls: [] },
+    ])
   })
 
   it("skips non-function tool calls (e.g. custom type)", async () => {

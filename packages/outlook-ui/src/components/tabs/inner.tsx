@@ -3,19 +3,29 @@ import { Badge } from "../../catalyst/badge"
 import { fetchJson, relTime, truncate } from "../../api"
 import { classifyToolCall } from "../../tools"
 import { useNavigate } from "../../navigation"
+import type { OutlookSessionTranscript, OutlookTranscriptMessage as TranscriptMessage } from "../../../../../src/heart/outlook/outlook-types"
+import {
+  getOutlookTranscriptMessageText,
+  getOutlookTranscriptTimestamp,
+} from "../../../../../src/heart/outlook/outlook-types"
 
-interface TranscriptMessage {
-  index: number
-  role: string
-  content: string | null
-  tool_call_id?: string
-  tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }>
+function transcriptTimestamp(msg: TranscriptMessage): string {
+  return getOutlookTranscriptTimestamp(msg)
+}
+
+function formatTranscriptTimestamp(msg: TranscriptMessage): string {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(transcriptTimestamp(msg)))
 }
 
 export function InnerTab({ agentName, view }: { agentName: string; view: Record<string, unknown> }) {
   const nav = useNavigate()
   const [habits, setHabits] = useState<Record<string, unknown> | null>(null)
-  const [transcript, setTranscript] = useState<{ messages: TranscriptMessage[] } | null>(null)
+  const [transcript, setTranscript] = useState<OutlookSessionTranscript | null>(null)
   const [showTranscript, setShowTranscript] = useState(false)
   const inner = view.inner as Record<string, unknown>
 
@@ -25,7 +35,7 @@ export function InnerTab({ agentName, view }: { agentName: string; view: Record<
 
   function loadTranscript() {
     if (transcript) { setShowTranscript(!showTranscript); return }
-    fetchJson<{ messages: TranscriptMessage[] }>(`/agents/${encodeURIComponent(agentName)}/inner-transcript`)
+    fetchJson<OutlookSessionTranscript>(`/agents/${encodeURIComponent(agentName)}/inner-transcript`)
       .then((data) => { setTranscript(data); setShowTranscript(true) })
   }
 
@@ -176,11 +186,11 @@ function InnerTranscriptView({ messages }: { messages: TranscriptMessage[] }) {
   const landmarks: Array<{ index: number; kind: string; label: string }> = []
   for (const m of conversation) {
     if (m.role !== "assistant") continue
-    const calls = (m.tool_calls ?? []).map(classifyToolCall)
+    const calls = (m.toolCalls ?? []).map(classifyToolCall)
     for (const c of calls) {
-      if (c.kind === "surface") landmarks.push({ index: m.index, kind: "surfaced", label: truncate(c.deliveredText ?? "", 40) })
-      if (c.kind === "rest") landmarks.push({ index: m.index, kind: "resting", label: "resting" })
-      if (c.kind === "delegation") landmarks.push({ index: m.index, kind: "delegated", label: "continued thinking" })
+      if (c.kind === "surface") landmarks.push({ index: m.sequence, kind: "surfaced", label: truncate(c.deliveredText ?? "", 40) })
+      if (c.kind === "rest") landmarks.push({ index: m.sequence, kind: "resting", label: "resting" })
+      if (c.kind === "delegation") landmarks.push({ index: m.sequence, kind: "delegated", label: "continued thinking" })
     }
   }
 
@@ -220,11 +230,12 @@ function InnerTranscriptView({ messages }: { messages: TranscriptMessage[] }) {
         </button>
       )}
       {visible.map((m) => {
+        const text = getOutlookTranscriptMessageText(m)
         if (m.role === "user") {
-          const isDelegated = m.content?.includes("[pending from") || m.content?.includes("[delegated")
-          const isWakeUp = m.content?.includes("waking up") || m.content?.includes("world-state checkpoint")
+          const isDelegated = text.includes("[pending from") || text.includes("[delegated")
+          const isWakeUp = text.includes("waking up") || text.includes("world-state checkpoint")
           return (
-            <div key={m.index} data-msg-index={m.index} className="flex justify-start py-1">
+            <div key={m.id} data-msg-index={m.sequence} className="flex justify-start py-1">
               <div className={`max-w-[85%] rounded-2xl rounded-bl-sm px-3 py-2 ring-1 ${
                 isDelegated
                   ? "bg-ouro-gold/8 ring-ouro-gold/15"
@@ -238,10 +249,11 @@ function InnerTranscriptView({ messages }: { messages: TranscriptMessage[] }) {
                   }}>
                     {isDelegated ? "★ delegated" : isWakeUp ? "heartbeat" : "prompt"}
                   </p>
-                  <span className="font-mono text-[9px] text-ouro-shadow/40">#{m.index}</span>
+                  <span className="font-mono text-[9px] text-ouro-shadow/40">#{m.sequence}</span>
+                  <span className="font-mono text-[9px] text-ouro-shadow/60">{formatTranscriptTimestamp(m)}</span>
                 </div>
                 <p className="text-sm leading-relaxed text-ouro-bone whitespace-pre-wrap break-words">
-                  {m.content}
+                  {text}
                 </p>
               </div>
             </div>
@@ -249,20 +261,21 @@ function InnerTranscriptView({ messages }: { messages: TranscriptMessage[] }) {
         }
 
         if (m.role === "assistant") {
-          const classified = (m.tool_calls ?? []).map(classifyToolCall)
+          const classified = (m.toolCalls ?? []).map(classifyToolCall)
           const surfaces = classified.filter((c) => c.kind === "surface")
           const rests = classified.filter((c) => c.kind === "rest")
           const ponders = classified.filter((c) => c.kind === "delegation")
 
           return (
-            <div key={m.index} data-msg-index={m.index}>
+            <div key={m.id} data-msg-index={m.sequence}>
               {/* Surface = conclusion delivered outward — landmark */}
               {surfaces.map((sc) => (
                 <div key={sc.id} className="flex justify-end py-1">
                   <div className="max-w-[85%] rounded-2xl rounded-br-sm bg-ouro-scale/15 px-3 py-2 ring-1 ring-ouro-scale/20">
                     <div className="flex items-center gap-2 mb-0.5">
                       <p className="font-mono text-[9px] uppercase tracking-wider text-ouro-glow">★ surfaced outward</p>
-                      <span className="font-mono text-[9px] text-ouro-shadow/40">#{m.index}</span>
+                      <span className="font-mono text-[9px] text-ouro-shadow/40">#{m.sequence}</span>
+                      <span className="font-mono text-[9px] text-ouro-shadow/60">{formatTranscriptTimestamp(m)}</span>
                     </div>
                     <p className="text-sm leading-relaxed text-ouro-bone whitespace-pre-wrap break-words">{sc.deliveredText}</p>
                     {sc.metadata && <p className="mt-1 font-mono text-[9px] text-ouro-shadow">→ {sc.metadata}</p>}
@@ -271,22 +284,23 @@ function InnerTranscriptView({ messages }: { messages: TranscriptMessage[] }) {
               ))}
 
               {ponders.length > 0 && (
-                <div className="py-1 text-center font-mono text-[10px] text-ouro-gold/50">— still thinking — #{m.index}</div>
+                <div className="py-1 text-center font-mono text-[10px] text-ouro-gold/50">— still thinking — #{m.sequence} · {formatTranscriptTimestamp(m)}</div>
               )}
 
               {rests.length > 0 && (
-                <div className="py-1 text-center font-mono text-[10px] text-ouro-shadow/40">— resting — #{m.index}</div>
+                <div className="py-1 text-center font-mono text-[10px] text-ouro-shadow/40">— resting — #{m.sequence} · {formatTranscriptTimestamp(m)}</div>
               )}
 
               {/* Regular thinking (no mechanism calls) */}
-              {surfaces.length === 0 && rests.length === 0 && ponders.length === 0 && m.content && (
+              {surfaces.length === 0 && rests.length === 0 && ponders.length === 0 && text && (
                 <div className="flex justify-end py-1">
                   <div className="max-w-[85%] rounded-2xl rounded-br-sm bg-ouro-glow/6 px-3 py-2 ring-1 ring-ouro-glow/8">
                     <div className="flex items-center gap-2 mb-0.5">
                       <p className="font-mono text-[9px] uppercase tracking-wider text-ouro-glow/50">thinking</p>
-                      <span className="font-mono text-[9px] text-ouro-shadow/40">#{m.index}</span>
+                      <span className="font-mono text-[9px] text-ouro-shadow/40">#{m.sequence}</span>
+                      <span className="font-mono text-[9px] text-ouro-shadow/60">{formatTranscriptTimestamp(m)}</span>
                     </div>
-                    <p className="text-sm leading-relaxed text-ouro-mist whitespace-pre-wrap break-words">{m.content}</p>
+                    <p className="text-sm leading-relaxed text-ouro-mist whitespace-pre-wrap break-words">{text}</p>
                   </div>
                 </div>
               )}
