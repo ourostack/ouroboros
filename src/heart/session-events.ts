@@ -467,10 +467,20 @@ export function sanitizeProviderMessages(messages: OpenAI.ChatCompletionMessageP
   return migrateToolNames(stripOrphanedToolResults(repairSessionMessages(normalized.map(toProviderMessage))))
 }
 
+export function stampIngressTime(msg: OpenAI.ChatCompletionMessageParam): void {
+  (msg as unknown as Record<string, unknown>)._ingressAt = new Date().toISOString()
+}
+
+export function getIngressTime(msg: OpenAI.ChatCompletionMessageParam): string | null {
+  const value = (msg as unknown as Record<string, unknown>)._ingressAt
+  return typeof value === "string" ? value : null
+}
+
 function createEventTime(
   role: SessionEventRole,
   recordedAt: string,
   captureKind: SessionEventCaptureKind,
+  ingressAt?: string | null,
 ): SessionEventTime {
   if (captureKind === "migration") {
     return {
@@ -487,7 +497,7 @@ function createEventTime(
     return {
       authoredAt: null,
       authoredAtSource: "unknown",
-      observedAt: recordedAt,
+      observedAt: ingressAt ?? recordedAt,
       observedAtSource: "ingest",
       recordedAt,
       recordedAtSource: "save",
@@ -511,6 +521,7 @@ function buildEventFromMessage(
   captureKind: SessionEventCaptureKind,
   sourceMessageIndex: number | null,
   legacyVersion: number | null,
+  ingressAt?: string | null,
 ): SessionEvent {
   const normalized = normalizeMessage(message)
   const role = normalized.role
@@ -524,7 +535,7 @@ function buildEventFromMessage(
     toolCallId: role === "tool" ? normalized.toolCallId : null,
     toolCalls: role === "assistant" ? normalized.toolCalls : [],
     attachments: [],
-    time: createEventTime(role, recordedAt, captureKind),
+    time: createEventTime(role, recordedAt, captureKind, ingressAt),
     relations: {
       replyToEventId: null,
       threadRootEventId: null,
@@ -817,6 +828,8 @@ function selectProjectedEventIds(
 
 export function buildCanonicalSessionEnvelope(options: SessionEnvelopeBuildOptions): SessionEnvelope {
   const existing = options.existing
+  // Capture ingress timestamps before sanitization strips extra properties
+  const currentIngressTimes = options.currentMessages.map(getIngressTime)
   const previousMessages = sanitizeProviderMessages(options.previousMessages)
   const currentMessages = sanitizeProviderMessages(options.currentMessages)
   const trimmedMessages = sanitizeProviderMessages(options.trimmedMessages)
@@ -827,9 +840,10 @@ export function buildCanonicalSessionEnvelope(options: SessionEnvelopeBuildOptio
   const commonPrefix = findCommonPrefixLength(previousMessages, currentMessages)
   const appendFrom = previousMessages.length === commonPrefix ? previousMessages.length : commonPrefix
   const newMessages = currentMessages.slice(appendFrom)
+  const newIngressTimes = currentIngressTimes.slice(appendFrom)
   const baseSequence = existing?.events.length ?? 0
   const newEvents = newMessages.map((message, index) =>
-    buildEventFromMessage(message, baseSequence + index + 1, options.recordedAt, "live", null, null),
+    buildEventFromMessage(message, baseSequence + index + 1, options.recordedAt, "live", null, null, newIngressTimes[index]),
   )
   const events = [...(existing?.events ?? []), ...newEvents]
   const currentEventIds = [
