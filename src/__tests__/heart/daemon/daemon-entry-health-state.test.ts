@@ -37,6 +37,7 @@ const { registerGlobalLogSinkMock, registeredHealthSinks, capturedHealthStates }
     pid: number
     safeMode: null
     degraded: Array<{ component: string; reason: string }>
+    agents: Record<string, { status: string; pid: number | null; crashes: number }>
   }>,
 }))
 
@@ -107,6 +108,7 @@ vi.mock("../../../heart/daemon/daemon-health", async () => {
             pid: number
             safeMode: null
             degraded: Array<{ component: string; reason: string }>
+            agents: Record<string, { status: string; pid: number | null; crashes: number }>
           })
         }
       }
@@ -133,7 +135,16 @@ describe("daemon entry health state wiring", () => {
     vi.unstubAllGlobals()
   })
 
-  function setupDaemonMocks() {
+  function setupDaemonMocks(snapshots: Array<{
+    name: string
+    channel: string
+    status: string
+    pid: number | null
+    restartCount: number
+    lastCrashAt: string | null
+    errorReason: string | null
+    fixHint: string | null
+  }> = []) {
     const start = vi.fn(async () => undefined)
     const stop = vi.fn(async () => undefined)
     const emitNervesEvent = vi.fn()
@@ -150,7 +161,7 @@ describe("daemon entry health state wiring", () => {
     }))
     vi.doMock("../../../heart/daemon/process-manager", () => ({
       DaemonProcessManager: class {
-        listAgentSnapshots = vi.fn(() => [])
+        listAgentSnapshots = vi.fn(() => snapshots)
         sendToAgent = vi.fn()
       },
     }))
@@ -255,5 +266,72 @@ describe("daemon entry health state wiring", () => {
         error: "raw start failure",
       }),
     }))
+  })
+
+  it("captures degraded agent snapshots with fix guidance in daemon health state", async () => {
+    vi.resetModules()
+    setupDaemonMocks([{
+      name: "ouroboros",
+      channel: "inner-dialog",
+      status: "crashed",
+      pid: null,
+      restartCount: 0,
+      lastCrashAt: null,
+      errorReason: "secrets.json for 'ouroboros' is missing providers.github-copilot section",
+      fixHint: "Run 'ouro auth ouroboros' to configure github-copilot credentials.",
+    }])
+    vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
+
+    await import("../../../heart/daemon/daemon-entry")
+    await Promise.resolve()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    registeredHealthSinks[0]!({ event: "daemon.agent_config_invalid" })
+
+    expect(capturedHealthStates).toHaveLength(1)
+    expect(capturedHealthStates[0]).toMatchObject({
+      status: "degraded",
+      agents: {
+        ouroboros: {
+          status: "crashed",
+          pid: null,
+          crashes: 0,
+        },
+      },
+    })
+    expect(capturedHealthStates[0]?.degraded).toEqual([
+      expect.objectContaining({
+        component: "agent:ouroboros",
+        reason: "secrets.json for 'ouroboros' is missing providers.github-copilot section Fix: Run 'ouro auth ouroboros' to configure github-copilot credentials.",
+      }),
+    ])
+  })
+
+  it("falls back to worker status when degraded agent snapshots have no fix guidance", async () => {
+    vi.resetModules()
+    setupDaemonMocks([{
+      name: "helper",
+      channel: "inner-dialog",
+      status: "stopped",
+      pid: null,
+      restartCount: 0,
+      lastCrashAt: null,
+      errorReason: null,
+      fixHint: null,
+    }])
+    vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
+
+    await import("../../../heart/daemon/daemon-entry")
+    await Promise.resolve()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    registeredHealthSinks[0]!({ event: "daemon.agent_exit" })
+
+    expect(capturedHealthStates[0]?.degraded).toEqual([
+      expect.objectContaining({
+        component: "agent:helper",
+        reason: "inner-dialog is stopped",
+      }),
+    ])
   })
 })

@@ -89,6 +89,7 @@ describe("--no-repair flag: daemon.up handler", () => {
       stable: [],
       degraded: [
         { agent: "slugger", errorReason: "missing credentials", fixHint: "run ouro auth slugger" },
+        { agent: "helper", errorReason: "stopped" },
       ],
     })
 
@@ -101,6 +102,8 @@ describe("--no-repair flag: daemon.up handler", () => {
     // Should write degraded summary to stdout
     const allOutput = writeStdout.mock.calls.map((c: any[]) => c[0]).join("\n")
     expect(allOutput).toContain("slugger")
+    expect(allOutput).toContain("helper: stopped")
+    expect(allOutput).toContain("fix: run ouro auth slugger")
     expect(allOutput).toMatch(/degrad/i)
   })
 

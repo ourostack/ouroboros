@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.324",
+      "changes": [
+        "fix(daemon): surface crashed worker error reasons and fix hints in `ouro status`, `ouro up --no-repair`, health-monitor alerts, and daemon-health snapshots so configuration failures point to the exact repair command instead of a bare warn/crashed state.",
+        "ci(release): verify the supported npm publish channels after release (`@ouro.bot/cli@alpha` and `ouro.bot@latest`) and remove the broken trusted-publishing `ouro.bot@alpha` dist-tag warning path."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.323",
       "changes": [
         "fix(bluebubbles): drain missed upstream BlueBubbles messages after an outage by querying recent messages when the upstream health probe recovers, deduping against the inbound sidecar, repairing candidates, and replaying them through the normal BlueBubbles turn path oldest-first.",
