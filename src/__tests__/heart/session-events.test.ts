@@ -887,7 +887,67 @@ describe("session events", () => {
     ])
   })
 
-  it("reuses existing event ids when rebuilding from an envelope with an empty projection", async () => {
+  it("annotates user and assistant messages with relative time offsets", async () => {
+    const { annotateMessageTimestamps } = await import("../../heart/session-events")
+    const nowMs = Date.parse("2026-04-09T18:00:00.000Z")
+    const mkEvt = (id: string, seq: number, role: "system" | "user" | "assistant", content: string | null, observedAt: string, authoredAt: string | null = null) => ({
+      id, sequence: seq, role, content, name: null, toolCallId: null, toolCalls: [] as any[], attachments: [] as string[],
+      time: { authoredAt, authoredAtSource: (authoredAt ? "local" : "unknown") as any, observedAt, observedAtSource: "ingest" as const, recordedAt: observedAt, recordedAtSource: "save" as const },
+      relations: { replyToEventId: null, threadRootEventId: null, references: [] as string[], toolCallId: null, supersedesEventId: null, redactsEventId: null },
+      provenance: { captureKind: "live" as const, legacyVersion: null, sourceMessageIndex: null },
+    })
+    const mkEnv = (events: any[]) => ({
+      version: 2 as const, events,
+      projection: { eventIds: [] as string[], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: null },
+      lastUsage: null, state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+    })
+    // Minutes + just-now
+    expect(annotateMessageTimestamps(mkEnv([
+      mkEvt("s", 1, "system", "sys", "2026-04-09T17:00:00.000Z", "2026-04-09T17:00:00.000Z"),
+      mkEvt("u1", 2, "user", "five min", "2026-04-09T17:55:00.000Z"),
+      mkEvt("a1", 3, "assistant", "reply", "2026-04-09T17:55:30.000Z", "2026-04-09T17:55:30.000Z"),
+      mkEvt("u2", 4, "user", "recent", "2026-04-09T17:59:50.000Z"),
+    ]), [
+      { role: "system" as const, content: "sys" },
+      { role: "user" as const, content: "five min" },
+      { role: "assistant" as const, content: "reply" },
+      { role: "user" as const, content: "recent" },
+    ], nowMs)).toEqual([
+      { role: "system", content: "sys" },
+      { role: "user", content: "[-5m] five min" },
+      { role: "assistant", content: "[-4m] reply" },
+      { role: "user", content: "[just now] recent" },
+    ])
+    // Hours
+    expect(annotateMessageTimestamps(
+      mkEnv([mkEvt("u", 1, "user", "old", "2026-04-09T15:00:00.000Z")]),
+      [{ role: "user" as const, content: "old" }], nowMs,
+    )).toEqual([{ role: "user", content: "[-3h] old" }])
+    // Days
+    expect(annotateMessageTimestamps(
+      mkEnv([mkEvt("u", 1, "user", "ancient", "2026-04-07T18:00:00.000Z")]),
+      [{ role: "user" as const, content: "ancient" }], nowMs,
+    )).toEqual([{ role: "user", content: "[-2d] ancient" }])
+    // Future => no annotation
+    expect(annotateMessageTimestamps(
+      mkEnv([mkEvt("u", 1, "user", "future", "2026-04-09T19:00:00.000Z")]),
+      [{ role: "user" as const, content: "future" }], nowMs,
+    )).toEqual([{ role: "user", content: "future" }])
+    // Empty content => no annotation
+    expect(annotateMessageTimestamps(
+      mkEnv([mkEvt("u", 1, "user", null, "2026-04-09T17:50:00.000Z")]),
+      [{ role: "user" as const, content: "" }], nowMs,
+    )).toEqual([{ role: "user", content: "" }])
+    // More messages than events => extras pass through
+    const annotated = annotateMessageTimestamps(
+      mkEnv([mkEvt("u", 1, "user", "msg", "2026-04-09T17:50:00.000Z")]),
+      [{ role: "user" as const, content: "msg" }, { role: "user" as const, content: "extra" }], nowMs,
+    )
+    expect(annotated[0]).toEqual({ role: "user", content: "[-10m] msg" })
+    expect(annotated[1]).toEqual({ role: "user", content: "extra" })
+  })
+
+    it("reuses existing event ids when rebuilding from an envelope with an empty projection", async () => {
     const { buildCanonicalSessionEnvelope } = await import("../../heart/session-events")
 
     const existing = {
