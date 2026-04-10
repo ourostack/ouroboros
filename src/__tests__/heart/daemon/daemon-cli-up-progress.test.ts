@@ -208,6 +208,19 @@ describe("ouro up: UpProgress integration", () => {
     )
   })
 
+  it("reports singular pruned bundle without trailing s", async () => {
+    mocks.upProgressCompletePhase.mockClear()
+    mocks.pruneStaleEphemeralBundles.mockReturnValueOnce(["stale.ouro"])
+    const deps = makeDeps()
+
+    await runOuroCli(["up"], deps)
+
+    expect(mocks.upProgressCompletePhase).toHaveBeenCalledWith(
+      "bundle cleanup",
+      "pruned 1 stale bundle",
+    )
+  })
+
   it("reports agent updates via completePhase", async () => {
     mocks.upProgressCompletePhase.mockClear()
     mocks.applyPendingUpdates.mockResolvedValueOnce({
@@ -223,6 +236,23 @@ describe("ouro up: UpProgress integration", () => {
     expect(mocks.upProgressCompletePhase).toHaveBeenCalledWith(
       "agent updates",
       expect.stringContaining("2"),
+    )
+  })
+
+  it("reports singular agent update without trailing s", async () => {
+    mocks.upProgressCompletePhase.mockClear()
+    mocks.applyPendingUpdates.mockResolvedValueOnce({
+      updated: [
+        { agent: "alpha", from: "0.1.0-alpha.80", to: "0.1.0-alpha.90" },
+      ],
+    })
+    const deps = makeDeps()
+
+    await runOuroCli(["up"], deps)
+
+    expect(mocks.upProgressCompletePhase).toHaveBeenCalledWith(
+      "agent updates",
+      "1 agent to runtime 0.1.0-alpha.90 (was 0.1.0-alpha.80)",
     )
   })
 
