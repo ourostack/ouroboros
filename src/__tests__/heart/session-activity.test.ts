@@ -424,6 +424,8 @@ describe("session activity", () => {
 
   it("defaults unanswered inbound count to zero when explicit friend-facing activity exists without chronology", async () => {
     vi.resetModules()
+    const now = Date.now()
+    const explicitActivityAt = new Date(now - 10 * 60 * 1000).toISOString()
     vi.doMock("../../heart/session-events", () => ({
       loadSessionEnvelopeFile: vi.fn(() => ({
         version: 2,
@@ -439,7 +441,7 @@ describe("session activity", () => {
         lastUsage: null,
         state: {
           mustResolveBeforeHandoff: false,
-          lastFriendActivityAt: "2026-04-09T18:00:00.000Z",
+          lastFriendActivityAt: explicitActivityAt,
         },
       })),
       deriveSessionChronology: vi.fn(() => null),
@@ -456,14 +458,14 @@ describe("session activity", () => {
         if (p === path.join(sessionsDir, "friend-1", "cli")) return ["session.json"] as any
         return [] as any
       }) as any)
-      vi.mocked(fs.statSync).mockReturnValue({ mtimeMs: Date.parse("2026-04-09T18:05:00.000Z") } as any)
+      vi.mocked(fs.statSync).mockReturnValue({ mtimeMs: now - 5 * 60 * 1000 } as any)
       vi.mocked(fs.readFileSync).mockImplementation(((p: string) => {
         if (p === path.join(friendsDir, "friend-1.json")) return JSON.stringify({ name: "Ari" })
         throw new Error("ENOENT")
       }) as any)
 
       const { listSessionActivity } = await import("../../heart/session-activity")
-      const [entry] = listSessionActivity({ sessionsDir, friendsDir, agentName: "slugger" })
+      const [entry] = listSessionActivity({ sessionsDir, friendsDir, agentName: "slugger", nowMs: now })
 
       expect(entry).toMatchObject({
         friendId: "friend-1",
@@ -478,6 +480,7 @@ describe("session activity", () => {
 
   it("falls back to mtime when derived chronology has a malformed inbound timestamp", async () => {
     vi.resetModules()
+    const now = Date.now()
     vi.doMock("../../heart/session-events", () => ({
       loadSessionEnvelopeFile: vi.fn(() => ({
         version: 2,
@@ -507,7 +510,7 @@ describe("session activity", () => {
     try {
       const sessionsDir = "/mock/sessions"
       const friendsDir = "/mock/friends"
-      const mtimeMs = Date.parse("2026-04-09T18:15:00.000Z")
+      const mtimeMs = now - 15 * 60 * 1000
 
       vi.mocked(fs.existsSync).mockReturnValue(true)
       vi.mocked(fs.readdirSync).mockImplementation(((p: string) => {
@@ -523,7 +526,7 @@ describe("session activity", () => {
       }) as any)
 
       const { listSessionActivity } = await import("../../heart/session-activity")
-      const [entry] = listSessionActivity({ sessionsDir, friendsDir, agentName: "slugger" })
+      const [entry] = listSessionActivity({ sessionsDir, friendsDir, agentName: "slugger", nowMs: now })
 
       expect(entry).toMatchObject({
         friendId: "friend-1",

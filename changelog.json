@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.321",
+      "changes": [
+        "refactor(outlook): split `src/heart/outlook/outlook-read.ts` into focused reader modules for agent/machine state, sessions, runtime views, continuity views, and shared helpers while keeping the exported Outlook read API stable through a small composition root.",
+        "test(outlook): expand Outlook read verification with composition, continuity catch-path, runtime fallback, and session-activity regressions so the refactor stays covered under the full coverage and nerves-audit gates."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.320",
       "changes": [
         "fix(daemon): make `ouro up` wait for real startup stability before reporting success. The CLI now stays attached through ordered startup phases, requires sustained socket liveness plus fresh current-boot health evidence, retries once when startup loses the socket, and surfaces recent daemon log context on failure instead of claiming the daemon started.",

@@ -1,0 +1,32 @@
+import { describe, expect, it } from "vitest"
+
+describe("outlook read composition root", () => {
+  it("re-exports the extracted reader families from focused modules", async () => {
+    const root = await import("../../../heart/outlook/outlook-read")
+    const agentMachine = await import("../../../heart/outlook/readers/agent-machine")
+    const sessions = await import("../../../heart/outlook/readers/sessions")
+    const runtime = await import("../../../heart/outlook/readers/runtime-readers")
+    const continuity = await import("../../../heart/outlook/readers/continuity-readers")
+
+    expect(root.readOutlookAgentState).toBe(agentMachine.readOutlookAgentState)
+    expect(root.readOutlookMachineState).toBe(agentMachine.readOutlookMachineState)
+    expect(root.readSessionInventory).toBe(sessions.readSessionInventory)
+    expect(root.readSessionTranscript).toBe(sessions.readSessionTranscript)
+    expect(root.readCodingDeep).toBe(runtime.readCodingDeep)
+    expect(root.readAttentionView).toBe(runtime.readAttentionView)
+    expect(root.readBridgeInventory).toBe(runtime.readBridgeInventory)
+    expect(root.readDaemonHealthDeep).toBe(runtime.readDaemonHealthDeep)
+    expect(root.readMemoryView).toBe(runtime.readMemoryView)
+    expect(root.readFriendView).toBe(runtime.readFriendView)
+    expect(root.readLogView).toBe(runtime.readLogView)
+    expect(root.readHabitView).toBe(runtime.readHabitView)
+    expect(root.readNeedsMeView).toBe(runtime.readNeedsMeView)
+    expect(root.readDeskPrefs).toBe(runtime.readDeskPrefs)
+    expect(root.readOutlookContinuity).toBe(continuity.readOutlookContinuity)
+    expect(root.readOrientationView).toBe(continuity.readOrientationView)
+    expect(root.readObligationDetailView).toBe(continuity.readObligationDetailView)
+    expect(root.readChangesView).toBe(continuity.readChangesView)
+    expect(root.readSelfFixView).toBe(continuity.readSelfFixView)
+    expect(root.readMemoryDecisionView).toBe(continuity.readMemoryDecisionView)
+  })
+})
