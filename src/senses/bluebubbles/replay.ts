@@ -1,5 +1,5 @@
 import { renderAttachmentBlock } from "../../heart/attachments/render"
-import { buildBlueBubblesAttachmentRecord } from "../../heart/attachments/types"
+import { buildBlueBubblesAttachmentRecord } from "../../heart/attachments/sources/bluebubbles"
 import { resetIdentity, setAgentName } from "../../heart/identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { createBlueBubblesClient, type BlueBubblesClient } from "./client"

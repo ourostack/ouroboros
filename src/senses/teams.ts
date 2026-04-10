@@ -1,6 +1,7 @@
 import * as fs from "fs"
 import OpenAI from "openai"
 import { App } from "@microsoft/teams.apps"
+import type { Entity } from "@microsoft/teams.api"
 import { DevtoolsPlugin } from "@microsoft/teams.dev"
 import { runAgent, ChannelCallbacks, RunAgentOptions, createSummarize, repairOrphanedToolCalls } from "../heart/core"
 import type { ToolContext } from "../repertoire/tools"
@@ -676,6 +677,7 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
             messages,
             sessionPath: sessPath,
             state: existing?.state,
+            events: existing?.events,
           }
         },
       },
@@ -846,7 +848,7 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
   // (graph + ado + github).  The verifyState activity only carries a `state`
   // code with no connectionName, so we try each configured connection until
   // one succeeds.
-  app.on("signin.verify-state", async (ctx) => {
+  app.on("signin.verify-state", (async (ctx: any) => {
     const { api, activity } = ctx
     if (!activity.value?.state) return { status: 404 }
     for (const cn of connectionNames) {
@@ -863,7 +865,7 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
     }
     emitNervesEvent({ level: "warn", event: "channel.verify_state", component: "channels", message: `[${label}] verify-state failed for all connections`, meta: {} })
     return { status: 412 }
-  })
+  }) as any)
 
   // Handle Teams feedback reactions (thumbs up/down on AI-generated messages).
   // SDK routes message/submitAction with actionName "feedback" to this event.
@@ -902,7 +904,7 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
       }
 
       const ctxSend = async (t: string) => {
-        await ctx.send({ type: "message", text: t, replyToId: activity.replyToId, entities: aiLabelEntities() as unknown as import("@microsoft/teams.api").Entity[], channelData: { feedbackLoopEnabled: true } })
+        await ctx.send({ type: "message", text: t, replyToId: activity.replyToId, entities: aiLabelEntities() as Entity[], channelData: { feedbackLoopEnabled: true } })
       }
       await handleTeamsMessage(syntheticText, stream, convId, teamsContext, ctxSend, { isReactionSignal: true, suppressEmptyStreamMessage: true })
     } catch (err: unknown) {
@@ -925,7 +927,7 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
           contentType: "application/vnd.microsoft.card.adaptive",
           content: card,
         }],
-        entities: aiLabelEntities() as unknown as import("@microsoft/teams.api").Entity[],
+        entities: aiLabelEntities() as Entity[],
         channelData: { feedbackLoopEnabled: true },
       })
     } catch (err: unknown) {
@@ -1046,7 +1048,7 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
       const ctxSend = async (t: string) => {
         // Use send with replyToId (not reply, which adds a blockquote).
         // replyToId anchors the message after the user's message in Copilot Chat.
-        await ctx.send({ type: "message", text: t, replyToId: activity.id, entities: aiLabelEntities() as unknown as import("@microsoft/teams.api").Entity[], channelData: { feedbackLoopEnabled: true } })
+        await ctx.send({ type: "message", text: t, replyToId: activity.id, entities: aiLabelEntities() as Entity[], channelData: { feedbackLoopEnabled: true } })
       }
       await handleTeamsMessage(text, stream, convId, teamsContext, ctxSend)
     } catch (err: unknown) {
@@ -1057,7 +1059,7 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
     }
   })
 
-  app.event("error", ({ error }) => {
+  app.event("error", ({ error }: { error: unknown }) => {
     const msg = error instanceof Error ? error.message : String(error)
     emitNervesEvent({ level: "error", event: "channel.app_error", component: "channels", message: `[${label}] ${msg}`, meta: {} })
   })

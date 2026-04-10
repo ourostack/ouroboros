@@ -172,6 +172,14 @@ describe("start-of-turn packet", () => {
       const packet = buildStartOfTurnPacket(view)
       expect(packet.tempo).toBe("crisis")
     })
+
+    it("can carry current-session temporal context for the active conversation", () => {
+      const view = makeView()
+      const packet = buildStartOfTurnPacket(view, {
+        currentSessionTiming: "current thread: last inbound 2m ago; i last replied 45m ago; 1 unanswered inbound message",
+      })
+      expect(packet.currentSessionTiming).toContain("last inbound 2m ago")
+    })
   })
 
   describe("renderStartOfTurnPacket", () => {

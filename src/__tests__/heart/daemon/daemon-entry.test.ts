@@ -59,6 +59,14 @@ vi.mock("../../../heart/daemon/daemon-tombstone", () => ({
   writeDaemonTombstone: writeDaemonTombstoneMock,
 }))
 
+vi.mock("../../../heart/config", () => ({
+  getBlueBubblesChannelConfig: vi.fn(() => ({
+    port: 18790,
+    webhookPath: "/bluebubbles-webhook",
+    requestTimeoutMs: 30000,
+  })),
+}))
+
 describe("daemon entrypoint", () => {
   afterEach(() => {
     listEnabledBundleAgentsMock.mockReset()
@@ -163,10 +171,12 @@ describe("daemon entrypoint", () => {
       ok: false,
       message: "unknown scheduled job: nightly",
     })
-    await expect(daemonOptions.healthMonitor.runChecks()).resolves.toEqual([
+    const healthResults = await daemonOptions.healthMonitor.runChecks()
+    expect(healthResults).toEqual([
       { name: "agent-processes", status: "critical", message: "non-running agents: slugger" },
       { name: "cron-health", status: "ok", message: "cron jobs are healthy" },
       { name: "disk-space", status: "ok", message: "disk usage healthy (0%)" },
+      expect.objectContaining({ name: "sense-probe:bluebubbles", status: "critical" }),
     ])
     await expect(daemonOptions.router.send({
       from: "slugger",
@@ -404,6 +414,79 @@ describe("daemon entrypoint", () => {
     expect(exitSpy).toHaveBeenCalledWith(1)
 
     argvSpy.mockRestore()
+  })
+
+  it("degrades recoverable habit bootstrap failures instead of taking the fatal startupFailure path", async () => {
+    vi.resetModules()
+    listEnabledBundleAgentsMock.mockReturnValue(["slugger"])
+    habitSchedulerStartMock.mockImplementationOnce(() => {
+      throw new Error("launchctl unavailable")
+    })
+
+    const start = vi.fn(async () => undefined)
+    const stop = vi.fn(async () => undefined)
+    const emitNervesEvent = vi.fn()
+    const configureDaemonRuntimeLogger = vi.fn()
+    const healthMonitorStartPeriodicChecks = vi.fn()
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => code as never) as any)
+    vi.spyOn(process, "on").mockImplementation(((
+      _event: string,
+      _cb: () => void,
+    ) => process) as any)
+
+    class MockOuroDaemon {
+      start = start
+      stop = stop
+    }
+
+    class MockProcessManager {
+      listAgentSnapshots = vi.fn(() => [])
+      sendToAgent = vi.fn()
+    }
+
+    vi.doMock("../../../heart/daemon/daemon", () => ({
+      OuroDaemon: MockOuroDaemon,
+    }))
+    vi.doMock("../../../heart/daemon/process-manager", () => ({
+      DaemonProcessManager: MockProcessManager,
+    }))
+    vi.doMock("../../../heart/daemon/health-monitor", () => ({
+      HealthMonitor: class MockHealthMonitor {
+        runChecks = vi.fn(async () => [])
+        startPeriodicChecks = healthMonitorStartPeriodicChecks
+        stopPeriodicChecks = vi.fn()
+      },
+    }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
+    vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
+
+    await import("../../../heart/daemon/daemon-entry")
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(start).toHaveBeenCalledTimes(1)
+    expect(habitSchedulerStartMock).toHaveBeenCalledTimes(1)
+    expect(habitSchedulerStartPeriodicReconciliationMock).not.toHaveBeenCalled()
+    expect(habitSchedulerWatchMock).not.toHaveBeenCalled()
+    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "warn",
+      event: "daemon.bootstrap_degraded",
+      meta: expect.objectContaining({
+        component: "habits:slugger",
+        error: "launchctl unavailable",
+        guidance: expect.stringContaining("slugger"),
+      }),
+    }))
+    expect(emitNervesEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+      event: "daemon.entry_error",
+    }))
+    expect(healthMonitorStartPeriodicChecks).toHaveBeenCalledWith(60_000)
+    expect(writeDaemonTombstoneMock).not.toHaveBeenCalledWith(
+      "startupFailure",
+      expect.anything(),
+    )
+    expect(stop).not.toHaveBeenCalled()
+    expect(exitSpy).not.toHaveBeenCalledWith(1)
   })
 
   it("falls back to default socket when --socket value is blank", async () => {

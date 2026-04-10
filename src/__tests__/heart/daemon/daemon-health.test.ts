@@ -425,8 +425,47 @@ describe("daemon-health", () => {
       expect(HEALTH_TRACKED_EVENTS).toContain("daemon.agent_restart_exhausted")
       expect(HEALTH_TRACKED_EVENTS).toContain("daemon.agent_permanent_failure")
       expect(HEALTH_TRACKED_EVENTS).toContain("daemon.agent_cooldown_recovery")
+      expect(HEALTH_TRACKED_EVENTS).toContain("daemon.bootstrap_degraded")
       expect(HEALTH_TRACKED_EVENTS).toContain("daemon.safe_mode_entered")
       expect(HEALTH_TRACKED_EVENTS).toContain("daemon.habit_scheduler_start")
+    })
+
+    it("treats recoverable bootstrap degradation events as health-changing signals", async () => {
+      const dir = makeTmpDir()
+      const healthPath = path.join(dir, "daemon-health.json")
+      const { createHealthNervesSink } = await import("../../../heart/daemon/daemon-health")
+
+      const writer = new DaemonHealthWriter(healthPath)
+      const writeHealthSpy = vi.spyOn(writer, "writeHealth")
+      const degradedState = makeHealthState({
+        status: "degraded",
+        degraded: [{
+          component: "habits:slugger",
+          reason: "launchctl unavailable; habit automation disabled until fixed",
+          since: "2026-04-09T23:30:00.000Z",
+        }],
+      })
+      const getState = vi.fn<() => DaemonHealthState>(() => degradedState)
+      const sink = createHealthNervesSink(writer, getState)
+
+      sink({
+        ts: new Date().toISOString(),
+        level: "warn",
+        event: "daemon.bootstrap_degraded",
+        trace_id: "test-bootstrap-degraded",
+        component: "daemon",
+        message: "recoverable bootstrap failure",
+        meta: {
+          component: "habits:slugger",
+          error: "launchctl unavailable",
+          guidance: "fix slugger habits or cron setup and rerun ouro up",
+        },
+      })
+
+      await new Promise((resolve) => setTimeout(resolve, 1100))
+
+      expect(getState).toHaveBeenCalledTimes(1)
+      expect(writeHealthSpy).toHaveBeenCalledWith(degradedState)
     })
 
     it("calls writeHealth with the state returned by getState", async () => {

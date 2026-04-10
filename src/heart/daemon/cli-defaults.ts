@@ -31,6 +31,8 @@ import { listEnabledBundleAgents } from "./agent-discovery"
 import { getPackageVersion } from "../../mind/bundle-manifest"
 import { syncGlobalOuroBotWrapper as defaultSyncGlobalOuroBotWrapper } from "../versioning/ouro-bot-global-installer"
 import { pruneDaemonLogs as defaultPruneDaemonLogs } from "./logs-prune"
+import { readHealth, getDefaultHealthPath } from "./daemon-health"
+import { discoverLogFiles, formatLogLine, readLastLines } from "./log-tailer"
 import { writeLaunchAgentPlist } from "./launchd"
 import { DEFAULT_DAEMON_SOCKET_PATH, sendDaemonCommand, checkDaemonSocketAlive } from "./socket-client"
 import { listSessionActivity } from "../session-activity"
@@ -40,6 +42,7 @@ import {
 } from "../auth/auth-flow"
 import { isAgentProvider } from "./cli-parse"
 import type { OuroCliDeps, DiscoveredCredential } from "./cli-types"
+import { scanEnvVarCredentials } from "./provider-discovery"
 
 // ── Default implementations ──
 
@@ -90,6 +93,27 @@ function defaultCleanupStaleSocket(socketPath: string): void {
   if (fs.existsSync(socketPath)) {
     fs.unlinkSync(socketPath)
   }
+}
+
+function defaultReadHealthUpdatedAt(healthPath: string): number | null {
+  try {
+    return fs.statSync(healthPath).mtimeMs
+  } catch {
+    return null
+  }
+}
+
+function defaultReadRecentDaemonLogLines(lines = 10): string[] {
+  const files = discoverLogFiles({})
+  const recentLines: string[] = []
+  for (const file of files) {
+    recentLines.push(...readLastLines(file, lines, fs.readFileSync))
+  }
+  return recentLines.slice(-lines).map((line) => formatLogLine(line))
+}
+
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 function defaultFallbackPendingMessage(command: Extract<import("./daemon").DaemonCommand, { kind: "message.send" }>): string {
@@ -274,26 +298,18 @@ export async function defaultRunSerpentGuide(): Promise<string | null> {
       azure: "",
     }
 
-    // Scan environment variables for API keys using the canonical descriptor
+    // Scan environment variables for API keys using the shared helper
+    const envCreds = scanEnvVarCredentials(process.env)
     const envDiscovered: Array<DiscoveredCredential & { envVar: string }> = []
-    for (const [provider, desc] of Object.entries(PROVIDER_CREDENTIALS) as Array<[AgentProvider, typeof PROVIDER_CREDENTIALS[AgentProvider]]>) {
-      const envCred: HatchCredentialsInput = {}
-      let firstEnvVar: string | undefined
-      for (const [envVar, credKey] of Object.entries(desc.envVars)) {
-        const value = process.env[envVar]
-        if (value) {
-          ;(envCred as Record<string, string>)[credKey] = value
-          if (!firstEnvVar) firstEnvVar = envVar
-        }
-      }
-      // Only register if at least one required field was found
-      const hasRequired = desc.required.some((key) => !!(envCred as Record<string, string>)[key])
-      if (hasRequired && firstEnvVar) {
-        const provCfg: Record<string, string> = { model: defaultModels[provider] }
-        if (provider === "azure" && envCred.deployment) provCfg.deployment = envCred.deployment
-        envDiscovered.push({ provider, agentName: "env", credentials: envCred, providerConfig: provCfg, envVar: firstEnvVar })
-        discovered.push({ provider, agentName: "env", credentials: envCred, providerConfig: provCfg })
-      }
+    for (const cred of envCreds) {
+      // Enrich with default model and first matching env var name (for display)
+      const desc = PROVIDER_CREDENTIALS[cred.provider]
+      const firstEnvVar = Object.entries(desc.envVars).find(([envVar]) => process.env[envVar])?.[0] ?? ""
+      const provCfg: Record<string, string> = { model: defaultModels[cred.provider], ...cred.providerConfig }
+      if (cred.provider === "azure" && (cred.credentials as Record<string, string>).deployment) provCfg.deployment = (cred.credentials as Record<string, string>).deployment
+      const enriched = { ...cred, providerConfig: provCfg }
+      envDiscovered.push({ ...enriched, envVar: firstEnvVar })
+      discovered.push(enriched)
     }
 
     if (discovered.length > 0) {
@@ -477,6 +493,16 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     checkSocketAlive: checkDaemonSocketAlive,
     cleanupStaleSocket: defaultCleanupStaleSocket,
     fallbackPendingMessage: defaultFallbackPendingMessage,
+    healthFilePath: getDefaultHealthPath(),
+    readHealthState: readHealth,
+    readHealthUpdatedAt: defaultReadHealthUpdatedAt,
+    readRecentDaemonLogLines: defaultReadRecentDaemonLogLines,
+    sleep: defaultSleep,
+    now: () => Date.now(),
+    startupPollIntervalMs: 250,
+    startupStabilityWindowMs: 1_500,
+    startupTimeoutMs: 10_000,
+    startupRetryLimit: 1,
     listDiscoveredAgents: defaultListDiscoveredAgents,
     runHatchFlow: defaultRunHatchFlow,
     promptInput: defaultPromptInput,

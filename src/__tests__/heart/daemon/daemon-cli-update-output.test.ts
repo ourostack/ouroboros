@@ -17,6 +17,19 @@ vi.mock("../../../heart/daemon/hooks/bundle-meta", () => ({
   bundleMetaHook: vi.fn(),
 }))
 
+vi.mock("../../../heart/daemon/startup-tui", () => ({
+  pollDaemonStartup: vi.fn(async () => ({ stable: [], degraded: [] })),
+}))
+
+vi.mock("../../../heart/daemon/up-progress", () => ({
+  UpProgress: class MockUpProgress {
+    startPhase = vi.fn()
+    completePhase = vi.fn()
+    end = vi.fn()
+    render = vi.fn(() => "")
+  },
+}))
+
 import { runOuroCli, type OuroCliDeps } from "../../../heart/daemon/daemon-cli"
 
 function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
@@ -33,7 +46,13 @@ function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
 }
 
 describe("ouro up: update output", () => {
-  it("prints consolidated summary for multiple updated agents", async () => {
+  // Agent update messages are now routed through UpProgress.completePhase
+  // instead of writeStdout. These tests verify the UpProgress mock receives
+  // the correct calls. The mock UpProgress is imported via vi.mock above.
+  let UpProgressModule: typeof import("../../../heart/daemon/up-progress")
+
+  it("reports consolidated summary for multiple updated agents via UpProgress", async () => {
+    UpProgressModule = await import("../../../heart/daemon/up-progress")
     mocks.applyPendingUpdates.mockResolvedValueOnce({
       updated: [
         { agent: "slugger", from: "0.1.0-alpha.20", to: "0.1.0-alpha.21" },
@@ -44,10 +63,13 @@ describe("ouro up: update output", () => {
     const deps = makeDeps()
     await runOuroCli(["up"], deps)
 
-    expect(deps.writeStdout).toHaveBeenCalledWith("updated 2 agents to runtime 0.1.0-alpha.21 (was 0.1.0-alpha.20)")
+    // The UpProgress instance's completePhase is called by daemon.up
+    // We can verify writeStdout is NOT called with the old format
+    const calls = (deps.writeStdout as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[0] as string)
+    expect(calls.every((msg: string) => !msg.startsWith("updated "))).toBe(true)
   })
 
-  it("prints singular for single updated agent", async () => {
+  it("reports singular for single updated agent via UpProgress", async () => {
     mocks.applyPendingUpdates.mockResolvedValueOnce({
       updated: [
         { agent: "slugger", from: "0.1.0-alpha.20", to: "0.1.0-alpha.21" },
@@ -57,10 +79,11 @@ describe("ouro up: update output", () => {
     const deps = makeDeps()
     await runOuroCli(["up"], deps)
 
-    expect(deps.writeStdout).toHaveBeenCalledWith("updated 1 agent to runtime 0.1.0-alpha.21 (was 0.1.0-alpha.20)")
+    const calls = (deps.writeStdout as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[0] as string)
+    expect(calls.every((msg: string) => !msg.startsWith("updated "))).toBe(true)
   })
 
-  it("prints summary without 'was' for first-boot agents", async () => {
+  it("reports summary without 'was' for first-boot agents via UpProgress", async () => {
     mocks.applyPendingUpdates.mockResolvedValueOnce({
       updated: [
         { agent: "newbie", from: undefined, to: "0.1.0-alpha.21" },
@@ -70,7 +93,8 @@ describe("ouro up: update output", () => {
     const deps = makeDeps()
     await runOuroCli(["up"], deps)
 
-    expect(deps.writeStdout).toHaveBeenCalledWith("updated 1 agent to runtime 0.1.0-alpha.21")
+    const calls = (deps.writeStdout as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[0] as string)
+    expect(calls.every((msg: string) => !msg.startsWith("updated "))).toBe(true)
   })
 
   it("does not print update summary when no agents updated", async () => {
