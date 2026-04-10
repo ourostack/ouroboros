@@ -78,6 +78,17 @@ import { readFirstBundleMetaVersion, createDefaultOuroCliDeps, defaultListDiscov
 
 // ── ensureDaemonRunning ──
 
+const DEFAULT_DAEMON_STARTUP_TIMEOUT_MS = 10_000
+const DEFAULT_DAEMON_STARTUP_POLL_INTERVAL_MS = 500
+const DEFAULT_DAEMON_STARTUP_STABILITY_WINDOW_MS = 1_500
+const DEFAULT_DAEMON_STARTUP_RETRY_LIMIT = 1
+const DEFAULT_DAEMON_STARTUP_LOG_LINES = 10
+
+interface DaemonStartupFailure {
+  reason: string
+  retryable: boolean
+}
+
 export async function ensureDaemonRunning(deps: OuroCliDeps): Promise<EnsureDaemonResult> {
   const alive = await deps.checkSocketAlive(deps.socketPath)
   if (alive) {
@@ -119,43 +130,185 @@ export async function ensureDaemonRunning(deps: OuroCliDeps): Promise<EnsureDaem
     })
   }
 
-  deps.cleanupStaleSocket(deps.socketPath)
-  const started = await deps.startDaemonProcess(deps.socketPath)
-  const pid = started.pid ?? "unknown"
+  const retryLimit = deps.startupRetryLimit ?? DEFAULT_DAEMON_STARTUP_RETRY_LIMIT
+  let lastFailure: DaemonStartupFailure | null = null
+  let lastPid: number | null = null
 
-  // Verify the daemon actually comes up before reporting success
-  const verified = await verifyDaemonAlive(deps.checkSocketAlive, deps.socketPath)
+  for (let attempt = 0; attempt <= retryLimit; attempt += 1) {
+    deps.reportDaemonStartupPhase?.("starting daemon...")
+    deps.reportDaemonStartupPhase?.("waiting for daemon socket...")
+    deps.cleanupStaleSocket(deps.socketPath)
 
-  /* v8 ignore start -- daemon liveness failure: requires real daemon crash timing @preserve */
-  if (!verified) {
-    return {
-      alreadyRunning: false,
-      message: `daemon spawned (pid ${pid}) but failed to respond within 10s — check \`ouro status\` or daemon logs`,
+    const bootStartedAtMs = (deps.now ?? Date.now)()
+    const started = await deps.startDaemonProcess(deps.socketPath)
+    lastPid = started.pid ?? null
+
+    const startupFailure = await waitForDaemonStartup(deps, {
+      bootStartedAtMs,
+      pid: lastPid,
+    })
+    if (!startupFailure) {
+      return {
+        alreadyRunning: false,
+        message: `daemon started (pid ${lastPid ?? "unknown"})`,
+      }
     }
+
+    lastFailure = startupFailure
+    if (!startupFailure.retryable || attempt >= retryLimit) {
+      break
+    }
+
+    deps.reportDaemonStartupPhase?.("daemon startup lost stability; cleaning up and retrying once...")
   }
-  /* v8 ignore stop */
 
   return {
     alreadyRunning: false,
-    message: `daemon started (pid ${pid})`,
+    message: formatDaemonStartupFailureMessage(lastPid, lastFailure, deps),
   }
 }
 
-/* v8 ignore start -- daemon liveness poll: real socket timing untestable in vitest @preserve */
+function hasStartupHealthMonitor(deps: OuroCliDeps): boolean {
+  return !!deps.healthFilePath && !!deps.readHealthState && !!deps.readHealthUpdatedAt
+}
+
+function hasFreshCurrentBootHealthSignal(
+  deps: OuroCliDeps,
+  bootStartedAtMs: number,
+  pid: number | null,
+): boolean {
+  if (!hasStartupHealthMonitor(deps)) return false
+
+  const healthState = deps.readHealthState!(deps.healthFilePath!)
+  if (!healthState) return false
+
+  const healthUpdatedAt = deps.readHealthUpdatedAt!(deps.healthFilePath!)
+  if (healthUpdatedAt === null || healthUpdatedAt < bootStartedAtMs) {
+    return false
+  }
+
+  const healthStartedAtMs = Date.parse(healthState.startedAt)
+  if (!Number.isFinite(healthStartedAtMs) || healthStartedAtMs < bootStartedAtMs) {
+    return false
+  }
+
+  if (pid !== null && healthState.pid !== pid) {
+    return false
+  }
+
+  return true
+}
+
+function formatDaemonStartupFailureMessage(
+  pid: number | null,
+  failure: DaemonStartupFailure | null,
+  deps: OuroCliDeps,
+): string {
+  const lines = [
+    `daemon spawned (pid ${pid ?? "unknown"}) but failed to stabilize: ${failure?.reason ?? "unknown startup failure"}`,
+  ]
+  const recentLogLines = deps.readRecentDaemonLogLines?.(DEFAULT_DAEMON_STARTUP_LOG_LINES) ?? []
+  if (recentLogLines.length > 0) {
+    lines.push("recent daemon logs:")
+    lines.push(...recentLogLines.map((line) => `  ${line}`))
+  }
+  lines.push("fix hint for daemon: check daemon logs or run `ouro doctor`")
+  return lines.join("\n")
+}
+
+async function waitForDaemonStartup(
+  deps: OuroCliDeps,
+  options: {
+    bootStartedAtMs: number
+    pid: number | null
+  },
+): Promise<DaemonStartupFailure | null> {
+  const now = deps.now ?? Date.now
+  const sleep = deps.sleep ?? defaultSleep
+  const timeoutMs = deps.startupTimeoutMs ?? DEFAULT_DAEMON_STARTUP_TIMEOUT_MS
+  const pollIntervalMs = deps.startupPollIntervalMs ?? DEFAULT_DAEMON_STARTUP_POLL_INTERVAL_MS
+  const stabilityWindowMs = deps.startupStabilityWindowMs ?? DEFAULT_DAEMON_STARTUP_STABILITY_WINDOW_MS
+  const deadline = options.bootStartedAtMs + timeoutMs
+  const useHealthMonitor = hasStartupHealthMonitor(deps)
+  let stableSinceMs: number | null = null
+  let sawSocket = false
+  let announcedHealthCheck = false
+
+  if (!useHealthMonitor) {
+    const verified = await verifyDaemonAlive(
+      deps.checkSocketAlive,
+      deps.socketPath,
+      timeoutMs,
+      pollIntervalMs,
+      sleep,
+      now,
+    )
+    return verified
+      ? null
+      : {
+          reason: `daemon failed to respond within ${Math.ceil(timeoutMs / 1000)}s`,
+          retryable: false,
+        }
+  }
+
+  while (now() < deadline) {
+    await sleep(pollIntervalMs)
+    const aliveNow = await deps.checkSocketAlive(deps.socketPath)
+    if (!aliveNow) {
+      if (sawSocket) {
+        return {
+          reason: "daemon socket disappeared during startup",
+          retryable: true,
+        }
+      }
+      continue
+    }
+
+    if (!sawSocket) {
+      sawSocket = true
+      stableSinceMs = now()
+      if (!announcedHealthCheck) {
+        deps.reportDaemonStartupPhase?.("verifying daemon health...")
+        announcedHealthCheck = true
+      }
+    }
+
+    if (!hasFreshCurrentBootHealthSignal(deps, options.bootStartedAtMs, options.pid)) {
+      continue
+    }
+
+    if (stableSinceMs !== null && now() - stableSinceMs >= stabilityWindowMs) {
+      return null
+    }
+  }
+
+  return {
+    reason: sawSocket
+      ? "daemon did not publish fresh health for the current boot attempt"
+      : `daemon failed to respond within ${Math.ceil(timeoutMs / 1000)}s`,
+    retryable: sawSocket,
+  }
+}
+
 async function verifyDaemonAlive(
   checkSocketAlive: (socketPath: string) => Promise<boolean>,
   socketPath: string,
   maxWaitMs = 10_000,
   pollIntervalMs = 500,
+  sleep: (ms: number) => Promise<void> = defaultSleep,
+  now: () => number = Date.now,
 ): Promise<boolean> {
-  const deadline = Date.now() + maxWaitMs
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, pollIntervalMs))
+  const deadline = now() + maxWaitMs
+  while (now() < deadline) {
+    await sleep(pollIntervalMs)
     if (await checkSocketAlive(socketPath)) return true
   }
   return false
 }
-/* v8 ignore stop */
+
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
 
 // ── GitHub Copilot model helpers ──
 
@@ -968,7 +1121,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       deps.writeStdout(`updated ${count} agent${count === 1 ? "" : "s"} to runtime ${to}${fromStr}`)
     }
 
-    const daemonResult = await ensureDaemonRunning(deps)
+    const daemonResult = await ensureDaemonRunning({
+      ...deps,
+      reportDaemonStartupPhase: deps.writeStdout,
+    })
     deps.writeStdout(daemonResult.message)
 
     // Persist boot startup AFTER daemon is running — bootstrap is safe now

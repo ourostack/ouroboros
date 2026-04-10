@@ -15,6 +15,7 @@ import type { OuroPathInstallResult } from "../versioning/ouro-path-installer"
 import type { TaskModule } from "../../repertoire/tasks/types"
 import type { FriendStore } from "../../mind/friends/store"
 import type { CheckForUpdateResult } from "../versioning/update-checker"
+import type { DaemonHealthState } from "./daemon-health"
 
 export type OuroCliCommand =
   | { kind: "daemon.up" }
@@ -122,6 +123,16 @@ export interface OuroCliDeps {
    */
   secretsRoot?: string
   healthFilePath?: string
+  readHealthState?: (healthPath: string) => DaemonHealthState | null
+  readHealthUpdatedAt?: (healthPath: string) => number | null
+  readRecentDaemonLogLines?: (lines?: number) => string[]
+  sleep?: (ms: number) => Promise<void>
+  now?: () => number
+  startupPollIntervalMs?: number
+  startupStabilityWindowMs?: number
+  startupTimeoutMs?: number
+  startupRetryLimit?: number
+  reportDaemonStartupPhase?: (text: string) => void
 }
 
 export interface SessionEntry {
