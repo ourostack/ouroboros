@@ -2,7 +2,7 @@ import { useEffect, useState } from "react"
 import { Badge } from "../../catalyst/badge"
 import { fetchJson, relTime } from "../../api"
 
-export function RuntimeTab({ agentName, view }: { agentName: string; view: Record<string, unknown> }) {
+export function RuntimeTab({ agentName, view, refreshGeneration }: { agentName: string; view: Record<string, unknown>; refreshGeneration: number }) {
   const [health, setHealth] = useState<Record<string, unknown> | null>(null)
   const [logs, setLogs] = useState<Record<string, unknown> | null>(null)
 
@@ -15,7 +15,7 @@ export function RuntimeTab({ agentName, view }: { agentName: string; view: Recor
       fetchJson<Record<string, unknown>>("/machine/health").then(setHealth).catch(() => null),
       fetchJson<Record<string, unknown>>("/machine/logs").then(setLogs).catch(() => null),
     ])
-  }, [agentName])
+  }, [agentName, refreshGeneration])
 
   const degradedComponents = (health?.degradedComponents ?? []) as Array<Record<string, unknown>>
   const logEntries = (logs?.entries ?? []) as Array<Record<string, unknown>>
