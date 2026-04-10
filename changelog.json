@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.323",
+      "changes": [
+        "fix(bluebubbles): drain missed upstream BlueBubbles messages after an outage by querying recent messages when the upstream health probe recovers, deduping against the inbound sidecar, repairing candidates, and replaying them through the normal BlueBubbles turn path oldest-first.",
+        "fix(bluebubbles): make upstream catch-up bounded, paginated, and observable with nerves events for query start/end/skip/error, catch-up start/complete/error, runtime status updates, and explicit failure state if the bounded page limit is reached before the outage window is drained."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.322",
       "changes": [
         "fix(bluebubbles): share BlueBubbles health diagnostics between runtime status and doctor so fetch, malformed URL, auth, and upstream server failures produce actionable repair guidance instead of a bare `fetch failed`.",

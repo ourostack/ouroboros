@@ -33,6 +33,7 @@ const mocks = vi.hoisted(() => ({
   setTyping: vi.fn().mockResolvedValue(undefined),
   markChatRead: vi.fn().mockResolvedValue(undefined),
   checkHealth: vi.fn().mockResolvedValue(undefined),
+  listRecentMessages: vi.fn().mockResolvedValue([]),
   repairEvent: vi.fn(async (event: unknown) => event),
   getMessageText: vi.fn(async () => null),
   recordMutation: vi.fn(),
@@ -189,6 +190,7 @@ vi.mock("../../../senses/bluebubbles/client", () => ({
     setTyping: (...args: any[]) => mocks.setTyping(...args),
     markChatRead: (...args: any[]) => mocks.markChatRead(...args),
     checkHealth: (...args: any[]) => mocks.checkHealth(...args),
+    listRecentMessages: (...args: any[]) => mocks.listRecentMessages(...args),
     repairEvent: (...args: any[]) => mocks.repairEvent(...args),
     getMessageText: (...args: any[]) => mocks.getMessageText(...args),
   })),
@@ -418,6 +420,42 @@ const fromMePayload = {
   },
 }
 
+function makeCatchUpMessage(overrides: Partial<{
+  messageGuid: string
+  timestamp: number
+  fromMe: boolean
+  text: string
+  textForAgent: string
+}> = {}) {
+  const text = overrides.text ?? overrides.textForAgent ?? "missed while bluebubbles was offline"
+  return {
+    kind: "message" as const,
+    eventType: "new-message",
+    messageGuid: overrides.messageGuid ?? "catchup-guid",
+    timestamp: overrides.timestamp ?? Date.now(),
+    fromMe: overrides.fromMe ?? false,
+    sender: {
+      provider: "imessage-handle" as const,
+      externalId: "ari@mendelow.me",
+      rawId: "ari@mendelow.me",
+      displayName: "ari@mendelow.me",
+    },
+    chat: {
+      chatGuid: "any;-;ari@mendelow.me",
+      chatIdentifier: "ari@mendelow.me",
+      isGroup: false,
+      sessionKey: "chat:any;-;ari@mendelow.me",
+      sendTarget: { kind: "chat_guid" as const, value: "any;-;ari@mendelow.me" },
+      participantHandles: [],
+    },
+    text,
+    textForAgent: overrides.textForAgent ?? text,
+    attachments: [],
+    hasPayloadData: false,
+    requiresRepair: false,
+  }
+}
+
 const groupReactionPayload = {
   ...reactionPayload,
   data: {
@@ -587,6 +625,7 @@ function resetMocks(): void {
   mocks.setTyping.mockReset().mockResolvedValue(undefined)
   mocks.markChatRead.mockReset().mockResolvedValue(undefined)
   mocks.checkHealth.mockReset().mockResolvedValue(undefined)
+  mocks.listRecentMessages.mockReset().mockResolvedValue([])
   mocks.repairEvent.mockReset().mockImplementation(async (event: unknown) => event)
   mocks.recordMutation.mockReset()
   mocks.listen.mockReset().mockImplementation((_: number, cb?: () => void) => cb?.())
@@ -2611,6 +2650,388 @@ describe("BlueBubbles sense runtime", () => {
     )
   })
 
+  it("catches up recent upstream messages after BlueBubbles recovers from an outage", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+
+    mocks.listRecentMessages.mockResolvedValueOnce([
+      makeCatchUpMessage({
+        messageGuid: "upstream-missed-guid",
+        timestamp: Date.now() - 60_000,
+        textForAgent: "did this arrive while bluebubbles was down?",
+      }),
+    ])
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.catchUpMissedBlueBubblesMessages({}, {
+      upstreamStatus: "error",
+      detail: "Cannot reach BlueBubbles",
+      lastCheckedAt: new Date().toISOString(),
+      pendingRecoveryCount: 0,
+    })
+
+    expect(result).toEqual(expect.objectContaining({
+      inspected: 1,
+      recovered: 1,
+      skipped: 0,
+      failed: 0,
+      lastRecoveredMessageGuid: "upstream-missed-guid",
+    }))
+    expect(mocks.runAgent).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "user",
+          content: expect.stringContaining("did this arrive while bluebubbles was down?"),
+        }),
+      ]),
+      expect.any(Object),
+      "bluebubbles",
+      expect.any(AbortSignal),
+      expect.any(Object),
+    )
+
+    const { getBlueBubblesInboundLogPath } = await import("../../../senses/bluebubbles/inbound-log")
+    const logPath = getBlueBubblesInboundLogPath("testagent", "chat:any;-;ari@mendelow.me")
+    const lines = fs.readFileSync(logPath, "utf-8").trim().split("\n")
+    expect(JSON.parse(lines[0] ?? "{}")).toEqual(expect.objectContaining({
+      messageGuid: "upstream-missed-guid",
+      source: "upstream-catchup",
+    }))
+  })
+
+  it("continues paginating catch-up until the upstream backlog is drained", async () => {
+    const now = Date.now()
+    const firstPage = Array.from({ length: 50 }, (_, index) => makeCatchUpMessage({
+      messageGuid: index < 2 ? "page-one-duplicate" : `page-one-from-me-${index}`,
+      timestamp: now - index,
+      fromMe: true,
+    }))
+    const recovered = makeCatchUpMessage({
+      messageGuid: "page-two-inbound",
+      timestamp: now - 1_000,
+      textForAgent: "second page should still be drained",
+    })
+    mocks.listRecentMessages
+      .mockResolvedValueOnce(firstPage)
+      .mockResolvedValueOnce([recovered])
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.catchUpMissedBlueBubblesMessages({}, {
+      upstreamStatus: "error",
+      detail: "down",
+      pendingRecoveryCount: 0,
+    })
+
+    expect(mocks.listRecentMessages).toHaveBeenNthCalledWith(1, { limit: 50, offset: 0 })
+    expect(mocks.listRecentMessages).toHaveBeenNthCalledWith(2, { limit: 50, offset: 50 })
+    expect(result).toEqual(expect.objectContaining({
+      inspected: 50,
+      recovered: 1,
+      skipped: 49,
+      failed: 0,
+      lastRecoveredMessageGuid: "page-two-inbound",
+    }))
+    expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+    expect(mocks.runAgent).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "user",
+          content: expect.stringContaining("second page should still be drained"),
+        }),
+      ]),
+      expect.any(Object),
+      "bluebubbles",
+      expect.any(AbortSignal),
+      expect.any(Object),
+    )
+  })
+
+  it("stops paginating catch-up once a full page reaches the catch-up cutoff", async () => {
+    const now = Date.now()
+    mocks.listRecentMessages.mockResolvedValueOnce(Array.from({ length: 50 }, (_, index) => makeCatchUpMessage({
+      messageGuid: `old-page-${index}`,
+      timestamp: now - 120_000 - index,
+    })))
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.catchUpMissedBlueBubblesMessages({}, {
+      upstreamStatus: "ok",
+      detail: "upstream reachable",
+      lastCheckedAt: new Date(now).toISOString(),
+      pendingRecoveryCount: 0,
+    })
+
+    expect(mocks.listRecentMessages).toHaveBeenCalledTimes(1)
+    expect(result).toEqual(expect.objectContaining({
+      inspected: 50,
+      recovered: 0,
+      skipped: 50,
+      failed: 0,
+    }))
+    expect(mocks.repairEvent).not.toHaveBeenCalled()
+  })
+
+  it("marks catch-up unhealthy when the bounded page limit is reached before the cutoff", async () => {
+    const now = Date.now()
+    mocks.listRecentMessages.mockImplementation(async ({ offset = 0 } = {}) => Array.from({ length: 50 }, (_, index) =>
+      makeCatchUpMessage({
+        messageGuid: `limit-page-${offset}-${index}`,
+        timestamp: now - index,
+        fromMe: true,
+      })))
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.catchUpMissedBlueBubblesMessages({}, {
+      upstreamStatus: "ok",
+      detail: "upstream reachable",
+      lastCheckedAt: new Date(now).toISOString(),
+      pendingRecoveryCount: 0,
+    })
+
+    expect(mocks.listRecentMessages).toHaveBeenCalledTimes(20)
+    expect(result).toEqual(expect.objectContaining({
+      inspected: 1000,
+      recovered: 0,
+      skipped: 1000,
+      failed: 1,
+    }))
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "warn",
+      event: "senses.bluebubbles_catchup_error",
+      meta: expect.objectContaining({
+        inspectedPages: 20,
+        reason: "catch-up page limit reached before the outage window cutoff",
+      }),
+    }))
+  })
+
+  it("skips catch-up messages that are outgoing, too old, or already recorded", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    const now = Date.now()
+
+    const { recordBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
+    recordBlueBubblesInbound("testagent", makeCatchUpMessage({
+      messageGuid: "already-recorded-guid",
+      timestamp: now - 1_000,
+    }), "webhook")
+
+    mocks.listRecentMessages.mockResolvedValueOnce([
+      makeCatchUpMessage({ messageGuid: "from-me-guid", timestamp: now - 1_000, fromMe: true }),
+      makeCatchUpMessage({ messageGuid: "too-old-guid", timestamp: now - 120_000 }),
+      makeCatchUpMessage({ messageGuid: "already-recorded-guid", timestamp: now - 1_000 }),
+    ])
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.catchUpMissedBlueBubblesMessages({}, {
+      upstreamStatus: "ok",
+      detail: "upstream reachable",
+      lastCheckedAt: new Date(now).toISOString(),
+      pendingRecoveryCount: 0,
+    })
+
+    expect(result).toEqual(expect.objectContaining({
+      inspected: 3,
+      recovered: 0,
+      skipped: 3,
+      failed: 0,
+    }))
+    expect(mocks.repairEvent).not.toHaveBeenCalled()
+  })
+
+  it("keeps catch-up candidates skipped when repair cannot produce an inbound message", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    const candidate = makeCatchUpMessage({ messageGuid: "catchup-still-mutation" })
+    mocks.listRecentMessages.mockResolvedValueOnce([candidate])
+    mocks.repairEvent.mockResolvedValueOnce({
+      kind: "mutation",
+      eventType: "updated-message",
+      mutationType: "delivery",
+      messageGuid: "catchup-still-mutation",
+      timestamp: candidate.timestamp,
+      fromMe: false,
+      sender: candidate.sender,
+      chat: candidate.chat,
+      shouldNotifyAgent: false,
+      textForAgent: "message marked as delivered",
+      requiresRepair: false,
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.catchUpMissedBlueBubblesMessages({}, {
+      upstreamStatus: "error",
+      detail: "down",
+      pendingRecoveryCount: 0,
+    })
+
+    expect(result).toEqual(expect.objectContaining({ inspected: 1, recovered: 0, skipped: 1, failed: 0 }))
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+  })
+
+  it("bootstraps catch-up messages into the inbound sidecar when the session already has the text", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    mocks.loadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "user", content: "already handled upstream catchup" },
+      ],
+    })
+    mocks.listRecentMessages.mockResolvedValueOnce([
+      makeCatchUpMessage({
+        messageGuid: "catchup-already-in-session",
+        textForAgent: "already handled upstream catchup",
+      }),
+    ])
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.catchUpMissedBlueBubblesMessages({}, {
+      upstreamStatus: "error",
+      detail: "down",
+      pendingRecoveryCount: 0,
+    })
+
+    expect(result).toEqual(expect.objectContaining({ inspected: 1, recovered: 0, skipped: 1, failed: 0 }))
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+
+    const { hasRecordedBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
+    expect(hasRecordedBlueBubblesInbound("testagent", "chat:any;-;ari@mendelow.me", "catchup-already-in-session")).toBe(true)
+  })
+
+  it("records catch-up query failures without crashing the recovery pass", async () => {
+    mocks.listRecentMessages.mockRejectedValueOnce(new Error("query exploded"))
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.catchUpMissedBlueBubblesMessages({}, {
+      upstreamStatus: "error",
+      detail: "down",
+      pendingRecoveryCount: 0,
+    })
+
+    expect(result).toEqual(expect.objectContaining({ inspected: 0, recovered: 0, skipped: 0, failed: 1 }))
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "warn",
+      event: "senses.bluebubbles_catchup_error",
+      meta: expect.objectContaining({ reason: "query exploded" }),
+    }))
+  })
+
+  it("skips catch-up cleanly for older injected clients without recent-message query support", async () => {
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.catchUpMissedBlueBubblesMessages({
+      createClient: () => ({
+        checkHealth: vi.fn(),
+        editMessage: vi.fn(),
+        getMessageText: vi.fn(),
+        markChatRead: vi.fn(),
+        repairEvent: vi.fn(),
+        sendText: vi.fn(),
+        setTyping: vi.fn(),
+      } as any),
+    })
+
+    expect(result).toEqual({ inspected: 0, recovered: 0, skipped: 0, failed: 0 })
+  })
+
+  it("falls back to the first catch-up window when previous runtime timestamp is invalid", async () => {
+    mocks.listRecentMessages.mockResolvedValueOnce([])
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.catchUpMissedBlueBubblesMessages({}, {
+      upstreamStatus: "ok",
+      detail: "upstream reachable",
+      lastCheckedAt: "not-a-date",
+      pendingRecoveryCount: 0,
+    })
+
+    expect(result).toEqual({ inspected: 0, recovered: 0, skipped: 0, failed: 0 })
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_catchup_start",
+      meta: expect.objectContaining({
+        pageSize: 50,
+        maxPages: 20,
+      }),
+    }))
+  })
+
+  it("keeps partial catch-up pages when a later query fails", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    const now = Date.now()
+    mocks.listRecentMessages
+      .mockResolvedValueOnce(Array.from({ length: 50 }, (_, index) => makeCatchUpMessage({
+        messageGuid: `partial-query-${index}`,
+        timestamp: now - index,
+        fromMe: true,
+      })))
+      .mockRejectedValueOnce("query string exploded")
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.catchUpMissedBlueBubblesMessages()
+
+    expect(result).toEqual(expect.objectContaining({ inspected: 50, recovered: 0, skipped: 50, failed: 1 }))
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "warn",
+      event: "senses.bluebubbles_catchup_error",
+      meta: expect.objectContaining({
+        offset: 50,
+        reason: "query string exploded",
+      }),
+    }))
+  })
+
+  it("records per-message catch-up failures and continues the pass", async () => {
+    const candidate = makeCatchUpMessage({ messageGuid: "catchup-message-fails" })
+    mocks.listRecentMessages.mockResolvedValueOnce([candidate])
+    mocks.repairEvent.mockRejectedValueOnce("repair string exploded")
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.catchUpMissedBlueBubblesMessages({}, {
+      upstreamStatus: "error",
+      detail: "down",
+      pendingRecoveryCount: 0,
+    })
+
+    expect(result).toEqual(expect.objectContaining({ inspected: 1, recovered: 0, skipped: 0, failed: 1 }))
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "warn",
+      event: "senses.bluebubbles_catchup_error",
+      meta: expect.objectContaining({
+        messageGuid: "catchup-message-fails",
+        reason: "repair string exploded",
+      }),
+    }))
+  })
+
+  it("records Error per-message catch-up failures with the Error message", async () => {
+    const candidate = makeCatchUpMessage({ messageGuid: "catchup-message-error-fails" })
+    mocks.listRecentMessages.mockResolvedValueOnce([candidate])
+    mocks.repairEvent.mockRejectedValueOnce(new Error("repair error exploded"))
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.catchUpMissedBlueBubblesMessages({}, {
+      upstreamStatus: "error",
+      detail: "down",
+      pendingRecoveryCount: 0,
+    })
+
+    expect(result).toEqual(expect.objectContaining({ inspected: 1, recovered: 0, skipped: 0, failed: 1 }))
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "warn",
+      event: "senses.bluebubbles_catchup_error",
+      meta: expect.objectContaining({
+        messageGuid: "catchup-message-error-fails",
+        reason: "repair error exploded",
+      }),
+    }))
+  })
+
   it("recovers identifier-only backlog candidates by falling back to unknown routing metadata", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
@@ -3367,6 +3788,51 @@ describe("BlueBubbles sense runtime", () => {
         pendingRecoveryCount: 0,
         lastRecoveredAt: expect.any(String),
       }),
+    )
+  })
+
+  it("records upstream catch-up progress in runtime state after a healthy probe", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    mocks.listRecentMessages.mockResolvedValueOnce([
+      makeCatchUpMessage({
+        messageGuid: "runtime-catchup-guid",
+        timestamp: Date.now() - 60_000,
+        textForAgent: "runtime catch-up should be visible",
+      }),
+    ])
+
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp()
+    await flushAsyncWork()
+    closableServer.close()
+
+    const runtimePath = path.join(tempAgentRoot, "state", "senses", "bluebubbles", "runtime.json")
+    await waitFor(() => fs.existsSync(runtimePath))
+    expect(JSON.parse(fs.readFileSync(runtimePath, "utf-8"))).toEqual(
+      expect.objectContaining({
+        upstreamStatus: "ok",
+        detail: "caught up 1 missed message(s)",
+        pendingRecoveryCount: 0,
+        lastRecoveredAt: expect.any(String),
+        lastRecoveredMessageGuid: "runtime-catchup-guid",
+      }),
+    )
+    expect(mocks.runAgent).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "user",
+          content: expect.stringContaining("runtime catch-up should be visible"),
+        }),
+      ]),
+      expect.any(Object),
+      "bluebubbles",
+      expect.any(AbortSignal),
+      expect.any(Object),
     )
   })
 
