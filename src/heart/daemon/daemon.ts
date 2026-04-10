@@ -398,6 +398,27 @@ interface DaemonStatusPayload {
   agents: BundleAgentRow[]
 }
 
+interface SocketIdentity {
+  dev: number
+  ino: number
+}
+
+function readSocketIdentity(socketPath: string): SocketIdentity | null {
+  try {
+    const stats = fs.lstatSync(socketPath)
+    return {
+      dev: stats.dev,
+      ino: stats.ino,
+    }
+  } catch {
+    return null
+  }
+}
+
+function sameSocketIdentity(left: SocketIdentity | null, right: SocketIdentity | null): boolean {
+  return !!left && !!right && left.dev === right.dev && left.ino === right.ino
+}
+
 function buildWorkerRows(
   snapshots: ReturnType<DaemonProcessManagerLike["listAgentSnapshots"]>,
 ): DaemonWorkerRow[] {
@@ -489,6 +510,7 @@ export class OuroDaemon {
   private readonly mode: "dev" | "production"
   private server: net.Server | null = null
   private outlookServer: OutlookHttpServerHandle | null = null
+  private socketIdentity: SocketIdentity | null = null
   private readonly outlookServerFactory: () => Promise<OutlookHttpServerHandle>
 
   constructor(options: OuroDaemonOptions) {
@@ -771,6 +793,7 @@ export class OuroDaemon {
       server.listen(this.socketPath, () => {
         // Replace the one-time error listener with a persistent one after successful listen
         server.removeAllListeners("error")
+        this.socketIdentity = readSocketIdentity(this.socketPath)
         /* v8 ignore start — server error after listen requires real socket race condition @preserve */
         server.on("error", (err) => {
           emitNervesEvent({
@@ -989,9 +1012,26 @@ export class OuroDaemon {
       this.outlookServer = null
     }
 
-    if (fs.existsSync(this.socketPath)) {
+    const socketPathExists = fs.existsSync(this.socketPath)
+    const currentSocketIdentity = socketPathExists ? readSocketIdentity(this.socketPath) : null
+    if (sameSocketIdentity(this.socketIdentity, currentSocketIdentity)) {
       fs.unlinkSync(this.socketPath)
+    } else if (socketPathExists) {
+      emitNervesEvent({
+        level: "warn",
+        component: "daemon",
+        event: "daemon.socket_cleanup_skipped",
+        message: "skipped daemon socket cleanup because the socket path no longer belongs to this daemon",
+        meta: {
+          socketPath: this.socketPath,
+          expectedDev: this.socketIdentity?.dev ?? null,
+          expectedIno: this.socketIdentity?.ino ?? null,
+          actualDev: currentSocketIdentity?.dev ?? null,
+          actualIno: currentSocketIdentity?.ino ?? null,
+        },
+      })
     }
+    this.socketIdentity = null
   }
 
   async handleRawPayload(raw: string): Promise<string> {

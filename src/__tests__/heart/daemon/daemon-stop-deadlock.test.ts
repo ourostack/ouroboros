@@ -73,6 +73,15 @@ function makeDaemon(
   } as any)
 }
 
+async function waitForSocketPathState(socketPath: string, exists: boolean, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (fs.existsSync(socketPath) === exists) return
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  throw new Error(`socket path ${exists ? "did not appear" : "did not disappear"} within ${timeoutMs}ms`)
+}
+
 async function sendDaemonCommandOverRealSocket(
   socketPath: string,
   command: Record<string, unknown>,
@@ -111,8 +120,11 @@ async function sendDaemonStopOverRealSocket(socketPath: string, timeoutMs: numbe
 describe("daemon.stop deadlock regression", () => {
   let daemons: OuroDaemon[] = []
   let socketPath: string
+  let releaseBlockedOutlookStop: (() => void) | null = null
 
   afterEach(async () => {
+    releaseBlockedOutlookStop?.()
+    releaseBlockedOutlookStop = null
     for (const daemon of daemons.reverse()) {
       // Best-effort: if a test left the daemon up, try to stop it.
       try { await daemon.stop() } catch { /* already stopped */ }
@@ -164,15 +176,19 @@ describe("daemon.stop deadlock regression", () => {
     expect(stopResult.endedAt).toBeLessThan(2_000)
   })
 
-  it("an older daemon stop path does not unlink a newer daemon's rebound socket", async () => {
+  it("an older daemon stop path does not unlink a replacement path entry after releasing the original socket", async () => {
     socketPath = tmpSocketPath("daemon-stop-socket-race")
 
-    let releaseOutlookStop: (() => void) | null = null
+    let markOutlookStopBlocked: (() => void) | null = null
+    const outlookStopBlocked = new Promise<void>((resolve) => {
+      markOutlookStopBlocked = resolve
+    })
     const daemonA = makeDaemon(socketPath, {
       outlookServerFactory: async () => ({
         stop: async () => {
           await new Promise<void>((resolve) => {
-            releaseOutlookStop = resolve
+            releaseBlockedOutlookStop = resolve
+            markOutlookStopBlocked?.()
           })
         },
       }),
@@ -181,19 +197,21 @@ describe("daemon.stop deadlock regression", () => {
     await daemonA.start()
 
     const daemonAStop = daemonA.stop()
-    await new Promise((resolve) => setTimeout(resolve, 50))
+    await outlookStopBlocked
+    await waitForSocketPathState(socketPath, false, 2_000)
 
-    const daemonB = makeDaemon(socketPath)
-    daemons.push(daemonB)
-    await daemonB.start()
+    // The bug is pathname ownership, not socket protocol. Once daemon A has
+    // released the original socket path, any newer entry at the same pathname
+    // must be preserved. Using a plain file makes the race deterministic while
+    // still proving the old daemon is deleting a path it no longer owns.
+    fs.writeFileSync(socketPath, "replacement-daemon-socket", "utf-8")
     expect(fs.existsSync(socketPath)).toBe(true)
 
-    releaseOutlookStop?.()
+    releaseBlockedOutlookStop?.()
+    releaseBlockedOutlookStop = null
     await daemonAStop
 
     expect(fs.existsSync(socketPath)).toBe(true)
-
-    const statusResult = await sendDaemonCommandOverRealSocket(socketPath, { kind: "daemon.status" }, 2_000)
-    expect(statusResult.raw.length).toBeGreaterThan(0)
+    expect(fs.readFileSync(socketPath, "utf-8")).toBe("replacement-daemon-socket")
   })
 })
