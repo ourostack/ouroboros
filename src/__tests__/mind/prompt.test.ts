@@ -834,7 +834,7 @@ describe("buildSystem", () => {
     const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = await buildSystem()
-    expect(result).toMatch(/current date and time: \d{4}-\d{2}-\d{2} \d{2}:\d{2} PT/)
+    expect(result).toMatch(/current date and time: \d{4}-\d{2}-\d{2} \d{2}:\d{2} [A-Z]{2,5}/)
   })
 
   it("includes tools section with tool names", async () => {

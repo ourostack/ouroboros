@@ -112,9 +112,12 @@ const senseManager = new DaemonSenseManager({
   agents: [...managedAgents],
 })
 
-/* v8 ignore next 2 -- entry-point wiring: probe factory and HealthMonitor both have full unit tests @preserve */
-const bbChannelConfig = getBlueBubblesChannelConfig()
-const bbProbe = createHttpHealthProbe("bluebubbles", bbChannelConfig.port)
+/* v8 ignore next 5 -- entry-point wiring: probe factory and HealthMonitor both have full unit tests @preserve */
+let bbPort = 18790
+try { bbPort = getBlueBubblesChannelConfig().port } catch {
+  // Daemon runs without --agent; agent-scoped config may not be available.
+}
+const bbProbe = createHttpHealthProbe("bluebubbles", bbPort)
 
 const healthMonitor = new HealthMonitor({
   processManager,
