@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.315",
+      "changes": [
+        "fix(tui): fix startup TUI ANSI overwrite, daemon death detection, and log visibility. Resolves visual corruption from overlapping ANSI escape sequences, improves process death detection reliability, and ensures daemon log output is consistently visible during startup."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.314",
       "changes": [
         "fix(daemon): remove 60s startup TUI timeout and show progress while socket is unavailable. `pollDaemonStartup()` now waits indefinitely until all agents are stable or failed, instead of timing out after 60s and falsely reporting degraded status. Added 'waiting for daemon' spinner with elapsed time and latest daemon log event while the socket is not yet available."
