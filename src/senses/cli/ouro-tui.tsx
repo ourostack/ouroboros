@@ -417,6 +417,16 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
     }
     // PageUp/PageDown: suppress (no text insertion, no action)
     if (key.pageUp || key.pageDown) return
+    // Alt+Enter (single data event): Ink checks `return: input === '\r'` before
+    // stripping the \x1b prefix, so key.return is false when the terminal sends
+    // \x1b\r as one chunk.  Detect via the stripped inputChar instead.
+    if (inputChar === "\r" && key.meta) {
+      lastEscTime.current = 0
+      const before = inputRef.current.slice(0, cursorRef.current)
+      const after = inputRef.current.slice(cursorRef.current)
+      updateInput(before + "\n" + after, cursorRef.current + 1)
+      return
+    }
     if (key.return) {
       // Alt+Enter: detect via key.meta OR recent ESC (within 50ms — Ink splits \x1b\r)
       const recentEsc = (Date.now() - lastEscTime.current) < 50
