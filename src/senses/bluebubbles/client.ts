@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto"
 import { getBlueBubblesChannelConfig, getBlueBubblesConfig, getMinimaxConfig } from "../../heart/config"
 import { loadAgentConfig } from "../../heart/identity"
+import {
+  probeBlueBubblesHealth,
+  redactBlueBubblesHealthDetailForNerves,
+} from "../../heart/daemon/bluebubbles-health-diagnostics"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { MINIMAX_PROVIDER_BASE_URL } from "../../heart/providers/minimax"
 import { minimaxVlmDescribe } from "../../heart/providers/minimax-vlm"
@@ -417,19 +421,19 @@ export function createBlueBubblesClient(
     },
 
     async checkHealth(): Promise<void> {
-      const url = buildBlueBubblesApiUrl(config.serverUrl, "/api/v1/message/count", config.password)
       emitNervesEvent({
         component: "senses",
         event: "senses.bluebubbles_healthcheck_start",
         message: "probing bluebubbles upstream health",
         meta: { serverUrl: config.serverUrl },
       })
-      const response = await fetch(url, {
-        method: "GET",
-        signal: AbortSignal.timeout(channelConfig.requestTimeoutMs),
+      const result = await probeBlueBubblesHealth({
+        serverUrl: config.serverUrl,
+        password: config.password,
+        requestTimeoutMs: channelConfig.requestTimeoutMs,
+        fetchImpl: fetch,
       })
-      if (!response.ok) {
-        const errorText = await response.text().catch(() => "")
+      if (!result.ok) {
         emitNervesEvent({
           level: "warn",
           component: "senses",
@@ -437,11 +441,13 @@ export function createBlueBubblesClient(
           message: "bluebubbles upstream health probe failed",
           meta: {
             serverUrl: config.serverUrl,
-            status: response.status,
-            reason: errorText || "unknown",
+            status: result.status,
+            reason: result.reason,
+            classification: result.classification,
+            detail: redactBlueBubblesHealthDetailForNerves(result.detail),
           },
         })
-        throw new Error(`BlueBubbles upstream health check failed (${response.status}): ${errorText || "unknown"}`)
+        throw new Error(result.detail)
       }
       emitNervesEvent({
         component: "senses",

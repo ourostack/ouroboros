@@ -2356,6 +2356,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       statSync: (p: string) => fs.statSync(p),
       /* v8 ignore stop */
       checkSocketAlive: deps.checkSocketAlive,
+      fetchImpl: deps.fetchImpl ?? fetch,
       socketPath: deps.socketPath,
       bundlesRoot: deps.bundlesRoot ?? getAgentBundlesRoot(),
       secretsRoot: deps.secretsRoot ?? path.join(os.homedir(), ".agentsecrets"),

@@ -51,6 +51,14 @@ describe("ouro doctor CLI execution", () => {
     expect(formatDoctorOutput).toHaveBeenCalledWith(MOCK_RESULT)
   })
 
+  it("passes the injected fetch implementation into doctor diagnostics", async () => {
+    const fetchImpl = vi.fn() as unknown as typeof fetch
+    const deps = createMinimalDeps({ fetchImpl })
+    await runOuroCli(["doctor"], deps)
+
+    expect(runDoctorChecks).toHaveBeenCalledWith(expect.objectContaining({ fetchImpl }))
+  })
+
   it("writes formatted output to stdout", async () => {
     const deps = createMinimalDeps()
     await runOuroCli(["doctor"], deps)
