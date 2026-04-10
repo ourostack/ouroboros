@@ -78,6 +78,8 @@ function main() {
     process.exit(1)
   }
 
+  // Install workspace deps before running workspace tests (root npm ci doesn't install them)
+  runNpm(["install", "--prefix", "packages/outlook-ui"])
   const outlookUiExit = runNpm(["run", "test:outlook-ui"]).status ?? 1
   if (outlookUiExit !== 0) {
     const summary = {
