@@ -84,6 +84,7 @@ import { runInteractiveRepair } from "./interactive-repair"
 import { runAgenticRepair } from "./agentic-repair"
 import { pollDaemonStartup } from "./startup-tui"
 import { pruneStaleEphemeralBundles } from "./stale-bundle-prune"
+import { UpProgress } from "./up-progress"
 
 // ── ensureDaemonRunning ──
 
@@ -892,19 +893,20 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
     const linkedVersionBeforeUp = deps.getCurrentCliVersion?.() ?? null
 
+    const progress = new UpProgress({ write: deps.writeStdout, isTTY: false })
+
     // ── versioned CLI update check ──
     if (deps.checkForCliUpdate) {
-      deps.writeStdout("checking for updates...")
+      progress.startPhase("update check")
       let pendingReExec = false
       try {
         const updateResult = await deps.checkForCliUpdate()
         if (updateResult.available && updateResult.latestVersion) {
-          deps.writeStdout(`installing ${updateResult.latestVersion}...`)
           /* v8 ignore next -- fallback: getCurrentCliVersion always injected in tests @preserve */
           const currentVersion = linkedVersionBeforeUp ?? "unknown"
           await deps.installCliVersion!(updateResult.latestVersion)
           deps.activateCliVersion!(updateResult.latestVersion)
-          deps.writeStdout(`ouro updated to ${updateResult.latestVersion} (was ${currentVersion})`)
+          progress.completePhase("update check", `installed ${updateResult.latestVersion}`)
           const changelogCommand = buildChangelogCommand(currentVersion, updateResult.latestVersion)
           /* v8 ignore next -- buildChangelogCommand is non-null when an actual newer version is installed @preserve */
           if (changelogCommand) {
@@ -924,13 +926,16 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       }
       /* v8 ignore stop */
       if (pendingReExec) {
+        progress.end()
         deps.reExecFromNewVersion!(args)
       } else {
-        deps.writeStdout("up to date.")
+        progress.completePhase("update check", "up to date")
       }
     }
 
+    progress.startPhase("system setup")
     await performSystemSetup(deps)
+    progress.completePhase("system setup")
 
     // Track whether we've already printed the "ouro updated to" message
     // this turn so the bundle-meta-fallback path below doesn't double-print.
@@ -1005,17 +1010,20 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       const to = updateSummary.updated[0].to
       const fromStr = from ? ` (was ${from})` : ""
       const count = agents.length
-      deps.writeStdout(`updated ${count} agent${count === 1 ? "" : "s"} to runtime ${to}${fromStr}`)
+      progress.startPhase("agent updates")
+      progress.completePhase("agent updates", `${count} agent${count === 1 ? "" : "s"} to runtime ${to}${fromStr}`)
     }
 
     // ── stale bundle pruning ──
     const prunedBundles = pruneStaleEphemeralBundles({ bundlesRoot: deps.bundlesRoot })
-    for (const name of prunedBundles) {
-      deps.writeStdout(`pruned stale bundle: ${name}`)
+    if (prunedBundles.length > 0) {
+      progress.startPhase("bundle cleanup")
+      progress.completePhase("bundle cleanup", `pruned ${prunedBundles.length} stale bundle${prunedBundles.length === 1 ? "" : "s"}`)
     }
 
-    deps.writeStdout("starting daemon...")
+    progress.startPhase("starting daemon")
     const daemonResult = await ensureDaemonRunning(deps)
+    progress.end()
     deps.writeStdout(daemonResult.message)
 
     // Interactive repair for degraded agents (Unit 5) — skipped by --no-repair (Unit 6)
