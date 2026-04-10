@@ -63,9 +63,12 @@ import type {
   WhoamiCliCommand,
   SessionCliCommand,
   ThoughtsCliCommand,
+  DoctorCliCommand,
+  HelpCliCommand,
 } from "./cli-types"
 import { parseOuroCommand } from "./cli-parse"
 import { isAgentProvider, usage } from "./cli-parse"
+import { getGroupedHelp, getCommandHelp } from "./cli-help"
 import {
   parseStatusPayload,
   formatDaemonStatusOutput,
@@ -75,6 +78,12 @@ import {
   formatMcpResponse,
 } from "./cli-render"
 import { readFirstBundleMetaVersion, createDefaultOuroCliDeps, defaultListDiscoveredAgents } from "./cli-defaults"
+import { runDoctorChecks } from "./doctor"
+import { formatDoctorOutput } from "./cli-render-doctor"
+import { runInteractiveRepair } from "./interactive-repair"
+import { runAgenticRepair } from "./agentic-repair"
+import { pollDaemonStartup } from "./startup-tui"
+import { pruneStaleEphemeralBundles } from "./stale-bundle-prune"
 
 // ── ensureDaemonRunning ──
 
@@ -123,39 +132,58 @@ export async function ensureDaemonRunning(deps: OuroCliDeps): Promise<EnsureDaem
   const started = await deps.startDaemonProcess(deps.socketPath)
   const pid = started.pid ?? "unknown"
 
-  // Verify the daemon actually comes up before reporting success
-  const verified = await verifyDaemonAlive(deps.checkSocketAlive, deps.socketPath)
-
-  /* v8 ignore start -- daemon liveness failure: requires real daemon crash timing @preserve */
-  if (!verified) {
-    return {
-      alreadyRunning: false,
-      message: `daemon spawned (pid ${pid}) but failed to respond within 10s — check \`ouro status\` or daemon logs`,
-    }
-  }
-  /* v8 ignore stop */
+  // Poll daemon status with real-time TUI progress until all agents
+  // are either stable (running 5s+) or definitively failed (crashed).
+  const stability = await pollDaemonStartup({
+    sendCommand: deps.sendCommand,
+    socketPath: deps.socketPath,
+    daemonPid: started.pid ?? null,
+    /* v8 ignore next -- thin wrapper: raw process.stdout.write for ANSI cursor control @preserve */
+    writeRaw: (text) => process.stdout.write(text),
+    /* v8 ignore next -- thin wrapper: real Date.now() injected for testability @preserve */
+    now: () => Date.now(),
+    /* v8 ignore next -- thin wrapper: real setTimeout injected for testability @preserve */
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    /* v8 ignore start -- daemon log tail + pid check: reads real filesystem, tested via deployment @preserve */
+    readLatestDaemonEvent: () => {
+      try {
+        // The daemon writes structured events to daemon.ndjson in the first
+        // agent bundle's state/daemon/logs/ directory. Read the last line to
+        // surface what it's currently doing (e.g., "starting auto-start agents").
+        const bundlesRoot = getAgentBundlesRoot()
+        if (!fs.existsSync(bundlesRoot)) return null
+        const agents = fs.readdirSync(bundlesRoot).filter((d) => d.endsWith(".ouro"))
+        for (const agent of agents) {
+          const logPath = path.join(bundlesRoot, agent, "state", "daemon", "logs", "daemon.ndjson")
+          if (!fs.existsSync(logPath)) continue
+          const stat = fs.statSync(logPath)
+          if (stat.size === 0) continue
+          // Only read logs from the last 30 seconds (daemon just started)
+          const mtime = stat.mtimeMs
+          if (Date.now() - mtime > 30_000) continue
+          const buf = Buffer.alloc(4096)
+          const fd = fs.openSync(logPath, "r")
+          const readFrom = Math.max(0, stat.size - 4096)
+          fs.readSync(fd, buf, 0, 4096, readFrom)
+          fs.closeSync(fd)
+          const lines = buf.toString("utf-8").trim().split("\n").filter(Boolean)
+          const last = lines[lines.length - 1]
+          if (!last) continue
+          const parsed = JSON.parse(last)
+          return parsed.message ?? null
+        }
+      } catch { /* best effort */ }
+      return null
+    },
+    /* v8 ignore stop */
+  })
 
   return {
     alreadyRunning: false,
     message: `daemon started (pid ${pid})`,
+    stability,
   }
 }
-
-/* v8 ignore start -- daemon liveness poll: real socket timing untestable in vitest @preserve */
-async function verifyDaemonAlive(
-  checkSocketAlive: (socketPath: string) => Promise<boolean>,
-  socketPath: string,
-  maxWaitMs = 10_000,
-  pollIntervalMs = 500,
-): Promise<boolean> {
-  const deadline = Date.now() + maxWaitMs
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, pollIntervalMs))
-    if (await checkSocketAlive(socketPath)) return true
-  }
-  return false
-}
-/* v8 ignore stop */
 
 // ── GitHub Copilot model helpers ──
 
@@ -257,7 +285,7 @@ async function verifyProviderCredentials(
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "outlook" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | { kind: "bluebubbles.replay" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "outlook" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DoctorCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" }>): DaemonCommand {
   return command
 }
 
@@ -725,7 +753,7 @@ function resolveClonePath(
 
 export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefaultOuroCliDeps()): Promise<string> {
   if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) {
-    const text = usage()
+    const text = getGroupedHelp()
     deps.writeStdout(text)
     return text
   }
@@ -807,6 +835,14 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     meta: { kind: command.kind },
   })
 
+  if (command.kind === "help") {
+    const text = command.command
+      ? (getCommandHelp(command.command) ?? `Unknown command: ${command.command}\n\n${getGroupedHelp()}`)
+      : getGroupedHelp()
+    deps.writeStdout(text)
+    return text
+  }
+
   if (command.kind === "bluebubbles.replay") {
     const { replayBlueBubblesMessage, formatBlueBubblesReplayText } = await import("../../senses/bluebubbles/replay")
     const replay = await replayBlueBubblesMessage({
@@ -858,10 +894,12 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
     // ── versioned CLI update check ──
     if (deps.checkForCliUpdate) {
+      deps.writeStdout("checking for updates...")
       let pendingReExec = false
       try {
         const updateResult = await deps.checkForCliUpdate()
         if (updateResult.available && updateResult.latestVersion) {
+          deps.writeStdout(`installing ${updateResult.latestVersion}...`)
           /* v8 ignore next -- fallback: getCurrentCliVersion always injected in tests @preserve */
           const currentVersion = linkedVersionBeforeUp ?? "unknown"
           await deps.installCliVersion!(updateResult.latestVersion)
@@ -887,6 +925,8 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       /* v8 ignore stop */
       if (pendingReExec) {
         deps.reExecFromNewVersion!(args)
+      } else {
+        deps.writeStdout("up to date.")
       }
     }
 
@@ -968,8 +1008,79 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       deps.writeStdout(`updated ${count} agent${count === 1 ? "" : "s"} to runtime ${to}${fromStr}`)
     }
 
+    // ── stale bundle pruning ──
+    const prunedBundles = pruneStaleEphemeralBundles({ bundlesRoot: deps.bundlesRoot })
+    for (const name of prunedBundles) {
+      deps.writeStdout(`pruned stale bundle: ${name}`)
+    }
+
+    deps.writeStdout("starting daemon...")
     const daemonResult = await ensureDaemonRunning(deps)
     deps.writeStdout(daemonResult.message)
+
+    // Interactive repair for degraded agents (Unit 5) — skipped by --no-repair (Unit 6)
+    if (daemonResult.stability?.degraded && daemonResult.stability.degraded.length > 0) {
+      if (command.noRepair) {
+        // --no-repair: write degraded summary and skip interactive repair
+        deps.writeStdout("degraded agents:")
+        for (const d of daemonResult.stability.degraded) {
+          deps.writeStdout(`  ${d.agent}: ${d.errorReason}`)
+        }
+        emitNervesEvent({
+          level: "warn",
+          component: "daemon",
+          event: "daemon.no_repair_degraded_summary",
+          message: "degraded agents detected with --no-repair, skipping interactive repair",
+          meta: { degradedCount: daemonResult.stability.degraded.length },
+        })
+      } else {
+        await runAgenticRepair(daemonResult.stability.degraded, {
+          /* v8 ignore start -- production provider discovery wiring @preserve */
+          discoverWorkingProvider: async () => {
+            const { discoverWorkingProvider: discover } = await import("./provider-discovery")
+            const { discoverExistingCredentials } = await import("./cli-defaults")
+            const { pingProvider } = await import("../provider-ping")
+            return discover({
+              discoverExistingCredentials,
+              pingProvider: pingProvider as unknown as (provider: AgentProvider, config: Record<string, string>) => Promise<import("../provider-ping").PingResult>,
+              env: process.env as Record<string, string | undefined>,
+              secretsRoot: deps.secretsRoot ?? `${process.env["HOME"]}/.agentsecrets`,
+            })
+          },
+          createProviderRuntime: (provider, _credentials) => {
+            const { createProviderRegistry } = require("../core") as typeof import("../core")
+            const runtime = createProviderRegistry().resolve(provider)
+            if (!runtime) throw new Error(`failed to create runtime for ${provider}`)
+            return runtime
+          },
+          readDaemonLogsTail: () => {
+            try {
+              const fs = require("node:fs") as typeof import("node:fs")
+              const path = require("node:path") as typeof import("node:path")
+              const logsDir = path.join(process.env["HOME"] ?? "", ".agentstate", "daemon", "logs")
+              const files = fs.readdirSync(logsDir).filter((f: string) => f.endsWith(".log")).sort()
+              if (files.length === 0) return "(no daemon logs found)"
+              const lastLog = fs.readFileSync(path.join(logsDir, files[files.length - 1]!), "utf8")
+              const lines = lastLog.split("\n")
+              return lines.slice(-50).join("\n")
+            } catch {
+              return "(unable to read daemon logs)"
+            }
+          },
+          /* v8 ignore stop */
+          runInteractiveRepair,
+          promptInput: deps.promptInput ?? (async () => "n"),
+          writeStdout: deps.writeStdout,
+          runAuthFlow: async (agent: string) => {
+            const { config } = readAgentConfigForAgent(agent, deps.bundlesRoot)
+            const provider = config.humanFacing.provider
+            /* v8 ignore next -- tests always inject runAuthFlow; default is for production @preserve */
+            const authRunner = deps.runAuthFlow ?? (await import("../auth/auth-flow")).runRuntimeAuthFlow
+            await authRunner({ agentName: agent, provider, promptInput: deps.promptInput })
+          },
+        })
+      }
+    }
 
     // Persist boot startup AFTER daemon is running — bootstrap is safe now
     // because the daemon socket exists, so launchd's KeepAlive registers
@@ -2037,6 +2148,33 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     const message = `hatched ${hatchInput.agentName} at ${result.bundleRoot} using specialist identity ${result.selectedIdentity}; ${daemonResult.message}`
     deps.writeStdout(message)
     return message
+  }
+
+  // ── doctor (local, no daemon socket needed) ──
+  if (command.kind === "doctor") {
+    const doctorDeps = {
+      /* v8 ignore start -- thin fs wrappers tested via doctor.test.ts with injected deps @preserve */
+      existsSync: (p: string) => fs.existsSync(p),
+      readFileSync: (p: string) => fs.readFileSync(p, "utf-8"),
+      readdirSync: (p: string) => fs.readdirSync(p),
+      statSync: (p: string) => fs.statSync(p),
+      /* v8 ignore stop */
+      checkSocketAlive: deps.checkSocketAlive,
+      socketPath: deps.socketPath,
+      bundlesRoot: deps.bundlesRoot ?? getAgentBundlesRoot(),
+      secretsRoot: deps.secretsRoot ?? path.join(os.homedir(), ".agentsecrets"),
+      homedir: os.homedir(),
+    }
+    const doctorResult = await runDoctorChecks(doctorDeps)
+    const output = formatDoctorOutput(doctorResult)
+    deps.writeStdout(output)
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.doctor_run",
+      message: "ouro doctor completed",
+      meta: { passed: doctorResult.summary.passed, warnings: doctorResult.summary.warnings, failed: doctorResult.summary.failed },
+    })
+    return output
   }
 
   const daemonCommand = toDaemonCommand(command)

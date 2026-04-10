@@ -1,6 +1,6 @@
 {
   "name": "@ouro.bot/cli",
-  "version": "0.1.0-alpha.299",
+  "version": "0.1.0-alpha.315",
   "main": "dist/heart/daemon/ouro-entry.js",
   "bin": {
     "cli": "dist/heart/daemon/ouro-bot-entry.js",
@@ -26,6 +26,7 @@
     "teams": "tsc && node dist/senses/teams-entry.js --agent ouroboros",
     "bluebubbles": "tsc && node dist/senses/bluebubbles/entry.js --agent ouroboros",
     "test": "vitest run",
+    "test:outlook-ui": "npm test --prefix packages/outlook-ui",
     "test:coverage:vitest": "vitest run --coverage",
     "test:coverage": "node scripts/run-coverage-gate.cjs",
     "build": "tsc && (cd packages/outlook-ui && npm install --ignore-scripts 2>/dev/null && npm run build && cp -r dist ../../dist/outlook-ui) || echo 'outlook-ui build skipped'",

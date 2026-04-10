@@ -11,6 +11,7 @@ import type { Facing } from "../../mind/friends/channel"
 import type { TrustLevel } from "../../mind/friends/types"
 import type { HatchCredentialsInput } from "../hatch/hatch-flow"
 import type { OuroCliCommand } from "./cli-types"
+import { suggestCommand } from "./cli-help"
 
 // ── Shared helpers ──
 
@@ -40,7 +41,7 @@ export function isAgentProvider(value: unknown): value is AgentProvider {
 export function usage(): string {
   return [
     "Usage:",
-    "  ouro [up]",
+    "  ouro [up] [--no-repair]",
     "  ouro dev [--repo-path <path>] [--clone [--clone-path <path>]]",
     "  ouro stop|down|status|logs|hatch",
     "  ouro outlook [--json]",
@@ -79,6 +80,7 @@ export function usage(): string {
     "  ouro mcp call <server> <tool> [--args '{...}']",
     "  ouro rollback [<version>]",
     "  ouro versions",
+    "  ouro doctor",
   ].join("\n")
 }
 
@@ -687,6 +689,16 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   const [head, second] = args
   if (!head) return { kind: "daemon.up" }
 
+  // ── help command ──
+  if (head === "help") {
+    return second ? { kind: "help", command: second } : { kind: "help" }
+  }
+
+  // ── per-command --help ──
+  if (args.includes("--help")) {
+    return { kind: "help", command: head }
+  }
+
   if (head === "--agent" && second) {
     return parseOuroCommand(args.slice(2))
   }
@@ -705,7 +717,10 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
     if (!hookAgent) throw new Error("hook requires --agent <name>")
     return { kind: "hook", event, agent: hookAgent }
   }
-  if (head === "up") return { kind: "daemon.up" }
+  if (head === "up") {
+    const noRepair = args.includes("--no-repair")
+    return noRepair ? { kind: "daemon.up", noRepair: true } : { kind: "daemon.up" }
+  }
   if (head === "dev") {
     const devArgs = args.slice(1)
     let repoPath: string | undefined
@@ -765,7 +780,10 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "link") return parseLinkCommand(args.slice(1))
   if (head === "mcp-serve") return parseMcpServeCommand(args.slice(1))
   if (head === "setup") return parseSetupCommand(args.slice(1))
+  if (head === "doctor") return { kind: "doctor" }
   if (head === "bluebubbles") return parseBlueBubblesCommand(args.slice(1))
 
-  throw new Error(`Unknown command '${args.join(" ")}'.\n${usage()}`)
+  const suggestion = suggestCommand(head)
+  const hint = suggestion ? ` Did you mean '${suggestion}'?` : ""
+  throw new Error(`Unknown command '${args.join(" ")}'.${hint}\n${usage()}`)
 }

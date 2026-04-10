@@ -392,11 +392,15 @@ describe("daemon CLI default dependency branches", () => {
       getAgentDaemonLoggingConfigPath: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logging.json",
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+    vi.doMock("../../../heart/daemon/startup-tui", () => ({
+      pollDaemonStartup: vi.fn(async () => ({ stable: [], degraded: [] })),
+    }))
     vi.doMock("fs", () => ({
       existsSync: vi.fn(() => false),
       unlinkSync: vi.fn(),
       readFileSync: vi.fn(() => JSON.stringify({ version: "9.9.9" })),
       readdirSync: vi.fn(() => []),
+      rmSync: vi.fn(),
       openSync: vi.fn(() => 99),
       closeSync: vi.fn(),
     }))

@@ -24,6 +24,8 @@ import { checkAgentConfig } from "./agent-config-check"
 import { flushPulse } from "./pulse"
 import { sendDaemonCommand } from "./socket-client"
 import { getPackageVersion } from "../../mind/bundle-manifest"
+import { createHttpHealthProbe } from "./http-health-probe"
+import { getBlueBubblesChannelConfig } from "../config"
 
 function parseSocketPath(argv: string[]): string {
   const socketIndex = argv.indexOf("--socket")
@@ -104,9 +106,14 @@ const senseManager = new DaemonSenseManager({
   agents: [...managedAgents],
 })
 
+/* v8 ignore next 2 -- entry-point wiring: probe factory and HealthMonitor both have full unit tests @preserve */
+const bbChannelConfig = getBlueBubblesChannelConfig()
+const bbProbe = createHttpHealthProbe("bluebubbles", bbChannelConfig.port)
+
 const healthMonitor = new HealthMonitor({
   processManager,
   scheduler,
+  senseProbes: [bbProbe],
   alertSink: (message) => {
     emitNervesEvent({
       level: "error",
@@ -157,34 +164,45 @@ void daemon.start().then(() => {
   const osCronDeps = createRealOsCronDeps()
 
   for (const agent of managedAgents) {
-    const bundleRoot = path.join(bundlesRoot, `${agent}.ouro`)
-    const habitsDir = path.join(bundleRoot, "habits")
+    try {
+      const bundleRoot = path.join(bundlesRoot, `${agent}.ouro`)
+      const habitsDir = path.join(bundleRoot, "habits")
 
-    // Migrate old tasks/habits/ to habits/ at bundle root
-    migrateHabitsFromTaskSystem(bundleRoot)
+      // Migrate old tasks/habits/ to habits/ at bundle root
+      migrateHabitsFromTaskSystem(bundleRoot)
 
-    const osCronManager = new LaunchdCronManager(osCronDeps)
-    const scheduler = new HabitScheduler({
-      agent,
-      habitsDir,
-      osCronManager,
-      onHabitFire: (habitName) => {
-        processManager.sendToAgent(agent, { type: "habit", habitName })
-      },
-      deps: {
-        readdir: (dir) => fs.readdirSync(dir),
-        readFile: (p, enc) => fs.readFileSync(p, enc as BufferEncoding),
-        writeFile: (p, c, enc) => fs.writeFileSync(p, c, enc as BufferEncoding),
-        existsSync: (p) => fs.existsSync(p),
-        now: () => Date.now(),
-        ouroPath,
-        watch: (dir, cb) => fs.watch(dir, cb),
-      },
-    })
-    scheduler.start()
-    scheduler.startPeriodicReconciliation()
-    scheduler.watchForChanges()
-    habitSchedulers.push(scheduler)
+      const osCronManager = new LaunchdCronManager(osCronDeps)
+      const scheduler = new HabitScheduler({
+        agent,
+        habitsDir,
+        osCronManager,
+        onHabitFire: (habitName) => {
+          processManager.sendToAgent(agent, { type: "habit", habitName })
+        },
+        deps: {
+          readdir: (dir) => fs.readdirSync(dir),
+          readFile: (p, enc) => fs.readFileSync(p, enc as BufferEncoding),
+          writeFile: (p, c, enc) => fs.writeFileSync(p, c, enc as BufferEncoding),
+          existsSync: (p) => fs.existsSync(p),
+          now: () => Date.now(),
+          ouroPath,
+          watch: (dir, cb) => fs.watch(dir, cb),
+        },
+      })
+      scheduler.start()
+      scheduler.startPeriodicReconciliation()
+      scheduler.watchForChanges()
+      habitSchedulers.push(scheduler)
+    } catch (err: unknown) {
+      const error = err instanceof Error ? err : new Error(String(err))
+      emitNervesEvent({
+        level: "error",
+        component: "daemon",
+        event: "daemon.habit_setup_error",
+        message: `habit setup failed for agent ${agent}`,
+        meta: { agent, error: error.message },
+      })
+    }
   }
 
   healthMonitor.startPeriodicChecks(60_000)

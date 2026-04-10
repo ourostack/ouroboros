@@ -270,6 +270,8 @@ export interface DaemonProcessManagerLike {
     backoffMs: number
     lastExitCode?: number | null
     lastSignal?: string | null
+    errorReason?: string | null
+    fixHint?: string | null
   }>
 }
 
@@ -369,6 +371,8 @@ interface DaemonWorkerRow {
   startedAt: string | null
   lastExitCode: number | null
   lastSignal: string | null
+  errorReason: string | null
+  fixHint: string | null
 }
 
 interface DaemonStatusOverview {
@@ -410,6 +414,8 @@ function buildWorkerRows(
     startedAt: snapshot.startedAt,
     lastExitCode: snapshot.lastExitCode ?? null,
     lastSignal: snapshot.lastSignal ?? null,
+    errorReason: snapshot.errorReason ?? null,
+    fixHint: snapshot.fixHint ?? null,
   }))
 }
 

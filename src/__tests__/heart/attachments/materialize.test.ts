@@ -3,9 +3,13 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { materializeAttachment, persistBlueBubblesAttachmentSource } from "../../../heart/attachments/materialize"
+import { materializeAttachment } from "../../../heart/attachments/materialize"
 import { rememberRecentAttachment } from "../../../heart/attachments/store"
-import { buildBlueBubblesAttachmentRecord, buildCliLocalFileAttachmentRecord } from "../../../heart/attachments/types"
+import {
+  buildBlueBubblesAttachmentRecord,
+  persistBlueBubblesAttachmentSource,
+} from "../../../heart/attachments/sources/bluebubbles"
+import { buildCliLocalFileAttachmentRecord } from "../../../heart/attachments/sources/cli-local-file"
 import * as configModule from "../../../heart/config"
 import * as downloadModule from "../../../senses/bluebubbles/attachment-download"
 

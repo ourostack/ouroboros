@@ -1,6 +1,11 @@
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { DaemonHealthResult } from "./daemon"
 
+export interface SenseProbe {
+  name: string
+  check: () => Promise<{ ok: boolean; detail?: string }>
+}
+
 export interface HealthMonitorOptions {
   processManager: {
     listAgentSnapshots: () => Array<{ name: string; status: string }>
@@ -11,6 +16,7 @@ export interface HealthMonitorOptions {
   alertSink?: (message: string) => Promise<void> | void
   diskUsagePercent?: () => number
   onCriticalAgent?: (agentName: string) => void
+  senseProbes?: SenseProbe[]
 }
 
 export class HealthMonitor {
@@ -19,6 +25,7 @@ export class HealthMonitor {
   private readonly alertSink: (message: string) => Promise<void> | void
   private readonly diskUsagePercent: () => number
   private readonly onCriticalAgent: (agentName: string) => void
+  private readonly senseProbes: SenseProbe[]
   private intervalHandle: ReturnType<typeof setInterval> | null = null
 
   constructor(options: HealthMonitorOptions) {
@@ -27,6 +34,7 @@ export class HealthMonitor {
     this.alertSink = options.alertSink ?? (() => undefined)
     this.diskUsagePercent = options.diskUsagePercent ?? (() => 0)
     this.onCriticalAgent = options.onCriticalAgent ?? (() => undefined)
+    this.senseProbes = options.senseProbes ?? []
   }
 
   startPeriodicChecks(intervalMs: number): void {
@@ -109,6 +117,31 @@ export class HealthMonitor {
         status: "ok",
         message: `disk usage healthy (${diskPercent}%)`,
       })
+    }
+
+    for (const probe of this.senseProbes) {
+      try {
+        const outcome = await probe.check()
+        if (outcome.ok) {
+          results.push({
+            name: `sense-probe:${probe.name}`,
+            status: "ok",
+            message: `${probe.name} healthy`,
+          })
+        } else {
+          results.push({
+            name: `sense-probe:${probe.name}`,
+            status: "critical",
+            message: `${probe.name} failed: ${outcome.detail ?? "unknown"}`,
+          })
+        }
+      } catch (error) {
+        results.push({
+          name: `sense-probe:${probe.name}`,
+          status: "critical",
+          message: `${probe.name} error: ${error instanceof Error ? error.message : String(error)}`,
+        })
+      }
     }
 
     for (const result of results) {
