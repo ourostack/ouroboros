@@ -34,9 +34,15 @@ export interface BlueBubblesClient {
   setTyping(chat: BlueBubblesChatRef, typing: boolean): Promise<void>
   markChatRead(chat: BlueBubblesChatRef): Promise<void>
   checkHealth(): Promise<void>
+  listRecentMessages?(params?: BlueBubblesListRecentMessagesParams): Promise<BlueBubblesNormalizedEvent[]>
   repairEvent(event: BlueBubblesNormalizedEvent): Promise<BlueBubblesNormalizedEvent>
   /** Fetch the text content of a message by its GUID. Returns null if not found or on error. */
   getMessageText(messageGuid: string): Promise<string | null>
+}
+
+export interface BlueBubblesListRecentMessagesParams {
+  limit?: number
+  offset?: number
 }
 
 type ClientConfig = ReturnType<typeof getBlueBubblesConfig>
@@ -95,6 +101,10 @@ async function parseJsonBody(response: Response): Promise<unknown> {
   }
 }
 
+function describeCaughtValue(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
 function buildRepairUrl(baseUrl: string, messageGuid: string, password: string): string {
   const url = buildBlueBubblesApiUrl(baseUrl, `/api/v1/message/${encodeURIComponent(messageGuid)}`, password)
   const parsed = new URL(url)
@@ -143,6 +153,20 @@ function extractChatQueryRows(payload: unknown): BlueBubblesChatQueryRecord[] {
     return []
   }
   return data.map((entry) => asRecord(entry)).filter((entry): entry is BlueBubblesChatQueryRecord => entry !== null)
+}
+
+function extractMessageQueryRows(payload: unknown): JsonRecord[] {
+  const record = asRecord(payload)
+  const data = asRecord(record?.data)
+  const rows =
+    Array.isArray(record?.data) ? record.data
+      : Array.isArray(data?.messages) ? data.messages
+        : Array.isArray(data?.results) ? data.results
+          : Array.isArray(record?.messages) ? record.messages
+            : Array.isArray(payload) ? payload
+              : []
+
+  return rows.map((entry) => asRecord(entry)).filter((entry): entry is JsonRecord => entry !== null)
 }
 
 async function resolveChatGuidForIdentifier(
@@ -455,6 +479,77 @@ export function createBlueBubblesClient(
         message: "bluebubbles upstream health probe succeeded",
         meta: { serverUrl: config.serverUrl },
       })
+    },
+
+    async listRecentMessages(params: BlueBubblesListRecentMessagesParams = {}): Promise<BlueBubblesNormalizedEvent[]> {
+      const limit = Math.max(1, Math.min(100, Math.floor(params.limit ?? 50)))
+      const offset = Math.max(0, Math.floor(params.offset ?? 0))
+      const url = buildBlueBubblesApiUrl(config.serverUrl, "/api/v1/message/query", config.password)
+
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.bluebubbles_query_recent_start",
+        message: "querying recent bluebubbles messages",
+        meta: { limit, offset },
+      })
+
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          limit,
+          offset,
+          sort: "DESC",
+          with: ["chats", "attachments", "payloadData", "messageSummaryInfo"],
+        }),
+        signal: AbortSignal.timeout(channelConfig.requestTimeoutMs),
+      })
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => "")
+        emitNervesEvent({
+          level: "warn",
+          component: "senses",
+          event: "senses.bluebubbles_query_recent_error",
+          message: "bluebubbles recent message query failed",
+          meta: {
+            status: response.status,
+            reason: errorText || "unknown",
+          },
+        })
+        throw new Error(`BlueBubbles recent message query failed (${response.status}): ${errorText || "unknown"}`)
+      }
+
+      const payload = await parseJsonBody(response)
+      const rows = extractMessageQueryRows(payload)
+      const messages: BlueBubblesNormalizedEvent[] = []
+      for (const row of rows) {
+        try {
+          messages.push(normalizeBlueBubblesEvent({ type: "new-message", data: row }))
+        } catch (error) {
+          emitNervesEvent({
+            level: "warn",
+            component: "senses",
+            event: "senses.bluebubbles_query_recent_skip",
+            message: "skipped unusable bluebubbles recent message row",
+            meta: {
+              reason: describeCaughtValue(error),
+            },
+          })
+        }
+      }
+
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.bluebubbles_query_recent_end",
+        message: "queried recent bluebubbles messages",
+        meta: {
+          rows: rows.length,
+          normalized: messages.length,
+        },
+      })
+
+      return messages
     },
 
     async repairEvent(event: BlueBubblesNormalizedEvent): Promise<BlueBubblesNormalizedEvent> {
