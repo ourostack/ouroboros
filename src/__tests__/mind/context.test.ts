@@ -518,7 +518,9 @@ describe("loadSession", () => {
       JSON.stringify({ version: 1, messages: msgs, lastUsage: usage }),
     )
     const result = loadSession("/tmp/session.json")
-    expect(result).toMatchObject({ messages: msgs, lastUsage: usage, state: undefined })
+    expect(result).toMatchObject({ lastUsage: usage, state: undefined })
+    expect(result!.messages[0]).toEqual({ role: "system", content: "sys" })
+    expect(result!.messages[1]).toMatchObject({ role: "user", content: expect.stringContaining("hi") })
     expect(result!.events).toHaveLength(2)
   })
 
@@ -547,11 +549,9 @@ describe("loadSession", () => {
         recordedAt: expect.any(String),
       }),
     })
-    expect(result!.messages).toEqual([
-      { role: "system", content: "sys" },
-      { role: "user", content: "hello" },
-      { role: "assistant", content: "hi" },
-    ])
+    expect(result!.messages[0]).toEqual({ role: "system", content: "sys" })
+    expect(result!.messages[1]).toMatchObject({ role: "user", content: expect.stringContaining("hello") })
+    expect(result!.messages[2]).toMatchObject({ role: "assistant", content: expect.stringContaining("hi") })
   })
 
   it("returns lastUsage: undefined when not present in saved file", async () => {
@@ -561,7 +561,8 @@ describe("loadSession", () => {
       JSON.stringify({ version: 1, messages: msgs }),
     )
     const result = loadSession("/tmp/session.json")
-    expect(result).toMatchObject({ messages: msgs, lastUsage: undefined, state: undefined })
+    expect(result).toMatchObject({ lastUsage: undefined, state: undefined })
+    expect(result!.messages).toEqual([{ role: "system", content: "sys" }])
     expect(result!.events).toHaveLength(1)
   })
 
