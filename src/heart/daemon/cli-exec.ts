@@ -88,6 +88,17 @@ import { UpProgress } from "./up-progress"
 
 // ── ensureDaemonRunning ──
 
+const DEFAULT_DAEMON_STARTUP_TIMEOUT_MS = 10_000
+const DEFAULT_DAEMON_STARTUP_POLL_INTERVAL_MS = 500
+const DEFAULT_DAEMON_STARTUP_STABILITY_WINDOW_MS = 1_500
+const DEFAULT_DAEMON_STARTUP_RETRY_LIMIT = 1
+const DEFAULT_DAEMON_STARTUP_LOG_LINES = 10
+
+interface DaemonStartupFailure {
+  reason: string
+  retryable: boolean
+}
+
 export async function ensureDaemonRunning(deps: OuroCliDeps): Promise<EnsureDaemonResult> {
   const alive = await deps.checkSocketAlive(deps.socketPath)
   if (alive) {
@@ -129,63 +140,235 @@ export async function ensureDaemonRunning(deps: OuroCliDeps): Promise<EnsureDaem
     })
   }
 
-  deps.cleanupStaleSocket(deps.socketPath)
-  const started = await deps.startDaemonProcess(deps.socketPath)
-  const pid = started.pid ?? "unknown"
+  const retryLimit = deps.startupRetryLimit ?? DEFAULT_DAEMON_STARTUP_RETRY_LIMIT
+  let lastFailure: DaemonStartupFailure = {
+    reason: "daemon failed before the startup monitor recorded a failure",
+    retryable: false,
+  }
+  let lastPid: number | null = null
 
-  // Poll daemon status with real-time TUI progress until all agents
-  // are either stable (running 5s+) or definitively failed (crashed).
-  const stability = await pollDaemonStartup({
-    sendCommand: deps.sendCommand,
-    socketPath: deps.socketPath,
-    daemonPid: started.pid ?? null,
-    /* v8 ignore next -- thin wrapper: raw process.stdout.write for ANSI cursor control @preserve */
-    writeRaw: (text) => process.stdout.write(text),
-    /* v8 ignore next -- thin wrapper: real Date.now() injected for testability @preserve */
-    now: () => Date.now(),
-    /* v8 ignore next -- thin wrapper: real setTimeout injected for testability @preserve */
-    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
-    /* v8 ignore start -- daemon log tail + pid check: reads real filesystem, tested via deployment @preserve */
-    readLatestDaemonEvent: () => {
-      try {
-        // The daemon writes structured events to daemon.ndjson in the first
-        // agent bundle's state/daemon/logs/ directory. Read the last line to
-        // surface what it's currently doing (e.g., "starting auto-start agents").
-        const bundlesRoot = getAgentBundlesRoot()
-        if (!fs.existsSync(bundlesRoot)) return null
-        const agents = fs.readdirSync(bundlesRoot).filter((d) => d.endsWith(".ouro"))
-        for (const agent of agents) {
-          const logPath = path.join(bundlesRoot, agent, "state", "daemon", "logs", "daemon.ndjson")
-          if (!fs.existsSync(logPath)) continue
-          const stat = fs.statSync(logPath)
-          if (stat.size === 0) continue
-          // Only read logs from the last 30 seconds (daemon just started)
-          const mtime = stat.mtimeMs
-          if (Date.now() - mtime > 30_000) continue
-          const buf = Buffer.alloc(4096)
-          const fd = fs.openSync(logPath, "r")
+  const readLatestDaemonStartupEvent = () => {
+    try {
+      // The daemon writes structured events to daemon.ndjson in the first
+      // agent bundle's state/daemon/logs/ directory. Read the last line to
+      // surface what it's currently doing (e.g., "starting auto-start agents").
+      const bundlesRoot = getAgentBundlesRoot()
+      if (!fs.existsSync(bundlesRoot)) return null
+      const agents = fs.readdirSync(bundlesRoot).filter((d) => d.endsWith(".ouro"))
+      for (const agent of agents) {
+        const logPath = path.join(bundlesRoot, agent, "state", "daemon", "logs", "daemon.ndjson")
+        if (!fs.existsSync(logPath)) continue
+        const stat = fs.statSync(logPath)
+        if (stat.size === 0) continue
+        // Only read logs from the last 30 seconds (daemon just started)
+        const mtime = stat.mtimeMs
+        if (Date.now() - mtime > 30_000) continue
+        const buf = Buffer.alloc(4096)
+        const fd = fs.openSync(logPath, "r")
+        let bytesRead = 0
+        try {
           const readFrom = Math.max(0, stat.size - 4096)
-          fs.readSync(fd, buf, 0, 4096, readFrom)
+          bytesRead = fs.readSync(fd, buf, 0, 4096, readFrom)
+        } finally {
           fs.closeSync(fd)
-          const lines = buf.toString("utf-8").trim().split("\n").filter(Boolean)
-          const last = lines[lines.length - 1]
-          if (!last) continue
-          const parsed = JSON.parse(last)
-          return parsed.message ?? null
         }
-      } catch { /* best effort */ }
-      return null
-    },
-    /* v8 ignore stop */
-  })
+        const lines = buf.subarray(0, bytesRead).toString("utf-8").trim().split("\n").filter(Boolean)
+        const last = lines[lines.length - 1]
+        if (!last) continue
+        const parsed = JSON.parse(last)
+        return parsed.message ?? null
+      }
+    } catch {
+      // Best effort only.
+    }
+    return null
+  }
+
+  for (let attempt = 0; attempt <= retryLimit; attempt += 1) {
+    deps.reportDaemonStartupPhase?.("starting daemon...")
+    deps.reportDaemonStartupPhase?.("waiting for daemon socket...")
+    deps.cleanupStaleSocket(deps.socketPath)
+
+    const bootStartedAtMs = (deps.now ?? Date.now)()
+    const started = await deps.startDaemonProcess(deps.socketPath)
+    lastPid = started.pid ?? null
+
+    const startupFailure = await waitForDaemonStartup(deps, {
+      bootStartedAtMs,
+      pid: lastPid,
+    })
+    if (!startupFailure) {
+      const stability = await pollDaemonStartup({
+        sendCommand: deps.sendCommand,
+        socketPath: deps.socketPath,
+        daemonPid: lastPid,
+        /* v8 ignore next -- thin wrapper: raw process.stdout.write for ANSI cursor control @preserve */
+        writeRaw: (text) => process.stdout.write(text),
+        /* v8 ignore next -- thin wrapper: real Date.now() injected for testability @preserve */
+        now: () => Date.now(),
+        /* v8 ignore next -- thin wrapper: real setTimeout injected for testability @preserve */
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        /* v8 ignore start -- daemon log tail + pid check: reads real filesystem, tested via deployment @preserve */
+        readLatestDaemonEvent: readLatestDaemonStartupEvent,
+        /* v8 ignore stop */
+      })
+
+      return {
+        alreadyRunning: false,
+        message: `daemon started (pid ${lastPid ?? "unknown"})`,
+        stability,
+      }
+    }
+
+    lastFailure = startupFailure
+    if (!startupFailure.retryable || attempt >= retryLimit) {
+      break
+    }
+
+    deps.reportDaemonStartupPhase?.("daemon startup lost stability; cleaning up and retrying once...")
+  }
 
   return {
     alreadyRunning: false,
-    message: `daemon started (pid ${pid})`,
-    stability,
+    message: formatDaemonStartupFailureMessage(lastPid, lastFailure, deps),
   }
 }
 
+function hasStartupHealthMonitor(deps: OuroCliDeps): boolean {
+  return !!deps.healthFilePath && !!deps.readHealthState && !!deps.readHealthUpdatedAt
+}
+
+function hasFreshCurrentBootHealthSignal(
+  deps: OuroCliDeps,
+  bootStartedAtMs: number,
+  pid: number | null,
+): boolean {
+  const healthState = deps.readHealthState!(deps.healthFilePath!)
+  if (!healthState) return false
+
+  const healthUpdatedAt = deps.readHealthUpdatedAt!(deps.healthFilePath!)
+  if (healthUpdatedAt === null || healthUpdatedAt < bootStartedAtMs) {
+    return false
+  }
+
+  const healthStartedAtMs = Date.parse(healthState.startedAt)
+  if (!Number.isFinite(healthStartedAtMs) || healthStartedAtMs < bootStartedAtMs) {
+    return false
+  }
+
+  if (pid !== null && healthState.pid !== pid) {
+    return false
+  }
+
+  return true
+}
+
+function formatDaemonStartupFailureMessage(
+  pid: number | null,
+  failure: DaemonStartupFailure,
+  deps: OuroCliDeps,
+): string {
+  const lines = [
+    `daemon spawned (pid ${pid ?? "unknown"}) but failed to stabilize: ${failure.reason}`,
+  ]
+  const recentLogLines = deps.readRecentDaemonLogLines?.(DEFAULT_DAEMON_STARTUP_LOG_LINES) ?? []
+  if (recentLogLines.length > 0) {
+    lines.push("recent daemon logs:")
+    lines.push(...recentLogLines.map((line) => `  ${line}`))
+  }
+  lines.push("fix hint for daemon: check daemon logs or run `ouro doctor`")
+  return lines.join("\n")
+}
+
+async function waitForDaemonStartup(
+  deps: OuroCliDeps,
+  options: {
+    bootStartedAtMs: number
+    pid: number | null
+  },
+): Promise<DaemonStartupFailure | null> {
+  const now = deps.now ?? Date.now
+  const sleep = deps.sleep ?? defaultSleep
+  const timeoutMs = deps.startupTimeoutMs ?? DEFAULT_DAEMON_STARTUP_TIMEOUT_MS
+  const pollIntervalMs = deps.startupPollIntervalMs ?? DEFAULT_DAEMON_STARTUP_POLL_INTERVAL_MS
+  const stabilityWindowMs = deps.startupStabilityWindowMs ?? DEFAULT_DAEMON_STARTUP_STABILITY_WINDOW_MS
+  const deadline = options.bootStartedAtMs + timeoutMs
+  const useHealthMonitor = hasStartupHealthMonitor(deps)
+  let stableSinceMs: number | null = null
+  let sawSocket = false
+
+  if (!useHealthMonitor) {
+    const verified = await verifyDaemonAlive(
+      deps.checkSocketAlive,
+      deps.socketPath,
+      timeoutMs,
+      pollIntervalMs,
+      sleep,
+      now,
+    )
+    return verified
+      ? null
+      : {
+          reason: `daemon failed to respond within ${Math.ceil(timeoutMs / 1000)}s`,
+          retryable: false,
+        }
+  }
+
+  while (now() < deadline) {
+    await sleep(pollIntervalMs)
+    const aliveNow = await deps.checkSocketAlive(deps.socketPath)
+    if (!aliveNow) {
+      if (sawSocket) {
+        return {
+          reason: "daemon socket disappeared during startup",
+          retryable: true,
+        }
+      }
+      continue
+    }
+
+    if (!sawSocket) {
+      sawSocket = true
+      stableSinceMs = now()
+      deps.reportDaemonStartupPhase?.("verifying daemon health...")
+    }
+
+    if (!hasFreshCurrentBootHealthSignal(deps, options.bootStartedAtMs, options.pid)) {
+      continue
+    }
+
+    if (stableSinceMs !== null && now() - stableSinceMs >= stabilityWindowMs) {
+      return null
+    }
+  }
+
+  return {
+    reason: sawSocket
+      ? "daemon did not publish fresh health for the current boot attempt"
+      : `daemon failed to respond within ${Math.ceil(timeoutMs / 1000)}s`,
+    retryable: sawSocket,
+  }
+}
+
+async function verifyDaemonAlive(
+  checkSocketAlive: (socketPath: string) => Promise<boolean>,
+  socketPath: string,
+  maxWaitMs = 10_000,
+  pollIntervalMs = 500,
+  sleep: (ms: number) => Promise<void> = defaultSleep,
+  now: () => number = Date.now,
+): Promise<boolean> {
+  const deadline = now() + maxWaitMs
+  while (now() < deadline) {
+    await sleep(pollIntervalMs)
+    if (await checkSocketAlive(socketPath)) return true
+  }
+  return false
+}
+
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
 // ── GitHub Copilot model helpers ──
 
 export async function listGithubCopilotModels(
@@ -1022,7 +1205,12 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     }
 
     progress.startPhase("starting daemon")
-    const daemonResult = await ensureDaemonRunning(deps)
+    const daemonResult = await ensureDaemonRunning({
+      ...deps,
+      reportDaemonStartupPhase: (label) => {
+        ;(progress as { announceStep?: (line: string) => void }).announceStep?.(label)
+      },
+    })
     progress.end()
     deps.writeStdout(daemonResult.message)
 

@@ -7,7 +7,13 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { registerGlobalLogSink } from "../../nerves/index"
 import { FileMessageRouter } from "./message-router"
 import { HealthMonitor } from "./health-monitor"
-import { DaemonHealthWriter, createHealthNervesSink, getDefaultHealthPath } from "./daemon-health"
+import {
+  DaemonHealthWriter,
+  createHealthNervesSink,
+  getDefaultHealthPath,
+  type DaemonHealthState,
+  type DegradedComponent,
+} from "./daemon-health"
 import { TaskDrivenScheduler } from "./task-scheduler"
 import { configureDaemonRuntimeLogger } from "./runtime-logging"
 import { DaemonSenseManager } from "./sense-manager"
@@ -142,19 +148,73 @@ const daemon = new OuroDaemon({
   mode,
 })
 
+const daemonStartedAt = new Date().toISOString()
+const degradedComponents: DegradedComponent[] = []
+
+function buildDaemonHealthState(): DaemonHealthState {
+  return {
+    status: degradedComponents.length > 0 ? "degraded" : "ok",
+    mode,
+    pid: process.pid,
+    startedAt: daemonStartedAt,
+    uptimeSeconds: Math.floor(process.uptime()),
+    safeMode: null,
+    degraded: degradedComponents.map((entry) => ({ ...entry })),
+    agents: {},
+    habits: {},
+  }
+}
+
+function recordRecoverableBootstrapFailure(options: {
+  agent: string
+  component: string
+  habitsDir: string
+  error: unknown
+  guidance: string
+}): void {
+  const errorMessage = options.error instanceof Error ? options.error.message : String(options.error)
+  const existing = degradedComponents.find((entry) => entry.component === options.component)
+  const reason = `${errorMessage}. ${options.guidance}`
+
+  if (existing) {
+    existing.reason = reason
+  } else {
+    degradedComponents.push({
+      component: options.component,
+      reason,
+      since: new Date().toISOString(),
+    })
+  }
+
+  emitNervesEvent({
+    level: "warn",
+    component: "daemon",
+    event: "daemon.bootstrap_degraded",
+    message: "recoverable daemon bootstrap failure; daemon remains available in degraded mode",
+    meta: {
+      agent: options.agent,
+      component: options.component,
+      habitsDir: options.habitsDir,
+      error: errorMessage,
+      guidance: options.guidance,
+    },
+  })
+}
+
+function emitHabitSetupError(agent: string, error: unknown): void {
+  const normalized = error instanceof Error ? error : new Error(String(error))
+  emitNervesEvent({
+    level: "error",
+    component: "daemon",
+    event: "daemon.habit_setup_error",
+    message: `habit setup failed for agent ${agent}`,
+    meta: { agent, error: normalized.message },
+  })
+}
+
 /* v8 ignore start — daemon health writer wiring, tested via daemon-health.test.ts @preserve */
 const healthWriter = new DaemonHealthWriter(getDefaultHealthPath())
-const healthSink = createHealthNervesSink(healthWriter, () => ({
-  status: "ok",
-  mode,
-  pid: process.pid,
-  startedAt: new Date().toISOString(),
-  uptimeSeconds: Math.floor(process.uptime()),
-  safeMode: null,
-  degraded: [],
-  agents: {},
-  habits: {},
-}))
+const healthSink = createHealthNervesSink(healthWriter, buildDaemonHealthState)
 registerGlobalLogSink(healthSink)
 /* v8 ignore stop */
 
@@ -167,10 +227,11 @@ void daemon.start().then(() => {
   const osCronDeps = createRealOsCronDeps()
 
   for (const agent of managedAgents) {
-    try {
-      const bundleRoot = path.join(bundlesRoot, `${agent}.ouro`)
-      const habitsDir = path.join(bundleRoot, "habits")
+    const bundleRoot = path.join(bundlesRoot, `${agent}.ouro`)
+    const habitsDir = path.join(bundleRoot, "habits")
+    const degradedComponent = `habits:${agent}`
 
+    try {
       // Migrate old tasks/habits/ to habits/ at bundle root
       migrateHabitsFromTaskSystem(bundleRoot)
 
@@ -192,18 +253,37 @@ void daemon.start().then(() => {
           watch: (dir, cb) => fs.watch(dir, cb),
         },
       })
-      scheduler.start()
-      scheduler.startPeriodicReconciliation()
-      scheduler.watchForChanges()
-      habitSchedulers.push(scheduler)
+
+      try {
+        scheduler.start()
+        scheduler.startPeriodicReconciliation()
+        scheduler.watchForChanges()
+        habitSchedulers.push(scheduler)
+      } catch (error) {
+        try {
+          scheduler.stopWatching()
+          scheduler.stop()
+        } catch {
+          // Cleanup is best-effort for partially initialized schedulers.
+        }
+        emitHabitSetupError(agent, error)
+        recordRecoverableBootstrapFailure({
+          agent,
+          component: degradedComponent,
+          habitsDir,
+          error,
+          guidance: `fix ${agent} habits or cron setup and rerun ouro up to restore habit automation`,
+        })
+      }
     } catch (err: unknown) {
       const error = err instanceof Error ? err : new Error(String(err))
-      emitNervesEvent({
-        level: "error",
-        component: "daemon",
-        event: "daemon.habit_setup_error",
-        message: `habit setup failed for agent ${agent}`,
-        meta: { agent, error: error.message },
+      emitHabitSetupError(agent, error)
+      recordRecoverableBootstrapFailure({
+        agent,
+        component: degradedComponent,
+        habitsDir,
+        error,
+        guidance: `fix ${agent} habits or cron setup and rerun ouro up to restore habit automation`,
       })
     }
   }

@@ -174,6 +174,15 @@ describe("UpProgress", () => {
   // ── Non-TTY mode ──
 
   describe("non-TTY mode", () => {
+    it("announceStep writes a plain breadcrumb in non-TTY mode", () => {
+      const write = vi.fn()
+      const progress = new UpProgress({ write, isTTY: false })
+
+      progress.announceStep("verifying daemon health...")
+
+      expect(write).toHaveBeenCalledWith("verifying daemon health...")
+    })
+
     it("writes a static line on completePhase", () => {
       const write = vi.fn()
       const progress = new UpProgress({ write, isTTY: false })
@@ -203,6 +212,17 @@ describe("UpProgress", () => {
       progress.startPhase("test")
       const output = progress.render(1000)
       expect(output).toBe("")
+    })
+  })
+
+  describe("TTY announceStep", () => {
+    it("does not write breadcrumbs in TTY mode", () => {
+      const write = vi.fn()
+      const progress = new UpProgress({ write, isTTY: true })
+
+      progress.announceStep("verifying daemon health...")
+
+      expect(write).not.toHaveBeenCalled()
     })
   })
 
