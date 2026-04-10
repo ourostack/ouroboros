@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
+import * as fs from "fs"
 import * as net from "net"
 import * as os from "os"
 import * as path from "path"
@@ -31,7 +32,12 @@ function tmpSocketPath(name: string): string {
   return path.join(os.tmpdir(), `${name}-${Date.now()}-${Math.random().toString(16).slice(2)}.sock`)
 }
 
-function makeDaemon(socketPath: string) {
+function makeDaemon(
+  socketPath: string,
+  options?: {
+    outlookServerFactory?: () => Promise<{ stop: () => Promise<void> }>
+  },
+) {
   const processManager = {
     listAgentSnapshots: vi.fn(() => []),
     startAutoStartAgents: vi.fn(async () => undefined),
@@ -63,10 +69,15 @@ function makeDaemon(socketPath: string) {
     healthMonitor,
     router,
     senseManager,
+    outlookServerFactory: options?.outlookServerFactory,
   } as any)
 }
 
-async function sendDaemonStopOverRealSocket(socketPath: string, timeoutMs: number): Promise<{ raw: string; endedAt: number }> {
+async function sendDaemonCommandOverRealSocket(
+  socketPath: string,
+  command: Record<string, unknown>,
+  timeoutMs: number,
+): Promise<{ raw: string; endedAt: number }> {
   return new Promise((resolve, reject) => {
     const startedAt = Date.now()
     const client = net.createConnection(socketPath)
@@ -77,7 +88,7 @@ async function sendDaemonStopOverRealSocket(socketPath: string, timeoutMs: numbe
     }, timeoutMs)
 
     client.on("connect", () => {
-      client.write(JSON.stringify({ kind: "daemon.stop" }) + "\n")
+      client.write(JSON.stringify(command) + "\n")
     })
     client.on("data", (chunk) => {
       raw += chunk.toString("utf-8")
@@ -93,21 +104,26 @@ async function sendDaemonStopOverRealSocket(socketPath: string, timeoutMs: numbe
   })
 }
 
+async function sendDaemonStopOverRealSocket(socketPath: string, timeoutMs: number): Promise<{ raw: string; endedAt: number }> {
+  return sendDaemonCommandOverRealSocket(socketPath, { kind: "daemon.stop" }, timeoutMs)
+}
+
 describe("daemon.stop deadlock regression", () => {
-  let daemon: OuroDaemon | null = null
+  let daemons: OuroDaemon[] = []
   let socketPath: string
 
   afterEach(async () => {
-    if (daemon) {
+    for (const daemon of daemons.reverse()) {
       // Best-effort: if a test left the daemon up, try to stop it.
       try { await daemon.stop() } catch { /* already stopped */ }
-      daemon = null
     }
+    daemons = []
   })
 
   it("daemon.stop sent over a real socket completes within 2s and does not deadlock", async () => {
     socketPath = tmpSocketPath("daemon-stop-deadlock")
-    daemon = makeDaemon(socketPath)
+    const daemon = makeDaemon(socketPath)
+    daemons.push(daemon)
     await daemon.start()
 
     // Send daemon.stop and wait for the server to close the connection.
@@ -127,7 +143,8 @@ describe("daemon.stop deadlock regression", () => {
     // Mirrors the real `ouro up` flow: it sends daemon.status to detect
     // version drift, then daemon.stop to replace the running daemon.
     socketPath = tmpSocketPath("daemon-status-then-stop")
-    daemon = makeDaemon(socketPath)
+    const daemon = makeDaemon(socketPath)
+    daemons.push(daemon)
     await daemon.start()
 
     // First: status request, completes normally.
@@ -145,5 +162,38 @@ describe("daemon.stop deadlock regression", () => {
     // Then: stop request, must not deadlock.
     const stopResult = await sendDaemonStopOverRealSocket(socketPath, 2_000)
     expect(stopResult.endedAt).toBeLessThan(2_000)
+  })
+
+  it("an older daemon stop path does not unlink a newer daemon's rebound socket", async () => {
+    socketPath = tmpSocketPath("daemon-stop-socket-race")
+
+    let releaseOutlookStop: (() => void) | null = null
+    const daemonA = makeDaemon(socketPath, {
+      outlookServerFactory: async () => ({
+        stop: async () => {
+          await new Promise<void>((resolve) => {
+            releaseOutlookStop = resolve
+          })
+        },
+      }),
+    })
+    daemons.push(daemonA)
+    await daemonA.start()
+
+    const daemonAStop = daemonA.stop()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    const daemonB = makeDaemon(socketPath)
+    daemons.push(daemonB)
+    await daemonB.start()
+    expect(fs.existsSync(socketPath)).toBe(true)
+
+    releaseOutlookStop?.()
+    await daemonAStop
+
+    expect(fs.existsSync(socketPath)).toBe(true)
+
+    const statusResult = await sendDaemonCommandOverRealSocket(socketPath, { kind: "daemon.status" }, 2_000)
+    expect(statusResult.raw.length).toBeGreaterThan(0)
   })
 })
