@@ -5,6 +5,7 @@ import * as os from "os"
 import * as path from "path"
 
 import { OuroDaemon } from "../../../heart/daemon/daemon"
+import { setRuntimeLogger } from "../../../nerves/runtime"
 
 /**
  * Regression test for the daemon.stop deadlock observed live on
@@ -125,6 +126,8 @@ describe("daemon.stop deadlock regression", () => {
   afterEach(async () => {
     releaseBlockedOutlookStop?.()
     releaseBlockedOutlookStop = null
+    setRuntimeLogger(null)
+    vi.restoreAllMocks()
     for (const daemon of daemons.reverse()) {
       // Best-effort: if a test left the daemon up, try to stop it.
       try { await daemon.stop() } catch { /* already stopped */ }
@@ -176,6 +179,19 @@ describe("daemon.stop deadlock regression", () => {
     expect(stopResult.endedAt).toBeLessThan(2_000)
   })
 
+  it("removes the socket path when this daemon still owns it during stop", async () => {
+    socketPath = tmpSocketPath("daemon-stop-owned-socket")
+    const daemon = makeDaemon(socketPath)
+    daemons.push(daemon)
+    fs.writeFileSync(socketPath, "owned-daemon-socket", "utf-8")
+    const stats = fs.lstatSync(socketPath)
+    ;(daemon as any).socketIdentity = { dev: stats.dev, ino: stats.ino }
+
+    await daemon.stop()
+
+    expect(fs.existsSync(socketPath)).toBe(false)
+  })
+
   it("an older daemon stop path does not unlink a replacement path entry after releasing the original socket", async () => {
     socketPath = tmpSocketPath("daemon-stop-socket-race")
 
@@ -206,6 +222,15 @@ describe("daemon.stop deadlock regression", () => {
     // still proving the old daemon is deleting a path it no longer owns.
     fs.writeFileSync(socketPath, "replacement-daemon-socket", "utf-8")
     expect(fs.existsSync(socketPath)).toBe(true)
+    const replacementStats = fs.lstatSync(socketPath)
+
+    const warn = vi.fn()
+    setRuntimeLogger({
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn,
+      error: vi.fn(),
+    })
 
     releaseBlockedOutlookStop?.()
     releaseBlockedOutlookStop = null
@@ -213,5 +238,13 @@ describe("daemon.stop deadlock regression", () => {
 
     expect(fs.existsSync(socketPath)).toBe(true)
     expect(fs.readFileSync(socketPath, "utf-8")).toBe("replacement-daemon-socket")
+    expect(warn).toHaveBeenCalledWith(expect.objectContaining({
+      event: "daemon.socket_cleanup_skipped",
+      meta: expect.objectContaining({
+        socketPath,
+        actualDev: replacementStats.dev,
+        actualIno: replacementStats.ino,
+      }),
+    }))
   })
 })
