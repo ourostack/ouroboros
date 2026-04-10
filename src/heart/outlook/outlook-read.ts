@@ -46,7 +46,6 @@ import {
   type OutlookSessionUsage,
   type OutlookTaskSummary,
   type OutlookTranscriptMessage,
-  type OutlookTranscriptToolCall,
   type OutlookContinuityView,
   type OutlookOrientationView,
   type OutlookObligationDetailView,
@@ -60,6 +59,13 @@ import {
 import { readPresence, readPeerPresence } from "../../arc/presence"
 import { readActiveCares } from "../../arc/cares"
 import { readRecentEpisodes } from "../../arc/episodes"
+import {
+  deriveSessionChronology,
+  extractEventText,
+  loadSessionEnvelopeFile,
+  type SessionEnvelope,
+  type SessionEvent,
+} from "../session-events"
 
 interface OutlookReadOptions {
   bundlesRoot?: string
@@ -440,77 +446,57 @@ export function readOutlookMachineState(options: OutlookReadOptions = {}): Outlo
 // Session inventory — enumerate all sessions with summary metadata
 // ---------------------------------------------------------------------------
 
-interface SessionEnvelope {
-  version?: number
-  messages?: Array<Record<string, unknown>>
-  lastUsage?: Record<string, unknown>
-  state?: Record<string, unknown>
-}
-
 /* v8 ignore start — session envelope parsing utilities */
-function parseSessionUsage(raw: Record<string, unknown> | undefined): OutlookSessionUsage | null {
-  if (!raw) return null
-  const inputTokens = typeof raw.input_tokens === "number" ? raw.input_tokens : 0
-  const outputTokens = typeof raw.output_tokens === "number" ? raw.output_tokens : 0
-  const reasoningTokens = typeof raw.reasoning_tokens === "number" ? raw.reasoning_tokens : 0
-  const totalTokens = typeof raw.total_tokens === "number" ? raw.total_tokens : 0
+function parseSessionUsage(raw: unknown): OutlookSessionUsage | null {
+  if (!raw || typeof raw !== "object") return null
+  const record = raw as Record<string, unknown>
+  const inputTokens = typeof record.input_tokens === "number" ? record.input_tokens : 0
+  const outputTokens = typeof record.output_tokens === "number" ? record.output_tokens : 0
+  const reasoningTokens = typeof record.reasoning_tokens === "number" ? record.reasoning_tokens : 0
+  const totalTokens = typeof record.total_tokens === "number" ? record.total_tokens : 0
   if (inputTokens === 0 && outputTokens === 0 && totalTokens === 0) return null
   return { input_tokens: inputTokens, output_tokens: outputTokens, reasoning_tokens: reasoningTokens, total_tokens: totalTokens }
 }
 
-function parseSessionContinuity(raw: Record<string, unknown> | undefined): OutlookSessionContinuity | null {
+function parseSessionContinuity(raw: unknown): OutlookSessionContinuity | null {
   if (!raw) return null
-  return {
-    mustResolveBeforeHandoff: raw.mustResolveBeforeHandoff === true,
-    lastFriendActivityAt: typeof raw.lastFriendActivityAt === "string" ? raw.lastFriendActivityAt : null,
+  if (typeof raw !== "object") return null
+  const record = raw as Record<string, unknown>
+  const continuity = {
+    mustResolveBeforeHandoff: record.mustResolveBeforeHandoff === true,
+    lastFriendActivityAt: typeof record.lastFriendActivityAt === "string" ? record.lastFriendActivityAt : null,
   }
+  if (!continuity.mustResolveBeforeHandoff && continuity.lastFriendActivityAt === null) return null
+  return continuity
 }
 
-function extractContent(message: Record<string, unknown>): string | null {
-  if (typeof message.content === "string") return message.content
-  return null
+function extractContent(event: SessionEvent | null | undefined): string | null {
+  if (!event) return null
+  const text = extractEventText(event)
+  return text.length > 0 ? text : null
 }
 
-function extractToolCallNames(message: Record<string, unknown>): string[] {
-  const toolCalls = message.tool_calls
-  if (!Array.isArray(toolCalls)) return []
-  return toolCalls
-    .map((call) => {
-      if (call && typeof call === "object" && "function" in call) {
-        const fn = (call as Record<string, unknown>).function
-        if (fn && typeof fn === "object" && "name" in fn) {
-          return typeof (fn as Record<string, unknown>).name === "string" ? (fn as Record<string, unknown>).name as string : null
-        }
-      }
-      /* v8 ignore start */
-      return null
-      /* v8 ignore stop */
-    })
-    .filter((name): name is string => name !== null)
+function extractToolCallNames(event: SessionEvent | null | undefined): string[] {
+  if (!event) return []
+  return event.toolCalls
+    .map((call) => call.function.name)
+    .filter((name): name is string => typeof name === "string" && name.length > 0)
 }
 
 /* v8 ignore stop */
 
-function estimateTokenCount(messages: Array<Record<string, unknown>>): number {
+function estimateTokenCount(messages: SessionEvent[]): number {
   let charCount = 0
   for (const msg of messages) {
     const content = extractContent(msg)
     if (content) charCount += content.length
-    const toolCalls = msg.tool_calls
-    if (Array.isArray(toolCalls)) {
-      charCount += JSON.stringify(toolCalls).length
-    }
+    if (msg.toolCalls.length > 0) charCount += JSON.stringify(msg.toolCalls).length
   }
   return Math.ceil(charCount / 4)
 }
 
 function readSessionEnvelope(sessionPath: string): SessionEnvelope | null {
-  try {
-    const raw = fs.readFileSync(sessionPath, "utf-8")
-    return JSON.parse(raw) as SessionEnvelope
-  } catch {
-    return null
-  }
+  return loadSessionEnvelopeFile(sessionPath)
 }
 
 /* v8 ignore start — filesystem traversal with defensive isDirectory checks */
@@ -587,21 +573,29 @@ export function readSessionInventory(agentName: string, options: OutlookReadOpti
     if (friendId === "self" && channel === "inner") continue
 
     const envelope = readSessionEnvelope(sessionPath)
-    const messages = Array.isArray(envelope?.messages) ? envelope.messages : []
-    const lastUsage = parseSessionUsage(envelope?.lastUsage as Record<string, unknown> | undefined)
-    const continuity = parseSessionContinuity(envelope?.state as Record<string, unknown> | undefined)
+    const events = envelope?.events ?? []
+    const chronology = deriveSessionChronology(events)
+    const lastUsage = parseSessionUsage(envelope?.lastUsage)
+    const continuity = parseSessionContinuity(envelope?.state)
 
-    const lastActivityAt = continuity?.lastFriendActivityAt ?? safeFileMtime(sessionPath) ?? now.toISOString()
-    const activitySource: "friend-facing" | "mtime-fallback" = continuity?.lastFriendActivityAt ? "friend-facing" : "mtime-fallback"
+    const hasObservedEventTiming = events.some((event) => event.time.authoredAt !== null || event.time.observedAt !== null)
+    const lastActivityAt = hasObservedEventTiming
+      ? (chronology.lastActivityAt ?? continuity?.lastFriendActivityAt ?? safeFileMtime(sessionPath) ?? now.toISOString())
+      : (continuity?.lastFriendActivityAt ?? safeFileMtime(sessionPath) ?? now.toISOString())
+    const activitySource: "event-timeline" | "friend-facing" | "mtime-fallback" = hasObservedEventTiming && chronology.lastActivityAt
+      ? "event-timeline"
+      : continuity?.lastFriendActivityAt
+        ? "friend-facing"
+        : "mtime-fallback"
 
-    const userMessages = messages.filter((m) => m.role === "user")
-    const assistantMessages = messages.filter((m) => m.role === "assistant")
+    const userMessages = events.filter((m) => m.role === "user")
+    const assistantMessages = events.filter((m) => m.role === "assistant")
     const lastUser = userMessages.length > 0 ? userMessages[userMessages.length - 1]! : null
     const lastAssistant = assistantMessages.length > 0 ? assistantMessages[assistantMessages.length - 1]! : null
 
     const latestToolCallNames: string[] = []
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const names = extractToolCallNames(messages[i]!)
+    for (let i = events.length - 1; i >= 0; i--) {
+      const names = extractToolCallNames(events[i]!)
       if (names.length > 0) {
         latestToolCallNames.push(...names)
         break
@@ -611,14 +605,14 @@ export function readSessionInventory(agentName: string, options: OutlookReadOpti
     const friendName = resolveFriendName(friendsDir, friendId)
 
     // Derive reply state from message pattern
-    const lastMsg = messages.length > 0 ? messages[messages.length - 1]! : null
+    const lastMsg = events.length > 0 ? events[events.length - 1]! : null
     const mustResolve = continuity?.mustResolveBeforeHandoff === true
     let replyState: "needs-reply" | "on-hold" | "monitoring" | "idle" = "idle"
     if (mustResolve) {
       replyState = "on-hold"
     } else if (lastMsg?.role === "user") {
       replyState = "needs-reply"
-    } else if (messages.length > 0) {
+    } else if (events.length > 0) {
       replyState = "monitoring"
     }
 
@@ -631,13 +625,13 @@ export function readSessionInventory(agentName: string, options: OutlookReadOpti
       lastActivityAt,
       activitySource,
       replyState,
-      messageCount: messages.length,
+      messageCount: events.length,
       lastUsage,
       continuity,
-      latestUserExcerpt: truncateExcerpt(extractContent(lastUser ?? {})),
-      latestAssistantExcerpt: truncateExcerpt(extractContent(lastAssistant ?? {})),
+      latestUserExcerpt: truncateExcerpt(extractContent(lastUser)),
+      latestAssistantExcerpt: truncateExcerpt(extractContent(lastAssistant)),
       latestToolCallNames,
-      estimatedTokens: messages.length > 0 ? estimateTokenCount(messages) : null,
+      estimatedTokens: events.length > 0 ? estimateTokenCount(events) : null,
     })
   }
 
@@ -694,36 +688,11 @@ export function readSessionTranscript(
   const envelope = readSessionEnvelope(sessionPath)
   if (!envelope) return null
 
-  const rawMessages = Array.isArray(envelope.messages) ? envelope.messages : []
+  const rawMessages = envelope.events
   const friendsDir = path.join(agentRoot, "friends")
   const friendName = resolveFriendName(friendsDir, friendId)
 
-  const messages: OutlookTranscriptMessage[] = rawMessages.map((msg, index) => {
-    const role = typeof msg.role === "string" ? msg.role as OutlookTranscriptMessage["role"] : "user"
-    const content = extractContent(msg)
-    const result: OutlookTranscriptMessage = { index, role, content }
-
-    if (typeof msg.name === "string") result.name = msg.name
-    if (typeof msg.tool_call_id === "string") result.tool_call_id = msg.tool_call_id
-
-    if (Array.isArray(msg.tool_calls)) {
-      result.tool_calls = msg.tool_calls
-        .filter((call): call is Record<string, unknown> => call != null && typeof call === "object")
-        .map((call) => {
-          const fn = call.function as Record<string, unknown> | undefined
-          return {
-            id: typeof call.id === "string" ? call.id : "",
-            type: typeof call.type === "string" ? call.type : "function",
-            function: {
-              name: typeof fn?.name === "string" ? fn.name : "unknown",
-              arguments: typeof fn?.arguments === "string" ? fn.arguments : JSON.stringify(fn?.arguments ?? ""),
-            },
-          } satisfies OutlookTranscriptToolCall
-        })
-    }
-
-    return result
-  })
+  const messages: OutlookTranscriptMessage[] = rawMessages
 
   return {
     friendId,
@@ -732,8 +701,8 @@ export function readSessionTranscript(
     key,
     sessionPath,
     messageCount: messages.length,
-    lastUsage: parseSessionUsage(envelope.lastUsage as Record<string, unknown> | undefined),
-    continuity: parseSessionContinuity(envelope.state as Record<string, unknown> | undefined),
+    lastUsage: parseSessionUsage(envelope.lastUsage),
+    continuity: parseSessionContinuity(envelope.state),
     messages,
   }
 }

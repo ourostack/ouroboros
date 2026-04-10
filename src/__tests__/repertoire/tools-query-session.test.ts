@@ -360,14 +360,16 @@ describe("query_session tool", () => {
 
     // No ctx.summarize — should return raw transcript
     const result = await tool.handler({ friendId: "friend-1", channel: "cli" })
-    expect(result).toContain("[user] hello")
-    expect(result).toContain("[assistant] hi there")
+    expect(result).toContain("| user |")
+    expect(result).toContain("hello")
+    expect(result).toContain("| assistant |")
+    expect(result).toContain("hi there")
   })
 
   it("delegates transcript recall to the shared session-recall helper", async () => {
     const mockRecallSession = vi.fn().mockResolvedValue({
       kind: "ok",
-      transcript: "[user] hello",
+      transcript: "[2026-04-09 17:45 | user | evt-000001] hello",
       summary: "Summary: hello",
       snapshot: "recent focus: hello",
     })
@@ -397,6 +399,61 @@ describe("query_session tool", () => {
       key: "session",
     }))
     expect(result).toBe("Summary: hello")
+  })
+
+  it("includes canonical chronology in raw transcript mode", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
+
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        version: 2,
+        events: [
+          {
+            id: "evt-000001",
+            sequence: 1,
+            role: "user",
+            content: "hello",
+            name: null,
+            toolCallId: null,
+            toolCalls: [],
+            attachments: [],
+            time: {
+              authoredAt: null,
+              authoredAtSource: "unknown",
+              observedAt: "2026-04-09T17:45:00.000Z",
+              observedAtSource: "ingest",
+              recordedAt: "2026-04-09T17:45:00.000Z",
+              recordedAtSource: "save",
+            },
+            relations: {
+              replyToEventId: null,
+              threadRootEventId: null,
+              references: [],
+              toolCallId: null,
+              supersedesEventId: null,
+              redactsEventId: null,
+            },
+            provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+          },
+        ],
+        projection: {
+          eventIds: ["evt-000001"],
+          trimmed: false,
+          maxTokens: 80000,
+          contextMargin: 20,
+          inputTokens: null,
+          projectedAt: "2026-04-09T17:45:00.000Z",
+        },
+        lastUsage: null,
+        state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: "2026-04-09T17:45:00.000Z" },
+      }),
+    )
+
+    const result = await tool.handler({ friendId: "friend-1", channel: "cli", key: "session" })
+    expect(result).toContain("evt-000001")
+    expect(result).toContain("2026-04-09")
+    expect(result).toContain("hello")
   })
 
   it("falls back to a missing-session message when shared recall throws unexpectedly", async () => {
@@ -669,8 +726,8 @@ describe("query_session tool", () => {
     })
 
     expect(result).toContain('history search: "billing"')
-    expect(result).toContain("[user] billing was failing in staging earlier")
-    expect(result).toContain("[assistant] billing is green now after the fix")
+    expect(result).toContain("billing was failing in staging earlier")
+    expect(result).toContain("billing is green now after the fix")
     expect(result).not.toContain("latest unrelated answer")
   })
 
