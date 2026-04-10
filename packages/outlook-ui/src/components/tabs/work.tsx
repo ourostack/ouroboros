@@ -37,7 +37,7 @@ interface SelfFixView {
   steps: SelfFixStep[]
 }
 
-export function WorkTab({ agentName, view, focus, onFocusConsumed }: { agentName: string; view: Record<string, unknown>; focus?: string; onFocusConsumed?: () => void }) {
+export function WorkTab({ agentName, view, focus, onFocusConsumed, refreshGeneration }: { agentName: string; view: Record<string, unknown>; focus?: string; onFocusConsumed?: () => void; refreshGeneration: number }) {
   const nav = useNavigate()
   const [coding, setCoding] = useState<Record<string, unknown> | null>(null)
   const [obligationDetail, setObligationDetail] = useState<ObligationDetailView | null>(null)
@@ -50,7 +50,7 @@ export function WorkTab({ agentName, view, focus, onFocusConsumed }: { agentName
     fetchJson<Record<string, unknown>>(`/agents/${encodeURIComponent(agentName)}/coding`).then(setCoding)
     fetchJson<ObligationDetailView>(`/agents/${encodeURIComponent(agentName)}/obligations`).then(setObligationDetail).catch(() => {})
     fetchJson<SelfFixView>(`/agents/${encodeURIComponent(agentName)}/self-fix`).then(setSelfFix).catch(() => {})
-  }, [agentName])
+  }, [agentName, refreshGeneration])
 
   // Use enriched obligations when available, fall back to summary
   const displayObligations = obligationDetail?.items ?? obligations.items ?? []
