@@ -66,6 +66,10 @@ describe("daemon command plane branches", () => {
       router,
       bundlesRoot,
       senseManager,
+      outlookServerFactory: vi.fn(async () => ({
+        url: "http://127.0.0.1:6876",
+        stop: async () => undefined,
+      })),
     } as any)
     return { daemon, processManager, scheduler, healthMonitor, router, senseManager }
   }
@@ -397,14 +401,14 @@ describe("daemon command plane branches", () => {
     expect(result.error).toContain("Unknown daemon command")
   })
 
-  it("stops cleanly when server was never started", async () => {
+  it("does not delete a socket path when stop is called before this daemon ever owned it", async () => {
     const socketPath = tmpSocketPath("daemon-stop-no-server")
     fs.writeFileSync(socketPath, "stale", "utf-8")
     const { daemon, processManager } = make(socketPath)
 
     await daemon.stop()
     expect(processManager.stopAll).toHaveBeenCalledTimes(1)
-    expect(fs.existsSync(socketPath)).toBe(false)
+    expect(fs.existsSync(socketPath)).toBe(true)
   })
 
   it("handles health, agent lifecycle, and cron commands", async () => {

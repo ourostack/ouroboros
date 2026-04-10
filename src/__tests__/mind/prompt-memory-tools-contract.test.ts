@@ -111,6 +111,16 @@ describe("prompt memory/friend contracts", () => {
     expect(system).toContain("grounded session history")
   })
 
+  it("includes [diary/external] trust framing guidance in tool contracts", async () => {
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const system = await buildSystem("cli")
+
+    expect(system).toContain("[diary/external]")
+    expect(system).toContain("outside sources")
+    expect(system).toContain("potentially untrustworthy")
+  })
+
   it("includes memory-awareness lines when friend context present", async () => {
     const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()

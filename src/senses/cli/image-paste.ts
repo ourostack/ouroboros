@@ -16,8 +16,9 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { getAgentName, getAgentRoot } from "../../heart/identity"
 import { renderAttachmentBlock } from "../../heart/attachments/render"
 import { rememberRecentAttachment } from "../../heart/attachments/store"
-import { buildCliLocalFileAttachmentRecord, type AttachmentRecord } from "../../heart/attachments/types"
 import { materializeAttachment } from "../../heart/attachments/materialize"
+import { buildCliLocalFileAttachmentRecord } from "../../heart/attachments/sources/cli-local-file"
+import type { AttachmentRecord } from "../../heart/attachments/types"
 
 /** Matches image file extensions (case-insensitive) */
 export const IMAGE_EXTENSION_REGEX = /\.(png|jpe?g|gif|webp)$/i

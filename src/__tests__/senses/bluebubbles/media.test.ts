@@ -2127,9 +2127,9 @@ describe("BlueBubbles media hydration — capability-aware image routing", () =>
 
   it("non-vision chat model with a non-persisted image: falls back cleanly instead of retrying the old dead path", async () => {
     vi.resetModules()
-    vi.doMock("../../../heart/attachments/materialize", async () => {
-      const actual = await vi.importActual<typeof import("../../../heart/attachments/materialize")>(
-        "../../../heart/attachments/materialize",
+    vi.doMock("../../../heart/attachments/sources/bluebubbles", async () => {
+      const actual = await vi.importActual<typeof import("../../../heart/attachments/sources/bluebubbles")>(
+        "../../../heart/attachments/sources/bluebubbles",
       )
       return {
         ...actual,
@@ -2154,7 +2154,7 @@ describe("BlueBubbles media hydration — capability-aware image routing", () =>
     expect(result.inputParts).toEqual([
       { type: "text", text: "[image description failed: image attachment could not be persisted for normalization]" },
     ])
-    vi.doUnmock("../../../heart/attachments/materialize")
+    vi.doUnmock("../../../heart/attachments/sources/bluebubbles")
   })
 
   it("non-vision chat model falls back to the persisted mime when normalization omits one", async () => {

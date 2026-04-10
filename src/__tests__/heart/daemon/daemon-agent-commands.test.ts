@@ -57,6 +57,10 @@ describe("daemon agent service command routing", () => {
       stopAll: vi.fn(async () => undefined),
       listSenseRows: vi.fn(() => []),
     }
+    const outlookServerFactory = vi.fn(async () => ({
+      origin: "http://127.0.0.1:0",
+      stop: vi.fn(async () => undefined),
+    }))
 
     const daemon = new OuroDaemon({
       socketPath,
@@ -65,6 +69,8 @@ describe("daemon agent service command routing", () => {
       healthMonitor,
       router,
       senseManager,
+      outlookServerFactory,
+      mode: "dev",
     } as any)
     return { daemon }
   }

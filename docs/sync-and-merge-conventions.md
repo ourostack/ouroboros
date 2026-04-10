@@ -90,6 +90,7 @@ git push origin --delete <branch>
 
 The detailed executable workflow lives in:
 
-- `subagents/work-merger.md`
+- `AGENTS.md` for repo-scoped merge policy and workflow gates
+- `github.com/ouroborosbot/ouroboros-skills` (`skills/work-merger/SKILL.md`) for the shared work-merger skill definition
 
 This doc exists to keep the repo-level policy discoverable, concise, and current.

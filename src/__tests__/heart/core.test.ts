@@ -19,6 +19,21 @@ function mockReadFileToolResult(content: string, matcher: RegExp = /\.txt$/) {
   })
 }
 
+function interceptFatalProviderInit() {
+  const mockExit = vi.spyOn(process, "exit").mockImplementation((() => {
+    throw new Error("process.exit called")
+  }) as any)
+  const mockError = vi.spyOn(console, "error").mockImplementation(() => {})
+  return {
+    mockExit,
+    mockError,
+    restore() {
+      mockExit.mockRestore()
+      mockError.mockRestore()
+    },
+  }
+}
+
 // Mock fs and child_process before importing core
 vi.mock("fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("fs")>()
@@ -3265,9 +3280,7 @@ describe("getClient", () => {
     const emitNervesEvent = vi.fn()
     vi.doMock("../../nerves/runtime", () => ({ emitNervesEvent }))
 
-    const mockExit = vi.spyOn(process, "exit").mockImplementation((() => {
-      throw new Error("process.exit called")
-    }) as any)
+    const fatal = interceptFatalProviderInit()
 
     try {
       const core = await import("../../heart/core")
@@ -3284,14 +3297,16 @@ describe("getClient", () => {
       // Expected -- process.exit throws
     }
 
-    expect(mockExit).toHaveBeenCalledWith(1)
+    expect(fatal.mockExit).toHaveBeenCalledWith(1)
+    expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
+    expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("providers.minimax.apiKey is missing"))
     expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       level: "error",
       event: "engine.provider_init_error",
       component: "engine",
     }))
 
-    mockExit.mockRestore()
+    fatal.restore()
   })
 
   it("uses MiniMax when minimax config is set", async () => {
@@ -3320,13 +3335,13 @@ describe("getClient", () => {
     const emitNervesEvent = vi.fn()
     vi.doMock("../../nerves/runtime", () => ({ emitNervesEvent }))
     await setupConfig({ humanFacingModel: "gpt-4o", providers: { azure: { apiKey: "azure-test-key" }, minimax: { apiKey: "mm-key" } } })
-    const mockExit = vi.spyOn(process, "exit").mockImplementation((() => {
-      throw new Error("process.exit called")
-    }) as any)
+    const fatal = interceptFatalProviderInit()
 
     try {
       const core = await import("../../heart/core")
       expect(() => core.getProvider()).toThrow("process.exit called")
+      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
+      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("providers.azure is incomplete"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
         level: "error",
         event: "engine.provider_init_error",
@@ -3334,7 +3349,7 @@ describe("getClient", () => {
         message: expect.stringContaining("provider 'azure' is selected"),
       }))
     } finally {
-      mockExit.mockRestore()
+      fatal.restore()
     }
   })
 
@@ -3667,13 +3682,13 @@ describe("provider abstraction contract", () => {
     }))
     await setupAzure()
 
-    const mockExit = vi.spyOn(process, "exit").mockImplementation((() => {
-      throw new Error("process.exit called")
-    }) as any)
+    const fatal = interceptFatalProviderInit()
 
     try {
       const core = await import("../../heart/core")
       expect(() => core.getProvider()).toThrow("process.exit called")
+      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
+      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("provider exploded"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
         level: "error",
         event: "engine.provider_init_error",
@@ -3681,7 +3696,7 @@ describe("provider abstraction contract", () => {
         message: "provider exploded",
       }))
     } finally {
-      mockExit.mockRestore()
+      fatal.restore()
       vi.doUnmock("../../heart/providers/azure")
     }
   })
@@ -3753,20 +3768,20 @@ describe("anthropic setup-token provider contract", () => {
       },
     })
 
-    const mockExit = vi.spyOn(process, "exit").mockImplementation((() => {
-      throw new Error("process.exit called")
-    }) as any)
+    const fatal = interceptFatalProviderInit()
 
     try {
       const core = await import("../../heart/core")
       expect(() => core.getProvider()).toThrow("process.exit called")
+      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
+      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("expected prefix sk-ant-oat01-"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
         level: "error",
         event: "engine.provider_init_error",
         message: expect.stringContaining("expected prefix sk-ant-oat01-"),
       }))
     } finally {
-      mockExit.mockRestore()
+      fatal.restore()
     }
   })
 
@@ -3783,20 +3798,20 @@ describe("anthropic setup-token provider contract", () => {
       },
     })
 
-    const mockExit = vi.spyOn(process, "exit").mockImplementation((() => {
-      throw new Error("process.exit called")
-    }) as any)
+    const fatal = interceptFatalProviderInit()
 
     try {
       const core = await import("../../heart/core")
       expect(() => core.getProvider()).toThrow("process.exit called")
+      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
+      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("too short"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
         level: "error",
         event: "engine.provider_init_error",
         message: expect.stringContaining("too short"),
       }))
     } finally {
-      mockExit.mockRestore()
+      fatal.restore()
     }
   })
 
@@ -3813,13 +3828,13 @@ describe("anthropic setup-token provider contract", () => {
       },
     })
 
-    const mockExit = vi.spyOn(process, "exit").mockImplementation((() => {
-      throw new Error("process.exit called")
-    }) as any)
+    const fatal = interceptFatalProviderInit()
 
     try {
       const core = await import("../../heart/core")
       expect(() => core.getProvider()).toThrow("process.exit called")
+      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
+      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("no setup-token credential was found"))
       const msg = emitNervesEvent.mock.calls.find(
         (c: any[]) => c[0]?.event === "engine.provider_init_error",
       )?.[0]?.message ?? ""
@@ -3831,7 +3846,7 @@ describe("anthropic setup-token provider contract", () => {
       expect(msg).not.toContain("npm run auth:claude-setup-token")
       expect(msg).not.toContain("--provider")
     } finally {
-      mockExit.mockRestore()
+      fatal.restore()
     }
   })
 
@@ -3847,14 +3862,14 @@ describe("anthropic setup-token provider contract", () => {
       },
     })
 
-    const mockExit = vi.spyOn(process, "exit").mockImplementation((() => {
-      throw new Error("process.exit called")
-    }) as any)
+    const fatal = interceptFatalProviderInit()
 
     try {
       const core = await import("../../heart/core")
       expect(() => core.getProvider()).toThrow("process.exit called")
-      expect(mockExit).toHaveBeenCalledWith(1)
+      expect(fatal.mockExit).toHaveBeenCalledWith(1)
+      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
+      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("providers.anthropic.setupToken is missing"))
       const msg = emitNervesEvent.mock.calls.find(
         (c: any[]) => c[0]?.event === "engine.provider_init_error",
       )?.[0]?.message ?? ""
@@ -3863,7 +3878,7 @@ describe("anthropic setup-token provider contract", () => {
       expect(msg).toContain("/tmp/.agentsecrets/testagent/secrets.json")
       expect(msg).toContain("providers.anthropic.setupToken")
     } finally {
-      mockExit.mockRestore()
+      fatal.restore()
     }
   })
 
@@ -4480,20 +4495,20 @@ describe("anthropic setup-token provider contract", () => {
       },
     })
 
-    const mockExit = vi.spyOn(process, "exit").mockImplementation((() => {
-      throw new Error("process.exit called")
-    }) as any)
+    const fatal = interceptFatalProviderInit()
 
     try {
       const core = await import("../../heart/core")
       expect(() => core.getProvider()).toThrow("process.exit called")
+      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
+      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("no setup-token credential was found"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
         level: "error",
         event: "engine.provider_init_error",
         message: expect.stringContaining("no setup-token credential was found"),
       }))
     } finally {
-      mockExit.mockRestore()
+      fatal.restore()
     }
   })
 
@@ -4641,20 +4656,20 @@ describe("anthropic setup-token provider contract", () => {
       },
     }))
 
-    const mockExit = vi.spyOn(process, "exit").mockImplementation((() => {
-      throw new Error("process.exit called")
-    }) as any)
+    const fatal = interceptFatalProviderInit()
 
     try {
       const core = await import("../../heart/core")
       expect(() => core.getProvider()).toThrow("process.exit called")
+      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
+      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("config-exploded"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
         level: "error",
         event: "engine.provider_init_error",
         message: "config-exploded",
       }))
     } finally {
-      mockExit.mockRestore()
+      fatal.restore()
       vi.doUnmock("../../heart/config")
     }
   })
@@ -4715,13 +4730,13 @@ describe("openai-codex oauth provider contract", () => {
       },
     } as any)
 
-    const mockExit = vi.spyOn(process, "exit").mockImplementation((() => {
-      throw new Error("process.exit called")
-    }) as any)
+    const fatal = interceptFatalProviderInit()
 
     try {
       const core = await import("../../heart/core")
       expect(() => core.getProvider()).toThrow("process.exit called")
+      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
+      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("providers.openai-codex.oauthAccessToken is missing"))
       const msg = emitNervesEvent.mock.calls.find(
         (c: any[]) => c[0]?.event === "engine.provider_init_error",
       )?.[0]?.message ?? ""
@@ -4733,7 +4748,7 @@ describe("openai-codex oauth provider contract", () => {
       expect(msg).not.toContain("npm run auth:openai-codex")
       expect(msg).not.toContain("--provider")
     } finally {
-      mockExit.mockRestore()
+      fatal.restore()
     }
   })
 
@@ -4820,20 +4835,20 @@ describe("openai-codex oauth provider contract", () => {
       },
     } as any)
 
-    const mockExit = vi.spyOn(process, "exit").mockImplementation((() => {
-      throw new Error("process.exit called")
-    }) as any)
+    const fatal = interceptFatalProviderInit()
 
     try {
       const core = await import("../../heart/core")
       expect(() => core.getProvider()).toThrow("process.exit called")
+      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
+      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("OAuth access token is empty"))
       const msg = emitNervesEvent.mock.calls.find(
         (c: any[]) => c[0]?.event === "engine.provider_init_error",
       )?.[0]?.message ?? ""
       expect(msg).toContain("OAuth access token is empty")
       expect(msg).toContain("providers.openai-codex.oauthAccessToken")
     } finally {
-      mockExit.mockRestore()
+      fatal.restore()
     }
   })
 
@@ -4851,20 +4866,20 @@ describe("openai-codex oauth provider contract", () => {
       },
     } as any)
 
-    const mockExit = vi.spyOn(process, "exit").mockImplementation((() => {
-      throw new Error("process.exit called")
-    }) as any)
+    const fatal = interceptFatalProviderInit()
 
     try {
       const core = await import("../../heart/core")
       expect(() => core.getProvider()).toThrow("process.exit called")
+      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
+      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("chatgpt_account_id"))
       const msg = emitNervesEvent.mock.calls.find(
         (c: any[]) => c[0]?.event === "engine.provider_init_error",
       )?.[0]?.message ?? ""
       expect(msg).toContain("chatgpt_account_id")
       expect(msg).toContain("backend-api/codex")
     } finally {
-      mockExit.mockRestore()
+      fatal.restore()
     }
   })
 
@@ -4883,20 +4898,20 @@ describe("openai-codex oauth provider contract", () => {
       },
     } as any)
 
-    const mockExit = vi.spyOn(process, "exit").mockImplementation((() => {
-      throw new Error("process.exit called")
-    }) as any)
+    const fatal = interceptFatalProviderInit()
 
     try {
       const core = await import("../../heart/core")
       expect(() => core.getProvider()).toThrow("process.exit called")
+      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
+      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("chatgpt_account_id"))
       const msg = emitNervesEvent.mock.calls.find(
         (c: any[]) => c[0]?.event === "engine.provider_init_error",
       )?.[0]?.message ?? ""
       expect(msg).toContain("chatgpt_account_id")
       expect(msg).toContain("backend-api/codex")
     } finally {
-      mockExit.mockRestore()
+      fatal.restore()
     }
   })
 
@@ -4913,20 +4928,20 @@ describe("openai-codex oauth provider contract", () => {
       },
     } as any)
 
-    const mockExit = vi.spyOn(process, "exit").mockImplementation((() => {
-      throw new Error("process.exit called")
-    }) as any)
+    const fatal = interceptFatalProviderInit()
 
     try {
       const core = await import("../../heart/core")
       expect(() => core.getProvider()).toThrow("process.exit called")
+      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
+      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("chatgpt_account_id"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
         level: "error",
         event: "engine.provider_init_error",
         message: expect.stringContaining("chatgpt_account_id"),
       }))
     } finally {
-      mockExit.mockRestore()
+      fatal.restore()
     }
   })
 
@@ -4944,20 +4959,20 @@ describe("openai-codex oauth provider contract", () => {
       },
     } as any)
 
-    const mockExit = vi.spyOn(process, "exit").mockImplementation((() => {
-      throw new Error("process.exit called")
-    }) as any)
+    const fatal = interceptFatalProviderInit()
 
     try {
       const core = await import("../../heart/core")
       expect(() => core.getProvider()).toThrow("process.exit called")
+      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
+      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("chatgpt_account_id"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
         level: "error",
         event: "engine.provider_init_error",
         message: expect.stringContaining("chatgpt_account_id"),
       }))
     } finally {
-      mockExit.mockRestore()
+      fatal.restore()
     }
   })
 
@@ -4975,20 +4990,20 @@ describe("openai-codex oauth provider contract", () => {
       },
     } as any)
 
-    const mockExit = vi.spyOn(process, "exit").mockImplementation((() => {
-      throw new Error("process.exit called")
-    }) as any)
+    const fatal = interceptFatalProviderInit()
 
     try {
       const core = await import("../../heart/core")
       expect(() => core.getProvider()).toThrow("process.exit called")
+      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
+      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("chatgpt_account_id"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
         level: "error",
         event: "engine.provider_init_error",
         message: expect.stringContaining("chatgpt_account_id"),
       }))
     } finally {
-      mockExit.mockRestore()
+      fatal.restore()
     }
   })
 

@@ -3,9 +3,11 @@ import type { BridgeRecord, BridgeSessionRef, BridgeTaskLink } from "../../nerve
 import type { TaskStatus, RuntimeMetadata } from "../../nerves/observation"
 import type { UsageData } from "../../nerves/observation"
 import type { InnerJobStatus } from "../daemon/thoughts"
+import type { SessionEvent } from "../session-events"
 
 // Re-export domain types through the observation layer
 export type { UsageData } from "../../nerves/observation"
+export type { SessionEvent } from "../session-events"
 
 export const OUTLOOK_PRODUCT_NAME = "Ouro Outlook" as const
 export const OUTLOOK_RELEASE_INTERACTION_MODEL = "read-only" as const
@@ -307,7 +309,7 @@ export interface OutlookSessionInventoryItem {
   key: string
   sessionPath: string
   lastActivityAt: string
-  activitySource: "friend-facing" | "mtime-fallback"
+  activitySource: "event-timeline" | "friend-facing" | "mtime-fallback"
   replyState: OutlookSessionReplyState
   messageCount: number
   lastUsage: OutlookSessionUsage | null
@@ -325,22 +327,28 @@ export interface OutlookSessionInventory {
   items: OutlookSessionInventoryItem[]
 }
 
-export interface OutlookTranscriptToolCall {
-  id: string
-  type: string
-  function: {
-    name: string
-    arguments: string
-  }
+export type OutlookTranscriptToolCall = SessionEvent["toolCalls"][number]
+export type OutlookTranscriptMessage = SessionEvent
+
+function transcriptContentText(content: SessionEvent["content"]): string {
+  if (typeof content === "string") return content
+  if (!Array.isArray(content)) return ""
+  return content
+    .map((part) => (
+      part.type === "text" && typeof part.text === "string"
+        ? part.text
+        : ""
+    ))
+    .filter((text) => text.length > 0)
+    .join("")
 }
 
-export interface OutlookTranscriptMessage {
-  index: number
-  role: "system" | "user" | "assistant" | "tool"
-  content: string | null
-  name?: string
-  tool_call_id?: string
-  tool_calls?: OutlookTranscriptToolCall[]
+export function getOutlookTranscriptMessageText(message: OutlookTranscriptMessage): string {
+  return transcriptContentText(message.content)
+}
+
+export function getOutlookTranscriptTimestamp(message: OutlookTranscriptMessage): string {
+  return message.time.authoredAt ?? message.time.observedAt ?? message.time.recordedAt
 }
 
 export interface OutlookSessionTranscript {

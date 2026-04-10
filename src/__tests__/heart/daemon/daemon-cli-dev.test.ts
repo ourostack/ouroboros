@@ -20,6 +20,10 @@ vi.mock("../../../heart/identity", () => ({
   HARNESS_CANONICAL_REPO_URL: "https://github.com/ouroborosbot/ouroboros.git",
 }))
 
+vi.mock("../../../heart/daemon/startup-tui", () => ({
+  pollDaemonStartup: vi.fn(async () => ({ stable: [], degraded: [] })),
+}))
+
 function makeDeps(overrides: Partial<OuroCliDeps> = {}): OuroCliDeps {
   return {
     socketPath: "/tmp/ouro-test.sock",

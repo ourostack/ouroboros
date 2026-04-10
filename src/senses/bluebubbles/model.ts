@@ -1,7 +1,7 @@
 import OpenAI from "openai"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { renderAttachmentBlock } from "../../heart/attachments/render"
-import { buildBlueBubblesAttachmentRecord } from "../../heart/attachments/types"
+import { buildBlueBubblesAttachmentRecord } from "../../heart/attachments/sources/bluebubbles"
 
 type JsonRecord = Record<string, unknown>
 

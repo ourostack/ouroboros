@@ -51,6 +51,10 @@ function make(socketPath: string, bundlesRoot?: string) {
   return { daemon, processManager, scheduler, healthMonitor, router, senseManager }
 }
 
+async function drainStartupSensePending(daemon: OuroDaemon): Promise<void> {
+  await (daemon as unknown as { drainPendingSenseMessages(): Promise<void> }).drainPendingSenseMessages()
+}
+
 /**
  * Helper: create a pending message file in the per-sense pending dir structure.
  * Path: {bundlesRoot}/{agent}.ouro/state/pending/{friendId}/{channel}/{key}/{filename}.json
@@ -85,8 +89,7 @@ describe("daemon startup sense pending drain", () => {
     })
 
     const { daemon, router } = make(socketPath, bundlesRoot)
-    await daemon.start()
-    await daemon.stop()
+    await drainStartupSensePending(daemon)
 
     // The drained message should be routed through the daemon router
     expect(router.send).toHaveBeenCalledWith(expect.objectContaining({
@@ -114,8 +117,7 @@ describe("daemon startup sense pending drain", () => {
     })
 
     const { daemon, router } = make(socketPath, bundlesRoot)
-    await daemon.start()
-    await daemon.stop()
+    await drainStartupSensePending(daemon)
 
     expect(router.send).toHaveBeenCalledWith(expect.objectContaining({
       from: "bob",
@@ -137,8 +139,7 @@ describe("daemon startup sense pending drain", () => {
     })
 
     const { daemon, router } = make(socketPath, bundlesRoot)
-    await daemon.start()
-    await daemon.stop()
+    await drainStartupSensePending(daemon)
 
     // CLI pending should NOT be routed
     expect(router.send).not.toHaveBeenCalled()
@@ -175,8 +176,7 @@ describe("daemon startup sense pending drain", () => {
     })
 
     const { daemon, router } = make(socketPath, bundlesRoot)
-    await daemon.start()
-    await daemon.stop()
+    await drainStartupSensePending(daemon)
 
     // All 3 messages should be routed
     expect(router.send).toHaveBeenCalledTimes(3)
@@ -195,8 +195,7 @@ describe("daemon startup sense pending drain", () => {
     fs.mkdirSync(path.join(bundlesRoot, "slugger.ouro", "state", "pending"), { recursive: true })
 
     const { daemon, router } = make(socketPath, bundlesRoot)
-    await daemon.start()
-    await daemon.stop()
+    await drainStartupSensePending(daemon)
 
     expect(router.send).not.toHaveBeenCalled()
 
@@ -214,8 +213,7 @@ describe("daemon startup sense pending drain", () => {
     })
 
     const { daemon, router } = make(socketPath, bundlesRoot)
-    await daemon.start()
-    await daemon.stop()
+    await drainStartupSensePending(daemon)
 
     // Inner channel pending should NOT be routed
     expect(router.send).not.toHaveBeenCalled()
@@ -236,8 +234,7 @@ describe("daemon startup sense pending drain", () => {
     fs.mkdirSync(path.join(bundlesRoot, "slugger.ouro"), { recursive: true })
 
     const { daemon } = make(socketPath, bundlesRoot)
-    await expect(daemon.start()).resolves.toBeUndefined()
-    await daemon.stop()
+    await expect(drainStartupSensePending(daemon)).resolves.toBeUndefined()
 
     fs.rmSync(bundlesRoot, { recursive: true, force: true })
   })
@@ -259,8 +256,7 @@ describe("daemon startup sense pending drain", () => {
     })
 
     const { daemon, router } = make(socketPath, bundlesRoot)
-    await daemon.start()
-    await daemon.stop()
+    await drainStartupSensePending(daemon)
 
     // The valid message should still be routed
     expect(router.send).toHaveBeenCalledWith(expect.objectContaining({
@@ -282,8 +278,7 @@ describe("daemon startup sense pending drain", () => {
     fs.writeFileSync(pendingRoot, "not-a-dir", "utf-8")
 
     const { daemon, router } = make(socketPath, bundlesRoot)
-    await daemon.start()
-    await daemon.stop()
+    await drainStartupSensePending(daemon)
 
     expect(router.send).not.toHaveBeenCalled()
 
@@ -311,8 +306,7 @@ describe("daemon startup sense pending drain", () => {
     })
 
     const { daemon, router } = make(socketPath, bundlesRoot)
-    await daemon.start()
-    await daemon.stop()
+    await drainStartupSensePending(daemon)
 
     // The broken friend dir should be skipped, valid one still routed
     expect(router.send).toHaveBeenCalledWith(expect.objectContaining({
@@ -333,8 +327,7 @@ describe("daemon startup sense pending drain", () => {
     fs.chmodSync(friendDir, 0o000)
 
     const { daemon, router } = make(socketPath, bundlesRoot)
-    await daemon.start()
-    await daemon.stop()
+    await drainStartupSensePending(daemon)
 
     expect(router.send).not.toHaveBeenCalled()
 
@@ -353,8 +346,7 @@ describe("daemon startup sense pending drain", () => {
     fs.chmodSync(channelDir, 0o000)
 
     const { daemon, router } = make(socketPath, bundlesRoot)
-    await daemon.start()
-    await daemon.stop()
+    await drainStartupSensePending(daemon)
 
     expect(router.send).not.toHaveBeenCalled()
 
@@ -384,8 +376,7 @@ describe("daemon startup sense pending drain", () => {
       .mockRejectedValueOnce(new Error("router down"))
       .mockResolvedValueOnce({ id: "msg-2", queuedAt: "2026-03-10T00:00:00.000Z" })
 
-    await daemon.start()
-    await daemon.stop()
+    await drainStartupSensePending(daemon)
 
     // Both messages should have been attempted
     expect(router.send).toHaveBeenCalledTimes(2)
@@ -420,8 +411,7 @@ describe("daemon startup sense pending drain", () => {
     })
 
     const { daemon, router } = make(socketPath, bundlesRoot)
-    await daemon.start()
-    await daemon.stop()
+    await drainStartupSensePending(daemon)
 
     // Only the valid message should be routed
     expect(router.send).toHaveBeenCalledTimes(1)

@@ -7,6 +7,7 @@ import { buildSystem } from "../mind/prompt"
 import { pickPhrase, getPhrases } from "../mind/phrases"
 import { formatKick, formatError } from "../mind/format"
 import { sessionPath } from "../heart/config"
+import { stampIngressTime } from "../heart/session-events"
 import { loadSession, deleteSession, postTurn } from "../mind/context"
 import { getPendingDir, drainDeferredReturns, drainPending, type PendingMessage } from "../mind/pending"
 import type { UsageData } from "../mind/context"
@@ -894,7 +895,9 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
           const userContent = contentParts
             ? contentParts
             : (prefix ? `${prefix}\n\n${input}` : input)
-          messages.push({ role: "user", content: userContent as any })
+          const userMsg = { role: "user" as const, content: userContent as any }
+          stampIngressTime(userMsg)
+          messages.push(userMsg)
           const traceId = createTraceId()
           result = await runAgent(messages, cliCallbacks, options.skipSystemPromptRefresh ? undefined : "cli", currentAbort.signal, {
             toolChoiceRequired: getEffectiveToolChoiceRequired(),
@@ -1026,6 +1029,7 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
   // Load existing session or start fresh
   const existing = loadSession(sessPath)
   let sessionState = existing?.state
+  let sessionEvents = existing?.events ?? []
   const mcpManager = await getSharedMcpManager() ?? undefined
   const sessionMessages: OpenAI.ChatCompletionMessageParam[] = existing?.messages && existing.messages.length > 0
     ? existing.messages
@@ -1050,6 +1054,7 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
       _testInputSource: options?._testInputSource,
       onAsyncAssistantMessage: async (messages, _assistantMessage) => {
         postTurn(messages, sessPath, undefined, undefined, sessionState)
+        sessionEvents = loadSession(sessPath)?.events ?? sessionEvents
       },
       runTurn: async (messages, userInput, callbacks, signal, toolContext, userContent) => {
         // Run the full per-turn pipeline: resolve -> gate -> session -> drain -> runAgent -> postTurn -> tokens
@@ -1090,6 +1095,7 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
               messages,
               sessionPath: sessPath,
               state: sessionState,
+              events: sessionEvents,
             }),
           },
           pendingDir,
@@ -1111,6 +1117,7 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
           postTurn: (turnMessages, sessionPathArg, usage, hooks, state) => {
             postTurn(turnMessages, sessionPathArg, usage, hooks, state)
             sessionState = state
+            sessionEvents = loadSession(sessionPathArg)?.events ?? sessionEvents
           },
           accumulateFriendTokens,
           signal,

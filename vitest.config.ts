@@ -36,6 +36,7 @@ export default defineConfig({
         "src/nerves/observation.ts",
         "src/heart/outlook/outlook-render.ts",
         "src/heart/daemon/cli-types.ts",
+        "src/heart/daemon/doctor-types.ts",
         "src/heart/daemon/daemon-cli.ts",
       ],
       thresholds: {

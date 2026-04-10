@@ -15,7 +15,7 @@ interface MemoryDecisionView {
   items: MemoryDecision[]
 }
 
-export function MemoryTab({ agentName }: { agentName: string }) {
+export function MemoryTab({ agentName, refreshGeneration }: { agentName: string; refreshGeneration: number }) {
   const [data, setData] = useState<Record<string, unknown> | null>(null)
   const [decisions, setDecisions] = useState<MemoryDecisionView | null>(null)
   const [view, setView] = useState<"diary" | "journal" | "decisions">("diary")
@@ -23,7 +23,7 @@ export function MemoryTab({ agentName }: { agentName: string }) {
   useEffect(() => {
     fetchJson<Record<string, unknown>>(`/agents/${encodeURIComponent(agentName)}/memory`).then(setData)
     fetchJson<MemoryDecisionView>(`/agents/${encodeURIComponent(agentName)}/memory-decisions`).then(setDecisions).catch(() => {})
-  }, [agentName])
+  }, [agentName, refreshGeneration])
 
   if (!data) {
     return (

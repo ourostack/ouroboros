@@ -22,7 +22,23 @@ import { describe, expect, it } from "vitest"
  * no longer reach the production daemon — but they CAN still create surprises
  * in concurrent tests. So we keep this contract test as a static defense.
  *
- * Three rules enforced as RATCHETS — current offenders are grandfathered in
+ * This file is the STATIC layer of a two-layer defense:
+ *
+ *   - STATIC (this file): scans source text for patterns that construct
+ *     paths under real prod directories. Catches the bug at the code-review
+ *     level — before the test ever runs.
+ *   - RUNTIME (`src/__tests__/nerves/global-capture.ts`, the "runtime
+ *     prod-path leak guard"): snapshots ~/AgentBundles at worker boot and
+ *     diffs at teardown. Catches leaks that the static scan misses —
+ *     specifically silent-fallback code paths where production code
+ *     routes a write to a real-fs path via a catch-all default (e.g. the
+ *     coding/manager.ts "default" agent name bug from PR #372).
+ *
+ * Both layers coexist. The static scan is fast (runs in ~300ms, no fs
+ * side effects) and catches 99% of issues. The runtime guard is the
+ * belt to the static scan's suspenders.
+ *
+ * Rules enforced as RATCHETS — current offenders are grandfathered in
  * the allowlists below, but no NEW files / lines can be added. Follow-up PRs
  * shrink the allowlists toward zero.
  *
@@ -113,6 +129,10 @@ const RM_RECURSIVE_ALLOWLIST: Array<{ file: string; why: string }> = [
   {
     file: "src/heart/daemon/cli-defaults.ts",
     why: "CLI self-setup temp dir cleanup: removes the temporary directory used during `ouro up` self-install after the new version is activated. Not agent-callable — runs inside createDefaultOuroCliDeps' setup path.",
+  },
+  {
+    file: "src/heart/daemon/stale-bundle-prune.ts",
+    why: "Stale ephemeral bundle pruning: removes .ouro directories that have no agent.json during `ouro up`. Not agent-callable — runs inside the daemon.up handler before ensureDaemonRunning.",
   },
 ]
 

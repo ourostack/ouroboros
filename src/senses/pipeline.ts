@@ -31,6 +31,7 @@ import { buildStartOfTurnPacket, renderStartOfTurnPacket, buildCapabilitiesSecti
 import { detectBundleState } from "../heart/bundle-state"
 import { preTurnPull, postTurnPush } from "../heart/sync"
 import { getSyncConfig } from "../heart/config"
+import { describeCurrentSessionTiming, stampIngressTime, type SessionEvent } from "../heart/session-events"
 import { derivePresence, writePresence } from "../arc/presence"
 import { emitEpisode } from "../arc/episodes"
 import { buildTurnContext } from "../heart/turn-context"
@@ -84,7 +85,7 @@ export interface InboundTurnInput {
   /** Resolves external identity into a FriendRecord + channel capabilities. */
   friendResolver: { resolve(): Promise<ResolvedContext> }
   /** Loads an existing session or creates a fresh one. */
-  sessionLoader: { loadOrCreate(): Promise<{ messages: ChatCompletionMessageParam[]; sessionPath: string; state?: SessionContinuityState }> }
+  sessionLoader: { loadOrCreate(): Promise<{ messages: ChatCompletionMessageParam[]; sessionPath: string; state?: SessionContinuityState; events?: SessionEvent[] }> }
   /** Directory to drain pending messages from. */
   pendingDir: string
   /** Friend store used for token accumulation. */
@@ -351,6 +352,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   // Step 3: Load/create session
   const session = await input.sessionLoader.loadOrCreate()
   const sessionMessages = session.messages
+  const sessionEvents = session.events ?? []
   let mustResolveBeforeHandoff = resolveMustResolveBeforeHandoff(
     session.state?.mustResolveBeforeHandoff === true,
     input.continuityIngressTexts,
@@ -368,6 +370,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     key: input.sessionKey ?? "session",
     sessionPath: session.sessionPath,
   }
+  const currentSessionTiming = describeCurrentSessionTiming(sessionEvents)
 
   // Step 3b: Pre-turn sync pull (opt-in) — MUST happen before any continuity state reads
   // so that obligations, episodes, cares, etc. reflect the latest remote state.
@@ -448,6 +451,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
 
   // Append user messages from the inbound turn
   for (const msg of input.messages) {
+    stampIngressTime(msg)
     sessionMessages.push(msg)
   }
 
@@ -483,6 +487,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
         primary: activeWorkFrame.primaryObligation,
         all: activeWorkFrame.pendingObligations,
       },
+      currentSessionTiming,
     })
     /* v8 ignore next 3 -- syncFailure propagation tested in sync.test.ts @preserve */
     if (syncFailure) {

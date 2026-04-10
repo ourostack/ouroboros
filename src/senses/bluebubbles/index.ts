@@ -868,6 +868,7 @@ async function handleBlueBubblesNormalizedEvent(
             messages: sessionMessages,
             sessionPath: sessPath,
             state: existing?.state,
+            events: existing?.events,
           }),
         },
         pendingDir,
@@ -1145,6 +1146,16 @@ export function createBlueBubblesWebhookHandler(
 ): (req: http.IncomingMessage, res: http.ServerResponse) => Promise<void> {
   return async (req, res) => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1")
+
+    if (url.pathname === "/health") {
+      if (req.method === "GET" || req.method === "HEAD") {
+        writeJson(res, 200, { status: "ok", uptime: process.uptime() })
+        return
+      }
+      writeJson(res, 405, { error: "Method not allowed" })
+      return
+    }
+
     const channelConfig = getBlueBubblesChannelConfig()
     const runtimeConfig = getBlueBubblesConfig()
 
