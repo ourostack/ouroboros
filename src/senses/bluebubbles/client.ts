@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto"
 import { getBlueBubblesChannelConfig, getBlueBubblesConfig, getMinimaxConfig } from "../../heart/config"
 import { loadAgentConfig } from "../../heart/identity"
+import { classifyHttpError } from "../../heart/providers/error-classification"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { MINIMAX_PROVIDER_BASE_URL } from "../../heart/providers/minimax"
 import { minimaxVlmDescribe } from "../../heart/providers/minimax-vlm"
@@ -39,6 +40,7 @@ type ClientConfig = ReturnType<typeof getBlueBubblesConfig>
 type ChannelConfig = ReturnType<typeof getBlueBubblesChannelConfig>
 type JsonRecord = Record<string, unknown>
 type BlueBubblesChatQueryRecord = Record<string, unknown>
+interface BlueBubblesHttpError extends Error { status?: number }
 
 function buildBlueBubblesApiUrl(baseUrl: string, endpoint: string, password: string): string {
   const root = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`
@@ -88,6 +90,42 @@ async function parseJsonBody(response: Response): Promise<unknown> {
     return JSON.parse(raw) as unknown
   } catch {
     return null
+  }
+}
+
+function stringifyUnknownError(error: unknown): string {
+  if (error instanceof Error) {
+    const message = error.message.trim()
+    if (message) return message
+    return error.name || "unknown"
+  }
+  const value = String(error).trim()
+  return value || "unknown"
+}
+
+function formatBlueBubblesHealthcheckFailure(
+  config: Pick<ClientConfig, "serverUrl">,
+  error: unknown,
+): string {
+  const serverUrl = config.serverUrl.trim() || "configured BlueBubbles server"
+  const rawReason = stringifyUnknownError(error)
+  const status = error instanceof Error && typeof (error as BlueBubblesHttpError).status === "number"
+    ? (error as BlueBubblesHttpError).status!
+    : null
+
+  if (!(error instanceof Error)) {
+    return `BlueBubbles health check failed at ${serverUrl}. Check \`bluebubbles.serverUrl\`, confirm the BlueBubbles app/API is running, and inspect daemon logs. Raw error: ${rawReason}`
+  }
+
+  switch (classifyHttpError(error)) {
+    case "network-error":
+      return `Cannot reach BlueBubbles at ${serverUrl}. Check \`bluebubbles.serverUrl\`, confirm the BlueBubbles app/API is running, and verify this machine can reach it. Raw error: ${rawReason}`
+    case "auth-failure":
+      return `BlueBubbles auth failed at ${serverUrl}${status === null ? "" : ` (HTTP ${status})`}. Check \`bluebubbles.password\` in secrets.json and confirm the server accepts it. Raw error: ${rawReason}`
+    case "server-error":
+      return `BlueBubbles upstream returned${status === null ? " a server error" : ` HTTP ${status}`} at ${serverUrl}. Check the BlueBubbles app/server logs and confirm the upstream API is healthy. Raw error: ${rawReason}`
+    default:
+      return `BlueBubbles health check failed at ${serverUrl}${status === null ? "" : ` (HTTP ${status})`}. Check the BlueBubbles server configuration and daemon logs. Raw error: ${rawReason}`
   }
 }
 
@@ -424,12 +462,23 @@ export function createBlueBubblesClient(
         message: "probing bluebubbles upstream health",
         meta: { serverUrl: config.serverUrl },
       })
-      const response = await fetch(url, {
-        method: "GET",
-        signal: AbortSignal.timeout(channelConfig.requestTimeoutMs),
-      })
-      if (!response.ok) {
-        const errorText = await response.text().catch(() => "")
+      try {
+        const response = await fetch(url, {
+          method: "GET",
+          signal: AbortSignal.timeout(channelConfig.requestTimeoutMs),
+        })
+        if (!response.ok) {
+          const errorText = await response.text().catch(() => "")
+          const error = new Error(errorText || "unknown") as BlueBubblesHttpError
+          error.status = response.status
+          throw error
+        }
+      } catch (error) {
+        const detail = formatBlueBubblesHealthcheckFailure(config, error)
+        const rawReason = stringifyUnknownError(error)
+        const status = error instanceof Error && typeof (error as BlueBubblesHttpError).status === "number"
+          ? (error as BlueBubblesHttpError).status
+          : null
         emitNervesEvent({
           level: "warn",
           component: "senses",
@@ -437,11 +486,13 @@ export function createBlueBubblesClient(
           message: "bluebubbles upstream health probe failed",
           meta: {
             serverUrl: config.serverUrl,
-            status: response.status,
-            reason: errorText || "unknown",
+            status,
+            reason: rawReason,
+            classification: error instanceof Error ? classifyHttpError(error) : "unknown",
+            detail,
           },
         })
-        throw new Error(`BlueBubbles upstream health check failed (${response.status}): ${errorText || "unknown"}`)
+        throw new Error(detail)
       }
       emitNervesEvent({
         component: "senses",
