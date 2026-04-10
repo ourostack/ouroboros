@@ -7,6 +7,8 @@ import * as path from "path"
 import { OuroDaemon } from "../../../heart/daemon/daemon"
 import { setRuntimeLogger } from "../../../nerves/runtime"
 
+vi.mock("fs", { spy: true })
+
 /**
  * Regression test for the daemon.stop deadlock observed live on
  * 2026-04-08:
@@ -252,5 +254,24 @@ describe("daemon.stop deadlock regression", () => {
         actualCtimeMs: replacementStats.ctimeMs,
       }),
     }))
+  })
+
+  it("still starts when capturing socket identity throws", async () => {
+    socketPath = tmpSocketPath("daemon-start-socket-identity-failure")
+    const daemon = makeDaemon(socketPath)
+    daemons.push(daemon)
+
+    const originalLstatSync = fs.lstatSync
+    vi.spyOn(fs, "lstatSync").mockImplementation(((targetPath: fs.PathLike, options?: fs.StatOptions & { bigint?: false }) => {
+      if (String(targetPath) === socketPath) {
+        throw new Error("simulated socket identity read failure")
+      }
+      return originalLstatSync(targetPath, options)
+    }) as typeof fs.lstatSync)
+
+    await daemon.start()
+
+    const statusResult = await sendDaemonCommandOverRealSocket(socketPath, { kind: "daemon.status" }, 2_000)
+    expect(statusResult.raw).toContain('"ok":true')
   })
 })
