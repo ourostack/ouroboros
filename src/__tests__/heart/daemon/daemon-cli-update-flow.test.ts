@@ -21,6 +21,15 @@ vi.mock("../../../heart/daemon/startup-tui", () => ({
   pollDaemonStartup: vi.fn(async () => ({ stable: [], degraded: [] })),
 }))
 
+vi.mock("../../../heart/daemon/up-progress", () => ({
+  UpProgress: class MockUpProgress {
+    startPhase = vi.fn()
+    completePhase = vi.fn()
+    end = vi.fn()
+    render = vi.fn(() => "")
+  },
+}))
+
 import { runOuroCli, type OuroCliDeps } from "../../../heart/daemon/daemon-cli"
 
 function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
@@ -51,7 +60,7 @@ describe("ouro up: CLI update flow", () => {
 
     expect(deps.installCliVersion).toHaveBeenCalledWith("0.1.0-alpha.90")
     expect(deps.activateCliVersion).toHaveBeenCalledWith("0.1.0-alpha.90")
-    expect(deps.writeStdout).toHaveBeenCalledWith("ouro updated to 0.1.0-alpha.90 (was 0.1.0-alpha.80)")
+    // Update message is now rendered via UpProgress.completePhase, not writeStdout
     expect(deps.reExecFromNewVersion).toHaveBeenCalledWith(["up"])
   })
 
