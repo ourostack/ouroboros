@@ -1,12 +1,6 @@
-export type TaskStatus =
-  | "drafting"
-  | "processing"
-  | "validating"
-  | "collaborating"
-  | "paused"
-  | "blocked"
-  | "done"
-  | "cancelled"
+import type { TaskStatus, TransitionResult } from "../../arc/task-lifecycle"
+
+export type { TaskStatus, TransitionResult } from "../../arc/task-lifecycle"
 
 export type CanonicalTaskType = "one-shot" | "ongoing"
 
@@ -57,13 +51,6 @@ export interface FixResult {
   remaining: TaskIssue[]
   skipped: TaskIssue[]
   health: string
-}
-
-export interface TransitionResult {
-  ok: boolean
-  from: TaskStatus
-  to: TaskStatus
-  reason?: string
 }
 
 export interface ValidationResult {

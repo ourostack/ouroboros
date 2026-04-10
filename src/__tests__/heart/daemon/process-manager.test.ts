@@ -105,6 +105,7 @@ describe("daemon process manager", () => {
       setTimeoutFn,
       clearTimeoutFn,
       configCheck,
+      statusWriter: () => {},
       onSnapshotChange,
     })
 
@@ -133,6 +134,7 @@ describe("daemon process manager", () => {
       setTimeoutFn,
       clearTimeoutFn,
       configCheck,
+      statusWriter: () => {},
     })
 
     await manager.startAgent("slugger")
@@ -657,6 +659,53 @@ describe("daemon process manager", () => {
     expect(spawn).not.toHaveBeenCalled()
     expect(manager.getAgentSnapshot("slugger")?.status).toBe("crashed")
     stderrSpy.mockRestore()
+  })
+
+  it("swallows statusWriter errors so config failures still update the snapshot", async () => {
+    now.mockReturnValue(1_000)
+    const statusWriter = vi.fn(() => {
+      throw new Error("status-writer-failed")
+    })
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+      configCheck: () => ({ ok: false, error: "missing creds", fix: "run ouro auth" }),
+      statusWriter,
+    })
+
+    await expect(manager.startAgent("slugger")).resolves.not.toThrow()
+
+    expect(spawn).not.toHaveBeenCalled()
+    expect(statusWriter).toHaveBeenCalledWith(expect.stringContaining("[daemon] slugger: missing creds"))
+    expect(manager.getAgentSnapshot("slugger")?.status).toBe("crashed")
+    expect(manager.getAgentSnapshot("slugger")?.fixHint).toContain("ouro auth")
+  })
+
+  it("swallows non-Error statusWriter throws so config failures still update the snapshot", async () => {
+    now.mockReturnValue(1_000)
+    const statusWriter = vi.fn(() => {
+      throw "status-writer-string"
+    })
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+      configCheck: () => ({ ok: false, error: "missing creds" }),
+      statusWriter,
+    })
+
+    await expect(manager.startAgent("slugger")).resolves.not.toThrow()
+
+    expect(spawn).not.toHaveBeenCalled()
+    expect(statusWriter).toHaveBeenCalledWith(expect.stringContaining("[daemon] slugger: missing creds"))
+    expect(manager.getAgentSnapshot("slugger")?.status).toBe("crashed")
   })
 
   it("proceeds with spawn when configCheck returns ok", async () => {

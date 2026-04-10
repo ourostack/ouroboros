@@ -30,6 +30,8 @@ import { checkAgentConfig } from "./agent-config-check"
 import { flushPulse } from "./pulse"
 import { sendDaemonCommand } from "./socket-client"
 import { getPackageVersion } from "../../mind/bundle-manifest"
+import { createHttpHealthProbe } from "./http-health-probe"
+import { getBlueBubblesChannelConfig } from "../config"
 
 function parseSocketPath(argv: string[]): string {
   const socketIndex = argv.indexOf("--socket")
@@ -110,9 +112,14 @@ const senseManager = new DaemonSenseManager({
   agents: [...managedAgents],
 })
 
+/* v8 ignore next 2 -- entry-point wiring: probe factory and HealthMonitor both have full unit tests @preserve */
+const bbChannelConfig = getBlueBubblesChannelConfig()
+const bbProbe = createHttpHealthProbe("bluebubbles", bbChannelConfig.port)
+
 const healthMonitor = new HealthMonitor({
   processManager,
   scheduler,
+  senseProbes: [bbProbe],
   alertSink: (message) => {
     emitNervesEvent({
       level: "error",
@@ -191,6 +198,17 @@ function recordRecoverableBootstrapFailure(options: {
   })
 }
 
+function emitHabitSetupError(agent: string, error: unknown): void {
+  const normalized = error instanceof Error ? error : new Error(String(error))
+  emitNervesEvent({
+    level: "error",
+    component: "daemon",
+    event: "daemon.habit_setup_error",
+    message: `habit setup failed for agent ${agent}`,
+    meta: { agent, error: normalized.message },
+  })
+}
+
 /* v8 ignore start — daemon health writer wiring, tested via daemon-health.test.ts @preserve */
 const healthWriter = new DaemonHealthWriter(getDefaultHealthPath())
 const healthSink = createHealthNervesSink(healthWriter, buildDaemonHealthState)
@@ -245,6 +263,7 @@ void daemon.start().then(() => {
         } catch {
           // Cleanup is best-effort for partially initialized schedulers.
         }
+        emitHabitSetupError(agent, error)
         recordRecoverableBootstrapFailure({
           agent,
           component: degradedComponent,
@@ -253,7 +272,9 @@ void daemon.start().then(() => {
           guidance: `fix ${agent} habits or cron setup and rerun ouro up to restore habit automation`,
         })
       }
-    } catch (error) {
+    } catch (err: unknown) {
+      const error = err instanceof Error ? err : new Error(String(err))
+      emitHabitSetupError(agent, error)
       recordRecoverableBootstrapFailure({
         agent,
         component: degradedComponent,

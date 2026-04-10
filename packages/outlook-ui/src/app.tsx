@@ -53,6 +53,7 @@ export function App() {
   const [machine, setMachine] = useState<MachineView | null>(null)
   const [selectedAgent, setSelectedAgent] = useState<string>(getInitialRoute()?.agent ?? "")
   const [agentView, setAgentView] = useState<Record<string, unknown> | null>(null)
+  const [refreshGeneration, setRefreshGeneration] = useState(0)
   const refreshRef = useRef(0)
   const initialRoute = useRef(getInitialRoute())
 
@@ -88,8 +89,13 @@ export function App() {
   useEffect(() => {
     const unsubscribe = subscribeToEvents(() => {
       const id = ++refreshRef.current
-      loadMachine().then(() => {
-        if (refreshRef.current === id && selectedAgent) loadAgent(selectedAgent)
+      void loadMachine().then(async () => {
+        if (refreshRef.current !== id) return
+        if (selectedAgent) {
+          await loadAgent(selectedAgent)
+          if (refreshRef.current !== id) return
+        }
+        setRefreshGeneration((current) => current + 1)
       })
     })
     return unsubscribe
@@ -227,6 +233,7 @@ export function App() {
         agentName={selectedAgent}
         view={agentView}
         deskPrefs={deskPrefs}
+        refreshGeneration={refreshGeneration}
         initialRoute={initialRoute.current?.agent === selectedAgent ? initialRoute.current : undefined}
       />
     </SidebarLayout>

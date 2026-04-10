@@ -137,6 +137,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
         messages: sessionMessages,
         sessionPath: sessPath,
         state: sessionState,
+        events: existing?.events,
       }),
     },
     /* v8 ignore stop */

@@ -43,11 +43,11 @@ function writeRecentAttachments(agentName: string, agentRoot: string, attachment
   fs.writeFileSync(targetPath, JSON.stringify(attachments, null, 2), "utf-8")
 }
 
-export function rememberRecentAttachment(
+export function rememberRecentAttachment<TAttachment extends AttachmentRecord>(
   agentName: string,
-  attachment: AttachmentRecord,
+  attachment: TAttachment,
   agentRoot = getAgentRoot(agentName),
-): AttachmentRecord {
+): TAttachment {
   const deduped = readRecentAttachments(agentName, agentRoot).filter((entry) => entry.id !== attachment.id)
   const updated = [attachment, ...deduped]
     .sort((a, b) => b.lastSeenAt - a.lastSeenAt)

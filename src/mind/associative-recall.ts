@@ -3,6 +3,7 @@ import * as fs from "fs"
 import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
 import { resolveDiaryRoot, type DiaryEntryProvenance } from "./diary"
+import { classifyProvenanceTrust } from "./provenance-trust"
 import { type EmbeddingProvider, createDefaultEmbeddingProvider } from "./embedding-provider"
 
 // Re-export EmbeddingProvider so existing consumers don't break.
@@ -218,8 +219,9 @@ export async function injectAssociativeRecall(
           if (fact.provenance.friendName) meta += ` friend=${fact.provenance.friendName}`
           if (fact.provenance.trust) meta += ` trust=${fact.provenance.trust}`
         }
+        const tag = classifyProvenanceTrust(fact.provenance) === "external" ? "diary/external" : "diary"
         resultLines.push({
-          text: `[diary] ${fact.text} [${meta}]`,
+          text: `[${tag}] ${fact.text} [${meta}]`,
           score: fact.score,
         })
       }

@@ -3,7 +3,7 @@ import { Badge } from "../../catalyst/badge"
 import { fetchJson, relTime, truncate } from "../../api"
 import { useNavigate } from "../../navigation"
 
-export function ConnectionsTab({ agentName, focus, onFocusConsumed }: { agentName: string; focus?: string; onFocusConsumed?: () => void }) {
+export function ConnectionsTab({ agentName, focus, onFocusConsumed, refreshGeneration }: { agentName: string; focus?: string; onFocusConsumed?: () => void; refreshGeneration: number }) {
   const nav = useNavigate()
   const [attention, setAttention] = useState<Record<string, unknown> | null>(null)
   const [bridges, setBridges] = useState<Record<string, unknown> | null>(null)
@@ -16,7 +16,7 @@ export function ConnectionsTab({ agentName, focus, onFocusConsumed }: { agentNam
       fetchJson<Record<string, unknown>>(`${base}/bridges`).then(setBridges),
       fetchJson<Record<string, unknown>>(`${base}/friends`).then(setFriends),
     ])
-  }, [agentName])
+  }, [agentName, refreshGeneration])
 
   const queueItems = (attention?.queueItems ?? []) as Array<Record<string, unknown>>
   const bridgeItems = (bridges?.items ?? []) as Array<Record<string, unknown>>

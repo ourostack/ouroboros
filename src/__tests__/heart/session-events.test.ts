@@ -1,0 +1,977 @@
+import { describe, expect, it } from "vitest"
+import type OpenAI from "openai"
+
+describe("session events", () => {
+  it("migrates a legacy v1 session envelope into canonical events with explicit metadata", async () => {
+    const { migrateLegacySessionEnvelope } = await import("../../heart/session-events")
+
+    const migrated = migrateLegacySessionEnvelope(
+      {
+        version: 1,
+        messages: [
+          { role: "system", content: "sys" },
+          { role: "user", content: "hello there" },
+          { role: "assistant", content: "hi back" },
+        ],
+        state: { lastFriendActivityAt: "2026-04-09T17:20:00.000Z", mustResolveBeforeHandoff: false },
+      },
+      {
+        recordedAt: "2026-04-09T17:21:00.000Z",
+        fileMtimeAt: "2026-04-09T17:21:00.000Z",
+      },
+    )
+
+    expect(migrated).not.toBeNull()
+    expect(migrated!.version).toBe(2)
+    expect(migrated!.events).toHaveLength(3)
+    expect(migrated!.projection.eventIds).toEqual(["evt-000001", "evt-000002", "evt-000003"])
+    expect(migrated!.events[1]).toMatchObject({
+      id: "evt-000002",
+      sequence: 2,
+      role: "user",
+      provenance: {
+        captureKind: "migration",
+        legacyVersion: 1,
+        sourceMessageIndex: 1,
+      },
+      time: {
+        authoredAt: null,
+        observedAt: null,
+        recordedAt: "2026-04-09T17:21:00.000Z",
+      },
+      relations: {
+        replyToEventId: null,
+        threadRootEventId: null,
+        references: [],
+        toolCallId: null,
+        supersedesEventId: null,
+        redactsEventId: null,
+      },
+    })
+  })
+
+  it("preserves full history on disk while projecting only the trimmed provider window", async () => {
+    const {
+      buildCanonicalSessionEnvelope,
+      projectProviderMessages,
+    } = await import("../../heart/session-events")
+
+    const previousMessages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "old question" },
+      { role: "assistant", content: "old answer" },
+    ]
+    const currentMessages: OpenAI.ChatCompletionMessageParam[] = [
+      ...previousMessages,
+      { role: "user", content: "latest question" },
+      { role: "assistant", content: "latest answer" },
+    ]
+    const trimmedMessages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "latest question" },
+      { role: "assistant", content: "latest answer" },
+    ]
+
+    const envelope = buildCanonicalSessionEnvelope({
+      existing: null,
+      previousMessages: [],
+      currentMessages: previousMessages,
+      trimmedMessages: previousMessages,
+      recordedAt: "2026-04-09T17:30:00.000Z",
+      lastUsage: null,
+      state: undefined,
+      projectionBasis: {
+        maxTokens: 80000,
+        contextMargin: 20,
+        inputTokens: null,
+      },
+    })
+
+    const updated = buildCanonicalSessionEnvelope({
+      existing: envelope,
+      previousMessages,
+      currentMessages,
+      trimmedMessages,
+      recordedAt: "2026-04-09T17:31:00.000Z",
+      lastUsage: null,
+      state: undefined,
+      projectionBasis: {
+        maxTokens: 80000,
+        contextMargin: 20,
+        inputTokens: 120000,
+      },
+    })
+
+    expect(updated.events).toHaveLength(5)
+    expect(updated.projection.eventIds).toEqual(["evt-000001", "evt-000004", "evt-000005"])
+    expect(projectProviderMessages(updated)).toEqual(trimmedMessages)
+  })
+
+  it("describes current session timing with reply cadence and unanswered inbound count", async () => {
+    const { describeCurrentSessionTiming } = await import("../../heart/session-events")
+
+    const timing = describeCurrentSessionTiming([
+      {
+        id: "evt-000001",
+        sequence: 1,
+        role: "user",
+        content: "hello",
+        name: null,
+        toolCallId: null,
+        toolCalls: [],
+        attachments: [],
+        time: {
+          authoredAt: null,
+          authoredAtSource: "unknown",
+          observedAt: "2026-04-09T10:00:00.000Z",
+          observedAtSource: "ingest",
+          recordedAt: "2026-04-09T10:00:00.000Z",
+          recordedAtSource: "save",
+        },
+        relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null },
+        provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+      },
+      {
+        id: "evt-000002",
+        sequence: 2,
+        role: "assistant",
+        content: "hi",
+        name: null,
+        toolCallId: null,
+        toolCalls: [],
+        attachments: [],
+        time: {
+          authoredAt: "2026-04-09T10:20:00.000Z",
+          authoredAtSource: "local",
+          observedAt: "2026-04-09T10:20:00.000Z",
+          observedAtSource: "local",
+          recordedAt: "2026-04-09T10:20:00.000Z",
+          recordedAtSource: "save",
+        },
+        relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null },
+        provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+      },
+      {
+        id: "evt-000003",
+        sequence: 3,
+        role: "user",
+        content: "one",
+        name: null,
+        toolCallId: null,
+        toolCalls: [],
+        attachments: [],
+        time: {
+          authoredAt: null,
+          authoredAtSource: "unknown",
+          observedAt: "2026-04-09T10:40:00.000Z",
+          observedAtSource: "ingest",
+          recordedAt: "2026-04-09T10:40:00.000Z",
+          recordedAtSource: "save",
+        },
+        relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null },
+        provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+      },
+      {
+        id: "evt-000004",
+        sequence: 4,
+        role: "user",
+        content: "two",
+        name: null,
+        toolCallId: null,
+        toolCalls: [],
+        attachments: [],
+        time: {
+          authoredAt: null,
+          authoredAtSource: "unknown",
+          observedAt: "2026-04-09T10:50:00.000Z",
+          observedAtSource: "ingest",
+          recordedAt: "2026-04-09T10:50:00.000Z",
+          recordedAtSource: "save",
+        },
+        relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null },
+        provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+      },
+    ], Date.parse("2026-04-09T11:00:00.000Z"))
+
+    expect(timing).toContain("last inbound 10m ago")
+    expect(timing).toContain("i last replied 40m ago")
+    expect(timing).toContain("2 unanswered inbound messages")
+  })
+
+  it("formats longer timing spans in hours and days", async () => {
+    const { describeCurrentSessionTiming } = await import("../../heart/session-events")
+
+    const timing = describeCurrentSessionTiming([
+      {
+        id: "evt-000001",
+        sequence: 1,
+        role: "assistant",
+        content: "older reply",
+        name: null,
+        toolCallId: null,
+        toolCalls: [],
+        attachments: [],
+        time: {
+          authoredAt: "2026-04-07T09:00:00.000Z",
+          authoredAtSource: "local",
+          observedAt: "2026-04-07T09:00:00.000Z",
+          observedAtSource: "local",
+          recordedAt: "2026-04-07T09:00:00.000Z",
+          recordedAtSource: "save",
+        },
+        relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null },
+        provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+      },
+      {
+        id: "evt-000002",
+        sequence: 2,
+        role: "user",
+        content: "newer question",
+        name: null,
+        toolCallId: null,
+        toolCalls: [],
+        attachments: [],
+        time: {
+          authoredAt: null,
+          authoredAtSource: "unknown",
+          observedAt: "2026-04-09T09:00:00.000Z",
+          observedAtSource: "ingest",
+          recordedAt: "2026-04-09T09:00:00.000Z",
+          recordedAtSource: "save",
+        },
+        relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null },
+        provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+      },
+    ], Date.parse("2026-04-09T11:00:00.000Z"))
+
+    expect(timing).toContain("last inbound 2h ago")
+    expect(timing).toContain("i last replied 2d ago")
+  })
+
+  it("accepts versionless legacy envelopes and filters attachment arrays in v2 envelopes", async () => {
+    const { parseSessionEnvelope } = await import("../../heart/session-events")
+
+    const migrated = parseSessionEnvelope({
+      messages: [
+        { role: "user", content: "hello" },
+      ],
+      state: { lastFriendActivityAt: "2026-04-09T17:20:00.000Z" },
+    }, {
+      recordedAt: "2026-04-09T17:21:00.000Z",
+      fileMtimeAt: "2026-04-09T17:21:00.000Z",
+    })
+
+    expect(migrated?.version).toBe(2)
+    expect(migrated?.events[0]?.provenance.captureKind).toBe("migration")
+
+    const parsed = parseSessionEnvelope({
+      version: 2,
+      events: [{
+        id: "evt-000001",
+        sequence: 1,
+        role: "user",
+        content: "hello",
+        name: null,
+        toolCallId: null,
+        toolCalls: [],
+        attachments: ["attachment:one", 42, "attachment:two"],
+        time: {
+          authoredAt: null,
+          authoredAtSource: "unknown",
+          observedAt: "2026-04-09T17:21:00.000Z",
+          observedAtSource: "ingest",
+          recordedAt: "2026-04-09T17:21:00.000Z",
+          recordedAtSource: "save",
+        },
+        relations: {
+          replyToEventId: null,
+          threadRootEventId: null,
+          references: [],
+          toolCallId: null,
+          supersedesEventId: null,
+          redactsEventId: null,
+        },
+        provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+      }],
+      projection: {
+        eventIds: ["evt-000001"],
+        trimmed: false,
+        maxTokens: null,
+        contextMargin: null,
+        inputTokens: null,
+        projectedAt: "2026-04-09T17:21:00.000Z",
+      },
+      lastUsage: null,
+      state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+    })
+
+    expect(parsed?.events[0]?.attachments).toEqual(["attachment:one", "attachment:two"])
+  })
+
+  it("drops malformed lastUsage payloads instead of preserving partial numeric garbage", async () => {
+    const { parseSessionEnvelope } = await import("../../heart/session-events")
+
+    const parsed = parseSessionEnvelope({
+      version: 2,
+      events: [],
+      projection: {
+        eventIds: [],
+        trimmed: false,
+        maxTokens: null,
+        contextMargin: null,
+        inputTokens: null,
+        projectedAt: null,
+      },
+      lastUsage: {
+        input_tokens: 10,
+        output_tokens: "11",
+        reasoning_tokens: 12,
+        total_tokens: 33,
+      },
+      state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+    }, {
+      recordedAt: "2026-04-09T17:21:00.000Z",
+      fileMtimeAt: "2026-04-09T17:21:00.000Z",
+    })
+
+    expect(parsed?.lastUsage).toBeNull()
+  })
+
+  it("migrates deprecated tool-call names in the canonical session helper", async () => {
+    const { migrateToolNames } = await import("../../heart/session-events")
+
+    const migrated = migrateToolNames([
+      {
+        role: "assistant",
+        tool_calls: [
+          { id: "tc1", type: "function", function: { name: "final_answer", arguments: "{}" } },
+          { id: "tc2", type: "custom", custom: { name: "leave-me-alone" } },
+        ],
+      } as any,
+    ])
+
+    expect((migrated[0] as any).tool_calls[0]).toEqual({
+      id: "tc1",
+      type: "function",
+      function: { name: "settle", arguments: "{}" },
+    })
+    expect((migrated[0] as any).tool_calls[1].type).toBe("custom")
+  })
+
+  it("normalizes provider messages across developer, assistant, tool, and user fallbacks", async () => {
+    const { sanitizeProviderMessages } = await import("../../heart/session-events")
+
+    const sanitized = sanitizeProviderMessages([
+      {
+        role: "developer",
+        content: [{ type: "text", text: "sys via developer" }],
+        name: "sysname",
+      } as any,
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "hello from parts" }],
+        name: "helper",
+        tool_calls: [
+          { function: { arguments: { ok: true } } },
+          { id: "tc-custom", type: "custom", function: { name: "kept-custom", arguments: "{}" } },
+        ],
+      } as any,
+      {
+        role: "tool",
+        content: [{ type: "text", text: "tool output" }],
+      } as any,
+      {
+        role: "user",
+        content: null,
+        name: "Ari",
+      } as any,
+    ])
+
+    expect(sanitized).toEqual([
+      {
+        role: "system",
+        content: "sys via developer",
+        name: "sysname",
+      },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "hello from parts" }],
+        name: "helper",
+        tool_calls: [
+          {
+            id: "",
+            type: "function",
+            function: { name: "unknown", arguments: "{\"ok\":true}" },
+          },
+          {
+            id: "tc-custom",
+            type: "custom",
+            function: { name: "kept-custom", arguments: "{}" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: "",
+        tool_call_id: "",
+      },
+      {
+        role: "user",
+        content: "",
+        name: "Ari",
+      },
+    ])
+  })
+
+  it("handles migrateToolNames guard paths before canonical normalization", async () => {
+    const { migrateToolNames } = await import("../../heart/session-events")
+
+    const migrated = migrateToolNames([
+      null,
+      {
+        role: "assistant",
+        tool_calls: [
+          null,
+          { type: "function", function: { arguments: { nested: true } } },
+          { id: "tc-rename", type: "function", function: { name: "final_answer", arguments: "{}" } },
+        ],
+      } as any,
+    ] as any)
+
+    expect((migrated[0] as any).tool_calls).toEqual([
+      {
+        id: "",
+        type: "function",
+        function: { name: "unknown", arguments: "{\"nested\":true}" },
+      },
+      {
+        id: "tc-rename",
+        type: "function",
+        function: { name: "settle", arguments: "{}" },
+      },
+    ])
+  })
+
+  it("parses canonical v2 envelopes with both explicit metadata and fallback defaults", async () => {
+    const {
+      migrateLegacySessionEnvelope,
+      parseSessionEnvelope,
+    } = await import("../../heart/session-events")
+
+    expect(migrateLegacySessionEnvelope(null, {
+      recordedAt: "2026-04-09T17:21:00.000Z",
+      fileMtimeAt: null,
+    })).toBeNull()
+    expect(parseSessionEnvelope(null)).toBeNull()
+
+    const legacy = migrateLegacySessionEnvelope({
+      messages: [{ role: "user", content: "legacy" }],
+      state: {},
+    }, {
+      recordedAt: "2026-04-09T17:21:00.000Z",
+      fileMtimeAt: null,
+    })
+    expect(legacy?.projection.projectedAt).toBe("2026-04-09T17:21:00.000Z")
+
+    const parsed = parseSessionEnvelope({
+      version: 2,
+      events: [
+        {
+          id: "evt-explicit",
+          sequence: 7,
+          role: "assistant",
+          content: "kept",
+          name: "named-assistant",
+          toolCallId: "tc-explicit",
+          toolCalls: [{ id: "call-1", type: "function", function: { name: "settle", arguments: "{}" } }],
+          attachments: ["attachment-1", 4],
+          time: {
+            authoredAt: "2026-04-09T17:00:00.000Z",
+            authoredAtSource: "local",
+            observedAt: "2026-04-09T17:00:01.000Z",
+            observedAtSource: "local",
+            recordedAt: "2026-04-09T17:00:02.000Z",
+            recordedAtSource: "save",
+          },
+          relations: {
+            replyToEventId: "evt-prev",
+            threadRootEventId: "evt-root",
+            references: ["evt-ref", 3],
+            toolCallId: "tool-ref",
+            supersedesEventId: "evt-old",
+            redactsEventId: "evt-redact",
+          },
+          provenance: {
+            captureKind: "synthetic",
+            legacyVersion: 1,
+            sourceMessageIndex: 2,
+          },
+        },
+        {
+          role: "developer",
+          content: { bad: true },
+          name: 42,
+          toolCallId: 99,
+          toolCalls: [{ function: { arguments: { weird: true } } }],
+          attachments: null,
+          time: {
+            authoredAt: 1,
+            authoredAtSource: 2,
+            observedAt: 3,
+            observedAtSource: 4,
+            recordedAt: 5,
+            recordedAtSource: 6,
+          },
+          relations: {
+            replyToEventId: 1,
+            threadRootEventId: 2,
+            references: null,
+            toolCallId: 4,
+            supersedesEventId: 5,
+            redactsEventId: 6,
+          },
+          provenance: {
+            captureKind: 7,
+            legacyVersion: "bad",
+            sourceMessageIndex: "bad",
+          },
+        },
+      ],
+      projection: {
+        eventIds: ["evt-explicit", 2],
+        trimmed: true,
+        maxTokens: 8000,
+        contextMargin: 15,
+        inputTokens: "bad",
+        projectedAt: 9,
+      },
+      lastUsage: null,
+      state: {},
+    }, {
+      recordedAt: "2026-04-09T17:30:00.000Z",
+    })
+
+    expect(parsed).not.toBeNull()
+    expect(parsed!.events[0]).toMatchObject({
+      id: "evt-explicit",
+      sequence: 7,
+      attachments: ["attachment-1"],
+      relations: {
+        replyToEventId: "evt-prev",
+        threadRootEventId: "evt-root",
+        references: ["evt-ref"],
+        toolCallId: "tool-ref",
+        supersedesEventId: "evt-old",
+        redactsEventId: "evt-redact",
+      },
+      provenance: {
+        captureKind: "synthetic",
+        legacyVersion: 1,
+        sourceMessageIndex: 2,
+      },
+    })
+    expect(parsed!.events[1]).toMatchObject({
+      id: "evt-000002",
+      sequence: 2,
+      role: "system",
+      content: null,
+      name: null,
+      toolCallId: null,
+      toolCalls: [
+        {
+          id: "",
+          type: "function",
+          function: { name: "unknown", arguments: "{\"weird\":true}" },
+        },
+      ],
+      attachments: [],
+      time: {
+        authoredAt: null,
+        authoredAtSource: "unknown",
+        observedAt: null,
+        observedAtSource: "unknown",
+        recordedAt: "2026-04-09T17:30:00.000Z",
+        recordedAtSource: "save",
+      },
+      relations: {
+        replyToEventId: null,
+        threadRootEventId: null,
+        references: [],
+        toolCallId: null,
+        supersedesEventId: null,
+        redactsEventId: null,
+      },
+      provenance: {
+        captureKind: "live",
+        legacyVersion: null,
+        sourceMessageIndex: null,
+      },
+    })
+    expect(parsed!.projection).toEqual({
+      eventIds: ["evt-explicit"],
+      trimmed: true,
+      maxTokens: 8000,
+      contextMargin: 15,
+      inputTokens: null,
+      projectedAt: null,
+    })
+
+    const projectionFallback = parseSessionEnvelope({
+      version: 2,
+      events: [
+        {
+          id: "evt-projection",
+          sequence: 1,
+          role: "user",
+          content: "hello",
+          name: null,
+          toolCallId: null,
+          toolCalls: [],
+          attachments: [],
+          time: {
+            authoredAt: null,
+            authoredAtSource: "unknown",
+            observedAt: null,
+            observedAtSource: "unknown",
+            recordedAt: "2026-04-09T17:30:00.000Z",
+            recordedAtSource: "save",
+          },
+          relations: {
+            replyToEventId: null,
+            threadRootEventId: null,
+            references: [],
+            toolCallId: null,
+            supersedesEventId: null,
+            redactsEventId: null,
+          },
+          provenance: {
+            captureKind: "live",
+            legacyVersion: null,
+            sourceMessageIndex: null,
+          },
+        },
+      ],
+      projection: {
+        eventIds: null,
+        trimmed: false,
+        maxTokens: null,
+        contextMargin: null,
+        inputTokens: 12,
+        projectedAt: "2026-04-09T17:31:00.000Z",
+      },
+      lastUsage: null,
+      state: {},
+    }, {
+      recordedAt: "2026-04-09T17:30:00.000Z",
+    })
+
+    expect(projectionFallback?.projection).toEqual({
+      eventIds: [],
+      trimmed: false,
+      maxTokens: null,
+      contextMargin: null,
+      inputTokens: 12,
+      projectedAt: "2026-04-09T17:31:00.000Z",
+    })
+  })
+
+  it("preserves history while reprojecting from the first changed message", async () => {
+    const { buildCanonicalSessionEnvelope, projectProviderMessages } = await import("../../heart/session-events")
+
+    const previousMessages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "old question" },
+      { role: "assistant", content: "old answer" },
+    ]
+    const currentMessages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "revised question" },
+      { role: "assistant", content: "revised answer" },
+    ]
+
+    const existing = buildCanonicalSessionEnvelope({
+      existing: null,
+      previousMessages: [],
+      currentMessages: previousMessages,
+      trimmedMessages: previousMessages,
+      recordedAt: "2026-04-09T17:40:00.000Z",
+      lastUsage: null,
+      state: undefined,
+      projectionBasis: {
+        maxTokens: 80000,
+        contextMargin: 20,
+        inputTokens: null,
+      },
+    })
+
+    const updated = buildCanonicalSessionEnvelope({
+      existing,
+      previousMessages,
+      currentMessages,
+      trimmedMessages: currentMessages,
+      recordedAt: "2026-04-09T17:41:00.000Z",
+      lastUsage: null,
+      state: undefined,
+      projectionBasis: {
+        maxTokens: 80000,
+        contextMargin: 20,
+        inputTokens: 90000,
+      },
+    })
+
+    expect(updated.events).toHaveLength(5)
+    expect(updated.projection.eventIds).toEqual(["evt-000001", "evt-000004", "evt-000005"])
+    expect(projectProviderMessages(updated)).toEqual(currentMessages)
+  })
+
+  it("projects canonical tool and user fallback content back to provider messages", async () => {
+    const { projectProviderMessages } = await import("../../heart/session-events")
+
+    const projected = projectProviderMessages({
+      version: 2,
+      events: [
+        {
+          id: "evt-tool",
+          sequence: 1,
+          role: "tool",
+          content: [{ type: "text", text: "tool part" }],
+          name: null,
+          toolCallId: "tc-1",
+          toolCalls: [],
+          attachments: [],
+          time: {
+            authoredAt: null,
+            authoredAtSource: "unknown",
+            observedAt: null,
+            observedAtSource: "unknown",
+            recordedAt: "2026-04-09T17:50:00.000Z",
+            recordedAtSource: "save",
+          },
+          relations: {
+            replyToEventId: null,
+            threadRootEventId: null,
+            references: [],
+            toolCallId: null,
+            supersedesEventId: null,
+            redactsEventId: null,
+          },
+          provenance: {
+            captureKind: "live",
+            legacyVersion: null,
+            sourceMessageIndex: null,
+          },
+        },
+        {
+          id: "evt-user",
+          sequence: 2,
+          role: "user",
+          content: null,
+          name: "Ari",
+          toolCallId: null,
+          toolCalls: [],
+          attachments: [],
+          time: {
+            authoredAt: null,
+            authoredAtSource: "unknown",
+            observedAt: "2026-04-09T17:51:00.000Z",
+            observedAtSource: "ingest",
+            recordedAt: "2026-04-09T17:51:00.000Z",
+            recordedAtSource: "save",
+          },
+          relations: {
+            replyToEventId: null,
+            threadRootEventId: null,
+            references: [],
+            toolCallId: null,
+            supersedesEventId: null,
+            redactsEventId: null,
+          },
+          provenance: {
+            captureKind: "live",
+            legacyVersion: null,
+            sourceMessageIndex: null,
+          },
+        },
+      ],
+      projection: {
+        eventIds: ["evt-tool", "evt-user"],
+        trimmed: false,
+        maxTokens: null,
+        contextMargin: null,
+        inputTokens: null,
+        projectedAt: null,
+      },
+      lastUsage: null,
+      state: {
+        mustResolveBeforeHandoff: false,
+        lastFriendActivityAt: null,
+      },
+    })
+
+    expect(projected).toEqual([
+      {
+        role: "tool",
+        content: "tool part",
+        tool_call_id: "tc-1",
+      },
+      {
+        role: "user",
+        content: "",
+        name: "Ari",
+      },
+    ])
+  })
+
+  it("projects every event when a canonical envelope has an empty projection id list", async () => {
+    const { projectProviderMessages } = await import("../../heart/session-events")
+
+    const projected = projectProviderMessages({
+      version: 2,
+      events: [
+        {
+          id: "evt-000001",
+          sequence: 1,
+          role: "system",
+          content: "sys",
+          name: null,
+          toolCallId: null,
+          toolCalls: [],
+          attachments: [],
+          time: {
+            authoredAt: "2026-04-09T17:20:00.000Z",
+            authoredAtSource: "local",
+            observedAt: "2026-04-09T17:20:00.000Z",
+            observedAtSource: "local",
+            recordedAt: "2026-04-09T17:20:00.000Z",
+            recordedAtSource: "save",
+          },
+          relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null },
+          provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+        },
+        {
+          id: "evt-000002",
+          sequence: 2,
+          role: "user",
+          content: "hello",
+          name: null,
+          toolCallId: null,
+          toolCalls: [],
+          attachments: [],
+          time: {
+            authoredAt: null,
+            authoredAtSource: "unknown",
+            observedAt: "2026-04-09T17:21:00.000Z",
+            observedAtSource: "ingest",
+            recordedAt: "2026-04-09T17:21:00.000Z",
+            recordedAtSource: "save",
+          },
+          relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null },
+          provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+        },
+      ],
+      projection: {
+        eventIds: [],
+        trimmed: false,
+        maxTokens: null,
+        contextMargin: null,
+        inputTokens: null,
+        projectedAt: "2026-04-09T17:21:00.000Z",
+      },
+      lastUsage: null,
+      state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+    })
+
+    expect(projected).toEqual([
+      { role: "system", content: "sys" },
+      { role: "user", content: "hello" },
+    ])
+  })
+
+  it("reuses existing event ids when rebuilding from an envelope with an empty projection", async () => {
+    const { buildCanonicalSessionEnvelope } = await import("../../heart/session-events")
+
+    const existing = {
+      version: 2 as const,
+      events: [
+        {
+          id: "evt-000001",
+          sequence: 1,
+          role: "system",
+          content: "sys",
+          name: null,
+          toolCallId: null,
+          toolCalls: [],
+          attachments: [],
+          time: {
+            authoredAt: "2026-04-09T17:20:00.000Z",
+            authoredAtSource: "local",
+            observedAt: "2026-04-09T17:20:00.000Z",
+            observedAtSource: "local",
+            recordedAt: "2026-04-09T17:20:00.000Z",
+            recordedAtSource: "save",
+          },
+          relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null },
+          provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+        },
+        {
+          id: "evt-000002",
+          sequence: 2,
+          role: "user",
+          content: "old question",
+          name: null,
+          toolCallId: null,
+          toolCalls: [],
+          attachments: [],
+          time: {
+            authoredAt: null,
+            authoredAtSource: "unknown",
+            observedAt: "2026-04-09T17:21:00.000Z",
+            observedAtSource: "ingest",
+            recordedAt: "2026-04-09T17:21:00.000Z",
+            recordedAtSource: "save",
+          },
+          relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null },
+          provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+        },
+      ],
+      projection: {
+        eventIds: [],
+        trimmed: false,
+        maxTokens: 80000,
+        contextMargin: 20,
+        inputTokens: null,
+        projectedAt: "2026-04-09T17:21:00.000Z",
+      },
+      lastUsage: null,
+      state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+    }
+
+    const updated = buildCanonicalSessionEnvelope({
+      existing,
+      previousMessages: [
+        { role: "system", content: "sys" },
+        { role: "user", content: "old question" },
+      ],
+      currentMessages: [
+        { role: "system", content: "sys" },
+        { role: "user", content: "old question" },
+        { role: "assistant", content: "new answer" },
+      ],
+      trimmedMessages: [
+        { role: "system", content: "sys" },
+        { role: "user", content: "old question" },
+        { role: "assistant", content: "new answer" },
+      ],
+      recordedAt: "2026-04-09T17:30:00.000Z",
+      lastUsage: null,
+      state: undefined,
+      projectionBasis: {
+        maxTokens: 80000,
+        contextMargin: 20,
+        inputTokens: null,
+      },
+    })
+
+    expect(updated.projection.eventIds).toEqual(["evt-000001", "evt-000002", "evt-000003"])
+  })
+})

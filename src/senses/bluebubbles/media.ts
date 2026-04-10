@@ -8,8 +8,10 @@ import { getAgentName, getAgentRoot, getAgentToolsRoot } from "../../heart/ident
 import { getModelCapabilities } from "../../heart/model-capabilities"
 import { normalizeImageForVision } from "../../heart/attachments/image-normalize"
 import { rememberRecentAttachment } from "../../heart/attachments/store"
-import { buildBlueBubblesAttachmentRecord } from "../../heart/attachments/types"
-import { persistBlueBubblesAttachmentSource } from "../../heart/attachments/materialize"
+import {
+  buildBlueBubblesAttachmentRecord,
+  persistBlueBubblesAttachmentSource,
+} from "../../heart/attachments/sources/bluebubbles"
 import type { BlueBubblesAttachmentSummary } from "./model"
 import {
   downloadBlueBubblesAttachment,

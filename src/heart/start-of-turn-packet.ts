@@ -15,6 +15,7 @@ export interface StartOfTurnPacket {
   cares: string
   presence: string
   resumeHint: string
+  currentSessionTiming?: string
   tempo: TempoMode
   tokenBudget: TempoTokenBudget
   assembledAt: string
@@ -187,7 +188,13 @@ export function buildCapabilitiesSection(bundleRoot: string): string | undefined
   return parts.join("")
 }
 
-export function buildStartOfTurnPacket(view: TemporalView, opts?: { canonicalObligations?: { primary: Obligation | null; all: Obligation[] } }): StartOfTurnPacket {
+export function buildStartOfTurnPacket(
+  view: TemporalView,
+  opts?: {
+    canonicalObligations?: { primary: Obligation | null; all: Obligation[] }
+    currentSessionTiming?: string
+  },
+): StartOfTurnPacket {
   const tempo = view.tempo
   const tokenBudget = TEMPO_BUDGETS[tempo]
   const effectiveObligations = opts?.canonicalObligations ? opts.canonicalObligations.all : view.activeObligations
@@ -198,6 +205,7 @@ export function buildStartOfTurnPacket(view: TemporalView, opts?: { canonicalObl
     cares: buildCaresSection(view.activeCares),
     presence: buildPresenceSection(view.peerPresence),
     resumeHint: buildResumeHint(view, opts?.canonicalObligations ? effectiveObligations : undefined),
+    currentSessionTiming: opts?.currentSessionTiming,
     tempo,
     tokenBudget,
     assembledAt: new Date().toISOString(),
@@ -240,6 +248,7 @@ export function renderStartOfTurnPacket(packet: StartOfTurnPacket): string {
     { label: "bundleState", content: renderBundleStateHint(packet.bundleState ?? []), priority: 7 },
     { label: "syncFailure", content: packet.syncFailure ?? "", priority: 7 },
     { label: "resume", content: packet.resumeHint, priority: 6 },
+    { label: "sessionTiming", content: packet.currentSessionTiming ?? "", priority: 5 },
     { label: "obligations", content: packet.obligations, priority: 5 },
     { label: "cares", content: packet.cares, priority: 4 },
     { label: "plot", content: packet.plotLine, priority: 3 },
