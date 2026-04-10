@@ -14,6 +14,7 @@ interface AgentInspectorProps {
   agentName: string
   view: Record<string, unknown> | null
   deskPrefs?: Record<string, unknown> | null
+  refreshGeneration: number
   initialRoute?: RouteState
 }
 
@@ -34,7 +35,7 @@ function attentionColor(level: string): "red" | "yellow" | "lime" | "zinc" {
   return "zinc"
 }
 
-export function AgentInspector({ agentName, view, deskPrefs, initialRoute }: AgentInspectorProps) {
+export function AgentInspector({ agentName, view, deskPrefs, refreshGeneration, initialRoute }: AgentInspectorProps) {
   const [activeTab, setActiveTab] = useState<TabId>(initialRoute?.tab ?? "overview")
   const [focusTarget, setFocusTarget] = useState<string | undefined>(initialRoute?.focus)
   const initialConsumed = useRef(false)
@@ -122,13 +123,13 @@ export function AgentInspector({ agentName, view, deskPrefs, initialRoute }: Age
 
         {/* Tab content */}
         <div className="mt-6">
-          {activeTab === "overview" && <OverviewTab view={view} deskPrefs={deskPrefs} />}
-          {activeTab === "sessions" && <SessionsTab agentName={agentName} focus={focusTarget} onFocusConsumed={consumeFocus} deskPrefs={deskPrefs} />}
-          {activeTab === "work" && <WorkTab agentName={agentName} view={view} focus={focusTarget} onFocusConsumed={consumeFocus} />}
-          {activeTab === "connections" && <ConnectionsTab agentName={agentName} focus={focusTarget} onFocusConsumed={consumeFocus} />}
-          {activeTab === "inner" && <InnerTab agentName={agentName} view={view} />}
-          {activeTab === "memory" && <MemoryTab agentName={agentName} />}
-          {activeTab === "runtime" && <RuntimeTab agentName={agentName} view={view} />}
+          {activeTab === "overview" && <OverviewTab view={view} deskPrefs={deskPrefs} refreshGeneration={refreshGeneration} />}
+          {activeTab === "sessions" && <SessionsTab agentName={agentName} focus={focusTarget} onFocusConsumed={consumeFocus} deskPrefs={deskPrefs} refreshGeneration={refreshGeneration} />}
+          {activeTab === "work" && <WorkTab agentName={agentName} view={view} focus={focusTarget} onFocusConsumed={consumeFocus} refreshGeneration={refreshGeneration} />}
+          {activeTab === "connections" && <ConnectionsTab agentName={agentName} focus={focusTarget} onFocusConsumed={consumeFocus} refreshGeneration={refreshGeneration} />}
+          {activeTab === "inner" && <InnerTab agentName={agentName} view={view} refreshGeneration={refreshGeneration} />}
+          {activeTab === "memory" && <MemoryTab agentName={agentName} refreshGeneration={refreshGeneration} />}
+          {activeTab === "runtime" && <RuntimeTab agentName={agentName} view={view} refreshGeneration={refreshGeneration} />}
         </div>
       </div>
     </NavigationContext.Provider>

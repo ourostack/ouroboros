@@ -72,7 +72,7 @@ interface ContinuityView {
   episodes: { recentCount: number; items: Array<{ id: string; kind: string; summary: string; timestamp: string }> }
 }
 
-export function OverviewTab({ view, deskPrefs }: { view: Record<string, unknown>; deskPrefs?: Record<string, unknown> | null }) {
+export function OverviewTab({ view, deskPrefs, refreshGeneration }: { view: Record<string, unknown>; deskPrefs?: Record<string, unknown> | null; refreshGeneration: number }) {
   const nav = useNavigate()
   const [needsMe, setNeedsMe] = useState<{ items: NeedsMeItem[] } | null>(null)
   const [codingDeep, setCodingDeep] = useState<{ items: Array<Record<string, unknown>> } | null>(null)
@@ -101,7 +101,7 @@ export function OverviewTab({ view, deskPrefs }: { view: Record<string, unknown>
     fetchJson<ContinuityView>(`/agents/${encodeURIComponent(agent.agentName as string)}/continuity`).then(setContinuity).catch(() => {})
     fetchJson<OrientationView>(`/agents/${encodeURIComponent(agent.agentName as string)}/orientation`).then(setOrientation).catch(() => {})
     fetchJson<ChangesView>(`/agents/${encodeURIComponent(agent.agentName as string)}/changes`).then(setChanges).catch(() => {})
-  }, [agent.agentName])
+  }, [agent.agentName, refreshGeneration])
 
   return (
     <div className="space-y-6">

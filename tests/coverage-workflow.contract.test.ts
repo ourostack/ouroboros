@@ -40,4 +40,21 @@ describe("coverage workflow contract", () => {
     expect(workflow).toContain('git diff --name-only "origin/${{ github.base_ref }}...HEAD" -- src/ ":(exclude)src/__tests__/**"')
     expect(workflow).toContain("No releasable src/ changes detected — version bump not required")
   })
+
+  it("runs the outlook-ui package test suite before the root coverage gate continues", () => {
+    const gate = readFileSync(
+      join(process.cwd(), "scripts", "run-coverage-gate.cjs"),
+      "utf8",
+    )
+
+    expect(gate).toContain('runNpm(["run", "test:outlook-ui"])')
+    expect(gate).toContain("outlook_ui_tests")
+
+    const packageJson = readFileSync(
+      join(process.cwd(), "package.json"),
+      "utf8",
+    )
+
+    expect(packageJson).toContain('"test:outlook-ui": "npm test --prefix packages/outlook-ui"')
+  })
 })
