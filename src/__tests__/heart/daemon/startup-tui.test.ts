@@ -403,23 +403,76 @@ describe("startup-tui", () => {
       expect(allOutput).toContain("beta")
     })
 
-    it("returns empty result on timeout", async () => {
+    it("shows waiting message with daemon event while socket is unavailable", async () => {
       let callCount = 0
+      const writes: string[] = []
       const deps = {
-        sendCommand: vi.fn(async () => { throw new Error("ECONNREFUSED") }),
-        socketPath: "/tmp/test.sock",
-        writeStdout: vi.fn(),
-        now: vi.fn(() => {
+        sendCommand: vi.fn(async () => {
           callCount++
-          // Exceed the 60s timeout on second call
-          return callCount <= 1 ? 0 : 61_000
+          if (callCount <= 2) throw new Error("ECONNREFUSED")
+          // Third call: return a resolved payload so the loop exits
+          return makeDaemonResponse(makePayload([
+            { agent: "alpha", status: "crashed", startedAt: null, errorReason: "test", fixHint: "test" },
+          ]))
         }),
+        socketPath: "/tmp/test.sock",
+        writeStdout: vi.fn((text: string) => writes.push(text)),
+        now: vi.fn(() => 5_000),
+        sleep: vi.fn(async () => {}),
+        readLatestDaemonEvent: vi.fn(() => "starting auto-start agents"),
+      }
+
+      const result = await pollDaemonStartup(deps)
+      // First two calls show "waiting for daemon" spinner with daemon event
+      expect(writes.some((w) => w.includes("waiting for daemon"))).toBe(true)
+      expect(writes.some((w) => w.includes("starting auto-start agents"))).toBe(true)
+      // Eventually resolves
+      expect(result.degraded).toHaveLength(1)
+    })
+
+    it("shows waiting message without event when readLatestDaemonEvent returns null", async () => {
+      let callCount = 0
+      const writes: string[] = []
+      const deps = {
+        sendCommand: vi.fn(async () => {
+          callCount++
+          if (callCount <= 1) throw new Error("ECONNREFUSED")
+          return makeDaemonResponse(makePayload([
+            { agent: "alpha", status: "crashed", startedAt: null, errorReason: "test", fixHint: "test" },
+          ]))
+        }),
+        socketPath: "/tmp/test.sock",
+        writeStdout: vi.fn((text: string) => writes.push(text)),
+        now: vi.fn(() => 5_000),
+        sleep: vi.fn(async () => {}),
+        readLatestDaemonEvent: vi.fn(() => null),
+      }
+
+      const result = await pollDaemonStartup(deps)
+      expect(writes.some((w) => w.includes("waiting for daemon"))).toBe(true)
+      expect(result.degraded).toHaveLength(1)
+    })
+
+    it("shows waiting message without event when readLatestDaemonEvent is not provided", async () => {
+      let callCount = 0
+      const writes: string[] = []
+      const deps = {
+        sendCommand: vi.fn(async () => {
+          callCount++
+          if (callCount <= 1) throw new Error("ECONNREFUSED")
+          return makeDaemonResponse(makePayload([
+            { agent: "alpha", status: "crashed", startedAt: null, errorReason: "test", fixHint: "test" },
+          ]))
+        }),
+        socketPath: "/tmp/test.sock",
+        writeStdout: vi.fn((text: string) => writes.push(text)),
+        now: vi.fn(() => 5_000),
         sleep: vi.fn(async () => {}),
       }
 
       const result = await pollDaemonStartup(deps)
-      expect(result.stable).toEqual([])
-      expect(result.degraded).toEqual([])
+      expect(writes.some((w) => w.includes("waiting for daemon"))).toBe(true)
+      expect(result.degraded).toHaveLength(1)
     })
 
     it("final summary omits error/fix lines for default messages", async () => {

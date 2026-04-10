@@ -19,7 +19,6 @@ import { emitNervesEvent } from "../../nerves/runtime"
 const SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 const STABILITY_THRESHOLD_MS = 5_000
 const POLL_INTERVAL_MS = 500
-const MAX_POLL_MS = 60_000
 
 // ── ANSI helpers ──
 
@@ -49,6 +48,8 @@ export interface PollDaemonStartupDeps {
   writeStdout: (text: string) => void
   now: () => number
   sleep: (ms: number) => Promise<void>
+  /** Read the latest daemon log event message (tail ndjson). Returns null if unavailable. */
+  readLatestDaemonEvent?: () => string | null
 }
 
 // ── Pure functions ──
@@ -172,24 +173,30 @@ export async function pollDaemonStartup(deps: PollDaemonStartupDeps): Promise<St
     const now = deps.now()
     const elapsed = now - startTime
 
-    if (elapsed > MAX_POLL_MS) {
-      emitNervesEvent({
-        level: "warn",
-        component: "daemon",
-        event: "daemon.startup_poll_timeout",
-        message: "startup polling timed out",
-        meta: { elapsedMs: elapsed },
-      })
-      // Timeout: treat any unresolved agents as degraded
-      return { stable: [], degraded: [] }
-    }
-
     let payload: StatusPayload | null = null
     try {
       const response = await deps.sendCommand(deps.socketPath, { kind: "daemon.status" })
       payload = parseStatusPayload(response.data)
     } catch {
-      // Socket not yet available — will retry after sleep
+      // Socket not yet available — show what the daemon is doing from its log
+      const elapsedSec = (elapsed / 1000).toFixed(1)
+      const frameIndex = Math.floor(elapsed / 100) % SPINNER_FRAMES.length
+      const spinner = SPINNER_FRAMES[frameIndex]
+      const latestEvent = deps.readLatestDaemonEvent?.() ?? null
+      const lines: string[] = []
+      lines.push(`${spinner} ${BOLD}waiting for daemon${RESET} ${DIM}(${elapsedSec}s)${RESET}`)
+      if (latestEvent) {
+        lines.push(`  ${DIM}${latestEvent}${RESET}`)
+      }
+      let output = ""
+      if (prevLineCount > 0) {
+        output += `\x1b[${prevLineCount}A`
+      }
+      for (const line of lines) {
+        output += `\x1b[2K${line}\n`
+      }
+      deps.writeStdout(output)
+      prevLineCount = lines.length
     }
 
     if (payload) {
