@@ -22,21 +22,33 @@ function formatTranscriptTimestamp(msg: TranscriptMessage): string {
   }).format(new Date(transcriptTimestamp(msg)))
 }
 
-export function InnerTab({ agentName, view }: { agentName: string; view: Record<string, unknown> }) {
+export function InnerTab({ agentName, view, refreshGeneration }: { agentName: string; view: Record<string, unknown>; refreshGeneration: number }) {
   const nav = useNavigate()
   const [habits, setHabits] = useState<Record<string, unknown> | null>(null)
   const [transcript, setTranscript] = useState<OutlookSessionTranscript | null>(null)
   const [showTranscript, setShowTranscript] = useState(false)
+  const transcriptRefreshRef = useRef<number | null>(null)
   const inner = view.inner as Record<string, unknown>
 
   useEffect(() => {
     fetchJson<Record<string, unknown>>(`/agents/${encodeURIComponent(agentName)}/habits`).then(setHabits)
-  }, [agentName])
+  }, [agentName, refreshGeneration])
+
+  useEffect(() => {
+    if (!transcript) return
+    if (transcriptRefreshRef.current === refreshGeneration) return
+    transcriptRefreshRef.current = refreshGeneration
+    fetchJson<OutlookSessionTranscript>(`/agents/${encodeURIComponent(agentName)}/inner-transcript`).then(setTranscript)
+  }, [agentName, refreshGeneration, transcript !== null])
 
   function loadTranscript() {
     if (transcript) { setShowTranscript(!showTranscript); return }
     fetchJson<OutlookSessionTranscript>(`/agents/${encodeURIComponent(agentName)}/inner-transcript`)
-      .then((data) => { setTranscript(data); setShowTranscript(true) })
+      .then((data) => {
+        transcriptRefreshRef.current = refreshGeneration
+        setTranscript(data)
+        setShowTranscript(true)
+      })
   }
 
   const habitItems = (habits?.items ?? []) as Array<Record<string, unknown>>
