@@ -190,7 +190,7 @@ describe("daemon.stop deadlock regression", () => {
     daemons.push(daemon)
     fs.writeFileSync(socketPath, "owned-daemon-socket", "utf-8")
     const stats = fs.lstatSync(socketPath)
-    ;(daemon as any).socketIdentity = { dev: stats.dev, ino: stats.ino }
+    ;(daemon as any).socketIdentity = { dev: stats.dev, ino: stats.ino, ctimeMs: stats.ctimeMs }
 
     await daemon.stop()
 
@@ -249,6 +249,7 @@ describe("daemon.stop deadlock regression", () => {
         socketPath,
         actualDev: replacementStats.dev,
         actualIno: replacementStats.ino,
+        actualCtimeMs: replacementStats.ctimeMs,
       }),
     }))
   })
