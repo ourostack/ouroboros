@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.332",
+      "changes": [
+        "refactor(outlook): remove the orphaned server-rendered Outlook fallback so the HTTP surface clearly serves the built SPA or JSON errors."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.331",
       "changes": [
         "test(isolation): route daemon entrypoint suites through per-test temporary homes so fresh coverage workers no longer create transient `slugger.ouro` bundles under `~/AgentBundles`."
