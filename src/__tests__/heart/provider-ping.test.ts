@@ -53,6 +53,26 @@ vi.mock("../../heart/providers/openai-codex", () => ({
     model: "gpt-5.4",
     client: codexClient,
     classifyError: mockClassifyError,
+    streamTurn: vi.fn(async (request: any) => {
+      request.callbacks.onModelStart()
+      request.callbacks.onModelStreamStart()
+      request.callbacks.onTextChunk("pong")
+      request.callbacks.onReasoningChunk("checking")
+      request.callbacks.onToolStart("noop", {})
+      request.callbacks.onToolEnd("noop", "ok", true)
+      request.callbacks.onError(new Error("ignored"), "transient")
+      await codexClient.responses.create({
+        model: "gpt-5.4",
+        input: [{ role: "user", content: "ping" }],
+        instructions: "",
+        tools: [],
+        reasoning: { effort: "medium", summary: "detailed" },
+        stream: true,
+        store: false,
+        include: ["reasoning.encrypted_content"],
+      }, request.signal ? { signal: request.signal } : {})
+      return { content: "pong", toolCalls: [], outputItems: [] }
+    }),
   })),
   classifyOpenAICodexError: vi.fn(() => "unknown"),
 }))
@@ -69,6 +89,7 @@ vi.mock("../../heart/providers/github-copilot", () => ({
 
 import { pingProvider, sanitizeErrorMessage, type PingResult } from "../../heart/provider-ping"
 import type { ProviderErrorClassification } from "../../heart/core"
+import { createOpenAICodexProviderRuntime } from "../../heart/providers/openai-codex"
 
 describe("sanitizeErrorMessage", () => {
   it("strips raw JSON from Anthropic SDK errors", () => {
@@ -136,8 +157,16 @@ describe("pingProvider", () => {
       oauthAccessToken: "valid-token",
     })
     expect(result.ok).toBe(true)
+    expect(createOpenAICodexProviderRuntime).toHaveBeenCalledWith("gpt-5.4")
     expect(mockResponsesCreate).toHaveBeenCalledWith(
-      expect.objectContaining({ model: "gpt-5.4", input: "ping", store: false }),
+      expect.objectContaining({
+        model: "gpt-5.4",
+        input: [{ role: "user", content: "ping" }],
+        stream: true,
+        store: false,
+        reasoning: { effort: "medium", summary: "detailed" },
+        include: ["reasoning.encrypted_content"],
+      }),
       expect.anything(),
     )
   })
