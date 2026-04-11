@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.334",
+      "changes": [
+        "refactor(outlook): route the Outlook SPA through canonical shared Outlook contracts instead of tab-local shadow DTOs and generic `Record<string, unknown>` casts.",
+        "test(outlook): type live-refresh fixtures against the canonical agent view contract so UI tests catch backend/UI shape drift."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.333",
       "changes": [
         "docs(workflow): document the skill freshness fallback for installs that do not have a local `_registry.json`."

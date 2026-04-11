@@ -9,11 +9,12 @@ import { ConnectionsTab } from "./tabs/connections"
 import { InnerTab } from "./tabs/inner"
 import { MemoryTab } from "./tabs/memory"
 import { RuntimeTab } from "./tabs/runtime"
+import type { OutlookAgentView, OutlookDeskPrefs } from "../contracts"
 
 interface AgentInspectorProps {
   agentName: string
-  view: Record<string, unknown> | null
-  deskPrefs?: Record<string, unknown> | null
+  view: OutlookAgentView | null
+  deskPrefs?: OutlookDeskPrefs | null
   refreshGeneration: number
   initialRoute?: RouteState
 }
@@ -79,8 +80,8 @@ export function AgentInspector({ agentName, view, deskPrefs, refreshGeneration, 
     )
   }
 
-  const agent = view.agent as Record<string, unknown>
-  const attention = agent.attention as { level: string; label: string }
+  const agent = view.agent
+  const attention = agent.attention
 
   return (
     <NavigationContext.Provider value={navigate}>
@@ -98,7 +99,7 @@ export function AgentInspector({ agentName, view, deskPrefs, refreshGeneration, 
         {/* Tabs */}
         <nav className="mt-4 flex gap-0.5 overflow-x-auto border-b border-ouro-moss/20 -mx-1">
           {(() => {
-            const order = (deskPrefs as any)?.tabOrder as string[] | null
+            const order = deskPrefs?.tabOrder
             if (!order) return TABS
             const ordered = order
               .map((id) => TABS.find((t) => t.id === id))

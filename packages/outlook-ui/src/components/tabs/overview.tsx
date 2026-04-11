@@ -2,14 +2,16 @@ import { useEffect, useState } from "react"
 import { Badge } from "../../catalyst/badge"
 import { fetchJson, relTime, truncate } from "../../api"
 import { useNavigate, type TabId } from "../../navigation"
-
-interface NeedsMeItem {
-  urgency: string
-  label: string
-  detail: string
-  ref: { tab: string; focus?: string } | null
-  ageMs: number | null
-}
+import type {
+  OutlookAgentView,
+  OutlookChangesView,
+  OutlookCodingDeep,
+  OutlookContinuityView,
+  OutlookDeskPrefs,
+  OutlookNeedsMeItem,
+  OutlookNeedsMeView,
+  OutlookOrientationView,
+} from "../../contracts"
 
 const URGENCY_COLORS: Record<string, "red" | "yellow" | "lime" | "zinc"> = {
   "owed-reply": "red",
@@ -40,67 +42,34 @@ const URGENCY_WHY: Record<string, string> = {
 
 const STALE_URGENCIES = new Set(["stale-delegation"])
 const ACTION_URGENCIES = new Set(["owed-reply", "blocking-obligation", "broken-return", "return-ready", "overdue-habit"])
+const ACTIVE_CODING_STATUSES = new Set<string>(["spawning", "running", "waiting_input", "stalled"])
 
-interface OrientationView {
-  currentSession: { friendId: string; channel: string; key: string; lastActivityAt: string | null } | null
-  centerOfGravity: string
-  primaryObligation: { id: string; content: string; status: string; nextAction: string | null; waitingOn: string | null } | null
-  resumeHandle: {
-    sessionLabel: string | null
-    lane: string | null
-    artifact: string | null
-    blockerOrWaitingOn: string | null
-    nextAction: string | null
-    confidence: string
-  } | null
-  otherActiveSessions: Array<{ friendId: string; friendName: string; channel: string; key: string; lastActivityAt: string }>
-}
-
-interface ChangesView {
-  changeCount: number
-  items: Array<{ kind: string; id: string; from: string | null; to: string | null; summary: string }>
-  snapshotAge: string | null
-  formatted: string
-}
-
-interface ContinuityView {
-  presence: {
-    self: { agentName: string; availability: string; lane?: string; tempo?: string; updatedAt?: string } | null
-    peers: Array<{ agentName: string; availability: string; lane?: string; updatedAt?: string }>
-  }
-  cares: { activeCount: number; items: Array<{ id: string; label: string; status: string; salience: string }> }
-  episodes: { recentCount: number; items: Array<{ id: string; kind: string; summary: string; timestamp: string }> }
-}
-
-export function OverviewTab({ view, deskPrefs, refreshGeneration }: { view: Record<string, unknown>; deskPrefs?: Record<string, unknown> | null; refreshGeneration: number }) {
+export function OverviewTab({ view, deskPrefs, refreshGeneration }: { view: OutlookAgentView; deskPrefs?: OutlookDeskPrefs | null; refreshGeneration: number }) {
   const nav = useNavigate()
-  const [needsMe, setNeedsMe] = useState<{ items: NeedsMeItem[] } | null>(null)
-  const [codingDeep, setCodingDeep] = useState<{ items: Array<Record<string, unknown>> } | null>(null)
-  const [continuity, setContinuity] = useState<ContinuityView | null>(null)
-  const [orientation, setOrientation] = useState<OrientationView | null>(null)
-  const [changes, setChanges] = useState<ChangesView | null>(null)
-  const agent = view.agent as Record<string, unknown>
-  const work = view.work as Record<string, unknown>
-  const inner = view.inner as Record<string, unknown>
-  const activity = view.activity as {
-    freshness: { status: string }
-    recent: Array<{ kind: string; at: string; label: string; detail: string }>
-  }
-  const degraded = agent.degraded as { status: string; issues: Array<{ code: string; detail: string }> }
-  const attention = agent.attention as { level: string; label: string }
-  const tasks = work.tasks as { liveCount: number; blockedCount: number }
-  const obligations = work.obligations as { openCount: number }
-  const sessions = work.sessions as { liveCount: number }
-  const coding = work.coding as { activeCount: number; blockedCount: number }
-  const senses = (agent.senses as string[]) ?? []
-  const bridges = (work.bridges as string[]) ?? []
+  const [needsMe, setNeedsMe] = useState<OutlookNeedsMeView | null>(null)
+  const [codingDeep, setCodingDeep] = useState<OutlookCodingDeep | null>(null)
+  const [continuity, setContinuity] = useState<OutlookContinuityView | null>(null)
+  const [orientation, setOrientation] = useState<OutlookOrientationView | null>(null)
+  const [changes, setChanges] = useState<OutlookChangesView | null>(null)
+  const agent = view.agent
+  const work = view.work
+  const inner = view.inner
+  const activity = view.activity
+  const degraded = agent.degraded
+  const attention = agent.attention
+  const tasks = work.tasks
+  const obligations = work.obligations
+  const sessions = work.sessions
+  const coding = work.coding
+  const senses = agent.senses
+  const bridges = work.bridges
 
   useEffect(() => {
-    fetchJson<{ items: NeedsMeItem[] }>(`/agents/${encodeURIComponent(agent.agentName as string)}/needs-me`).then(setNeedsMe)
-    fetchJson<{ items: Array<Record<string, unknown>> }>(`/agents/${encodeURIComponent(agent.agentName as string)}/coding`).then(setCodingDeep)
-    fetchJson<ContinuityView>(`/agents/${encodeURIComponent(agent.agentName as string)}/continuity`).then(setContinuity).catch(() => {})
-    fetchJson<OrientationView>(`/agents/${encodeURIComponent(agent.agentName as string)}/orientation`).then(setOrientation).catch(() => {})
-    fetchJson<ChangesView>(`/agents/${encodeURIComponent(agent.agentName as string)}/changes`).then(setChanges).catch(() => {})
+    fetchJson<OutlookNeedsMeView>(`/agents/${encodeURIComponent(agent.agentName)}/needs-me`).then(setNeedsMe)
+    fetchJson<OutlookCodingDeep>(`/agents/${encodeURIComponent(agent.agentName)}/coding`).then(setCodingDeep)
+    fetchJson<OutlookContinuityView>(`/agents/${encodeURIComponent(agent.agentName)}/continuity`).then(setContinuity).catch(() => {})
+    fetchJson<OutlookOrientationView>(`/agents/${encodeURIComponent(agent.agentName)}/orientation`).then(setOrientation).catch(() => {})
+    fetchJson<OutlookChangesView>(`/agents/${encodeURIComponent(agent.agentName)}/changes`).then(setChanges).catch(() => {})
   }, [agent.agentName, refreshGeneration])
 
   return (
@@ -120,7 +89,7 @@ export function OverviewTab({ view, deskPrefs, refreshGeneration }: { view: Reco
                 </p>
                 <div className="mt-2 space-y-1.5">
                   {actionItems.map((item, i) => (
-                    <NeedsMeRow key={`action-${i}`} item={item} nav={nav} agentName={agent.agentName as string} onDismiss={() => {
+                    <NeedsMeRow key={`action-${i}`} item={item} nav={nav} agentName={agent.agentName} onDismiss={() => {
                       setNeedsMe((prev) => prev ? { items: prev.items.filter((_, idx) => needsMe.items.indexOf(item) !== idx) } : prev)
                     }} />
                   ))}
@@ -139,14 +108,14 @@ export function OverviewTab({ view, deskPrefs, refreshGeneration }: { view: Reco
                     onClick={async () => {
                       for (const item of staleItems) {
                         if (item.ref?.focus) {
-                          await fetch(`/api/agents/${encodeURIComponent(agent.agentName as string)}/dismiss-obligation`, {
+                          await fetch(`/api/agents/${encodeURIComponent(agent.agentName)}/dismiss-obligation`, {
                             method: "POST",
                             headers: { "content-type": "application/json" },
                             body: JSON.stringify({ obligationId: item.ref.focus }),
                           })
                         }
                       }
-                      fetchJson<{ items: NeedsMeItem[] }>(`/agents/${encodeURIComponent(agent.agentName as string)}/needs-me`).then(setNeedsMe)
+                      fetchJson<OutlookNeedsMeView>(`/agents/${encodeURIComponent(agent.agentName)}/needs-me`).then(setNeedsMe)
                     }}
                     className="text-xs text-ouro-gold underline underline-offset-2 hover:text-ouro-bone transition-colors"
                   >
@@ -155,8 +124,8 @@ export function OverviewTab({ view, deskPrefs, refreshGeneration }: { view: Reco
                 </div>
                 <div className="mt-2 space-y-1.5">
                   {staleItems.map((item, i) => (
-                    <NeedsMeRow key={`stale-${i}`} item={item} nav={nav} agentName={agent.agentName as string} onDismiss={() => {
-                      fetchJson<{ items: NeedsMeItem[] }>(`/agents/${encodeURIComponent(agent.agentName as string)}/needs-me`).then(setNeedsMe)
+                    <NeedsMeRow key={`stale-${i}`} item={item} nav={nav} agentName={agent.agentName} onDismiss={() => {
+                      fetchJson<OutlookNeedsMeView>(`/agents/${encodeURIComponent(agent.agentName)}/needs-me`).then(setNeedsMe)
                     }} />
                   ))}
                 </div>
@@ -167,16 +136,16 @@ export function OverviewTab({ view, deskPrefs, refreshGeneration }: { view: Reco
       })()}
 
       {/* "What I'm carrying" — agent-written, editable via outlook-prefs.json */}
-      {(deskPrefs as any)?.carrying && (
+      {deskPrefs?.carrying && (
         <div className="rounded-xl bg-ouro-moss/10 p-4 ring-1 ring-ouro-glow/8">
           <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-ouro-glow">What I'm carrying</p>
-          <p className="mt-1 text-sm leading-relaxed text-ouro-bone">{(deskPrefs as any).carrying}</p>
+          <p className="mt-1 text-sm leading-relaxed text-ouro-bone">{deskPrefs.carrying}</p>
         </div>
       )}
 
       {/* Pinned constellations — linked threads */}
       {(() => {
-        const constellations = ((deskPrefs as any)?.pinnedConstellations ?? []) as Array<Record<string, unknown>>
+        const constellations = deskPrefs?.pinnedConstellations ?? []
         if (constellations.length === 0) return null
         return (
           <div>
@@ -184,15 +153,15 @@ export function OverviewTab({ view, deskPrefs, refreshGeneration }: { view: Reco
             <div className="mt-2 space-y-2">
               {constellations.map((c, i) => (
                 <div key={i} className="rounded-lg bg-ouro-void/40 px-3 py-2.5 ring-1 ring-ouro-moss/15">
-                  <p className="font-medium text-ouro-bone">{c.label as string}</p>
+                  <p className="font-medium text-ouro-bone">{c.label}</p>
                   <div className="mt-1 flex flex-wrap gap-1.5">
-                    {((c.friendIds ?? []) as string[]).map((f) => (
+                    {c.friendIds.map((f) => (
                       <button key={f} onClick={() => nav({ tab: "sessions" })} className="text-xs text-ouro-glow underline decoration-ouro-glow/30 underline-offset-2">friend:{f.slice(0,8)}…</button>
                     ))}
-                    {((c.taskRefs ?? []) as string[]).map((t) => (
+                    {c.taskRefs.map((t) => (
                       <button key={t} onClick={() => nav({ tab: "work" })} className="text-xs text-ouro-glow underline decoration-ouro-glow/30 underline-offset-2">task:{t}</button>
                     ))}
-                    {((c.bridgeIds ?? []) as string[]).map((b) => (
+                    {c.bridgeIds.map((b) => (
                       <button key={b} onClick={() => nav({ tab: "connections", focus: b })} className="text-xs text-ouro-glow underline decoration-ouro-glow/30 underline-offset-2">bridge:{b.slice(0,8)}…</button>
                     ))}
                   </div>
@@ -210,7 +179,7 @@ export function OverviewTab({ view, deskPrefs, refreshGeneration }: { view: Reco
         </p>
         <p className="mt-1 font-display text-xl italic font-semibold text-ouro-bone sm:text-2xl">{attention.label}</p>
         <p className="mt-2 text-sm leading-relaxed text-ouro-mist">
-          {agent.agentName as string} has{" "}
+          {agent.agentName} has{" "}
           <NavLink tab="work">{tasks.liveCount} live tasks</NavLink>,{" "}
           <NavLink tab="work">{obligations.openCount} obligations</NavLink>,{" "}
           <NavLink tab="work">{coding.activeCount} coding lanes</NavLink>, and{" "}
@@ -245,20 +214,24 @@ export function OverviewTab({ view, deskPrefs, refreshGeneration }: { view: Reco
       {orientation && (
         <div className="rounded-xl bg-ouro-moss/10 p-4 ring-1 ring-ouro-glow/8">
           <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-ouro-glow">Orientation</p>
-          {orientation.currentSession && (
-            <div className="mt-2 flex items-center gap-2">
-              <Badge color="lime">active session</Badge>
-              <button
-                onClick={() => nav({ tab: "sessions", focus: `${orientation.currentSession!.friendId}/${orientation.currentSession!.channel}/${orientation.currentSession!.key}` })}
-                className="text-sm text-ouro-glow underline decoration-ouro-glow/30 underline-offset-2"
-              >
-                {orientation.currentSession.channel}/{orientation.currentSession.key}
-              </button>
-              {orientation.currentSession.lastActivityAt && (
-                <span className="text-xs text-ouro-shadow">{relTime(orientation.currentSession.lastActivityAt)}</span>
-              )}
-            </div>
-          )}
+          {(() => {
+            const currentSession = orientation.currentSession
+            if (!currentSession) return null
+            return (
+              <div className="mt-2 flex items-center gap-2">
+                <Badge color="lime">active session</Badge>
+                <button
+                  onClick={() => nav({ tab: "sessions", focus: `${currentSession.friendId}/${currentSession.channel}/${currentSession.key}` })}
+                  className="text-sm text-ouro-glow underline decoration-ouro-glow/30 underline-offset-2"
+                >
+                  {currentSession.channel}/{currentSession.key}
+                </button>
+                {currentSession.lastActivityAt && (
+                  <span className="text-xs text-ouro-shadow">{relTime(currentSession.lastActivityAt)}</span>
+                )}
+              </div>
+            )
+          })()}
           {orientation.primaryObligation && (
             <div className="mt-2 rounded-lg bg-ouro-void/40 px-3 py-2 ring-1 ring-ouro-moss/15">
               <div className="flex items-center gap-2">
@@ -412,27 +385,27 @@ export function OverviewTab({ view, deskPrefs, refreshGeneration }: { view: Reco
         <Meter label="Tasks" value={tasks.liveCount} sub={`${tasks.blockedCount} blocked`} onClick={() => nav({ tab: "work" })} />
         <Meter label="Obligations" value={obligations.openCount} sub={`${sessions.liveCount} sessions`} onClick={() => nav({ tab: "work" })} />
         <Meter label="Coding" value={coding.activeCount} sub={`${coding.blockedCount} blocked`} onClick={() => nav({ tab: "work" })} />
-        <Meter label="Inner" value={inner.status as string} sub={truncate((inner.summary as string) ?? "", 30)} onClick={() => nav({ tab: "inner" })} />
+        <Meter label="Inner" value={inner.status} sub={truncate(inner.summary ?? "", 30)} onClick={() => nav({ tab: "inner" })} />
       </div>
 
       {/* Active coding sessions — visible from overview */}
       {codingDeep && codingDeep.items.length > 0 && (() => {
-        const active = codingDeep.items.filter((c) => ["spawning","running","waiting_input","stalled"].includes(c.status as string))
+        const active = codingDeep.items.filter((c) => ACTIVE_CODING_STATUSES.has(c.status))
         if (active.length === 0) return null
         return (
           <Section title={`Active coding (${active.length})`}>
             <div className="space-y-1.5">
               {active.map((c) => (
                 <button
-                  key={c.id as string}
+                  key={c.id}
                   onClick={() => nav({ tab: "work" })}
                   className="flex w-full items-center gap-2 rounded-lg bg-ouro-void/40 px-3 py-2 text-left ring-1 ring-ouro-moss/15 hover:ring-ouro-glow/20 transition-colors"
                 >
-                  <Badge color={(c.status as string) === "running" ? "lime" : (c.status as string) === "waiting_input" ? "yellow" : "zinc"}>
-                    {c.status as string}
+                  <Badge color={c.status === "running" ? "lime" : c.status === "waiting_input" ? "yellow" : "zinc"}>
+                    {c.status}
                   </Badge>
-                  <span className="truncate text-sm text-ouro-bone">{c.runner as string} — {truncate(c.workdir as string, 40)}</span>
-                  <span className="shrink-0 text-xs text-ouro-shadow">{relTime(c.lastActivityAt as string)}</span>
+                  <span className="truncate text-sm text-ouro-bone">{c.runner} — {truncate(c.workdir, 40)}</span>
+                  <span className="shrink-0 text-xs text-ouro-shadow">{relTime(c.lastActivityAt)}</span>
                 </button>
               ))}
             </div>
@@ -462,13 +435,12 @@ export function OverviewTab({ view, deskPrefs, refreshGeneration }: { view: Reco
 
       {/* Recently closed — closure memory */}
       {(() => {
-        const allObligations = (work.obligations as any)?.items ?? []
-        const fulfilled = allObligations.filter((o: any) => o.status === "fulfilled")
+        const fulfilled = obligations.items.filter((o) => o.status === "fulfilled")
         if (fulfilled.length === 0) return null
         return (
           <Section title="Recently closed">
             <div className="space-y-1">
-              {fulfilled.slice(0, 3).map((o: any, i: number) => (
+              {fulfilled.slice(0, 3).map((o, i) => (
                 <div key={i} className="flex items-center gap-2 rounded-lg px-3 py-2 bg-ouro-glow/5 ring-1 ring-ouro-glow/10">
                   <Badge color="lime">closed</Badge>
                   <p className="text-sm text-ouro-mist truncate">{truncate(o.content, 80)}</p>
@@ -511,8 +483,9 @@ export function OverviewTab({ view, deskPrefs, refreshGeneration }: { view: Reco
   )
 }
 
-function NeedsMeRow({ item, nav, agentName, onDismiss }: { item: NeedsMeItem; nav: (t: { tab: TabId; focus?: string }) => void; agentName: string; onDismiss: () => void }) {
+function NeedsMeRow({ item, nav, agentName, onDismiss }: { item: OutlookNeedsMeItem; nav: (t: { tab: TabId; focus?: string }) => void; agentName: string; onDismiss: () => void }) {
   const isReturnReady = item.urgency === "return-ready"
+  const dismissFocus = item.ref?.focus
   return (
     <div className={`flex w-full items-start gap-2.5 rounded-lg px-3 py-2.5 text-left ring-1 transition-colors ${
       isReturnReady ? "bg-ouro-glow/5 ring-ouro-glow/15" : "bg-ouro-void/40 ring-ouro-moss/10"
@@ -535,14 +508,14 @@ function NeedsMeRow({ item, nav, agentName, onDismiss }: { item: NeedsMeItem; na
           </span>
         )}
       </button>
-      {item.ref?.focus && (
+      {dismissFocus && (
         <button
           onClick={async (e) => {
             e.stopPropagation()
             await fetch(`/api/agents/${encodeURIComponent(agentName)}/dismiss-obligation`, {
               method: "POST",
               headers: { "content-type": "application/json" },
-              body: JSON.stringify({ obligationId: item.ref!.focus }),
+              body: JSON.stringify({ obligationId: dismissFocus }),
             })
             onDismiss()
           }}
