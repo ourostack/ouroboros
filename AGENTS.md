@@ -117,7 +117,8 @@ Before starting work, check that locally installed skills are up to date:
 
 1. Fetch the manifest from `https://raw.githubusercontent.com/ouroborosbot/ouroboros-skills/main/manifest.json`.
 2. Compare the manifest against the local `_registry.json` in your skills directory.
-3. If any skill's commit SHA is stale, update it using the skill-management workflow before proceeding.
+3. If `_registry.json` is missing, fetch the specific `SKILL.md` files named by the manifest and compare them directly against the local installed copies.
+4. If any skill's commit SHA is stale, or any direct file comparison differs, update it using the skill-management workflow before proceeding.
 
 This replaces the old pattern of diffing against `subagents/*.md` files in this repo. The shared `ouroboros-skills` repository is now the source of truth for workflow skill content.
 
