@@ -66,6 +66,12 @@ export function createSseBroadcaster(): SseBroadcaster {
   return { add, broadcast, disconnectAll }
 }
 
+export function createStateChangedBroadcast(sse: Pick<SseBroadcaster, "broadcast">): () => void {
+  return () => {
+    sse.broadcast("state-changed", { at: new Date().toISOString() })
+  }
+}
+
 export function createBundleWatcher(
   bundlesRoot: string,
   onChange: () => void,

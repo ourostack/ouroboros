@@ -26,14 +26,17 @@ export function normalizeLegacyOutlookApiPath(pathname: string): string {
   return pathname
 }
 
-export function resolveSpaDistDir(): string | null {
-  const candidates = [
+function defaultSpaDistCandidates(): string[] {
+  return [
     path.resolve(__dirname, "..", "..", "..", "packages", "outlook-ui", "dist"),
     path.resolve(__dirname, "..", "..", "packages", "outlook-ui", "dist"),
     path.resolve(__dirname, "..", "..", "..", "..", "packages", "outlook-ui", "dist"),
     path.resolve(__dirname, "..", "..", "outlook-ui"),
     path.resolve(__dirname, "..", "outlook-ui"),
   ]
+}
+
+export function resolveSpaDistDir(candidates = defaultSpaDistCandidates()): string | null {
   for (const candidate of candidates) {
     if (fs.existsSync(path.join(candidate, "index.html"))) return candidate
   }
