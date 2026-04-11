@@ -26,6 +26,7 @@
     "teams": "tsc && node dist/senses/teams-entry.js --agent ouroboros",
     "bluebubbles": "tsc && node dist/senses/bluebubbles/entry.js --agent ouroboros",
     "test": "vitest run",
+    "typecheck:outlook-ui": "tsc --noEmit -p packages/outlook-ui/tsconfig.json",
     "test:outlook-ui": "npm test --prefix packages/outlook-ui",
     "test:coverage:vitest": "vitest run --coverage",
     "test:coverage": "node scripts/run-coverage-gate.cjs",
