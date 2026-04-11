@@ -2,6 +2,43 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.334",
+      "changes": [
+        "refactor(outlook): route the Outlook SPA through canonical shared Outlook contracts instead of tab-local shadow DTOs and generic `Record<string, unknown>` casts.",
+        "test(outlook): type live-refresh fixtures against the canonical agent view contract so UI tests catch backend/UI shape drift."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.333",
+      "changes": [
+        "docs(workflow): document the skill freshness fallback for installs that do not have a local `_registry.json`."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.332",
+      "changes": [
+        "refactor(outlook): remove the orphaned server-rendered Outlook fallback so the HTTP surface clearly serves the built SPA or JSON errors."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.331",
+      "changes": [
+        "test(isolation): route daemon entrypoint suites through per-test temporary homes so fresh coverage workers no longer create transient `slugger.ouro` bundles under `~/AgentBundles`."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.330",
+      "changes": [
+        "test(isolation): keep pipeline integration identity state under a per-test temporary home so full coverage no longer creates transient `pipeline-int-*` bundles in the real `~/AgentBundles` root."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.329",
+      "changes": [
+        "fix(wrapper): make fresh first-run `npx ouro.bot --version` pass through to the installed CLI after bootstrap, while preserving first-install PATH guidance for bare `npx ouro.bot`."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.328",
       "changes": [
         "fix(auth): keep provider switches model-aware so changing providers updates incompatible model pairings to safe provider defaults instead of carrying stale model names across OpenAI Codex, Anthropic, MiniMax, Azure, and GitHub Copilot.",

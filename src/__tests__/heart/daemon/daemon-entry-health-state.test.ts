@@ -1,4 +1,7 @@
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import * as fs from "fs"
+import * as os from "os"
+import * as path from "path"
 
 const { listEnabledBundleAgentsMock } = vi.hoisted(() => ({
   listEnabledBundleAgentsMock: vi.fn(() => [] as string[]),
@@ -118,6 +121,15 @@ vi.mock("../../../heart/daemon/daemon-health", async () => {
 })
 
 describe("daemon entry health state wiring", () => {
+  let testHomeRoot: string
+  let originalHome: string | undefined
+
+  beforeEach(() => {
+    originalHome = process.env.HOME
+    testHomeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-entry-health-home-"))
+    process.env.HOME = testHomeRoot
+  })
+
   afterEach(() => {
     listEnabledBundleAgentsMock.mockReset()
     listEnabledBundleAgentsMock.mockReturnValue([])
@@ -133,6 +145,12 @@ describe("daemon entry health state wiring", () => {
     capturedHealthStates.splice(0, capturedHealthStates.length)
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
+    fs.rmSync(testHomeRoot, { recursive: true, force: true })
+    if (originalHome === undefined) {
+      delete process.env.HOME
+    } else {
+      process.env.HOME = originalHome
+    }
   })
 
   function setupDaemonMocks(snapshots: Array<{

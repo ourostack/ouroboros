@@ -9,6 +9,7 @@ import { ConnectionsTab } from "./connections"
 import { InnerTab } from "./inner"
 import { MemoryTab } from "./memory"
 import { RuntimeTab } from "./runtime"
+import type { OutlookAgentView } from "../../contracts"
 
 function jsonResponse(payload: unknown): Response {
   return new Response(JSON.stringify(payload), {
@@ -21,6 +22,85 @@ async function flushRefresh(): Promise<void> {
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
   })
+}
+
+type AgentViewOverrides = {
+  agent?: Partial<OutlookAgentView["agent"]>
+  work?: {
+    tasks?: Partial<OutlookAgentView["work"]["tasks"]>
+    obligations?: Partial<OutlookAgentView["work"]["obligations"]>
+    sessions?: Partial<OutlookAgentView["work"]["sessions"]>
+    coding?: Partial<OutlookAgentView["work"]["coding"]>
+    bridges?: string[]
+  }
+  inner?: OutlookAgentView["inner"]
+  activity?: Partial<OutlookAgentView["activity"]>
+}
+
+function makeAgentView(overrides: AgentViewOverrides = {}): OutlookAgentView {
+  const base: OutlookAgentView = {
+    productName: "Ouro Outlook",
+    interactionModel: "read-only",
+    viewer: { kind: "human", innerDetail: "summary" },
+    agent: {
+      agentName: "slugger",
+      agentRoot: "/tmp/slugger.ouro",
+      enabled: true,
+      provider: "openai",
+      freshness: { status: "fresh", latestActivityAt: null, ageMs: null },
+      degraded: { status: "ok", issues: [] },
+      attention: { level: "idle", label: "steady" },
+      senses: [],
+    },
+    work: {
+      tasks: {
+        totalCount: 0,
+        liveCount: 0,
+        blockedCount: 0,
+        byStatus: {
+          drafting: 0,
+          processing: 0,
+          validating: 0,
+          collaborating: 0,
+          paused: 0,
+          blocked: 0,
+          done: 0,
+          cancelled: 0,
+        },
+        liveTaskNames: [],
+        actionRequired: [],
+        activeBridges: [],
+      },
+      obligations: { openCount: 0, items: [] },
+      sessions: { liveCount: 0, items: [] },
+      coding: { totalCount: 0, activeCount: 0, blockedCount: 0, items: [] },
+      bridges: [],
+    },
+    inner: { mode: "summary", status: "idle", summary: null, hasPending: false },
+    activity: { freshness: { status: "fresh", latestActivityAt: null, ageMs: null }, recent: [] },
+  }
+
+  return {
+    ...base,
+    agent: { ...base.agent, ...overrides.agent },
+    work: {
+      ...base.work,
+      tasks: {
+        ...base.work.tasks,
+        ...overrides.work?.tasks,
+        byStatus: {
+          ...base.work.tasks.byStatus,
+          ...overrides.work?.tasks?.byStatus,
+        },
+      },
+      obligations: { ...base.work.obligations, ...overrides.work?.obligations },
+      sessions: { ...base.work.sessions, ...overrides.work?.sessions },
+      coding: { ...base.work.coding, ...overrides.work?.coding },
+      bridges: overrides.work?.bridges ?? base.work.bridges,
+    },
+    inner: overrides.inner ?? base.inner,
+    activity: { ...base.activity, ...overrides.activity },
+  }
 }
 
 afterEach(() => {
@@ -41,23 +121,7 @@ describe("Outlook deep-tab live refresh", () => {
     })
     vi.stubGlobal("fetch", fetchMock)
 
-    const view = {
-      agent: {
-        agentName: "slugger",
-        degraded: { status: "healthy", issues: [] },
-        attention: { level: "idle", label: "steady" },
-        senses: [],
-      },
-      work: {
-        tasks: { liveCount: 0, blockedCount: 0 },
-        obligations: { openCount: 0 },
-        sessions: { liveCount: 0 },
-        coding: { activeCount: 0, blockedCount: 0 },
-        bridges: [],
-      },
-      inner: { status: "idle", hasPending: false },
-      activity: { freshness: { status: "fresh" }, recent: [] },
-    } satisfies Record<string, unknown>
+    const view = makeAgentView()
 
     const ui = render(
       <NavigationContext.Provider value={() => {}}>
@@ -244,7 +308,7 @@ describe("Outlook deep-tab live refresh", () => {
     })
     vi.stubGlobal("fetch", fetchMock)
 
-    const view = { work: { obligations: { openCount: 0, items: [] }, tasks: { liveCount: 0, blockedCount: 0, liveTaskNames: [], actionRequired: [] } } }
+    const view = makeAgentView()
 
     const ui = render(
       <NavigationContext.Provider value={() => {}}>
@@ -299,7 +363,7 @@ describe("Outlook deep-tab live refresh", () => {
     })
     vi.stubGlobal("fetch", fetchMock)
 
-    const view = { inner: { status: "idle", hasPending: false } }
+    const view = makeAgentView()
 
     const ui = render(
       <NavigationContext.Provider value={() => {}}>
@@ -348,7 +412,12 @@ describe("Outlook deep-tab live refresh", () => {
     })
     vi.stubGlobal("fetch", fetchMock)
 
-    const view = { agent: { degraded: { status: "healthy", issues: [] }, freshness: { status: "fresh", ageMs: 0 }, provider: "none", enabled: true } }
+    const view = makeAgentView({
+      agent: {
+        provider: "none",
+        freshness: { status: "fresh", latestActivityAt: null, ageMs: 0 },
+      },
+    })
 
     const ui = render(<RuntimeTab agentName="slugger" view={view} refreshGeneration={0} />)
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))

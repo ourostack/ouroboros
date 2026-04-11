@@ -1,4 +1,7 @@
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import * as fs from "fs"
+import * as os from "os"
+import * as path from "path"
 
 const { listEnabledBundleAgentsMock } = vi.hoisted(() => ({
   listEnabledBundleAgentsMock: vi.fn(() => [] as string[]),
@@ -76,6 +79,15 @@ vi.mock("../../../heart/config", () => ({
 }))
 
 describe("daemon entry error boundary — per-agent habit setup isolation", () => {
+  let testHomeRoot: string
+  let originalHome: string | undefined
+
+  beforeEach(() => {
+    originalHome = process.env.HOME
+    testHomeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-entry-error-home-"))
+    process.env.HOME = testHomeRoot
+  })
+
   afterEach(() => {
     listEnabledBundleAgentsMock.mockReset()
     listEnabledBundleAgentsMock.mockReturnValue([])
@@ -89,6 +101,12 @@ describe("daemon entry error boundary — per-agent habit setup isolation", () =
     writeDaemonTombstoneMock.mockReset()
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
+    fs.rmSync(testHomeRoot, { recursive: true, force: true })
+    if (originalHome === undefined) {
+      delete process.env.HOME
+    } else {
+      process.env.HOME = originalHome
+    }
   })
 
   /**

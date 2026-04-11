@@ -3,11 +3,17 @@ import { Badge } from "../../catalyst/badge"
 import { fetchJson, relTime, truncate } from "../../api"
 import { classifyToolCall } from "../../tools"
 import { useNavigate } from "../../navigation"
-import type { OutlookSessionTranscript, OutlookTranscriptMessage as TranscriptMessage } from "../../../../../src/heart/outlook/outlook-types"
+import type {
+  OutlookAgentView,
+  OutlookHabitItem,
+  OutlookHabitView,
+  OutlookSessionTranscript,
+  OutlookTranscriptMessage as TranscriptMessage,
+} from "../../contracts"
 import {
   getOutlookTranscriptMessageText,
   getOutlookTranscriptTimestamp,
-} from "../../../../../src/heart/outlook/outlook-types"
+} from "../../contracts"
 
 function transcriptTimestamp(msg: TranscriptMessage): string {
   return getOutlookTranscriptTimestamp(msg)
@@ -22,16 +28,16 @@ function formatTranscriptTimestamp(msg: TranscriptMessage): string {
   }).format(new Date(transcriptTimestamp(msg)))
 }
 
-export function InnerTab({ agentName, view, refreshGeneration }: { agentName: string; view: Record<string, unknown>; refreshGeneration: number }) {
+export function InnerTab({ agentName, view, refreshGeneration }: { agentName: string; view: OutlookAgentView; refreshGeneration: number }) {
   const nav = useNavigate()
-  const [habits, setHabits] = useState<Record<string, unknown> | null>(null)
+  const [habits, setHabits] = useState<OutlookHabitView | null>(null)
   const [transcript, setTranscript] = useState<OutlookSessionTranscript | null>(null)
   const [showTranscript, setShowTranscript] = useState(false)
   const transcriptRefreshRef = useRef<number | null>(null)
-  const inner = view.inner as Record<string, unknown>
+  const inner = view.inner
 
   useEffect(() => {
-    fetchJson<Record<string, unknown>>(`/agents/${encodeURIComponent(agentName)}/habits`).then(setHabits)
+    fetchJson<OutlookHabitView>(`/agents/${encodeURIComponent(agentName)}/habits`).then(setHabits)
   }, [agentName, refreshGeneration])
 
   useEffect(() => {
@@ -51,13 +57,15 @@ export function InnerTab({ agentName, view, refreshGeneration }: { agentName: st
       })
   }
 
-  const habitItems = (habits?.items ?? []) as Array<Record<string, unknown>>
+  const habitItems = habits?.items ?? []
   const overdueHabits = habitItems.filter((h) => h.isOverdue)
   const activeHealthy = habitItems.filter((h) => h.status === "active" && !h.isOverdue)
   const pausedHabits = habitItems.filter((h) => h.status === "paused")
+  const innerOrigin = inner.mode === "deep" ? inner.origin : null
+  const innerObligationStatus = inner.mode === "deep" ? inner.obligationStatus : null
 
   // Find heartbeat specifically
-  const heartbeat = habitItems.find((h) => (h.name as string)?.toLowerCase() === "heartbeat")
+  const heartbeat = habitItems.find((h) => h.name.toLowerCase() === "heartbeat")
 
   return (
     <div className="space-y-8">
@@ -76,7 +84,7 @@ export function InnerTab({ agentName, view, refreshGeneration }: { agentName: st
                 {heartbeat.isOverdue ? "Overdue" : "Healthy"}
               </span>
               <span className="text-xs text-ouro-shadow">
-                every {heartbeat.cadence as string} · last {heartbeat.lastRun ? relTime(heartbeat.lastRun as string) : "never"}
+                every {heartbeat.cadence ?? "unknown"} · last {heartbeat.lastRun ? relTime(heartbeat.lastRun) : "never"}
               </span>
             </div>
           </div>
@@ -87,29 +95,28 @@ export function InnerTab({ agentName, view, refreshGeneration }: { agentName: st
       <section>
         <div className="rounded-xl bg-ouro-moss/15 p-4 ring-1 ring-ouro-glow/10">
           <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-ouro-glow">Inner work</p>
-          <p className="mt-1 font-display text-xl italic font-semibold text-ouro-bone">{inner.status as string}</p>
-          {inner.summary && <p className="mt-2 text-sm leading-relaxed text-ouro-mist">{inner.summary as string}</p>}
+          <p className="mt-1 font-display text-xl italic font-semibold text-ouro-bone">{inner.status}</p>
+          {inner.summary && <p className="mt-2 text-sm leading-relaxed text-ouro-mist">{inner.summary}</p>}
           <p className="mt-2 text-sm text-ouro-shadow">
             {inner.hasPending ? "Pending inner work queued." : "No pending inner work."}
           </p>
-          {inner.mode === "deep" && inner.origin && (
+          {innerOrigin && (
             <div className="mt-3">
               <p className="font-mono text-[9px] uppercase tracking-wider text-ouro-shadow">Triggered from</p>
               <button
                 onClick={() => {
-                  const o = inner.origin as Record<string, string>
-                  nav({ tab: "sessions", focus: `${o.friendId}/${o.channel}/${o.key}` })
+                  nav({ tab: "sessions", focus: `${innerOrigin.friendId}/${innerOrigin.channel}/${innerOrigin.key}` })
                 }}
                 className="mt-1 text-xs text-ouro-glow underline decoration-ouro-glow/30 underline-offset-2 hover:decoration-ouro-glow"
               >
-                {(inner.origin as Record<string, string>).friendId?.slice(0, 8)}…/{(inner.origin as Record<string, string>).channel}/{(inner.origin as Record<string, string>).key}
+                {innerOrigin.friendId.slice(0, 8)}…/{innerOrigin.channel}/{innerOrigin.key}
               </button>
-              {inner.obligationStatus && (
+              {innerObligationStatus && (
                 <button
                   onClick={() => nav({ tab: "work" })}
                   className="ml-2 text-xs text-ouro-glow underline decoration-ouro-glow/30 underline-offset-2 hover:decoration-ouro-glow"
                 >
-                  obligation: {inner.obligationStatus as string}
+                  obligation: {innerObligationStatus}
                 </button>
               )}
             </div>
@@ -146,7 +153,7 @@ export function InnerTab({ agentName, view, refreshGeneration }: { agentName: st
               Overdue ({overdueHabits.length})
             </p>
             <div className="space-y-1.5">
-              {overdueHabits.map((h) => <HabitCard key={h.name as string} h={h} />)}
+              {overdueHabits.map((h) => <HabitCard key={h.name} h={h} />)}
             </div>
           </div>
         )}
@@ -157,7 +164,7 @@ export function InnerTab({ agentName, view, refreshGeneration }: { agentName: st
               Running fine ({activeHealthy.length})
             </p>
             <div className="space-y-1.5">
-              {activeHealthy.map((h) => <HabitCard key={h.name as string} h={h} />)}
+              {activeHealthy.map((h) => <HabitCard key={h.name} h={h} />)}
             </div>
           </div>
         )}
@@ -168,7 +175,7 @@ export function InnerTab({ agentName, view, refreshGeneration }: { agentName: st
               Paused ({pausedHabits.length})
             </p>
             <div className="space-y-1.5">
-              {pausedHabits.map((h) => <HabitCard key={h.name as string} h={h} />)}
+              {pausedHabits.map((h) => <HabitCard key={h.name} h={h} />)}
             </div>
           </div>
         )}
@@ -326,10 +333,10 @@ function InnerTranscriptView({ messages }: { messages: TranscriptMessage[] }) {
   )
 }
 
-function HabitCard({ h }: { h: Record<string, unknown> }) {
-  const isOverdue = h.isOverdue as boolean
-  const isDegraded = h.isDegraded as boolean
-  const status = h.status as string
+function HabitCard({ h }: { h: OutlookHabitItem }) {
+  const isOverdue = h.isOverdue
+  const isDegraded = h.isDegraded
+  const status = h.status
 
   return (
     <div className={`rounded-lg px-3 py-2.5 ring-1 ${
@@ -342,24 +349,24 @@ function HabitCard({ h }: { h: Record<string, unknown> }) {
         <Badge color={isOverdue ? "red" : isDegraded ? "yellow" : status === "active" ? "lime" : "zinc"}>
           {isOverdue ? "overdue" : isDegraded ? "degraded" : status}
         </Badge>
-        <span className="font-medium text-ouro-bone">{h.title as string}</span>
+        <span className="font-medium text-ouro-bone">{h.title}</span>
       </div>
       <div className="mt-1 flex flex-wrap gap-3 text-xs text-ouro-shadow">
-        {h.cadence && <span>every {h.cadence as string}</span>}
-        <span>{h.lastRun ? `last ${relTime(h.lastRun as string)}` : "never run"}</span>
-        {isDegraded && h.degradedReason && <span className="text-ouro-gold">{h.degradedReason as string}</span>}
+        {h.cadence && <span>every {h.cadence}</span>}
+        <span>{h.lastRun ? `last ${relTime(h.lastRun)}` : "never run"}</span>
+        {isDegraded && h.degradedReason && <span className="text-ouro-gold">{h.degradedReason}</span>}
         {/* Confidence indicator */}
         {!isOverdue && !isDegraded && status === "active" && h.lastRun && (
           <span className="text-ouro-glow">on schedule</span>
         )}
         {isOverdue && h.overdueMs && (
-          <span className="text-ouro-fang">{Math.floor((h.overdueMs as number) / 60000)}m overdue</span>
+          <span className="text-ouro-fang">{Math.floor(h.overdueMs / 60000)}m overdue</span>
         )}
         {!h.lastRun && status === "active" && (
           <span className="text-ouro-gold">never fired — may be misconfigured</span>
         )}
       </div>
-      {h.bodyExcerpt && <p className="mt-1 text-xs text-ouro-shadow/70">{h.bodyExcerpt as string}</p>}
+      {h.bodyExcerpt && <p className="mt-1 text-xs text-ouro-shadow/70">{h.bodyExcerpt}</p>}
     </div>
   )
 }

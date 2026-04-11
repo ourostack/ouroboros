@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
@@ -68,6 +68,15 @@ vi.mock("../../../heart/config", () => ({
 }))
 
 describe("daemon entrypoint", () => {
+  let testHomeRoot: string
+  let originalHome: string | undefined
+
+  beforeEach(() => {
+    originalHome = process.env.HOME
+    testHomeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-entry-test-home-"))
+    process.env.HOME = testHomeRoot
+  })
+
   afterEach(() => {
     listEnabledBundleAgentsMock.mockReset()
     listEnabledBundleAgentsMock.mockReturnValue([])
@@ -80,6 +89,12 @@ describe("daemon entrypoint", () => {
     writeDaemonTombstoneMock.mockReset()
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
+    fs.rmSync(testHomeRoot, { recursive: true, force: true })
+    if (originalHome === undefined) {
+      delete process.env.HOME
+    } else {
+      process.env.HOME = originalHome
+    }
   })
 
   it("boots daemon with default socket and wires signal handlers", async () => {
