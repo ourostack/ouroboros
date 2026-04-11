@@ -41,12 +41,14 @@ describe("coverage workflow contract", () => {
     expect(workflow).toContain("No releasable src/ changes detected — version bump not required")
   })
 
-  it("runs the outlook-ui package test suite before the root coverage gate continues", () => {
+  it("runs the outlook-ui package typecheck and test suite before the root coverage gate continues", () => {
     const gate = readFileSync(
       join(process.cwd(), "scripts", "run-coverage-gate.cjs"),
       "utf8",
     )
 
+    expect(gate).toContain('runNpm(["run", "typecheck:outlook-ui"])')
+    expect(gate).toContain("outlook_ui_typecheck")
     expect(gate).toContain('runNpm(["run", "test:outlook-ui"])')
     expect(gate).toContain("outlook_ui_tests")
 
@@ -55,6 +57,7 @@ describe("coverage workflow contract", () => {
       "utf8",
     )
 
+    expect(packageJson).toContain('"typecheck:outlook-ui": "tsc --noEmit -p packages/outlook-ui/tsconfig.json"')
     expect(packageJson).toContain('"test:outlook-ui": "npm test --prefix packages/outlook-ui"')
   })
 })
