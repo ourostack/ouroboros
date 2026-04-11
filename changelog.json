@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.328",
+      "changes": [
+        "fix(auth): keep provider switches model-aware so changing providers updates incompatible model pairings to safe provider defaults instead of carrying stale model names across OpenAI Codex, Anthropic, MiniMax, Azure, and GitHub Copilot.",
+        "fix(auth): rewrite provider auth/failover guidance into multiline actionable sections with provider error details, model-mismatch repair commands, and ready-provider switch prompts."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.327",
       "changes": [
         "fix(daemon): make startup stability polling respect stdout TTY capability so captured `ouro up` output is plain append-only text without raw ANSI cursor-control or color escapes, while interactive terminals keep in-place progress rendering."
