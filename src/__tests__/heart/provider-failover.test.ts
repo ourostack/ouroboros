@@ -109,6 +109,44 @@ describe("buildFailoverContext", () => {
     expect(ctx.unconfiguredProviders).toHaveLength(0)
   })
 
+  it("gives concrete recovery guidance for every configured-but-unavailable provider class", () => {
+    const ctx = buildFailoverContext(
+      "network error",
+      "network-error",
+      "openai-codex",
+      "gpt-5.4",
+      "slugger",
+      {
+        anthropic: { ok: false, classification: "auth-failure", message: "expired" },
+        azure: { ok: false, classification: "network-error", message: "fetch failed" },
+        minimax: { ok: false, classification: "usage-limit", message: "quota" },
+        "github-copilot": { ok: false, classification: "unknown", message: "mystery" },
+      },
+      models,
+    )
+
+    expect(ctx.userMessage).toContain("Configured but unavailable:")
+    expect(ctx.userMessage).toContain("anthropic: credentials need to be refreshed")
+    expect(ctx.userMessage).toContain("azure: could not be reached")
+    expect(ctx.userMessage).toContain("minimax: usage limit hit")
+    expect(ctx.userMessage).toContain("github-copilot: could not be reached")
+  })
+
+  it("truncates overly long provider detail in the user-facing message", () => {
+    const longDetail = `fatal ${"x".repeat(320)}`
+    const ctx = buildFailoverContext(
+      longDetail,
+      "unknown",
+      "openai-codex",
+      "gpt-5.4",
+      "slugger",
+      {},
+      models,
+    )
+
+    expect(ctx.userMessage).toContain(`provider detail: ${longDetail.slice(0, 297)}...`)
+  })
+
   it("reflects classification in error summary with model", () => {
     expect(buildFailoverContext("", "auth-failure", "anthropic", "claude-opus-4-6", "a", {}, {}).errorSummary)
       .toBe("anthropic (claude-opus-4-6) authentication failed")
