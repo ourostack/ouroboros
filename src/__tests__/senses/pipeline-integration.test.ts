@@ -5,7 +5,7 @@
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions"
 import type { ChannelCallbacks, RunAgentOptions } from "../../heart/core"
 import type {
@@ -117,16 +117,27 @@ function makeIntegrationInput(overrides: Partial<InboundTurnInput> = {}): Inboun
 describe("pipeline integration — full UX/AX scenarios", () => {
   let bundleRoot: string
   let agentRoot: string
+  let homeRoot: string
+  let originalHome: string | undefined
 
   beforeEach(() => {
-    bundleRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pipeline-int-"))
-    setAgentName(`pipeline-int-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
+    originalHome = process.env.HOME
+    homeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pipeline-int-home-"))
+    process.env.HOME = homeRoot
+    const agentName = `pipeline-int-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    setAgentName(agentName)
     agentRoot = getAgentRoot()
-    fs.rmSync(agentRoot, { recursive: true, force: true })
+    fs.mkdirSync(agentRoot, { recursive: true })
+    bundleRoot = agentRoot
   })
 
   afterEach(() => {
-    fs.rmSync(agentRoot, { recursive: true, force: true })
+    fs.rmSync(homeRoot, { recursive: true, force: true })
+    if (originalHome === undefined) {
+      delete process.env.HOME
+    } else {
+      process.env.HOME = originalHome
+    }
     resetIdentity()
   })
 
