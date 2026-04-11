@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.335",
+      "changes": [
+        "OpenAI Codex auth verification now uses the same streamed runtime turn shape as real Codex conversations, so successful browser login no longer ends with a false `400 status code (no body)` ping failure.",
+        "Provider ping defaults now come from the shared provider/model registry, keeping auth verification aligned with current model defaults such as `gpt-5.4`."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.334",
       "changes": [
         "refactor(outlook): route the Outlook SPA through canonical shared Outlook contracts instead of tab-local shadow DTOs and generic `Record<string, unknown>` casts.",
