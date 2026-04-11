@@ -6,12 +6,12 @@ export async function fetchJson<T>(path: string): Promise<T> {
   return response.json() as Promise<T>
 }
 
-export function subscribeToEvents(onEvent: (event: string, data: Record<string, unknown>) => void): () => void {
+export function subscribeToEvents(onEvent: (event: string, data: unknown) => void): () => void {
   const source = new EventSource(`${BASE}/events`)
 
   source.addEventListener("state-changed", (e) => {
     try {
-      const data = JSON.parse(e.data) as Record<string, unknown>
+      const data: unknown = JSON.parse(e.data)
       onEvent("state-changed", data)
     } catch {
       onEvent("state-changed", {})
