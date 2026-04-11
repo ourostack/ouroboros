@@ -1,6 +1,6 @@
 import type Anthropic from "@anthropic-ai/sdk"
 import OpenAI from "openai"
-import type { ProviderErrorClassification, ProviderRuntime } from "./core"
+import type { ChannelCallbacks, ProviderErrorClassification, ProviderRuntime } from "./core"
 import { PROVIDER_CREDENTIALS, type AgentProvider } from "./identity"
 import type {
   AnthropicProviderConfig,
@@ -15,6 +15,7 @@ import { createMinimaxProviderRuntime } from "./providers/minimax"
 import { createOpenAICodexProviderRuntime } from "./providers/openai-codex"
 import { createGithubCopilotProviderRuntime } from "./providers/github-copilot"
 import { loadAgentSecrets } from "./auth/auth-flow"
+import { getDefaultModelForProvider } from "./provider-models"
 import { emitNervesEvent } from "../nerves/runtime"
 
 export type PingResult =
@@ -29,6 +30,15 @@ type ProviderConfig =
   | OpenAICodexProviderConfig
 
 const PING_TIMEOUT_MS = 10_000
+const PING_CALLBACKS: ChannelCallbacks = {
+  onModelStart() {},
+  onModelStreamStart() {},
+  onTextChunk() {},
+  onReasoningChunk() {},
+  onToolStart() {},
+  onToolEnd() {},
+  onError() {},
+}
 
 /**
  * Strip raw JSON/HTML API response bodies from error messages.
@@ -71,17 +81,9 @@ function hasEmptyCredentials(provider: AgentProvider, config: ProviderConfig): b
 function createRuntimeForPing(provider: AgentProvider, _config: ProviderConfig): ProviderRuntime {
   // The provider constructors read credentials from the active config via getXxxConfig().
   // For ping, this is acceptable because verifyProviderCredentials patches the runtime
-  // config before calling ping. The model string is a default — for anthropic the ping
-  // overrides it with haiku anyway, and for others it's used in a minimal API call.
-  const DEFAULT_MODELS: Record<AgentProvider, string> = {
-    anthropic: "claude-haiku-4-5-20251001",
-    azure: "gpt-4o",
-    minimax: "MiniMax-M2.7",
-    "openai-codex": "codex-mini-latest",
-    "github-copilot": "gpt-4o",
-  }
-  /* v8 ignore next -- fallback: all known providers are in DEFAULT_MODELS @preserve */
-  const model = DEFAULT_MODELS[provider] ?? "unknown"
+  // config before calling ping. Use the same provider defaults as auth switch
+  // and hatch so verification cannot drift to stale provider/model pairings.
+  const model = getDefaultModelForProvider(provider)
   switch (provider) {
     case "anthropic":
       return createAnthropicProviderRuntime(model)
@@ -138,13 +140,13 @@ export async function pingProvider(
           { signal: controller.signal, headers: { "anthropic-beta": "claude-code-20250219,oauth-2025-04-20" } },
         )
       } else if (provider === "openai-codex") {
-        // Codex uses the Responses API (chatgpt.com/backend-api/codex/responses),
-        // not the Chat Completions API. Ping via responses endpoint.
-        const client = runtime.client as OpenAI
-        await (client as unknown as { responses: { create: (params: Record<string, unknown>, opts: Record<string, unknown>) => Promise<unknown> } }).responses.create(
-          { model: runtime.model, input: "ping", store: false },
-          { signal: controller.signal },
-        )
+        await runtime.streamTurn({
+          messages: [{ role: "user", content: "ping" }],
+          activeTools: [],
+          callbacks: PING_CALLBACKS,
+          signal: controller.signal,
+          toolChoiceRequired: false,
+        })
       } else {
         // OpenAI-compatible providers (azure, minimax, github-copilot)
         const client = runtime.client as OpenAI
