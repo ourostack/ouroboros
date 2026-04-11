@@ -220,3 +220,6 @@ jobs:
           verify_tag "ouro.bot@latest" "$LOCAL"
 
           echo "supported npm dist-tags verified for ${LOCAL}"
+
+      - name: Smoke published package binaries
+        run: npm run release:smoke
