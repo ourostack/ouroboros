@@ -35,6 +35,7 @@ export default defineConfig({
         "src/heart/providers/anthropic-token.ts",
         "src/nerves/observation.ts",
         "src/heart/outlook/outlook-render.ts",
+        "src/heart/outlook/outlook-read.ts",
         "src/heart/daemon/cli-types.ts",
         "src/heart/daemon/doctor-types.ts",
         "src/heart/daemon/daemon-cli.ts",
