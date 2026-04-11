@@ -1,28 +1,16 @@
 import { useEffect, useState } from "react"
 import { Badge } from "../../catalyst/badge"
 import { fetchJson, relTime } from "../../api"
-
-interface MemoryDecision {
-  kind: string
-  decision: string
-  reason: string | null
-  excerpt: string | null
-  timestamp: string
-}
-
-interface MemoryDecisionView {
-  totalCount: number
-  items: MemoryDecision[]
-}
+import type { OutlookMemoryDecisionView, OutlookMemoryView } from "../../contracts"
 
 export function MemoryTab({ agentName, refreshGeneration }: { agentName: string; refreshGeneration: number }) {
-  const [data, setData] = useState<Record<string, unknown> | null>(null)
-  const [decisions, setDecisions] = useState<MemoryDecisionView | null>(null)
+  const [data, setData] = useState<OutlookMemoryView | null>(null)
+  const [decisions, setDecisions] = useState<OutlookMemoryDecisionView | null>(null)
   const [view, setView] = useState<"diary" | "journal" | "decisions">("diary")
 
   useEffect(() => {
-    fetchJson<Record<string, unknown>>(`/agents/${encodeURIComponent(agentName)}/memory`).then(setData)
-    fetchJson<MemoryDecisionView>(`/agents/${encodeURIComponent(agentName)}/memory-decisions`).then(setDecisions).catch(() => {})
+    fetchJson<OutlookMemoryView>(`/agents/${encodeURIComponent(agentName)}/memory`).then(setData)
+    fetchJson<OutlookMemoryDecisionView>(`/agents/${encodeURIComponent(agentName)}/memory-decisions`).then(setDecisions).catch(() => {})
   }, [agentName, refreshGeneration])
 
   if (!data) {
@@ -34,8 +22,8 @@ export function MemoryTab({ agentName, refreshGeneration }: { agentName: string;
     )
   }
 
-  const diaryEntries = (data.recentDiaryEntries ?? []) as Array<Record<string, unknown>>
-  const journalEntries = (data.recentJournalEntries ?? []) as Array<Record<string, unknown>>
+  const diaryEntries = data.recentDiaryEntries
+  const journalEntries = data.recentJournalEntries
 
   return (
     <div className="space-y-4">
@@ -47,7 +35,7 @@ export function MemoryTab({ agentName, refreshGeneration }: { agentName: string;
             view === "diary" ? "text-ouro-glow" : "text-ouro-shadow hover:text-ouro-mist"
           }`}
         >
-          Diary ({data.diaryEntryCount as number})
+          Diary ({data.diaryEntryCount})
         </button>
         <span className="text-ouro-shadow/30">|</span>
         <button
@@ -56,7 +44,7 @@ export function MemoryTab({ agentName, refreshGeneration }: { agentName: string;
             view === "journal" ? "text-ouro-glow" : "text-ouro-shadow hover:text-ouro-mist"
           }`}
         >
-          Journal ({data.journalEntryCount as number})
+          Journal ({data.journalEntryCount})
         </button>
         <span className="text-ouro-shadow/30">|</span>
         <button
@@ -74,13 +62,13 @@ export function MemoryTab({ agentName, refreshGeneration }: { agentName: string;
           {diaryEntries.length > 0 ? (
             <div className="space-y-3">
               {diaryEntries.map((e) => (
-                <article key={e.id as string} className="rounded-xl bg-ouro-void/40 px-4 py-3.5 ring-1 ring-ouro-moss/15">
+                <article key={e.id} className="rounded-xl bg-ouro-void/40 px-4 py-3.5 ring-1 ring-ouro-moss/15">
                   <p className="text-sm leading-relaxed text-ouro-bone">
-                    {e.text as string}
+                    {e.text}
                   </p>
                   <div className="mt-2 flex items-center gap-2 text-xs text-ouro-shadow">
-                    <Badge>{e.source as string}</Badge>
-                    <span>{relTime(e.createdAt as string)}</span>
+                    <Badge>{e.source}</Badge>
+                    <span>{relTime(e.createdAt)}</span>
                   </div>
                 </article>
               ))}
@@ -96,9 +84,9 @@ export function MemoryTab({ agentName, refreshGeneration }: { agentName: string;
           {journalEntries.length > 0 ? (
             <div className="space-y-3">
               {journalEntries.map((e) => (
-                <article key={e.filename as string} className="rounded-xl bg-ouro-void/40 px-4 py-3.5 ring-1 ring-ouro-moss/15">
-                  <p className="font-medium text-ouro-bone">{e.filename as string}</p>
-                  <p className="mt-1 text-sm leading-relaxed text-ouro-mist">{e.preview as string}</p>
+                <article key={e.filename} className="rounded-xl bg-ouro-void/40 px-4 py-3.5 ring-1 ring-ouro-moss/15">
+                  <p className="font-medium text-ouro-bone">{e.filename}</p>
+                  <p className="mt-1 text-sm leading-relaxed text-ouro-mist">{e.preview}</p>
                 </article>
               ))}
             </div>

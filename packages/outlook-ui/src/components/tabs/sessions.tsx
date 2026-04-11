@@ -4,15 +4,16 @@ import { fetchJson, relTime, truncate } from "../../api"
 import { classifyToolCall, type ClassifiedToolCall } from "../../tools"
 import { useNavigate } from "../../navigation"
 import type {
+  OutlookDeskPrefs,
   OutlookSessionInventory as SessionInventory,
   OutlookSessionInventoryItem as SessionItem,
   OutlookSessionTranscript as Transcript,
   OutlookTranscriptMessage as TranscriptMessage,
-} from "../../../../../src/heart/outlook/outlook-types"
+} from "../../contracts"
 import {
   getOutlookTranscriptMessageText,
   getOutlookTranscriptTimestamp,
-} from "../../../../../src/heart/outlook/outlook-types"
+} from "../../contracts"
 
 const REPLY_STATE_BADGE: Record<string, { color: "red" | "yellow" | "lime" | "zinc"; label: string }> = {
   "needs-reply": { color: "red", label: "needs reply" },
@@ -34,7 +35,7 @@ function formatTranscriptTimestamp(msg: TranscriptMessage): string {
   }).format(new Date(transcriptTimestamp(msg)))
 }
 
-export function SessionsTab({ agentName, focus, onFocusConsumed, deskPrefs, refreshGeneration }: { agentName: string; focus?: string; onFocusConsumed?: () => void; deskPrefs?: Record<string, unknown> | null; refreshGeneration: number }) {
+export function SessionsTab({ agentName, focus, onFocusConsumed, deskPrefs, refreshGeneration }: { agentName: string; focus?: string; onFocusConsumed?: () => void; deskPrefs?: OutlookDeskPrefs | null; refreshGeneration: number }) {
   const nav = useNavigate()
   const [inventory, setInventory] = useState<SessionInventory | null>(null)
   const [expandedKey, setExpandedKey] = useState<string | null>(null)
@@ -82,7 +83,7 @@ export function SessionsTab({ agentName, focus, onFocusConsumed, deskPrefs, refr
     setLoading(true)
   }
 
-  const starredFriends = new Set(((deskPrefs as any)?.starredFriends ?? []) as string[])
+  const starredFriends = new Set(deskPrefs?.starredFriends ?? [])
 
   if (!inventory) {
     return <Loading label="Loading sessions" />
