@@ -87,7 +87,7 @@ describe("buildFailoverContext", () => {
 
     expect(ctx.workingProviders).toHaveLength(0)
     expect(ctx.unconfiguredProviders).toHaveLength(0)
-    expect(ctx.userMessage).toContain("no other providers are available")
+    expect(ctx.userMessage).toContain("No other providers are available")
   })
 
   it("omits providers that are configured but also failing", () => {
@@ -109,6 +109,44 @@ describe("buildFailoverContext", () => {
     expect(ctx.unconfiguredProviders).toHaveLength(0)
   })
 
+  it("gives concrete recovery guidance for every configured-but-unavailable provider class", () => {
+    const ctx = buildFailoverContext(
+      "network error",
+      "network-error",
+      "openai-codex",
+      "gpt-5.4",
+      "slugger",
+      {
+        anthropic: { ok: false, classification: "auth-failure", message: "expired" },
+        azure: { ok: false, classification: "network-error", message: "fetch failed" },
+        minimax: { ok: false, classification: "usage-limit", message: "quota" },
+        "github-copilot": { ok: false, classification: "unknown", message: "mystery" },
+      },
+      models,
+    )
+
+    expect(ctx.userMessage).toContain("Configured but unavailable:")
+    expect(ctx.userMessage).toContain("anthropic: credentials need to be refreshed")
+    expect(ctx.userMessage).toContain("azure: could not be reached")
+    expect(ctx.userMessage).toContain("minimax: usage limit hit")
+    expect(ctx.userMessage).toContain("github-copilot: could not be reached")
+  })
+
+  it("truncates overly long provider detail in the user-facing message", () => {
+    const longDetail = `fatal ${"x".repeat(320)}`
+    const ctx = buildFailoverContext(
+      longDetail,
+      "unknown",
+      "openai-codex",
+      "gpt-5.4",
+      "slugger",
+      {},
+      models,
+    )
+
+    expect(ctx.userMessage).toContain(`provider detail: ${longDetail.slice(0, 297)}...`)
+  })
+
   it("reflects classification in error summary with model", () => {
     expect(buildFailoverContext("", "auth-failure", "anthropic", "claude-opus-4-6", "a", {}, {}).errorSummary)
       .toBe("anthropic (claude-opus-4-6) authentication failed")
@@ -116,6 +154,27 @@ describe("buildFailoverContext", () => {
       .toBe("openai-codex (gpt-5.4) hit its usage limit")
     expect(buildFailoverContext("", "server-error", "azure", "", "a", {}, {}).errorSummary)
       .toBe("azure is experiencing an outage")
+  })
+
+  it("calls out provider/model mismatches with concrete repair commands", () => {
+    const ctx = buildFailoverContext(
+      "401 Provided authentication token is expired.",
+      "auth-failure",
+      "openai-codex",
+      "claude-sonnet-4.6",
+      "slugger",
+      {
+        anthropic: { ok: true },
+      },
+      models,
+    )
+
+    expect(ctx.errorSummary).toBe("openai-codex [configured model: claude-sonnet-4.6] authentication failed")
+    expect(ctx.userMessage).toContain("provider detail: 401 Provided authentication token is expired.")
+    expect(ctx.userMessage).toContain("does not look like a model for OpenAI Codex")
+    expect(ctx.userMessage).toContain("ouro config model --agent slugger --facing human gpt-5.4")
+    expect(ctx.userMessage).toContain("Ready providers:")
+    expect(ctx.userMessage).toContain('reply "switch to anthropic"')
   })
 })
 

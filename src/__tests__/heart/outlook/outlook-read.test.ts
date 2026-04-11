@@ -1344,6 +1344,24 @@ describe("outlook deep readers", () => {
         fs.rmSync(tempHome, { recursive: true, force: true })
       }
     })
+
+    it("keeps friend session counts when a session file mtime cannot be read", async () => {
+      const bundlesRoot = makeBundleRoot()
+      const alphaRoot = path.join(bundlesRoot, "alpha.ouro")
+      const sessionDir = path.join(alphaRoot, "state", "sessions", "friend-1", "cli")
+      writeAgentConfig(alphaRoot)
+      writeJson(path.join(alphaRoot, "friends", "friend-1.json"), { name: "Ari" })
+      fs.mkdirSync(sessionDir, { recursive: true })
+      fs.symlinkSync(path.join(sessionDir, "missing-target.json"), path.join(sessionDir, "broken.json"))
+
+      const friends = readFriendView("alpha", { bundlesRoot })
+
+      expect(friends.friends[0]).toMatchObject({
+        friendId: "friend-1",
+        sessionCount: 1,
+        lastActivityAt: null,
+      })
+    })
   })
 
   describe("readLogView", () => {

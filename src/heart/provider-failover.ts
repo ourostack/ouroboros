@@ -1,6 +1,11 @@
 import type { ProviderErrorClassification } from "./core"
 import type { AgentProvider } from "./identity"
 import type { HealthInventoryResult, PingResult } from "./provider-ping"
+import {
+  getDefaultModelForProvider,
+  getProviderModelMismatchMessage,
+  resolveModelForProviderDisplay,
+} from "./provider-models"
 import { emitNervesEvent } from "../nerves/runtime"
 
 export interface FailoverContext {
@@ -17,15 +22,6 @@ export type FailoverAction =
   | { action: "switch"; provider: AgentProvider }
   | { action: "dismiss" }
 
-const FAILING_PROVIDER_LABELS: Record<ProviderErrorClassification, string> = {
-  "auth-failure": "its credentials need to be refreshed",
-  "usage-limit": "has also hit its usage limit",
-  "rate-limit": "is also being rate limited",
-  "server-error": "is also experiencing an outage",
-  "network-error": "could not be reached",
-  "unknown": "could not be reached",
-}
-
 const CLASSIFICATION_LABELS: Record<ProviderErrorClassification, string> = {
   "auth-failure": "authentication failed",
   "usage-limit": "hit its usage limit",
@@ -35,8 +31,44 @@ const CLASSIFICATION_LABELS: Record<ProviderErrorClassification, string> = {
   "unknown": "encountered an error",
 }
 
+function formatProviderWithModel(provider: AgentProvider, model: string): string {
+  if (!model) return provider
+  if (getProviderModelMismatchMessage(provider, model)) {
+    return `${provider} [configured model: ${model}]`
+  }
+  return `${provider} (${model})`
+}
+
+function formatErrorDetail(errorMessage: string, errorSummary: string): string {
+  const detail = errorMessage.replace(/\s+/g, " ").trim()
+  if (!detail || detail === errorSummary) return ""
+  return detail.length > 300 ? `${detail.slice(0, 297)}...` : detail
+}
+
+function formatFailingProviderLine(
+  provider: AgentProvider,
+  classification: ProviderErrorClassification,
+  agentName: string,
+): string {
+  const authCommand = `ouro auth --agent ${agentName} --provider ${provider}`
+  switch (classification) {
+    case "auth-failure":
+      return `  - ${provider}: credentials need to be refreshed. Run \`${authCommand}\`.`
+    case "network-error":
+      return `  - ${provider}: could not be reached. Check network/provider availability; if credentials may be stale, run \`${authCommand}\`.`
+    case "server-error":
+      return `  - ${provider}: provider outage or server error. Retry later; if it keeps failing, run \`${authCommand}\`.`
+    case "rate-limit":
+      return `  - ${provider}: rate limited. Wait and retry, or switch to a ready provider below.`
+    case "usage-limit":
+      return `  - ${provider}: usage limit hit. Wait for quota reset, raise quota, or switch to a ready provider below.`
+    case "unknown":
+      return `  - ${provider}: could not be reached. Run \`${authCommand}\` if credentials may be stale.`
+  }
+}
+
 export function buildFailoverContext(
-  _errorMessage: string,
+  errorMessage: string,
   classification: ProviderErrorClassification,
   currentProvider: AgentProvider,
   currentModel: string,
@@ -45,8 +77,10 @@ export function buildFailoverContext(
   providerModels: Partial<Record<AgentProvider, string>>,
 ): FailoverContext {
   const label = CLASSIFICATION_LABELS[classification]
-  const providerWithModel = currentModel ? `${currentProvider} (${currentModel})` : currentProvider
+  const providerWithModel = formatProviderWithModel(currentProvider, currentModel)
   const errorSummary = `${providerWithModel} ${label}`
+  const errorDetail = formatErrorDetail(errorMessage, errorSummary)
+  const modelMismatch = getProviderModelMismatchMessage(currentProvider, currentModel)
 
   const workingProviders: AgentProvider[] = []
   const unconfiguredProviders: AgentProvider[] = []
@@ -64,31 +98,54 @@ export function buildFailoverContext(
   }
 
   const lines: string[] = [`${errorSummary}.`]
+  if (errorDetail) {
+    lines.push(`provider detail: ${errorDetail}`)
+  }
+
+  if (classification === "auth-failure") {
+    lines.push("")
+    lines.push("To keep using the current provider:")
+    lines.push(`  1. Run \`ouro auth --agent ${agentName} --provider ${currentProvider}\``)
+  }
+
+  if (modelMismatch) {
+    const defaultModel = getDefaultModelForProvider(currentProvider)
+    lines.push("")
+    lines.push("Config warning:")
+    lines.push(`  - ${modelMismatch}`)
+    lines.push("  - Repair the configured model with:")
+    lines.push(`    \`ouro config model --agent ${agentName} --facing human ${defaultModel}\``)
+    lines.push(`    \`ouro config model --agent ${agentName} --facing agent ${defaultModel}\``)
+  }
 
   if (workingProviders.length > 0) {
-    const switchDescriptions = workingProviders.map((p) => {
-      const model = providerModels[p]
-      return model ? `${p} (${model})` : /* v8 ignore next -- defensive: model always present in secrets @preserve */ p
-    })
-    const switchOptions = workingProviders.map((p) => `"switch to ${p}"`).join(" or ")
-    lines.push(`these providers are ready to go: ${switchDescriptions.join(", ")}.`)
-    lines.push(`reply ${switchOptions} to continue.`)
+    lines.push("")
+    lines.push("Ready providers:")
+    for (const provider of workingProviders) {
+      const model = resolveModelForProviderDisplay(provider, providerModels[provider])
+      lines.push(`  - ${provider} (${model}): reply "switch to ${provider}"`)
+    }
   }
 
   if (failingProviders.length > 0) {
+    lines.push("")
+    lines.push("Configured but unavailable:")
     for (const { provider, classification } of failingProviders) {
-      /* v8 ignore next -- defensive: all classifications have labels @preserve */
-      const detail = FAILING_PROVIDER_LABELS[classification] ?? "could not be reached"
-      lines.push(`${provider} is configured but ${detail}. run \`ouro auth --agent ${agentName} --provider ${provider}\` to refresh.`)
+      lines.push(formatFailingProviderLine(provider, classification, agentName))
     }
   }
 
   if (unconfiguredProviders.length > 0) {
-    lines.push(`to set up ${unconfiguredProviders.join(", ")}, run \`ouro auth --agent ${agentName}\` in terminal.`)
+    lines.push("")
+    lines.push("Not configured:")
+    for (const provider of unconfiguredProviders) {
+      lines.push(`  - ${provider}: run \`ouro auth --agent ${agentName} --provider ${provider}\``)
+    }
   }
 
   if (workingProviders.length === 0 && unconfiguredProviders.length === 0 && failingProviders.length === 0) {
-    lines.push(`no other providers are available. run \`ouro auth --agent ${agentName}\` in terminal to configure one.`)
+    lines.push("")
+    lines.push(`No other providers are available. Run \`ouro auth --agent ${agentName}\` in terminal to configure one.`)
   }
 
   emitNervesEvent({
@@ -105,7 +162,7 @@ export function buildFailoverContext(
     agentName,
     workingProviders,
     unconfiguredProviders,
-    userMessage: lines.join(" "),
+    userMessage: lines.join("\n"),
   }
 }
 

@@ -5,6 +5,7 @@ import { buildDefaultAgentTemplate, PROVIDER_CREDENTIALS, type AgentProvider } f
 import { slugify } from "../config"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { writeProviderCredentials } from "../auth/auth-flow"
+import { getDefaultModelForProvider } from "../provider-models"
 import { renderHabitFile } from "../habits/habit-parser"
 import {
   getRepoSpecialistIdentitiesDir,
@@ -148,9 +149,10 @@ function writeDiaryScaffold(bundleRoot: string): void {
 
 function writeHatchlingAgentConfig(bundleRoot: string, input: HatchFlowInput): void {
   const template = buildDefaultAgentTemplate(input.agentName)
+  const model = getDefaultModelForProvider(input.provider)
   template.provider = input.provider
-  template.humanFacing = { provider: input.provider, model: template.humanFacing.model }
-  template.agentFacing = { provider: input.provider, model: template.agentFacing.model }
+  template.humanFacing = { provider: input.provider, model }
+  template.agentFacing = { provider: input.provider, model }
   template.enabled = true
   fs.writeFileSync(path.join(bundleRoot, "agent.json"), `${JSON.stringify(template, null, 2)}\n`, "utf-8")
 }

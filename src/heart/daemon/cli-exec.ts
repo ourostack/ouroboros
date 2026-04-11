@@ -1930,7 +1930,16 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       writeAgentProviderSelection(command.agent, "human", command.provider, deps.bundlesRoot)
       writeAgentProviderSelection(command.agent, "agent", command.provider, deps.bundlesRoot)
     }
-    const message = `switched ${command.agent} to ${command.provider} (verified working)`
+    const { config: updatedConfig } = readAgentConfigForAgent(command.agent, deps.bundlesRoot)
+    const facingSummary = command.facing
+      ? (() => {
+          const facingConfig = command.facing === "human" ? updatedConfig.humanFacing : updatedConfig.agentFacing
+          return `${command.facing} model: ${facingConfig.model}`
+        })()
+      : updatedConfig.humanFacing.model === updatedConfig.agentFacing.model
+        ? `model: ${updatedConfig.humanFacing.model}`
+        : `human model: ${updatedConfig.humanFacing.model}; agent model: ${updatedConfig.agentFacing.model}`
+    const message = `switched ${command.agent} to ${command.provider} (${facingSummary}; verified working)`
     deps.writeStdout(message)
     return message
   }

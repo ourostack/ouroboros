@@ -25,6 +25,7 @@ import { readPendingObligations } from "../arc/obligations"
 import { buildFailoverContext, handleFailoverReply, type FailoverContext } from "../heart/provider-failover"
 import { runHealthInventory } from "../heart/provider-ping"
 import { writeAgentProviderSelection, loadAgentSecrets } from "../heart/auth/auth-flow"
+import { resolveModelForProviderDisplay } from "../heart/provider-models"
 import { deriveTempo } from "../heart/tempo"
 import { buildTemporalView } from "../heart/temporal-view"
 import { buildStartOfTurnPacket, renderStartOfTurnPacket, buildCapabilitiesSection } from "../heart/start-of-turn-packet"
@@ -250,11 +251,12 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
           try {
             const { secrets } = loadAgentSecrets(failoverAgentName)
             const cfg = secrets.providers[failoverAction.provider as keyof typeof secrets.providers] as Record<string, unknown> | undefined
-            return cfg?.model ?? cfg?.modelName ?? ""
+            const hint = cfg?.model ?? cfg?.modelName
+            return resolveModelForProviderDisplay(failoverAction.provider, typeof hint === "string" ? hint : "")
           /* v8 ignore next 2 -- defensive: secrets read failure @preserve */
-          } catch { return "" }
+          } catch { return resolveModelForProviderDisplay(failoverAction.provider) }
         })()
-        const newProviderLabel = newProviderSecrets ? `${failoverAction.provider} (${newProviderSecrets})` : failoverAction.provider
+        const newProviderLabel = `${failoverAction.provider} (${newProviderSecrets})`
         input.messages = [{
           role: "user" as const,
           content: `[provider switch: ${pendingContext.errorSummary}. switched to ${newProviderLabel}. your conversation history is intact — respond to the user's last message.]`,
