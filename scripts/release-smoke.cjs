@@ -6,7 +6,7 @@
  * Running `npm exec --package @ouro.bot/cli@x -- ouro --version` from this
  * repository can resolve an already-installed global `ouro` binary instead of
  * the requested package. This helper always runs from a fresh temp prefix and
- * verifies the resolved binary path before trusting the version output.
+ * verifies the resolved binary path before trusting any smoke result.
  */
 
 const childProcess = require("child_process")
@@ -49,6 +49,36 @@ function runNpmExec(deps, prefixDir, packageRef, command, args = []) {
       stdio: ["ignore", "pipe", "pipe"],
     },
   )
+}
+
+function runPublishedBinResolutionSmoke(input, deps = defaultDeps()) {
+  const packageRef = `${input.packageName}@${input.version}`
+  const prefixDir = deps.mkdtempSync(path.join(deps.tmpdir(), "ouro-release-smoke-"))
+
+  try {
+    const resolvedPath = runNpmExec(deps, prefixDir, packageRef, "which", [input.binName]).trim()
+    if (!isNpmExecBinPath(resolvedPath, input.binName)) {
+      return {
+        ok: false,
+        packageRef,
+        binName: input.binName,
+        resolvedPath,
+        output: "",
+        message: `${packageRef} ${input.binName} resolved to ${resolvedPath}, not an npm exec package binary`,
+      }
+    }
+
+    return {
+      ok: true,
+      packageRef,
+      binName: input.binName,
+      resolvedPath,
+      output: "",
+      message: `${packageRef} ${input.binName} resolved from npm exec package`,
+    }
+  } finally {
+    deps.rmSync(prefixDir, { recursive: true, force: true })
+  }
 }
 
 function runPublishedBinVersionSmoke(input, deps = defaultDeps()) {
@@ -97,7 +127,7 @@ function runPublishedBinVersionSmoke(input, deps = defaultDeps()) {
 function runReleaseSmokeSuite(version, deps = defaultDeps()) {
   return [
     runPublishedBinVersionSmoke({ packageName: "@ouro.bot/cli", binName: "ouro", version }, deps),
-    runPublishedBinVersionSmoke({ packageName: "ouro.bot", binName: "ouro.bot", version }, deps),
+    runPublishedBinResolutionSmoke({ packageName: "ouro.bot", binName: "ouro.bot", version }, deps),
   ]
 }
 
@@ -133,6 +163,7 @@ module.exports = {
   buildNpmExecArgs,
   isNpmExecBinPath,
   lastNonEmptyLine,
+  runPublishedBinResolutionSmoke,
   runPublishedBinVersionSmoke,
   runReleaseSmokeSuite,
 }
