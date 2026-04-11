@@ -4,7 +4,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { readOutlookAgentState, readOutlookMachineState } from "./outlook-read"
 import { createOutlookHttpReadHooks } from "./outlook-http-hooks"
 import { createOutlookHttpRequestHandler } from "./outlook-http-routes"
-import { createBundleWatcher, createSseBroadcaster } from "./outlook-http-transport"
+import { createBundleWatcher, createSseBroadcaster, createStateChangedBroadcast } from "./outlook-http-transport"
 import type {
   OutlookAgentState,
   OutlookAgentView,
@@ -76,9 +76,7 @@ export async function startOutlookHttpServer(options: StartOutlookHttpServerOpti
   const readAgentView = options.readAgentView
   const hooks = createOutlookHttpReadHooks(options)
   const sse = createSseBroadcaster()
-  const bundleWatcher = bundlesRoot ? createBundleWatcher(bundlesRoot, () => {
-    sse.broadcast("state-changed", { at: new Date().toISOString() })
-  }) : null
+  const bundleWatcher = bundlesRoot ? createBundleWatcher(bundlesRoot, createStateChangedBroadcast(sse)) : null
 
   let server!: http.Server
   server = http.createServer(createOutlookHttpRequestHandler({

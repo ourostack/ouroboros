@@ -26,18 +26,26 @@ export interface OutlookHttpRouteOptions {
   readAgentView?: (agentName: string) => OutlookAgentView | null
   hooks: OutlookHttpReadHooks
   sse: Pick<SseBroadcaster, "add">
+  staticFiles?: OutlookHttpStaticFiles
+}
+
+export interface OutlookHttpStaticFiles {
+  resolveSpaDistDir(): string | null
+  serveStaticFile(response: http.ServerResponse, filePath: string): boolean
 }
 
 export function createOutlookHttpRequestHandler(options: OutlookHttpRouteOptions): http.RequestListener {
+  const staticFiles = options.staticFiles ?? { resolveSpaDistDir, serveStaticFile }
+
   return (request, response) => {
     let pathname = normalizeOutlookRequestPath(request.url)
     const origin = `http://${options.host}:${options.getPort()}`
 
     if (pathname.startsWith("/assets/")) {
-      const spaDir = resolveSpaDistDir()
+      const spaDir = staticFiles.resolveSpaDistDir()
       if (spaDir) {
         const assetPath = path.join(spaDir, pathname)
-        if (serveStaticFile(response, assetPath)) return
+        if (staticFiles.serveStaticFile(response, assetPath)) return
       }
       writeJson(response, 404, { ok: false, error: "asset not found" })
       return
@@ -86,9 +94,9 @@ export function createOutlookHttpRequestHandler(options: OutlookHttpRouteOptions
       return
     }
 
-    const spaDir = resolveSpaDistDir()
+    const spaDir = staticFiles.resolveSpaDistDir()
     if (spaDir) {
-      if (serveStaticFile(response, path.join(spaDir, "index.html"))) return
+      if (staticFiles.serveStaticFile(response, path.join(spaDir, "index.html"))) return
     }
     writeJson(response, 404, { ok: false, error: `not found: ${pathname}` })
   }

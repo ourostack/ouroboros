@@ -27,11 +27,53 @@ function createMockResponse() {
   return response
 }
 
+function createMockRequest(url: string, method = "GET") {
+  const request = new EventEmitter() as any
+  request.url = url
+  request.method = method
+  return request
+}
+
+function createRouteOptions(overrides: Record<string, unknown> = {}) {
+  const hooks = {
+    agentRoot: vi.fn((agentName: string) => path.join(os.tmpdir(), `${agentName}.ouro`)),
+    readAgentSessions: vi.fn(() => ({ totalCount: 0, activeCount: 0, staleCount: 0, items: [] })),
+    readAgentTranscript: vi.fn(() => null),
+    readAgentCoding: vi.fn(() => ({ totalCount: 0, activeCount: 0, blockedCount: 0, items: [] })),
+    readAgentAttention: vi.fn(() => ({ queueLength: 0, queueItems: [], pendingChannels: [], returnObligations: [] })),
+    readAgentBridges: vi.fn(() => ({ totalCount: 0, activeCount: 0, items: [] })),
+    readAgentMemory: vi.fn(() => ({ diaryEntryCount: 0, recentDiaryEntries: [], journalEntryCount: 0, recentJournalEntries: [] })),
+    readAgentFriends: vi.fn(() => ({ totalFriends: 0, friends: [] })),
+    readAgentContinuity: vi.fn(() => ({ presence: { self: null, peers: [] }, cares: { activeCount: 0, items: [] }, episodes: { recentCount: 0, items: [] } })),
+    readAgentOrientation: vi.fn(() => ({ currentSession: null, centerOfGravity: null, primaryObligation: null, resumeHandle: null, otherActiveSessions: [], rawState: null })),
+    readAgentObligations: vi.fn(() => ({ openCount: 0, primaryId: null, primarySelectionReason: null, items: [] })),
+    readAgentChanges: vi.fn(() => ({ changeCount: 0, items: [], snapshotAge: null, formatted: "" })),
+    readAgentSelfFix: vi.fn(() => ({ active: false, currentStep: null, steps: [] })),
+    readAgentMemoryDecisions: vi.fn(() => ({ totalCount: 0, items: [] })),
+    readAgentHabits: vi.fn(() => ({ totalCount: 0, activeCount: 0, pausedCount: 0, degradedCount: 0, overdueCount: 0, items: [] })),
+    readDaemonHealth: vi.fn(() => null),
+    readLogs: vi.fn(() => ({ logPath: null, totalLines: 0, entries: [] })),
+    readDeskPrefs: vi.fn(() => ({ carrying: null, statusLine: null, tabOrder: null, starredFriends: [], pinnedConstellations: [], dismissedObligations: [] })),
+    readNeedsMe: vi.fn(() => ({ items: [] })),
+  }
+
+  return {
+    host: "127.0.0.1",
+    getPort: () => 1234,
+    readMachineState: () => ({ productName: "Ouro Outlook", agentCount: 0 }),
+    readAgentState: () => null,
+    hooks,
+    sse: { add: vi.fn() },
+    ...overrides,
+  } as any
+}
+
 describe("outlook http", () => {
   it("keeps path normalization and static serving in explicit helper seams", async () => {
     const {
       normalizeOutlookRequestPath,
       normalizeLegacyOutlookApiPath,
+      resolveSpaDistDir,
       serveStaticFile,
     } = await import("../../../heart/outlook/outlook-http-static")
 
@@ -46,6 +88,8 @@ describe("outlook http", () => {
     const dataPath = path.join(dir, "agent.unknown")
     fs.writeFileSync(htmlPath, "<main>Ouro</main>")
     fs.writeFileSync(dataPath, "opaque")
+    expect(resolveSpaDistDir([dir])).toBe(dir)
+    expect(resolveSpaDistDir([path.join(dir, "missing")])).toBeNull()
 
     const htmlResponse = createMockResponse()
     expect(serveStaticFile(htmlResponse, htmlPath)).toBe(true)
@@ -67,32 +111,56 @@ describe("outlook http", () => {
     expect(serveStaticFile(missingResponse, path.join(dir, "missing.js"))).toBe(false)
     expect(missingResponse.writeHead).not.toHaveBeenCalled()
 
+    expect(serveStaticFile(createMockResponse(), dir)).toBe(false)
+
     fs.rmSync(dir, { recursive: true, force: true })
   })
 
   it("keeps SSE broadcast and bundle watch mechanics in explicit transport seams", async () => {
-    const { createSseBroadcaster, createBundleWatcher } = await import("../../../heart/outlook/outlook-http-transport")
+    const {
+      createSseBroadcaster,
+      createBundleWatcher,
+      createStateChangedBroadcast,
+    } = await import("../../../heart/outlook/outlook-http-transport")
 
     const sse = createSseBroadcaster()
     const firstResponse = createMockResponse()
     const secondResponse = createMockResponse()
+    const brokenWriteResponse = createMockResponse()
+    brokenWriteResponse.write = vi.fn(() => {
+      throw new Error("closed")
+    })
+    const brokenEndResponse = createMockResponse()
+    brokenEndResponse.end = vi.fn(() => {
+      throw new Error("already closed")
+    })
     sse.add(firstResponse)
     sse.add(secondResponse)
+    sse.add(brokenWriteResponse)
+    sse.add(brokenEndResponse)
 
     sse.broadcast("state-changed", { at: "2026-04-10T20:00:00.000Z" })
     expect(firstResponse.write).toHaveBeenCalledWith("event: state-changed\ndata: {\"at\":\"2026-04-10T20:00:00.000Z\"}\n\n")
     expect(secondResponse.write).toHaveBeenCalledTimes(1)
+    expect(brokenWriteResponse.write).toHaveBeenCalledTimes(1)
 
     firstResponse.emit("close")
     sse.broadcast("state-changed", { at: "later" })
     expect(firstResponse.write).toHaveBeenCalledTimes(1)
     expect(secondResponse.write).toHaveBeenCalledTimes(2)
+    expect(brokenWriteResponse.write).toHaveBeenCalledTimes(1)
 
     sse.disconnectAll()
     expect(secondResponse.end).toHaveBeenCalled()
+    expect(brokenEndResponse.end).toHaveBeenCalled()
+
+    const broadcast = vi.fn()
+    createStateChangedBroadcast({ broadcast })()
+    expect(broadcast).toHaveBeenCalledWith("state-changed", { at: expect.any(String) })
 
     const onChange = vi.fn()
     const close = vi.fn()
+    const clearTimeout = vi.fn()
     let watchedCallback: (() => void) | null = null
     const watcher = createBundleWatcher("/bundles", onChange, {
       existsSync: () => true,
@@ -104,11 +172,13 @@ describe("outlook http", () => {
         callback()
         return 1 as any
       },
-      clearTimeout: vi.fn(),
+      clearTimeout,
     })
 
     watchedCallback?.()
-    expect(onChange).toHaveBeenCalledTimes(1)
+    watchedCallback?.()
+    expect(clearTimeout).toHaveBeenCalledWith(1)
+    expect(onChange).toHaveBeenCalledTimes(2)
     watcher.stop()
     expect(close).toHaveBeenCalledTimes(1)
 
@@ -119,6 +189,16 @@ describe("outlook http", () => {
       clearTimeout: vi.fn(),
     })
     missingWatcher.stop()
+
+    const throwingWatcher = createBundleWatcher("/bundles", onChange, {
+      existsSync: () => true,
+      watch: () => {
+        throw new Error("unsupported")
+      },
+      setTimeout: vi.fn(),
+      clearTimeout: vi.fn(),
+    })
+    throwingWatcher.stop()
   })
 
   it("keeps default hook composition in an explicit helper seam", async () => {
@@ -133,6 +213,124 @@ describe("outlook http", () => {
     expect(hooks.agentRoot("slugger")).toBe(path.join("/tmp/ouro-bundles", "slugger.ouro"))
     expect(hooks.readAgentCoding("slugger")).toBe(coding)
     expect(hooks.readDaemonHealth()).toBeNull()
+    expect(createOutlookHttpReadHooks({}).agentRoot("slugger")).toBe("slugger.ouro")
+
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "outlook-default-hooks-"))
+    const defaultHooks = createOutlookHttpReadHooks({ bundlesRoot })
+    expect(defaultHooks.readAgentContinuity("nobody")).toBeTruthy()
+    expect(defaultHooks.readAgentOrientation("nobody")).toBeTruthy()
+    expect(defaultHooks.readAgentObligations("nobody")).toBeTruthy()
+    expect(defaultHooks.readAgentChanges("nobody")).toBeTruthy()
+    expect(defaultHooks.readAgentSelfFix("nobody")).toBeTruthy()
+    expect(defaultHooks.readAgentMemoryDecisions("nobody")).toBeTruthy()
+    fs.rmSync(bundlesRoot, { recursive: true, force: true })
+  })
+
+  it("keeps asset and SPA fallback dispatch in the route helper seam", async () => {
+    const { createOutlookHttpRequestHandler } = await import("../../../heart/outlook/outlook-http-routes")
+    const serveStaticFile = vi.fn(() => true)
+    const handler = createOutlookHttpRequestHandler(createRouteOptions({
+      staticFiles: {
+        resolveSpaDistDir: () => "/spa",
+        serveStaticFile,
+      },
+    }))
+
+    const assetResponse = createMockResponse()
+    handler(createMockRequest("/assets/index.js"), assetResponse)
+    expect(serveStaticFile).toHaveBeenCalledWith(assetResponse, path.join("/spa", "/assets/index.js"))
+    expect(assetResponse.writeHead).not.toHaveBeenCalled()
+
+    const fallbackResponse = createMockResponse()
+    handler(createMockRequest("/client/side/route"), fallbackResponse)
+    expect(serveStaticFile).toHaveBeenCalledWith(fallbackResponse, path.join("/spa", "index.html"))
+    expect(fallbackResponse.writeHead).not.toHaveBeenCalled()
+
+    const missingAssetResponse = createMockResponse()
+    createOutlookHttpRequestHandler(createRouteOptions({
+      staticFiles: {
+        resolveSpaDistDir: () => "/spa",
+        serveStaticFile: () => false,
+      },
+    }))(createMockRequest("/assets/missing.js"), missingAssetResponse)
+    expect(missingAssetResponse.statusCode).toBe(404)
+    expect(missingAssetResponse.body.toString("utf8")).toContain("asset not found")
+
+    const missingAssetWithoutSpaResponse = createMockResponse()
+    createOutlookHttpRequestHandler(createRouteOptions({
+      staticFiles: {
+        resolveSpaDistDir: () => null,
+        serveStaticFile: vi.fn(),
+      },
+    }))(createMockRequest("/assets/missing-no-spa.js"), missingAssetWithoutSpaResponse)
+    expect(missingAssetWithoutSpaResponse.statusCode).toBe(404)
+    expect(missingAssetWithoutSpaResponse.body.toString("utf8")).toContain("asset not found")
+
+    const missingFallbackResponse = createMockResponse()
+    createOutlookHttpRequestHandler(createRouteOptions({
+      staticFiles: {
+        resolveSpaDistDir: () => null,
+        serveStaticFile: vi.fn(),
+      },
+    }))(createMockRequest("/client/side/route"), missingFallbackResponse)
+    expect(missingFallbackResponse.statusCode).toBe(404)
+    expect(missingFallbackResponse.body.toString("utf8")).toContain("not found: /client/side/route")
+
+    const missingFallbackWithSpaResponse = createMockResponse()
+    createOutlookHttpRequestHandler(createRouteOptions({
+      staticFiles: {
+        resolveSpaDistDir: () => "/spa",
+        serveStaticFile: () => false,
+      },
+    }))(createMockRequest("/client/side/missing"), missingFallbackWithSpaResponse)
+    expect(missingFallbackWithSpaResponse.statusCode).toBe(404)
+    expect(missingFallbackWithSpaResponse.body.toString("utf8")).toContain("not found: /client/side/missing")
+
+    const agentResponse = createMockResponse()
+    createOutlookHttpRequestHandler(createRouteOptions({
+      readAgentState: () => ({ agentName: "slugger", productName: "Ouro Outlook" }),
+    }))(createMockRequest("/api/agents/slugger"), agentResponse)
+    expect(agentResponse.statusCode).toBe(200)
+    expect(JSON.parse(agentResponse.body.toString("utf8"))).toEqual(expect.objectContaining({ agentName: "slugger" }))
+  })
+
+  it("keeps desk preference mutation in the route helper seam", async () => {
+    const { createOutlookHttpRequestHandler } = await import("../../../heart/outlook/outlook-http-routes")
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "outlook-agent-"))
+    const hooks = createRouteOptions().hooks
+    hooks.agentRoot = vi.fn(() => agentRoot)
+    const handler = createOutlookHttpRequestHandler(createRouteOptions({ hooks }))
+
+    const successResponse = createMockResponse()
+    const successRequest = createMockRequest("/api/agents/slugger/dismiss-obligation", "POST")
+    handler(successRequest, successResponse)
+    successRequest.emit("data", JSON.stringify({ obligationId: "ob-1" }))
+    successRequest.emit("end")
+    expect(successResponse.statusCode).toBe(200)
+    expect(JSON.parse(successResponse.body.toString("utf8"))).toEqual({ ok: true, dismissed: 1 })
+
+    const duplicateResponse = createMockResponse()
+    const duplicateRequest = createMockRequest("/api/agents/slugger/dismiss-obligation", "POST")
+    handler(duplicateRequest, duplicateResponse)
+    duplicateRequest.emit("data", JSON.stringify({ obligationId: "ob-1" }))
+    duplicateRequest.emit("end")
+    expect(JSON.parse(duplicateResponse.body.toString("utf8"))).toEqual({ ok: true, dismissed: 1 })
+
+    const missingResponse = createMockResponse()
+    const missingRequest = createMockRequest("/api/agents/slugger/dismiss-obligation", "POST")
+    handler(missingRequest, missingResponse)
+    missingRequest.emit("data", JSON.stringify({ obligationId: "" }))
+    missingRequest.emit("end")
+    expect(missingResponse.statusCode).toBe(400)
+
+    const invalidResponse = createMockResponse()
+    const invalidRequest = createMockRequest("/api/agents/slugger/dismiss-obligation", "POST")
+    handler(invalidRequest, invalidResponse)
+    invalidRequest.emit("data", "{")
+    invalidRequest.emit("end")
+    expect(invalidResponse.statusCode).toBe(500)
+
+    fs.rmSync(agentRoot, { recursive: true, force: true })
   })
 
   it("serves loopback-only HTML and JSON endpoints for Outlook", async () => {
@@ -495,6 +693,9 @@ describe("outlook http", () => {
 
     const needsMe = await fetch(`${server.origin}/outlook/api/agents/nobody/needs-me`).then((r) => r.json())
     expect(needsMe).toEqual(expect.objectContaining({ items: expect.any(Array) }))
+
+    const missingAgent = await fetch(`${server.origin}/outlook/api/agents/nobody`)
+    expect([200, 404]).toContain(missingAgent.status)
 
     await server.stop()
     fs.rmSync(bundlesRoot, { recursive: true, force: true })
