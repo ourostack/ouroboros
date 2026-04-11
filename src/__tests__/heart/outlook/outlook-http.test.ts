@@ -381,7 +381,7 @@ describe("outlook http", () => {
     await server.stop()
   })
 
-  it("renders the default app safely and normalizes trailing-slash Outlook routes", async () => {
+  it("serves the SPA fallback safely and normalizes trailing-slash Outlook routes", async () => {
     const { startOutlookHttpServer } = await import("../../../heart/outlook/outlook-http")
 
     const server = await startOutlookHttpServer({
@@ -454,7 +454,7 @@ describe("outlook http", () => {
       readAgentState: () => null,
     })
 
-    // Root serves SPA if built, or 404 if SPA dist not available
+    // Root serves the built SPA when available, or JSON 404 otherwise.
     const rootResponse = await fetch(`${server.origin}/`)
     expect([200, 404]).toContain(rootResponse.status)
 
@@ -489,7 +489,7 @@ describe("outlook http", () => {
     await server.stop()
   })
 
-  it("uses the default direct-read hooks and default renderer when no options are provided", async () => {
+  it("uses the default direct-read hooks and SPA route fallback when no options are provided", async () => {
     vi.resetModules()
     const readOutlookMachineState = vi.fn(() => ({
       productName: "Ouro Outlook",
@@ -511,7 +511,7 @@ describe("outlook http", () => {
 
     expect(server.origin).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
 
-    // Root serves SPA if built, or 404 if SPA dist not available
+    // Root serves the built SPA when available, or JSON 404 otherwise.
     const rootResponse = await fetch(`${server.origin}/`)
     expect([200, 404]).toContain(rootResponse.status)
 
