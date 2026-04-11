@@ -222,6 +222,30 @@ const cache = new Map()
       expect(result.exempt).toContain("src/heart/outlook/outlook-types.ts")
     })
 
+    it("exempts Outlook HTTP helper modules whose server root owns observability", () => {
+      const files = new Map<string, string[]>([
+        ["src/heart/outlook/outlook-http.ts", ["daemon:daemon.outlook_http_started"]],
+      ])
+      const fileContents = new Map<string, string>([
+        ["src/heart/outlook/outlook-http.ts", 'emitNervesEvent({ component: "daemon", event: "daemon.outlook_http_started" })'],
+        ["src/heart/outlook/outlook-http-transport.ts", "export function createSseBroadcaster() {}"],
+        ["src/heart/outlook/outlook-http-static.ts", "export function serveStaticFile() {}"],
+        ["src/heart/outlook/outlook-http-hooks.ts", "export function createOutlookHttpReadHooks() {}"],
+        ["src/heart/outlook/outlook-http-routes.ts", "export function createOutlookHttpRequestHandler() {}"],
+        ["src/heart/outlook/outlook-http-response.ts", "export function writeJson() {}"],
+      ])
+
+      const result = checkFileCompleteness(files, fileContents)
+
+      expect(result.status).toBe("pass")
+      expect(result.missing).toHaveLength(0)
+      expect(result.exempt).toContain("src/heart/outlook/outlook-http-transport.ts")
+      expect(result.exempt).toContain("src/heart/outlook/outlook-http-static.ts")
+      expect(result.exempt).toContain("src/heart/outlook/outlook-http-hooks.ts")
+      expect(result.exempt).toContain("src/heart/outlook/outlook-http-routes.ts")
+      expect(result.exempt).toContain("src/heart/outlook/outlook-http-response.ts")
+    })
+
     it("returns pass when all files have events or are exempt", () => {
       const files = new Map<string, string[]>([
         ["src/a.ts", ["x:y"]],
