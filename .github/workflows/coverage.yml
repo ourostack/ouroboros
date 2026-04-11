@@ -190,4 +190,33 @@ jobs:
         run: |
           cd packages/ouro.bot
           npm publish --access public --provenance --tag latest
-          npm dist-tag add "ouro.bot@$(node -p "require('./package.json').version")" alpha || echo "::warning::Unable to add ouro.bot alpha dist-tag; latest publish succeeded"
+
+      - name: Verify supported npm dist-tags
+        run: |
+          LOCAL=$(node -p "require('./package.json').version")
+
+          verify_tag() {
+            package_ref="$1"
+            expected="$2"
+
+            for attempt in 1 2 3 4 5 6; do
+              actual=$(npm view "$package_ref" version 2>/dev/null || echo "")
+              if [ "$actual" = "$expected" ]; then
+                echo "${package_ref} verified at ${expected}"
+                return 0
+              fi
+
+              if [ "$attempt" != "6" ]; then
+                echo "${package_ref} points at ${actual:-missing}, expected ${expected}; retrying after npm propagation delay"
+                sleep 10
+              fi
+            done
+
+            echo "::error::${package_ref} points at ${actual:-missing}, expected ${expected}"
+            return 1
+          }
+
+          verify_tag "@ouro.bot/cli@alpha" "$LOCAL"
+          verify_tag "ouro.bot@latest" "$LOCAL"
+
+          echo "supported npm dist-tags verified for ${LOCAL}"

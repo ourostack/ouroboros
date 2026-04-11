@@ -6,6 +6,7 @@ import type { DaemonResponse } from "../../../heart/daemon/daemon"
 // The module under test does not exist yet — these imports will fail (red phase)
 import {
   pollDaemonStartup,
+  renderWaitingForDaemon,
   renderStartupProgress,
   assessStability,
 } from "../../../heart/daemon/startup-tui"
@@ -197,6 +198,32 @@ describe("startup-tui", () => {
         { agent: "alpha", status: "running", startedAt: "2026-04-09T12:00:00.000Z" },
       ])
       const output = renderStartupProgress(payload, 2000)
+      expect(output).toContain("\x1b[2K")
+    })
+
+    it("omits ANSI control and color escapes in non-TTY mode", () => {
+      const payload = makePayload([
+        { agent: "alpha", status: "running", startedAt: "2026-04-09T12:00:00.000Z" },
+        { agent: "beta", status: "starting", startedAt: null },
+      ])
+      const output = renderStartupProgress(payload, 3000, 3, { isTTY: false })
+      expect(output).toContain("waiting for agents")
+      expect(output).toContain("alpha/cli: running")
+      expect(output).toContain("beta/cli: starting")
+      expect(output).not.toMatch(/\x1b\[/)
+    })
+
+    it("omits ANSI control and color escapes while waiting for daemon in non-TTY mode", () => {
+      const output = renderWaitingForDaemon(3000, "loading bundles", 2, { isTTY: false })
+      expect(output).toContain("waiting for daemon")
+      expect(output).toContain("loading bundles")
+      expect(output).not.toMatch(/\x1b\[/)
+    })
+
+    it("defaults waiting-for-daemon rendering to TTY ANSI output", () => {
+      const output = renderWaitingForDaemon(3000, null, 1)
+      expect(output).toContain("waiting for daemon")
+      expect(output).toMatch(/\x1b\[\d+A/)
       expect(output).toContain("\x1b[2K")
     })
 
@@ -538,6 +565,68 @@ describe("startup-tui", () => {
       const allOutput = writes.join("")
       expect(allOutput).toContain("bad config file")
       expect(allOutput).toContain("edit agent.json")
+    })
+
+    it("writes append-only plain output during non-TTY startup polling", async () => {
+      let callCount = 0
+      const now = new Date("2026-04-09T12:00:10.000Z").getTime()
+      const payload = makePayload([
+        { agent: "alpha", status: "running", startedAt: "2026-04-09T12:00:00.000Z" },
+      ])
+      const writes: string[] = []
+
+      const result = await pollDaemonStartup({
+        sendCommand: vi.fn(async () => {
+          callCount++
+          if (callCount === 1) throw new Error("ECONNREFUSED")
+          return makeDaemonResponse(payload)
+        }),
+        socketPath: "/tmp/test.sock",
+        daemonPid: null,
+        writeRaw: vi.fn((text: string) => writes.push(text)),
+        now: vi.fn(() => now),
+        sleep: vi.fn(async () => {}),
+        readLatestDaemonEvent: vi.fn(() => "loading bundles"),
+        isTTY: false,
+      })
+
+      expect(result.stable).toEqual(["alpha"])
+      const allOutput = writes.join("")
+      expect(allOutput).toContain("waiting for daemon")
+      expect(allOutput).toContain("loading bundles")
+      expect(allOutput).toContain("alpha/cli: running")
+      expect(allOutput).toContain("alpha: stable")
+      expect(allOutput).not.toMatch(/\x1b\[/)
+    })
+
+    it("writes plain degraded error and fix summary in non-TTY startup polling", async () => {
+      const now = new Date("2026-04-09T12:00:10.000Z").getTime()
+      const payload = makePayload([
+        { agent: "beta", status: "crashed", startedAt: null, errorReason: "missing token", fixHint: "run ouro auth beta" },
+      ])
+      const writes: string[] = []
+
+      const result = await pollDaemonStartup({
+        sendCommand: vi.fn(async () => makeDaemonResponse(payload)),
+        socketPath: "/tmp/test.sock",
+        daemonPid: 12345,
+        writeRaw: vi.fn((text: string) => writes.push(text)),
+        now: vi.fn(() => now),
+        sleep: vi.fn(async () => {}),
+        isTTY: false,
+      })
+
+      expect(result.degraded).toEqual([{
+        agent: "beta",
+        errorReason: "missing token",
+        fixHint: "run ouro auth beta",
+      }])
+      const allOutput = writes.join("")
+      expect(allOutput).toContain("beta/cli: crashed")
+      expect(allOutput).toContain("beta: degraded")
+      expect(allOutput).toContain("error: missing token")
+      expect(allOutput).toContain("fix:   run ouro auth beta")
+      expect(allOutput).not.toMatch(/\x1b\[/)
     })
 
     it("detects daemon process death and returns immediately", async () => {
