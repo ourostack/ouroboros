@@ -80,12 +80,30 @@ function main() {
 
   // Install workspace deps before running workspace tests (root npm ci doesn't install them)
   runNpm(["install", "--prefix", "packages/outlook-ui"])
+  const outlookUiTypecheckExit = runNpm(["run", "typecheck:outlook-ui"]).status ?? 1
+  if (outlookUiTypecheckExit !== 0) {
+    const summary = {
+      overall_status: "fail",
+      lint: { status: "pass" },
+      changelog: { status: "pass" },
+      outlook_ui_typecheck: { status: "fail" },
+      outlook_ui_tests: { status: "skip" },
+      code_coverage: { status: "skip" },
+      nerves_coverage: { status: "skip" },
+      required_actions: [{ type: "ui-typecheck", target: "packages/outlook-ui", reason: "npm run typecheck:outlook-ui failed" }],
+    }
+    writeJson(summaryPath, summary)
+    console.log(`coverage gate: fail (${summaryPath})`)
+    process.exit(1)
+  }
+
   const outlookUiExit = runNpm(["run", "test:outlook-ui"]).status ?? 1
   if (outlookUiExit !== 0) {
     const summary = {
       overall_status: "fail",
       lint: { status: "pass" },
       changelog: { status: "pass" },
+      outlook_ui_typecheck: { status: "pass" },
       outlook_ui_tests: { status: "fail" },
       code_coverage: { status: "skip" },
       nerves_coverage: { status: "skip" },
@@ -147,6 +165,7 @@ function main() {
   const summary = {
     overall_status: overallStatus,
     lint: { status: "pass" },
+    outlook_ui_typecheck: { status: "pass" },
     outlook_ui_tests: { status: "pass" },
     code_coverage: {
       status: codeCoverageStatus,
