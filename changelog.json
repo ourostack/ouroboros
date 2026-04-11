@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.336",
+      "changes": [
+        "Inner dialogue prompts now advertise the actual inner delivery contract: use `surface` to send thoughts outward and `rest` to end the turn, instead of suggesting unavailable `send_message` or `settle` tools."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.335",
       "changes": [
         "OpenAI Codex auth verification now uses the same streamed runtime turn shape as real Codex conversations, so successful browser login no longer ends with a false `400 status code (no body)` ping failure.",
