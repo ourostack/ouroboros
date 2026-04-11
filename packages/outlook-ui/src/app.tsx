@@ -15,28 +15,7 @@ import {
 import { Navbar, NavbarItem, NavbarSection, NavbarSpacer } from "./catalyst/navbar"
 import { Badge } from "./catalyst/badge"
 import { AgentInspector } from "./components/agent-inspector"
-
-interface MachineView {
-  overview: {
-    productName: string
-    observedAt: string
-    daemon: { status: string; mode: string; health: string }
-    runtime: { version: string }
-    freshness: { status: string; latestActivityAt: string | null; ageMs: number | null }
-    degraded: { status: string; issues: Array<{ code: string; detail: string }> }
-    totals: Record<string, number>
-  }
-  agents: Array<{
-    agentName: string
-    enabled: boolean
-    attention: { level: string; label: string }
-    freshness: { status: string; latestActivityAt: string | null }
-    degraded: { status: string; issues: Array<{ code: string; detail: string }> }
-    tasks: { liveCount: number; blockedCount: number }
-    obligations: { openCount: number }
-    coding: { activeCount: number; blockedCount: number }
-  }>
-}
+import type { OutlookAgentInnerView, OutlookAgentView, OutlookDeskPrefs, OutlookMachineView } from "./contracts"
 
 function getInitialRoute(): RouteState | null {
   return parseHash(window.location.hash)
@@ -50,16 +29,16 @@ function attentionBadgeColor(level: string): "red" | "yellow" | "lime" | "zinc" 
 }
 
 export function App() {
-  const [machine, setMachine] = useState<MachineView | null>(null)
+  const [machine, setMachine] = useState<OutlookMachineView | null>(null)
   const [selectedAgent, setSelectedAgent] = useState<string>(getInitialRoute()?.agent ?? "")
-  const [agentView, setAgentView] = useState<Record<string, unknown> | null>(null)
+  const [agentView, setAgentView] = useState<OutlookAgentView | null>(null)
   const [refreshGeneration, setRefreshGeneration] = useState(0)
   const refreshRef = useRef(0)
   const initialRoute = useRef(getInitialRoute())
 
   const loadMachine = useCallback(async () => {
     try {
-      const data = await fetchJson<MachineView>("/machine")
+      const data = await fetchJson<OutlookMachineView>("/machine")
       setMachine(data)
       if (!selectedAgent && data.agents.length > 0) {
         const agent = initialRoute.current?.agent ?? data.agents[0]!.agentName
@@ -68,14 +47,14 @@ export function App() {
     } catch { /* retry on SSE */ }
   }, [selectedAgent])
 
-  const [deskPrefs, setDeskPrefs] = useState<Record<string, unknown> | null>(null)
+  const [deskPrefs, setDeskPrefs] = useState<OutlookDeskPrefs | null>(null)
 
   const loadAgent = useCallback(async (name: string) => {
     if (!name) { setAgentView(null); setDeskPrefs(null); return }
     try {
       const [view, prefs] = await Promise.all([
-        fetchJson<Record<string, unknown>>(`/agents/${encodeURIComponent(name)}`),
-        fetchJson<Record<string, unknown>>(`/agents/${encodeURIComponent(name)}/desk-prefs`),
+        fetchJson<OutlookAgentView>(`/agents/${encodeURIComponent(name)}`),
+        fetchJson<OutlookDeskPrefs>(`/agents/${encodeURIComponent(name)}/desk-prefs`),
       ])
       setAgentView(view)
       setDeskPrefs(prefs)
@@ -212,13 +191,12 @@ export function App() {
             <div className="px-4 py-2 border-t border-ouro-moss/20">
               <p className="text-xs italic text-ouro-shadow/70">
                 {(() => {
-                  const manualStatus = (deskPrefs as any)?.statusLine
+                  const manualStatus = deskPrefs?.statusLine
                   if (manualStatus) return manualStatus
-                  const inner = (agentView as any)?.inner
-                  const status = inner?.status
-                  if (status === "working" || inner?.hasPending) return "thinking through something privately"
-                  const work = (agentView as any)?.work
-                  const obCount = work?.obligations?.openCount ?? 0
+                  const inner: OutlookAgentInnerView = agentView.inner
+                  const status = inner.status
+                  if (status === "running" || inner.hasPending) return "thinking through something privately"
+                  const obCount = agentView.work.obligations.openCount
                   if (obCount > 2) return "a few loose ends"
                   if (obCount > 0) return "carrying something"
                   return "steady"
