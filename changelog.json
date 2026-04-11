@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.327",
+      "changes": [
+        "fix(daemon): make startup stability polling respect stdout TTY capability so captured `ouro up` output is plain append-only text without raw ANSI cursor-control or color escapes, while interactive terminals keep in-place progress rendering."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.326",
       "changes": [
         "refactor(outlook): split the Outlook HTTP server boundary into focused transport, static/path, default-hook, route-dispatch, and JSON-response helpers while preserving the public `startOutlookHttpServer()` API and existing HTTP behavior.",
