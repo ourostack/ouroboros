@@ -4788,6 +4788,81 @@ describe("openai-codex oauth provider contract", () => {
     ).rejects.toThrow("authentication failed")
   })
 
+  it("surfaces terminal openai-codex auth guidance with model mismatch repair details", async () => {
+    const cases = [
+      {
+        model: "claude-sonnet-4.6",
+        detail: `authentication failed ${"x".repeat(320)}`,
+        expectedLabel: "openai-codex [configured model: claude-sonnet-4.6] authentication failed.",
+        expectedDetail: "provider detail: authentication failed",
+        expectedRepair: "does not look like a model for OpenAI Codex",
+      },
+      {
+        model: "gpt-5.4",
+        detail: "authentication failed",
+        expectedLabel: "openai-codex (gpt-5.4) authentication failed.",
+        expectedDetail: "provider detail: authentication failed",
+        expectedRepair: null,
+      },
+      {
+        model: "",
+        detail: "   ",
+        expectedLabel: "openai-codex authentication failed.",
+        expectedDetail: null,
+        expectedRepair: "OpenAI Codex has no model set",
+      },
+    ] as const
+
+    for (const testCase of cases) {
+      vi.resetModules()
+      vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
+      await setupConfig({
+        humanFacingModel: testCase.model,
+        providers: {
+          "openai-codex": {
+            oauthAccessToken: makeOpenAICodexAccessToken(),
+          },
+        },
+      } as any)
+
+      const authError: any = new Error(testCase.detail)
+      authError.status = 401
+      mockResponsesCreate.mockReset()
+      mockResponsesCreate.mockRejectedValue(authError)
+
+      const errors: { error: Error; severity: string }[] = []
+      const callbacks: ChannelCallbacks = {
+        onModelStart: vi.fn(),
+        onModelStreamStart: vi.fn(),
+        onTextChunk: vi.fn(),
+        onReasoningChunk: vi.fn(),
+        onToolStart: vi.fn(),
+        onToolEnd: vi.fn(),
+        onError: (error, severity) => errors.push({ error, severity }),
+      }
+
+      const core = await import("../../heart/core")
+      await core.runAgent([{ role: "system", content: "test" }], callbacks)
+
+      const terminal = errors.find((entry) => entry.severity === "terminal")
+      expect(terminal?.error.message).toContain(testCase.expectedLabel)
+      if (testCase.expectedDetail) {
+        expect(terminal?.error.message).toContain(testCase.expectedDetail)
+      } else {
+        expect(terminal?.error.message).not.toContain("provider detail:")
+      }
+      if (testCase.expectedRepair) {
+        expect(terminal?.error.message).toContain(testCase.expectedRepair)
+        expect(terminal?.error.message).toContain("ouro config model --agent testagent --facing human gpt-5.4")
+        expect(terminal?.error.message).toContain("ouro config model --agent testagent --facing agent gpt-5.4")
+      } else {
+        expect(terminal?.error.message).not.toContain("Config warning:")
+      }
+      expect(terminal?.error.message).toContain("ouro auth --agent testagent --provider openai-codex")
+      expect(terminal?.error.message).toContain("ouro auth switch --agent testagent --provider <provider>")
+    }
+  })
+
   it("wraps openai-codex auth failures detected from error message markers", async () => {
     vi.resetModules()
     vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
