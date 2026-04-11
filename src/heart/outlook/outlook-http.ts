@@ -1,32 +1,10 @@
-import * as fs from "fs"
 import * as http from "http"
 import type { AddressInfo } from "net"
-import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
-import {
-  readAttentionView,
-  readBridgeInventory,
-  readChangesView,
-  readCodingDeep,
-  readDaemonHealthDeep,
-  readFriendView,
-  readHabitView,
-  readDeskPrefs,
-  readLogView,
-  readMemoryDecisionView,
-  readMemoryView,
-  readNeedsMeView,
-  readObligationDetailView,
-  readOrientationView,
-  readOutlookAgentState,
-  readOutlookContinuity,
-  readOutlookMachineState,
-  readSelfFixView,
-  readSessionInventory,
-  readSessionTranscript,
-} from "./outlook-read"
-// Server-rendered fallback kept for backward compatibility but SPA is primary
-// import { renderOutlookApp } from "./outlook-render"
+import { readOutlookAgentState, readOutlookMachineState } from "./outlook-read"
+import { createOutlookHttpReadHooks } from "./outlook-http-hooks"
+import { createOutlookHttpRequestHandler } from "./outlook-http-routes"
+import { createBundleWatcher, createSseBroadcaster } from "./outlook-http-transport"
 import type {
   OutlookAgentState,
   OutlookAgentView,
@@ -84,144 +62,6 @@ export interface OutlookHttpServerHandle {
   stop(): Promise<void>
 }
 
-interface SseClient {
-  id: number
-  response: http.ServerResponse
-}
-
-function createSseBroadcaster() {
-  let nextId = 1
-  const clients = new Set<SseClient>()
-
-  function add(response: http.ServerResponse): SseClient {
-    const client: SseClient = { id: nextId++, response }
-    clients.add(client)
-    response.on("close", () => clients.delete(client))
-    return client
-  }
-
-  function broadcast(event: string, data: Record<string, unknown> = {}): void {
-    const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
-    for (const client of clients) {
-      try {
-        client.response.write(payload)
-      /* v8 ignore start */
-      } catch {
-        clients.delete(client)
-      }
-      /* v8 ignore stop */
-    }
-  }
-
-  function disconnectAll(): void {
-    for (const client of clients) {
-      try {
-        client.response.end()
-      /* v8 ignore start */
-      } catch {
-        /* already closed */
-      }
-      /* v8 ignore stop */
-    }
-    clients.clear()
-  }
-
-  return { add, broadcast, disconnectAll }
-}
-
-/* v8 ignore start — filesystem watcher, tested via integration */
-function createBundleWatcher(bundlesRoot: string, onChange: () => void): { stop: () => void } {
-  const watchers: fs.FSWatcher[] = []
-  let debounceTimer: ReturnType<typeof setTimeout> | null = null
-  const DEBOUNCE_MS = 500
-
-  function debouncedOnChange(): void {
-    if (debounceTimer) clearTimeout(debounceTimer)
-    debounceTimer = setTimeout(onChange, DEBOUNCE_MS)
-  }
-
-  try {
-    if (fs.existsSync(bundlesRoot)) {
-      const watcher = fs.watch(bundlesRoot, { recursive: true }, debouncedOnChange)
-      watchers.push(watcher)
-    }
-  } catch {
-    // watch not available — SSE will rely on manual broadcast
-  }
-
-  return {
-    stop() {
-      if (debounceTimer) clearTimeout(debounceTimer)
-      for (const w of watchers) try { w.close() } catch { /* ignore */ }
-      watchers.length = 0
-    },
-  }
-}
-/* v8 ignore stop */
-
-
-function writeJson(response: http.ServerResponse, statusCode: number, payload: unknown): void {
-  response.writeHead(statusCode, { "content-type": "application/json; charset=utf-8" })
-  response.end(`${JSON.stringify(payload, null, 2)}\n`)
-}
-
-
-/* v8 ignore start — SPA static file serving infrastructure */
-const MIME_TYPES: Record<string, string> = {
-  ".html": "text/html",
-  ".js": "application/javascript",
-  ".css": "text/css",
-  ".json": "application/json",
-  ".svg": "image/svg+xml",
-  ".png": "image/png",
-  ".ico": "image/x-icon",
-  ".woff2": "font/woff2",
-}
-
-function resolveSpaDistDir(): string | null {
-  // Look for the built SPA relative to this file's location
-  // In production: dist/heart/daemon/outlook-http.js -> ../../packages/outlook-ui/dist/
-  // In dev: packages/outlook-ui/dist/
-  const candidates = [
-    path.resolve(__dirname, "..", "..", "..", "packages", "outlook-ui", "dist"),
-    path.resolve(__dirname, "..", "..", "packages", "outlook-ui", "dist"),
-    path.resolve(__dirname, "..", "..", "..", "..", "packages", "outlook-ui", "dist"),
-    // npm-published layout: the SPA dist is copied to dist/outlook-ui/
-    path.resolve(__dirname, "..", "..", "outlook-ui"),
-    path.resolve(__dirname, "..", "outlook-ui"),
-  ]
-  for (const candidate of candidates) {
-    if (fs.existsSync(path.join(candidate, "index.html"))) return candidate
-  }
-  return null
-}
-
-function serveStaticFile(response: http.ServerResponse, filePath: string): boolean {
-  try {
-    if (!fs.existsSync(filePath)) return false
-    const ext = path.extname(filePath)
-    const contentType = MIME_TYPES[ext] ?? "application/octet-stream"
-    const content = fs.readFileSync(filePath)
-    response.writeHead(200, {
-      "content-type": contentType,
-      "cache-control": ext === ".html" ? "no-cache" : "public, max-age=31536000, immutable",
-    })
-    response.end(content)
-    return true
-  } catch {
-    return false
-  }
-}
-
-/* v8 ignore stop */
-
-function normalizePath(urlValue = "/"): string {
-  const parsed = new URL(urlValue, "http://127.0.0.1")
-  const normalizedPath = parsed.pathname.replace(/\/+$/, "")
-  if (normalizedPath.length === 0) return "/"
-  return normalizedPath
-}
-
 export async function startOutlookHttpServer(options: StartOutlookHttpServerOptions = {}): Promise<OutlookHttpServerHandle> {
   const host = options.host ?? "127.0.0.1"
   const port = options.port ?? 0
@@ -229,251 +69,28 @@ export async function startOutlookHttpServer(options: StartOutlookHttpServerOpti
   const opts = bundlesRoot ? { bundlesRoot } : undefined
   const readMachineState = options.readMachineState ?? (() => readOutlookMachineState(opts))
   const readMachineView = options.readMachineView
-  /* v8 ignore start */
   const readAgentState = options.readAgentState ?? ((agentName: string) => {
     if (opts) return readOutlookAgentState(agentName, opts)
     return readOutlookAgentState(agentName)
   })
-  /* v8 ignore stop */
   const readAgentView = options.readAgentView
-
-  /* v8 ignore start — default hook wiring, tested via integration */
-  const agentRoot = (agentName: string) => {
-    const base = bundlesRoot ?? ""
-    return path.join(base, `${agentName}.ouro`)
-  }
-
-  const hooks = {
-    readAgentSessions: options.readAgentSessions ?? ((agentName: string) => readSessionInventory(agentName, bundlesRoot ? { bundlesRoot } : undefined)),
-    readAgentTranscript: options.readAgentTranscript ?? ((agentName: string, friendId: string, channel: string, key: string) => readSessionTranscript(agentName, friendId, channel, key, bundlesRoot ? { bundlesRoot } : undefined)),
-    readAgentCoding: options.readAgentCoding ?? ((agentName: string) => readCodingDeep(agentRoot(agentName))),
-    readAgentAttention: options.readAgentAttention ?? ((agentName: string) => readAttentionView(agentName, bundlesRoot ? { bundlesRoot } : undefined)),
-    readAgentBridges: options.readAgentBridges ?? ((agentName: string) => readBridgeInventory(agentRoot(agentName))),
-    readAgentMemory: options.readAgentMemory ?? ((agentName: string) => readMemoryView(agentRoot(agentName))),
-    readAgentFriends: options.readAgentFriends ?? ((agentName: string) => readFriendView(agentName, bundlesRoot ? { bundlesRoot } : undefined)),
-    readAgentContinuity: options.readAgentContinuity ?? ((agentName: string) => readOutlookContinuity(agentRoot(agentName), agentName)),
-    readAgentOrientation: options.readAgentOrientation ?? ((agentName: string) => readOrientationView(agentRoot(agentName), agentName)),
-    readAgentObligations: options.readAgentObligations ?? ((agentName: string) => readObligationDetailView(agentRoot(agentName))),
-    readAgentChanges: options.readAgentChanges ?? ((agentName: string) => readChangesView(agentRoot(agentName))),
-    readAgentSelfFix: options.readAgentSelfFix ?? ((agentName: string) => readSelfFixView(agentRoot(agentName))),
-    readAgentMemoryDecisions: options.readAgentMemoryDecisions ?? ((agentName: string) => readMemoryDecisionView(agentRoot(agentName))),
-    readAgentHabits: options.readAgentHabits ?? ((agentName: string) => readHabitView(agentRoot(agentName))),
-    readDaemonHealth: options.readDaemonHealth ?? (() => readDaemonHealthDeep(options.healthPath)),
-    readLogs: options.readLogs ?? (() => readLogView(options.logPath ?? null)),
-  }
-  /* v8 ignore stop */
-
+  const hooks = createOutlookHttpReadHooks(options)
   const sse = createSseBroadcaster()
-  /* v8 ignore start — watcher callback fires on filesystem changes */
   const bundleWatcher = bundlesRoot ? createBundleWatcher(bundlesRoot, () => {
     sse.broadcast("state-changed", { at: new Date().toISOString() })
   }) : null
-  /* v8 ignore stop */
 
-  const server = http.createServer((request, response) => {
-    let pathname = normalizePath(request.url)
-    const origin = `http://${host}:${(server.address() as AddressInfo).port}`
-
-    /* v8 ignore start — SPA static asset serving */
-    // Serve built SPA static assets: /assets/*
-    if (pathname.startsWith("/assets/")) {
-      const spaDir = resolveSpaDistDir()
-      if (spaDir) {
-        const assetPath = path.join(spaDir, pathname)
-        if (serveStaticFile(response, assetPath)) return
-      }
-      writeJson(response, 404, { ok: false, error: "asset not found" })
-      return
-    }
-
-    /* v8 ignore stop */
-
-    // Legacy /outlook route — redirect to root
-    if (pathname === "/outlook") {
-      response.writeHead(301, { location: "/" })
-      response.end()
-      return
-    }
-
-    // Compatibility alias: /outlook/api/* → /api/*
-    /* v8 ignore start -- legacy compat path: tested via integration @preserve */
-    if (pathname.startsWith("/outlook/api/")) {
-      pathname = pathname.slice("/outlook".length)
-    } else if (pathname === "/outlook/api") {
-      pathname = "/api"
-    }
-    /* v8 ignore stop */
-
-    // SSE event stream
-    if (pathname === "/api/events") {
-      response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", "connection": "keep-alive", "access-control-allow-origin": "*" })
-      response.write(":ok\n\n")
-      sse.add(response)
-      return
-    }
-
-    if (pathname === "/api/machine") {
-      const machine = readMachineState()
-      const machineView = readMachineView?.({ origin, machine })
-      writeJson(response, 200, machineView ?? machine)
-      return
-    }
-
-    if (pathname === "/api/machine/health") {
-      const health = hooks.readDaemonHealth()
-      writeJson(response, 200, health ?? { status: "unavailable" })
-      return
-    }
-
-    if (pathname === "/api/machine/logs") {
-      writeJson(response, 200, hooks.readLogs())
-      return
-    }
-
-    // Agent-level endpoints: /api/agents/:agent[/:surface[/:params...]]
-    const agentMatch = /^\/api\/agents\/([^/]+)(?:\/(.+))?$/.exec(pathname)
-    if (agentMatch) {
-      const agent = decodeURIComponent(agentMatch[1]!)
-      const surface = agentMatch[2] ?? null
-
-      if (!surface) {
-        const view = readAgentView?.(agent)
-        if (view) { writeJson(response, 200, view); return }
-        const state = readAgentState(agent)
-        if (!state) { writeJson(response, 404, { ok: false, error: `unknown agent: ${agent}` }); return }
-        writeJson(response, 200, state)
-        return
-      }
-
-      if (surface === "sessions") {
-        writeJson(response, 200, hooks.readAgentSessions(agent))
-        return
-      }
-
-      const transcriptMatch = /^sessions\/([^/]+)\/([^/]+)\/([^/]+)$/.exec(surface)
-      if (transcriptMatch) {
-        const friendId = decodeURIComponent(transcriptMatch[1]!)
-        const channel = decodeURIComponent(transcriptMatch[2]!)
-        const key = decodeURIComponent(transcriptMatch[3]!)
-        const transcript = hooks.readAgentTranscript(agent, friendId, channel, key)
-        if (!transcript) { writeJson(response, 404, { ok: false, error: "session not found" }); return }
-        writeJson(response, 200, transcript)
-        return
-      }
-
-      if (surface === "coding") {
-        writeJson(response, 200, hooks.readAgentCoding(agent))
-        return
-      }
-
-      if (surface === "attention") {
-        writeJson(response, 200, hooks.readAgentAttention(agent))
-        return
-      }
-
-      if (surface === "bridges") {
-        writeJson(response, 200, hooks.readAgentBridges(agent))
-        return
-      }
-
-      if (surface === "memory") {
-        writeJson(response, 200, hooks.readAgentMemory(agent))
-        return
-      }
-
-      if (surface === "friends") {
-        writeJson(response, 200, hooks.readAgentFriends(agent))
-        return
-      }
-
-      if (surface === "continuity") {
-        writeJson(response, 200, hooks.readAgentContinuity(agent))
-        return
-      }
-
-      if (surface === "orientation") {
-        writeJson(response, 200, hooks.readAgentOrientation(agent))
-        return
-      }
-
-      if (surface === "obligations") {
-        writeJson(response, 200, hooks.readAgentObligations(agent))
-        return
-      }
-
-      if (surface === "changes") {
-        writeJson(response, 200, hooks.readAgentChanges(agent))
-        return
-      }
-
-      if (surface === "self-fix") {
-        writeJson(response, 200, hooks.readAgentSelfFix(agent))
-        return
-      }
-
-      if (surface === "memory-decisions") {
-        writeJson(response, 200, hooks.readAgentMemoryDecisions(agent))
-        return
-      }
-
-      /* v8 ignore start — desk prefs write + reads */
-      if (surface === "dismiss-obligation" && request.method === "POST") {
-        let body = ""
-        request.on("data", (chunk) => { body += chunk })
-        request.on("end", () => {
-          try {
-            const { obligationId } = JSON.parse(body) as { obligationId: string }
-            if (!obligationId) { writeJson(response, 400, { ok: false, error: "obligationId required" }); return }
-            const prefsPath = path.join(agentRoot(agent), "state", "outlook-prefs.json")
-            let prefs: Record<string, unknown> = {}
-            try { prefs = JSON.parse(fs.readFileSync(prefsPath, "utf-8")) as Record<string, unknown> } catch { /* new file */ }
-            const dismissed = Array.isArray(prefs.dismissedObligations) ? prefs.dismissedObligations as string[] : []
-            if (!dismissed.includes(obligationId)) dismissed.push(obligationId)
-            prefs.dismissedObligations = dismissed
-            fs.mkdirSync(path.dirname(prefsPath), { recursive: true })
-            fs.writeFileSync(prefsPath, JSON.stringify(prefs, null, 2) + "\n", "utf-8")
-            writeJson(response, 200, { ok: true, dismissed: dismissed.length })
-          } catch (error) {
-            writeJson(response, 500, { ok: false, error: String(error) })
-          }
-        })
-        return
-      }
-
-      if (surface === "desk-prefs") {
-        writeJson(response, 200, readDeskPrefs(agentRoot(agent)))
-        return
-      }
-
-      if (surface === "needs-me") {
-        writeJson(response, 200, readNeedsMeView(agent, opts))
-        return
-      }
-      /* v8 ignore stop */
-
-      if (surface === "habits") {
-        writeJson(response, 200, hooks.readAgentHabits(agent))
-        return
-      }
-
-      if (surface === "inner-transcript") {
-        const transcript = hooks.readAgentTranscript(agent, "self", "inner", "dialog")
-        writeJson(response, 200, transcript ?? { messageCount: 0, messages: [] })
-        return
-      }
-
-      writeJson(response, 404, { ok: false, error: `unknown agent surface: ${surface}` })
-      return
-    }
-
-    /* v8 ignore start — SPA fallback for client-side routing @preserve */
-    const spaDir = resolveSpaDistDir()
-    if (spaDir) {
-      if (serveStaticFile(response, path.join(spaDir, "index.html"))) return
-    }
-    writeJson(response, 404, { ok: false, error: `not found: ${pathname}` })
-    /* v8 ignore stop */
-  })
+  let server!: http.Server
+  server = http.createServer(createOutlookHttpRequestHandler({
+    host,
+    getPort: () => (server.address() as AddressInfo).port,
+    readMachineState,
+    readMachineView,
+    readAgentState,
+    readAgentView,
+    hooks,
+    sse,
+  }))
 
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject)
