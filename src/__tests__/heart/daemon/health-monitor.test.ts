@@ -63,6 +63,36 @@ describe("HealthMonitor", () => {
     ])
   })
 
+  it("includes agent error reasons and fix hints in critical process messages", async () => {
+    const alertSink = vi.fn(async () => undefined)
+    const monitor = new HealthMonitor({
+      processManager: {
+        listAgentSnapshots: () => [{
+          name: "ouroboros",
+          status: "crashed",
+          errorReason: "secrets.json is missing providers.github-copilot section",
+          fixHint: "Run 'ouro auth ouroboros'",
+        }],
+      },
+      scheduler: {
+        listJobs: () => [{ id: "hourly-check", lastRun: "2026-03-07T00:00:00.000Z" }],
+      },
+      diskUsagePercent: () => 10,
+      alertSink,
+    })
+
+    const results = await monitor.runChecks()
+
+    expect(results[0]).toEqual({
+      name: "agent-processes",
+      status: "critical",
+      message: "non-running agents: ouroboros (secrets.json is missing providers.github-copilot section; fix: Run 'ouro auth ouroboros')",
+    })
+    expect(alertSink).toHaveBeenCalledWith(
+      "[critical] agent-processes: non-running agents: ouroboros (secrets.json is missing providers.github-copilot section; fix: Run 'ouro auth ouroboros')",
+    )
+  })
+
   it("reports critical status for non-running agents and disk exhaustion and alerts for each", async () => {
     const alertSink = vi.fn(async () => undefined)
     const monitor = new HealthMonitor({

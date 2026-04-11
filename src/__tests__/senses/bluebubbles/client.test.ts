@@ -36,6 +36,8 @@ describe("BlueBubbles client", () => {
     global.fetch = originalFetch
     vi.restoreAllMocks()
     vi.doUnmock("../../../senses/bluebubbles/media")
+    vi.doUnmock("../../../senses/bluebubbles/model")
+    vi.resetModules()
   })
 
   it("sends threaded replies through the BlueBubbles text endpoint", async () => {
@@ -914,6 +916,240 @@ describe("BlueBubbles client", () => {
     await expect(client.checkHealth()).rejects.toThrow(
       "BlueBubbles auth failed at http://bluebubbles.local (HTTP 401). Check `bluebubbles.password` in secrets.json and confirm the server accepts it. Raw error: unauthorized",
     )
+  })
+
+  it("queries recent upstream messages through the BlueBubbles message query endpoint", async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        data: [
+          {
+            guid: "recent-guid",
+            text: "you missed this while bluebubbles was down",
+            dateCreated: 1772949155000,
+            isFromMe: false,
+            handle: { address: "ari@mendelow.me" },
+            chats: [{ guid: "any;-;ari@mendelow.me", chatIdentifier: "ari@mendelow.me" }],
+          },
+        ],
+      }), { status: 200 }),
+    ) as typeof fetch
+
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+
+    const result = await client.listRecentMessages?.({ limit: 250, offset: -1 })
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      "http://bluebubbles.local/api/v1/message/query?password=secret-token",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: expect.any(AbortSignal),
+      }),
+    )
+    expect(JSON.parse((global.fetch as any).mock.calls[0][1].body)).toEqual({
+      limit: 100,
+      offset: 0,
+      sort: "DESC",
+      with: ["chats", "attachments", "payloadData", "messageSummaryInfo"],
+    })
+    expect(result).toEqual([
+      expect.objectContaining({
+        kind: "message",
+        messageGuid: "recent-guid",
+        textForAgent: "you missed this while bluebubbles was down",
+      }),
+    ])
+  })
+
+  it("accepts BlueBubbles recent-message response wrapper variants", async () => {
+    const responses = [
+      { data: { messages: [{ guid: "messages-guid", text: "from data.messages" }] } },
+      { data: { results: [{ guid: "results-guid", text: "from data.results" }] } },
+      { messages: [{ guid: "root-messages-guid", text: "from root messages" }] },
+      [{ guid: "root-array-guid", text: "from root array" }],
+      { data: { nope: [] } },
+    ].map((payload) => new Response(JSON.stringify(payload), { status: 200 }))
+    global.fetch = vi.fn()
+      .mockResolvedValueOnce(responses[0])
+      .mockResolvedValueOnce(responses[1])
+      .mockResolvedValueOnce(responses[2])
+      .mockResolvedValueOnce(responses[3])
+      .mockResolvedValueOnce(responses[4]) as typeof fetch
+
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+
+    await expect(client.listRecentMessages?.()).resolves.toEqual([
+      expect.objectContaining({ messageGuid: "messages-guid" }),
+    ])
+    await expect(client.listRecentMessages?.()).resolves.toEqual([
+      expect.objectContaining({ messageGuid: "results-guid" }),
+    ])
+    await expect(client.listRecentMessages?.()).resolves.toEqual([
+      expect.objectContaining({ messageGuid: "root-messages-guid" }),
+    ])
+    await expect(client.listRecentMessages?.()).resolves.toEqual([
+      expect.objectContaining({ messageGuid: "root-array-guid" }),
+    ])
+    await expect(client.listRecentMessages?.()).resolves.toEqual([])
+  })
+
+  it("skips unusable recent-message rows without failing the whole query", async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        data: [
+          { text: "missing guid" },
+          { guid: "usable-guid", text: "still catch this" },
+        ],
+      }), { status: 200 }),
+    ) as typeof fetch
+
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+
+    const result = await client.listRecentMessages?.()
+
+    expect(result).toEqual([expect.objectContaining({ messageGuid: "usable-guid" })])
+    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "warn",
+      event: "senses.bluebubbles_query_recent_skip",
+      meta: expect.objectContaining({ reason: "BlueBubbles payload is missing data.guid" }),
+    }))
+  })
+
+  it("stringifies non-Error recent-message normalization failures", async () => {
+    vi.resetModules()
+    vi.doMock("../../../senses/bluebubbles/model", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("../../../senses/bluebubbles/model")>()
+      return {
+        ...actual,
+        normalizeBlueBubblesEvent: vi.fn(() => {
+          throw "normalize string"
+        }),
+      }
+    })
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        data: [
+          { guid: "string-normalize-failure", text: "this row will throw" },
+        ],
+      }), { status: 200 }),
+    ) as typeof fetch
+
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+
+    await expect(client.listRecentMessages?.()).resolves.toEqual([])
+    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "warn",
+      event: "senses.bluebubbles_query_recent_skip",
+      meta: expect.objectContaining({ reason: "normalize string" }),
+    }))
+  })
+
+  it("surfaces recent-message query failures with response context", async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response("query unavailable", { status: 503 }),
+    ) as typeof fetch
+
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+
+    await expect(client.listRecentMessages?.()).rejects.toThrow(
+      "BlueBubbles recent message query failed (503): query unavailable",
+    )
+    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "warn",
+      event: "senses.bluebubbles_query_recent_error",
+      meta: expect.objectContaining({ status: 503, reason: "query unavailable" }),
+    }))
+  })
+
+  it("surfaces recent-message query failures even when the response body cannot be read", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 502,
+      text: vi.fn().mockRejectedValue(new Error("body unreadable")),
+    } as unknown as Response) as typeof fetch
+
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+
+    await expect(client.listRecentMessages?.()).rejects.toThrow(
+      "BlueBubbles recent message query failed (502): unknown",
+    )
+    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "warn",
+      event: "senses.bluebubbles_query_recent_error",
+      meta: expect.objectContaining({ status: 502, reason: "unknown" }),
+    }))
   })
 
   it("promotes repaired state-only delivery mutations into inbound message events when the full message exists", async () => {

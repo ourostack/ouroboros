@@ -376,6 +376,12 @@ export function formatDaemonStatusOutput(response: DaemonResponse, fallback: str
         /* v8 ignore stop */
         const details = [pidStr, restartStr, exitStr].filter(Boolean).join("  ")
         lines.push(`    ${name} ${dot} ${row.status.padEnd(10)}  ${dim(details)}`)
+        if (row.errorReason) {
+          lines.push(`      ${dim(`error: ${row.errorReason}`)}`)
+        }
+        if (row.fixHint) {
+          lines.push(`      ${dim(`fix:   ${row.fixHint}`)}`)
+        }
       }
     }
     lines.push("")

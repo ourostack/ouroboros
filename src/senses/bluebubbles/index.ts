@@ -30,7 +30,7 @@ import {
 import { createBlueBubblesClient, type BlueBubblesClient } from "./client"
 import { hasRecordedBlueBubblesInbound, recordBlueBubblesInbound, type BlueBubblesInboundSource } from "./inbound-log"
 import { listBlueBubblesRecoveryCandidates, recordBlueBubblesMutation, type BlueBubblesMutationLogEntry } from "./mutation-log"
-import { writeBlueBubblesRuntimeState } from "./runtime-state"
+import { readBlueBubblesRuntimeState, writeBlueBubblesRuntimeState, type BlueBubblesRuntimeState } from "./runtime-state"
 import { findObsoleteBlueBubblesThreadSessions } from "./session-cleanup"
 import { createToolActivityCallbacks } from "../../heart/tool-activity-callbacks"
 import { getDebugMode } from "../commands"
@@ -161,6 +161,11 @@ const defaultDeps: RuntimeDeps = {
 }
 
 const BLUEBUBBLES_RUNTIME_SYNC_INTERVAL_MS = 30_000
+const BLUEBUBBLES_CATCHUP_PAGE_SIZE = 50
+const BLUEBUBBLES_CATCHUP_MAX_PAGES = 20
+const BLUEBUBBLES_HEALTHY_CATCHUP_OVERLAP_MS = 90_000
+const BLUEBUBBLES_RECOVERY_CATCHUP_LOOKBACK_MS = 24 * 60 * 60 * 1000
+const BLUEBUBBLES_FIRST_CATCHUP_LOOKBACK_MS = 10 * 60 * 1000
 
 function resolveFriendParams(event: BlueBubblesNormalizedEvent): FriendResolverParams {
   if (event.chat.isGroup) {
@@ -1051,10 +1056,41 @@ export interface BlueBubblesRecoveryResult {
   failed: number
 }
 
+export interface BlueBubblesCatchUpResult {
+  inspected: number
+  recovered: number
+  skipped: number
+  failed: number
+  lastRecoveredMessageGuid?: string
+}
+
 function countPendingRecoveryCandidates(agentName: string): number {
   return listBlueBubblesRecoveryCandidates(agentName)
     .filter((entry) => !hasRecordedBlueBubblesInbound(agentName, entry.sessionKey, entry.messageGuid))
     .length
+}
+
+function parseTimestampMs(value: string | undefined): number | null {
+  if (!value) return null
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function resolveBlueBubblesCatchUpSince(previousState: BlueBubblesRuntimeState, nowMs = Date.now()): number {
+  if (previousState.upstreamStatus === "error") {
+    return nowMs - BLUEBUBBLES_RECOVERY_CATCHUP_LOOKBACK_MS
+  }
+
+  const lastCheckedAt = parseTimestampMs(previousState.lastCheckedAt)
+  if (lastCheckedAt !== null) {
+    return Math.max(0, lastCheckedAt - BLUEBUBBLES_HEALTHY_CATCHUP_OVERLAP_MS)
+  }
+
+  return nowMs - BLUEBUBBLES_FIRST_CATCHUP_LOOKBACK_MS
+}
+
+function formatRecoveredCount(count: number): string {
+  return `caught up ${count} missed message(s)`
 }
 
 async function syncBlueBubblesRuntime(deps: Partial<RuntimeDeps> = {}): Promise<void> {
@@ -1062,20 +1098,27 @@ async function syncBlueBubblesRuntime(deps: Partial<RuntimeDeps> = {}): Promise<
   const agentName = resolvedDeps.getAgentName()
   const client = resolvedDeps.createClient()
   const checkedAt = new Date().toISOString()
+  const previousState = readBlueBubblesRuntimeState(agentName)
 
   try {
     await client.checkHealth()
     const recovery = await recoverMissedBlueBubblesMessages(resolvedDeps)
+    const catchUp = await catchUpMissedBlueBubblesMessages(resolvedDeps, previousState)
+    const failed = recovery.failed + catchUp.failed
+    const recovered = recovery.recovered + catchUp.recovered
     writeBlueBubblesRuntimeState(agentName, {
-      upstreamStatus: recovery.pending > 0 || recovery.failed > 0 ? "error" : "ok",
-      detail: recovery.failed > 0
-        ? `recovery failures: ${recovery.failed}`
+      upstreamStatus: recovery.pending > 0 || failed > 0 ? "error" : "ok",
+      detail: failed > 0
+        ? `recovery failures: ${failed}`
         : recovery.pending > 0
           ? `pending recovery: ${recovery.pending}`
+          : catchUp.recovered > 0
+            ? formatRecoveredCount(catchUp.recovered)
           : "upstream reachable",
       lastCheckedAt: checkedAt,
       pendingRecoveryCount: recovery.pending,
-      lastRecoveredAt: recovery.recovered > 0 ? checkedAt : undefined,
+      lastRecoveredAt: recovered > 0 ? checkedAt : previousState.lastRecoveredAt,
+      lastRecoveredMessageGuid: catchUp.lastRecoveredMessageGuid ?? previousState.lastRecoveredMessageGuid,
     })
   } catch (error) {
     writeBlueBubblesRuntimeState(agentName, {
@@ -1085,6 +1128,139 @@ async function syncBlueBubblesRuntime(deps: Partial<RuntimeDeps> = {}): Promise<
       pendingRecoveryCount: countPendingRecoveryCandidates(agentName),
     })
   }
+}
+
+export async function catchUpMissedBlueBubblesMessages(
+  deps: Partial<RuntimeDeps> = {},
+  previousState?: BlueBubblesRuntimeState,
+): Promise<BlueBubblesCatchUpResult> {
+  const resolvedDeps = { ...defaultDeps, ...deps }
+  const agentName = resolvedDeps.getAgentName()
+  const client = resolvedDeps.createClient()
+  const result: BlueBubblesCatchUpResult = { inspected: 0, recovered: 0, skipped: 0, failed: 0 }
+  const state = previousState ?? readBlueBubblesRuntimeState(agentName)
+  const catchUpSince = resolveBlueBubblesCatchUpSince(state)
+
+  /* v8 ignore next -- older injected test doubles may omit the catch-up query method */
+  if (!client.listRecentMessages) return result
+
+  emitNervesEvent({
+    component: "senses",
+    event: "senses.bluebubbles_catchup_start",
+    message: "bluebubbles upstream catch-up pass started",
+    meta: {
+      since: new Date(catchUpSince).toISOString(),
+      pageSize: BLUEBUBBLES_CATCHUP_PAGE_SIZE,
+      maxPages: BLUEBUBBLES_CATCHUP_MAX_PAGES,
+    },
+  })
+
+  const recentEvents: BlueBubblesNormalizedEvent[] = []
+  for (let page = 0; page < BLUEBUBBLES_CATCHUP_MAX_PAGES; page++) {
+    let pageEvents: BlueBubblesNormalizedEvent[]
+    try {
+      pageEvents = await client.listRecentMessages({
+        limit: BLUEBUBBLES_CATCHUP_PAGE_SIZE,
+        offset: page * BLUEBUBBLES_CATCHUP_PAGE_SIZE,
+      })
+    } catch (error) {
+      result.failed++
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.bluebubbles_catchup_error",
+        message: "bluebubbles upstream catch-up query failed",
+        meta: {
+          offset: page * BLUEBUBBLES_CATCHUP_PAGE_SIZE,
+          reason: error instanceof Error ? error.message : String(error),
+        },
+      })
+      break
+    }
+
+    recentEvents.push(...pageEvents)
+    if (pageEvents.length < BLUEBUBBLES_CATCHUP_PAGE_SIZE) break
+
+    const oldestMessageTimestamp = pageEvents
+      .filter((event): event is BlueBubblesNormalizedMessage => event.kind === "message")
+      .reduce((oldest, event) => Math.min(oldest, event.timestamp), Number.POSITIVE_INFINITY)
+    if (oldestMessageTimestamp <= catchUpSince) break
+
+    if (page === BLUEBUBBLES_CATCHUP_MAX_PAGES - 1) {
+      result.failed++
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.bluebubbles_catchup_error",
+        message: "bluebubbles upstream catch-up reached the bounded page limit",
+        meta: {
+          inspectedPages: BLUEBUBBLES_CATCHUP_MAX_PAGES,
+          reason: "catch-up page limit reached before the outage window cutoff",
+        },
+      })
+    }
+  }
+
+  const seenMessageGuids = new Set<string>()
+  const candidates = recentEvents
+    .filter((event): event is BlueBubblesNormalizedMessage => event.kind === "message")
+    .filter((event) => {
+      if (seenMessageGuids.has(event.messageGuid)) return false
+      seenMessageGuids.add(event.messageGuid)
+      return true
+    })
+    .sort((left, right) => left.timestamp - right.timestamp)
+
+  for (const event of candidates) {
+    result.inspected++
+    if (
+      event.fromMe
+      || event.timestamp < catchUpSince
+      || hasRecordedBlueBubblesInbound(agentName, event.chat.sessionKey, event.messageGuid)
+    ) {
+      result.skipped++
+      continue
+    }
+
+    try {
+      const repaired = await client.repairEvent(event)
+      if (repaired.kind !== "message") {
+        result.skipped++
+        continue
+      }
+
+      const handled = await handleBlueBubblesNormalizedEvent(repaired, resolvedDeps, "upstream-catchup")
+      if (handled.reason === "already_processed") {
+        result.skipped++
+      } else {
+        result.recovered++
+        result.lastRecoveredMessageGuid = repaired.messageGuid
+      }
+    } catch (error) {
+      result.failed++
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.bluebubbles_catchup_error",
+        message: "bluebubbles upstream catch-up message failed",
+        meta: {
+          messageGuid: event.messageGuid,
+          reason: error instanceof Error ? error.message : String(error),
+        },
+      })
+    }
+  }
+
+  if (result.inspected > 0 || result.recovered > 0 || result.skipped > 0 || result.failed > 0) {
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.bluebubbles_catchup_complete",
+      message: "bluebubbles upstream catch-up pass completed",
+      meta: { ...result },
+    })
+  }
+
+  return result
 }
 
 export async function recoverMissedBlueBubblesMessages(

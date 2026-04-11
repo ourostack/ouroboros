@@ -92,6 +92,13 @@ const DISPATCH_EXEMPT_PATTERNS = [
   // consumed by server readers and the UI. Outlook read/render modules own
   // the observability for these projections.
   "heart/outlook/outlook-types",
+  // Outlook HTTP helper modules: route/static/transport/hook seams are
+  // dispatched by outlook-http.ts, whose server lifecycle owns observability.
+  "heart/outlook/outlook-http-transport",
+  "heart/outlook/outlook-http-static",
+  "heart/outlook/outlook-http-hooks",
+  "heart/outlook/outlook-http-routes",
+  "heart/outlook/outlook-http-response",
 ]
 
 function isDispatchExempt(filePath: string): boolean {

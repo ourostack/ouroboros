@@ -152,15 +152,41 @@ const daemonStartedAt = new Date().toISOString()
 const degradedComponents: DegradedComponent[] = []
 
 function buildDaemonHealthState(): DaemonHealthState {
+  const snapshots = processManager.listAgentSnapshots()
+  const agentDegradedComponents: DegradedComponent[] = snapshots
+    .filter((snapshot) => snapshot.status !== "running")
+    .map((snapshot) => {
+      const reasonParts = [
+        snapshot.errorReason ?? `${snapshot.channel} is ${snapshot.status}`,
+        snapshot.fixHint ? `Fix: ${snapshot.fixHint}` : null,
+      ].filter((part): part is string => part !== null)
+      return {
+        component: `agent:${snapshot.name}`,
+        reason: reasonParts.join(" "),
+        since: snapshot.lastCrashAt ?? daemonStartedAt,
+      }
+    })
+  const degraded = [
+    ...degradedComponents.map((entry) => ({ ...entry })),
+    ...agentDegradedComponents,
+  ]
+
   return {
-    status: degradedComponents.length > 0 ? "degraded" : "ok",
+    status: degraded.length > 0 ? "degraded" : "ok",
     mode,
     pid: process.pid,
     startedAt: daemonStartedAt,
     uptimeSeconds: Math.floor(process.uptime()),
     safeMode: null,
-    degraded: degradedComponents.map((entry) => ({ ...entry })),
-    agents: {},
+    degraded,
+    agents: Object.fromEntries(snapshots.map((snapshot) => [
+      snapshot.name,
+      {
+        status: snapshot.status,
+        pid: snapshot.pid,
+        crashes: snapshot.restartCount,
+      },
+    ])),
     habits: {},
   }
 }

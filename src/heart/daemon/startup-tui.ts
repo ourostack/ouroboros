@@ -47,6 +47,8 @@ export interface PollDaemonStartupDeps {
   socketPath: string
   /** Raw write — must NOT append newlines (use process.stdout.write, not console.log). */
   writeRaw: (text: string) => void
+  /** Whether raw writes can safely use cursor-control ANSI for in-place rendering. */
+  isTTY?: boolean
   now: () => number
   sleep: (ms: number) => Promise<void>
   /** PID of the spawned daemon process. Used to detect early death. */
@@ -55,6 +57,10 @@ export interface PollDaemonStartupDeps {
   isProcessAlive?: (pid: number) => boolean
   /** Read the latest daemon log event message (tail ndjson). Returns null if unavailable. */
   readLatestDaemonEvent?: () => string | null
+}
+
+export interface StartupRenderOptions {
+  isTTY?: boolean
 }
 
 // ── Pure functions ──
@@ -102,30 +108,24 @@ export function renderStartupProgress(
   payload: StatusPayload,
   elapsed: number,
   prevLineCount = 0,
+  options: StartupRenderOptions = {},
 ): string {
+  const isTTY = options.isTTY ?? true
   const frameIndex = Math.floor(elapsed / 100) % SPINNER_FRAMES.length
   const spinner = SPINNER_FRAMES[frameIndex]
   const lines: string[] = []
 
   const elapsedSec = (elapsed / 1000).toFixed(1)
-  lines.push(`${spinner} ${BOLD}waiting for agents${RESET} ${DIM}(${elapsedSec}s)${RESET}`)
+  lines.push(isTTY
+    ? `${spinner} ${BOLD}waiting for agents${RESET} ${DIM}(${elapsedSec}s)${RESET}`
+    : `${spinner} waiting for agents (${elapsedSec}s)`)
 
   for (const worker of payload.workers) {
-    const statusColor = worker.status === "running" ? GREEN
-      : worker.status === "crashed" ? RED
-      : YELLOW
-    const statusText = `${statusColor}${worker.status}${RESET}`
+    const statusText = isTTY ? colorStatus(worker.status) : worker.status
     lines.push(`  ${worker.agent}/${worker.worker}: ${statusText}`)
   }
 
-  let output = ""
-  if (prevLineCount > 0) {
-    output += `\x1b[${prevLineCount}A`
-  }
-  for (const line of lines) {
-    output += `\x1b[2K${line}\n`
-  }
-  return output
+  return renderStartupLines(lines, prevLineCount, isTTY)
 }
 
 /**
@@ -135,44 +135,42 @@ export function renderWaitingForDaemon(
   elapsed: number,
   latestEvent: string | null,
   prevLineCount = 0,
+  options: StartupRenderOptions = {},
 ): string {
+  const isTTY = options.isTTY ?? true
   const elapsedSec = (elapsed / 1000).toFixed(1)
   const frameIndex = Math.floor(elapsed / 100) % SPINNER_FRAMES.length
   const spinner = SPINNER_FRAMES[frameIndex]
   const lines: string[] = []
-  lines.push(`${spinner} ${BOLD}waiting for daemon${RESET} ${DIM}(${elapsedSec}s)${RESET}`)
+  lines.push(isTTY
+    ? `${spinner} ${BOLD}waiting for daemon${RESET} ${DIM}(${elapsedSec}s)${RESET}`
+    : `${spinner} waiting for daemon (${elapsedSec}s)`)
   if (latestEvent) {
-    lines.push(`  ${DIM}${latestEvent}${RESET}`)
+    lines.push(isTTY ? `  ${DIM}${latestEvent}${RESET}` : `  ${latestEvent}`)
   }
-  let output = ""
-  if (prevLineCount > 0) {
-    output += `\x1b[${prevLineCount}A`
-  }
-  for (const line of lines) {
-    output += `\x1b[2K${line}\n`
-  }
-  return output
+  return renderStartupLines(lines, prevLineCount, isTTY)
 }
 
 /**
  * Render the final summary after all agents have resolved.
  */
-function renderFinalSummary(result: StartupResult): string {
+function renderFinalSummary(result: StartupResult, isTTY: boolean): string {
   const lines: string[] = []
 
   for (const agent of result.stable) {
-    lines.push(`  ${GREEN}\u2713${RESET} ${agent}: ${GREEN}stable${RESET}`)
+    lines.push(isTTY ? `  ${GREEN}\u2713${RESET} ${agent}: ${GREEN}stable${RESET}` : `  \u2713 ${agent}: stable`)
   }
   for (const d of result.degraded) {
-    lines.push(`  ${RED}\u2717${RESET} ${d.agent}: ${RED}degraded${RESET}`)
+    lines.push(isTTY ? `  ${RED}\u2717${RESET} ${d.agent}: ${RED}degraded${RESET}` : `  \u2717 ${d.agent}: degraded`)
     if (d.errorReason !== "unknown error") {
-      lines.push(`    ${DIM}error: ${d.errorReason}${RESET}`)
+      lines.push(isTTY ? `    ${DIM}error: ${d.errorReason}${RESET}` : `    error: ${d.errorReason}`)
     }
     if (d.fixHint !== "check daemon logs") {
-      lines.push(`    ${DIM}fix:   ${d.fixHint}${RESET}`)
+      lines.push(isTTY ? `    ${DIM}fix:   ${d.fixHint}${RESET}` : `    fix:   ${d.fixHint}`)
     }
   }
 
+  if (!isTTY) return lines.join("\n") + "\n"
   return lines.map((line) => `\x1b[2K${line}`).join("\n") + "\n"
 }
 
@@ -188,6 +186,7 @@ function renderFinalSummary(result: StartupResult): string {
 export async function pollDaemonStartup(deps: PollDaemonStartupDeps): Promise<StartupResult> {
   const startTime = deps.now()
   let prevLineCount = 0
+  const isTTY = deps.isTTY ?? true
   const isAlive = deps.isProcessAlive ?? defaultIsProcessAlive
 
   emitNervesEvent({
@@ -218,7 +217,7 @@ export async function pollDaemonStartup(deps: PollDaemonStartupDeps): Promise<St
           meta: { pid: deps.daemonPid, lastEvent: latestEvent },
         })
         // Clear the waiting line
-        if (prevLineCount > 0) {
+        if (isTTY && prevLineCount > 0) {
           let clear = `\x1b[${prevLineCount}A`
           for (let i = 0; i < prevLineCount; i++) clear += `\x1b[2K\n`
           deps.writeRaw(clear)
@@ -231,13 +230,13 @@ export async function pollDaemonStartup(deps: PollDaemonStartupDeps): Promise<St
 
       // Show what the daemon is doing from its log
       const latestEvent = deps.readLatestDaemonEvent?.() ?? null
-      const output = renderWaitingForDaemon(elapsed, latestEvent, prevLineCount)
+      const output = renderWaitingForDaemon(elapsed, latestEvent, prevLineCount, { isTTY })
       deps.writeRaw(output)
       prevLineCount = latestEvent ? 2 : 1
     }
 
     if (payload) {
-      const output = renderStartupProgress(payload, elapsed, prevLineCount)
+      const output = renderStartupProgress(payload, elapsed, prevLineCount, { isTTY })
       deps.writeRaw(output)
       prevLineCount = payload.workers.length + 1
 
@@ -247,7 +246,7 @@ export async function pollDaemonStartup(deps: PollDaemonStartupDeps): Promise<St
           stable: assessment.stable,
           degraded: assessment.degraded,
         }
-        const summary = renderFinalSummary(result)
+        const summary = renderFinalSummary(result, isTTY)
         deps.writeRaw(summary)
 
         emitNervesEvent({
@@ -266,6 +265,26 @@ export async function pollDaemonStartup(deps: PollDaemonStartupDeps): Promise<St
 
     await deps.sleep(POLL_INTERVAL_MS)
   }
+}
+
+function colorStatus(status: string): string {
+  const statusColor = status === "running" ? GREEN
+    : status === "crashed" ? RED
+    : YELLOW
+  return `${statusColor}${status}${RESET}`
+}
+
+function renderStartupLines(lines: string[], prevLineCount: number, isTTY: boolean): string {
+  if (!isTTY) return lines.join("\n") + "\n"
+
+  let output = ""
+  if (prevLineCount > 0) {
+    output += `\x1b[${prevLineCount}A`
+  }
+  for (const line of lines) {
+    output += `\x1b[2K${line}\n`
+  }
+  return output
 }
 
 /* v8 ignore start -- process liveness check: uses real process.kill(0), tested via deployment @preserve */
