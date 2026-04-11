@@ -1,10 +1,140 @@
+import { EventEmitter } from "events"
+import * as fs from "fs"
+import * as os from "os"
+import * as path from "path"
 import { describe, expect, it, vi } from "vitest"
 
 vi.mock("../../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn(),
 }))
 
+function createMockResponse() {
+  const response = new EventEmitter() as any
+  response.headers = null as Record<string, string> | null
+  response.statusCode = null as number | null
+  response.body = Buffer.alloc(0)
+  response.writeHead = vi.fn((statusCode: number, headers: Record<string, string>) => {
+    response.statusCode = statusCode
+    response.headers = headers
+  })
+  response.write = vi.fn((chunk: string | Buffer) => {
+    response.body = Buffer.concat([response.body, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)])
+    return true
+  })
+  response.end = vi.fn((chunk?: string | Buffer) => {
+    if (chunk) response.write(chunk)
+  })
+  return response
+}
+
 describe("outlook http", () => {
+  it("keeps path normalization and static serving in explicit helper seams", async () => {
+    const {
+      normalizeOutlookRequestPath,
+      normalizeLegacyOutlookApiPath,
+      serveStaticFile,
+    } = await import("../../../heart/outlook/outlook-http-static")
+
+    expect(normalizeOutlookRequestPath("/outlook/api/machine///?fresh=true")).toBe("/outlook/api/machine")
+    expect(normalizeOutlookRequestPath()).toBe("/")
+    expect(normalizeLegacyOutlookApiPath("/outlook/api")).toBe("/api")
+    expect(normalizeLegacyOutlookApiPath("/outlook/api/agents/slugger")).toBe("/api/agents/slugger")
+    expect(normalizeLegacyOutlookApiPath("/api/machine")).toBe("/api/machine")
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "outlook-static-"))
+    const htmlPath = path.join(dir, "index.html")
+    const dataPath = path.join(dir, "agent.unknown")
+    fs.writeFileSync(htmlPath, "<main>Ouro</main>")
+    fs.writeFileSync(dataPath, "opaque")
+
+    const htmlResponse = createMockResponse()
+    expect(serveStaticFile(htmlResponse, htmlPath)).toBe(true)
+    expect(htmlResponse.statusCode).toBe(200)
+    expect(htmlResponse.headers).toEqual(expect.objectContaining({
+      "content-type": "text/html",
+      "cache-control": "no-cache",
+    }))
+    expect(htmlResponse.body.toString("utf8")).toBe("<main>Ouro</main>")
+
+    const opaqueResponse = createMockResponse()
+    expect(serveStaticFile(opaqueResponse, dataPath)).toBe(true)
+    expect(opaqueResponse.headers).toEqual(expect.objectContaining({
+      "content-type": "application/octet-stream",
+      "cache-control": "public, max-age=31536000, immutable",
+    }))
+
+    const missingResponse = createMockResponse()
+    expect(serveStaticFile(missingResponse, path.join(dir, "missing.js"))).toBe(false)
+    expect(missingResponse.writeHead).not.toHaveBeenCalled()
+
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it("keeps SSE broadcast and bundle watch mechanics in explicit transport seams", async () => {
+    const { createSseBroadcaster, createBundleWatcher } = await import("../../../heart/outlook/outlook-http-transport")
+
+    const sse = createSseBroadcaster()
+    const firstResponse = createMockResponse()
+    const secondResponse = createMockResponse()
+    sse.add(firstResponse)
+    sse.add(secondResponse)
+
+    sse.broadcast("state-changed", { at: "2026-04-10T20:00:00.000Z" })
+    expect(firstResponse.write).toHaveBeenCalledWith("event: state-changed\ndata: {\"at\":\"2026-04-10T20:00:00.000Z\"}\n\n")
+    expect(secondResponse.write).toHaveBeenCalledTimes(1)
+
+    firstResponse.emit("close")
+    sse.broadcast("state-changed", { at: "later" })
+    expect(firstResponse.write).toHaveBeenCalledTimes(1)
+    expect(secondResponse.write).toHaveBeenCalledTimes(2)
+
+    sse.disconnectAll()
+    expect(secondResponse.end).toHaveBeenCalled()
+
+    const onChange = vi.fn()
+    const close = vi.fn()
+    let watchedCallback: (() => void) | null = null
+    const watcher = createBundleWatcher("/bundles", onChange, {
+      existsSync: () => true,
+      watch: (_root, _options, callback) => {
+        watchedCallback = callback
+        return { close }
+      },
+      setTimeout: (callback) => {
+        callback()
+        return 1 as any
+      },
+      clearTimeout: vi.fn(),
+    })
+
+    watchedCallback?.()
+    expect(onChange).toHaveBeenCalledTimes(1)
+    watcher.stop()
+    expect(close).toHaveBeenCalledTimes(1)
+
+    const missingWatcher = createBundleWatcher("/missing", onChange, {
+      existsSync: () => false,
+      watch: vi.fn(),
+      setTimeout: vi.fn(),
+      clearTimeout: vi.fn(),
+    })
+    missingWatcher.stop()
+  })
+
+  it("keeps default hook composition in an explicit helper seam", async () => {
+    const { createOutlookHttpReadHooks } = await import("../../../heart/outlook/outlook-http-hooks")
+    const coding = { totalCount: 1, activeCount: 1, blockedCount: 0, items: [] }
+    const hooks = createOutlookHttpReadHooks({
+      bundlesRoot: "/tmp/ouro-bundles",
+      readAgentCoding: () => coding,
+      readDaemonHealth: () => null,
+    })
+
+    expect(hooks.agentRoot("slugger")).toBe(path.join("/tmp/ouro-bundles", "slugger.ouro"))
+    expect(hooks.readAgentCoding("slugger")).toBe(coding)
+    expect(hooks.readDaemonHealth()).toBeNull()
+  })
+
   it("serves loopback-only HTML and JSON endpoints for Outlook", async () => {
     const { startOutlookHttpServer } = await import("../../../heart/outlook/outlook-http")
 
