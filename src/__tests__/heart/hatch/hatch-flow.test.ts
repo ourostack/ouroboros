@@ -181,7 +181,7 @@ describe("hatch flow", () => {
     cleanup.push(bundlesRoot, secretsRoot, specialistSource, specialistTarget)
     fs.writeFileSync(path.join(specialistSource, "medusa.md"), "# Medusa\n", "utf-8")
 
-    await runHatchFlow(
+    const result = await runHatchFlow(
       {
         agentName: "CodexBot",
         humanName: "Ari",
@@ -202,10 +202,15 @@ describe("hatch flow", () => {
     const secretsPath = path.join(secretsRoot, "CodexBot", "secrets.json")
     const secrets = JSON.parse(fs.readFileSync(secretsPath, "utf-8")) as {
       providers: {
-        "openai-codex": { oauthAccessToken: string }
+        "openai-codex": { oauthAccessToken: string; model?: string }
       }
     }
     expect(secrets.providers["openai-codex"].oauthAccessToken).toBe("oauth-token-123")
+    expect(secrets.providers["openai-codex"].model).toBeUndefined()
+
+    const agentConfig = JSON.parse(fs.readFileSync(path.join(result.bundleRoot, "agent.json"), "utf-8")) as Record<string, any>
+    expect(agentConfig.humanFacing).toEqual({ provider: "openai-codex", model: "gpt-5.4" })
+    expect(agentConfig.agentFacing).toEqual({ provider: "openai-codex", model: "gpt-5.4" })
   })
 
   it("writes provider-specific secrets for minimax hatch flows", async () => {

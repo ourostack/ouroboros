@@ -5,6 +5,7 @@ import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { getAgentBundlesRoot, getAgentSecretsPath, normalizeSenses, PROVIDER_CREDENTIALS, type AgentConfig, type AgentProvider } from "../identity"
 import { migrateAgentConfigV1ToV2 } from "../migrate-config"
+import { resolveModelForProviderSelection } from "../provider-models"
 import type { Facing } from "../../mind/friends/channel"
 import type { HatchCredentialsInput } from "../hatch/hatch-flow"
 
@@ -14,28 +15,23 @@ const ANTHROPIC_SETUP_TOKEN_MIN_LENGTH = 80
 interface SecretsTemplate {
   providers: {
     azure: {
-      modelName: string
       apiKey: string
       endpoint: string
       deployment: string
       apiVersion: string
     }
     minimax: {
-      model: string
       apiKey: string
     }
     anthropic: {
-      model: string
       setupToken: string
       refreshToken?: string
       expiresAt?: number
     }
     "openai-codex": {
-      model: string
       oauthAccessToken: string
     }
     "github-copilot": {
-      model: string
       githubToken: string
       baseUrl: string
     }
@@ -69,28 +65,23 @@ interface SecretsTemplate {
 const DEFAULT_SECRETS_TEMPLATE: SecretsTemplate = {
   providers: {
     azure: {
-      modelName: "gpt-4o-mini",
       apiKey: "",
       endpoint: "",
       deployment: "",
       apiVersion: "2025-04-01-preview",
     },
     minimax: {
-      model: "MiniMax-M2.7",
       apiKey: "",
     },
     anthropic: {
-      model: "claude-opus-4-6",
       setupToken: "",
       refreshToken: "",
       expiresAt: 0,
     },
     "openai-codex": {
-      model: "gpt-5.4",
       oauthAccessToken: "",
     },
     "github-copilot": {
-      model: "claude-sonnet-4.6",
       githubToken: "",
       baseUrl: "",
     },
@@ -244,16 +235,27 @@ export function writeAgentProviderSelection(
 ): string {
   const { configPath, config } = readAgentConfigForAgent(agentName, bundlesRoot)
   const facingKey = facing === "human" ? "humanFacing" : "agentFacing"
+  const previousFacing = config[facingKey]
+  const resolved = resolveModelForProviderSelection(provider, previousFacing.model)
   const nextConfig = {
     ...config,
-    [facingKey]: { ...config[facingKey], provider },
+    [facingKey]: { ...previousFacing, provider, model: resolved.model },
   }
   fs.writeFileSync(configPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf8")
   emitNervesEvent({
     component: "daemon",
     event: "daemon.auth_provider_selected",
     message: "updated agent provider selection after auth flow",
-    meta: { agentName, facing, provider, configPath },
+    meta: {
+      agentName,
+      facing,
+      provider,
+      previousProvider: previousFacing.provider,
+      previousModel: previousFacing.model,
+      model: resolved.model,
+      preservedModel: resolved.preserved,
+      configPath,
+    },
   })
   return configPath
 }

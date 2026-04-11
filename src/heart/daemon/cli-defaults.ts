@@ -40,6 +40,7 @@ import {
   runRuntimeAuthFlow as defaultRunRuntimeAuthFlow,
   collectRuntimeAuthCredentials,
 } from "../auth/auth-flow"
+import { DEFAULT_PROVIDER_MODELS } from "../provider-models"
 import { isAgentProvider } from "./cli-parse"
 import type { OuroCliDeps, DiscoveredCredential } from "./cli-types"
 import { scanEnvVarCredentials } from "./provider-discovery"
@@ -290,13 +291,7 @@ export async function defaultRunSerpentGuide(): Promise<string | null> {
     const hatchVerb = existingBundleCount > 0 ? "let's hatch a new agent." : "let's hatch your first agent."
 
     // Default models per provider (used when entering new credentials)
-    const defaultModels: Record<AgentProvider, string> = {
-      anthropic: "claude-opus-4-6",
-      minimax: "MiniMax-M2.7",
-      "openai-codex": "gpt-5.4",
-      "github-copilot": "claude-sonnet-4.6",
-      azure: "",
-    }
+    const defaultModels = DEFAULT_PROVIDER_MODELS
 
     // Scan environment variables for API keys using the shared helper
     const envCreds = scanEnvVarCredentials(process.env)
