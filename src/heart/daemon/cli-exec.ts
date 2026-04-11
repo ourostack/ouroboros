@@ -185,6 +185,8 @@ export async function ensureDaemonRunning(deps: OuroCliDeps): Promise<EnsureDaem
       daemonPid: runtimeResult.startedPid ?? null,
       /* v8 ignore next -- thin wrapper: raw process.stdout.write for ANSI cursor control @preserve */
       writeRaw: (text) => process.stdout.write(text),
+      /* v8 ignore next -- thin wrapper: real stdout TTY detection injected for captured-output safety @preserve */
+      isTTY: process.stdout.isTTY === true,
       /* v8 ignore next -- thin wrapper: real Date.now() injected for testability @preserve */
       now: () => Date.now(),
       /* v8 ignore next -- thin wrapper: real setTimeout injected for testability @preserve */
@@ -228,6 +230,8 @@ export async function ensureDaemonRunning(deps: OuroCliDeps): Promise<EnsureDaem
         daemonPid: lastPid,
         /* v8 ignore next -- thin wrapper: raw process.stdout.write for ANSI cursor control @preserve */
         writeRaw: (text) => process.stdout.write(text),
+        /* v8 ignore next -- thin wrapper: real stdout TTY detection injected for captured-output safety @preserve */
+        isTTY: process.stdout.isTTY === true,
         /* v8 ignore next -- thin wrapper: real Date.now() injected for testability @preserve */
         now: () => Date.now(),
         /* v8 ignore next -- thin wrapper: real setTimeout injected for testability @preserve */
