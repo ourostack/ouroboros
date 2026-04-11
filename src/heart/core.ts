@@ -33,6 +33,7 @@ import { createObligation, createReturnObligation, generateObligationId } from "
 import { createToolLoopState, detectToolLoop, recordToolOutcome } from "./tool-loop";
 import { createPonderPacket, findHarnessFrictionPacket, revisePonderPacket, type PonderPacket, type PonderPacketKind } from "../arc/packets";
 import { createToolFrictionLedger, rewriteToolResultForModel } from "./tool-friction";
+import { getDefaultModelForProvider, getProviderModelMismatchMessage } from "./provider-models";
 
 export type ProviderId = "azure" | "anthropic" | "minimax" | "openai-codex" | "github-copilot";
 
@@ -572,6 +573,36 @@ const RETRY_LABELS: Record<ProviderErrorClassification, string> = {
   "network-error": "network error",
   "unknown": "error",
 };
+
+function buildAuthFailureGuidance(provider: ProviderId, model: string, agentName: string, detail: string): string {
+  const mismatch = getProviderModelMismatchMessage(provider, model)
+  const modelLabel = model
+    ? mismatch
+      ? `${provider} [configured model: ${model}]`
+      : `${provider} (${model})`
+    : provider
+  const lines = [`${modelLabel} authentication failed.`]
+  const cleanDetail = detail.replace(/\s+/g, " ").trim()
+  if (cleanDetail) lines.push(`provider detail: ${cleanDetail.length > 300 ? `${cleanDetail.slice(0, 297)}...` : cleanDetail}`)
+
+  lines.push("")
+  lines.push("To keep using this provider:")
+  lines.push(`  1. Run \`ouro auth --agent ${agentName} --provider ${provider}\``)
+
+  if (mismatch) {
+    const defaultModel = getDefaultModelForProvider(provider)
+    lines.push("")
+    lines.push("Config warning:")
+    lines.push(`  - ${mismatch}`)
+    lines.push("  - Repair the configured model with:")
+    lines.push(`    \`ouro config model --agent ${agentName} --facing human ${defaultModel}\``)
+    lines.push(`    \`ouro config model --agent ${agentName} --facing agent ${defaultModel}\``)
+  }
+
+  lines.push("")
+  lines.push(`To use another configured provider instead, run \`ouro auth switch --agent ${agentName} --provider <provider>\`.`)
+  return lines.join("\n")
+}
 
 export async function runAgent(
   messages: OpenAI.ChatCompletionMessageParam[],
@@ -1211,11 +1242,12 @@ export async function runAgent(
       if (terminalErrorClassification === "auth-failure") {
         const agentName = getAgentName()
         const currentProvider = providerRuntime.id
-        callbacks.onError(new Error(
-          `${currentProvider} (${providerRuntime.model}) encountered an error. ` +
-          `Run \`ouro auth --agent ${agentName} --provider ${currentProvider}\` to refresh credentials, ` +
-          `or \`ouro auth switch --agent ${agentName} --provider <other>\` to switch providers.`
-        ), "terminal")
+        callbacks.onError(new Error(buildAuthFailureGuidance(
+          currentProvider,
+          providerRuntime.model,
+          agentName,
+          terminalError.message,
+        )), "terminal")
       } else {
         callbacks.onError(terminalError, "terminal");
       }

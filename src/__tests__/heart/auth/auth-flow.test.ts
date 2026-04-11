@@ -501,7 +501,9 @@ describe("runtime auth flow", () => {
     const result = writeProviderCredentials(agentName, "minimax", { apiKey: "direct-minimax-key" })
 
     expect(result.secretsPath).toBe(path.join(homeDir, agentSecretsSubpath, agentName, "secrets.json"))
-    expect(readSecrets(homeDir, agentName).providers.minimax.apiKey).toBe("direct-minimax-key")
+    const secrets = readSecrets(homeDir, agentName)
+    expect(secrets.providers.minimax.apiKey).toBe("direct-minimax-key")
+    expect(secrets.providers.minimax.model).toBeUndefined()
   })
 
   it("uses shared runtime auth to resolve missing anthropic hatch credentials", async () => {
@@ -921,8 +923,10 @@ describe("writeAgentProviderSelection with facing", () => {
 
     const updated = JSON.parse(fs.readFileSync(configPath, "utf8")) as Record<string, any>
     expect(updated.humanFacing.provider).toBe("openai-codex")
+    expect(updated.humanFacing.model).toBe("gpt-5.4")
     // agentFacing should be unchanged
     expect(updated.agentFacing.provider).toBe("anthropic")
+    expect(updated.agentFacing.model).toBe("claude-opus-4-6")
   })
 
   it("writes to agentFacing when facing is 'agent'", () => {
@@ -938,8 +942,25 @@ describe("writeAgentProviderSelection with facing", () => {
 
     const updated = JSON.parse(fs.readFileSync(configPath, "utf8")) as Record<string, any>
     expect(updated.agentFacing.provider).toBe("github-copilot")
+    expect(updated.agentFacing.model).toBe("claude-opus-4-6")
     // humanFacing should be unchanged
     expect(updated.humanFacing.provider).toBe("anthropic")
+  })
+
+  it("does not carry a clearly incompatible model across provider switches", () => {
+    emitTestEvent("writeAgentProviderSelection resets incompatible model")
+    const bundlesRoot = makeTempDir("auth-flow-provider-model-reset")
+    const agentName = "FacingModelResetBot"
+    const configPath = writeAgentConfig(bundlesRoot, agentName, "github-copilot", {
+      humanFacing: { provider: "github-copilot", model: "claude-sonnet-4.6" },
+      agentFacing: { provider: "github-copilot", model: "claude-sonnet-4.6" },
+    })
+
+    writeAgentProviderSelection(agentName, "human", "openai-codex", bundlesRoot)
+
+    const updated = JSON.parse(fs.readFileSync(configPath, "utf8")) as Record<string, any>
+    expect(updated.humanFacing).toEqual({ provider: "openai-codex", model: "gpt-5.4" })
+    expect(updated.agentFacing).toEqual({ provider: "github-copilot", model: "claude-sonnet-4.6" })
   })
 })
 
