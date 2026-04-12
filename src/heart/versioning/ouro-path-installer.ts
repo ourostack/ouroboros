@@ -10,6 +10,15 @@ export interface OuroPathInstallResult {
   shellProfileUpdated: string | null
   skippedReason?: string
   repairedOldLauncher: boolean
+  pathResolution?: OuroPathResolution
+}
+
+export interface OuroPathResolution {
+  status: "ok" | "missing" | "shadowed"
+  expectedPath: string
+  resolvedPath: string | null
+  detail: string
+  remediation: string | null
 }
 
 export interface OuroPathInstallerDeps {
@@ -74,6 +83,10 @@ function isBinDirInPath(binDir: string, envPath: string): boolean {
   return envPath.split(path.delimiter).some((p) => p === binDir)
 }
 
+function samePath(a: string, b: string): boolean {
+  return path.resolve(a) === path.resolve(b)
+}
+
 function buildPathExportLine(binDir: string, shell: string | undefined): string {
   const base = shell ? path.basename(shell) : /* v8 ignore next -- unreachable: only called when detectShellProfile returns non-null, which requires shell @preserve */ ""
   if (base === "fish") {
@@ -92,6 +105,65 @@ function isWrapperCurrent(
     return readFileSync(scriptPath, "utf-8") === WRAPPER_SCRIPT
   } catch {
     return false
+  }
+}
+
+function firstOuroOnPath(envPath: string, existsSync: (p: string) => boolean): string | null {
+  for (const dir of envPath.split(path.delimiter)) {
+    if (!dir) continue
+    const candidate = path.join(dir, "ouro")
+    if (existsSync(candidate)) return candidate
+  }
+  return null
+}
+
+export function diagnoseOuroPath(deps: {
+  homeDir: string
+  envPath: string
+  existsSync: (p: string) => boolean
+  readFileSync: (p: string, encoding: BufferEncoding) => string
+}): OuroPathResolution {
+  const binDir = path.join(deps.homeDir, ".ouro-cli", "bin")
+  const expectedPath = path.join(binDir, "ouro")
+  const resolvedPath = firstOuroOnPath(deps.envPath, deps.existsSync)
+
+  if (!resolvedPath) {
+    return {
+      status: "missing",
+      expectedPath,
+      resolvedPath: null,
+      detail: `PATH does not resolve ouro; expected ${expectedPath}`,
+      remediation: `add ${binDir} to PATH or open a new shell after ouro up updates your shell profile`,
+    }
+  }
+
+  if (samePath(resolvedPath, expectedPath)) {
+    return {
+      status: "ok",
+      expectedPath,
+      resolvedPath,
+      detail: `PATH resolves ouro to ${expectedPath}`,
+      remediation: null,
+    }
+  }
+
+  if (isWrapperCurrent(resolvedPath, deps.existsSync, deps.readFileSync)) {
+    return {
+      status: "ok",
+      expectedPath,
+      resolvedPath,
+      detail: `PATH resolves ouro through a compatible wrapper at ${resolvedPath}`,
+      remediation: null,
+    }
+  }
+
+  const shadowDir = path.dirname(resolvedPath)
+  return {
+    status: "shadowed",
+    expectedPath,
+    resolvedPath,
+    detail: `PATH resolves ouro to ${resolvedPath} before ${expectedPath}`,
+    remediation: `move ${binDir} before ${shadowDir} in PATH, or remove/replace ${resolvedPath} after confirming it is the stale ouro launcher`,
   }
 }
 
@@ -128,6 +200,8 @@ export function installOuroCommand(deps: OuroPathInstallerDeps = {}): OuroPathIn
   const scriptPath = path.join(binDir, "ouro")
   const oldScriptPath = path.join(homeDir, ".local", "bin", "ouro")
 
+  const resolvePath = (): OuroPathResolution => diagnoseOuroPath({ homeDir, envPath, existsSync, readFileSync })
+
   const modernCurrent = isWrapperCurrent(scriptPath, existsSync, readFileSync)
   const oldExists = existsSync(oldScriptPath)
   const oldCurrent = oldExists && isWrapperCurrent(oldScriptPath, existsSync, readFileSync)
@@ -155,13 +229,23 @@ export function installOuroCommand(deps: OuroPathInstallerDeps = {}): OuroPathIn
 
   // ── Fast-path: modern wrapper already current ──
   if (modernCurrent) {
+    const pathResolution = resolvePath()
+    if (pathResolution.status === "shadowed") {
+      emitNervesEvent({
+        level: "warn",
+        component: "daemon",
+        event: "daemon.ouro_path_shadowed",
+        message: "PATH resolves ouro to a stale external launcher",
+        meta: { resolvedPath: pathResolution.resolvedPath, expectedPath: pathResolution.expectedPath, remediation: pathResolution.remediation },
+      })
+    }
     emitNervesEvent({
       component: "daemon",
       event: "daemon.ouro_path_install_skip",
       message: "ouro command already installed",
-      meta: { scriptPath },
+      meta: { scriptPath, pathStatus: pathResolution.status, resolvedPath: pathResolution.resolvedPath },
     })
-    return { installed: false, scriptPath, pathReady: isBinDirInPath(binDir, envPath), shellProfileUpdated: null, skippedReason: "already-installed", repairedOldLauncher }
+    return { installed: false, scriptPath, pathReady: isBinDirInPath(binDir, envPath), shellProfileUpdated: null, skippedReason: "already-installed", repairedOldLauncher, pathResolution }
   }
 
   emitNervesEvent({
@@ -217,12 +301,23 @@ export function installOuroCommand(deps: OuroPathInstallerDeps = {}): OuroPathIn
     }
   }
 
+  const pathResolution = resolvePath()
+  if (pathResolution.status === "shadowed") {
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.ouro_path_shadowed",
+      message: "PATH resolves ouro to a stale external launcher",
+      meta: { resolvedPath: pathResolution.resolvedPath, expectedPath: pathResolution.expectedPath, remediation: pathResolution.remediation },
+    })
+  }
+
   emitNervesEvent({
     component: "daemon",
     event: "daemon.ouro_path_install_end",
     message: "ouro command installed",
-    meta: { scriptPath, pathReady, shellProfileUpdated, oldScriptPath: oldExists ? oldScriptPath : null },
+    meta: { scriptPath, pathReady, shellProfileUpdated, oldScriptPath: oldExists ? oldScriptPath : null, pathStatus: pathResolution.status, resolvedPath: pathResolution.resolvedPath },
   })
 
-  return { installed: true, scriptPath, pathReady, shellProfileUpdated, repairedOldLauncher }
+  return { installed: true, scriptPath, pathReady, shellProfileUpdated, repairedOldLauncher, pathResolution }
 }

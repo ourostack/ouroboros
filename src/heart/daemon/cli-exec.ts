@@ -574,6 +574,12 @@ async function performSystemSetup(deps: OuroCliDeps): Promise<void> {
       if (installResult.repairedOldLauncher) {
         deps.writeStdout("repaired stale ouro launcher at ~/.local/bin/ouro")
       }
+      if (installResult.pathResolution?.status === "shadowed") {
+        deps.writeStdout(
+          `fix ouro PATH: ${installResult.pathResolution.detail}; ` +
+          `fix: ${installResult.pathResolution.remediation}`,
+        )
+      }
     } catch (error) {
       emitNervesEvent({
         level: "warn",
@@ -2424,6 +2430,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       bundlesRoot: deps.bundlesRoot ?? getAgentBundlesRoot(),
       secretsRoot: deps.secretsRoot ?? path.join(os.homedir(), ".agentsecrets"),
       homedir: os.homedir(),
+      envPath: process.env.PATH ?? "",
     }
     const doctorResult = await runDoctorChecks(doctorDeps)
     const output = formatDoctorOutput(doctorResult)
