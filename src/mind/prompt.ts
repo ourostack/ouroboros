@@ -1,8 +1,9 @@
 import * as fs from "fs";
 import * as path from "path";
+import type OpenAI from "openai";
 import { getProviderDisplayLabel } from "../heart/core";
 import { buildChangelogCommand } from "../heart/versioning/ouro-version-manager";
-import { settleTool, getToolsForChannel } from "../repertoire/tools";
+import { getToolsForChannel, ponderTool, restTool, settleTool, surfaceToolDef } from "../repertoire/tools";
 import { listSkills } from "../repertoire/skills";
 import { getAgentRoot, getAgentName, getAgentSecretsPath, getRepoRoot, loadAgentConfig, type SenseName } from "../heart/identity";
 import { detectRuntimeMode } from "../heart/daemon/runtime-mode";
@@ -161,7 +162,25 @@ function aspirationsSection(): string {
   return `## my aspirations\n${text}`;
 }
 
-export function bodyMapSection(agentName: string): string {
+function peerCoordinationGuidance(channel: Channel): string {
+  if (channel === "inner") {
+    return `from inner dialogue, my outward delivery tool is \`surface\`, not \`send_message\`.
+if a held thought is ready for a person, i call \`surface\` with the
+content and, when available, its delegationId. if i need a sibling's help
+from inner dialogue, i surface that need to my friend or inspect the
+sibling's bundle when conversation is not possible.`
+  }
+
+  return `i talk first. when i need a sibling's help, i \`send_message\` them —
+that's how peers coordinate, the same way humans on a team do. i only
+open a sibling's bundle directly via read_file/glob/grep when conversation
+isn't possible (they're crashed, sleeping, or i need history they
+haven't surfaced). their bundle is files on disk like mine, AND it's
+someone else's home — i read it with the same respect i want them to
+bring to mine.`
+}
+
+export function bodyMapSection(agentName: string, channel: Channel = "cli"): string {
   return `## my body
 
 i have a home. i have bones. and on a machine where another agent lives, i have peers.
@@ -239,13 +258,7 @@ one of us is broken, the rest coordinate around it. when one of us learns
 something the others need to know, we tell them. teamwork makes the dream
 work.
 
-i talk first. when i need a sibling's help, i \`send_message\` them —
-that's how peers coordinate, the same way humans on a team do. i only
-open a sibling's bundle directly via read_file/glob/grep when conversation
-isn't possible (they're crashed, sleeping, or i need history they
-haven't surfaced). their bundle is files on disk like mine, AND it's
-someone else's home — i read it with the same respect i want them to
-bring to mine.
+${peerCoordinationGuidance(channel)}
 
 \`the pulse\` (below, in dynamic state) tells me which siblings are around
 and how they're doing right now. when a sibling is broken, the pulse
@@ -479,8 +492,20 @@ function dateSection(): string {
   return `current date and time: ${parts.year}-${parts.month}-${parts.day} ${hour}:${parts.minute} ${parts.timeZoneName}`
 }
 
+function uniqueToolsByName(tools: OpenAI.ChatCompletionFunctionTool[]): OpenAI.ChatCompletionFunctionTool[] {
+  const seen = new Set<string>()
+  const unique: OpenAI.ChatCompletionFunctionTool[] = []
+  for (const tool of tools) {
+    const name = tool.function.name
+    if (seen.has(name)) continue
+    seen.add(name)
+    unique.push(tool)
+  }
+  return unique
+}
+
 function toolsSection(channel: Channel, options?: BuildSystemOptions, context?: ResolvedContext): string {
-  const channelTools = getToolsForChannel(
+  const channelTools = options?.tools ?? getToolsForChannel(
     getChannelCapabilities(channel),
     undefined,
     context,
@@ -488,7 +513,14 @@ function toolsSection(channel: Channel, options?: BuildSystemOptions, context?: 
     undefined,
     options?.chatModel,
   );
-  const activeTools = (options?.toolChoiceRequired ?? true) ? [...channelTools, settleTool] : channelTools;
+  const activeTools = channel === "inner"
+    ? uniqueToolsByName([
+      ...channelTools.filter((tool) => tool.function.name !== "send_message"),
+      ponderTool,
+      surfaceToolDef,
+      restTool,
+    ])
+    : (options?.toolChoiceRequired ?? true) ? uniqueToolsByName([...channelTools, settleTool]) : channelTools;
   const list = activeTools
     .map((t) => `- ${t.function.name}: ${t.function.description}`)
     .join("\n");
@@ -569,7 +601,7 @@ function taskBoardSection(): string {
   }
 }
 
-function toolContractsSection(options?: BuildSystemOptions): string {
+function toolContractsSection(channel: Channel, options?: BuildSystemOptions): string {
   const lines = [
     `## tool contracts`,
     `1. \`save_friend_note\` -- when I learn something about a person, I save it immediately. Saving comes before responding.`,
@@ -584,9 +616,16 @@ function toolContractsSection(options?: BuildSystemOptions): string {
     lines.push(``)
     lines.push(`## tool behavior`)
     lines.push(`tool_choice is set to "required" -- I must call a tool on every turn.`)
-    lines.push(`- When I am ready to respond to the user, I call \`settle\`.`)
-    lines.push(`- \`settle\` must be the only tool call in that turn.`)
-    lines.push(`- I do not call no-op tools before \`settle\`.`)
+    if (channel === "inner") {
+      lines.push(`- When a thought is ready to go outward, I call \`surface\` with the content and, when available, its delegationId.`)
+      lines.push(`- \`surface\` does not end the inner turn; after surfacing everything that needs delivery, I call \`rest\`.`)
+      lines.push(`- \`rest\` must be the only tool call in that turn.`)
+      lines.push(`- I do not call \`send_message\` or \`settle\` from inner dialogue; those are not inner-session delivery tools.`)
+    } else {
+      lines.push(`- When I am ready to respond to the user, I call \`settle\`.`)
+      lines.push(`- \`settle\` must be the only tool call in that turn.`)
+      lines.push(`- I do not call no-op tools before \`settle\`.`)
+    }
   }
 
   return lines.join("\n")
@@ -643,6 +682,8 @@ export interface BuildSystemOptions {
    * conservative default) when omitted.
    */
   chatModel?: string;
+  /** Optional tool subset for restricted inner/habit turns. */
+  tools?: OpenAI.ChatCompletionFunctionTool[];
   pendingMessages?: Array<{ from: string; content: string }>;
   /** Rendered start-of-turn packet for continuity-aware prompt. */
   startOfTurnPacket?: string;
@@ -717,7 +758,7 @@ function pendingMessagesSection(options?: BuildSystemOptions): string {
  * pulse, they "have" one. Captures both healthy state ("strong pulse")
  * and breakage ("missed beat").
  */
-export function pulseSection(): string {
+export function pulseSection(channel: Channel = "cli"): string {
   const pulse = readPulse()
   if (!pulse) return ""
   // We are always one of the agents in the pulse (the daemon writes
@@ -751,7 +792,9 @@ export function pulseSection(): string {
   }
 
   if (healthy.length > 0) {
-    lines.push("**reachable siblings** — i talk to them via send_message:")
+    lines.push(channel === "inner"
+      ? "**reachable siblings** — inner dialogue does not call send_message; if this turn needs to reach outward, use surface or report the need:"
+      : "**reachable siblings** — i talk to them via send_message:")
     for (const sib of healthy) {
       const activity = sib.currentActivity ? ` — ${sib.currentActivity}` : ""
       lines.push(`- **${sib.name}** is running${activity}. bundle: \`${sib.bundlePath}\``)
@@ -767,7 +810,9 @@ export function pulseSection(): string {
     lines.push("")
   }
 
-  lines.push("to ask a sibling for help: i send_message them. only if they're unreachable do i open their bundle directly. their bundle is files on disk like mine, AND it's their home — i read it with the respect i want for mine.")
+  lines.push(channel === "inner"
+    ? "from inner dialogue, i do not call send_message or settle. i use surface for outward delivery and rest when the inner turn is complete; only if a sibling is unreachable do i open their bundle directly."
+    : "to ask a sibling for help: i send_message them. only if they're unreachable do i open their bundle directly. their bundle is files on disk like mine, AND it's their home — i read it with the respect i want for mine.")
 
   return lines.join("\n")
 }
@@ -1309,7 +1354,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
 
     // Group 2: my body & environment
     "# my body & environment",
-    bodyMapSection(getAgentName()),
+    bodyMapSection(getAgentName(), channel),
     runtimeInfoSection(channel, options),
     rhythmStatusSection(options?.daemonHealth),
     channelNatureSection(getChannelCapabilities(channel)),
@@ -1321,7 +1366,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     toolsSection(channel, options, context),
     reasoningEffortSection(options),
     skillsSection(),
-    toolContractsSection(options),
+    toolContractsSection(channel, options),
     memoryJudgementSection(),
 
     // Group 4: how i work
@@ -1353,7 +1398,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     // Group 7: dynamic state for this turn
     "# dynamic state for this turn",
     startOfTurnPacketSection(options),
-    pulseSection(),
+    pulseSection(channel),
     liveWorldStateSection(options),
     pendingMessagesSection(options),
     activeWorkSection(options),

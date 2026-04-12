@@ -2810,6 +2810,34 @@ describe("buildSystem with context", () => {
     expect(result).toContain("think. journal. share. rest.")
   })
 
+  it("buildSystem('inner') teaches surface/rest instead of send_message/settle delivery", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("inner")
+    const toolsBlock = result.match(/## my tools\n[\s\S]*?(?=\n\n## |\n\n# )/)?.[0] ?? ""
+
+    expect(toolsBlock).toContain("- surface:")
+    expect(toolsBlock).toContain("- rest:")
+    expect(toolsBlock).toContain("- ponder:")
+    expect(toolsBlock).not.toContain("- send_message:")
+    expect(toolsBlock).not.toContain("- settle:")
+    expect(result).toContain("When a thought is ready to go outward, I call `surface`")
+    expect(result).toContain("I do not call `send_message` or `settle` from inner dialogue")
+    expect(result).toContain("my outward delivery tool is `surface`, not `send_message`")
+    expect(result).not.toContain("when i need a sibling's help, i `send_message` them")
+    expect(result).not.toContain("to ask a sibling for help: i send_message them")
+
+    const duplicateResult = await buildSystem("inner", {
+      tools: [{ type: "function", function: { name: "rest", description: "duplicate rest" } } as any],
+    })
+    const duplicateToolsBlock = duplicateResult.match(/## my tools\n[\s\S]*?(?=\n\n## |\n\n# )/)?.[0] ?? ""
+    expect(duplicateToolsBlock.match(/- rest:/g)).toHaveLength(1)
+  })
+
   it("buildSystem('cli') does NOT include metacognitive framing", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
