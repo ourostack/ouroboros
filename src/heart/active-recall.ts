@@ -2,7 +2,7 @@ import type OpenAI from "openai"
 import * as fs from "fs"
 import * as path from "path"
 
-import { readDiaryEntries, type DiaryEntry } from "../mind/diary"
+import { readDiaryEntries, resolveDiaryRoot, type DiaryEntry } from "../mind/diary"
 import type { FriendRecord } from "../mind/friends/types"
 import { emitNervesEvent } from "../nerves/runtime"
 
@@ -168,14 +168,13 @@ export function gatherActiveRecallCandidates(query: string, options: InjectActiv
   const queryTerms = tokenize(query)
   if (queryTerms.size === 0) return []
 
-  const diaryRoot = options.diaryRoot
-  const diaryEntries = diaryRoot ? readDiaryEntries(diaryRoot) : readDiaryEntries()
+  const diaryRoot = resolveDiaryRoot(options.diaryRoot)
+  const diaryEntries = readDiaryEntries(diaryRoot)
   const diaryCandidates = diaryEntries
     .map((fact) => ({ candidate: diaryCandidate(fact), score: scoreText(queryTerms, fact.text) }))
     .filter((entry) => entry.score > 0)
 
-  const resolvedDiaryRoot = diaryRoot ?? path.join(process.cwd(), "diary")
-  const journalDir = journalDirForDiaryRoot(resolvedDiaryRoot, options.journalDir)
+  const journalDir = journalDirForDiaryRoot(diaryRoot, options.journalDir)
   const journalCandidates = readJournalIndex(journalDir)
     .map((entry) => ({
       candidate: {
