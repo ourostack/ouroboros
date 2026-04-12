@@ -85,7 +85,38 @@
 **Blast radius**: crosses trust boundaries
 **Fix shape**: Decide whether per-test audit should enforce every test or a scoped subset, then update capture/audit/tests together so the rule is truthful and CI-enforceable without relying on empty per-test artifacts.
 **Suggested supporting skills**: work-planner
+**Status**: fixed
+**Linked work**: https://github.com/ouroborosbot/ouroboros/pull/444
+
+---
+
+## [D-007] — Shared skill freshness registry is missing locally
+
+**Source**: observed-during-seed
+**What**: The repo instructions require comparing the shared `ouroboros-skills` manifest against a local skills `_registry.json`, but `/Users/arimendelow/.agents/skills/_registry.json` does not exist on this machine.
+**Where**: `/Users/arimendelow/.agents/skills/_registry.json`; `AGENTS.md` skill freshness workflow
+**Why it matters**: Agents can follow the mandated freshness check and still have no local source of truth to determine whether installed workflow skills are stale, which makes planner/doer invocation reliability depend on ad-hoc inspection.
+**Evidence**: During D-006 startup, `curl -fsSL https://raw.githubusercontent.com/ouroborosbot/ouroboros-skills/main/manifest.json` succeeded, but `cat /Users/arimendelow/.agents/skills/_registry.json` failed with `No such file or directory`, and `find /Users/arimendelow/.agents/skills -maxdepth 2 -name _registry.json -o -name registry.json` returned no registry.
+**Severity**: high-value
+**Blast radius**: affects multiple modules
+**Fix shape**: Restore or generate a local installed-skill registry as part of the skill-management workflow, and make the freshness check fail with exact remediation when the registry is absent.
+**Suggested supporting skills**: work-planner
 **Status**: open
 **Linked work**:
+
+---
+
+## [D-008] — Agent entrypoint test sleeps instead of awaiting dynamic import completion
+
+**Source**: observed-during-seed
+**What**: `src/__tests__/heart/agent-entry.test.ts` used a fixed ten-round timer flush to wait for `agent-entry.ts`'s dynamic `import("../senses/inner-dialog-worker")`, which was insufficient under a full coverage run.
+**Where**: `src/__tests__/heart/agent-entry.test.ts`
+**Why it matters**: The full coverage gate can fail nondeterministically even when the entrypoint behavior is correct, eroding trust in the gate D-006 is making stricter.
+**Evidence**: Full `npm run test:coverage` run `2026-04-12T04-12-33-736Z` failed with `expected "vi.fn()" to be called 1 times, but got 0 times` in `agent-entry.test.ts`, while an isolated `npm exec vitest -- run src/__tests__/heart/agent-entry.test.ts` passed.
+**Severity**: high-value
+**Blast radius**: self-contained
+**Fix shape**: Replace fixed timer flushing with `vi.waitFor()` around the actual mock call/error assertions.
+**Status**: fixed
+**Linked work**: https://github.com/ouroborosbot/ouroboros/pull/444
 
 ---

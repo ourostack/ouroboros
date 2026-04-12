@@ -104,6 +104,162 @@ emitNervesEvent({ component: "test", event: "test_end", message: "e" })
     expect(report.required_actions).toEqual([])
   })
 
+  it("accepts append-only per-test ndjson records from parallel workers", () => {
+    const { eventsPath, perTestPath, sourceRoot } = createAuditFixture()
+
+    writeFileSync(eventsPath, JSON.stringify({
+      ts: "2026-03-05T00:00:00.000Z",
+      level: "info",
+      event: "test_case_observed",
+      trace_id: "t1",
+      component: "tests",
+      message: "observed",
+      meta: {},
+    }) + "\n", "utf8")
+
+    writeFileSync(perTestPath, [
+      JSON.stringify({
+        testName: "worker one > emits",
+        events: [{ component: "tests", event: "test_case_observed", level: "info", meta: { worker: 1 } }],
+      }),
+      JSON.stringify({
+        testName: "worker two > emits",
+        events: [{ component: "tests", event: "test_case_observed", level: "info", meta: { worker: 2 } }],
+      }),
+      "",
+    ].join("\n"), "utf8")
+
+    const report = auditNervesCoverage({ eventsPath, perTestPath, sourceRoot })
+
+    expect(report.nerves_coverage.every_test_emits.status).toBe("pass")
+    expect(report.nerves_coverage.every_test_emits.total_tests).toBe(2)
+  })
+
+  it("accepts a single per-test JSON record for compatibility", () => {
+    const { eventsPath, perTestPath, sourceRoot } = createAuditFixture()
+
+    writeFileSync(eventsPath, JSON.stringify({
+      ts: "2026-03-05T00:00:00.000Z",
+      level: "info",
+      event: "test_case_observed",
+      trace_id: "t1",
+      component: "tests",
+      message: "observed",
+      meta: {},
+    }) + "\n", "utf8")
+    writeFileSync(perTestPath, JSON.stringify({
+      testName: "worker one > emits",
+      events: [{ component: "tests", event: "test_case_observed", level: "info", meta: { worker: 1 } }],
+    }), "utf8")
+
+    const report = auditNervesCoverage({ eventsPath, perTestPath, sourceRoot })
+
+    expect(report.nerves_coverage.every_test_emits.status).toBe("pass")
+    expect(report.nerves_coverage.every_test_emits.total_tests).toBe(1)
+  })
+
+  it("fails when the per-test artifact has no captured test records", () => {
+    const { eventsPath, perTestPath, sourceRoot } = createAuditFixture()
+
+    writeFileSync(eventsPath, JSON.stringify({
+      ts: "2026-03-05T00:00:00.000Z",
+      level: "info",
+      event: "test_case_observed",
+      trace_id: "t1",
+      component: "tests",
+      message: "observed",
+      meta: {},
+    }) + "\n", "utf8")
+    writeFileSync(perTestPath, JSON.stringify({}), "utf8")
+
+    const report = auditNervesCoverage({ eventsPath, perTestPath, sourceRoot })
+
+    expect(report.nerves_coverage.every_test_emits.status).toBe("fail")
+    expect(report.required_actions).toContainEqual(expect.objectContaining({
+      target: "every-test-emits",
+    }))
+  })
+
+  it("fails gracefully when the per-test artifact is empty", () => {
+    const { eventsPath, perTestPath, sourceRoot } = createAuditFixture()
+
+    writeFileSync(eventsPath, JSON.stringify({
+      ts: "2026-03-05T00:00:00.000Z",
+      level: "info",
+      event: "test_case_observed",
+      trace_id: "t1",
+      component: "tests",
+      message: "observed",
+      meta: {},
+    }) + "\n", "utf8")
+    writeFileSync(perTestPath, "", "utf8")
+
+    const report = auditNervesCoverage({ eventsPath, perTestPath, sourceRoot })
+
+    expect(report.nerves_coverage.every_test_emits.status).toBe("fail")
+  })
+
+  it("fails gracefully when a per-test ndjson line is not a record", () => {
+    const { eventsPath, perTestPath, sourceRoot } = createAuditFixture()
+
+    writeFileSync(eventsPath, JSON.stringify({
+      ts: "2026-03-05T00:00:00.000Z",
+      level: "info",
+      event: "test_case_observed",
+      trace_id: "t1",
+      component: "tests",
+      message: "observed",
+      meta: {},
+    }) + "\n", "utf8")
+    writeFileSync(perTestPath, [
+      JSON.stringify({ testName: "worker one > emits", events: [{ component: "tests", event: "test_case_observed" }] }),
+      JSON.stringify({ nope: true }),
+      "",
+    ].join("\n"), "utf8")
+
+    const report = auditNervesCoverage({ eventsPath, perTestPath, sourceRoot })
+
+    expect(report.nerves_coverage.every_test_emits.status).toBe("fail")
+  })
+
+  it("fails gracefully when the per-test artifact is JSON null", () => {
+    const { eventsPath, perTestPath, sourceRoot } = createAuditFixture()
+
+    writeFileSync(eventsPath, JSON.stringify({
+      ts: "2026-03-05T00:00:00.000Z",
+      level: "info",
+      event: "test_case_observed",
+      trace_id: "t1",
+      component: "tests",
+      message: "observed",
+      meta: {},
+    }) + "\n", "utf8")
+    writeFileSync(perTestPath, "null", "utf8")
+
+    const report = auditNervesCoverage({ eventsPath, perTestPath, sourceRoot })
+
+    expect(report.nerves_coverage.every_test_emits.status).toBe("fail")
+  })
+
+  it("fails gracefully when the per-test artifact is a JSON primitive", () => {
+    const { eventsPath, perTestPath, sourceRoot } = createAuditFixture()
+
+    writeFileSync(eventsPath, JSON.stringify({
+      ts: "2026-03-05T00:00:00.000Z",
+      level: "info",
+      event: "test_case_observed",
+      trace_id: "t1",
+      component: "tests",
+      message: "observed",
+      meta: {},
+    }) + "\n", "utf8")
+    writeFileSync(perTestPath, "42", "utf8")
+
+    const report = auditNervesCoverage({ eventsPath, perTestPath, sourceRoot })
+
+    expect(report.nerves_coverage.every_test_emits.status).toBe("fail")
+  })
+
   it("overall_status is fail when any rule fails", () => {
     const { eventsPath, perTestPath, sourceRoot } = createAuditFixture()
 

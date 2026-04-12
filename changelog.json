@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.342",
+      "changes": [
+        "The nerves coverage gate now writes append-only per-test NDJSON records across Vitest workers, emits a redaction-safe heartbeat for every executed test, fails closed when per-test capture is missing or malformed, and scopes start/end pairing to explicit process lifecycle events so the full-suite audit is truthful instead of passable through empty artifacts."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.341",
       "changes": [
         "`ouro up` and `ouro doctor` now detect when PATH resolves `ouro` to a stale external launcher before the managed `~/.ouro-cli/bin/ouro` wrapper, then print exact path-specific remediation instead of leaving users stuck on an older shim."

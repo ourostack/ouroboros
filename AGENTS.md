@@ -182,8 +182,8 @@ All runtime logging goes through `emitNervesEvent()` from `src/nerves/runtime`. 
 - **meta-tooling**: The nerves audit CLI itself (cannot observe itself)
 
 **Automatic enforcement** -- five CI audit rules (no manual manifest):
-1. **every-test-emits**: Every test must emit at least one nerves event
-2. **start/end pairing**: Events ending in `_start` must have a matching `_end` or `_error` in the same test
+1. **every-test-emits**: Every executed Vitest test must be observed by the global nerves capture heartbeat
+2. **start/end pairing**: Process-scoped lifecycle events ending in `_start` must have a matching `_end` or `_error` in the same test
 3. **error context**: Error-level events must have non-empty `meta` with diagnostic context
 4. **source coverage**: Every `component:event` key found in production source must be observed during tests
 5. **file completeness**: Every production file with executable code must have at least one `emitNervesEvent` call (type-only files are exempt)
