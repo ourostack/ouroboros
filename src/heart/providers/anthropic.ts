@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
-import { getAnthropicConfig } from "../config";
+import { getAnthropicConfig, type AnthropicProviderConfig } from "../config";
 import { getAgentName, getAgentSecretsPath } from "../identity";
 import type { UsageData } from "../../mind/context";
 import { emitNervesEvent } from "../../nerves/runtime";
@@ -52,8 +52,7 @@ function getAnthropicReauthGuidance(reason: string): string {
   ].join("\n");
 }
 
-function resolveAnthropicSetupTokenCredential(): AnthropicCredential {
-  const anthropicConfig = getAnthropicConfig();
+function resolveAnthropicSetupTokenCredential(anthropicConfig: AnthropicProviderConfig = getAnthropicConfig()): AnthropicCredential {
   const token = anthropicConfig.setupToken?.trim();
   if (!token) {
     throw new Error(
@@ -413,14 +412,13 @@ async function streamAnthropicMessages(
   };
 }
 
-export function createAnthropicProviderRuntime(model: string): ProviderRuntime {
+export function createAnthropicProviderRuntime(model: string, anthropicConfig: AnthropicProviderConfig = getAnthropicConfig()): ProviderRuntime {
   emitNervesEvent({
     component: "engine",
     event: "engine.provider_init",
     message: "anthropic provider init",
     meta: { provider: "anthropic" },
   });
-  const anthropicConfig = getAnthropicConfig();
   if (!anthropicConfig.setupToken) {
     throw new Error(
       getAnthropicReauthGuidance(
@@ -432,7 +430,7 @@ export function createAnthropicProviderRuntime(model: string): ProviderRuntime {
   const capabilities = new Set<ProviderCapability>();
   if (modelCaps.reasoningEffort) capabilities.add("reasoning-effort");
 
-  const credential = resolveAnthropicSetupTokenCredential();
+  const credential = resolveAnthropicSetupTokenCredential(anthropicConfig);
   const refreshToken = (anthropicConfig as unknown as Record<string, unknown>).refreshToken as string | undefined
   const expiresAt = (anthropicConfig as unknown as Record<string, unknown>).expiresAt as number | undefined
 

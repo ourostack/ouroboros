@@ -78,6 +78,7 @@ import {
   formatMcpResponse,
 } from "./cli-render"
 import { readFirstBundleMetaVersion, createDefaultOuroCliDeps, defaultListDiscoveredAgents } from "./cli-defaults"
+import { checkAgentConfigWithProviderHealth } from "./agent-config-check"
 import { runDoctorChecks } from "./doctor"
 import { formatDoctorOutput } from "./cli-render-doctor"
 import { runInteractiveRepair } from "./interactive-repair"
@@ -93,6 +94,64 @@ const DEFAULT_DAEMON_STARTUP_POLL_INTERVAL_MS = 500
 const DEFAULT_DAEMON_STARTUP_STABILITY_WINDOW_MS = 1_500
 const DEFAULT_DAEMON_STARTUP_RETRY_LIMIT = 1
 const DEFAULT_DAEMON_STARTUP_LOG_LINES = 10
+
+async function checkAlreadyRunningAgentProviders(deps: OuroCliDeps): Promise<Array<{ agent: string; errorReason: string; fixHint: string }>> {
+  const agents = await Promise.resolve(
+    deps.listDiscoveredAgents ? deps.listDiscoveredAgents() : defaultListDiscoveredAgents(),
+  )
+  const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
+  const secretsRoot = deps.secretsRoot ?? path.join(os.homedir(), ".agentsecrets")
+  const degraded: Array<{ agent: string; errorReason: string; fixHint: string }> = []
+
+  for (const agent of agents) {
+    try {
+      const result = await checkAgentConfigWithProviderHealth(agent, bundlesRoot, secretsRoot)
+      if (result.ok) continue
+      const errorReason = result.error ?? "agent provider health check failed"
+      const fixHint = result.fix ?? ""
+      degraded.push({ agent, errorReason, fixHint })
+      emitNervesEvent({
+        level: "error",
+        component: "daemon",
+        event: "daemon.agent_config_invalid",
+        message: errorReason,
+        meta: { agent, fix: fixHint, source: "already-running-provider-check" },
+      })
+    } catch (error) {
+      const errorReason = error instanceof Error ? error.message : String(error)
+      degraded.push({
+        agent,
+        errorReason,
+        fixHint: "Run 'ouro doctor' for diagnostics, then retry 'ouro up'.",
+      })
+      emitNervesEvent({
+        level: "error",
+        component: "daemon",
+        event: "daemon.agent_config_invalid",
+        message: errorReason,
+        meta: { agent, fix: "ouro doctor", source: "already-running-provider-check" },
+      })
+    }
+  }
+
+  return degraded
+}
+
+export function mergeStartupStability(
+  stability: EnsureDaemonResult["stability"],
+  extraDegraded: Array<{ agent: string; errorReason: string; fixHint: string }>,
+): EnsureDaemonResult["stability"] {
+  if (extraDegraded.length === 0) return stability
+  const degradedByAgent = new Map<string, { agent: string; errorReason: string; fixHint: string }>()
+  for (const entry of stability?.degraded ?? []) degradedByAgent.set(entry.agent, entry)
+  for (const entry of extraDegraded) degradedByAgent.set(entry.agent, entry)
+  const degraded = [...degradedByAgent.values()]
+  const stable: string[] = []
+  for (const agent of stability?.stable ?? []) {
+    if (!degradedByAgent.has(agent)) stable.push(agent)
+  }
+  return { stable, degraded }
+}
 
 interface DaemonStartupFailure {
   reason: string
@@ -1239,6 +1298,12 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         ;(progress as { announceStep?: (line: string) => void }).announceStep?.(label)
       },
     })
+    if (daemonResult.alreadyRunning) {
+      progress.startPhase("provider checks")
+      const providerDegraded = await checkAlreadyRunningAgentProviders(deps)
+      daemonResult.stability = mergeStartupStability(daemonResult.stability, providerDegraded)
+      progress.completePhase("provider checks", providerDegraded.length > 0 ? `${providerDegraded.length} degraded` : "ok")
+    }
     progress.end()
     deps.writeStdout(daemonResult.message)
 
@@ -1298,9 +1363,9 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
           runInteractiveRepair,
           promptInput: deps.promptInput ?? (async () => "n"),
           writeStdout: deps.writeStdout,
-          runAuthFlow: async (agent: string) => {
+          runAuthFlow: async (agent: string, providerOverride?: AgentProvider) => {
             const { config } = readAgentConfigForAgent(agent, deps.bundlesRoot)
-            const provider = config.humanFacing.provider
+            const provider = providerOverride ?? config.humanFacing.provider
             /* v8 ignore next -- tests always inject runAuthFlow; default is for production @preserve */
             const authRunner = deps.runAuthFlow ?? (await import("../auth/auth-flow")).runRuntimeAuthFlow
             await authRunner({ agentName: agent, provider, promptInput: deps.promptInput })

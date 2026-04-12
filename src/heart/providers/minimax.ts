@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import { getMinimaxConfig } from "../config";
+import { getMinimaxConfig, type MinimaxProviderConfig } from "../config";
 import { emitNervesEvent } from "../../nerves/runtime";
 import type { ProviderErrorClassification, ProviderRuntime, ProviderTurnRequest } from "../core";
 import { classifyHttpError } from "./error-classification";
@@ -17,14 +17,13 @@ export function classifyMinimaxError(error: Error): ProviderErrorClassification 
 import { streamChatCompletion } from "../streaming";
 import { getModelCapabilities } from "../model-capabilities";
 
-export function createMinimaxProviderRuntime(model: string): ProviderRuntime {
+export function createMinimaxProviderRuntime(model: string, minimaxConfig: MinimaxProviderConfig = getMinimaxConfig()): ProviderRuntime {
   emitNervesEvent({
     component: "engine",
     event: "engine.provider_init",
     message: "minimax provider init",
     meta: { provider: "minimax" },
   });
-  const minimaxConfig = getMinimaxConfig();
   if (!minimaxConfig.apiKey) {
     throw new Error(
       "provider 'minimax' is selected in agent.json but providers.minimax.apiKey is missing in secrets.json.",

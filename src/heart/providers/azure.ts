@@ -1,5 +1,5 @@
 import OpenAI, { AzureOpenAI } from "openai";
-import { getAzureConfig } from "../config";
+import { getAzureConfig, type AzureProviderConfig } from "../config";
 import { emitNervesEvent } from "../../nerves/runtime";
 import type { ProviderCapability, ProviderErrorClassification, ProviderRuntime, ProviderTurnRequest } from "../core";
 import type { ResponseItem, TurnResult } from "../streaming";
@@ -44,8 +44,7 @@ export function createAzureTokenProvider(managedIdentityClientId?: string): () =
   };
 }
 
-export function createAzureProviderRuntime(model: string): ProviderRuntime {
-  const azureConfig = getAzureConfig();
+export function createAzureProviderRuntime(model: string, azureConfig: AzureProviderConfig = getAzureConfig()): ProviderRuntime {
   const useApiKey = !!azureConfig.apiKey;
   const authMethod = useApiKey ? "key" : "managed-identity";
 
