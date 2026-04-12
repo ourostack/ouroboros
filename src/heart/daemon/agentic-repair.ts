@@ -38,7 +38,7 @@ export interface AgenticRepairDeps {
   createProviderRuntime: (provider: AgentProvider, credentials: Record<string, string>) => AgenticProviderRuntime
   readDaemonLogsTail: () => string
   /** Auth flow runner passed through to interactive repair fallback */
-  runAuthFlow?: (agent: string) => Promise<void>
+  runAuthFlow?: (agent: string, provider?: AgentProvider) => Promise<void>
 }
 
 export interface AgenticRepairResult {

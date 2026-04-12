@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import { getGithubCopilotConfig } from "../config";
+import { getGithubCopilotConfig, type GithubCopilotProviderConfig } from "../config";
 import { emitNervesEvent } from "../../nerves/runtime";
 import type { ProviderCapability, ProviderErrorClassification, ProviderRuntime, ProviderTurnRequest } from "../core";
 import type { ResponseItem, TurnResult } from "../streaming";
@@ -12,14 +12,13 @@ export function classifyGithubCopilotError(error: Error): ProviderErrorClassific
 }
 
 
-export function createGithubCopilotProviderRuntime(model: string): ProviderRuntime {
+export function createGithubCopilotProviderRuntime(model: string, config: GithubCopilotProviderConfig = getGithubCopilotConfig()): ProviderRuntime {
   emitNervesEvent({
     component: "engine",
     event: "engine.provider_init",
     message: "github-copilot provider init",
     meta: { provider: "github-copilot" },
   });
-  const config = getGithubCopilotConfig();
   if (!config.githubToken) {
     throw new Error(
       "provider 'github-copilot' is selected in agent.json but providers.github-copilot.githubToken is missing in secrets.json.",
