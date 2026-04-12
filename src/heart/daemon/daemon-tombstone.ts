@@ -125,7 +125,7 @@ export function captureDeathForensics(deps: CaptureForensicsDeps = DEFAULT_FOREN
 
 function deriveKillerHint(parentCommand: string | null, snapshot: string | null): string | null {
   if (parentCommand !== null && parentCommand.toLowerCase().includes("launchd")) {
-    return "process was reparented to launchd — likely killed by launchctl bootout, KeepAlive thrash, or memory pressure"
+    return "process was reparented to launchd — likely killed by launchctl bootout, KeepAlive thrash, or RSS pressure"
   }
   if (snapshot !== null) {
     const lower = snapshot.toLowerCase()

@@ -5,7 +5,7 @@
  * this store authenticates directly as the agent using its own master password.
  * The agent owns the vault, so no human-in-the-loop is needed.
  *
- * Requires the `bw` CLI to be installed. Session tokens are cached in-memory.
+ * Requires the `bw` CLI to be installed. Session tokens are cached process-local.
  */
 
 import { execFile as execFileCb } from "node:child_process"

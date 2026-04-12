@@ -50,7 +50,7 @@ export interface PulseAgentEntry {
   /** Current process status. */
   status: "running" | "starting" | "stopped" | "crashed"
   /** ISO timestamp of when this agent was most recently observed alive,
-   *  or null if it has never been alive in this daemon's memory. */
+   *  or null if it has never been alive in this daemon process. */
   lastSeenAt: string | null
   /** Human-readable description of why this agent is broken, if it is.
    *  Mirrors checkAgentConfig's error field. Null when healthy. */

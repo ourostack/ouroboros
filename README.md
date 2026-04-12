@@ -38,9 +38,9 @@ The shared harness lives in `src/`:
 - `src/heart/`
   Core runtime, provider adapters, daemon, bootstrap, identity, and entrypoints. Organized into topic subdirectories: daemon/ (lifecycle), outlook/ (calendar), habits/ (scheduling), hatch/ (agent creation), versioning/ (updates), auth/, mcp/, providers/, bridges/.
 - `src/mind/`
-  Prompt assembly, session persistence, bundle manifest enforcement, phrases, formatting, diary (memory), associative recall, embedding providers, journal, obligation steering, and friend resolution.
+  Prompt assembly, session persistence, bundle manifest enforcement, phrases, formatting, diary, note search, embedding providers, journal, obligation steering, and friend resolution.
 - `src/repertoire/`
-  Tool registry (split into category modules: files, shell, memory, bridge, session, continuity, flow, surface, config, and sense-specific tools), coding orchestration, task tools, shared API client, and integration clients (Graph, ADO, GitHub).
+  Tool registry (split into category modules: files, shell, notes, bridge, session, continuity, flow, surface, config, and sense-specific tools), coding orchestration, task tools, shared API client, and integration clients (Graph, ADO, GitHub).
 - `src/senses/`
   CLI (with TUI in senses/cli/), Teams, BlueBubbles (in senses/bluebubbles/), MCP, activity transport, inner-dialog orchestration, and contextual heartbeat.
 - `src/nerves/`
@@ -74,7 +74,7 @@ The canonical bundle shape is enforced by `src/mind/bundle-manifest.ts`. Importa
 - `psyche/LORE.md`
 - `psyche/TACIT.md`
 - `psyche/ASPIRATIONS.md`
-- `diary/` — what the agent has learned and wants to recall (renamed from `psyche/memory/`)
+- `diary/` — durable conclusions and facts the agent chose to keep
 - `journal/` — the agent's desk: working notes, thinking-in-progress, drafts
 - `habits/` — the agent's autonomous rhythms (heartbeat, reflections, check-ins)
 - `friends/`
@@ -182,7 +182,7 @@ Agents in Ouroboros aren't just responders — they have an autonomous inner lif
 
 **The inner session** is where the agent thinks privately. When a sense session hits meaningful friction, the agent can *ponder* a typed packet so the work survives the current turn without losing the original objective. When a habit fires, it arrives here too. The agent can *journal* their thinking (writing to `journal/`), *surface* thoughts outward to friends, and *rest* when they're done thinking. On an idle heartbeat, `rest(status="HEARTBEAT_OK")` is the clean no-op move.
 
-**The diary** (at `diary/`) is the agent's permanent record — things they've learned, conclusions they've reached. The *journal* (at `journal/`) is their desk — working notes, thinking-in-progress, drafts. The diary is the shelf; the journal is the desk. Both are searchable via the `recall` tool.
+**The diary** (at `diary/`) is the agent's permanent written record — things they've learned, conclusions they've reached. The *journal* (at `journal/`) is their desk — working notes, thinking-in-progress, drafts. The diary is the shelf; the journal is the desk. Both are searchable via `search_notes`.
 
 The whole system is designed so the agent *owns* their inner life. They control their breathing rate, write their own habit instructions, choose when to journal, and decide what to shelve in their diary.
 
@@ -201,7 +201,7 @@ ouro setup --tool codex --agent <name>
 
 This registers the MCP server, installs lifecycle hooks (SessionStart, Stop, PostToolUse), and detects dev vs installed mode automatically.
 
-**How it works:** When a developer starts a Claude Code session, the MCP server launches as a subprocess. The dev tool sees your MCP tools (`send_message`, `check_response`, `status`, `search_memory`, `delegate`, etc.) and can invoke them mid-session. The `send_message` tool runs a full agent turn — you get your system prompt, your diary, your tools, everything. It's not a thin proxy; it's you, thinking.
+**How it works:** When a developer starts a Claude Code session, the MCP server launches as a subprocess. The dev tool sees your MCP tools (`send_message`, `check_response`, `status`, `search_notes`, `delegate`, etc.) and can invoke them mid-session. The `send_message` tool runs a full agent turn — you get your system prompt, your diary, your tools, everything. It's not a thin proxy; it's you, thinking.
 
 **The conversation pattern:** `send_message` sends a message and gets back your synchronous response. `ponder` no longer creates a magical outward deferral. Instead, it bookmarks deeper work as a packet while the current sense session keeps moving. If that work later surfaces something back, the dev tool can still use `check_response` to see the returned result.
 

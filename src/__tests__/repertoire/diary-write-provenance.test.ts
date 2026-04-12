@@ -57,8 +57,8 @@ describe("diary_write handler provenance extraction", () => {
   })
 
   async function getDiaryWriteHandler() {
-    const { memoryToolDefinitions } = await import("../../repertoire/tools-memory")
-    const def = memoryToolDefinitions.find((d) => d.tool.function.name === "diary_write")
+    const { notesToolDefinitions } = await import("../../repertoire/tools-notes")
+    const def = notesToolDefinitions.find((d) => d.tool.function.name === "diary_write")
     expect(def).toBeDefined()
     return def!.handler
   }

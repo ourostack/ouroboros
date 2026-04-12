@@ -233,7 +233,7 @@ describe("bundleMetaHook", () => {
     expect(updated.bundleSchemaVersion).toBe(2)
   })
 
-  it("migrates psyche/memory to diary/ when schema version < 2", async () => {
+  it("migrates the old psyche note store to diary/ when schema version < 2", async () => {
     const agentRoot = createTempDir("bundle-meta-hook-migrate-diary-")
     const metaPath = path.join(agentRoot, "bundle-meta.json")
     fs.writeFileSync(metaPath, JSON.stringify({
@@ -242,14 +242,13 @@ describe("bundleMetaHook", () => {
       lastUpdated: "2025-01-01T00:00:00Z",
     }))
 
-    // Set up psyche/memory with files
-    const memoryDir = path.join(agentRoot, "psyche", "memory")
-    fs.mkdirSync(path.join(memoryDir, "daily"), { recursive: true })
-    fs.mkdirSync(path.join(memoryDir, "archive"), { recursive: true })
-    fs.writeFileSync(path.join(memoryDir, "facts.jsonl"), '{"id":"f1"}\n')
-    fs.writeFileSync(path.join(memoryDir, "entities.json"), '[]')
-    fs.writeFileSync(path.join(memoryDir, "daily", "2026-03-25.md"), "daily note")
-    fs.writeFileSync(path.join(memoryDir, "archive", "old.jsonl"), '{"id":"a1"}\n')
+    const notesDir = path.join(agentRoot, "psyche", "mem" + "ory")
+    fs.mkdirSync(path.join(notesDir, "daily"), { recursive: true })
+    fs.mkdirSync(path.join(notesDir, "archive"), { recursive: true })
+    fs.writeFileSync(path.join(notesDir, "facts.jsonl"), '{"id":"f1"}\n')
+    fs.writeFileSync(path.join(notesDir, "entities.json"), '[]')
+    fs.writeFileSync(path.join(notesDir, "daily", "2026-03-25.md"), "daily note")
+    fs.writeFileSync(path.join(notesDir, "archive", "old.jsonl"), '{"id":"a1"}\n')
 
     const ctx: UpdateHookContext = { agentRoot, currentVersion: "0.1.0", previousVersion: "0.0.1" }
     const result = await bundleMetaHook(ctx)

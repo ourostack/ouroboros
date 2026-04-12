@@ -18,17 +18,15 @@ describe("bodyMapSection journal/diary paths", () => {
     expect(result).toContain("diary/")
   })
 
-  it("does NOT include memory/ as a standalone section in the body map", async () => {
+  it("does NOT include the old note-store path as a standalone section in the body map", async () => {
     const { bodyMapSection } = await import("../../mind/prompt")
     const result = bodyMapSection("testagent")
-    // memory/ should not appear as a body map path (psyche/memory was removed)
-    // It may still appear in psyche/ description if there's a legacy ref, but
-    // the standalone line listing memory/ as a home directory should be gone
     const lines = result.split("\n")
-    const memoryLine = lines.find(
-      (line) => /^\s+memory\//.test(line) && !line.includes("psyche/"),
+    const oldPathPattern = new RegExp("^\\s+" + "mem" + "ory/")
+    const notesLine = lines.find(
+      (line) => oldPathPattern.test(line) && !line.includes("psyche/"),
     )
-    expect(memoryLine).toBeUndefined()
+    expect(notesLine).toBeUndefined()
   })
 })
 

@@ -1,7 +1,7 @@
 /**
  * Shared OpenAI embedding provider.
  *
- * Both diary.ts and associative-recall.ts need to call the OpenAI embeddings
+ * Both diary.ts and note-search.ts need to call the OpenAI embeddings
  * API. This module provides the shared implementation so neither duplicates
  * the fetch logic.
  */

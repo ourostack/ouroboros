@@ -1,6 +1,6 @@
 import type { FriendStore } from "../mind/friends/store"
 import type { Channel, FriendRecord } from "../mind/friends/types"
-import { recallSession, type SessionRecallOptions } from "./session-recall"
+import { summarizeSessionTail, type SessionTailOptions } from "./session-transcript"
 import { listSessionActivity } from "./session-activity"
 import { describeTrustContext, type TrustExplanation } from "../mind/friends/trust-explanation"
 import { emitNervesEvent } from "../nerves/runtime"
@@ -76,7 +76,7 @@ export async function listTargetSessionCandidates(input: {
   agentName: string
   currentSession?: { friendId: string; channel: string; key: string } | null
   friendStore: FriendStore
-  summarize?: SessionRecallOptions["summarize"]
+  summarize?: SessionTailOptions["summarize"]
 }): Promise<TargetSessionCandidate[]> {
   emitNervesEvent({
     component: "engine",
@@ -105,7 +105,7 @@ export async function listTargetSessionCandidates(input: {
       friend,
       channel: entry.channel as Channel,
     })
-    const recall = await recallSession({
+    const sessionTail = await summarizeSessionTail({
       sessionPath: entry.sessionPath,
       friendId: entry.friendId,
       channel: entry.channel,
@@ -114,9 +114,9 @@ export async function listTargetSessionCandidates(input: {
       summarize: input.summarize,
       trustLevel: trust.level,
     })
-    const snapshot = recall.kind === "ok"
-      ? recall.snapshot
-      : recall.kind === "empty"
+    const snapshot = sessionTail.kind === "ok"
+      ? sessionTail.snapshot
+      : sessionTail.kind === "empty"
         ? "recent focus: no recent visible messages"
         : "recent focus: session transcript unavailable"
     const delivery = describeDelivery({

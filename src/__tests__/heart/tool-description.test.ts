@@ -83,15 +83,15 @@ describe("humanReadableToolDescription", () => {
     })
   })
 
-  describe("recall", () => {
+  describe("search_notes", () => {
     it("extracts args.query", () => {
-      expect(humanReadableToolDescription("recall", { query: "MCP" }))
-        .toBe("searching memory for 'MCP'...")
+      expect(humanReadableToolDescription("search_notes", { query: "MCP" }))
+        .toBe("searching notes for 'MCP'...")
     })
 
     it("falls back to generic when no query arg", () => {
-      expect(humanReadableToolDescription("recall", {}))
-        .toBe("searching memory...")
+      expect(humanReadableToolDescription("search_notes", {}))
+        .toBe("searching notes...")
     })
   })
 

@@ -2,24 +2,24 @@ import { resolveSessionPath } from "../heart/config";
 import { createBridgeManager, formatBridgeStatus } from "../heart/bridges/manager";
 import { emitNervesEvent } from "../nerves/runtime";
 import {
-  recallSession,
-  type SessionRecallOptions,
-  type SessionRecallResult,
-} from "../heart/session-recall";
+  summarizeSessionTail,
+  type SessionTailOptions,
+  type SessionTailResult,
+} from "../heart/session-transcript";
 import type { ToolDefinition } from "./tools-base";
 
 const NO_SESSION_FOUND_MESSAGE = "no session found for that friend/channel/key combination."
 const EMPTY_SESSION_MESSAGE = "session exists but has no non-system messages."
 
-async function recallSessionSafely(options: SessionRecallOptions): Promise<SessionRecallResult | { kind: "missing" }> {
+async function summarizeSessionTailSafely(options: SessionTailOptions): Promise<SessionTailResult | { kind: "missing" }> {
   try {
-    return await recallSession(options)
+    return await summarizeSessionTail(options)
   } catch (error) {
     if (options.summarize) {
       emitNervesEvent({
         component: "daemon",
-        event: "daemon.session_recall_summary_fallback",
-        message: "session recall summarization failed; using raw transcript",
+        event: "daemon.session_tail_summary_summary_fallback",
+        message: "session tail summarization failed; using raw transcript",
         meta: {
           friendId: options.friendId,
           channel: options.channel,
@@ -29,7 +29,7 @@ async function recallSessionSafely(options: SessionRecallOptions): Promise<Sessi
         },
       })
       try {
-        return await recallSession({
+        return await summarizeSessionTail({
           ...options,
           summarize: undefined,
         })
@@ -104,7 +104,7 @@ export const bridgeToolDefinitions: ToolDefinition[] = [
         }
 
         const sessionPath = resolveSessionPath(friendId, channel, key)
-        const recall = await recallSessionSafely({
+        const sessionTail = await summarizeSessionTailSafely({
           sessionPath,
           friendId,
           channel,
@@ -113,7 +113,7 @@ export const bridgeToolDefinitions: ToolDefinition[] = [
           trustLevel: ctx?.context?.friend?.trustLevel,
           summarize: ctx?.summarize,
         })
-        if (recall.kind === "missing") {
+        if (sessionTail.kind === "missing") {
           return NO_SESSION_FOUND_MESSAGE
         }
 
@@ -123,7 +123,7 @@ export const bridgeToolDefinitions: ToolDefinition[] = [
             channel,
             key,
             sessionPath,
-            snapshot: recall.kind === "ok" ? recall.snapshot : EMPTY_SESSION_MESSAGE,
+            snapshot: sessionTail.kind === "ok" ? sessionTail.snapshot : EMPTY_SESSION_MESSAGE,
           }),
         )
       }

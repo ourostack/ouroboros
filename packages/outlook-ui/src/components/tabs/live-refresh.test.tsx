@@ -7,7 +7,7 @@ import { SessionsTab } from "./sessions"
 import { WorkTab } from "./work"
 import { ConnectionsTab } from "./connections"
 import { InnerTab } from "./inner"
-import { MemoryTab } from "./memory"
+import { NotesTab } from "./notes"
 import { RuntimeTab } from "./runtime"
 import type { OutlookAgentView } from "../../contracts"
 
@@ -387,19 +387,19 @@ describe("Outlook deep-tab live refresh", () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4))
   })
 
-  it("re-fetches memory data when refreshGeneration advances", async () => {
+  it("re-fetches notes data when refreshGeneration advances", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
-      if (url.endsWith("/memory")) return jsonResponse({ diaryEntryCount: 0, journalEntryCount: 0, recentDiaryEntries: [], recentJournalEntries: [] })
-      if (url.endsWith("/memory-decisions")) return jsonResponse({ totalCount: 0, items: [] })
+      if (url.endsWith("/notes")) return jsonResponse({ diaryEntryCount: 0, journalEntryCount: 0, recentDiaryEntries: [], recentJournalEntries: [] })
+      if (url.endsWith("/note-decisions")) return jsonResponse({ totalCount: 0, items: [] })
       throw new Error(`unexpected url: ${url}`)
     })
     vi.stubGlobal("fetch", fetchMock)
 
-    const ui = render(<MemoryTab agentName="slugger" refreshGeneration={0} />)
+    const ui = render(<NotesTab agentName="slugger" refreshGeneration={0} />)
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
 
-    ui.rerender(<MemoryTab agentName="slugger" refreshGeneration={1} />)
+    ui.rerender(<NotesTab agentName="slugger" refreshGeneration={1} />)
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4))
   })
 

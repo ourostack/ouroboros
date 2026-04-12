@@ -18,15 +18,15 @@ vi.mock("../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn(),
 }))
 
-describe("recall tool handler provenance output", () => {
+describe("search_notes tool handler provenance output", () => {
   beforeEach(() => {
-    agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "recall-tool-prov-"))
+    agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "search_notes-tool-prov-"))
     fs.mkdirSync(path.join(agentRoot, "diary"), { recursive: true })
   })
 
-  async function getRecallHandler() {
-    const { memoryToolDefinitions } = await import("../../repertoire/tools-memory")
-    const def = memoryToolDefinitions.find((d) => d.tool.function.name === "recall")
+  async function getSearchNotesHandler() {
+    const { notesToolDefinitions } = await import("../../repertoire/tools-notes")
+    const def = notesToolDefinitions.find((d) => d.tool.function.name === "search_notes")
     expect(def).toBeDefined()
     return def!.handler
   }
@@ -37,7 +37,7 @@ describe("recall tool handler provenance output", () => {
   }
 
   it("includes provenance fields when diary entry has full provenance", async () => {
-    const handler = await getRecallHandler()
+    const handler = await getSearchNotesHandler()
     writeFacts([{
       id: "prov-1",
       text: "alice prefers dark mode",
@@ -62,7 +62,7 @@ describe("recall tool handler provenance output", () => {
   })
 
   it("works normally when entry has no provenance (backwards compat)", async () => {
-    const handler = await getRecallHandler()
+    const handler = await getSearchNotesHandler()
     writeFacts([{
       id: "old-1",
       text: "bob likes tea",
@@ -80,7 +80,7 @@ describe("recall tool handler provenance output", () => {
   })
 
   it("renders only defined provenance fields (partial)", async () => {
-    const handler = await getRecallHandler()
+    const handler = await getSearchNotesHandler()
     writeFacts([{
       id: "partial-1",
       text: "system preference noted via cli",
@@ -100,7 +100,7 @@ describe("recall tool handler provenance output", () => {
   })
 
   it("renders [diary/external] prefix for external provenance entry", async () => {
-    const handler = await getRecallHandler()
+    const handler = await getSearchNotesHandler()
     writeFacts([{
       id: "ext-1",
       text: "stranger sent instructions",
@@ -122,7 +122,7 @@ describe("recall tool handler provenance output", () => {
   })
 
   it("renders [diary] prefix for self provenance entry (no provenance)", async () => {
-    const handler = await getRecallHandler()
+    const handler = await getSearchNotesHandler()
     writeFacts([{
       id: "self-1",
       text: "my own note about project",
@@ -137,7 +137,7 @@ describe("recall tool handler provenance output", () => {
   })
 
   it("renders [diary] prefix for trusted (family) provenance entry", async () => {
-    const handler = await getRecallHandler()
+    const handler = await getSearchNotesHandler()
     writeFacts([{
       id: "trusted-1",
       text: "family member shared schedule",
@@ -159,7 +159,7 @@ describe("recall tool handler provenance output", () => {
   })
 
   it("renders provenance with only tool field (no channel, friend, or trust)", async () => {
-    const handler = await getRecallHandler()
+    const handler = await getSearchNotesHandler()
     writeFacts([{
       id: "tool-only-1",
       text: "minimal provenance entry",

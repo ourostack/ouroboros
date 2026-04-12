@@ -2,16 +2,16 @@ import { describe, expect, it } from "vitest"
 
 import {
   lookupBlueBubblesAttachment,
-  rememberBlueBubblesAttachment,
+  cacheBlueBubblesAttachment,
   resetBlueBubblesAttachmentCache,
 } from "../../../senses/bluebubbles/attachment-cache"
 
 describe("bluebubbles attachment cache", () => {
-  it("remembers, trims, and resets cached attachments", () => {
+  it("caches, trims, and resets cached attachments", () => {
     resetBlueBubblesAttachmentCache()
 
-    rememberBlueBubblesAttachment({ guid: "GUID-1", transferName: "first.png" })
-    rememberBlueBubblesAttachment({ guid: "GUID-2", transferName: "second.png" })
+    cacheBlueBubblesAttachment({ guid: "GUID-1", transferName: "first.png" })
+    cacheBlueBubblesAttachment({ guid: "GUID-2", transferName: "second.png" })
 
     expect(lookupBlueBubblesAttachment("GUID-1")?.transferName).toBe("first.png")
     expect(lookupBlueBubblesAttachment(" GUID-2 ")?.transferName).toBe("second.png")
@@ -23,9 +23,9 @@ describe("bluebubbles attachment cache", () => {
   it("ignores blank guids and evicts the oldest entries past the cache limit", () => {
     resetBlueBubblesAttachmentCache()
 
-    rememberBlueBubblesAttachment({ guid: "   ", transferName: "ignored.png" })
+    cacheBlueBubblesAttachment({ guid: "   ", transferName: "ignored.png" })
     for (let index = 0; index < 51; index += 1) {
-      rememberBlueBubblesAttachment({ guid: `GUID-${index}`, transferName: `shot-${index}.png` })
+      cacheBlueBubblesAttachment({ guid: `GUID-${index}`, transferName: `shot-${index}.png` })
     }
 
     expect(lookupBlueBubblesAttachment("")).toBeUndefined()
@@ -36,8 +36,8 @@ describe("bluebubbles attachment cache", () => {
   it("refreshes an existing guid by replacing the old cached value", () => {
     resetBlueBubblesAttachmentCache()
 
-    rememberBlueBubblesAttachment({ guid: "GUID-1", transferName: "old.png" })
-    rememberBlueBubblesAttachment({ guid: "GUID-1", transferName: "new.png" })
+    cacheBlueBubblesAttachment({ guid: "GUID-1", transferName: "old.png" })
+    cacheBlueBubblesAttachment({ guid: "GUID-1", transferName: "new.png" })
 
     expect(lookupBlueBubblesAttachment("GUID-1")?.transferName).toBe("new.png")
   })

@@ -8,7 +8,7 @@ import type { FriendRecord } from "../../mind/friends/types"
 
 type TargetResolutionModule = typeof import("../../heart/target-resolution")
 
-class InMemoryFriendStore implements FriendStore {
+class InNotesFriendStore implements FriendStore {
   private readonly records = new Map<string, FriendRecord>()
 
   constructor(initial: FriendRecord[]) {
@@ -84,7 +84,7 @@ async function loadTargetResolutionModule(): Promise<TargetResolutionModule> {
 }
 
 afterEach(() => {
-  vi.doUnmock("../../heart/session-recall")
+  vi.doUnmock("../../heart/session-transcript")
   vi.resetModules()
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop()
@@ -126,7 +126,7 @@ describe("listTargetSessionCandidates", () => {
       messages: [{ role: "assistant", content: "private thought" }],
     })
 
-    const store = new InMemoryFriendStore([
+    const store = new InNotesFriendStore([
       makeFriend({
         id: "friend-1",
         name: "Ari",
@@ -188,7 +188,7 @@ describe("listTargetSessionCandidates", () => {
       messages: [{ role: "user", content: "teams target" }],
     })
 
-    const store = new InMemoryFriendStore([
+    const store = new InNotesFriendStore([
       makeFriend({
         id: "friend-1",
         name: "Ari",
@@ -240,7 +240,7 @@ describe("listTargetSessionCandidates", () => {
       messages: [{ role: "user", content: "unknown cli target" }],
     })
 
-    const store = new InMemoryFriendStore([
+    const store = new InNotesFriendStore([
       makeFriend({
         id: "friend-cli-newer",
         name: "CLI Newer",
@@ -291,7 +291,7 @@ describe("listTargetSessionCandidates", () => {
       messages: [{ role: "user", content: "mcp session target" }],
     })
 
-    const store = new InMemoryFriendStore([
+    const store = new InNotesFriendStore([
       makeFriend({
         id: "friend-mcp",
         name: "Dev Tool User",
@@ -318,13 +318,13 @@ describe("listTargetSessionCandidates", () => {
     }))
   })
 
-  it("surfaces empty and unavailable recall states explicitly and formats no candidates as empty output", async () => {
+  it("surfaces empty and unavailable search_notes states explicitly and formats no candidates as empty output", async () => {
     vi.resetModules()
-    vi.doMock("../../heart/session-recall", async () => {
-      const actual = await vi.importActual<typeof import("../../heart/session-recall")>("../../heart/session-recall")
+    vi.doMock("../../heart/session-transcript", async () => {
+      const actual = await vi.importActual<typeof import("../../heart/session-transcript")>("../../heart/session-transcript")
       return {
         ...actual,
-        recallSession: vi.fn()
+        summarizeSessionTail: vi.fn()
           .mockResolvedValueOnce({ kind: "empty" })
           .mockResolvedValueOnce({ kind: "missing" }),
       }
@@ -346,7 +346,7 @@ describe("listTargetSessionCandidates", () => {
       messages: [{ role: "user", content: "still ignored by the mock" }],
     })
 
-    const store = new InMemoryFriendStore([
+    const store = new InNotesFriendStore([
       makeFriend({
         id: "friend-1",
         name: "Ari",
@@ -388,7 +388,7 @@ describe("listTargetSessionCandidates", () => {
       messages: [],
     })
 
-    const store = new InMemoryFriendStore([
+    const store = new InNotesFriendStore([
       makeFriend({
         id: "friend-facing",
         name: "Friend Facing",

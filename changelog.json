@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.343",
+      "changes": [
+        "Kept-notes preflight now blocks provider turns long enough to search diary, journal, and friend-note candidates, then injects only first-person found/fuzzy notes under source-specific headings.",
+        "Tooling, MCP, Outlook, session-tail, and note-search surfaces now use diary/journal/notes naming, including `search_notes` and `tools-notes.ts`, while old saved-session tool names migrate quietly."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.342",
       "changes": [
         "The nerves coverage gate now writes append-only per-test NDJSON records across Vitest workers, emits a redaction-safe heartbeat for every executed test, fails closed when per-test capture is missing or malformed, and scopes start/end pairing to explicit process lifecycle events so the full-suite audit is truthful instead of passable through empty artifacts."

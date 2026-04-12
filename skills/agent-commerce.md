@@ -84,7 +84,7 @@ Card numbers must NEVER appear in:
 - Tool return values shown to the model
 - Nerves events or logs
 - Chat messages to the human
-- Any stored state or memory
+- Any stored state or written notes
 
 The only place card numbers exist is inside the Stripe client's internal payment flow functions, scoped to a single function call. The model only ever sees card IDs and last-4 digits.
 

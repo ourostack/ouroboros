@@ -19,11 +19,11 @@ vi.mock("../../nerves/runtime", () => ({
 }))
 
 import {
-  injectAssociativeRecall,
+  injectNoteSearchContext,
   type EmbeddingProvider,
-} from "../../mind/associative-recall"
+} from "../../mind/note-search"
 
-describe("associative recall provenance display", () => {
+describe("note search provenance display", () => {
   beforeEach(() => {
     mockGetOpenAIEmbeddingsApiKey.mockReset().mockReturnValue("test-key")
     mockGetAgentRoot.mockReset().mockReturnValue("/mock/agent")
@@ -44,8 +44,8 @@ describe("associative recall provenance display", () => {
     },
   }
 
-  it("includes provenance fields in recall result text when present", async () => {
-    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "recall-prov-"))
+  it("includes provenance fields in search_notes result text when present", async () => {
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "search_notes-prov-"))
     const fact: DiaryEntry = {
       id: "prov-1",
       text: "alice prefers dark mode",
@@ -67,7 +67,7 @@ describe("associative recall provenance display", () => {
       { role: "user", content: "dark mode preference" },
     ]
 
-    await injectAssociativeRecall(messages, { provider, diaryRoot, minScore: 0, topK: 1 })
+    await injectNoteSearchContext(messages, { provider, diaryRoot, minScore: 0, topK: 1 })
 
     const content = messages[0].content as string
     expect(content).toContain("channel=bluebubbles")
@@ -77,7 +77,7 @@ describe("associative recall provenance display", () => {
   })
 
   it("works normally when diary entry has no provenance (backwards compat)", async () => {
-    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "recall-prov-"))
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "search_notes-prov-"))
     const fact: DiaryEntry = {
       id: "old-1",
       text: "bob likes tea",
@@ -92,7 +92,7 @@ describe("associative recall provenance display", () => {
       { role: "user", content: "tea preference" },
     ]
 
-    await injectAssociativeRecall(messages, { provider, diaryRoot, minScore: 0, topK: 1 })
+    await injectNoteSearchContext(messages, { provider, diaryRoot, minScore: 0, topK: 1 })
 
     const content = messages[0].content as string
     expect(content).toContain("[diary] bob likes tea")
@@ -103,7 +103,7 @@ describe("associative recall provenance display", () => {
   })
 
   it("renders provenance with only tool field (no channel, friend, or trust)", async () => {
-    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "recall-prov-"))
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "search_notes-prov-"))
     const fact: DiaryEntry = {
       id: "tool-only-1",
       text: "minimal provenance entry",
@@ -121,7 +121,7 @@ describe("associative recall provenance display", () => {
       { role: "user", content: "minimal provenance" },
     ]
 
-    await injectAssociativeRecall(messages, { provider, diaryRoot, minScore: 0, topK: 1 })
+    await injectNoteSearchContext(messages, { provider, diaryRoot, minScore: 0, topK: 1 })
 
     const content = messages[0].content as string
     expect(content).toContain("[diary] minimal provenance entry")
@@ -132,7 +132,7 @@ describe("associative recall provenance display", () => {
   })
 
   it("renders [diary] prefix for entry with no provenance", async () => {
-    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "recall-prov-"))
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "search_notes-prov-"))
     const fact: DiaryEntry = {
       id: "trust-self-1",
       text: "self authored note",
@@ -147,7 +147,7 @@ describe("associative recall provenance display", () => {
       { role: "user", content: "self authored" },
     ]
 
-    await injectAssociativeRecall(messages, { provider, diaryRoot, minScore: 0, topK: 1 })
+    await injectNoteSearchContext(messages, { provider, diaryRoot, minScore: 0, topK: 1 })
 
     const content = messages[0].content as string
     expect(content).toContain("[diary] self authored note")
@@ -155,7 +155,7 @@ describe("associative recall provenance display", () => {
   })
 
   it("renders [diary] prefix for entry with trusted (family) provenance", async () => {
-    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "recall-prov-"))
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "search_notes-prov-"))
     const fact: DiaryEntry = {
       id: "trust-fam-1",
       text: "family member said hello",
@@ -177,7 +177,7 @@ describe("associative recall provenance display", () => {
       { role: "user", content: "family member" },
     ]
 
-    await injectAssociativeRecall(messages, { provider, diaryRoot, minScore: 0, topK: 1 })
+    await injectNoteSearchContext(messages, { provider, diaryRoot, minScore: 0, topK: 1 })
 
     const content = messages[0].content as string
     expect(content).toContain("[diary] family member said hello")
@@ -185,7 +185,7 @@ describe("associative recall provenance display", () => {
   })
 
   it("renders [diary/external] prefix for entry with external provenance", async () => {
-    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "recall-prov-"))
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "search_notes-prov-"))
     const fact: DiaryEntry = {
       id: "trust-ext-1",
       text: "stranger sent a link",
@@ -207,7 +207,7 @@ describe("associative recall provenance display", () => {
       { role: "user", content: "stranger sent" },
     ]
 
-    await injectAssociativeRecall(messages, { provider, diaryRoot, minScore: 0, topK: 1 })
+    await injectNoteSearchContext(messages, { provider, diaryRoot, minScore: 0, topK: 1 })
 
     const content = messages[0].content as string
     expect(content).toContain("[diary/external] stranger sent a link")
@@ -215,7 +215,7 @@ describe("associative recall provenance display", () => {
   })
 
   it("renders [diary] prefix for self provenance (inner channel, no friend)", async () => {
-    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "recall-prov-"))
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "search_notes-prov-"))
     const fact: DiaryEntry = {
       id: "trust-inner-1",
       text: "inner reflection note",
@@ -234,7 +234,7 @@ describe("associative recall provenance display", () => {
       { role: "user", content: "inner reflection" },
     ]
 
-    await injectAssociativeRecall(messages, { provider, diaryRoot, minScore: 0, topK: 1 })
+    await injectNoteSearchContext(messages, { provider, diaryRoot, minScore: 0, topK: 1 })
 
     const content = messages[0].content as string
     expect(content).toContain("[diary] inner reflection note")
@@ -242,7 +242,7 @@ describe("associative recall provenance display", () => {
   })
 
   it("renders only defined provenance fields (partial: channel only)", async () => {
-    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "recall-prov-"))
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "search_notes-prov-"))
     const fact: DiaryEntry = {
       id: "partial-1",
       text: "system preference noted",
@@ -261,7 +261,7 @@ describe("associative recall provenance display", () => {
       { role: "user", content: "system preference" },
     ]
 
-    await injectAssociativeRecall(messages, { provider, diaryRoot, minScore: 0, topK: 1 })
+    await injectNoteSearchContext(messages, { provider, diaryRoot, minScore: 0, topK: 1 })
 
     const content = messages[0].content as string
     expect(content).toContain("channel=cli")

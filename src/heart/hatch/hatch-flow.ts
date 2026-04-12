@@ -191,7 +191,7 @@ export async function runHatchFlow(input: HatchFlowInput, deps: HatchFlowDeps = 
 
   writeReadme(bundleRoot, "Root of this agent bundle.")
   writeReadme(path.join(bundleRoot, "psyche"), "Identity and behavior files.")
-  writeReadme(path.join(bundleRoot, "diary"), "Persistent diary — things I've learned and remember.")
+  writeReadme(path.join(bundleRoot, "diary"), "Persistent diary -- things I have learned and chosen to keep.")
   writeReadme(path.join(bundleRoot, "friends"), "Known friend records.")
   writeReadme(path.join(bundleRoot, "tasks"), "Task files.")
   writeReadme(path.join(bundleRoot, "tasks", "one-shots"), "One-shot tasks.")

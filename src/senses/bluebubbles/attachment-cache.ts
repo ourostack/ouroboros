@@ -2,7 +2,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import type { BlueBubblesAttachmentSummary } from "./model"
 
 /**
- * Bounded in-memory cache of recently-seen BlueBubbles attachment summaries.
+ * Bounded process-local cache of recently-seen BlueBubbles attachment summaries.
  *
  * Populated at attachment-hydration time so the `describe_image` tool can
  * look up a guid → summary later in the same turn (or a few turns later)
@@ -20,7 +20,7 @@ const MAX_CACHED_ATTACHMENTS = 50
 
 const cache = new Map<string, BlueBubblesAttachmentSummary>()
 
-export function rememberBlueBubblesAttachment(summary: BlueBubblesAttachmentSummary): void {
+export function cacheBlueBubblesAttachment(summary: BlueBubblesAttachmentSummary): void {
   const guid = summary.guid?.trim()
   if (!guid) return
   // Re-insert to move to end (LRU behavior via Map insertion order).
