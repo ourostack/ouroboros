@@ -6,6 +6,7 @@
  */
 
 import { emitNervesEvent } from "../../nerves/runtime"
+import { PROVIDER_CREDENTIALS, type AgentProvider } from "../identity"
 
 export interface DegradedAgent {
   agent: string
@@ -16,7 +17,7 @@ export interface DegradedAgent {
 export interface InteractiveRepairDeps {
   promptInput: (prompt: string) => Promise<string>
   writeStdout: (msg: string) => void
-  runAuthFlow: (agent: string) => Promise<void>
+  runAuthFlow: (agent: string, provider?: AgentProvider) => Promise<void>
 }
 
 export interface InteractiveRepairResult {
@@ -31,6 +32,22 @@ function isCredentialIssue(degraded: DegradedAgent): boolean {
 
 function isConfigError(degraded: DegradedAgent): boolean {
   return degraded.fixHint.length > 0 && !isCredentialIssue(degraded)
+}
+
+function isAgentProvider(value: string): value is AgentProvider {
+  return Object.prototype.hasOwnProperty.call(PROVIDER_CREDENTIALS, value)
+}
+
+function extractProviderFromFixHint(fixHint: string): AgentProvider | undefined {
+  const provider = fixHint.match(/--provider\s+([a-z0-9-]+)/)?.[1]
+    ?? fixHint.match(/providers\.([a-z0-9-]+)/)?.[1]
+  if (!provider || !isAgentProvider(provider)) return undefined
+  return provider
+}
+
+function authCommandFor(degraded: DegradedAgent): string {
+  const command = degraded.fixHint.match(/ouro auth[^\n.]+/)?.[0]?.trim()
+  return command && command.length > 0 ? command : `ouro auth --agent ${degraded.agent}`
 }
 
 export async function runInteractiveRepair(
@@ -53,12 +70,18 @@ export async function runInteractiveRepair(
 
   for (const entry of degraded) {
     if (isCredentialIssue(entry)) {
+      const provider = extractProviderFromFixHint(entry.fixHint)
+      const authCommand = authCommandFor(entry)
       const answer = await deps.promptInput(
-        `run \`ouro auth ${entry.agent}\` now? [y/n] `,
+        `run \`${authCommand}\` now? [y/n] `,
       )
       if (answer.toLowerCase() === "y") {
         try {
-          await deps.runAuthFlow(entry.agent)
+          if (provider) {
+            await deps.runAuthFlow(entry.agent, provider)
+          } else {
+            await deps.runAuthFlow(entry.agent)
+          }
           repairsAttempted = true
         } catch (error) {
           const msg = error instanceof Error ? error.message : String(error)

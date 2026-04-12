@@ -607,15 +607,17 @@ describe("daemon process manager", () => {
       now,
       setTimeoutFn,
       clearTimeoutFn,
-      configCheck: () => ({ ok: false, error: "missing creds", fix: "run ouro auth" }),
+      configCheck: async () => ({ ok: false, error: "selected provider failed health check", fix: "run ouro auth --agent slugger --provider openai-codex" }),
     })
 
     await manager.startAgent("slugger")
 
     expect(spawn).not.toHaveBeenCalled()
     expect(manager.getAgentSnapshot("slugger")?.status).toBe("crashed")
-    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("missing creds"))
-    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("run ouro auth"))
+    expect(manager.getAgentSnapshot("slugger")?.errorReason).toBe("selected provider failed health check")
+    expect(manager.getAgentSnapshot("slugger")?.fixHint).toContain("openai-codex")
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("selected provider failed health check"))
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("run ouro auth --agent slugger --provider openai-codex"))
     stderrSpy.mockRestore()
   })
 
@@ -719,7 +721,10 @@ describe("daemon process manager", () => {
       now,
       setTimeoutFn,
       clearTimeoutFn,
-      configCheck: () => ({ ok: true }),
+      configCheck: async () => {
+        expect(spawn).not.toHaveBeenCalled()
+        return { ok: true }
+      },
     })
 
     await manager.startAgent("slugger")

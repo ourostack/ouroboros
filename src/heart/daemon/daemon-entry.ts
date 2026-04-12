@@ -26,7 +26,7 @@ import { createRealOsCronDeps, resolveOuroBinaryPath } from "./os-cron-deps"
 import { LaunchdCronManager } from "./os-cron"
 import { writeDaemonTombstone } from "./daemon-tombstone"
 import * as os from "os"
-import { checkAgentConfig } from "./agent-config-check"
+import { checkAgentConfigWithProviderHealth } from "./agent-config-check"
 import { flushPulse } from "./pulse"
 import { sendDaemonCommand } from "./socket-client"
 import { getPackageVersion } from "../../mind/bundle-manifest"
@@ -77,11 +77,11 @@ const processManager = new DaemonProcessManager({
     autoStart: true,
   })),
   existsSync: fs.existsSync,
-  /* v8 ignore next 4 -- wiring: delegates to checkAgentConfig which has full unit tests @preserve */
-  configCheck: (agent) => {
+  /* v8 ignore next 4 -- wiring: delegates to checkAgentConfigWithProviderHealth which has full unit tests @preserve */
+  configCheck: async (agent) => {
     const bundlesRoot = getAgentBundlesRoot()
     const secretsRoot = path.join(os.homedir(), ".agentsecrets")
-    return checkAgentConfig(agent, bundlesRoot, secretsRoot)
+    return checkAgentConfigWithProviderHealth(agent, bundlesRoot, secretsRoot)
   },
   /* v8 ignore start -- pulse flush wiring: integration code; flushPulse itself has full unit tests @preserve */
   onSnapshotChange: () => {

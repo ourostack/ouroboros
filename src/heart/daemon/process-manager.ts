@@ -48,7 +48,7 @@ export interface DaemonProcessManagerOptions {
   setTimeoutFn?: (cb: () => void, delay: number) => unknown
   clearTimeoutFn?: (timer: unknown) => void
   existsSync?: (p: string) => boolean
-  configCheck?: (agent: string) => { ok: boolean; error?: string; fix?: string }
+  configCheck?: (agent: string) => { ok: boolean; error?: string; fix?: string } | Promise<{ ok: boolean; error?: string; fix?: string }>
   /** Human-visible writer for daemon status lines such as config-check
    *  failures. Defaults to stderr; tests can inject a quieter sink. */
   statusWriter?: (text: string) => void
@@ -89,7 +89,7 @@ export class DaemonProcessManager {
   private readonly cooldownRecoveryMs: number
   private readonly maxCooldownRetries: number
   private readonly existsSyncFn: ((p: string) => boolean) | null
-  private readonly configCheckFn: ((agent: string) => { ok: boolean; error?: string; fix?: string }) | null
+  private readonly configCheckFn: ((agent: string) => { ok: boolean; error?: string; fix?: string } | Promise<{ ok: boolean; error?: string; fix?: string }>) | null
   private readonly statusWriterFn: (text: string) => void
   private readonly onSnapshotChangeFn: ((snapshot: DaemonAgentSnapshot) => void) | null
 
@@ -196,7 +196,7 @@ export class DaemonProcessManager {
     state.snapshot.status = "starting"
 
     if (this.configCheckFn) {
-      const result = this.configCheckFn(agent)
+      const result = await this.configCheckFn(agent)
       if (!result.ok) {
         state.snapshot.status = "crashed"
         // Surface the error and fix to the snapshot so sibling agents can

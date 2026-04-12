@@ -30,6 +30,7 @@ type ProviderConfig =
   | OpenAICodexProviderConfig
 
 const PING_TIMEOUT_MS = 10_000
+const DEFAULT_AZURE_API_VERSION = "2025-04-01-preview"
 const PING_CALLBACKS: ChannelCallbacks = {
   onModelStart() {},
   onModelStreamStart() {},
@@ -75,26 +76,35 @@ export function sanitizeErrorMessage(message: string): string {
 
 function hasEmptyCredentials(provider: AgentProvider, config: ProviderConfig): boolean {
   const record = config as unknown as Record<string, unknown>
+  if (provider === "azure") {
+    const hasManagedIdentity =
+      typeof record.endpoint === "string" && record.endpoint.length > 0 &&
+      typeof record.deployment === "string" && record.deployment.length > 0 &&
+      typeof record.managedIdentityClientId === "string" && record.managedIdentityClientId.length > 0
+    if (hasManagedIdentity) return false
+  }
   return PROVIDER_CREDENTIALS[provider].required.some((key) => !record[key])
 }
 
-function createRuntimeForPing(provider: AgentProvider, _config: ProviderConfig): ProviderRuntime {
-  // The provider constructors read credentials from the active config via getXxxConfig().
-  // For ping, this is acceptable because verifyProviderCredentials patches the runtime
-  // config before calling ping. Use the same provider defaults as auth switch
-  // and hatch so verification cannot drift to stale provider/model pairings.
+function createRuntimeForPing(provider: AgentProvider, config: ProviderConfig): ProviderRuntime {
+  // Use the same provider defaults as auth switch and hatch so verification
+  // cannot drift to stale provider/model pairings, and pass the checked
+  // credentials directly so daemon-side pings do not depend on --agent globals.
   const model = getDefaultModelForProvider(provider)
   switch (provider) {
     case "anthropic":
-      return createAnthropicProviderRuntime(model)
+      return createAnthropicProviderRuntime(model, config as AnthropicProviderConfig)
     case "azure":
-      return createAzureProviderRuntime(model)
+      return createAzureProviderRuntime(model, {
+        ...(config as AzureProviderConfig),
+        apiVersion: (config as AzureProviderConfig).apiVersion ?? DEFAULT_AZURE_API_VERSION,
+      })
     case "minimax":
-      return createMinimaxProviderRuntime(model)
+      return createMinimaxProviderRuntime(model, config as MinimaxProviderConfig)
     case "openai-codex":
-      return createOpenAICodexProviderRuntime(model)
+      return createOpenAICodexProviderRuntime(model, config as OpenAICodexProviderConfig)
     case "github-copilot":
-      return createGithubCopilotProviderRuntime(model)
+      return createGithubCopilotProviderRuntime(model, config as GithubCopilotProviderConfig)
     /* v8 ignore next 2 -- exhaustive: all providers handled above @preserve */
     default:
       throw new Error(`unsupported provider for ping: ${provider}`)
