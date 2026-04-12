@@ -1,6 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs"
+import { createHash } from "crypto"
 import { homedir, tmpdir } from "os"
-import { dirname, join } from "path"
+import { dirname, join, resolve } from "path"
 import { afterAll, afterEach, beforeEach } from "vitest"
 
 import { registerGlobalLogSink, type LogEvent } from "../../nerves"
@@ -8,8 +9,13 @@ import { __getLiveTmpBundleHandles } from "../test-helpers/tmpdir-bundle"
 
 const REPO_SLUG = "ouroboros-agent-harness"
 
+function coverageRunOwner(cwd: string = process.cwd()): string {
+  const hash = createHash("sha256").update(resolve(cwd)).digest("hex").slice(0, 12)
+  return `cwd-${hash}`
+}
+
 function readActiveRunDir(): string | null {
-  const activePath = join(tmpdir(), "ouroboros-test-runs", REPO_SLUG, ".active-run.json")
+  const activePath = join(tmpdir(), "ouroboros-test-runs", REPO_SLUG, coverageRunOwner(), ".active-run.json")
   if (!existsSync(activePath)) return null
   try {
     const parsed = JSON.parse(readFileSync(activePath, "utf8")) as { run_dir?: unknown }
