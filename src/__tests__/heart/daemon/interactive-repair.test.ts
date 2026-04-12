@@ -57,6 +57,25 @@ describe("runInteractiveRepair", () => {
     expect(emitNervesEvent).toHaveBeenCalled()
   })
 
+  it("preserves provider-specific auth repair commands from fix hints", async () => {
+    const deps = makeDeps({
+      promptInput: vi.fn(async () => "y"),
+    })
+    const degraded: DegradedAgent[] = [
+      {
+        agent: "slugger",
+        errorReason: "selected provider github-copilot for agentFacing failed health check: token expired",
+        fixHint: "Run 'ouro auth --agent slugger --provider github-copilot' to refresh credentials.",
+      },
+    ]
+    const result = await runInteractiveRepair(degraded, deps)
+    expect(result).toEqual({ repairsAttempted: true })
+    expect(deps.promptInput).toHaveBeenCalledWith(
+      expect.stringContaining("ouro auth --agent slugger --provider github-copilot"),
+    )
+    expect(deps.runAuthFlow).toHaveBeenCalledWith("slugger", "github-copilot")
+  })
+
   it("skips auth flow when user says n for missing credentials", async () => {
     const deps = makeDeps({
       promptInput: vi.fn(async () => "n"),
@@ -68,6 +87,21 @@ describe("runInteractiveRepair", () => {
     expect(result).toEqual({ repairsAttempted: false })
     expect(deps.runAuthFlow).not.toHaveBeenCalled()
     expect(emitNervesEvent).toHaveBeenCalled()
+  })
+
+  it("falls back to an agent-scoped auth command when a credential issue has no command hint", async () => {
+    const deps = makeDeps({
+      promptInput: vi.fn(async () => "n"),
+    })
+    const degraded: DegradedAgent[] = [
+      { agent: "slugger", errorReason: "credentials are invalid", fixHint: "refresh the token" },
+    ]
+    const result = await runInteractiveRepair(degraded, deps)
+    expect(result).toEqual({ repairsAttempted: false })
+    expect(deps.promptInput).toHaveBeenCalledWith(
+      expect.stringContaining("ouro auth --agent slugger"),
+    )
+    expect(deps.runAuthFlow).not.toHaveBeenCalled()
   })
 
   it("shows fix hint and offers retry for config errors with actionable fixHint", async () => {

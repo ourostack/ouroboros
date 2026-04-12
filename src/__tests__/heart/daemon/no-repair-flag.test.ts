@@ -48,6 +48,7 @@ function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
     writeStdout: vi.fn(),
     checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
     cleanupStaleSocket: vi.fn(),
+    listDiscoveredAgents: vi.fn(async () => []),
     fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
     ...overrides,
   }

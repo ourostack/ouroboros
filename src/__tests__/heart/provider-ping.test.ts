@@ -90,6 +90,7 @@ vi.mock("../../heart/providers/github-copilot", () => ({
 import { pingProvider, sanitizeErrorMessage, type PingResult } from "../../heart/provider-ping"
 import type { ProviderErrorClassification } from "../../heart/core"
 import { createOpenAICodexProviderRuntime } from "../../heart/providers/openai-codex"
+import { createAzureProviderRuntime } from "../../heart/providers/azure"
 
 describe("sanitizeErrorMessage", () => {
   it("strips raw JSON from Anthropic SDK errors", () => {
@@ -157,7 +158,10 @@ describe("pingProvider", () => {
       oauthAccessToken: "valid-token",
     })
     expect(result.ok).toBe(true)
-    expect(createOpenAICodexProviderRuntime).toHaveBeenCalledWith("gpt-5.4")
+    expect(createOpenAICodexProviderRuntime).toHaveBeenCalledWith("gpt-5.4", {
+      model: "gpt-5.4",
+      oauthAccessToken: "valid-token",
+    })
     expect(mockResponsesCreate).toHaveBeenCalledWith(
       expect.objectContaining({
         model: "gpt-5.4",
@@ -179,6 +183,31 @@ describe("pingProvider", () => {
       endpoint: "https://example.openai.azure.com",
       deployment: "gpt-4o-mini",
       apiVersion: "2025-04-01-preview",
+    })
+    expect(result.ok).toBe(true)
+  })
+
+  it("adds the default azure API version when ping config omits it", async () => {
+    mockOpenAICreate.mockResolvedValue({ choices: [{ message: { content: "hi" } }] })
+    const result = await pingProvider("azure", {
+      modelName: "gpt-4o-mini",
+      apiKey: "valid-key",
+      endpoint: "https://example.openai.azure.com",
+      deployment: "gpt-4o-mini",
+    })
+    expect(result.ok).toBe(true)
+    expect(createAzureProviderRuntime).toHaveBeenCalledWith("gpt-4o-mini", expect.objectContaining({
+      apiVersion: "2025-04-01-preview",
+    }))
+  })
+
+  it("allows azure managed identity credentials without an apiKey", async () => {
+    mockOpenAICreate.mockResolvedValue({ choices: [{ message: { content: "hi" } }] })
+    const result = await pingProvider("azure", {
+      endpoint: "https://example.openai.azure.com",
+      deployment: "gpt-4o-mini",
+      apiVersion: "2025-04-01-preview",
+      managedIdentityClientId: "client-id",
     })
     expect(result.ok).toBe(true)
   })

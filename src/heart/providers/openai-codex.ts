@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import { getOpenAICodexConfig } from "../config";
+import { getOpenAICodexConfig, type OpenAICodexProviderConfig } from "../config";
 import { getAgentName, getAgentSecretsPath } from "../identity";
 import { emitNervesEvent } from "../../nerves/runtime";
 import type { ProviderCapability, ProviderErrorClassification, ProviderRuntime, ProviderTurnRequest } from "../core";
@@ -89,14 +89,13 @@ function getChatGPTAccountIdFromToken(token: string): string {
   return accountId.trim();
 }
 
-export function createOpenAICodexProviderRuntime(model: string): ProviderRuntime {
+export function createOpenAICodexProviderRuntime(model: string, codexConfig: OpenAICodexProviderConfig = getOpenAICodexConfig()): ProviderRuntime {
   emitNervesEvent({
     component: "engine",
     event: "engine.provider_init",
     message: "openai-codex provider init",
     meta: { provider: "openai-codex" },
   });
-  const codexConfig = getOpenAICodexConfig();
   if (!codexConfig.oauthAccessToken) {
     throw new Error(
       getOpenAICodexReauthGuidance(
