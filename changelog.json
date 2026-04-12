@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.338",
+      "changes": [
+        "fix(mind): instruct agent not to echo timestamp tags in responses"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.337",
       "changes": [
         "`ouro up` now checks the selected human-facing and agent-facing providers for each discovered agent, so startup reports degraded agents immediately when a configured provider token is missing or fails a live health check.",

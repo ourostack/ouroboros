@@ -489,7 +489,11 @@ function dateSection(): string {
   )
   /* v8 ignore next -- Intl hour-24 bug only triggers at midnight @preserve */
   const hour = parts.hour === "24" ? "00" : parts.hour
-  return `current date and time: ${parts.year}-${parts.month}-${parts.day} ${hour}:${parts.minute} ${parts.timeZoneName}`
+  const datetime = `${parts.year}-${parts.month}-${parts.day} ${hour}:${parts.minute} ${parts.timeZoneName}`
+  return [
+    `current date and time: ${datetime}`,
+    "messages in conversations may have a relative-time tag like [-5m] or [-2h] prepended to their content. these indicate how long ago each message was sent relative to now. they are metadata for your orientation only — never echo or reproduce them in your responses.",
+  ].join("\n")
 }
 
 function uniqueToolsByName(tools: OpenAI.ChatCompletionFunctionTool[]): OpenAI.ChatCompletionFunctionTool[] {
