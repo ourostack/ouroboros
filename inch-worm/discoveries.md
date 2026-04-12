@@ -85,8 +85,8 @@
 **Blast radius**: crosses trust boundaries
 **Fix shape**: Decide whether per-test audit should enforce every test or a scoped subset, then update capture/audit/tests together so the rule is truthful and CI-enforceable without relying on empty per-test artifacts.
 **Suggested supporting skills**: work-planner
-**Status**: in-progress
-**Linked work**: branch `ouroboros/nerves-audit-contract`
+**Status**: fixed
+**Linked work**: https://github.com/ouroborosbot/ouroboros/pull/444
 
 ---
 
@@ -116,7 +116,7 @@
 **Severity**: high-value
 **Blast radius**: self-contained
 **Fix shape**: Replace fixed timer flushing with `vi.waitFor()` around the actual mock call/error assertions.
-**Status**: in-progress
-**Linked work**: branch `ouroboros/nerves-audit-contract`
+**Status**: fixed
+**Linked work**: https://github.com/ouroborosbot/ouroboros/pull/444
 
 ---
