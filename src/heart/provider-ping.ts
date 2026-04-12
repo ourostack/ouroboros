@@ -22,6 +22,10 @@ export type PingResult =
   | { ok: true }
   | { ok: false; classification: ProviderErrorClassification; message: string }
 
+export type GithubCopilotModelPingResult =
+  | { ok: true }
+  | { ok: false; error: string }
+
 type ProviderConfig =
   | AnthropicProviderConfig
   | AzureProviderConfig
@@ -30,6 +34,10 @@ type ProviderConfig =
   | OpenAICodexProviderConfig
 
 const PING_TIMEOUT_MS = 10_000
+const PING_PROMPT = "ping"
+const CHAT_PING_MAX_TOKENS = 1
+const RESPONSE_PING_MAX_OUTPUT_TOKENS = 16
+const ANTHROPIC_SETUP_PING_MODEL = "claude-haiku-4-5-20251001"
 const DEFAULT_AZURE_API_VERSION = "2025-04-01-preview"
 const PING_CALLBACKS: ChannelCallbacks = {
   onModelStart() {},
@@ -39,6 +47,20 @@ const PING_CALLBACKS: ChannelCallbacks = {
   onToolStart() {},
   onToolEnd() {},
   onError() {},
+}
+
+type PingMessage = { role: "user"; content: string }
+
+function createPingMessages(): PingMessage[] {
+  return [{ role: "user", content: PING_PROMPT }]
+}
+
+function createChatPingRequest(model: string): { model: string; max_tokens: number; messages: PingMessage[] } {
+  return { model, max_tokens: CHAT_PING_MAX_TOKENS, messages: createPingMessages() }
+}
+
+function createResponsePingRequest(model: string): { model: string; input: string; max_output_tokens: number } {
+  return { model, input: PING_PROMPT, max_output_tokens: RESPONSE_PING_MAX_OUTPUT_TOKENS }
 }
 
 /**
@@ -72,6 +94,49 @@ export function sanitizeErrorMessage(message: string): string {
 
   // Already clean (e.g., "401 Provided authentication token is expired.")
   return message
+}
+
+export async function pingGithubCopilotModel(
+  baseUrl: string,
+  token: string,
+  model: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<GithubCopilotModelPingResult> {
+  const base = baseUrl.replace(/\/+$/, "")
+  const isClaude = model.startsWith("claude")
+  const url = isClaude ? `${base}/chat/completions` : `${base}/responses`
+  const body = isClaude
+    ? JSON.stringify(createChatPingRequest(model))
+    : JSON.stringify(createResponsePingRequest(model))
+  try {
+    const response = await fetchImpl(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body,
+    })
+    if (response.ok) return { ok: true }
+    let detail = `HTTP ${response.status}`
+    try {
+      const json = await response.json() as Record<string, unknown>
+      /* v8 ignore start -- error format parsing: all branches tested via config-models.test.ts @preserve */
+      if (typeof json.error === "string") detail = json.error
+      else if (typeof json.error === "object" && json.error !== null) {
+        const errObj = json.error as Record<string, unknown>
+        if (typeof errObj.message === "string") detail = errObj.message
+      }
+      else if (typeof json.message === "string") detail = json.message
+      /* v8 ignore stop */
+    } catch {
+      // response body not JSON — keep HTTP status
+    }
+    return { ok: false, error: detail }
+  } catch (err) {
+    /* v8 ignore next -- defensive: fetch errors are always Error instances @preserve */
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
 }
 
 function hasEmptyCredentials(provider: AgentProvider, config: ProviderConfig): boolean {
@@ -146,12 +211,12 @@ export async function pingProvider(
         // thinking param in the request body).
         const client = runtime.client as Anthropic
         await client.messages.create(
-          { model: "claude-haiku-4-5-20251001", max_tokens: 1, messages: [{ role: "user", content: "ping" }] },
+          createChatPingRequest(ANTHROPIC_SETUP_PING_MODEL),
           { signal: controller.signal, headers: { "anthropic-beta": "claude-code-20250219,oauth-2025-04-20" } },
         )
       } else if (provider === "openai-codex") {
         await runtime.streamTurn({
-          messages: [{ role: "user", content: "ping" }],
+          messages: createPingMessages(),
           activeTools: [],
           callbacks: PING_CALLBACKS,
           signal: controller.signal,
@@ -161,7 +226,7 @@ export async function pingProvider(
         // OpenAI-compatible providers (azure, minimax, github-copilot)
         const client = runtime.client as OpenAI
         await client.chat.completions.create(
-          { model: runtime.model, max_tokens: 1, messages: [{ role: "user", content: "ping" }] },
+          createChatPingRequest(runtime.model),
           { signal: controller.signal },
         )
       }
