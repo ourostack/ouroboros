@@ -11,12 +11,12 @@ import {
   readFriendView,
   readHabitView,
   readLogView,
-  readMemoryView,
+  readNotesView,
   readNeedsMeView,
 } from "../../../heart/outlook/readers/runtime-readers"
 import {
   readChangesView,
-  readMemoryDecisionView,
+  readNoteDecisionView,
   readObligationDetailView,
   readOrientationView,
   readSelfFixView,
@@ -1203,7 +1203,7 @@ describe("outlook deep readers", () => {
     })
   })
 
-  describe("readMemoryView", () => {
+  describe("readNotesView", () => {
     it("reads diary facts and journal index", async () => {
       const tmpRoot = makeBundleRoot()
       const agentRoot = path.join(tmpRoot, "agent.ouro")
@@ -1223,35 +1223,35 @@ describe("outlook deep readers", () => {
         { filename: "2026-03-29.md", preview: "Daemon hosting design", mtime: 1711713600000, embedding: [] },
       ])
 
-      const memory = readMemoryView(agentRoot)
+      const notes = readNotesView(agentRoot)
 
-      expect(memory.diaryEntryCount).toBe(2)
-      expect(memory.recentDiaryEntries[0]!.text).toBe("User prefers concise answers.")
-      expect(memory.journalEntryCount).toBe(2)
-      expect(memory.recentJournalEntries[0]!.filename).toBe("2026-03-30.md")
+      expect(notes.diaryEntryCount).toBe(2)
+      expect(notes.recentDiaryEntries[0]!.text).toBe("User prefers concise answers.")
+      expect(notes.journalEntryCount).toBe(2)
+      expect(notes.recentJournalEntries[0]!.filename).toBe("2026-03-30.md")
     })
 
     it("handles missing diary and journal directories", async () => {
-      const memory = readMemoryView("/tmp/nonexistent-agent.ouro")
-      expect(memory.diaryEntryCount).toBe(0)
-      expect(memory.journalEntryCount).toBe(0)
+      const notes = readNotesView("/tmp/nonexistent-agent.ouro")
+      expect(notes.diaryEntryCount).toBe(0)
+      expect(notes.journalEntryCount).toBe(0)
     })
 
-    it("does NOT read from legacy psyche/memory path -- only diary/", async () => {
+    it("does NOT read from legacy psyche/notes path -- only diary/", async () => {
       const tmpRoot = makeBundleRoot()
       const agentRoot = path.join(tmpRoot, "agent.ouro")
 
-      fs.mkdirSync(path.join(agentRoot, "psyche", "memory"), { recursive: true })
+      fs.mkdirSync(path.join(agentRoot, "psyche", "notes"), { recursive: true })
       const facts = [{ id: "f1", text: "Legacy fact.", source: "legacy", createdAt: "2026-03-28T10:00:00.000Z", embedding: [] }]
-      fs.writeFileSync(path.join(agentRoot, "psyche", "memory", "facts.jsonl"), facts.map((f) => JSON.stringify(f)).join("\n") + "\n", "utf-8")
+      fs.writeFileSync(path.join(agentRoot, "psyche", "notes", "facts.jsonl"), facts.map((f) => JSON.stringify(f)).join("\n") + "\n", "utf-8")
 
-      const memory = readMemoryView(agentRoot)
+      const notes = readNotesView(agentRoot)
 
-      // Should NOT find entries in psyche/memory since we no longer fall back
-      expect(memory.diaryEntryCount).toBe(0)
+      // Should NOT find entries in psyche/notes since we no longer fall back
+      expect(notes.diaryEntryCount).toBe(0)
     })
 
-    it("skips malformed memory entries and normalizes optional fields", async () => {
+    it("skips malformed diary entries and normalizes optional fields", async () => {
       const tmpRoot = makeBundleRoot()
       const agentRoot = path.join(tmpRoot, "agent.ouro")
 
@@ -1268,17 +1268,17 @@ describe("outlook deep readers", () => {
         { preview: "skip me", mtime: 1 },
       ])
 
-      const memory = readMemoryView(agentRoot)
+      const notes = readNotesView(agentRoot)
 
-      expect(memory.diaryEntryCount).toBe(2)
-      expect(memory.recentDiaryEntries.find((entry) => entry.id === "f1")).toEqual({
+      expect(notes.diaryEntryCount).toBe(2)
+      expect(notes.recentDiaryEntries.find((entry) => entry.id === "f1")).toEqual({
         id: "f1",
         text: "Valid but sparse",
         source: "",
         createdAt: "",
       })
-      expect(memory.journalEntryCount).toBe(1)
-      expect(memory.recentJournalEntries[0]).toEqual({
+      expect(notes.journalEntryCount).toBe(1)
+      expect(notes.recentJournalEntries[0]).toEqual({
         filename: "2026-03-30.md",
         preview: "",
         mtime: 0,
@@ -2431,16 +2431,16 @@ describe("outlook deep readers", () => {
     })
   })
 
-  describe("readMemoryDecisionView", () => {
+  describe("readNoteDecisionView", () => {
     it("returns empty state when the decision log is missing", async () => {
-      const view = readMemoryDecisionView("/tmp/nonexistent-agent.ouro")
+      const view = readNoteDecisionView("/tmp/nonexistent-agent.ouro")
       expect(view).toEqual({ totalCount: 0, items: [] })
     })
 
-    it("reads reverse-chronological memory decisions and skips malformed lines", async () => {
-      const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "memory-decisions-"))
+    it("reads reverse-chronological note decisions and skips malformed lines", async () => {
+      const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "note-decisions-"))
       try {
-        const logPath = path.join(agentRoot, "state", "outlook", "memory-decisions.jsonl")
+        const logPath = path.join(agentRoot, "state", "outlook", "note-decisions.jsonl")
         fs.mkdirSync(path.dirname(logPath), { recursive: true })
         fs.writeFileSync(logPath, [
           JSON.stringify({ kind: "friend", decision: "promote", timestamp: "2026-04-03T09:00:00Z", id: "m-1" }),
@@ -2448,7 +2448,7 @@ describe("outlook deep readers", () => {
           JSON.stringify({ kind: "fact", decision: "ignore", timestamp: "2026-04-03T10:00:00Z", id: "m-2" }),
         ].join("\n") + "\n", "utf-8")
 
-        const view = readMemoryDecisionView(agentRoot, 1)
+        const view = readNoteDecisionView(agentRoot, 1)
 
         expect(view.totalCount).toBe(2)
         expect(view.items).toHaveLength(1)

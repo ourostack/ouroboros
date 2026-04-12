@@ -6,18 +6,18 @@ vi.mock("fs", () => ({
 
 import * as fs from "fs"
 
-function stripRecallMetadata(text: string): string {
+function stripTranscriptMetadata(text: string): string {
   return text.replace(/\[[^\]]*\|\s*(system|user|assistant|tool)\s*\|\s*evt-\d+\]\s*/g, "[$1] ")
 }
 
-describe("session-recall", () => {
+describe("session transcript", () => {
   beforeEach(() => {
     vi.resetModules()
     vi.mocked(fs.readFileSync).mockReset()
   })
 
   it("extracts a canonical transcript tail and compact snapshot", async () => {
-    const { recallSession } = await import("../../heart/session-recall")
+    const { summarizeSessionTail } = await import("../../heart/session-transcript")
 
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
       version: 1,
@@ -30,7 +30,7 @@ describe("session-recall", () => {
       ],
     }))
 
-    const result = await recallSession({
+    const result = await summarizeSessionTail({
       sessionPath: "/mock/agent-root/state/sessions/friend-1/cli/session.json",
       friendId: "friend-1",
       channel: "cli",
@@ -40,16 +40,16 @@ describe("session-recall", () => {
 
     expect(result.kind).toBe("ok")
     if (result.kind === "ok") {
-      expect(stripRecallMetadata(result.transcript)).toBe("[user] latest user question\n[assistant] latest assistant answer")
-      expect(stripRecallMetadata(result.summary)).toBe("[user] latest user question\n[assistant] latest assistant answer")
+      expect(stripTranscriptMetadata(result.transcript)).toBe("[user] latest user question\n[assistant] latest assistant answer")
+      expect(stripTranscriptMetadata(result.summary)).toBe("[user] latest user question\n[assistant] latest assistant answer")
       expect(result.snapshot).toContain("recent focus:")
       expect(result.snapshot).toContain("latest user question")
       expect(result.snapshot).not.toContain("oldest question")
     }
   })
 
-  it("uses trust-aware summarization instructions for non-self recall", async () => {
-    const { recallSession } = await import("../../heart/session-recall")
+  it("uses trust-aware summarization instructions for non-self search_notes", async () => {
+    const { summarizeSessionTail } = await import("../../heart/session-transcript")
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
       version: 1,
       messages: [
@@ -61,7 +61,7 @@ describe("session-recall", () => {
 
     const summarize = vi.fn().mockResolvedValue("Summary: release issue resolved.")
 
-    const result = await recallSession({
+    const result = await summarizeSessionTail({
       sessionPath: "/mock/agent-root/state/sessions/friend-1/teams/thread.json",
       friendId: "friend-1",
       channel: "teams",
@@ -78,8 +78,8 @@ describe("session-recall", () => {
     )
   })
 
-  it("uses fully transparent summarization instructions for self/inner recall", async () => {
-    const { recallSession } = await import("../../heart/session-recall")
+  it("uses fully transparent summarization instructions for self/inner search_notes", async () => {
+    const { summarizeSessionTail } = await import("../../heart/session-transcript")
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
       version: 1,
       messages: [
@@ -91,7 +91,7 @@ describe("session-recall", () => {
 
     const summarize = vi.fn().mockResolvedValue("Summary: thinking about penguins.")
 
-    const result = await recallSession({
+    const result = await summarizeSessionTail({
       sessionPath: "/mock/agent-root/state/sessions/self/inner/dialog.json",
       friendId: "self",
       channel: "inner",
@@ -109,7 +109,7 @@ describe("session-recall", () => {
   })
 
   it("falls back to the raw transcript when no summarizer is available", async () => {
-    const { recallSession } = await import("../../heart/session-recall")
+    const { summarizeSessionTail } = await import("../../heart/session-transcript")
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
       version: 1,
       messages: [
@@ -119,7 +119,7 @@ describe("session-recall", () => {
       ],
     }))
 
-    const result = await recallSession({
+    const result = await summarizeSessionTail({
       sessionPath: "/mock/agent-root/state/sessions/friend-1/cli/session.json",
       friendId: "friend-1",
       channel: "cli",
@@ -129,13 +129,13 @@ describe("session-recall", () => {
 
     expect(result.kind).toBe("ok")
     if (result.kind === "ok") {
-      expect(stripRecallMetadata(result.transcript)).toBe("[user] hello\n[assistant] hi")
-      expect(stripRecallMetadata(result.summary)).toBe("[user] hello\n[assistant] hi")
+      expect(stripTranscriptMetadata(result.transcript)).toBe("[user] hello\n[assistant] hi")
+      expect(stripTranscriptMetadata(result.summary)).toBe("[user] hello\n[assistant] hi")
     }
   })
 
   it("normalizes structured content arrays into transcript text", async () => {
-    const { recallSession } = await import("../../heart/session-recall")
+    const { summarizeSessionTail } = await import("../../heart/session-transcript")
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
       version: 1,
       messages: [
@@ -160,7 +160,7 @@ describe("session-recall", () => {
       ],
     }))
 
-    const result = await recallSession({
+    const result = await summarizeSessionTail({
       sessionPath: "/mock/agent-root/state/sessions/friend-1/cli/session.json",
       friendId: "friend-1",
       channel: "cli",
@@ -170,13 +170,13 @@ describe("session-recall", () => {
 
     expect(result.kind).toBe("ok")
     if (result.kind === "ok") {
-      expect(stripRecallMetadata(result.transcript)).toBe("[user] think about penguins\n[assistant] formal little blokes")
-      expect(stripRecallMetadata(result.summary)).toBe("[user] think about penguins\n[assistant] formal little blokes")
+      expect(stripTranscriptMetadata(result.transcript)).toBe("[user] think about penguins\n[assistant] formal little blokes")
+      expect(stripTranscriptMetadata(result.summary)).toBe("[user] think about penguins\n[assistant] formal little blokes")
     }
   })
 
   it("normalizes invalid roles and ignores non-array object content without inventing extra text", async () => {
-    const { recallSession } = await import("../../heart/session-recall")
+    const { summarizeSessionTail } = await import("../../heart/session-transcript")
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
       version: 1,
       messages: [
@@ -185,7 +185,7 @@ describe("session-recall", () => {
       ],
     }))
 
-    const result = await recallSession({
+    const result = await summarizeSessionTail({
       sessionPath: "/mock/agent-root/state/sessions/friend-1/cli/session.json",
       friendId: "friend-1",
       channel: "cli",
@@ -195,14 +195,14 @@ describe("session-recall", () => {
 
     expect(result.kind).toBe("ok")
     if (result.kind === "ok") {
-      expect(stripRecallMetadata(result.transcript)).toBe("[user] should be ignored because role is invalid")
-      expect(stripRecallMetadata(result.summary)).toBe("[user] should be ignored because role is invalid")
+      expect(stripTranscriptMetadata(result.transcript)).toBe("[user] should be ignored because role is invalid")
+      expect(stripTranscriptMetadata(result.summary)).toBe("[user] should be ignored because role is invalid")
       expect(result.transcript).not.toContain("not an array")
     }
   })
 
   it("ignores malformed non-object session entries while keeping valid messages", async () => {
-    const { recallSession } = await import("../../heart/session-recall")
+    const { summarizeSessionTail } = await import("../../heart/session-transcript")
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
       version: 1,
       messages: [
@@ -212,7 +212,7 @@ describe("session-recall", () => {
       ],
     }))
 
-    const result = await recallSession({
+    const result = await summarizeSessionTail({
       sessionPath: "/mock/agent-root/state/sessions/friend-1/cli/session.json",
       friendId: "friend-1",
       channel: "cli",
@@ -222,13 +222,13 @@ describe("session-recall", () => {
 
     expect(result.kind).toBe("ok")
     if (result.kind === "ok") {
-      expect(stripRecallMetadata(result.transcript)).toBe("[user] keep the real message")
-      expect(stripRecallMetadata(result.summary)).toBe("[user] keep the real message")
+      expect(stripTranscriptMetadata(result.transcript)).toBe("[user] keep the real message")
+      expect(stripTranscriptMetadata(result.summary)).toBe("[user] keep the real message")
     }
   })
 
   it("clips long summaries and latest-turn previews in the snapshot", async () => {
-    const { recallSession } = await import("../../heart/session-recall")
+    const { summarizeSessionTail } = await import("../../heart/session-transcript")
     const longSummary = "summary ".repeat(50).trim()
     const longUser = "user detail ".repeat(30).trim()
     const longAssistant = "assistant detail ".repeat(30).trim()
@@ -240,7 +240,7 @@ describe("session-recall", () => {
       ],
     }))
 
-    const result = await recallSession({
+    const result = await summarizeSessionTail({
       sessionPath: "/mock/agent-root/state/sessions/friend-1/cli/session.json",
       friendId: "friend-1",
       channel: "cli",
@@ -258,7 +258,7 @@ describe("session-recall", () => {
   })
 
   it("builds snapshots without a latest-user line when the visible transcript is assistant-only", async () => {
-    const { recallSession } = await import("../../heart/session-recall")
+    const { summarizeSessionTail } = await import("../../heart/session-transcript")
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
       version: 1,
       messages: [
@@ -266,7 +266,7 @@ describe("session-recall", () => {
       ],
     }))
 
-    const result = await recallSession({
+    const result = await summarizeSessionTail({
       sessionPath: "/mock/agent-root/state/sessions/friend-1/cli/session.json",
       friendId: "friend-1",
       channel: "cli",
@@ -281,7 +281,7 @@ describe("session-recall", () => {
   })
 
   it("returns missing when a history search cannot read the session file", async () => {
-    const { searchSessionTranscript } = await import("../../heart/session-recall")
+    const { searchSessionTranscript } = await import("../../heart/session-transcript")
     vi.mocked(fs.readFileSync).mockImplementation(() => {
       throw new Error("ENOENT")
     })
@@ -298,7 +298,7 @@ describe("session-recall", () => {
   })
 
   it("searches the full session history and returns matched excerpts", async () => {
-    const { searchSessionTranscript } = await import("../../heart/session-recall")
+    const { searchSessionTranscript } = await import("../../heart/session-transcript")
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
       version: 1,
       messages: [
@@ -322,13 +322,13 @@ describe("session-recall", () => {
     const ok = result.kind === "ok" ? result : null
     expect(ok?.snapshot).toContain('history query: "billing"')
     expect(ok?.matches).toHaveLength(2)
-    expect(stripRecallMetadata(ok?.matches[0] ?? "")).toContain("[assistant] yes, looking now")
-    expect(stripRecallMetadata(ok?.matches[0] ?? "")).toContain("[user] the billing fix looked shaky earlier")
-    expect(stripRecallMetadata(ok?.matches[0] ?? "")).toContain("[assistant] the billing fix is merged and stable now")
+    expect(stripTranscriptMetadata(ok?.matches[0] ?? "")).toContain("[assistant] yes, looking now")
+    expect(stripTranscriptMetadata(ok?.matches[0] ?? "")).toContain("[user] the billing fix looked shaky earlier")
+    expect(stripTranscriptMetadata(ok?.matches[0] ?? "")).toContain("[assistant] the billing fix is merged and stable now")
   })
 
   it("returns a no-match search result with the latest turn context", async () => {
-    const { searchSessionTranscript } = await import("../../heart/session-recall")
+    const { searchSessionTranscript } = await import("../../heart/session-transcript")
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
       version: 1,
       messages: [
@@ -354,7 +354,7 @@ describe("session-recall", () => {
   })
 
   it("builds no-match snapshots without assistant lines when that context is absent", async () => {
-    const { searchSessionTranscript } = await import("../../heart/session-recall")
+    const { searchSessionTranscript } = await import("../../heart/session-transcript")
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
       version: 1,
       messages: [
@@ -378,7 +378,7 @@ describe("session-recall", () => {
   })
 
   it("returns empty for search when the session has no non-system messages", async () => {
-    const { searchSessionTranscript } = await import("../../heart/session-recall")
+    const { searchSessionTranscript } = await import("../../heart/session-transcript")
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
       version: 1,
       messages: [
@@ -398,7 +398,7 @@ describe("session-recall", () => {
   })
 
   it("treats a blank search query as no match while still surfacing the query snapshot", async () => {
-    const { searchSessionTranscript } = await import("../../heart/session-recall")
+    const { searchSessionTranscript } = await import("../../heart/session-transcript")
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
       version: 1,
       messages: [
@@ -423,7 +423,7 @@ describe("session-recall", () => {
   })
 
   it("collapses duplicate history excerpts when repeated matches would produce the same snippet", async () => {
-    const { searchSessionTranscript } = await import("../../heart/session-recall")
+    const { searchSessionTranscript } = await import("../../heart/session-transcript")
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
       version: 1,
       messages: [
@@ -444,13 +444,13 @@ describe("session-recall", () => {
     })
 
     expect(result.kind).toBe("ok")
-    expect((result.kind === "ok" ? result.matches : []).map(stripRecallMetadata)).toEqual([
+    expect((result.kind === "ok" ? result.matches : []).map(stripTranscriptMetadata)).toEqual([
       "[user] hello there\n[assistant] billing is green now\n[user] hello there",
     ])
   })
 
   it("returns empty when the session has no non-system messages", async () => {
-    const { recallSession } = await import("../../heart/session-recall")
+    const { summarizeSessionTail } = await import("../../heart/session-transcript")
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
       version: 1,
       messages: [
@@ -458,7 +458,7 @@ describe("session-recall", () => {
       ],
     }))
 
-    const result = await recallSession({
+    const result = await summarizeSessionTail({
       sessionPath: "/mock/agent-root/state/sessions/friend-1/cli/session.json",
       friendId: "friend-1",
       channel: "cli",
@@ -470,12 +470,12 @@ describe("session-recall", () => {
   })
 
   it("returns missing when the session file cannot be read", async () => {
-    const { recallSession } = await import("../../heart/session-recall")
+    const { summarizeSessionTail } = await import("../../heart/session-transcript")
     vi.mocked(fs.readFileSync).mockImplementation(() => {
       throw new Error("ENOENT")
     })
 
-    const result = await recallSession({
+    const result = await summarizeSessionTail({
       sessionPath: "/mock/agent-root/state/sessions/friend-1/cli/session.json",
       friendId: "friend-1",
       channel: "cli",

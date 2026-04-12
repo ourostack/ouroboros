@@ -11,8 +11,8 @@ import { listSessionActivity } from "../../session-activity"
 import {
   type OutlookChangesView,
   type OutlookContinuityView,
-  type OutlookMemoryDecision,
-  type OutlookMemoryDecisionView,
+  type OutlookNoteDecision,
+  type OutlookNoteDecisionView,
   type OutlookObligationDetailItem,
   type OutlookObligationDetailView,
   type OutlookOrientationView,
@@ -292,8 +292,8 @@ export function readSelfFixView(agentRoot: string): OutlookSelfFixView {
   }
 }
 
-export function readMemoryDecisionView(agentRoot: string, limit = 50): OutlookMemoryDecisionView {
-  const logPath = path.join(agentRoot, "state", "outlook", "memory-decisions.jsonl")
+export function readNoteDecisionView(agentRoot: string, limit = 50): OutlookNoteDecisionView {
+  const logPath = path.join(agentRoot, "state", "outlook", "note-decisions.jsonl")
 
   let lines: string[] = []
   try {
@@ -303,10 +303,10 @@ export function readMemoryDecisionView(agentRoot: string, limit = 50): OutlookMe
     return { totalCount: 0, items: [] }
   }
 
-  const items: OutlookMemoryDecision[] = []
+  const items: OutlookNoteDecision[] = []
   for (const line of lines) {
     try {
-      const parsed = JSON.parse(line) as OutlookMemoryDecision
+      const parsed = JSON.parse(line) as OutlookNoteDecision
       if (parsed.kind && parsed.decision && parsed.timestamp) {
         items.push(parsed)
       }

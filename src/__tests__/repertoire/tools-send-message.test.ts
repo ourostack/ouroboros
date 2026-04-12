@@ -584,7 +584,7 @@ describe("send_message tool", () => {
       await tool.handler({
         friendId: "self",
         channel: "cli",
-        content: "remember this for later",
+        content: "keep this for later",
       })
 
       // Even when channel is 'cli', self goes to inner dialog
@@ -846,7 +846,7 @@ describe("send_message tool", () => {
       const result = await tool.handler({
         friendId: "self",
         channel: "teams",
-        content: "remember this",
+        content: "keep this",
       })
 
       // Should indicate inward routing, not the original outward channel

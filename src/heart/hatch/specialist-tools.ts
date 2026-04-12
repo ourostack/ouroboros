@@ -89,9 +89,9 @@ function writeReadme(dir: string, purpose: string): void {
 }
 
 function scaffoldBundle(bundleRoot: string): void {
-  writeReadme(path.join(bundleRoot, "memory"), "Persistent memory store.")
-  writeReadme(path.join(bundleRoot, "memory", "daily"), "Daily memory entries.")
-  writeReadme(path.join(bundleRoot, "memory", "archive"), "Archived memory.")
+  writeReadme(path.join(bundleRoot, "notes"), "Persistent notes store.")
+  writeReadme(path.join(bundleRoot, "notes", "daily"), "Daily note entries.")
+  writeReadme(path.join(bundleRoot, "notes", "archive"), "Archived notes.")
   writeReadme(path.join(bundleRoot, "friends"), "Known friend records.")
   writeReadme(path.join(bundleRoot, "tasks"), "Task files.")
   writeReadme(path.join(bundleRoot, "tasks", "one-shots"), "One-shot tasks.")
@@ -101,10 +101,10 @@ function scaffoldBundle(bundleRoot: string): void {
   writeReadme(path.join(bundleRoot, "senses"), "Sense-specific config.")
   writeReadme(path.join(bundleRoot, "senses", "teams"), "Teams sense config.")
 
-  // Memory scaffold files
-  const memoryRoot = path.join(bundleRoot, "memory")
-  const factsPath = path.join(memoryRoot, "facts.jsonl")
-  const entitiesPath = path.join(memoryRoot, "entities.json")
+  // Notes scaffold files
+  const notesRoot = path.join(bundleRoot, "notes")
+  const factsPath = path.join(notesRoot, "facts.jsonl")
+  const entitiesPath = path.join(notesRoot, "entities.json")
   /* v8 ignore next -- defensive: guard against re-scaffold on existing bundle @preserve */
   if (!fs.existsSync(factsPath)) fs.writeFileSync(factsPath, "", "utf-8")
   /* v8 ignore next -- defensive: guard against re-scaffold on existing bundle @preserve */

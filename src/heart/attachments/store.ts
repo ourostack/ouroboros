@@ -43,7 +43,7 @@ function writeRecentAttachments(agentName: string, agentRoot: string, attachment
   fs.writeFileSync(targetPath, JSON.stringify(attachments, null, 2), "utf-8")
 }
 
-export function rememberRecentAttachment<TAttachment extends AttachmentRecord>(
+export function cacheRecentAttachment<TAttachment extends AttachmentRecord>(
   agentName: string,
   attachment: TAttachment,
   agentRoot = getAgentRoot(agentName),

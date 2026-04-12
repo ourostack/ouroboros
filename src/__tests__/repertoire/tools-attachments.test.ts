@@ -24,7 +24,7 @@ vi.mock("../../heart/providers/minimax-vlm", () => ({
 import { getToolsForChannel } from "../../repertoire/tools"
 import { attachmentToolDefinitions } from "../../repertoire/tools-attachments"
 import { getChannelCapabilities } from "../../mind/friends/channel"
-import { rememberRecentAttachment } from "../../heart/attachments/store"
+import { cacheRecentAttachment } from "../../heart/attachments/store"
 import { buildCliLocalFileAttachmentRecord } from "../../heart/attachments/sources/cli-local-file"
 import * as materializeModule from "../../heart/attachments/materialize"
 import { minimaxVlmDescribe } from "../../heart/providers/minimax-vlm"
@@ -80,7 +80,7 @@ describe("attachment tool registration", () => {
 describe("attachment tool handlers", () => {
   it("lists recent attachments as JSON", async () => {
     const agentRoot = makeAgentRoot()
-    rememberRecentAttachment(
+    cacheRecentAttachment(
       "testagent",
       buildCliLocalFileAttachmentRecord({
         path: "/tmp/screenshot.png",
@@ -101,7 +101,7 @@ describe("attachment tool handlers", () => {
 
   it("lists recent attachments without filters when kind is blank and limit is invalid", async () => {
     const agentRoot = makeAgentRoot()
-    rememberRecentAttachment(
+    cacheRecentAttachment(
       "testagent",
       buildCliLocalFileAttachmentRecord({
         path: "/tmp/screenshot.png",
@@ -120,7 +120,7 @@ describe("attachment tool handlers", () => {
 
   it("filters recent attachments by kind when requested", async () => {
     const agentRoot = makeAgentRoot()
-    rememberRecentAttachment(
+    cacheRecentAttachment(
       "testagent",
       buildCliLocalFileAttachmentRecord({
         path: "/tmp/screenshot.png",
@@ -129,7 +129,7 @@ describe("attachment tool handlers", () => {
       }),
       agentRoot,
     )
-    rememberRecentAttachment(
+    cacheRecentAttachment(
       "testagent",
       buildCliLocalFileAttachmentRecord({
         path: "/tmp/report.pdf",
@@ -155,7 +155,7 @@ describe("attachment tool handlers", () => {
       mimeType: "image/png",
       byteCount: 9,
     })
-    rememberRecentAttachment("testagent", attachment, agentRoot)
+    cacheRecentAttachment("testagent", attachment, agentRoot)
 
     const tool = attachmentToolDefinitions.find((def) => def.tool.function.name === "materialize_attachment")!
     const raw = await tool.handler({ attachment_id: attachment.id, variant: "original" })
@@ -220,7 +220,7 @@ describe("attachment tool handlers", () => {
       mimeType: "image/tiff",
       byteCount: 100,
     })
-    rememberRecentAttachment("testagent", attachment, agentRoot)
+    cacheRecentAttachment("testagent", attachment, agentRoot)
 
     vi.spyOn(materializeModule, "materializeAttachment").mockResolvedValue({
       attachmentId: attachment.id,
@@ -257,7 +257,7 @@ describe("attachment tool handlers", () => {
       mimeType: "image/tiff",
       byteCount: 100,
     })
-    rememberRecentAttachment("testagent", attachment, agentRoot)
+    cacheRecentAttachment("testagent", attachment, agentRoot)
 
     vi.spyOn(materializeModule, "materializeAttachment").mockResolvedValue({
       attachmentId: attachment.id,
@@ -284,7 +284,7 @@ describe("attachment tool handlers", () => {
       mimeType: "image/tiff",
       byteCount: 100,
     })
-    rememberRecentAttachment("testagent", attachment, agentRoot)
+    cacheRecentAttachment("testagent", attachment, agentRoot)
 
     vi.spyOn(materializeModule, "materializeAttachment").mockResolvedValue({
       attachmentId: attachment.id,
@@ -314,7 +314,7 @@ describe("attachment tool handlers", () => {
       mimeType: "image/tiff",
       byteCount: 100,
     })
-    rememberRecentAttachment("testagent", attachment, agentRoot)
+    cacheRecentAttachment("testagent", attachment, agentRoot)
 
     vi.spyOn(materializeModule, "materializeAttachment").mockResolvedValue({
       attachmentId: attachment.id,

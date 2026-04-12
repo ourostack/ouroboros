@@ -66,6 +66,6 @@ export const PII_BUNDLE_DIRECTORIES: readonly string[] = [
   "facts",
   "family",
   "travel",
-  "memory",
+  "notes",
   "sessions",
 ] as const

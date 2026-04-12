@@ -31,26 +31,26 @@ describe("createStatusBatcher", () => {
     const send = vi.fn()
     const batcher = createStatusBatcher(send, 500)
 
-    batcher.add("searching memory...")
+    batcher.add("searching notes...")
     batcher.add("reading file...")
     batcher.add("checking session...")
     expect(send).not.toHaveBeenCalled()
 
     vi.advanceTimersByTime(500)
     expect(send).toHaveBeenCalledTimes(1)
-    expect(send).toHaveBeenCalledWith("searching memory... \u00b7 reading file... \u00b7 checking session...")
+    expect(send).toHaveBeenCalledWith("searching notes... \u00b7 reading file... \u00b7 checking session...")
   })
 
   it("flush sends accumulated descriptions immediately", () => {
     const send = vi.fn()
     const batcher = createStatusBatcher(send, 500)
 
-    batcher.add("searching memory...")
+    batcher.add("searching notes...")
     batcher.add("reading file...")
 
     batcher.flush()
     expect(send).toHaveBeenCalledTimes(1)
-    expect(send).toHaveBeenCalledWith("searching memory... \u00b7 reading file...")
+    expect(send).toHaveBeenCalledWith("searching notes... \u00b7 reading file...")
 
     // Timer should not fire again (already flushed)
     vi.advanceTimersByTime(500)

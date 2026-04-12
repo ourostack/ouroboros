@@ -14,7 +14,7 @@ import type {
   OutlookChangesView,
   OutlookContinuityView,
   OutlookDaemonHealthDeep,
-  OutlookMemoryDecisionView,
+  OutlookNoteDecisionView,
   OutlookObligationDetailView,
   OutlookOrientationView,
   OutlookSelfFixView,
@@ -23,7 +23,7 @@ import type {
   OutlookLogView,
   OutlookMachineState,
   OutlookMachineView,
-  OutlookMemoryView,
+  OutlookNotesView,
   OutlookSessionInventory,
   OutlookSessionTranscript,
 } from "./outlook-types"
@@ -43,14 +43,14 @@ export interface StartOutlookHttpServerOptions {
   readAgentCoding?: (agentName: string) => OutlookCodingDeep
   readAgentAttention?: (agentName: string) => OutlookAttentionView
   readAgentBridges?: (agentName: string) => OutlookBridgeInventory
-  readAgentMemory?: (agentName: string) => OutlookMemoryView
+  readAgentNotes?: (agentName: string) => OutlookNotesView
   readAgentFriends?: (agentName: string) => OutlookFriendView
   readAgentContinuity?: (agentName: string) => OutlookContinuityView
   readAgentOrientation?: (agentName: string) => OutlookOrientationView
   readAgentObligations?: (agentName: string) => OutlookObligationDetailView
   readAgentChanges?: (agentName: string) => OutlookChangesView
   readAgentSelfFix?: (agentName: string) => OutlookSelfFixView
-  readAgentMemoryDecisions?: (agentName: string) => OutlookMemoryDecisionView
+  readAgentNoteDecisions?: (agentName: string) => OutlookNoteDecisionView
   readAgentHabits?: (agentName: string) => OutlookHabitView
   readDaemonHealth?: () => OutlookDaemonHealthDeep | null
   readLogs?: () => OutlookLogView

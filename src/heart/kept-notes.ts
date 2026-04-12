@@ -6,41 +6,41 @@ import { readDiaryEntries, resolveDiaryRoot, type DiaryEntry } from "../mind/dia
 import type { FriendRecord } from "../mind/friends/types"
 import { emitNervesEvent } from "../nerves/runtime"
 
-export interface RecallSource {
+export interface KeptNoteSource {
   kind: "diary" | "journal" | "friend-note"
   label: string
   ref?: string
 }
 
-export interface RecallCandidate {
+export interface KeptNoteCandidate {
   text: string
-  source: RecallSource
+  source: KeptNoteSource
 }
 
-export type ActiveRecallJudgeResult =
+export type KeptNotesJudgeResult =
   | { status: "none"; pressure: string[] }
   | { status: "found"; note: string; sourceIndexes?: number[] }
   | { status: "fuzzy"; hint: string; sourceIndexes?: number[] }
 
-export interface ActiveRecallJudgeInput {
+export interface KeptNotesJudgeInput {
   query: string
-  candidates: RecallCandidate[]
+  candidates: KeptNoteCandidate[]
 }
 
-export type ActiveRecallJudge = (input: ActiveRecallJudgeInput) => Promise<ActiveRecallJudgeResult>
+export type KeptNotesJudge = (input: KeptNotesJudgeInput) => Promise<KeptNotesJudgeResult>
 
-export type ActiveRecallOutcome =
+export type KeptNotesOutcome =
   | { status: "none"; elapsedMs: number; pressure: string[] }
-  | { status: "found"; note: string; sources: RecallSource[]; elapsedMs: number }
-  | { status: "fuzzy"; hint: string; sources: RecallSource[]; elapsedMs: number }
+  | { status: "found"; note: string; sources: KeptNoteSource[]; elapsedMs: number }
+  | { status: "fuzzy"; hint: string; sources: KeptNoteSource[]; elapsedMs: number }
   | { status: "timeout"; elapsedMs: number }
   | { status: "error"; reason: string; elapsedMs: number }
 
-export interface InjectActiveRecallOptions {
+export interface InjectKeptNotesOptions {
   diaryRoot?: string
   journalDir?: string
   friend?: FriendRecord
-  judge?: ActiveRecallJudge
+  judge?: KeptNotesJudge
   timeoutMs?: number
   channel?: string
   traceId?: string
@@ -52,7 +52,7 @@ interface JournalIndexEntry {
   preview: string
 }
 
-interface ActiveRecallRuntimeCallbacks {
+interface KeptNotesRuntimeCallbacks {
   onModelStart(): void
   onModelStreamStart(): void
   onTextChunk(text: string): void
@@ -62,12 +62,12 @@ interface ActiveRecallRuntimeCallbacks {
   onError(error: Error, severity: "transient" | "terminal"): void
 }
 
-export interface ActiveRecallRuntime {
+export interface KeptNotesRuntime {
   resetTurnState?(messages: OpenAI.ChatCompletionMessageParam[]): void
   streamTurn(request: {
     messages: OpenAI.ChatCompletionMessageParam[]
     activeTools: OpenAI.ChatCompletionFunctionTool[]
-    callbacks: ActiveRecallRuntimeCallbacks
+    callbacks: KeptNotesRuntimeCallbacks
     signal?: AbortSignal
     toolChoiceRequired?: boolean
     reasoningEffort?: string
@@ -76,7 +76,7 @@ export interface ActiveRecallRuntime {
 
 const DEFAULT_TIMEOUT_MS = 2500
 const MAX_CANDIDATES = 8
-const NOOP_CALLBACKS: ActiveRecallRuntimeCallbacks = {
+const NOOP_CALLBACKS: KeptNotesRuntimeCallbacks = {
   onModelStart() {},
   onModelStreamStart() {},
   onTextChunk() {},
@@ -140,14 +140,14 @@ function journalDirForDiaryRoot(diaryRoot: string, explicitJournalDir?: string):
   return path.join(path.dirname(diaryRoot), "journal")
 }
 
-function diaryCandidate(fact: DiaryEntry): RecallCandidate {
+function diaryCandidate(fact: DiaryEntry): KeptNoteCandidate {
   return {
     text: fact.text,
     source: { kind: "diary", label: "diary", ref: fact.id },
   }
 }
 
-function friendNoteCandidates(friend: FriendRecord | undefined, queryTerms: Set<string>): Array<{ candidate: RecallCandidate; score: number }> {
+function friendNoteCandidates(friend: FriendRecord | undefined, queryTerms: Set<string>): Array<{ candidate: KeptNoteCandidate; score: number }> {
   if (!friend) return []
   return Object.entries(friend.notes ?? {})
     .map(([key, note]) => {
@@ -163,7 +163,7 @@ function friendNoteCandidates(friend: FriendRecord | undefined, queryTerms: Set<
     .filter((entry) => entry.score > 0)
 }
 
-export function gatherActiveRecallCandidates(query: string, options: InjectActiveRecallOptions = {}): RecallCandidate[] {
+export function gatherKeptNotesCandidates(query: string, options: InjectKeptNotesOptions = {}): KeptNoteCandidate[] {
   const queryTerms = tokenize(query)
   if (queryTerms.size === 0) return []
 
@@ -190,9 +190,9 @@ export function gatherActiveRecallCandidates(query: string, options: InjectActiv
     .map((entry) => entry.candidate)
 }
 
-function selectedSources(candidates: RecallCandidate[], indexes?: number[]): RecallSource[] {
+function selectedSources(candidates: KeptNoteCandidate[], indexes?: number[]): KeptNoteSource[] {
   if (!indexes || indexes.length === 0) return []
-  const sources: RecallSource[] = []
+  const sources: KeptNoteSource[] = []
   for (const index of indexes) {
     if (!Number.isInteger(index)) continue
     const candidate = candidates[index]
@@ -201,28 +201,60 @@ function selectedSources(candidates: RecallCandidate[], indexes?: number[]): Rec
   return sources
 }
 
-function ensureFirstPerson(text: string): string {
-  const trimmed = text.trim()
-  if (/^(i|i'm|i’ve|i've|my|me)\b/i.test(trimmed)) return trimmed
-  return `I chose to keep this: ${trimmed}`
+function isFirstPerson(text: string): boolean {
+  return /^(i|i'm|i’ve|i've|my|me)\b/i.test(text.trim())
 }
 
-export function renderActiveRecallOutcome(outcome: ActiveRecallOutcome): string | null {
+function foundLine(text: string): string {
+  const trimmed = text.trim()
+  if (isFirstPerson(trimmed)) return trimmed
+  return `I kept this: ${trimmed}`
+}
+
+function fuzzyLine(text: string): string {
+  const trimmed = text.trim()
+  if (isFirstPerson(trimmed)) return trimmed
+  return `I may have kept something related: ${trimmed}`
+}
+
+const SOURCE_KIND_ORDER: KeptNoteSource["kind"][] = ["diary", "journal", "friend-note"]
+const SOURCE_KIND_LABELS: Record<KeptNoteSource["kind"], string> = {
+  diary: "my diary",
+  journal: "my journal",
+  "friend-note": "my friend notes",
+}
+
+function joinLabels(labels: string[]): string {
+  if (labels.length === 1) return labels[0]
+  if (labels.length === 2) return `${labels[0]} and ${labels[1]}`
+  return `${labels.slice(0, -1).join(", ")}, and ${labels[labels.length - 1]}`
+}
+
+function sourceHeading(sources: KeptNoteSource[]): string {
+  const sourceKinds = new Set(sources.map((source) => source.kind))
+  const labels = SOURCE_KIND_ORDER
+    .filter((kind) => sourceKinds.has(kind))
+    .map((kind) => SOURCE_KIND_LABELS[kind])
+  if (labels.length === 0) return "## from notes i chose to keep"
+  return `## from ${joinLabels(labels)}`
+}
+
+export function renderKeptNotesOutcome(outcome: KeptNotesOutcome): string | null {
   if (outcome.status === "found") {
-    return `## notes I chose to keep\n${ensureFirstPerson(outcome.note)}`
+    return `${sourceHeading(outcome.sources)}\nThis may matter now:\n${foundLine(outcome.note)}`
   }
   if (outcome.status === "fuzzy") {
-    return `## notes I chose to keep\n${ensureFirstPerson(outcome.hint)}`
+    return `${sourceHeading(outcome.sources)}\nThis is only a possible match; I should verify it before relying on it:\n${fuzzyLine(outcome.hint)}`
   }
   return null
 }
 
-function finish(outcome: ActiveRecallOutcome, traceId?: string): ActiveRecallOutcome {
+function finish(outcome: KeptNotesOutcome, traceId?: string): KeptNotesOutcome {
   emitNervesEvent({
     component: "mind",
-    event: "mind.active_recall_end",
+    event: "mind.kept_notes_end",
     trace_id: traceId,
-    message: "active recall completed",
+    message: "kept notes completed",
     meta: { status: outcome.status, elapsedMs: outcome.elapsedMs },
   })
   return outcome
@@ -243,10 +275,10 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
   })
 }
 
-export async function injectActiveRecall(
+export async function injectKeptNotes(
   messages: OpenAI.ChatCompletionMessageParam[],
-  options: InjectActiveRecallOptions = {},
-): Promise<ActiveRecallOutcome> {
+  options: InjectKeptNotesOptions = {},
+): Promise<KeptNotesOutcome> {
   const startedAt = Date.now()
   const systemMessage = messages[0]
   const query = latestUserText(messages)
@@ -257,14 +289,14 @@ export async function injectActiveRecall(
 
   emitNervesEvent({
     component: "mind",
-    event: "mind.active_recall_start",
+    event: "mind.kept_notes_start",
     trace_id: options.traceId,
-    message: "active recall started",
+    message: "kept notes started",
     meta: { channel: options.channel ?? "unknown" },
   })
 
   try {
-    const candidates = gatherActiveRecallCandidates(query, options)
+    const candidates = gatherKeptNotesCandidates(query, options)
     if (candidates.length === 0 || !options.judge) {
       return finish({ status: "none", elapsedMs: elapsedSince(startedAt), pressure: [] }, options.traceId)
     }
@@ -278,7 +310,7 @@ export async function injectActiveRecall(
     }
 
     const elapsedMs = elapsedSince(startedAt)
-    const outcome: ActiveRecallOutcome =
+    const outcome: KeptNotesOutcome =
       judged.status === "found"
         ? { status: "found", note: judged.note, sources: selectedSources(candidates, judged.sourceIndexes), elapsedMs }
         : judged.status === "fuzzy"
@@ -286,13 +318,13 @@ export async function injectActiveRecall(
           : { status: "none", pressure: judged.pressure, elapsedMs }
 
     if (outcome.status === "found" || outcome.status === "fuzzy") {
-      const rendered = renderActiveRecallOutcome(outcome)
+      const rendered = renderKeptNotesOutcome(outcome)
       messages[0] = { role: "system", content: `${systemMessage.content}\n\n${rendered}` }
       emitNervesEvent({
         component: "mind",
-        event: "mind.active_recall_injected",
+        event: "mind.kept_notes_injected",
         trace_id: options.traceId,
-        message: "active recall injected",
+        message: "kept notes injected",
         meta: { status: outcome.status, sourceCount: outcome.sources.length },
       })
     }
@@ -300,24 +332,24 @@ export async function injectActiveRecall(
     return finish(outcome, options.traceId)
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
-    const outcome: ActiveRecallOutcome = { status: "error", reason, elapsedMs: elapsedSince(startedAt) }
+    const outcome: KeptNotesOutcome = { status: "error", reason, elapsedMs: elapsedSince(startedAt) }
     emitNervesEvent({
       level: "warn",
       component: "mind",
-      event: "mind.active_recall_error",
+      event: "mind.kept_notes_error",
       trace_id: options.traceId,
-      message: "active recall failed",
+      message: "kept notes failed",
       meta: { reason },
     })
     return finish(outcome, options.traceId)
   }
 }
 
-function parseJudgeResult(content: string): ActiveRecallJudgeResult {
+function parseJudgeResult(content: string): KeptNotesJudgeResult {
   try {
     const parsed = JSON.parse(content) as unknown
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return { status: "none", pressure: ["invalid active recall judge output"] }
+      return { status: "none", pressure: ["invalid kept notes judge output"] }
     }
     const record = parsed as Record<string, unknown>
     if (record.status === "found" && typeof record.note === "string" && record.note.trim()) {
@@ -340,13 +372,13 @@ function parseJudgeResult(content: string): ActiveRecallJudgeResult {
         pressure: Array.isArray(record.pressure) ? record.pressure.filter((value): value is string => typeof value === "string") : [],
       }
     }
-    return { status: "none", pressure: ["invalid active recall judge output"] }
+    return { status: "none", pressure: ["invalid kept notes judge output"] }
   } catch {
-    return { status: "none", pressure: ["invalid active recall judge output"] }
+    return { status: "none", pressure: ["invalid kept notes judge output"] }
   }
 }
 
-function createJudgePrompt(input: ActiveRecallJudgeInput): OpenAI.ChatCompletionMessageParam[] {
+function createJudgePrompt(input: KeptNotesJudgeInput): OpenAI.ChatCompletionMessageParam[] {
   const candidates = input.candidates
     .map((candidate, index) => `${index}. [${candidate.source.kind}] ${candidate.text}`)
     .join("\n")
@@ -356,7 +388,7 @@ function createJudgePrompt(input: ActiveRecallJudgeInput): OpenAI.ChatCompletion
       content: [
         "Decide whether these intentionally kept notes matter to the user's current turn.",
         "Return only JSON.",
-        "Use found when a note clearly helps, fuzzy when it rings a bell but is uncertain, and none when nothing should be surfaced.",
+        "Use found when a note clearly helps, fuzzy when a note is close but uncertain, and none when nothing should be surfaced.",
         "Shapes: {\"status\":\"found\",\"note\":\"...\",\"sourceIndexes\":[0]}, {\"status\":\"fuzzy\",\"hint\":\"...\",\"sourceIndexes\":[0]}, or {\"status\":\"none\",\"pressure\":[]}.",
       ].join("\n"),
     },
@@ -367,7 +399,7 @@ function createJudgePrompt(input: ActiveRecallJudgeInput): OpenAI.ChatCompletion
   ]
 }
 
-export function createActiveRecallJudge(runtime: ActiveRecallRuntime, signal?: AbortSignal): ActiveRecallJudge {
+export function createKeptNotesJudge(runtime: KeptNotesRuntime, signal?: AbortSignal): KeptNotesJudge {
   return async (input) => {
     const messages = createJudgePrompt(input)
     runtime.resetTurnState?.(messages)
