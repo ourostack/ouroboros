@@ -3,12 +3,6 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 
-import { emitNervesEvent } from "../../nerves/runtime"
-
-vi.mock("../../nerves/runtime", () => ({
-  emitNervesEvent: vi.fn(),
-}))
-
 describe("active recall", () => {
   let tmpDir: string
   let diaryRoot: string
@@ -20,7 +14,6 @@ describe("active recall", () => {
     journalDir = path.join(tmpDir, "journal")
     fs.mkdirSync(diaryRoot, { recursive: true })
     fs.mkdirSync(journalDir, { recursive: true })
-    vi.mocked(emitNervesEvent).mockClear()
   })
 
   afterEach(() => {
