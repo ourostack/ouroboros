@@ -85,6 +85,40 @@ describe("pulseSection", () => {
     expect(result).not.toContain("broken siblings")
   })
 
+  it("renders inner-channel reachable siblings without teaching send_message delivery", async () => {
+    mockReadPulse.mockReturnValue({
+      generatedAt: "2026-04-08T22:00:00Z",
+      daemonVersion: "0.1.0-alpha.273",
+      agents: [
+        {
+          name: "slugger",
+          bundlePath: "/Users/test/AgentBundles/slugger.ouro",
+          status: "running",
+          lastSeenAt: "2026-04-08T22:00:00Z",
+          errorReason: null,
+          fixHint: null,
+          alertId: null,
+        },
+        {
+          name: "ouroboros",
+          bundlePath: "/Users/test/AgentBundles/ouroboros.ouro",
+          status: "running",
+          lastSeenAt: "2026-04-08T21:55:00Z",
+          errorReason: null,
+          fixHint: null,
+          alertId: null,
+        },
+      ],
+    })
+    const { pulseSection } = await import("../../mind/prompt")
+    const result = pulseSection("inner")
+    expect(result).toContain("reachable siblings")
+    expect(result).toContain("inner dialogue does not call send_message")
+    expect(result).toContain("use surface")
+    expect(result).not.toContain("via send_message")
+    expect(result).not.toContain("to ask a sibling for help: i send_message them")
+  })
+
   it("renders a broken sibling without a fix hint (still shows the reason)", async () => {
     mockReadPulse.mockReturnValue({
       generatedAt: "2026-04-08T22:00:00Z",
