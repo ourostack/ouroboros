@@ -19,7 +19,7 @@ import {
   type OutlookJournalEntry,
   type OutlookLogEntry,
   type OutlookLogView,
-  type OutlookMemoryView,
+  type OutlookNotesView,
   type OutlookNeedsMeItem,
   type OutlookNeedsMeView,
   type OutlookPendingChannel,
@@ -327,7 +327,7 @@ export function readDaemonHealthDeep(healthPath?: string): OutlookDaemonHealthDe
 
 /* v8 ignore stop */
 
-export function readMemoryView(agentRoot: string): OutlookMemoryView {
+export function readNotesView(agentRoot: string): OutlookNotesView {
   const diaryRoot = path.join(agentRoot, "diary")
   const effectiveDiaryRoot = fs.existsSync(diaryRoot) ? diaryRoot : null
 

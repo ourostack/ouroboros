@@ -433,7 +433,7 @@ export function OverviewTab({ view, deskPrefs, refreshGeneration }: { view: Outl
         </Section>
       </div>
 
-      {/* Recently closed — closure memory */}
+      {/* Recently closed — closure note */}
       {(() => {
         const fulfilled = obligations.items.filter((o) => o.status === "fulfilled")
         if (fulfilled.length === 0) return null

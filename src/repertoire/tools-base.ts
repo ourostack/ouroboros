@@ -6,7 +6,7 @@ import type { ActiveWorkFrame } from "../heart/active-work";
 
 import { fileToolDefinitions } from "./tools-files";
 import { shellToolDefinitions } from "./tools-shell";
-import { memoryToolDefinitions } from "./tools-memory";
+import { notesToolDefinitions } from "./tools-notes";
 import { bridgeToolDefinitions } from "./tools-bridge";
 import { sessionToolDefinitions } from "./tools-session";
 import { continuityToolDefinitions } from "./tools-continuity";
@@ -81,11 +81,11 @@ export interface ToolDefinition {
 export const editFileReadTracker = new Set<string>();
 
 // Combined base tool definitions — assembled from category modules.
-// Order preserved: files, shell, memory, bridge, session, continuity, config, coding.
+// Order preserved: files, shell, notes, bridge, session, continuity, config, coding.
 export const baseToolDefinitions: ToolDefinition[] = [
   ...fileToolDefinitions,
   ...shellToolDefinitions,
-  ...memoryToolDefinitions,
+  ...notesToolDefinitions,
   ...bridgeToolDefinitions,
   ...sessionToolDefinitions,
   ...continuityToolDefinitions,

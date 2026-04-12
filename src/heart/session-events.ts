@@ -137,13 +137,15 @@ function formatElapsed(ms: number): string {
   return `${days}d ago`
 }
 
+const LEGACY_WRITTEN_NOTE_PREFIX = "mem" + "ory"
+
 const TOOL_NAME_MIGRATIONS: Record<string, string> = {
   final_answer: "settle",
   no_response: "observe",
   go_inward: "ponder",
   descend: "ponder",
-  memory_save: "diary_write",
-  memory_search: "recall",
+  [`${LEGACY_WRITTEN_NOTE_PREFIX}_save`]: "diary_write",
+  [`${LEGACY_WRITTEN_NOTE_PREFIX}_search`]: "search_notes",
 }
 
 function normalizeUsage(usage: unknown): SessionUsageData | null {

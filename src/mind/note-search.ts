@@ -18,11 +18,11 @@ export interface DiaryEntryRecord {
   provenance?: DiaryEntryProvenance
 }
 
-export interface RecalledFact extends DiaryEntryRecord {
+export interface DiarySearchHit extends DiaryEntryRecord {
   score: number
 }
 
-export interface RecallQueryOptions {
+export interface NoteSearchOptions {
   minScore?: number
   topK?: number
 }
@@ -34,13 +34,13 @@ export interface JournalIndexEntry {
   preview: string
 }
 
-export interface RecalledJournalEntry {
+export interface JournalSearchHit {
   filename: string
   preview: string
   score: number
 }
 
-export interface InjectAssociativeRecallOptions extends RecallQueryOptions {
+export interface InjectNoteSearchContextOptions extends NoteSearchOptions {
   provider?: EmbeddingProvider
   diaryRoot?: string
   journalDir?: string
@@ -100,12 +100,12 @@ export function cosineSimilarity(left: number[], right: number[]): number {
   return dot / (Math.sqrt(leftNorm) * Math.sqrt(rightNorm))
 }
 
-export async function recallFactsForQuery(
+export async function searchDiaryFactsForQuery(
   query: string,
   facts: DiaryEntryRecord[],
   provider: EmbeddingProvider,
-  options?: RecallQueryOptions,
-): Promise<RecalledFact[]> {
+  options?: NoteSearchOptions,
+): Promise<DiarySearchHit[]> {
   const trimmed = query.trim()
   if (!trimmed) return []
   const minScore = options?.minScore ?? DEFAULT_MIN_SCORE
@@ -138,7 +138,7 @@ export function searchJournalIndex(
   queryEmbedding: number[],
   entries: JournalIndexEntry[],
   options?: { minScore?: number; topK?: number },
-): RecalledJournalEntry[] {
+): JournalSearchHit[] {
   const minScore = options?.minScore ?? DEFAULT_MIN_SCORE
   const topK = options?.topK ?? DEFAULT_TOP_K
 
@@ -161,9 +161,9 @@ function resolveJournalDir(diaryRoot: string, explicitJournalDir?: string): stri
   return path.join(agentRoot, "journal")
 }
 
-export async function injectAssociativeRecall(
+export async function injectNoteSearchContext(
   messages: OpenAI.ChatCompletionMessageParam[],
-  options?: InjectAssociativeRecallOptions,
+  options?: InjectNoteSearchContextOptions,
 ): Promise<void> {
   try {
     if (messages[0]?.role !== "system" || typeof messages[0].content !== "string") return
@@ -183,10 +183,10 @@ export async function injectAssociativeRecall(
 
     // Search diary entries
     if (facts.length > 0) {
-      let recalled: RecalledFact[]
+      let found: DiarySearchHit[]
       try {
         const provider = options?.provider ?? createDefaultProvider()
-        recalled = await recallFactsForQuery(query, facts, provider, options)
+        found = await searchDiaryFactsForQuery(query, facts, provider, options)
 
         // Compute query embedding for journal search while provider is available
         if (journalEntries.length > 0) {
@@ -197,22 +197,22 @@ export async function injectAssociativeRecall(
         // Embeddings unavailable — fall back to substring matching
         const lowerQuery = query.toLowerCase()
         const topK = options?.topK ?? DEFAULT_TOP_K
-        recalled = facts
+        found = facts
           .filter((fact) => fact.text.toLowerCase().includes(lowerQuery))
           .slice(0, topK)
           .map((fact) => ({ ...fact, score: 1 }))
-        if (recalled.length > 0) {
+        if (found.length > 0) {
           emitNervesEvent({
             level: "warn",
             component: "mind",
-            event: "mind.associative_recall_fallback",
+            event: "mind.note_search_fallback",
             message: "embeddings unavailable, used substring fallback",
-            meta: { matchCount: recalled.length },
+            meta: { matchCount: found.length },
           })
         }
       }
 
-      for (const fact of recalled) {
+      for (const fact of found) {
         let meta = `score=${fact.score.toFixed(3)} source=${fact.source}`
         if (fact.provenance) {
           if (fact.provenance.channel) meta += ` channel=${fact.provenance.channel}`
@@ -254,26 +254,26 @@ export async function injectAssociativeRecall(
     // Sort all results by score descending
     resultLines.sort((left, right) => right.score - left.score)
 
-    const recallSection = resultLines
+    const noteSection = resultLines
       .map((entry, index) => `${index + 1}. ${entry.text}`)
       .join("\n")
     messages[0] = {
       role: "system",
-      content: `${messages[0].content}\n\n## recalled context\n${recallSection}`,
+      content: `${messages[0].content}\n\n## from my diary and journal\n${noteSection}`,
     }
 
     emitNervesEvent({
       component: "mind",
-      event: "mind.associative_recall",
-      message: "associative recall injected",
+      event: "mind.note_search_context",
+      message: "note search injected",
       meta: { count: resultLines.length },
     })
   } catch (error) {
     emitNervesEvent({
       level: "warn",
       component: "mind",
-      event: "mind.associative_recall_error",
-      message: "associative recall failed",
+      event: "mind.note_search_context_error",
+      message: "note search failed",
       meta: {
         reason: error instanceof Error ? error.message : /* v8 ignore start -- defensive: non-Error catch branch @preserve */ String(error) /* v8 ignore stop */,
       },

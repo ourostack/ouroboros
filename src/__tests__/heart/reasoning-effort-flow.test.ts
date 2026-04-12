@@ -84,8 +84,8 @@ vi.mock("@anthropic-ai/sdk", () => {
   return { default: MockAnthropic }
 })
 
-vi.mock("../../mind/associative-recall", () => ({
-  injectAssociativeRecall: vi.fn().mockResolvedValue(undefined),
+vi.mock("../../mind/note-search", () => ({
+  injectNoteSearchContext: vi.fn().mockResolvedValue(undefined),
 }))
 
 import * as fs from "fs"

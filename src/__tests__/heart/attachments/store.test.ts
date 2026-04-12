@@ -8,7 +8,7 @@ import {
   getRecentAttachmentsPath,
   listRecentAttachments,
   readRecentAttachments,
-  rememberRecentAttachment,
+  cacheRecentAttachment,
 } from "../../../heart/attachments/store"
 import {
   buildAttachmentId,
@@ -90,8 +90,8 @@ describe("recent attachment store", () => {
       2_000,
     )
 
-    rememberRecentAttachment("slugger", first, agentRoot)
-    rememberRecentAttachment("slugger", second, agentRoot)
+    cacheRecentAttachment("slugger", first, agentRoot)
+    cacheRecentAttachment("slugger", second, agentRoot)
 
     expect(readRecentAttachments("slugger", agentRoot).map((entry) => entry.id)).toEqual([
       second.id,
@@ -119,8 +119,8 @@ describe("recent attachment store", () => {
       displayName: "receipt-updated.jpg",
     }
 
-    rememberRecentAttachment("slugger", original, agentRoot)
-    rememberRecentAttachment("slugger", updated, agentRoot)
+    cacheRecentAttachment("slugger", original, agentRoot)
+    cacheRecentAttachment("slugger", updated, agentRoot)
 
     const stored = readRecentAttachments("slugger", agentRoot)
     expect(stored).toHaveLength(1)
@@ -149,8 +149,8 @@ describe("recent attachment store", () => {
       2_000,
     )
 
-    rememberRecentAttachment("slugger", image, agentRoot)
-    rememberRecentAttachment("slugger", audio, agentRoot)
+    cacheRecentAttachment("slugger", image, agentRoot)
+    cacheRecentAttachment("slugger", audio, agentRoot)
 
     const images = listRecentAttachments("slugger", { kind: "image" }, agentRoot)
     const audioOnly = listRecentAttachments("slugger", { kind: "audio" }, agentRoot)
@@ -163,7 +163,7 @@ describe("recent attachment store", () => {
     const agentRoot = makeAgentRoot()
 
     for (let index = 0; index < MAX_RECENT_ATTACHMENTS + 5; index += 1) {
-      rememberRecentAttachment(
+      cacheRecentAttachment(
         "slugger",
         buildBlueBubblesAttachmentRecord(
           {

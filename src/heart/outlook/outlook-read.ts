@@ -18,13 +18,13 @@ export {
   readFriendView,
   readHabitView,
   readLogView,
-  readMemoryView,
+  readNotesView,
   readNeedsMeView,
 } from "./readers/runtime-readers"
 
 export {
   readChangesView,
-  readMemoryDecisionView,
+  readNoteDecisionView,
   readObligationDetailView,
   readOrientationView,
   readOutlookContinuity,

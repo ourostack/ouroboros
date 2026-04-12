@@ -27,7 +27,7 @@ function listMarkdownBasenames(dir: string): string[] {
     .sort();
 }
 
-// in-memory store for loaded skills
+// process-local store for loaded skills
 const loadedSkills: string[] = [];
 
 export function listSkills(): string[] {

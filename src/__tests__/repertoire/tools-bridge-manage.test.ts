@@ -22,8 +22,8 @@ vi.mock("../../heart/bridges/manager", async () => {
   }
 })
 
-vi.mock("../../heart/session-recall", () => ({
-  recallSession: vi.fn().mockResolvedValue({
+vi.mock("../../heart/session-transcript", () => ({
+  summarizeSessionTail: vi.fn().mockResolvedValue({
     kind: "ok",
     transcript: "user: hi\nassistant: hello",
     summary: "recent focus: relay setup",
@@ -65,9 +65,9 @@ describe("bridge_manage tool", () => {
     mockPromoteBridgeToTask.mockReset()
     mockCompleteBridge.mockReset()
     mockCancelBridge.mockReset()
-    const recall = await import("../../heart/session-recall")
-    vi.mocked(recall.recallSession).mockReset()
-    vi.mocked(recall.recallSession).mockResolvedValue({
+    const search_notes = await import("../../heart/session-transcript")
+    vi.mocked(search_notes.summarizeSessionTail).mockReset()
+    vi.mocked(search_notes.summarizeSessionTail).mockResolvedValue({
       kind: "ok",
       transcript: "user: hi\nassistant: hello",
       summary: "recent focus: relay setup",
@@ -134,7 +134,7 @@ describe("bridge_manage tool", () => {
     expect(result).toContain("state: active-idle")
   })
 
-  it("attaches another existing session by canonical identity and reuses session recall snapshotting", async () => {
+  it("attaches another existing session by canonical identity and reuses session search_notes snapshotting", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const tool = baseToolDefinitions.find((entry) => entry.tool.function.name === "bridge_manage")!
     mockAttachSession.mockReturnValue({
@@ -223,12 +223,12 @@ describe("bridge_manage tool", () => {
     expect(result).toContain("sessions: 2")
   })
 
-  it("falls back to the raw recall snapshot when summarization fails during attach", async () => {
+  it("falls back to the raw search_notes snapshot when summarization fails during attach", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const tool = baseToolDefinitions.find((entry) => entry.tool.function.name === "bridge_manage")!
-    const recall = await import("../../heart/session-recall")
+    const search_notes = await import("../../heart/session-transcript")
 
-    vi.mocked(recall.recallSession)
+    vi.mocked(search_notes.summarizeSessionTail)
       .mockRejectedValueOnce(new Error("summary failed"))
       .mockResolvedValueOnce({
         kind: "ok",
@@ -270,13 +270,13 @@ describe("bridge_manage tool", () => {
       } as any,
     )
 
-    expect(recall.recallSession).toHaveBeenNthCalledWith(1, expect.objectContaining({
+    expect(search_notes.summarizeSessionTail).toHaveBeenNthCalledWith(1, expect.objectContaining({
       friendId: "friend-2",
       channel: "teams",
       key: "conv-2",
       summarize: expect.any(Function),
     }))
-    expect(recall.recallSession).toHaveBeenNthCalledWith(2, expect.objectContaining({
+    expect(search_notes.summarizeSessionTail).toHaveBeenNthCalledWith(2, expect.objectContaining({
       friendId: "friend-2",
       channel: "teams",
       key: "conv-2",
@@ -288,14 +288,14 @@ describe("bridge_manage tool", () => {
     expect(result).toContain("sessions: 2")
   })
 
-  it("still reports missing when both summarized and raw recall fail during attach", async () => {
+  it("still reports missing when both summarized and raw search_notes fail during attach", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const tool = baseToolDefinitions.find((entry) => entry.tool.function.name === "bridge_manage")!
-    const recall = await import("../../heart/session-recall")
+    const search_notes = await import("../../heart/session-transcript")
 
-    vi.mocked(recall.recallSession)
+    vi.mocked(search_notes.summarizeSessionTail)
       .mockRejectedValueOnce(new Error("summary failed"))
-      .mockRejectedValueOnce(new Error("raw recall failed"))
+      .mockRejectedValueOnce(new Error("raw session tail failed"))
 
     const result = await tool.handler(
       {
@@ -358,8 +358,8 @@ describe("bridge_manage tool", () => {
   it("uses an explicit empty-session snapshot when attaching a session with no non-system messages", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const tool = baseToolDefinitions.find((entry) => entry.tool.function.name === "bridge_manage")!
-    const recall = await import("../../heart/session-recall")
-    vi.mocked(recall.recallSession).mockResolvedValueOnce({ kind: "empty" } as any)
+    const search_notes = await import("../../heart/session-transcript")
+    vi.mocked(search_notes.summarizeSessionTail).mockResolvedValueOnce({ kind: "empty" } as any)
     mockAttachSession.mockReturnValue({
       id: "bridge-1",
       objective: "relay Ari between cli and teams",
@@ -533,8 +533,8 @@ describe("bridge_manage tool", () => {
       "friendId and channel are required for bridge attach.",
     )
 
-    const recall = await import("../../heart/session-recall")
-    vi.mocked(recall.recallSession).mockResolvedValueOnce({ kind: "missing" } as any)
+    const search_notes = await import("../../heart/session-transcript")
+    vi.mocked(search_notes.summarizeSessionTail).mockResolvedValueOnce({ kind: "missing" } as any)
     expect(
       await tool.handler(
         { action: "attach", bridgeId: "bridge-1", friendId: "friend-2", channel: "teams", key: "conv-2" },
@@ -543,11 +543,11 @@ describe("bridge_manage tool", () => {
     ).toBe("no session found for that friend/channel/key combination.")
   })
 
-  it("falls back to the same missing-session response when shared recall throws during attach", async () => {
+  it("falls back to the same missing-session response when shared search_notes throws during attach", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const tool = baseToolDefinitions.find((entry) => entry.tool.function.name === "bridge_manage")!
-    const recall = await import("../../heart/session-recall")
-    vi.mocked(recall.recallSession).mockRejectedValueOnce(new Error("boom"))
+    const search_notes = await import("../../heart/session-transcript")
+    vi.mocked(search_notes.summarizeSessionTail).mockRejectedValueOnce(new Error("boom"))
 
     expect(
       await tool.handler(

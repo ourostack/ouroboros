@@ -7,7 +7,7 @@ import {
   type SessionEvent,
 } from "./session-events"
 
-export interface SessionRecallOptions {
+export interface SessionTailOptions {
   sessionPath: string
   friendId: string
   channel: string
@@ -17,7 +17,7 @@ export interface SessionRecallOptions {
   trustLevel?: TrustLevel
 }
 
-export type SessionRecallResult =
+export type SessionTailResult =
   | { kind: "missing" }
   | { kind: "empty" }
   | {
@@ -158,11 +158,11 @@ function buildSearchExcerpts(
     .map((candidate) => candidate.excerpt)
 }
 
-export async function recallSession(options: SessionRecallOptions): Promise<SessionRecallResult> {
+export async function summarizeSessionTail(options: SessionTailOptions): Promise<SessionTailResult> {
   emitNervesEvent({
     component: "daemon",
-    event: "daemon.session_recall",
-    message: "recalling session transcript tail",
+    event: "daemon.session_tail_summary",
+    message: "summarizing session transcript tail",
     meta: {
       friendId: options.friendId,
       channel: options.channel,

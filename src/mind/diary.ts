@@ -3,7 +3,7 @@ import * as path from "path";
 import { randomUUID } from "crypto";
 import { getAgentRoot } from "../heart/identity";
 import { emitNervesEvent } from "../nerves/runtime";
-import { cosineSimilarity } from "./associative-recall";
+import { cosineSimilarity } from "./note-search";
 import { detectSuspiciousContent } from "./diary-integrity";
 import { type EmbeddingProvider, createDefaultEmbeddingProvider } from "./embedding-provider";
 

@@ -27,7 +27,7 @@ export interface FileStateSnapshot {
 
 /**
  * Session-scoped LRU cache tracking file reads.
- * Stores content hashes (not full content) to limit memory.
+ * Stores content hashes (not full content) to limit stored content.
  * Keyed by absolute file path.
  *
  * Also maintains a separate snapshot list for future rewind support.

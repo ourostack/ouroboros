@@ -1,7 +1,7 @@
 import * as fs from "fs"
 import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
-import type { JournalIndexEntry } from "./associative-recall"
+import type { JournalIndexEntry } from "./note-search"
 
 export interface JournalEmbeddingProvider {
   embed(texts: string[]): Promise<number[][]>

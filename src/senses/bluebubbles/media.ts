@@ -7,7 +7,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { getAgentName, getAgentRoot, getAgentToolsRoot } from "../../heart/identity"
 import { getModelCapabilities } from "../../heart/model-capabilities"
 import { normalizeImageForVision } from "../../heart/attachments/image-normalize"
-import { rememberRecentAttachment } from "../../heart/attachments/store"
+import { cacheRecentAttachment } from "../../heart/attachments/store"
 import {
   buildBlueBubblesAttachmentRecord,
   persistBlueBubblesAttachmentSource,
@@ -320,7 +320,7 @@ export async function hydrateBlueBubblesAttachments(
   for (const attachment of attachments) {
     const name = describeAttachment(attachment)
     const initialRecord = attachment.guid?.trim()
-      ? rememberRecentAttachment(agentName, buildBlueBubblesAttachmentRecord(attachment), agentRoot)
+      ? cacheRecentAttachment(agentName, buildBlueBubblesAttachmentRecord(attachment), agentRoot)
       : null
     try {
       const downloaded = await downloadBlueBubblesAttachment(attachment, config, channelConfig, fetchImpl)

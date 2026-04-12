@@ -1,16 +1,16 @@
 import { useEffect, useState } from "react"
 import { Badge } from "../../catalyst/badge"
 import { fetchJson, relTime } from "../../api"
-import type { OutlookMemoryDecisionView, OutlookMemoryView } from "../../contracts"
+import type { OutlookNoteDecisionView, OutlookNotesView } from "../../contracts"
 
-export function MemoryTab({ agentName, refreshGeneration }: { agentName: string; refreshGeneration: number }) {
-  const [data, setData] = useState<OutlookMemoryView | null>(null)
-  const [decisions, setDecisions] = useState<OutlookMemoryDecisionView | null>(null)
+export function NotesTab({ agentName, refreshGeneration }: { agentName: string; refreshGeneration: number }) {
+  const [data, setData] = useState<OutlookNotesView | null>(null)
+  const [decisions, setDecisions] = useState<OutlookNoteDecisionView | null>(null)
   const [view, setView] = useState<"diary" | "journal" | "decisions">("diary")
 
   useEffect(() => {
-    fetchJson<OutlookMemoryView>(`/agents/${encodeURIComponent(agentName)}/memory`).then(setData)
-    fetchJson<OutlookMemoryDecisionView>(`/agents/${encodeURIComponent(agentName)}/memory-decisions`).then(setDecisions).catch(() => {})
+    fetchJson<OutlookNotesView>(`/agents/${encodeURIComponent(agentName)}/notes`).then(setData)
+    fetchJson<OutlookNoteDecisionView>(`/agents/${encodeURIComponent(agentName)}/note-decisions`).then(setDecisions).catch(() => {})
   }, [agentName, refreshGeneration])
 
   if (!data) {
@@ -115,7 +115,7 @@ export function MemoryTab({ agentName, refreshGeneration }: { agentName: string;
               ))}
             </div>
           ) : (
-            <p className="text-sm text-ouro-shadow italic">No memory decisions logged yet.</p>
+            <p className="text-sm text-ouro-shadow italic">No note decisions logged yet.</p>
           )}
         </div>
       )}
