@@ -1,10 +1,12 @@
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs"
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "fs"
 import { createHash } from "crypto"
 import { homedir, tmpdir } from "os"
 import { dirname, join, resolve } from "path"
 import { afterAll, afterEach, beforeEach } from "vitest"
 
 import { registerGlobalLogSink, type LogEvent } from "../../nerves"
+import { emitNervesEvent } from "../../nerves/runtime"
+import { LIFECYCLE_PAIRED_STARTS } from "../../nerves/coverage/audit-rules"
 import { __getLiveTmpBundleHandles } from "../test-helpers/tmpdir-bundle"
 
 const REPO_SLUG = "ouroboros-agent-harness"
@@ -31,7 +33,7 @@ const PER_TEST_KEY = Symbol.for("ouroboros.nerves.per-test-events")
 
 interface PerTestState {
   currentTest: string | null
-  events: Map<string, Array<{ component: string; event: string }>>
+  events: Map<string, Array<{ component: string; event: string; level?: string; meta?: Record<string, unknown> }>>
 }
 
 const scope = globalThis as Record<PropertyKey, unknown>
@@ -51,14 +53,42 @@ function recordEventForCurrentTest(entry: LogEvent): void {
     list = []
     pts.events.set(testName, list)
   }
-  list.push({ component: entry.component, event: entry.event })
+  list.push({
+    component: entry.component,
+    event: entry.event,
+    level: entry.level,
+    meta: entry.meta,
+  })
+}
+
+type TestContext = Parameters<Parameters<typeof beforeEach>[0]>[0]
+
+function formatTestName(ctx: TestContext): string {
+  const taskWithFile = ctx.task as typeof ctx.task & { file?: { name?: string } }
+  const fileName = taskWithFile.file?.name ?? ""
+  const suiteName = ctx.task.suite?.name ?? ""
+  return [fileName, suiteName, ctx.task.name].filter(Boolean).join(" > ")
+}
+
+let appendPerTestRecord: ((testName: string, events: Array<{ component: string; event: string; level?: string; meta?: Record<string, unknown> }>) => void) | null = null
+
+function persistPerTestRecord(testName: string, events: Array<{ component: string; event: string; level?: string; meta?: Record<string, unknown> }>): void {
+  appendPerTestRecord?.(testName, events)
 }
 
 // Register vitest hooks for per-test tracking
 beforeEach((ctx) => {
-  const suiteName = ctx.task.suite?.name ?? ""
-  const testName = suiteName ? `${suiteName} > ${ctx.task.name}` : ctx.task.name
+  const testName = formatTestName(ctx)
+  pts.events.set(testName, [])
   pts.currentTest = testName
+  emitNervesEvent({
+    component: "tests",
+    event: "test_case_observed",
+    message: "vitest test case observed by nerves capture",
+    meta: {
+      test_id: createHash("sha256").update(testName).digest("hex").slice(0, 12),
+    },
+  })
 })
 
 // Pairing guard: at the end of each test, walk the recorded per-test events
@@ -67,31 +97,13 @@ beforeEach((ctx) => {
 // immediately in the failing test, instead of letting them bleed into the
 // post-run coverage gate as intermittent audit failures.
 //
-// Scope: only events that represent a process-scoped lifecycle — daemon
-// startup, update checker, apply-pending-updates. These are the three events
-// whose missing pairs caused intermittent audit failures in CI and whose
-// emitters must now emit a terminating `_end` or `_error` on every path
-// (including throws) by construction.
-//
-// Most nerves `_start` events in the codebase are NOT lifecycle — they mark
-// the beginning of a streaming operation that pairs with its own `_end` from
-// a code path a narrow unit test may never exercise (e.g.
-// `repertoire.task_scan_start`, `mind.step_start`). Guarding those here
-// would require every unit test to drive the full operation, which is not
-// the point of a unit test. So the guard is intentionally scoped to the
-// lifecycle events where the contract IS process-wide pairing.
-//
-// See also: src/nerves/coverage/audit-rules.ts `checkStartEndPairing` which
-// enforces the same rule at the post-run audit level.
-const LIFECYCLE_PAIRED_STARTS = new Set<string>([
-  "daemon.server_start",
-  "daemon.update_checker_start",
-  "daemon.apply_pending_updates_start",
-])
+// Scope: only events that represent process-scoped lifecycle starts. Most
+// nerves `_start` events are narrow operation markers that a unit test may
+// intentionally exercise without driving the full matching end path. The
+// post-run audit enforces this same scoped lifecycle contract.
 
 afterEach((ctx) => {
-  const suiteName = ctx.task.suite?.name ?? ""
-  const testName = suiteName ? `${suiteName} > ${ctx.task.name}` : ctx.task.name
+  const testName = formatTestName(ctx)
   const events = pts.events.get(testName) ?? []
   const orphans: string[] = []
   for (const entry of events) {
@@ -104,10 +116,7 @@ afterEach((ctx) => {
       orphans.push(`${entry.component}:${entry.event}`)
     }
   }
-  // Drop the per-test event list so it does not leak into a sibling test —
-  // do this BEFORE throwing so a single orphaned test does not corrupt
-  // subsequent runs.
-  pts.events.delete(testName)
+  persistPerTestRecord(testName, events)
   pts.currentTest = null
   if (orphans.length > 0) {
     const uniq = Array.from(new Set(orphans))
@@ -137,8 +146,7 @@ afterEach((ctx) => {
 afterEach((ctx) => {
   const handles = __getLiveTmpBundleHandles()
   if (handles.size === 0) return
-  const suiteName = ctx.task.suite?.name ?? ""
-  const testName = suiteName ? `${suiteName} > ${ctx.task.name}` : ctx.task.name
+  const testName = formatTestName(ctx)
   const leaked: string[] = []
   // Snapshot the set before iterating — cleanup() mutates it.
   const snapshot = Array.from(handles)
@@ -243,8 +251,13 @@ if (runDir && (!existingState || existingState.runDir !== runDir)) {
   existingState?.unregister()
 
   const eventsPath = join(runDir, "vitest-events.ndjson")
-  const perTestPath = join(runDir, "vitest-events-per-test.json")
+  const perTestPath = join(runDir, "vitest-events-per-test.ndjson")
   mkdirSync(dirname(eventsPath), { recursive: true })
+  mkdirSync(dirname(perTestPath), { recursive: true })
+
+  appendPerTestRecord = (testName, events) => {
+    appendFileSync(perTestPath, `${JSON.stringify({ testName, events })}\n`, "utf8")
+  }
 
   const observed = new Set<string>()
   const unregister = registerGlobalLogSink((entry: LogEvent) => {
@@ -266,12 +279,8 @@ if (runDir && (!existingState || existingState.runDir !== runDir)) {
     state.flushed = true
     state.unregister()
 
-    // Write per-test events JSON
-    const perTestData: Record<string, Array<{ component: string; event: string }>> = {}
-    for (const [testName, events] of pts.events) {
-      perTestData[testName] = events
-    }
-    writeFileSync(perTestPath, JSON.stringify(perTestData, null, 2), "utf8")
+    // Per-test records are appended after each test so parallel workers cannot
+    // clobber each other's final JSON output at process teardown.
   }
 
   afterAll(flush)

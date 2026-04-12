@@ -1,12 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-// Helper: flush the microtask queue to allow dynamic import chains to settle
-async function flushMicrotasks(rounds = 10): Promise<void> {
-  for (let i = 0; i < rounds; i++) {
-    await new Promise((r) => setTimeout(r, 0))
-  }
-}
-
 describe("agent entrypoint", () => {
   afterEach(() => {
     vi.restoreAllMocks()
@@ -28,10 +21,11 @@ describe("agent entrypoint", () => {
     ])
 
     await import("../../heart/agent-entry")
-    await flushMicrotasks()
 
     expect(configureCliRuntimeLogger).toHaveBeenCalledWith("self")
-    expect(startInnerDialogWorker).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => {
+      expect(startInnerDialogWorker).toHaveBeenCalledTimes(1)
+    })
     argvSpy.mockRestore()
   })
 
@@ -43,11 +37,12 @@ describe("agent entrypoint", () => {
     const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue(["node", "agent-entry.js"])
 
     await import("../../heart/agent-entry")
-    await flushMicrotasks()
-    expect(exitSpy).toHaveBeenCalledWith(1)
-    expect(consoleError).toHaveBeenCalledWith(
-      expect.stringContaining("Missing required --agent"),
-    )
+    await vi.waitFor(() => {
+      expect(exitSpy).toHaveBeenCalledWith(1)
+      expect(consoleError).toHaveBeenCalledWith(
+        expect.stringContaining("Missing required --agent"),
+      )
+    })
 
     argvSpy.mockRestore()
     exitSpy.mockRestore()
@@ -74,9 +69,10 @@ describe("agent entrypoint", () => {
     ])
 
     await import("../../heart/agent-entry")
-    await flushMicrotasks()
-    expect(consoleError).toHaveBeenCalledWith("worker failed")
-    expect(exitSpy).toHaveBeenCalledWith(1)
+    await vi.waitFor(() => {
+      expect(consoleError).toHaveBeenCalledWith("worker failed")
+      expect(exitSpy).toHaveBeenCalledWith(1)
+    })
 
     argvSpy.mockRestore()
     exitSpy.mockRestore()
@@ -103,9 +99,10 @@ describe("agent entrypoint", () => {
     ])
 
     await import("../../heart/agent-entry")
-    await flushMicrotasks()
-    expect(consoleError).toHaveBeenCalledWith("worker string failure")
-    expect(exitSpy).toHaveBeenCalledWith(1)
+    await vi.waitFor(() => {
+      expect(consoleError).toHaveBeenCalledWith("worker string failure")
+      expect(exitSpy).toHaveBeenCalledWith(1)
+    })
 
     argvSpy.mockRestore()
     exitSpy.mockRestore()
