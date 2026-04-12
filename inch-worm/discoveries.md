@@ -54,6 +54,37 @@
 **Severity**: high-value
 **Blast radius**: affects multiple modules
 **Fix shape**: Make the coverage gate fail fast or self-diagnose when capture files are missing, then fix the underlying active-run/capture lifecycle so successful Vitest runs cannot silently skip artifact writes.
+**Status**: fixed
+**Linked work**: https://github.com/ouroborosbot/ouroboros/pull/442
+
+---
+
+## [D-005] — PATH can still resolve a stale `ouro` shim after npm publish/update
+
+**Source**: observed-during-seed
+**What**: After publishing and smoke-testing `0.1.0-alpha.340`, a clean temp-directory `npx --package @ouro.bot/cli@0.1.0-alpha.340 ouro --version` reported `.340`, but this shell's PATH-resolved `ouro` command still resolved to `/opt/homebrew/bin/ouro` and reported `0.1.0-alpha.323`.
+**Where**: `/opt/homebrew/bin/ouro`; install/update path resolution
+**Why it matters**: A user can successfully install or publish a newer runtime while their normal `ouro` command still points at an older shim, making update verification and repair guidance look contradictory.
+**Evidence**: Observed immediately after PR #441 publish: `npm view @ouro.bot/cli@0.1.0-alpha.340 version` and `npm view ouro.bot@0.1.0-alpha.340 version` both returned `.340`, clean temp `npx` returned `.340`, `npx ouro.bot@0.1.0-alpha.340 --version` returned `.340`, but `which ouro && ouro --version` returned `/opt/homebrew/bin/ouro` and `0.1.0-alpha.323`.
+**Severity**: high-value
+**Blast radius**: self-contained
+**Fix shape**: Teach install/update/doctor to detect when PATH resolves `ouro` to a stale external shim and either repair the shim or print exact path-specific remediation.
+**Status**: open
+**Linked work**:
+
+---
+
+## [D-006] — Per-test nerves audit is not currently enforceable against the full suite
+
+**Source**: observed-during-seed
+**What**: When per-test capture is made to aggregate completed tests across all Vitest workers/files, the post-run nerves audit reports thousands of silent tests and hundreds of unmatched `_start` events instead of passing.
+**Where**: `src/__tests__/nerves/global-capture.ts`; `src/nerves/coverage/audit-rules.ts`; `src/nerves/coverage/audit.ts`
+**Why it matters**: The current gate can only stay green because semantic per-test capture is effectively not representing the full suite; making it truthful requires either broad test instrumentation work or a narrower, explicitly enforced rule contract.
+**Evidence**: During D-004, a full `npm run test:coverage` with cross-file per-test aggregation captured 15,143 events but failed with `4376 test(s) emitted zero events` and `794 unmatched _start event(s)` in run `2026-04-12T03-01-41-301Z`.
+**Severity**: high-value
+**Blast radius**: crosses trust boundaries
+**Fix shape**: Decide whether per-test audit should enforce every test or a scoped subset, then update capture/audit/tests together so the rule is truthful and CI-enforceable without relying on empty per-test artifacts.
+**Suggested supporting skills**: work-planner
 **Status**: open
 **Linked work**:
 
