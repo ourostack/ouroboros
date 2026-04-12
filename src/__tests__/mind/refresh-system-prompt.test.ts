@@ -33,7 +33,11 @@ vi.mock("../../heart/core", () => ({
 
 vi.mock("../../repertoire/tools", () => ({
   getToolsForChannel: vi.fn(() => []),
+  observeTool: { type: "function", function: { name: "observe", description: "stay silent" } },
+  ponderTool: { type: "function", function: { name: "ponder", description: "think privately" } },
+  restTool: { type: "function", function: { name: "rest", description: "end inner turn" } },
   settleTool: { type: "function", function: { name: "settle", description: "respond" } },
+  surfaceToolDef: { type: "function", function: { name: "surface", description: "surface outward" } },
 }))
 
 vi.mock("../../repertoire/skills", () => ({

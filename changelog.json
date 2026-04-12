@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.340",
+      "changes": [
+        "Prompt tool lists now match runtime flow-tool availability: `ponder` and the channel terminal tool remain visible even when tool choice is optional, custom tool subsets keep required flow tools, and group/reaction turns list `observe` when runtime exposes it."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.339",
       "changes": [
         "`ouro config model` now validates GitHub Copilot model probes through the shared provider ping module, keeping provider health request shapes in one place.",

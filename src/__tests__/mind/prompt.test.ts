@@ -1157,7 +1157,8 @@ describe("buildSystem", () => {
     resetPsycheCache()
     const result = await buildSystem("cli", { toolChoiceRequired: false })
     expect(result).not.toContain("## tool behavior")
-    expect(result).not.toContain("settle")
+    expect(result).not.toContain("tool_choice is set to \"required\"")
+    expect(result).toContain("- settle:")
   })
 
   it("includes tool behavior section when options is undefined (defaults on)", async () => {
@@ -1219,7 +1220,7 @@ describe("buildSystem", () => {
     expect(result).toContain("- settle:")
   })
 
-  it("toolsSection does NOT include settle when toolChoiceRequired is false", async () => {
+  it("toolsSection still includes flow tools when toolChoiceRequired is false", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
@@ -1227,7 +1228,28 @@ describe("buildSystem", () => {
     const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = await buildSystem("cli", { toolChoiceRequired: false })
-    expect(result).not.toContain("- settle:")
+    expect(result).toContain("- ponder:")
+    expect(result).toContain("- settle:")
+  })
+
+  it("toolsSection keeps flow tools when a custom tool subset is provided", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("cli", {
+      toolChoiceRequired: false,
+      tools: [{
+        type: "function",
+        function: { name: "custom_lookup", description: "custom lookup", parameters: { type: "object", properties: {} } },
+      } as any],
+    })
+    const toolsBlock = result.match(/## my tools\n[\s\S]*?(?=\n\n## |\n\n# )/)?.[0] ?? ""
+    expect(toolsBlock).toContain("- custom_lookup:")
+    expect(toolsBlock).toContain("- ponder:")
+    expect(toolsBlock).toContain("- settle:")
   })
 
   it("does not export flagsSection (removed)", async () => {
@@ -3492,7 +3514,25 @@ describe("groupChatParticipationSection", () => {
     }
     const result = await buildSystem("bluebubbles", undefined, ctx as any)
     expect(result).toContain("observe")
+    expect(result.match(/## my tools\n[\s\S]*?(?=\n\n## |\n\n# )/)?.[0] ?? "").toContain("- observe:")
     expect(result).toMatch(/reaction|tapback/i)
+  })
+
+  it("buildSystem includes observe in the tools list for reaction signal turns", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const ctx = {
+      friend: makeFriendForGroup(),
+      channel: makeChannelCaps("teams", "closed"),
+      isGroupChat: false,
+    }
+    const result = await buildSystem("teams", { isReactionSignal: true }, ctx as any)
+    const toolsBlock = result.match(/## my tools\n[\s\S]*?(?=\n\n## |\n\n# )/)?.[0] ?? ""
+    expect(toolsBlock).toContain("- observe:")
   })
 })
 
