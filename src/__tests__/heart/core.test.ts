@@ -3027,6 +3027,10 @@ describe("runAgent", () => {
       judge: expect.any(Function),
     }))
     expect(mockCreateActiveRecallJudge).not.toHaveBeenCalled()
+    const activeRecallOptions = mockInjectActiveRecall.mock.calls[0][1]
+    await activeRecallOptions.judge({ query: "hello", candidates: [] })
+    expect(mockCreateActiveRecallJudge).toHaveBeenCalled()
+    expect(mockActiveRecallJudge).toHaveBeenCalledWith({ query: "hello", candidates: [] })
   })
 
   it("refreshes system prompt for teams channel", async () => {
