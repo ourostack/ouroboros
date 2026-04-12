@@ -129,6 +129,81 @@ describe("active recall", () => {
     expect(errorMessages[0].content).toBe("system prompt")
   })
 
+  it("handles recall boundary cases without surfacing brittle notes", async () => {
+    writeFact("auth notes should remain available")
+    fs.writeFileSync(path.join(journalDir, ".index.json"), JSON.stringify({ malformed: true }), "utf8")
+    const { gatherActiveRecallCandidates, injectActiveRecall, renderActiveRecallOutcome } = await import("../../heart/active-recall")
+
+    expect(gatherActiveRecallCandidates("a", { diaryRoot, journalDir })).toEqual([])
+    expect(gatherActiveRecallCandidates("auth", {
+      diaryRoot,
+      journalDir,
+      friend: {
+        id: "ari",
+        name: "Ari",
+        role: "primary",
+        trustLevel: "family",
+        externalIds: [],
+        tenantMemberships: [],
+        toolPreferences: {},
+        notes: undefined,
+        totalTokens: 0,
+        createdAt: "2026-04-12T00:00:00Z",
+        updatedAt: "2026-04-12T00:00:00Z",
+        schemaVersion: 1,
+      } as any,
+    }).map((candidate) => candidate.source.kind)).toEqual(["diary"])
+    expect(renderActiveRecallOutcome({ status: "timeout", elapsedMs: 1 })).toBeNull()
+
+    const emptySourceMessages: any[] = [
+      { role: "system", content: "system prompt" },
+      { role: "user", content: "auth" },
+    ]
+    const emptySourceOutcome = await injectActiveRecall(emptySourceMessages, {
+      diaryRoot,
+      journalDir,
+      judge: async () => ({ status: "found" as const, note: "I kept the auth path", sourceIndexes: [] }),
+    })
+
+    const invalidSourceMessages: any[] = [
+      { role: "system", content: "system prompt" },
+      { role: "user", content: "auth" },
+    ]
+    const invalidSourceOutcome = await injectActiveRecall(invalidSourceMessages, {
+      diaryRoot,
+      journalDir,
+      judge: async () => ({ status: "found" as const, note: "I kept the auth path", sourceIndexes: [0.5, 99] } as any),
+    })
+
+    const stringErrorMessages: any[] = [
+      { role: "system", content: "system prompt" },
+      { role: "user", content: "auth" },
+    ]
+    const stringErrorOutcome = await injectActiveRecall(stringErrorMessages, {
+      diaryRoot,
+      journalDir,
+      judge: async () => {
+        throw "string failure" // eslint-disable-line no-throw-literal
+      },
+    })
+
+    const blankUserOutcome = await injectActiveRecall([
+      { role: "system", content: "system prompt" },
+      { role: "user", content: "   " },
+    ] as any[], {
+      diaryRoot,
+      journalDir,
+      judge: async () => ({ status: "found" as const, note: "I kept a thing" }),
+    })
+
+    expect(emptySourceOutcome).toMatchObject({ status: "found", sources: [] })
+    expect(invalidSourceOutcome).toMatchObject({ status: "found", sources: [] })
+    expect(stringErrorOutcome).toMatchObject({ status: "error", reason: "string failure" })
+    expect(blankUserOutcome.status).toBe("none")
+    expect(emptySourceMessages[0].content).toContain("I kept the auth path")
+    expect(emptySourceMessages[0].content).not.toContain("I chose to keep this: I kept the auth path")
+  })
+
   it("injects fuzzy recall as a first-person kept-note hint", async () => {
     writeFact("oauth sometimes points to the device code flow")
     const { injectActiveRecall } = await import("../../heart/active-recall")
@@ -166,6 +241,7 @@ describe("active recall", () => {
 describe("active recall model judge", () => {
   it("uses a no-tools boxed provider call and parses found JSON", async () => {
     const { createActiveRecallJudge } = await import("../../heart/active-recall")
+    const signal = new AbortController().signal
     const runtime = {
       resetTurnState: vi.fn(),
       streamTurn: vi.fn(async () => ({
@@ -174,7 +250,7 @@ describe("active recall model judge", () => {
         outputItems: [],
       })),
     }
-    const judge = createActiveRecallJudge(runtime)
+    const judge = createActiveRecallJudge(runtime, signal)
     const result = await judge({
       query: "auth",
       candidates: [
@@ -189,8 +265,18 @@ describe("active recall model judge", () => {
     expect(runtime.resetTurnState).toHaveBeenCalled()
     expect(runtime.streamTurn).toHaveBeenCalledWith(expect.objectContaining({
       activeTools: [],
+      reasoningEffort: "low",
+      signal,
       toolChoiceRequired: false,
     }))
+    const request = runtime.streamTurn.mock.calls[0][0]
+    request.callbacks.onModelStart()
+    request.callbacks.onModelStreamStart()
+    request.callbacks.onTextChunk("chunk")
+    request.callbacks.onReasoningChunk("thinking")
+    request.callbacks.onToolStart("tool", { arg: "value" })
+    request.callbacks.onToolEnd("tool", "done", true)
+    request.callbacks.onError(new Error("no-op"), "transient")
   })
 
   it("returns none for invalid or non-json model output", async () => {
@@ -215,6 +301,11 @@ describe("active recall model judge", () => {
       resetTurnState: vi.fn(),
       streamTurn: vi.fn()
         .mockResolvedValueOnce({
+          content: JSON.stringify({ status: "found", note: " I kept the auth flow " }),
+          toolCalls: [],
+          outputItems: [],
+        })
+        .mockResolvedValueOnce({
           content: JSON.stringify({ status: "fuzzy", hint: "I might have kept the auth trail", sourceIndexes: [0, "bad", 99] }),
           toolCalls: [],
           outputItems: [],
@@ -225,12 +316,51 @@ describe("active recall model judge", () => {
           outputItems: [],
         })
         .mockResolvedValueOnce({
+          content: JSON.stringify({ status: "fuzzy", hint: " maybe the auth trail " }),
+          toolCalls: [],
+          outputItems: [],
+        })
+        .mockResolvedValueOnce({
+          content: JSON.stringify({ status: "none" }),
+          toolCalls: [],
+          outputItems: [],
+        })
+        .mockResolvedValueOnce({
           content: JSON.stringify([]),
           toolCalls: [],
           outputItems: [],
         })
         .mockResolvedValueOnce({
+          content: JSON.stringify(null),
+          toolCalls: [],
+          outputItems: [],
+        })
+        .mockResolvedValueOnce({
+          content: JSON.stringify("invalid"),
+          toolCalls: [],
+          outputItems: [],
+        })
+        .mockResolvedValueOnce({
           content: JSON.stringify({ status: "found", note: "   " }),
+          toolCalls: [],
+          outputItems: [],
+        })
+        .mockResolvedValueOnce({
+          content: JSON.stringify({ status: "found", note: 7 }),
+          toolCalls: [],
+          outputItems: [],
+        })
+        .mockResolvedValueOnce({
+          content: JSON.stringify({ status: "fuzzy", hint: "   " }),
+          toolCalls: [],
+          outputItems: [],
+        })
+        .mockResolvedValueOnce({
+          content: JSON.stringify({ status: "fuzzy", hint: 7 }),
+          toolCalls: [],
+          outputItems: [],
+        })
+        .mockResolvedValueOnce({
           toolCalls: [],
           outputItems: [],
         }),
@@ -242,11 +372,28 @@ describe("active recall model judge", () => {
     }
 
     await expect(judge(input)).resolves.toEqual({
+      status: "found",
+      note: "I kept the auth flow",
+      sourceIndexes: undefined,
+    })
+    await expect(judge(input)).resolves.toEqual({
       status: "fuzzy",
       hint: "I might have kept the auth trail",
       sourceIndexes: [0, 99],
     })
     await expect(judge(input)).resolves.toEqual({ status: "none", pressure: ["weak overlap"] })
+    await expect(judge(input)).resolves.toEqual({
+      status: "fuzzy",
+      hint: "maybe the auth trail",
+      sourceIndexes: undefined,
+    })
+    await expect(judge(input)).resolves.toEqual({ status: "none", pressure: [] })
+    await expect(judge(input)).resolves.toEqual({ status: "none", pressure: ["invalid active recall judge output"] })
+    await expect(judge(input)).resolves.toEqual({ status: "none", pressure: ["invalid active recall judge output"] })
+    await expect(judge(input)).resolves.toEqual({ status: "none", pressure: ["invalid active recall judge output"] })
+    await expect(judge(input)).resolves.toEqual({ status: "none", pressure: ["invalid active recall judge output"] })
+    await expect(judge(input)).resolves.toEqual({ status: "none", pressure: ["invalid active recall judge output"] })
+    await expect(judge(input)).resolves.toEqual({ status: "none", pressure: ["invalid active recall judge output"] })
     await expect(judge(input)).resolves.toEqual({ status: "none", pressure: ["invalid active recall judge output"] })
     await expect(judge(input)).resolves.toEqual({ status: "none", pressure: ["invalid active recall judge output"] })
   })

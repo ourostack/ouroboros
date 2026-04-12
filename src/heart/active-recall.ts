@@ -111,7 +111,6 @@ function tokenize(text: string): Set<string> {
 }
 
 function scoreText(queryTerms: Set<string>, text: string): number {
-  if (queryTerms.size === 0) return 0
   const textTerms = tokenize(text)
   let matches = 0
   for (const term of queryTerms) {
@@ -286,15 +285,15 @@ export async function injectActiveRecall(
           ? { status: "fuzzy", hint: judged.hint, sources: selectedSources(candidates, judged.sourceIndexes), elapsedMs }
           : { status: "none", pressure: judged.pressure, elapsedMs }
 
-    const rendered = renderActiveRecallOutcome(outcome)
-    if (rendered) {
+    if (outcome.status === "found" || outcome.status === "fuzzy") {
+      const rendered = renderActiveRecallOutcome(outcome)
       messages[0] = { role: "system", content: `${systemMessage.content}\n\n${rendered}` }
       emitNervesEvent({
         component: "mind",
         event: "mind.active_recall_injected",
         trace_id: options.traceId,
         message: "active recall injected",
-        meta: { status: outcome.status, sourceCount: "sources" in outcome ? outcome.sources.length : 0 },
+        meta: { status: outcome.status, sourceCount: outcome.sources.length },
       })
     }
 
