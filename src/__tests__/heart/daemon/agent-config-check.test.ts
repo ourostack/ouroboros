@@ -4,7 +4,12 @@ import * as path from "path"
 
 import { checkAgentConfig, checkAgentConfigWithProviderHealth } from "../../../heart/daemon/agent-config-check"
 
+const providerPingMock = vi.hoisted(() => vi.fn(async () => ({ ok: true }) as const))
+
 vi.mock("fs")
+vi.mock("../../../heart/provider-ping", () => ({
+  pingProvider: (provider: string, config: Record<string, unknown>) => providerPingMock(provider, config),
+}))
 vi.mock("../../../heart/identity", async () => {
   const actual = await vi.importActual<typeof import("../../../heart/identity")>("../../../heart/identity")
   return {
@@ -33,6 +38,8 @@ function secretsJson(provider: string, fields: Record<string, string>): string {
 describe("checkAgentConfig", () => {
   beforeEach(() => {
     mockReadFileSync.mockReset()
+    providerPingMock.mockReset()
+    providerPingMock.mockResolvedValue({ ok: true })
   })
 
   it("returns ok when agent.json and secrets are valid", () => {
@@ -285,6 +292,18 @@ describe("checkAgentConfig", () => {
     expect(pingProvider).toHaveBeenCalledWith("anthropic", { setupToken: "tok" })
   })
 
+  it("uses the default live provider ping when no ping dependency is supplied", async () => {
+    mockReadFileSync
+      .mockReturnValueOnce(agentJson())
+      .mockReturnValueOnce(secretsJson("anthropic", { setupToken: "tok" }))
+
+    const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, SECRETS)
+
+    expect(result).toEqual({ ok: true })
+    expect(providerPingMock).toHaveBeenCalledOnce()
+    expect(providerPingMock).toHaveBeenCalledWith("anthropic", { setupToken: "tok" })
+  })
+
   it("fails live check when a selected agentFacing provider ping fails", async () => {
     const pingProvider = vi.fn(async (provider: string) => {
       if (provider === "github-copilot") {
@@ -338,6 +357,19 @@ describe("checkAgentConfig", () => {
 
     expect(result.ok).toBe(false)
     expect(result.error).toContain("agent.json not found")
+    expect(pingProvider).not.toHaveBeenCalled()
+  })
+
+  it("returns credential structural errors before live health checks", async () => {
+    const pingProvider = vi.fn(async () => ({ ok: true }) as const)
+    mockReadFileSync
+      .mockReturnValueOnce(agentJson())
+      .mockReturnValueOnce(secretsJson("anthropic", {}))
+
+    const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, SECRETS, { pingProvider })
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain("missing required anthropic credentials")
     expect(pingProvider).not.toHaveBeenCalled()
   })
 })
