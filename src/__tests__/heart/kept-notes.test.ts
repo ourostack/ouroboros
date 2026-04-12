@@ -168,6 +168,15 @@ describe("kept notes", () => {
     })).toContain("## from my friend notes")
     expect(renderKeptNotesOutcome({
       status: "found",
+      note: "paired auth note",
+      sources: [
+        { kind: "diary", label: "diary", ref: "fact-1" },
+        { kind: "journal", label: "journal", ref: "auth.md" },
+      ],
+      elapsedMs: 1,
+    })).toContain("## from my diary and my journal")
+    expect(renderKeptNotesOutcome({
+      status: "found",
       note: "cross-source auth note",
       sources: [
         { kind: "diary", label: "diary", ref: "fact-1" },
@@ -176,6 +185,12 @@ describe("kept notes", () => {
       ],
       elapsedMs: 1,
     })).toContain("## from my diary, my journal, and my friend notes")
+    expect(renderKeptNotesOutcome({
+      status: "fuzzy",
+      hint: "I might have kept the auth trail",
+      sources: [{ kind: "diary", label: "diary", ref: "fact-1" }],
+      elapsedMs: 1,
+    })).not.toContain("I may have kept something related:")
 
     const emptySourceMessages: any[] = [
       { role: "system", content: "system prompt" },
