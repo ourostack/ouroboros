@@ -54,8 +54,8 @@
 **Severity**: high-value
 **Blast radius**: affects multiple modules
 **Fix shape**: Make the coverage gate fail fast or self-diagnose when capture files are missing, then fix the underlying active-run/capture lifecycle so successful Vitest runs cannot silently skip artifact writes.
-**Status**: in-progress
-**Linked work**: branch `ouroboros/coverage-capture-artifacts`
+**Status**: fixed
+**Linked work**: https://github.com/ouroborosbot/ouroboros/pull/442
 
 ---
 
