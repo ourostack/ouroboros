@@ -129,6 +129,25 @@ describe("active recall", () => {
     expect(errorMessages[0].content).toBe("system prompt")
   })
 
+  it("injects fuzzy recall as a first-person kept-note hint", async () => {
+    writeFact("oauth sometimes points to the device code flow")
+    const { injectActiveRecall } = await import("../../heart/active-recall")
+    const messages: any[] = [
+      { role: "system", content: "system prompt" },
+      { role: "user", content: "oauth details" },
+    ]
+
+    const outcome = await injectActiveRecall(messages, {
+      diaryRoot,
+      journalDir,
+      judge: async () => ({ status: "fuzzy" as const, hint: "device code flow might matter", sourceIndexes: [0] }),
+    })
+
+    expect(outcome.status).toBe("fuzzy")
+    expect(messages[0].content).toContain("## notes I chose to keep")
+    expect(messages[0].content).toContain("I chose to keep this: device code flow might matter")
+  })
+
   it("skips recall when the turn is not eligible", async () => {
     const { injectActiveRecall } = await import("../../heart/active-recall")
     const judge = vi.fn()
@@ -188,5 +207,47 @@ describe("active recall model judge", () => {
     })
 
     expect(result).toEqual({ status: "none", pressure: ["invalid active recall judge output"] })
+  })
+
+  it("parses fuzzy and none JSON while sanitizing source indexes and pressure", async () => {
+    const { createActiveRecallJudge } = await import("../../heart/active-recall")
+    const runtime = {
+      resetTurnState: vi.fn(),
+      streamTurn: vi.fn()
+        .mockResolvedValueOnce({
+          content: JSON.stringify({ status: "fuzzy", hint: "I might have kept the auth trail", sourceIndexes: [0, "bad", 99] }),
+          toolCalls: [],
+          outputItems: [],
+        })
+        .mockResolvedValueOnce({
+          content: JSON.stringify({ status: "none", pressure: ["weak overlap", 7] }),
+          toolCalls: [],
+          outputItems: [],
+        })
+        .mockResolvedValueOnce({
+          content: JSON.stringify([]),
+          toolCalls: [],
+          outputItems: [],
+        })
+        .mockResolvedValueOnce({
+          content: JSON.stringify({ status: "found", note: "   " }),
+          toolCalls: [],
+          outputItems: [],
+        }),
+    }
+    const judge = createActiveRecallJudge(runtime)
+    const input = {
+      query: "auth",
+      candidates: [{ text: "auth note", source: { kind: "diary" as const, label: "diary" } }],
+    }
+
+    await expect(judge(input)).resolves.toEqual({
+      status: "fuzzy",
+      hint: "I might have kept the auth trail",
+      sourceIndexes: [0, 99],
+    })
+    await expect(judge(input)).resolves.toEqual({ status: "none", pressure: ["weak overlap"] })
+    await expect(judge(input)).resolves.toEqual({ status: "none", pressure: ["invalid active recall judge output"] })
+    await expect(judge(input)).resolves.toEqual({ status: "none", pressure: ["invalid active recall judge output"] })
   })
 })
