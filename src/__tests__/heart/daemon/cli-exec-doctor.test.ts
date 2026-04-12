@@ -59,6 +59,23 @@ describe("ouro doctor CLI execution", () => {
     expect(runDoctorChecks).toHaveBeenCalledWith(expect.objectContaining({ fetchImpl }))
   })
 
+  it("passes an empty envPath to doctor diagnostics when PATH is unset", async () => {
+    const previousPath = process.env.PATH
+    delete process.env.PATH
+    try {
+      const deps = createMinimalDeps()
+      await runOuroCli(["doctor"], deps)
+
+      expect(runDoctorChecks).toHaveBeenCalledWith(expect.objectContaining({ envPath: "" }))
+    } finally {
+      if (previousPath === undefined) {
+        delete process.env.PATH
+      } else {
+        process.env.PATH = previousPath
+      }
+    }
+  })
+
   it("writes formatted output to stdout", async () => {
     const deps = createMinimalDeps()
     await runOuroCli(["doctor"], deps)
