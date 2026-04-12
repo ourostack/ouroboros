@@ -101,8 +101,8 @@
 **Blast radius**: affects multiple modules
 **Fix shape**: Restore or generate a local installed-skill registry as part of the skill-management workflow, and make the freshness check fail with exact remediation when the registry is absent.
 **Suggested supporting skills**: work-planner
-**Status**: open
-**Linked work**:
+**Status**: fixed
+**Linked work**: branch `ouroboros/skill-registry-freshness`; https://github.com/ouroborosbot/ouroboros-skills/pull/14; https://github.com/ouroborosbot/ouroboros-skills/pull/15
 
 ---
 
