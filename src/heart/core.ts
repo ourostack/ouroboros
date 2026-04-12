@@ -17,7 +17,7 @@ import { trimMessages } from "../mind/context";
 import { buildSystem } from "../mind/prompt";
 import type { McpManager } from "../repertoire/mcp-manager";
 import type { Channel } from "../mind/prompt";
-import { injectAssociativeRecall } from "../mind/associative-recall";
+import { createActiveRecallJudge, injectActiveRecall } from "./active-recall";
 import { createAnthropicProviderRuntime } from "./providers/anthropic";
 import { createAzureProviderRuntime } from "./providers/azure";
 import { createMinimaxProviderRuntime } from "./providers/minimax";
@@ -668,7 +668,15 @@ export async function runAgent(
     }
   }
 
-  await injectAssociativeRecall(messages);
+  if (channel) {
+    await injectActiveRecall(messages, {
+      channel,
+      friend: currentContext?.friend,
+      judge: async (input) => createActiveRecallJudge(getProviderRuntime("agent"), signal)(input),
+      signal,
+      traceId,
+    });
+  }
 
   let done = false;
   let lastUsage: UsageData | undefined;
