@@ -92,6 +92,9 @@ const mockOpenAICtor = vi.fn()
 const mockAnthropicMessagesCreate = vi.fn()
 const mockAnthropicCtor = vi.fn()
 const mockInjectAssociativeRecall = vi.fn().mockResolvedValue(undefined)
+const mockActiveRecallJudge = vi.fn()
+const mockCreateActiveRecallJudge = vi.fn(() => mockActiveRecallJudge)
+const mockInjectActiveRecall = vi.fn().mockResolvedValue({ status: "none", elapsedMs: 0, pressure: [] })
 vi.mock("openai", () => {
   class MockOpenAI {
     chat = {
@@ -128,6 +131,11 @@ vi.mock("@anthropic-ai/sdk", () => {
 
 vi.mock("../../mind/associative-recall", () => ({
   injectAssociativeRecall: (...args: any[]) => mockInjectAssociativeRecall(...args),
+}))
+
+vi.mock("../../heart/active-recall", () => ({
+  createActiveRecallJudge: (...args: any[]) => mockCreateActiveRecallJudge(...args),
+  injectActiveRecall: (...args: any[]) => mockInjectActiveRecall(...args),
 }))
 
 import * as fs from "fs"
@@ -502,6 +510,9 @@ describe("runAgent", () => {
     mockResponsesCreate.mockReset()
     mockOpenAICtor.mockReset()
     mockInjectAssociativeRecall.mockReset().mockResolvedValue(undefined)
+    mockActiveRecallJudge.mockReset()
+    mockCreateActiveRecallJudge.mockReset().mockReturnValue(mockActiveRecallJudge)
+    mockInjectActiveRecall.mockReset().mockResolvedValue({ status: "none", elapsedMs: 0, pressure: [] })
     // Restore default readFileSync so prompt.ts module-level psyche file loads work
     vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
     await setupMinimax()
@@ -2982,8 +2993,16 @@ describe("runAgent", () => {
     expect(messages[0].role).toBe("system")
   })
 
-  it("runs associative recall injection before model calls when channel is provided", async () => {
-    mockCreate.mockReturnValue(makeStream([makeChunk("hi")]))
+  it("runs active recall injection before model calls when channel is provided", async () => {
+    const order: string[] = []
+    mockInjectActiveRecall.mockImplementation(async () => {
+      order.push("active_recall")
+      return { status: "none", elapsedMs: 0, pressure: [] }
+    })
+    mockCreate.mockImplementation(() => {
+      order.push("model_call")
+      return makeStream([makeChunk("hi")])
+    })
 
     const callbacks: ChannelCallbacks = {
       onModelStart: () => {},
@@ -3001,7 +3020,13 @@ describe("runAgent", () => {
     ]
     await runAgent(messages, callbacks, "cli")
 
-    expect(mockInjectAssociativeRecall).toHaveBeenCalledWith(messages)
+    expect(order).toEqual(["active_recall", "model_call"])
+    expect(mockInjectAssociativeRecall).not.toHaveBeenCalled()
+    expect(mockCreateActiveRecallJudge).toHaveBeenCalled()
+    expect(mockInjectActiveRecall).toHaveBeenCalledWith(messages, expect.objectContaining({
+      channel: "cli",
+      judge: mockActiveRecallJudge,
+    }))
   })
 
   it("refreshes system prompt for teams channel", async () => {
