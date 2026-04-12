@@ -23,8 +23,8 @@
 **Severity**: high-value
 **Blast radius**: self-contained
 **Fix shape**: Make prompt tool rendering derive the same flow-tool additions as runtime, and update prompt tests so optional tool choice means "not forced" rather than "terminal tools absent."
-**Status**: in-progress
-**Linked work**:
+**Status**: fixed
+**Linked work**: https://github.com/ouroborosbot/ouroboros/pull/441
 
 ---
 
@@ -39,8 +39,8 @@
 **Blast radius**: self-contained
 **Fix shape**: Reuse the prompt/runtime parity helper from D-002 so group/reaction prompt tools include `observe` exactly when runtime would expose it.
 **Prerequisites**: D-002
-**Status**: in-progress
-**Linked work**:
+**Status**: fixed
+**Linked work**: https://github.com/ouroborosbot/ouroboros/pull/441
 
 ---
 
