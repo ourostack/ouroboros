@@ -3022,11 +3022,11 @@ describe("runAgent", () => {
 
     expect(order).toEqual(["active_recall", "model_call"])
     expect(mockInjectAssociativeRecall).not.toHaveBeenCalled()
-    expect(mockCreateActiveRecallJudge).toHaveBeenCalled()
     expect(mockInjectActiveRecall).toHaveBeenCalledWith(messages, expect.objectContaining({
       channel: "cli",
-      judge: mockActiveRecallJudge,
+      judge: expect.any(Function),
     }))
+    expect(mockCreateActiveRecallJudge).not.toHaveBeenCalled()
   })
 
   it("refreshes system prompt for teams channel", async () => {
