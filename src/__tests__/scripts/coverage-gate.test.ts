@@ -51,9 +51,9 @@ describe("coverage gate helpers", () => {
 
     expect(result.ok).toBe(false)
     expect(result.eventsPath).toBe(path.join(runDir, "vitest-events.ndjson"))
-    expect(result.perTestPath).toBe(path.join(runDir, "vitest-events-per-test.json"))
+    expect(result.perTestPath).toBe(path.join(runDir, "vitest-events-per-test.ndjson"))
     expect(result.problems).toContain(`missing ${path.join(runDir, "vitest-events.ndjson")}`)
-    expect(result.problems).toContain(`missing ${path.join(runDir, "vitest-events-per-test.json")}`)
+    expect(result.problems).toContain(`missing ${path.join(runDir, "vitest-events-per-test.ndjson")}`)
   })
 
   it("accepts readable event and per-test capture artifacts", () => {
@@ -73,8 +73,11 @@ describe("coverage gate helpers", () => {
       "utf8",
     )
     writeFileSync(
-      path.join(runDir, "vitest-events-per-test.json"),
-      JSON.stringify({}),
+      path.join(runDir, "vitest-events-per-test.ndjson"),
+      JSON.stringify({
+        testName: "coverage gate helpers > accepts readable event and per-test capture artifacts",
+        events: [{ component: "tests", event: "test_case_observed" }],
+      }) + "\n",
       "utf8",
     )
 
@@ -85,11 +88,47 @@ describe("coverage gate helpers", () => {
     const runDir = mkdtempSync(path.join(tmpdir(), "ouro-coverage-gate-empty-"))
     tempDirs.push(runDir)
     writeFileSync(path.join(runDir, "vitest-events.ndjson"), "{}\n", "utf8")
-    writeFileSync(path.join(runDir, "vitest-events-per-test.json"), "", "utf8")
+    writeFileSync(path.join(runDir, "vitest-events-per-test.ndjson"), "", "utf8")
 
     const result = inspectCaptureArtifacts(runDir)
 
     expect(result.ok).toBe(false)
-    expect(result.problems).toContain(`empty ${path.join(runDir, "vitest-events-per-test.json")}`)
+    expect(result.problems).toContain(`empty ${path.join(runDir, "vitest-events-per-test.ndjson")}`)
+  })
+
+  it("reports per-test capture with no records as an artifact failure", () => {
+    const runDir = mkdtempSync(path.join(tmpdir(), "ouro-coverage-gate-no-records-"))
+    tempDirs.push(runDir)
+    writeFileSync(path.join(runDir, "vitest-events.ndjson"), "{}\n", "utf8")
+    writeFileSync(path.join(runDir, "vitest-events-per-test.ndjson"), "{}", "utf8")
+
+    const result = inspectCaptureArtifacts(runDir)
+
+    expect(result.ok).toBe(false)
+    expect(result.problems).toContain(`invalid ${path.join(runDir, "vitest-events-per-test.ndjson")}: no per-test records`)
+  })
+
+  it("reports malformed per-test capture records", () => {
+    const runDir = mkdtempSync(path.join(tmpdir(), "ouro-coverage-gate-bad-records-"))
+    tempDirs.push(runDir)
+    writeFileSync(path.join(runDir, "vitest-events.ndjson"), "{}\n", "utf8")
+    writeFileSync(path.join(runDir, "vitest-events-per-test.ndjson"), "{\"testName\":\"ok\",\"events\":[]}\nnot-json\n", "utf8")
+
+    const result = inspectCaptureArtifacts(runDir)
+
+    expect(result.ok).toBe(false)
+    expect(result.problems[0]).toContain(`invalid ${path.join(runDir, "vitest-events-per-test.ndjson")}:`)
+  })
+
+  it("reports object per-test capture with non-array values", () => {
+    const runDir = mkdtempSync(path.join(tmpdir(), "ouro-coverage-gate-bad-object-"))
+    tempDirs.push(runDir)
+    writeFileSync(path.join(runDir, "vitest-events.ndjson"), "{}\n", "utf8")
+    writeFileSync(path.join(runDir, "vitest-events-per-test.ndjson"), JSON.stringify({ "test A": "bad" }), "utf8")
+
+    const result = inspectCaptureArtifacts(runDir)
+
+    expect(result.ok).toBe(false)
+    expect(result.problems).toContain(`invalid ${path.join(runDir, "vitest-events-per-test.ndjson")}: expected per-test event arrays`)
   })
 })

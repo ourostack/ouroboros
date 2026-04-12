@@ -8,7 +8,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
  * The global-capture setup file should:
  * 1. Track which test is currently running via beforeEach/afterEach hooks
  * 2. Associate each emitted event with the current test name
- * 3. Reset captured events between tests (isolation)
+ * 3. Emit a harness heartbeat so every executed test is observable
  * 4. Expose per-test data via the global capture state
  *
  * We verify this by checking the per-test state stored on globalThis
@@ -32,6 +32,14 @@ describe("per-test event capture", () => {
     const state = getPerTestState()
     expect(state).toBeDefined()
     expect(state!.currentTest).toContain("tracks the current test name during execution")
+  })
+
+  it("emits a harness heartbeat for the current test", () => {
+    const state = getPerTestState()
+    expect(state).toBeDefined()
+    const testName = state!.currentTest!
+    const events = state!.events.get(testName) ?? []
+    expect(events.some((e) => e.component === "tests" && e.event === "test_case_observed")).toBe(true)
   })
 
   it("associates emitted events with the current test", () => {

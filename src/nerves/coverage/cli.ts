@@ -39,7 +39,7 @@ export function runAuditCli(argv: string[]): number {
   }
 
   const eventsPath = args.eventsPath ?? join(runDir, "vitest-events.ndjson")
-  const perTestPath = args.perTestPath ?? join(runDir, "vitest-events-per-test.json")
+  const perTestPath = args.perTestPath ?? join(runDir, "vitest-events-per-test.ndjson")
   const sourceRoot = args.sourceRoot ?? resolve("src")
   const outputPath = args.output ?? join(runDir, "nerves-coverage.json")
 
