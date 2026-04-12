@@ -3,7 +3,7 @@ import * as path from "path";
 import type OpenAI from "openai";
 import { getProviderDisplayLabel } from "../heart/core";
 import { buildChangelogCommand } from "../heart/versioning/ouro-version-manager";
-import { getToolsForChannel, ponderTool, restTool, settleTool, surfaceToolDef } from "../repertoire/tools";
+import { getToolsForChannel, observeTool, ponderTool, restTool, settleTool, surfaceToolDef } from "../repertoire/tools";
 import { listSkills } from "../repertoire/skills";
 import { getAgentRoot, getAgentName, getAgentSecretsPath, getRepoRoot, loadAgentConfig, type SenseName } from "../heart/identity";
 import { detectRuntimeMode } from "../heart/daemon/runtime-mode";
@@ -524,7 +524,12 @@ function toolsSection(channel: Channel, options?: BuildSystemOptions, context?: 
       surfaceToolDef,
       restTool,
     ])
-    : (options?.toolChoiceRequired ?? true) ? uniqueToolsByName([...channelTools, settleTool]) : channelTools;
+    : uniqueToolsByName([
+      ...channelTools,
+      ponderTool,
+      ...((context?.isGroupChat || options?.isReactionSignal) ? [observeTool] : []),
+      settleTool,
+    ]);
   const list = activeTools
     .map((t) => `- ${t.function.name}: ${t.function.description}`)
     .join("\n");
@@ -688,6 +693,8 @@ export interface BuildSystemOptions {
   chatModel?: string;
   /** Optional tool subset for restricted inner/habit turns. */
   tools?: OpenAI.ChatCompletionFunctionTool[];
+  /** When true, the observe tool is available in 1:1 reaction/feedback turns. */
+  isReactionSignal?: boolean;
   pendingMessages?: Array<{ from: string; content: string }>;
   /** Rendered start-of-turn packet for continuity-aware prompt. */
   startOfTurnPacket?: string;
