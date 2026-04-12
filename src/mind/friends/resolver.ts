@@ -1,6 +1,6 @@
 // FriendResolver -- resolves external identity into a FriendRecord + channel capabilities.
 // Created per-request (per-incoming-message), per-friend.
-// Replaces the old ContextResolver: no authority checker, no separate memory resolution.
+// Replaces the old ContextResolver: no authority checker, no separate note resolution.
 
 import { randomUUID } from "crypto"
 import type { FriendStore } from "./store"

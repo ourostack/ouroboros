@@ -156,7 +156,7 @@ const cache = new Map()
         ["src/repertoire/tools.ts", 'emitNervesEvent({ component: "tools", event: "tool.start" })'],
         ["src/repertoire/tools-files.ts", "export function readFile() {}"],
         ["src/repertoire/tools-shell.ts", "export function runShell() {}"],
-        ["src/repertoire/tools-memory.ts", "export function saveNote() {}"],
+        ["src/repertoire/tools-notes.ts", "export function saveNote() {}"],
         ["src/repertoire/tools-bridge.ts", "export function manageBridge() {}"],
         ["src/repertoire/tools-session.ts", "export function querySession() {}"],
         ["src/repertoire/tools-continuity.ts", "export function queryEpisodes() {}"],

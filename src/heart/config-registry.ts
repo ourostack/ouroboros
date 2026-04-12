@@ -152,7 +152,7 @@ const registryData: ConfigRegistryEntry[] = [
     description: "Maximum context window size in tokens.",
     default: 80000,
     effects: "Larger values allow more context but increase cost and latency. Must match model capability.",
-    topics: ["context", "tokens", "memory", "performance"],
+    topics: ["context", "tokens", "notes", "performance"],
     validate: validateInteger(1000, 1000000),
   },
   {
@@ -207,7 +207,7 @@ const registryData: ConfigRegistryEntry[] = [
     description: "Percentage of context window reserved as margin before compaction triggers.",
     default: 20,
     effects: "Higher values trigger compaction earlier, preserving more headroom. Lower values use more context.",
-    topics: ["context", "compaction", "memory", "performance"],
+    topics: ["context", "compaction", "notes", "performance"],
     validate: validateInteger(0, 100),
   },
   {

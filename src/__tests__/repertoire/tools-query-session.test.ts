@@ -47,7 +47,7 @@ beforeEach(() => {
   vi.mocked(fs.existsSync).mockReset()
   vi.mocked(fs.readFileSync).mockReset()
   vi.mocked(fs.readdirSync).mockReset()
-  vi.doUnmock("../../heart/session-recall")
+  vi.doUnmock("../../heart/session-transcript")
 })
 
 describe("query_session tool", () => {
@@ -366,15 +366,15 @@ describe("query_session tool", () => {
     expect(result).toContain("hi there")
   })
 
-  it("delegates transcript recall to the shared session-recall helper", async () => {
-    const mockRecallSession = vi.fn().mockResolvedValue({
+  it("delegates transcript summary to the shared session transcript helper", async () => {
+    const mockSummarizeSessionTail = vi.fn().mockResolvedValue({
       kind: "ok",
       transcript: "[2026-04-09 17:45 | user | evt-000001] hello",
       summary: "Summary: hello",
       snapshot: "recent focus: hello",
     })
-    vi.doMock("../../heart/session-recall", () => ({
-      recallSession: mockRecallSession,
+    vi.doMock("../../heart/session-transcript", () => ({
+      summarizeSessionTail: mockSummarizeSessionTail,
     }))
 
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
@@ -392,7 +392,7 @@ describe("query_session tool", () => {
       } as any,
     )
 
-    expect(mockRecallSession).toHaveBeenCalledWith(expect.objectContaining({
+    expect(mockSummarizeSessionTail).toHaveBeenCalledWith(expect.objectContaining({
       sessionPath: "/mock/agent-root/state/sessions/friend-1/cli/session.json",
       friendId: "friend-1",
       channel: "cli",
@@ -456,10 +456,10 @@ describe("query_session tool", () => {
     expect(result).toContain("hello")
   })
 
-  it("falls back to a missing-session message when shared recall throws unexpectedly", async () => {
-    const mockRecallSession = vi.fn().mockRejectedValue(new Error("recall failed"))
-    vi.doMock("../../heart/session-recall", () => ({
-      recallSession: mockRecallSession,
+  it("falls back to a missing-session message when shared search_notes throws unexpectedly", async () => {
+    const mockSummarizeSessionTail = vi.fn().mockRejectedValue(new Error("session tail failed"))
+    vi.doMock("../../heart/session-transcript", () => ({
+      summarizeSessionTail: mockSummarizeSessionTail,
     }))
 
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
@@ -471,7 +471,7 @@ describe("query_session tool", () => {
       key: "session",
     })
 
-    expect(mockRecallSession).toHaveBeenCalledWith(expect.objectContaining({
+    expect(mockSummarizeSessionTail).toHaveBeenCalledWith(expect.objectContaining({
       sessionPath: "/mock/agent-root/state/sessions/friend-1/cli/session.json",
       friendId: "friend-1",
       channel: "cli",
@@ -755,8 +755,8 @@ describe("query_session tool", () => {
   })
 
   it("returns the missing-session message when history search fails unexpectedly", async () => {
-    vi.doMock("../../heart/session-recall", () => ({
-      recallSession: vi.fn(),
+    vi.doMock("../../heart/session-transcript", () => ({
+      summarizeSessionTail: vi.fn(),
       searchSessionTranscript: vi.fn().mockRejectedValue(new Error("search failed")),
     }))
 
@@ -774,8 +774,8 @@ describe("query_session tool", () => {
   })
 
   it("returns the empty-session message when history search finds no non-system content", async () => {
-    vi.doMock("../../heart/session-recall", () => ({
-      recallSession: vi.fn(),
+    vi.doMock("../../heart/session-transcript", () => ({
+      summarizeSessionTail: vi.fn(),
       searchSessionTranscript: vi.fn().mockResolvedValue({ kind: "empty" }),
     }))
 

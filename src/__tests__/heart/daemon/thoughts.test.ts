@@ -32,7 +32,7 @@ describe("thoughts", () => {
         { role: "system", content: "system prompt" },
         { role: "user", content: "waking up.\n\nwhat needs my attention?" },
         { role: "assistant", content: "checking in. all looks good." },
-        { role: "user", content: "...time passing. anything stirring?\n\nlast i remember: all looks good." },
+        { role: "user", content: "...time passing. anything stirring?\n\nlast checkpoint: all looks good." },
         { role: "assistant", content: "nothing new. resting." },
       ])
 
@@ -68,7 +68,7 @@ describe("thoughts", () => {
           role: "assistant",
           content: null,
           tool_calls: [
-            { id: "tc_1", type: "function", function: { name: "memory_search", arguments: "{}" } },
+            { id: "tc_1", type: "function", function: { name: "search_notes", arguments: "{}" } },
             { id: "tc_2", type: "function", function: { name: "shell", arguments: "{}" } },
           ],
         },
@@ -80,7 +80,7 @@ describe("thoughts", () => {
       const turns = parseInnerDialogSession(sessionPath)
 
       expect(turns).toHaveLength(1)
-      expect(turns[0].tools).toEqual(["memory_search", "shell"])
+      expect(turns[0].tools).toEqual(["search_notes", "shell"])
       expect(turns[0].response).toBe("found something interesting.")
     })
 
@@ -120,7 +120,7 @@ describe("thoughts", () => {
           role: "assistant",
           content: null,
           tool_calls: [
-            { id: "tc_1", type: "function", function: { name: "memory_search", arguments: "{}" } },
+            { id: "tc_1", type: "function", function: { name: "search_notes", arguments: "{}" } },
           ],
         },
         { role: "tool", tool_call_id: "tc_1", content: "results" },
@@ -134,7 +134,7 @@ describe("thoughts", () => {
       ])
 
       const turns = parseInnerDialogSession(sessionPath)
-      expect(turns[0].tools).toEqual(["memory_search"])
+      expect(turns[0].tools).toEqual(["search_notes"])
       expect(turns[0].tools).not.toContain("settle")
     })
 
@@ -146,7 +146,7 @@ describe("thoughts", () => {
           role: "assistant",
           content: null,
           tool_calls: [
-            { id: "tc_1", type: "function", function: { name: "memory_save", arguments: "{}" } },
+            { id: "tc_1", type: "function", function: { name: "diary_write", arguments: "{}" } },
             { id: "tc_2", type: "function", function: { name: "settle", arguments: "{\"answer\":\"saved and done.\"}" } },
           ],
         },
@@ -154,7 +154,7 @@ describe("thoughts", () => {
 
       const turns = parseInnerDialogSession(sessionPath)
       expect(turns[0].response).toBe("saved and done.")
-      expect(turns[0].tools).toEqual(["memory_save"])
+      expect(turns[0].tools).toEqual(["diary_write"])
     })
 
     it("handles settle with malformed arguments", () => {
@@ -328,13 +328,13 @@ describe("thoughts", () => {
     it("formats turns with type labels and responses", () => {
       const output = formatThoughtTurns([
         { type: "boot", prompt: "waking up.", response: "checking in.", tools: [] },
-        { type: "heartbeat", prompt: "anything?", response: "nothing new.", tools: ["memory_search"] },
+        { type: "heartbeat", prompt: "anything?", response: "nothing new.", tools: ["search_notes"] },
       ], 10)
 
       expect(output).toContain("--- boot ---")
       expect(output).toContain("checking in.")
       expect(output).toContain("--- heartbeat ---")
-      expect(output).toContain("tools: memory_search")
+      expect(output).toContain("tools: search_notes")
       expect(output).toContain("nothing new.")
     })
 

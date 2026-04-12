@@ -24,7 +24,7 @@ function makeFriend(overrides: Partial<FriendRecord> = {}): FriendRecord {
   }
 }
 
-class InMemoryFriendStore implements FriendStore {
+class ProcessLocalFriendStore implements FriendStore {
   readonly records = new Map<string, FriendRecord>()
   putCalls = 0
 
@@ -84,7 +84,7 @@ function participant(
 describe("upsertGroupContextParticipants", () => {
   it("creates unknown relevant group participants as acquaintances with the specific group external id", async () => {
     const { upsertGroupContextParticipants } = await loadGroupContextModule()
-    const store = new InMemoryFriendStore()
+    const store = new ProcessLocalFriendStore()
 
     const results = await upsertGroupContextParticipants({
       store,
@@ -117,7 +117,7 @@ describe("upsertGroupContextParticipants", () => {
   })
 
   it("keeps cold non-group first encounters on the generic resolver path as strangers", async () => {
-    const store = new InMemoryFriendStore([
+    const store = new ProcessLocalFriendStore([
       makeFriend({
         id: "existing-friend",
         name: "Existing Friend",
@@ -153,7 +153,7 @@ describe("upsertGroupContextParticipants", () => {
         { provider: "imessage-handle", externalId: "shared@example.com", linkedAt: "2026-03-14T17:42:00.000Z" },
       ],
     })
-    const store = new InMemoryFriendStore([stranger])
+    const store = new ProcessLocalFriendStore([stranger])
 
     const [result] = await upsertGroupContextParticipants({
       store,
@@ -182,7 +182,7 @@ describe("upsertGroupContextParticipants", () => {
         { provider: "imessage-handle", externalId: "family@example.com", linkedAt: "2026-03-14T17:42:00.000Z" },
       ],
     })
-    const store = new InMemoryFriendStore([family])
+    const store = new ProcessLocalFriendStore([family])
 
     const [result] = await upsertGroupContextParticipants({
       store,
@@ -202,7 +202,7 @@ describe("upsertGroupContextParticipants", () => {
 
   it("scopes bootstrap to the specific live group and avoids duplicate records for repeated handles", async () => {
     const { upsertGroupContextParticipants } = await loadGroupContextModule()
-    const store = new InMemoryFriendStore()
+    const store = new ProcessLocalFriendStore()
 
     const results = await upsertGroupContextParticipants({
       store,
@@ -224,7 +224,7 @@ describe("upsertGroupContextParticipants", () => {
 
   it("returns no updates when the relevant live group identifier is missing", async () => {
     const { upsertGroupContextParticipants } = await loadGroupContextModule()
-    const store = new InMemoryFriendStore()
+    const store = new ProcessLocalFriendStore()
 
     const results = await upsertGroupContextParticipants({
       store,
@@ -239,7 +239,7 @@ describe("upsertGroupContextParticipants", () => {
 
   it("falls back to the external id when the participant has no usable display name and ignores empty participant lists", async () => {
     const { upsertGroupContextParticipants } = await loadGroupContextModule()
-    const store = new InMemoryFriendStore()
+    const store = new ProcessLocalFriendStore()
 
     const emptyResults = await upsertGroupContextParticipants({
       store,
@@ -272,7 +272,7 @@ describe("upsertGroupContextParticipants", () => {
         { provider: "imessage-handle", externalId: "group:any;+;groupchat123", linkedAt: "2026-03-14T17:42:00.000Z" },
       ],
     })
-    const store = new InMemoryFriendStore([existing])
+    const store = new ProcessLocalFriendStore([existing])
 
     const results = await upsertGroupContextParticipants({
       store,
@@ -306,7 +306,7 @@ describe("upsertGroupContextParticipants", () => {
         { provider: "imessage-handle", externalId: "legacy@example.com", linkedAt: "2026-03-14T17:42:00.000Z" },
       ],
     })
-    const store = new InMemoryFriendStore([legacy])
+    const store = new ProcessLocalFriendStore([legacy])
 
     const [promoted] = await upsertGroupContextParticipants({
       store,
@@ -318,7 +318,7 @@ describe("upsertGroupContextParticipants", () => {
     expect(promoted.trustLevel).toBe("acquaintance")
     expect((await store.get("legacy-1"))?.notes).toEqual({})
 
-    const unknownStore = new InMemoryFriendStore()
+    const unknownStore = new ProcessLocalFriendStore()
     await upsertGroupContextParticipants({
       store: unknownStore,
       participants: [participant("unknown@example.com", "Unknown")],

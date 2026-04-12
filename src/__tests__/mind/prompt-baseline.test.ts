@@ -239,7 +239,7 @@ describe("token baseline measurement", () => {
       "- **Personality flattening**: Does the prompt retain humor, lowercase style, chaos-monkey energy?",
       "- **Lost metacognitive flow**: Does inner channel still get ponder/rest framing?",
       "- **ponder/rest/settle misuse**: Are tool contracts clear about when to use each?",
-      "- **Friend note confusion**: Does context section clearly separate auto-loaded vs manual recall?",
+      "- **Friend note confusion**: Does context section clearly separate auto-loaded vs manual search_notes?",
       "- **Cross-session truth**: Does family trust section correctly reference live world-state?",
       "- **Tool behavior**: Is tool_choice=required + settle contract present and clear?",
     ]

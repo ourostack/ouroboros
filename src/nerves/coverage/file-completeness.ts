@@ -48,7 +48,7 @@ export function isTypeOnlyFile(source: string): boolean {
 const DISPATCH_EXEMPT_PATTERNS = [
   "repertoire/tools-files",
   "repertoire/tools-shell",
-  "repertoire/tools-memory",
+  "repertoire/tools-notes",
   "repertoire/tools-bridge",
   "repertoire/tools-session",
   "repertoire/tools-continuity",
@@ -71,7 +71,7 @@ const DISPATCH_EXEMPT_PATTERNS = [
   // (diary.ts saveDiaryEntry) owns observability via mind.diary_integrity_warning.
   "mind/diary-integrity",
   // Provenance trust: pure classification function (no side effects). Callers
-  // (associative-recall.ts, tools-memory.ts) own observability for recall results.
+  // (note-search.ts, tools-notes.ts) own observability for note search results.
   "mind/provenance-trust",
   // Log redaction: pure utility consumed by the NDJSON sink (no independent side effects).
   "nerves/redact",

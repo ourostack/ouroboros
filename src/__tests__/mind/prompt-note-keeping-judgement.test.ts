@@ -1,7 +1,7 @@
 /**
- * Memory judgement heuristic tests — Unit 3.3
+ * Note-keeping judgement heuristic tests — Unit 3.3
  *
- * Pins the locked memory judgement rules from the doing doc and verifies
+ * Pins the locked note-keeping judgement rules from the doing doc and verifies
  * they appear in the system prompt where the agent will see them.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest"
@@ -73,7 +73,7 @@ function setupReadFileSync() {
   })
 }
 
-describe("memory judgement heuristics — locked content", () => {
+describe("note-keeping judgement heuristics — locked content", () => {
   beforeEach(() => {
     vi.resetModules()
     setupReadFileSync()
@@ -96,7 +96,7 @@ describe("memory judgement heuristics — locked content", () => {
     })
   })
 
-  it("includes locked memory judgement heuristics in the system prompt", async () => {
+  it("includes locked note-keeping judgement heuristics in the system prompt", async () => {
     const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const system = await buildSystem("cli")
@@ -130,7 +130,7 @@ describe("memory judgement heuristics — locked content", () => {
     const system = await buildSystem("cli")
 
     // The section header should be present
-    expect(system).toContain("## memory judgement")
+    expect(system).toContain("## note-keeping judgement")
 
     // Key decision rules
     expect(system).toContain("if it changes both, save both deliberately")
@@ -145,15 +145,15 @@ describe("memory judgement heuristics — locked content", () => {
     // The tool contracts section should still have the tool descriptions
     expect(system).toContain("save_friend_note")
     expect(system).toContain("diary_write")
-    expect(system).toContain("recall")
+    expect(system).toContain("written records")
 
-    // AND the memory judgement heuristics should be present (either in the same
+    // AND the note-keeping judgement heuristics should be present (either in the same
     // section or in a dedicated section)
-    expect(system).toContain("memory judgement")
+    expect(system).toContain("note-keeping judgement")
   })
 })
 
-describe("memory judgement heuristics — routing rules", () => {
+describe("note-keeping judgement heuristics — routing rules", () => {
   beforeEach(() => {
     vi.resetModules()
     setupReadFileSync()
@@ -207,17 +207,17 @@ describe("memory judgement heuristics — routing rules", () => {
     resetPsycheCache()
     const system = await buildSystem("cli")
 
-    // Regression guard: slugger once spent a recall scan looking for a custom
+    // Regression guard: slugger once spent a diary/journal search looking for a custom
     // travel/ folder that was right at the bundle root, then said "i should
     // know my own folder structure next time" — which is impossible without
     // writing it down. The diary guidance now explicitly flags bundle-layout
     // facts as a thing worth persisting via diary_write (the diary is a
-    // jsonl fact store queried via recall, not a directory of .md files).
+    // jsonl fact store queried via written-note search, not a directory of .md files).
     expect(system).toContain("facts about my own bundle layout")
     expect(system).toContain("save the fact with diary_write")
   })
 
-  it("body map says custom top-level folders may exist and instructs glob before recall", async () => {
+  it("body map says custom top-level folders may exist and instructs glob before diary/journal search", async () => {
     const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const system = await buildSystem("cli")
@@ -225,9 +225,9 @@ describe("memory judgement heuristics — routing rules", () => {
     // Same slugger incident — bodyMapSection only listed the 7 standard
     // folders. Agents had no signal that bundles can have custom top-level
     // folders and no nudge to glob the bundle root before falling back to
-    // recall. (The file-listing tool is `glob`, not `list_directory`.)
+    // diary/journal search. (The file-listing tool is `glob`, not `list_directory`.)
     expect(system).toContain("custom top-level folders")
     expect(system).toContain("`glob`")
-    expect(system).toContain("BEFORE reaching for `recall`")
+    expect(system).toContain("BEFORE using diary/journal search")
   })
 })

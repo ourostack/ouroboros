@@ -3,13 +3,13 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 
-describe("active recall", () => {
+describe("kept notes", () => {
   let tmpDir: string
   let diaryRoot: string
   let journalDir: string
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "active-recall-"))
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "kept-notes-"))
     diaryRoot = path.join(tmpDir, "diary")
     journalDir = path.join(tmpDir, "journal")
     fs.mkdirSync(diaryRoot, { recursive: true })
@@ -46,10 +46,10 @@ describe("active recall", () => {
     )
   }
 
-  it("injects found recall as first-person notes the agent chose to keep", async () => {
+  it("injects a found diary note with source-specific first-person phrasing", async () => {
     writeFact("auth uses OAuth device code login")
     writeJournalIndex()
-    const { injectActiveRecall } = await import("../../heart/active-recall")
+    const { injectKeptNotes } = await import("../../heart/kept-notes")
     const judge = vi.fn(async (input) => {
       expect(input.query).toBe("how does auth work?")
       expect(input.candidates.some((candidate) => candidate.source.kind === "diary")).toBe(true)
@@ -62,7 +62,7 @@ describe("active recall", () => {
       { role: "user", content: "how does auth work?" },
     ]
 
-    const outcome = await injectActiveRecall(messages, {
+    const outcome = await injectKeptNotes(messages, {
       diaryRoot,
       journalDir,
       friend: {
@@ -73,7 +73,7 @@ describe("active recall", () => {
         externalIds: [],
         tenantMemberships: [],
         toolPreferences: {},
-        notes: { auth: { value: "prefers deliberate recall phrasing", savedAt: "2026-04-12T00:00:00Z" } },
+        notes: { auth: { value: "prefers deliberate phrasing", savedAt: "2026-04-12T00:00:00Z" } },
         totalTokens: 0,
         createdAt: "2026-04-12T00:00:00Z",
         updatedAt: "2026-04-12T00:00:00Z",
@@ -83,29 +83,29 @@ describe("active recall", () => {
     })
 
     expect(outcome.status).toBe("found")
-    expect(messages[0].content).toContain("## notes I chose to keep")
-    expect(messages[0].content).toContain("I chose to keep this:")
+    expect(messages[0].content).toContain("## from my diary")
+    expect(messages[0].content).toContain("This may matter now:")
+    expect(messages[0].content).toContain("I kept this:")
     expect(messages[0].content).toContain("auth uses OAuth device code login")
-    expect(messages[0].content).not.toContain("## recalled context")
   })
 
   it("does not inject anything for none, timeout, or error outcomes", async () => {
     writeFact("billing notes are intentionally unrelated")
-    const { injectActiveRecall } = await import("../../heart/active-recall")
+    const { injectKeptNotes } = await import("../../heart/kept-notes")
     const baseMessages: any[] = [
       { role: "system", content: "system prompt" },
       { role: "user", content: "billing notes" },
     ]
 
     const noneMessages = structuredClone(baseMessages)
-    const noneOutcome = await injectActiveRecall(noneMessages, {
+    const noneOutcome = await injectKeptNotes(noneMessages, {
       diaryRoot,
       journalDir,
       judge: async () => ({ status: "none" as const, pressure: ["not relevant"] }),
     })
 
     const timeoutMessages = structuredClone(baseMessages)
-    const timeoutOutcome = await injectActiveRecall(timeoutMessages, {
+    const timeoutOutcome = await injectKeptNotes(timeoutMessages, {
       diaryRoot,
       journalDir,
       timeoutMs: 1,
@@ -113,7 +113,7 @@ describe("active recall", () => {
     })
 
     const errorMessages = structuredClone(baseMessages)
-    const errorOutcome = await injectActiveRecall(errorMessages, {
+    const errorOutcome = await injectKeptNotes(errorMessages, {
       diaryRoot,
       journalDir,
       judge: async () => {
@@ -129,13 +129,13 @@ describe("active recall", () => {
     expect(errorMessages[0].content).toBe("system prompt")
   })
 
-  it("handles recall boundary cases without surfacing brittle notes", async () => {
+  it("handles boundary cases without surfacing brittle notes", async () => {
     writeFact("auth notes should remain available")
     fs.writeFileSync(path.join(journalDir, ".index.json"), JSON.stringify({ malformed: true }), "utf8")
-    const { gatherActiveRecallCandidates, injectActiveRecall, renderActiveRecallOutcome } = await import("../../heart/active-recall")
+    const { gatherKeptNotesCandidates, injectKeptNotes, renderKeptNotesOutcome } = await import("../../heart/kept-notes")
 
-    expect(gatherActiveRecallCandidates("a", { diaryRoot, journalDir })).toEqual([])
-    expect(gatherActiveRecallCandidates("auth", {
+    expect(gatherKeptNotesCandidates("a", { diaryRoot, journalDir })).toEqual([])
+    expect(gatherKeptNotesCandidates("auth", {
       diaryRoot,
       journalDir,
       friend: {
@@ -153,13 +153,35 @@ describe("active recall", () => {
         schemaVersion: 1,
       } as any,
     }).map((candidate) => candidate.source.kind)).toEqual(["diary"])
-    expect(renderActiveRecallOutcome({ status: "timeout", elapsedMs: 1 })).toBeNull()
+    expect(renderKeptNotesOutcome({ status: "timeout", elapsedMs: 1 })).toBeNull()
+    expect(renderKeptNotesOutcome({
+      status: "found",
+      note: "journal auth note",
+      sources: [{ kind: "journal", label: "journal", ref: "auth.md" }],
+      elapsedMs: 1,
+    })).toContain("## from my journal")
+    expect(renderKeptNotesOutcome({
+      status: "found",
+      note: "friend auth note",
+      sources: [{ kind: "friend-note", label: "friend note: Ari", ref: "auth" }],
+      elapsedMs: 1,
+    })).toContain("## from my friend notes")
+    expect(renderKeptNotesOutcome({
+      status: "found",
+      note: "cross-source auth note",
+      sources: [
+        { kind: "diary", label: "diary", ref: "fact-1" },
+        { kind: "journal", label: "journal", ref: "auth.md" },
+        { kind: "friend-note", label: "friend note: Ari", ref: "auth" },
+      ],
+      elapsedMs: 1,
+    })).toContain("## from my diary, my journal, and my friend notes")
 
     const emptySourceMessages: any[] = [
       { role: "system", content: "system prompt" },
       { role: "user", content: "auth" },
     ]
-    const emptySourceOutcome = await injectActiveRecall(emptySourceMessages, {
+    const emptySourceOutcome = await injectKeptNotes(emptySourceMessages, {
       diaryRoot,
       journalDir,
       judge: async () => ({ status: "found" as const, note: "I kept the auth path", sourceIndexes: [] }),
@@ -169,7 +191,7 @@ describe("active recall", () => {
       { role: "system", content: "system prompt" },
       { role: "user", content: "auth" },
     ]
-    const invalidSourceOutcome = await injectActiveRecall(invalidSourceMessages, {
+    const invalidSourceOutcome = await injectKeptNotes(invalidSourceMessages, {
       diaryRoot,
       journalDir,
       judge: async () => ({ status: "found" as const, note: "I kept the auth path", sourceIndexes: [0.5, 99] } as any),
@@ -179,7 +201,7 @@ describe("active recall", () => {
       { role: "system", content: "system prompt" },
       { role: "user", content: "auth" },
     ]
-    const stringErrorOutcome = await injectActiveRecall(stringErrorMessages, {
+    const stringErrorOutcome = await injectKeptNotes(stringErrorMessages, {
       diaryRoot,
       journalDir,
       judge: async () => {
@@ -187,7 +209,7 @@ describe("active recall", () => {
       },
     })
 
-    const blankUserOutcome = await injectActiveRecall([
+    const blankUserOutcome = await injectKeptNotes([
       { role: "system", content: "system prompt" },
       { role: "user", content: "   " },
     ] as any[], {
@@ -201,36 +223,37 @@ describe("active recall", () => {
     expect(stringErrorOutcome).toMatchObject({ status: "error", reason: "string failure" })
     expect(blankUserOutcome.status).toBe("none")
     expect(emptySourceMessages[0].content).toContain("I kept the auth path")
-    expect(emptySourceMessages[0].content).not.toContain("I chose to keep this: I kept the auth path")
+    expect(emptySourceMessages[0].content).not.toContain("I kept this: I kept the auth path")
   })
 
-  it("injects fuzzy recall as a first-person kept-note hint", async () => {
+  it("injects a fuzzy diary note as a first-person kept-note hint", async () => {
     writeFact("oauth sometimes points to the device code flow")
-    const { injectActiveRecall } = await import("../../heart/active-recall")
+    const { injectKeptNotes } = await import("../../heart/kept-notes")
     const messages: any[] = [
       { role: "system", content: "system prompt" },
       { role: "user", content: "oauth details" },
     ]
 
-    const outcome = await injectActiveRecall(messages, {
+    const outcome = await injectKeptNotes(messages, {
       diaryRoot,
       journalDir,
       judge: async () => ({ status: "fuzzy" as const, hint: "device code flow might matter", sourceIndexes: [0] }),
     })
 
     expect(outcome.status).toBe("fuzzy")
-    expect(messages[0].content).toContain("## notes I chose to keep")
-    expect(messages[0].content).toContain("I chose to keep this: device code flow might matter")
+    expect(messages[0].content).toContain("## from my diary")
+    expect(messages[0].content).toContain("This is only a possible match; I should verify it before relying on it:")
+    expect(messages[0].content).toContain("I may have kept something related: device code flow might matter")
   })
 
-  it("skips recall when the turn is not eligible", async () => {
-    const { injectActiveRecall } = await import("../../heart/active-recall")
+  it("skips kept notes when the turn is not eligible", async () => {
+    const { injectKeptNotes } = await import("../../heart/kept-notes")
     const judge = vi.fn()
     const noSystem: any[] = [{ role: "user", content: "hello" }]
     const noUser: any[] = [{ role: "system", content: "system prompt" }]
 
-    const noSystemOutcome = await injectActiveRecall(noSystem, { diaryRoot, journalDir, judge })
-    const noUserOutcome = await injectActiveRecall(noUser, { diaryRoot, journalDir, judge })
+    const noSystemOutcome = await injectKeptNotes(noSystem, { diaryRoot, journalDir, judge })
+    const noUserOutcome = await injectKeptNotes(noUser, { diaryRoot, journalDir, judge })
 
     expect(noSystemOutcome.status).toBe("none")
     expect(noUserOutcome.status).toBe("none")
@@ -238,9 +261,9 @@ describe("active recall", () => {
   })
 })
 
-describe("active recall model judge", () => {
+describe("kept notes model judge", () => {
   it("uses a no-tools boxed provider call and parses found JSON", async () => {
-    const { createActiveRecallJudge } = await import("../../heart/active-recall")
+    const { createKeptNotesJudge } = await import("../../heart/kept-notes")
     const signal = new AbortController().signal
     const runtime = {
       resetTurnState: vi.fn(),
@@ -250,7 +273,7 @@ describe("active recall model judge", () => {
         outputItems: [],
       })),
     }
-    const judge = createActiveRecallJudge(runtime, signal)
+    const judge = createKeptNotesJudge(runtime, signal)
     const result = await judge({
       query: "auth",
       candidates: [
@@ -280,23 +303,23 @@ describe("active recall model judge", () => {
   })
 
   it("returns none for invalid or non-json model output", async () => {
-    const { createActiveRecallJudge } = await import("../../heart/active-recall")
+    const { createKeptNotesJudge } = await import("../../heart/kept-notes")
     const runtime = {
       resetTurnState: vi.fn(),
       streamTurn: vi.fn(async () => ({ content: "sure, here you go", toolCalls: [], outputItems: [] })),
     }
-    const judge = createActiveRecallJudge(runtime)
+    const judge = createKeptNotesJudge(runtime)
 
     const result = await judge({
       query: "auth",
       candidates: [{ text: "auth note", source: { kind: "diary", label: "diary" } }],
     })
 
-    expect(result).toEqual({ status: "none", pressure: ["invalid active recall judge output"] })
+    expect(result).toEqual({ status: "none", pressure: ["invalid kept notes judge output"] })
   })
 
   it("parses fuzzy and none JSON while sanitizing source indexes and pressure", async () => {
-    const { createActiveRecallJudge } = await import("../../heart/active-recall")
+    const { createKeptNotesJudge } = await import("../../heart/kept-notes")
     const runtime = {
       resetTurnState: vi.fn(),
       streamTurn: vi.fn()
@@ -365,7 +388,7 @@ describe("active recall model judge", () => {
           outputItems: [],
         }),
     }
-    const judge = createActiveRecallJudge(runtime)
+    const judge = createKeptNotesJudge(runtime)
     const input = {
       query: "auth",
       candidates: [{ text: "auth note", source: { kind: "diary" as const, label: "diary" } }],
@@ -388,13 +411,13 @@ describe("active recall model judge", () => {
       sourceIndexes: undefined,
     })
     await expect(judge(input)).resolves.toEqual({ status: "none", pressure: [] })
-    await expect(judge(input)).resolves.toEqual({ status: "none", pressure: ["invalid active recall judge output"] })
-    await expect(judge(input)).resolves.toEqual({ status: "none", pressure: ["invalid active recall judge output"] })
-    await expect(judge(input)).resolves.toEqual({ status: "none", pressure: ["invalid active recall judge output"] })
-    await expect(judge(input)).resolves.toEqual({ status: "none", pressure: ["invalid active recall judge output"] })
-    await expect(judge(input)).resolves.toEqual({ status: "none", pressure: ["invalid active recall judge output"] })
-    await expect(judge(input)).resolves.toEqual({ status: "none", pressure: ["invalid active recall judge output"] })
-    await expect(judge(input)).resolves.toEqual({ status: "none", pressure: ["invalid active recall judge output"] })
-    await expect(judge(input)).resolves.toEqual({ status: "none", pressure: ["invalid active recall judge output"] })
+    await expect(judge(input)).resolves.toEqual({ status: "none", pressure: ["invalid kept notes judge output"] })
+    await expect(judge(input)).resolves.toEqual({ status: "none", pressure: ["invalid kept notes judge output"] })
+    await expect(judge(input)).resolves.toEqual({ status: "none", pressure: ["invalid kept notes judge output"] })
+    await expect(judge(input)).resolves.toEqual({ status: "none", pressure: ["invalid kept notes judge output"] })
+    await expect(judge(input)).resolves.toEqual({ status: "none", pressure: ["invalid kept notes judge output"] })
+    await expect(judge(input)).resolves.toEqual({ status: "none", pressure: ["invalid kept notes judge output"] })
+    await expect(judge(input)).resolves.toEqual({ status: "none", pressure: ["invalid kept notes judge output"] })
+    await expect(judge(input)).resolves.toEqual({ status: "none", pressure: ["invalid kept notes judge output"] })
   })
 })

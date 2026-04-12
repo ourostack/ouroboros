@@ -121,7 +121,7 @@ export interface InboundTurnInput {
     signal?: AbortSignal,
     options?: RunAgentOptions,
   ) => Promise<{ usage?: UsageData; outcome: RunAgentOutcome; completion?: CompletionMetadata; error?: Error; errorClassification?: ProviderErrorClassification }>
-  /** In-memory failover state for this session. Channel owns this, pipeline reads/writes it. */
+  /** Process-local failover state for this session. Channel owns this, pipeline reads/writes it. */
   failoverState?: FailoverState
   /** Set by the pipeline during failover switch — signals that a provider switch occurred this turn. */
   switchedProvider?: string

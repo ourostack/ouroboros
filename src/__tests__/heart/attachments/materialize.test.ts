@@ -4,7 +4,7 @@ import * as path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { materializeAttachment } from "../../../heart/attachments/materialize"
-import { rememberRecentAttachment } from "../../../heart/attachments/store"
+import { cacheRecentAttachment } from "../../../heart/attachments/store"
 import {
   buildBlueBubblesAttachmentRecord,
   persistBlueBubblesAttachmentSource,
@@ -151,7 +151,7 @@ describe("materializeAttachment", () => {
       mimeType: "image/png",
       byteCount: 17,
     })
-    rememberRecentAttachment("slugger", record, agentRoot)
+    cacheRecentAttachment("slugger", record, agentRoot)
 
     const materialized = await materializeAttachment("slugger", record.id, {
       agentRoot,
@@ -173,7 +173,7 @@ describe("materializeAttachment", () => {
       mimeType: "image/tiff",
       byteCount: 18,
     })
-    rememberRecentAttachment("slugger", record, agentRoot)
+    cacheRecentAttachment("slugger", record, agentRoot)
 
     const normalizeImage = vi.fn().mockResolvedValue({
       path: normalizedPath,
@@ -210,7 +210,7 @@ describe("materializeAttachment", () => {
       1,
       { localPath, byteCount: 4 },
     )
-    rememberRecentAttachment("slugger", localRecord, agentRoot)
+    cacheRecentAttachment("slugger", localRecord, agentRoot)
 
     const fromLocal = await materializeAttachment("slugger", localRecord.id, { agentRoot, variant: "original" })
     expect(fromLocal.path).toBe(localPath)
@@ -223,7 +223,7 @@ describe("materializeAttachment", () => {
     const fallbackPath = path.join(agentRoot, "state", "attachments", "materialized", "bluebubbles", "GUID-fallback", "original.jpg")
     fs.mkdirSync(path.dirname(fallbackPath), { recursive: true })
     fs.writeFileSync(fallbackPath, "jpeg")
-    rememberRecentAttachment("slugger", fallbackRecord, agentRoot)
+    cacheRecentAttachment("slugger", fallbackRecord, agentRoot)
 
     const fromFallback = await materializeAttachment("slugger", fallbackRecord.id, { agentRoot, variant: "original" })
     expect(fromFallback.path).toBe(fallbackPath)
@@ -236,7 +236,7 @@ describe("materializeAttachment", () => {
       transferName: "download",
       mimeType: "image/png",
     })
-    rememberRecentAttachment("slugger", record, agentRoot)
+    cacheRecentAttachment("slugger", record, agentRoot)
     vi.spyOn(configModule, "getBlueBubblesConfig").mockReturnValue({
       serverUrl: "http://bluebubbles.local",
       password: "secret",
@@ -266,7 +266,7 @@ describe("materializeAttachment", () => {
       transferName: "download",
       mimeType: "image/png",
     })
-    rememberRecentAttachment("slugger", record, agentRoot)
+    cacheRecentAttachment("slugger", record, agentRoot)
     vi.spyOn(configModule, "getBlueBubblesConfig").mockReturnValue({
       serverUrl: "http://bluebubbles.local",
       password: "secret",
@@ -295,7 +295,7 @@ describe("materializeAttachment", () => {
       mimeType: "application/pdf",
       byteCount: 3,
     })
-    rememberRecentAttachment("slugger", record, agentRoot)
+    cacheRecentAttachment("slugger", record, agentRoot)
 
     await expect(
       materializeAttachment("slugger", record.id, { agentRoot, variant: "vision_safe" }),
@@ -311,7 +311,7 @@ describe("materializeAttachment", () => {
       mimeType: "image/tiff",
       byteCount: 18,
     })
-    rememberRecentAttachment("slugger", record, agentRoot)
+    cacheRecentAttachment("slugger", record, agentRoot)
 
     const materialized = await materializeAttachment("slugger", record.id, {
       agentRoot,

@@ -13,7 +13,7 @@ export const continuityToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "query_episodes",
-        description: "Query recent episodes from my continuity memory. Returns timestamped records of significant events (obligation shifts, coding milestones, bridge events, care events, turning points).",
+        description: "Query recent episodes from my continuity log. Returns timestamped records of significant events (obligation shifts, coding milestones, bridge events, care events, turning points).",
         parameters: {
           type: "object",
           properties: {
@@ -191,7 +191,7 @@ export const continuityToolDefinitions: ToolDefinition[] = [
         parameters: {
           type: "object",
           properties: {
-            content: { type: "string", description: "What I want to remember to do" },
+            content: { type: "string", description: "What I want to keep track of" },
             salience: { type: "string", description: "low, medium, or high (default: low)" },
             nudgeAfter: { type: "string", description: "ISO timestamp — nudge me after this time" },
           },

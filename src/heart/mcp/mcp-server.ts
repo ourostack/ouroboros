@@ -74,7 +74,7 @@ const TOOL_TO_COMMAND: Record<string, string> = {
   catchup: "agent.catchup",
   delegate: "agent.delegate",
   get_context: "agent.getContext",
-  search_memory: "agent.searchMemory",
+  search_notes: "agent.searchNotes",
   get_task: "agent.getTask",
   check_scope: "agent.checkScope",
   request_decision: "agent.requestDecision",
@@ -293,7 +293,7 @@ export function createMcpServer(options: McpServerOptions): McpServer {
     catchup: "handleAgentCatchup",
     delegate: "handleAgentDelegate",
     get_context: "handleAgentGetContext",
-    search_memory: "handleAgentSearchMemory",
+    search_notes: "handleAgentSearchNotes",
     get_task: "handleAgentGetTask",
     check_scope: "handleAgentCheckScope",
     request_decision: "handleAgentRequestDecision",
@@ -525,7 +525,7 @@ export function getToolSchemas(): McpToolSchema[] {
   return [
     {
       name: "ask",
-      description: "Ask the agent a question. The agent uses its memory and recent session context to provide a useful answer.",
+      description: "Ask the agent a question. The agent uses its diary, journal, and recent session context to provide a useful answer.",
       inputSchema: {
         type: "object",
         properties: {
@@ -536,7 +536,7 @@ export function getToolSchemas(): McpToolSchema[] {
     },
     {
       name: "status",
-      description: "Get the agent's current status including active sessions, memory state, and activity level.",
+      description: "Get the agent's current status including active sessions, diary and journal state, and activity level.",
       inputSchema: {
         type: "object",
         properties: {},
@@ -564,19 +564,19 @@ export function getToolSchemas(): McpToolSchema[] {
     },
     {
       name: "get_context",
-      description: "Get the agent's current working context including memory summary, active tasks, and relevant state.",
+      description: "Get the agent's current working context including note summary, active tasks, and relevant state.",
       inputSchema: {
         type: "object",
         properties: {},
       },
     },
     {
-      name: "search_memory",
-      description: "Search the agent's memory for information about a specific topic. Returns matching lines from the agent's memory file.",
+      name: "search_notes",
+      description: "Search the agent's diary for information about a specific topic. Returns matching diary lines.",
       inputSchema: {
         type: "object",
         properties: {
-          query: { type: "string", description: "Search term to look for in agent memory" },
+          query: { type: "string", description: "Search term to look for in agent notes" },
         },
         required: ["query"],
       },
@@ -614,7 +614,7 @@ export function getToolSchemas(): McpToolSchema[] {
     },
     {
       name: "check_guidance",
-      description: "Get guidance from the agent on how to approach a topic. The agent searches its memory for relevant guidance.",
+      description: "Get guidance from the agent on how to approach a topic. The agent searches its diary, journal, and session context for relevant guidance.",
       inputSchema: {
         type: "object",
         properties: {
@@ -658,7 +658,7 @@ export function getToolSchemas(): McpToolSchema[] {
     },
     {
       name: "send_message",
-      description: "Send a message to the agent and get a synchronous response. This runs a full agent turn — the agent can use tools, think, and respond. For multi-turn conversations, call repeatedly — the agent remembers prior messages in this session.",
+      description: "Send a message to the agent and get a synchronous response. This runs a full agent turn — the agent can use tools, think, and respond. For multi-turn conversations, call repeatedly — the agent keeps prior turns in this session.",
       inputSchema: {
         type: "object",
         properties: {

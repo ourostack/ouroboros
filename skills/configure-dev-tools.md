@@ -43,11 +43,11 @@ Once connected, these tools are available:
 - **check_response** -- Check for pending messages from the agent (after ponder or proactive surface)
 
 ### Read-only tools
-- **ask** -- Ask the agent a question (uses memory and context)
+- **ask** -- Ask the agent a question (uses diary, journal, and context)
 - **status** -- Get agent's current status and activity
 - **catchup** -- Get recent activity summary
 - **get_context** -- Get agent's current working context
-- **search_memory** -- Search agent's memory for specific topics
+- **search_notes** -- Search the agent's diary for specific topics
 - **get_task** -- Get details of the agent's current task
 - **check_scope** -- Verify if something is in scope for current work
 - **check_guidance** -- Get guidance on how to approach something

@@ -55,11 +55,11 @@ const TOOL_DESCRIPTIONS: Record<string, DescriptionBuilder> = {
     return `searching code for '${truncate(p, 40)}'...`
   },
 
-  // Memory and knowledge
-  recall: (args) => {
+  // Notes and knowledge
+  search_notes: (args) => {
     const q = args.query
-    if (!q) return "searching memory..."
-    return `searching memory for '${truncate(q, 40)}'...`
+    if (!q) return "searching notes..."
+    return `searching notes for '${truncate(q, 40)}'...`
   },
   diary_write: (args) => {
     const about = args.about

@@ -403,8 +403,8 @@ describe("execTool", () => {
     vi.unstubAllGlobals()
   })
 
-  // ── recall (was memory_search) ──
-  it("recall returns relevant diary entries for a query", async () => {
+  // ── search_notes ──
+  it("search_notes returns relevant diary entries for a query", async () => {
     vi.mocked(fs.existsSync).mockReturnValue(true)
     vi.mocked(fs.readFileSync).mockReturnValue(
       [
@@ -425,39 +425,39 @@ describe("execTool", () => {
       ].join("\n"),
     )
 
-    const result = await execTool("recall", { query: "pizza" })
+    const result = await execTool("search_notes", { query: "pizza" })
     expect(result).toContain("Ari likes mushroom pizza")
     expect(result).not.toContain("strict TypeScript")
   })
 
-  it("recall returns a query-required error when query is empty", async () => {
-    const result = await execTool("recall", { query: "   " })
+  it("search_notes returns a query-required error when query is empty", async () => {
+    const result = await execTool("search_notes", { query: "   " })
     expect(result).toContain("query is required")
   })
 
-  it("recall returns a query-required error when query is omitted", async () => {
-    const result = await execTool("recall", {})
+  it("search_notes returns a query-required error when query is omitted", async () => {
+    const result = await execTool("search_notes", {})
     expect(result).toContain("query is required")
   })
 
-  it("recall returns error text when reading diary entries fails", async () => {
+  it("search_notes returns error text when reading diary entries fails", async () => {
     vi.mocked(fs.existsSync).mockReturnValue(true)
     vi.mocked(fs.readFileSync).mockImplementation(() => {
       throw new Error("disk read failed")
     })
 
-    const result = await execTool("recall", { query: "pizza" })
+    const result = await execTool("search_notes", { query: "pizza" })
     expect(result).toContain("error:")
     expect(result).toContain("disk read failed")
   })
 
-  it("recall stringifies non-Error read failures", async () => {
+  it("search_notes stringifies non-Error read failures", async () => {
     vi.mocked(fs.existsSync).mockReturnValue(true)
     vi.mocked(fs.readFileSync).mockImplementation(() => {
       throw "disk failed as string"
     })
 
-    const result = await execTool("recall", { query: "pizza" })
+    const result = await execTool("search_notes", { query: "pizza" })
     expect(result).toContain("error:")
     expect(result).toContain("disk failed as string")
   })
@@ -593,17 +593,17 @@ describe("summarizeArgs", () => {
     expect(summarizeArgs("web_search", {})).toBe("")
   })
 
-  it("returns truncated query for recall", () => {
+  it("returns truncated query for search_notes", () => {
     const query = "a".repeat(70)
-    expect(summarizeArgs("recall", { query })).toBe("query=" + "a".repeat(60) + "...")
+    expect(summarizeArgs("search_notes", { query })).toBe("query=" + "a".repeat(60) + "...")
   })
 
-  it("returns empty string for recall with no query", () => {
-    expect(summarizeArgs("recall", {})).toBe("")
+  it("returns empty string for search_notes with no query", () => {
+    expect(summarizeArgs("search_notes", {})).toBe("")
   })
 
   it("returns entry/about for diary_write summaries", () => {
-    expect(summarizeArgs("diary_write", { entry: "remember this", about: "ari" })).toBe("entry=remember this about=ari")
+    expect(summarizeArgs("diary_write", { entry: "keep this", about: "ari" })).toBe("entry=keep this about=ari")
   })
 
   it("returns friendId for get_friend_note summaries", () => {
@@ -2513,7 +2513,7 @@ describe("save_friend_note tool", () => {
     expect(ctx.friendStore.put).toHaveBeenCalled()
   })
 
-  // -- Disk write / no in-memory mutation tests --
+  // -- Disk write / no process-local mutation tests --
 
   it("writes to disk via friendStore.put, reads fresh record via friendStore.get", async () => {
     vi.resetModules()
@@ -2624,7 +2624,7 @@ describe("github tool registration", () => {
           supportsRichCards: true,
           maxMessageLength: Infinity,
         },
-        memory: null,
+        notes: null,
       },
     } as any
     const { githubRequest } = await import("../../repertoire/github-client")

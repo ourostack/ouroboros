@@ -39,7 +39,7 @@ describe("MCP tool schemas", () => {
       "catchup",
       "delegate",
       "get_context",
-      "search_memory",
+      "search_notes",
       "get_task",
       "check_scope",
       "request_decision",
@@ -151,16 +151,16 @@ describe("MCP tool schemas", () => {
     })
   })
 
-  it("search_memory tool requires 'query' parameter", () => {
+  it("search_notes tool requires 'query' parameter", () => {
     emitNervesEvent({
       component: "daemon",
       event: "daemon.mcp_schema_test_start",
-      message: "testing search_memory tool schema",
+      message: "testing search_notes tool schema",
       meta: {},
     })
 
     const schemas = getToolSchemas()
-    const searchSchema = schemas.find((s) => s.name === "search_memory")
+    const searchSchema = schemas.find((s) => s.name === "search_notes")
     expect(searchSchema).toBeDefined()
     expect(searchSchema!.inputSchema.properties.query).toBeDefined()
     expect(searchSchema!.inputSchema.required).toContain("query")
@@ -168,7 +168,7 @@ describe("MCP tool schemas", () => {
     emitNervesEvent({
       component: "daemon",
       event: "daemon.mcp_schema_test_end",
-      message: "search_memory tool schema test complete",
+      message: "search_notes tool schema test complete",
       meta: {},
     })
   })

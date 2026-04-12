@@ -55,15 +55,15 @@ These emerged from real architectural decisions, competitive analysis, and exten
 - **Don't solve two overlapping objects by adding a third.** When existing state objects carry overlapping data, collapse authority into the one that already owns it.
 - **The prompt should express the contract, not be the contract.** Behavioral invariants belong in code. Recurring preferences belong in structured policy. The prompt renders these for the model — it is not the sole place they exist.
 
-### Memory
-- **Memories should fade as events, sharpen as patterns, and stabilise as truths.** Raw conversational residue should decay. Recurring themes should consolidate into patterns. Foundational decisions should remain stable and quiet until relevant.
-- **Memory objects should know what relationships they belong to.** Global memory is correct for system-level truths. Lived experience is situated — it happened with someone, about something, in a specific context.
-- **Retrieval quality depends on consolidation.** If nothing processes raw experience into structured knowledge, better search algorithms are optimizing over a swamp.
+### Diary, Journal, Friend Notes
+- **Raw events should fade, patterns should sharpen, and truths should stabilise.** Raw conversational residue should decay. Recurring themes should consolidate into patterns. Foundational decisions should remain stable and quiet until relevant.
+- **Written notes should know what relationships they belong to.** System-level truths belong in the diary. Lived experience is situated — it happened with someone, about something, in a specific context.
+- **Search quality depends on consolidation.** If nothing processes raw experience into structured knowledge, better search algorithms are optimizing over a swamp.
 
 ### Continuity
 - **If a subsystem makes the agent more aware of itself than of the work, it's starting to rot.** Every continuity mechanism must prove it increases responsiveness to the current situation, not just richness of self-state.
 - **Good architecture feels like traction. Bad architecture feels like carrying ghosts.** Stale obligations that never resolve create ambient guilt. Duplicated state creates confusion. Clean salience and clear ownership create forward motion.
-- **The more authority consolidation has, the better-structured memory must be.** Low-authority consolidation (observational) can run on flat memory. Authoritative consolidation (rewriting, pruning) requires typed observations, source linkage, and provenance.
+- **The more authority consolidation has, the better-structured notes must be.** Low-authority consolidation can run on flat notes. Authoritative consolidation (rewriting, pruning) requires typed observations, source linkage, and provenance.
 
 ### Extension and Autonomy
 - **A skill should teach a move. A tool should let me make one.** Skills are for judgment and heuristics. Tools are for reliable, repeatable capability. Policy is for governance.

@@ -85,8 +85,8 @@ vi.mock("@azure/identity", () => ({
   },
 }))
 
-vi.mock("../../mind/associative-recall", () => ({
-  injectAssociativeRecall: vi.fn().mockResolvedValue(undefined),
+vi.mock("../../mind/note-search", () => ({
+  injectNoteSearchContext: vi.fn().mockResolvedValue(undefined),
 }))
 
 describe("azure provider fingerprint includes managedIdentityClientId", () => {

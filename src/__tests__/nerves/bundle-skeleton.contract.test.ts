@@ -44,7 +44,7 @@ function resolveRequiredBundleRoots(): { ouroboros: string; slugger: string } | 
 /** Paths that must exist on disk for existing bundles.
  *  - `state` is runtime-only (created on first run)
  *  - `arc` is created on first write or migration
- *  - `diary` is new (migrated from psyche/memory on first write)
+ *  - `diary` is new (migrated from psyche/notes on first write)
  *  - `journal` is new (created on first journal write)
  */
 function requiredPaths(root: string): string[] {

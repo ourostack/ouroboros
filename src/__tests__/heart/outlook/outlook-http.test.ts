@@ -42,14 +42,14 @@ function createRouteOptions(overrides: Record<string, unknown> = {}) {
     readAgentCoding: vi.fn(() => ({ totalCount: 0, activeCount: 0, blockedCount: 0, items: [] })),
     readAgentAttention: vi.fn(() => ({ queueLength: 0, queueItems: [], pendingChannels: [], returnObligations: [] })),
     readAgentBridges: vi.fn(() => ({ totalCount: 0, activeCount: 0, items: [] })),
-    readAgentMemory: vi.fn(() => ({ diaryEntryCount: 0, recentDiaryEntries: [], journalEntryCount: 0, recentJournalEntries: [] })),
+    readAgentNotes: vi.fn(() => ({ diaryEntryCount: 0, recentDiaryEntries: [], journalEntryCount: 0, recentJournalEntries: [] })),
     readAgentFriends: vi.fn(() => ({ totalFriends: 0, friends: [] })),
     readAgentContinuity: vi.fn(() => ({ presence: { self: null, peers: [] }, cares: { activeCount: 0, items: [] }, episodes: { recentCount: 0, items: [] } })),
     readAgentOrientation: vi.fn(() => ({ currentSession: null, centerOfGravity: null, primaryObligation: null, resumeHandle: null, otherActiveSessions: [], rawState: null })),
     readAgentObligations: vi.fn(() => ({ openCount: 0, primaryId: null, primarySelectionReason: null, items: [] })),
     readAgentChanges: vi.fn(() => ({ changeCount: 0, items: [], snapshotAge: null, formatted: "" })),
     readAgentSelfFix: vi.fn(() => ({ active: false, currentStep: null, steps: [] })),
-    readAgentMemoryDecisions: vi.fn(() => ({ totalCount: 0, items: [] })),
+    readAgentNoteDecisions: vi.fn(() => ({ totalCount: 0, items: [] })),
     readAgentHabits: vi.fn(() => ({ totalCount: 0, activeCount: 0, pausedCount: 0, degradedCount: 0, overdueCount: 0, items: [] })),
     readDaemonHealth: vi.fn(() => null),
     readLogs: vi.fn(() => ({ logPath: null, totalLines: 0, entries: [] })),
@@ -222,7 +222,7 @@ describe("outlook http", () => {
     expect(defaultHooks.readAgentObligations("nobody")).toBeTruthy()
     expect(defaultHooks.readAgentChanges("nobody")).toBeTruthy()
     expect(defaultHooks.readAgentSelfFix("nobody")).toBeTruthy()
-    expect(defaultHooks.readAgentMemoryDecisions("nobody")).toBeTruthy()
+    expect(defaultHooks.readAgentNoteDecisions("nobody")).toBeTruthy()
     fs.rmSync(bundlesRoot, { recursive: true, force: true })
   })
 
@@ -544,7 +544,7 @@ describe("outlook http", () => {
       readAgentCoding: () => ({ totalCount: 1, activeCount: 1, blockedCount: 0, items: [] }),
       readAgentAttention: () => ({ queueLength: 2, queueItems: [], pendingChannels: [], returnObligations: [] }),
       readAgentBridges: () => ({ totalCount: 1, activeCount: 1, items: [] }),
-      readAgentMemory: () => ({ diaryEntryCount: 5, recentDiaryEntries: [], journalEntryCount: 2, recentJournalEntries: [] }),
+      readAgentNotes: () => ({ diaryEntryCount: 5, recentDiaryEntries: [], journalEntryCount: 2, recentJournalEntries: [] }),
       readAgentFriends: () => ({ totalFriends: 3, friends: [] }),
       readAgentHabits: () => ({ totalCount: 2, activeCount: 1, pausedCount: 1, degradedCount: 0, overdueCount: 0, items: [] }),
       readDaemonHealth: () => ({ status: "ok", mode: "dev", pid: 1, startedAt: "", uptimeSeconds: 0, safeMode: null, degradedComponents: [], agentHealth: {}, habitHealth: {} }),
@@ -575,9 +575,9 @@ describe("outlook http", () => {
     const bridges = await fetch(`${server.origin}/outlook/api/agents/slugger/bridges`).then((r) => r.json())
     expect(bridges).toEqual(expect.objectContaining({ totalCount: 1 }))
 
-    // Memory
-    const memory = await fetch(`${server.origin}/outlook/api/agents/slugger/memory`).then((r) => r.json())
-    expect(memory).toEqual(expect.objectContaining({ diaryEntryCount: 5 }))
+    // Notes
+    const notes = await fetch(`${server.origin}/outlook/api/agents/slugger/notes`).then((r) => r.json())
+    expect(notes).toEqual(expect.objectContaining({ diaryEntryCount: 5 }))
 
     // Friends
     const friends = await fetch(`${server.origin}/outlook/api/agents/slugger/friends`).then((r) => r.json())
@@ -621,7 +621,7 @@ describe("outlook http", () => {
       readAgentCoding: () => ({ totalCount: 0, activeCount: 0, blockedCount: 0, items: [] }),
       readAgentAttention: () => ({ queueLength: 0, queueItems: [], pendingChannels: [], returnObligations: [] }),
       readAgentBridges: () => ({ totalCount: 0, activeCount: 0, items: [] }),
-      readAgentMemory: () => ({ diaryEntryCount: 0, recentDiaryEntries: [], journalEntryCount: 0, recentJournalEntries: [] }),
+      readAgentNotes: () => ({ diaryEntryCount: 0, recentDiaryEntries: [], journalEntryCount: 0, recentJournalEntries: [] }),
       readAgentFriends: () => ({ totalFriends: 0, friends: [] }),
       readAgentHabits: () => ({ totalCount: 0, activeCount: 0, pausedCount: 0, degradedCount: 0, overdueCount: 0, items: [] }),
       readDaemonHealth: () => ({ status: "ok", mode: "dev", pid: 1, startedAt: "", uptimeSeconds: 0, safeMode: null, degradedComponents: [], agentHealth: {}, habitHealth: {} }),
@@ -670,8 +670,8 @@ describe("outlook http", () => {
     const attention = await fetch(`${server.origin}/outlook/api/agents/nobody/attention`).then((r) => r.json())
     expect(attention.queueLength).toBe(0)
 
-    const memory = await fetch(`${server.origin}/outlook/api/agents/nobody/memory`).then((r) => r.json())
-    expect(memory.diaryEntryCount).toBe(0)
+    const notes = await fetch(`${server.origin}/outlook/api/agents/nobody/notes`).then((r) => r.json())
+    expect(notes.diaryEntryCount).toBe(0)
 
     const friends = await fetch(`${server.origin}/outlook/api/agents/nobody/friends`).then((r) => r.json())
     expect(friends.totalFriends).toBe(0)
@@ -840,7 +840,7 @@ describe("outlook http", () => {
       readAgentCoding: () => ({ totalCount: 1, activeCount: 1, blockedCount: 0, items: [] }),
       readAgentAttention: () => ({ queueLength: 0, queueItems: [], pendingChannels: [], returnObligations: [] }),
       readAgentBridges: () => ({ totalCount: 0, activeCount: 0, items: [] }),
-      readAgentMemory: () => ({ diaryEntryCount: 0, recentDiaryEntries: [], journalEntryCount: 0, recentJournalEntries: [] }),
+      readAgentNotes: () => ({ diaryEntryCount: 0, recentDiaryEntries: [], journalEntryCount: 0, recentJournalEntries: [] }),
       readAgentFriends: () => ({ totalFriends: 0, friends: [] }),
       readAgentHabits: () => ({ totalCount: 0, activeCount: 0, pausedCount: 0, degradedCount: 0, overdueCount: 0, items: [] }),
       readDaemonHealth: () => ({ status: "ok", mode: "dev", pid: 1, startedAt: "", uptimeSeconds: 0, safeMode: null, degradedComponents: [], agentHealth: {}, habitHealth: {} }),
@@ -875,7 +875,7 @@ describe("outlook http", () => {
       readAgentCoding: () => ({ totalCount: 0, activeCount: 0, blockedCount: 0, items: [] }),
       readAgentAttention: () => ({ queueLength: 0, queueItems: [], pendingChannels: [], returnObligations: [] }),
       readAgentBridges: () => ({ totalCount: 0, activeCount: 0, items: [] }),
-      readAgentMemory: () => ({ diaryEntryCount: 0, recentDiaryEntries: [], journalEntryCount: 0, recentJournalEntries: [] }),
+      readAgentNotes: () => ({ diaryEntryCount: 0, recentDiaryEntries: [], journalEntryCount: 0, recentJournalEntries: [] }),
       readAgentFriends: () => ({ totalFriends: 0, friends: [] }),
       readAgentHabits: () => ({ totalCount: 0, activeCount: 0, pausedCount: 0, degradedCount: 0, overdueCount: 0, items: [] }),
       readDaemonHealth: () => null as any,
@@ -1027,7 +1027,7 @@ describe("outlook http", () => {
     await server.stop()
   })
 
-  it("serves /api/agents/:agent/memory-decisions endpoint", async () => {
+  it("serves /api/agents/:agent/note-decisions endpoint", async () => {
     const { startOutlookHttpServer } = await import("../../../heart/outlook/outlook-http")
 
     const mockDecisions = {
@@ -1040,10 +1040,10 @@ describe("outlook http", () => {
       port: 0,
       readMachineState: () => ({ productName: "Ouro Outlook", agentCount: 1 }) as any,
       readAgentState: () => null,
-      readAgentMemoryDecisions: () => mockDecisions,
+      readAgentNoteDecisions: () => mockDecisions,
     })
 
-    const res = await fetch(`${server.origin}/api/agents/slugger/memory-decisions`)
+    const res = await fetch(`${server.origin}/api/agents/slugger/note-decisions`)
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body).toEqual(mockDecisions)

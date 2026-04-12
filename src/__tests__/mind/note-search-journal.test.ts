@@ -19,13 +19,13 @@ vi.mock("../../nerves/runtime", () => ({
 const mockFetch = vi.fn()
 vi.stubGlobal("fetch", mockFetch)
 
-// ── recall tool handler: journal search ──────────────────────────
+// ── search_notes tool handler: journal search ──────────────────────────
 
-describe("recall tool: journal search via .index.json", () => {
+describe("search_notes tool: journal search via .index.json", () => {
   let tmpDir: string
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "recall-journal-"))
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "search_notes-journal-"))
     mockGetAgentRoot.mockReturnValue(tmpDir)
     mockGetOpenAIEmbeddingsApiKey.mockReset().mockReturnValue("test-key")
     mockFetch.mockReset()
@@ -58,10 +58,10 @@ describe("recall tool: journal search via .index.json", () => {
     })
 
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
-    const recallTool = baseToolDefinitions.find((d) => d.tool.function.name === "recall")
-    expect(recallTool).toBeDefined()
+    const searchNotesTool = baseToolDefinitions.find((d) => d.tool.function.name === "search_notes")
+    expect(searchNotesTool).toBeDefined()
 
-    const result = await recallTool!.handler({ query: "auth" }, undefined)
+    const result = await searchNotesTool!.handler({ query: "auth" }, undefined)
     // Should contain journal results tagged [journal]
     expect(result).toContain("[journal]")
     expect(result).toContain("auth-thoughts.md")
@@ -80,8 +80,8 @@ describe("recall tool: journal search via .index.json", () => {
     })
 
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
-    const recallTool = baseToolDefinitions.find((d) => d.tool.function.name === "recall")
-    const result = await recallTool!.handler({ query: "auth" }, undefined)
+    const searchNotesTool = baseToolDefinitions.find((d) => d.tool.function.name === "search_notes")
+    const result = await searchNotesTool!.handler({ query: "auth" }, undefined)
     expect(result).toContain("[diary]")
   })
 
@@ -105,8 +105,8 @@ describe("recall tool: journal search via .index.json", () => {
     })
 
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
-    const recallTool = baseToolDefinitions.find((d) => d.tool.function.name === "recall")
-    const result = await recallTool!.handler({ query: "project" }, undefined)
+    const searchNotesTool = baseToolDefinitions.find((d) => d.tool.function.name === "search_notes")
+    const result = await searchNotesTool!.handler({ query: "project" }, undefined)
     expect(result).toContain("[journal]")
     expect(result).toContain("notes.md")
     expect(result).toContain("Project notes")
@@ -132,8 +132,8 @@ describe("recall tool: journal search via .index.json", () => {
     })
 
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
-    const recallTool = baseToolDefinitions.find((d) => d.tool.function.name === "recall")
-    const result = await recallTool!.handler({ query: "auth" }, undefined)
+    const searchNotesTool = baseToolDefinitions.find((d) => d.tool.function.name === "search_notes")
+    const result = await searchNotesTool!.handler({ query: "auth" }, undefined)
     expect(result).toContain("[journal]")
     expect(result).toContain("auth-redesign.md")
   })
@@ -153,8 +153,8 @@ describe("recall tool: journal search via .index.json", () => {
     })
 
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
-    const recallTool = baseToolDefinitions.find((d) => d.tool.function.name === "recall")
-    const result = await recallTool!.handler({ query: "test" }, undefined)
+    const searchNotesTool = baseToolDefinitions.find((d) => d.tool.function.name === "search_notes")
+    const result = await searchNotesTool!.handler({ query: "test" }, undefined)
     // Should not crash — just return empty
     expect(result).toBe("")
   })
@@ -169,8 +169,8 @@ describe("recall tool: journal search via .index.json", () => {
     fs.writeFileSync(path.join(diaryDir, "facts.jsonl"), "", "utf8")
 
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
-    const recallTool = baseToolDefinitions.find((d) => d.tool.function.name === "recall")
-    const result = await recallTool!.handler({ query: "test" }, undefined)
+    const searchNotesTool = baseToolDefinitions.find((d) => d.tool.function.name === "search_notes")
+    const result = await searchNotesTool!.handler({ query: "test" }, undefined)
     expect(result).toBe("")
   })
 
@@ -185,20 +185,20 @@ describe("recall tool: journal search via .index.json", () => {
     })
 
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
-    const recallTool = baseToolDefinitions.find((d) => d.tool.function.name === "recall")
-    const result = await recallTool!.handler({ query: "something" }, undefined)
+    const searchNotesTool = baseToolDefinitions.find((d) => d.tool.function.name === "search_notes")
+    const result = await searchNotesTool!.handler({ query: "something" }, undefined)
     // When no matches, result should be empty or indicate no results
     expect(result).toBe("")
   })
 })
 
-// ── injectAssociativeRecall: diary + journal tagging ────────────
+// ── injectNoteSearchContext: diary + journal tagging ────────────
 
-describe("injectAssociativeRecall diary+journal tagging", () => {
+describe("injectNoteSearchContext diary+journal tagging", () => {
   let tmpDir: string
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "assoc-recall-journal-"))
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "assoc-search_notes-journal-"))
     mockGetAgentRoot.mockReturnValue(tmpDir)
     mockGetOpenAIEmbeddingsApiKey.mockReset().mockReturnValue("test-key")
     mockFetch.mockReset()
@@ -208,7 +208,7 @@ describe("injectAssociativeRecall diary+journal tagging", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true })
   })
 
-  it("tags diary results as [diary] in recalled context", async () => {
+  it("tags diary results as [diary] in from my diary and journal", async () => {
     const diaryDir = path.join(tmpDir, "diary")
     fs.mkdirSync(diaryDir, { recursive: true })
     const fact = { id: "f1", text: "auth uses oauth2", source: "test", createdAt: "2026-03-25T00:00:00Z", embedding: [0.9, 0.1, 0.0] }
@@ -219,18 +219,18 @@ describe("injectAssociativeRecall diary+journal tagging", () => {
       json: async () => ({ data: [{ embedding: [0.9, 0.1, 0.0] }] }),
     })
 
-    const { injectAssociativeRecall } = await import("../../mind/associative-recall")
+    const { injectNoteSearchContext } = await import("../../mind/note-search")
     const messages: any[] = [
       { role: "system", content: "you are helpful" },
       { role: "user", content: "tell me about auth" },
     ]
 
-    await injectAssociativeRecall(messages)
+    await injectNoteSearchContext(messages)
     expect(messages[0].content).toContain("[diary]")
     expect(messages[0].content).toContain("auth uses oauth2")
   })
 
-  it("includes journal results tagged [journal] in recalled context", async () => {
+  it("includes journal results tagged [journal] in from my diary and journal", async () => {
     const diaryDir = path.join(tmpDir, "diary")
     fs.mkdirSync(diaryDir, { recursive: true })
     fs.writeFileSync(path.join(diaryDir, "facts.jsonl"), "", "utf8")
@@ -249,13 +249,13 @@ describe("injectAssociativeRecall diary+journal tagging", () => {
       json: async () => ({ data: [{ embedding: [0.85, 0.15, 0.0] }] }),
     })
 
-    const { injectAssociativeRecall } = await import("../../mind/associative-recall")
+    const { injectNoteSearchContext } = await import("../../mind/note-search")
     const messages: any[] = [
       { role: "system", content: "you are helpful" },
       { role: "user", content: "tell me about API design" },
     ]
 
-    await injectAssociativeRecall(messages)
+    await injectNoteSearchContext(messages)
     expect(messages[0].content).toContain("[journal]")
     expect(messages[0].content).toContain("api-design.md")
   })
@@ -279,13 +279,13 @@ describe("injectAssociativeRecall diary+journal tagging", () => {
       json: async () => ({ data: [{ embedding: [0.85, 0.15, 0.0] }] }),
     })
 
-    const { injectAssociativeRecall } = await import("../../mind/associative-recall")
+    const { injectNoteSearchContext } = await import("../../mind/note-search")
     const messages: any[] = [
       { role: "system", content: "you are helpful" },
       { role: "user", content: "tell me about auth" },
     ]
 
-    await injectAssociativeRecall(messages)
+    await injectNoteSearchContext(messages)
     const content = messages[0].content
     expect(content).toContain("[diary]")
     expect(content).toContain("[journal]")
@@ -303,13 +303,13 @@ describe("injectAssociativeRecall diary+journal tagging", () => {
       json: async () => ({ data: [{ embedding: [0.9, 0.1, 0.0] }] }),
     })
 
-    const { injectAssociativeRecall } = await import("../../mind/associative-recall")
+    const { injectNoteSearchContext } = await import("../../mind/note-search")
     const messages: any[] = [
       { role: "system", content: "you are helpful" },
       { role: "user", content: "tell me about some fact" },
     ]
 
-    await injectAssociativeRecall(messages)
+    await injectNoteSearchContext(messages)
     // Should still have diary results even without journal
     expect(messages[0].content).toContain("[diary]")
   })
@@ -329,13 +329,13 @@ describe("injectAssociativeRecall diary+journal tagging", () => {
       json: async () => ({ data: [{ embedding: [0.9, 0.1, 0.0] }] }),
     })
 
-    const { injectAssociativeRecall } = await import("../../mind/associative-recall")
+    const { injectNoteSearchContext } = await import("../../mind/note-search")
     const messages: any[] = [
       { role: "system", content: "you are helpful" },
       { role: "user", content: "tell me about test data" },
     ]
 
-    await injectAssociativeRecall(messages)
+    await injectNoteSearchContext(messages)
     expect(messages[0].content).toContain("[diary]")
     expect(messages[0].content).not.toContain("[journal]")
   })
@@ -359,13 +359,13 @@ describe("injectAssociativeRecall diary+journal tagging", () => {
       json: async () => ({ data: [{ embedding: [0.9, 0.1, 0.0] }] }),
     })
 
-    const { injectAssociativeRecall } = await import("../../mind/associative-recall")
+    const { injectNoteSearchContext } = await import("../../mind/note-search")
     const messages: any[] = [
       { role: "system", content: "you are helpful" },
       { role: "user", content: "tell me about notes" },
     ]
 
-    await injectAssociativeRecall(messages)
+    await injectNoteSearchContext(messages)
     expect(messages[0].content).toContain("[journal]")
     expect(messages[0].content).toContain("notes.md")
     expect(messages[0].content).not.toContain("[diary]")
@@ -379,14 +379,14 @@ describe("injectAssociativeRecall diary+journal tagging", () => {
 
     // No journal dir
 
-    const { injectAssociativeRecall } = await import("../../mind/associative-recall")
+    const { injectNoteSearchContext } = await import("../../mind/note-search")
     const messages: any[] = [
       { role: "system", content: "you are helpful" },
       { role: "user", content: "anything" },
     ]
 
-    await injectAssociativeRecall(messages)
-    // No recalled context should be injected
+    await injectNoteSearchContext(messages)
+    // No from my diary and journal should be injected
     expect(messages[0].content).toBe("you are helpful")
   })
 
@@ -409,18 +409,18 @@ describe("injectAssociativeRecall diary+journal tagging", () => {
       json: async () => ({ data: [{ embedding: [0.9, 0.1, 0.0] }] }),
     })
 
-    const { injectAssociativeRecall } = await import("../../mind/associative-recall")
+    const { injectNoteSearchContext } = await import("../../mind/note-search")
     const messages: any[] = [
       { role: "system", content: "you are helpful" },
       { role: "user", content: "tell me about custom" },
     ]
 
-    await injectAssociativeRecall(messages, { journalDir: customJournalDir })
+    await injectNoteSearchContext(messages, { journalDir: customJournalDir })
     expect(messages[0].content).toContain("[journal]")
     expect(messages[0].content).toContain("custom.md")
   })
 
-  it("handles non-array journal index in injectAssociativeRecall", async () => {
+  it("handles non-array journal index in injectNoteSearchContext", async () => {
     const diaryDir = path.join(tmpDir, "diary")
     fs.mkdirSync(diaryDir, { recursive: true })
     const fact = { id: "f1", text: "auth fact", source: "test", createdAt: "2026-03-25T00:00:00Z", embedding: [0.9, 0.1, 0.0] }
@@ -436,13 +436,13 @@ describe("injectAssociativeRecall diary+journal tagging", () => {
       json: async () => ({ data: [{ embedding: [0.9, 0.1, 0.0] }] }),
     })
 
-    const { injectAssociativeRecall } = await import("../../mind/associative-recall")
+    const { injectNoteSearchContext } = await import("../../mind/note-search")
     const messages: any[] = [
       { role: "system", content: "you are helpful" },
       { role: "user", content: "tell me about auth" },
     ]
 
-    await injectAssociativeRecall(messages)
+    await injectNoteSearchContext(messages)
     // Should still work with diary results
     expect(messages[0].content).toContain("[diary]")
     expect(messages[0].content).not.toContain("[journal]")
@@ -468,14 +468,14 @@ describe("injectAssociativeRecall diary+journal tagging", () => {
       json: async () => ({ data: [{}] }),
     })
 
-    const { injectAssociativeRecall } = await import("../../mind/associative-recall")
+    const { injectNoteSearchContext } = await import("../../mind/note-search")
     const messages: any[] = [
       { role: "system", content: "you are helpful" },
       { role: "user", content: "tell me about notes" },
     ]
 
     // Should not crash — embed returns empty, so queryEmbedding is undefined
-    await injectAssociativeRecall(messages)
+    await injectNoteSearchContext(messages)
     // No results should be injected since embedding failed
     expect(messages[0].content).toBe("you are helpful")
   })
@@ -497,13 +497,13 @@ describe("injectAssociativeRecall diary+journal tagging", () => {
     // Make fetch throw to trigger the catch branch
     mockFetch.mockRejectedValue(new Error("network error"))
 
-    const { injectAssociativeRecall } = await import("../../mind/associative-recall")
+    const { injectNoteSearchContext } = await import("../../mind/note-search")
     const messages: any[] = [
       { role: "system", content: "you are helpful" },
       { role: "user", content: "tell me about notes" },
     ]
 
-    await injectAssociativeRecall(messages)
+    await injectNoteSearchContext(messages)
     // Should not crash -- just no journal results injected
     expect(messages[0].content).toBe("you are helpful")
   })
@@ -513,7 +513,7 @@ describe("injectAssociativeRecall diary+journal tagging", () => {
 
 describe("searchJournalIndex", () => {
   it("returns matching entries above minScore", async () => {
-    const { searchJournalIndex } = await import("../../mind/associative-recall")
+    const { searchJournalIndex } = await import("../../mind/note-search")
     const entries = [
       { filename: "a.md", embedding: [0.9, 0.1, 0.0], mtime: Date.now(), preview: "A" },
       { filename: "b.md", embedding: [0.1, 0.9, 0.0], mtime: Date.now(), preview: "B" },
@@ -525,7 +525,7 @@ describe("searchJournalIndex", () => {
   })
 
   it("filters out entries with empty embeddings", async () => {
-    const { searchJournalIndex } = await import("../../mind/associative-recall")
+    const { searchJournalIndex } = await import("../../mind/note-search")
     const entries = [
       { filename: "a.md", embedding: [], mtime: Date.now(), preview: "A" },
       { filename: "b.md", embedding: [0.9, 0.1, 0.0], mtime: Date.now(), preview: "B" },
@@ -536,7 +536,7 @@ describe("searchJournalIndex", () => {
   })
 
   it("sorts results by score descending", async () => {
-    const { searchJournalIndex } = await import("../../mind/associative-recall")
+    const { searchJournalIndex } = await import("../../mind/note-search")
     const entries = [
       { filename: "low.md", embedding: [0.1, 0.9, 0.0], mtime: Date.now(), preview: "Low" },
       { filename: "high.md", embedding: [0.95, 0.05, 0.0], mtime: Date.now(), preview: "High" },
@@ -553,7 +553,7 @@ describe("searchJournalIndex", () => {
   })
 
   it("respects topK limit", async () => {
-    const { searchJournalIndex } = await import("../../mind/associative-recall")
+    const { searchJournalIndex } = await import("../../mind/note-search")
     const entries = Array.from({ length: 10 }, (_, i) => ({
       filename: `f${i}.md`,
       embedding: [0.9 - i * 0.05, 0.1 + i * 0.05, 0.0],
@@ -566,7 +566,7 @@ describe("searchJournalIndex", () => {
   })
 
   it("returns zero-score results when query embedding is empty", async () => {
-    const { searchJournalIndex } = await import("../../mind/associative-recall")
+    const { searchJournalIndex } = await import("../../mind/note-search")
     const entries = [
       { filename: "a.md", embedding: [0.9, 0.1, 0.0], mtime: Date.now(), preview: "A" },
     ]
@@ -576,7 +576,7 @@ describe("searchJournalIndex", () => {
   })
 
   it("uses defaults when no options provided", async () => {
-    const { searchJournalIndex } = await import("../../mind/associative-recall")
+    const { searchJournalIndex } = await import("../../mind/note-search")
     const entries = [
       { filename: "a.md", embedding: [0.9, 0.1, 0.0], mtime: Date.now(), preview: "A" },
     ]

@@ -82,7 +82,7 @@ describe("nerves/redaction-sink integration", () => {
     expect(parsed.meta.apiKey).toBe("sk-ant-api03-realkey123")
   })
 
-  it("does not mutate the in-memory LogEvent object", async () => {
+  it("does not mutate the process-local LogEvent object", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ouro-redact-nomutate-"))
     const filePath = join(dir, "events.ndjson")
     const sink = createNdjsonFileSink(filePath)

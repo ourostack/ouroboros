@@ -91,10 +91,10 @@ const mockResponsesCreate = vi.fn()
 const mockOpenAICtor = vi.fn()
 const mockAnthropicMessagesCreate = vi.fn()
 const mockAnthropicCtor = vi.fn()
-const mockInjectAssociativeRecall = vi.fn().mockResolvedValue(undefined)
-const mockActiveRecallJudge = vi.fn()
-const mockCreateActiveRecallJudge = vi.fn(() => mockActiveRecallJudge)
-const mockInjectActiveRecall = vi.fn().mockResolvedValue({ status: "none", elapsedMs: 0, pressure: [] })
+const mockInjectNoteSearchContext = vi.fn().mockResolvedValue(undefined)
+const mockKeptNotesJudge = vi.fn()
+const mockCreateKeptNotesJudge = vi.fn(() => mockKeptNotesJudge)
+const mockInjectKeptNotes = vi.fn().mockResolvedValue({ status: "none", elapsedMs: 0, pressure: [] })
 vi.mock("openai", () => {
   class MockOpenAI {
     chat = {
@@ -129,13 +129,13 @@ vi.mock("@anthropic-ai/sdk", () => {
   }
 })
 
-vi.mock("../../mind/associative-recall", () => ({
-  injectAssociativeRecall: (...args: any[]) => mockInjectAssociativeRecall(...args),
+vi.mock("../../mind/note-search", () => ({
+  injectNoteSearchContext: (...args: any[]) => mockInjectNoteSearchContext(...args),
 }))
 
-vi.mock("../../heart/active-recall", () => ({
-  createActiveRecallJudge: (...args: any[]) => mockCreateActiveRecallJudge(...args),
-  injectActiveRecall: (...args: any[]) => mockInjectActiveRecall(...args),
+vi.mock("../../heart/kept-notes", () => ({
+  createKeptNotesJudge: (...args: any[]) => mockCreateKeptNotesJudge(...args),
+  injectKeptNotes: (...args: any[]) => mockInjectKeptNotes(...args),
 }))
 
 import * as fs from "fs"
@@ -509,10 +509,10 @@ describe("runAgent", () => {
     mockCreate.mockReset()
     mockResponsesCreate.mockReset()
     mockOpenAICtor.mockReset()
-    mockInjectAssociativeRecall.mockReset().mockResolvedValue(undefined)
-    mockActiveRecallJudge.mockReset()
-    mockCreateActiveRecallJudge.mockReset().mockReturnValue(mockActiveRecallJudge)
-    mockInjectActiveRecall.mockReset().mockResolvedValue({ status: "none", elapsedMs: 0, pressure: [] })
+    mockInjectNoteSearchContext.mockReset().mockResolvedValue(undefined)
+    mockKeptNotesJudge.mockReset()
+    mockCreateKeptNotesJudge.mockReset().mockReturnValue(mockKeptNotesJudge)
+    mockInjectKeptNotes.mockReset().mockResolvedValue({ status: "none", elapsedMs: 0, pressure: [] })
     // Restore default readFileSync so prompt.ts module-level psyche file loads work
     vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
     await setupMinimax()
@@ -2993,10 +2993,10 @@ describe("runAgent", () => {
     expect(messages[0].role).toBe("system")
   })
 
-  it("runs active recall injection before model calls when channel is provided", async () => {
+  it("runs kept notes injection before model calls when channel is provided", async () => {
     const order: string[] = []
-    mockInjectActiveRecall.mockImplementation(async () => {
-      order.push("active_recall")
+    mockInjectKeptNotes.mockImplementation(async () => {
+      order.push("kept_notes")
       return { status: "none", elapsedMs: 0, pressure: [] }
     })
     mockCreate.mockImplementation(() => {
@@ -3020,17 +3020,17 @@ describe("runAgent", () => {
     ]
     await runAgent(messages, callbacks, "cli")
 
-    expect(order).toEqual(["active_recall", "model_call"])
-    expect(mockInjectAssociativeRecall).not.toHaveBeenCalled()
-    expect(mockInjectActiveRecall).toHaveBeenCalledWith(messages, expect.objectContaining({
+    expect(order).toEqual(["kept_notes", "model_call"])
+    expect(mockInjectNoteSearchContext).not.toHaveBeenCalled()
+    expect(mockInjectKeptNotes).toHaveBeenCalledWith(messages, expect.objectContaining({
       channel: "cli",
       judge: expect.any(Function),
     }))
-    expect(mockCreateActiveRecallJudge).not.toHaveBeenCalled()
-    const activeRecallOptions = mockInjectActiveRecall.mock.calls[0][1]
-    await activeRecallOptions.judge({ query: "hello", candidates: [] })
-    expect(mockCreateActiveRecallJudge).toHaveBeenCalled()
-    expect(mockActiveRecallJudge).toHaveBeenCalledWith({ query: "hello", candidates: [] })
+    expect(mockCreateKeptNotesJudge).not.toHaveBeenCalled()
+    const keptNotesOptions = mockInjectKeptNotes.mock.calls[0][1]
+    await keptNotesOptions.judge({ query: "hello", candidates: [] })
+    expect(mockCreateKeptNotesJudge).toHaveBeenCalled()
+    expect(mockKeptNotesJudge).toHaveBeenCalledWith({ query: "hello", candidates: [] })
   })
 
   it("refreshes system prompt for teams channel", async () => {
@@ -8719,7 +8719,7 @@ describe("runAgent facing derivation from channel", () => {
     mockCreate.mockReset()
     mockResponsesCreate.mockReset()
     mockOpenAICtor.mockReset()
-    mockInjectAssociativeRecall.mockReset().mockResolvedValue(undefined)
+    mockInjectNoteSearchContext.mockReset().mockResolvedValue(undefined)
     vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
   })
 

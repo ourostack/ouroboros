@@ -160,8 +160,8 @@ function handleAgentRoute(request: http.IncomingMessage, response: http.ServerRe
     return
   }
 
-  if (surface === "memory") {
-    writeJson(response, 200, options.hooks.readAgentMemory(agent))
+  if (surface === "notes") {
+    writeJson(response, 200, options.hooks.readAgentNotes(agent))
     return
   }
 
@@ -195,8 +195,8 @@ function handleAgentRoute(request: http.IncomingMessage, response: http.ServerRe
     return
   }
 
-  if (surface === "memory-decisions") {
-    writeJson(response, 200, options.hooks.readAgentMemoryDecisions(agent))
+  if (surface === "note-decisions") {
+    writeJson(response, 200, options.hooks.readAgentNoteDecisions(agent))
     return
   }
 

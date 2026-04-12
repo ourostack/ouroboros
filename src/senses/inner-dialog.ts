@@ -142,7 +142,7 @@ export function buildInstinctUserMessage(
   const checkpoint = displayCheckpoint(state.checkpoint)
   const lines = [active.prompt]
   if (checkpoint) {
-    lines.push(`\nlast i remember: ${checkpoint}`)
+    lines.push(`\nlast checkpoint: ${checkpoint}`)
   }
   return lines.join("\n")
 }
@@ -171,7 +171,7 @@ export function buildTaskTriggeredMessage(taskId: string, taskContent: string, c
   }
   const renderedCheckpoint = displayCheckpoint(checkpoint)
   if (renderedCheckpoint) {
-    lines.push("", `last i remember: ${renderedCheckpoint}`)
+    lines.push("", `last checkpoint: ${renderedCheckpoint}`)
   }
   return lines.join("\n")
 }

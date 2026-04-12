@@ -308,7 +308,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
     expect(fs.existsSync(finalBundle)).toBe(true)
 
     // Scaffold dirs should exist
-    expect(fs.existsSync(path.join(finalBundle, "memory"))).toBe(true)
+    expect(fs.existsSync(path.join(finalBundle, "notes"))).toBe(true)
     expect(fs.existsSync(path.join(finalBundle, "friends"))).toBe(true)
     expect(fs.existsSync(path.join(finalBundle, "tasks"))).toBe(true)
     expect(fs.existsSync(path.join(finalBundle, "skills"))).toBe(true)

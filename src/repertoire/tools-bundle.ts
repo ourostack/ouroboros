@@ -523,7 +523,7 @@ const doFirstCommitHandler: ToolHandler = (args) => {
 // ─── tool: bundle_first_push_review ────────────────────────────────────
 
 /**
- * In-memory store of confirmation tokens issued by bundle_first_push_review.
+ * Process-local store of confirmation tokens issued by bundle_first_push_review.
  * Each entry maps a token → { bundleRoot, createdAt }. bundle_push validates
  * the token against this store on first-push attempts (detected via empty
  * `git ls-remote --heads`). 15-minute TTL so stale tokens don't accumulate.

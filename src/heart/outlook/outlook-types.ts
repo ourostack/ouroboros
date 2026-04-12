@@ -499,7 +499,7 @@ export interface OutlookDaemonHealthDeep {
 }
 
 // ---------------------------------------------------------------------------
-// Memory / journal inspection
+// Notes / journal inspection
 // ---------------------------------------------------------------------------
 
 export interface OutlookDiaryEntry {
@@ -515,7 +515,7 @@ export interface OutlookJournalEntry {
   mtime: number
 }
 
-export interface OutlookMemoryView {
+export interface OutlookNotesView {
   diaryEntryCount: number
   recentDiaryEntries: OutlookDiaryEntry[]
   journalEntryCount: number
@@ -737,20 +737,20 @@ export interface OutlookSelfFixView {
 }
 
 // ---------------------------------------------------------------------------
-// Memory decisions — save/skip judgement log
+// Notes decisions — save/skip judgement log
 // ---------------------------------------------------------------------------
 
-export interface OutlookMemoryDecision {
-  kind: "diary_write" | "save_friend_note" | "memory_skip"
+export interface OutlookNoteDecision {
+  kind: "diary_write" | "save_friend_note" | "note_skip"
   decision: "saved" | "skipped"
   reason: string | null
   excerpt: string | null
   timestamp: string
 }
 
-export interface OutlookMemoryDecisionView {
+export interface OutlookNoteDecisionView {
   totalCount: number
-  items: OutlookMemoryDecision[]
+  items: OutlookNoteDecision[]
 }
 
 // ---------------------------------------------------------------------------
