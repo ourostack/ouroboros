@@ -267,6 +267,31 @@ describe("ouro up: interactive repair wiring", () => {
     )
   })
 
+  it("keeps already-running daemons healthy when selected provider checks pass", async () => {
+    mocks.pollDaemonStartup.mockResolvedValueOnce({ stable: ["healthy-agent"], degraded: [] })
+    mocks.checkAgentConfigWithProviderHealth.mockResolvedValueOnce({ ok: true })
+    mocks.runInteractiveRepair.mockClear()
+
+    const deps = makeDeps({
+      checkSocketAlive: vi.fn(async () => true),
+      sendCommand: vi.fn(async () => ({
+        ok: true,
+        data: {
+          overview: currentRuntimeOverview(),
+        },
+      })),
+      listDiscoveredAgents: vi.fn(() => ["healthy-agent"]),
+      promptInput: vi.fn(async () => "n"),
+      bundlesRoot: "/tmp/bundles",
+      secretsRoot: "/tmp/secrets",
+    })
+
+    await runOuroCli(["up"], deps)
+
+    expect(mocks.checkAgentConfigWithProviderHealth).toHaveBeenCalledWith("healthy-agent", "/tmp/bundles", "/tmp/secrets")
+    expect(mocks.runInteractiveRepair).not.toHaveBeenCalled()
+  })
+
   it("reports provider-check exceptions for already-running daemons", async () => {
     mocks.pollDaemonStartup.mockResolvedValueOnce({ stable: ["test-agent"], degraded: [] })
     mocks.checkAgentConfigWithProviderHealth.mockRejectedValueOnce(new Error("config check exploded"))
