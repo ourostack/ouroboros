@@ -31,8 +31,9 @@ export {
   runOuroCli,
   ensureDaemonRunning,
   listGithubCopilotModels,
-  pingGithubCopilotModel,
 } from "./cli-exec"
+
+export { pingGithubCopilotModel } from "../provider-ping"
 
 // ── Defaults ──
 export {
