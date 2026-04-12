@@ -9,6 +9,6 @@
 **Blast radius**: affects multiple modules
 **Fix shape**: Add a bounded live provider verification step for unique selected facings during startup health/config checks, with clear degraded status and repair guidance.
 **Status**: fixed
-**Linked work**: `ouroboros/up-provider-health-check` branch; PR URL added after creation.
+**Linked work**: https://github.com/ouroborosbot/ouroboros/pull/439
 
 ---
