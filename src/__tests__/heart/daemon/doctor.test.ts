@@ -8,6 +8,7 @@ import type { DoctorDeps, DoctorResult } from "../../../heart/daemon/doctor-type
 import {
   runDoctorChecks,
   checkDaemon,
+  checkCliPath,
   checkAgents,
   checkSenses,
   checkHabits,
@@ -26,6 +27,7 @@ function createMockDeps(overrides: Partial<DoctorDeps> = {}): DoctorDeps {
     bundlesRoot: "/tmp/bundles",
     secretsRoot: "/tmp/secrets",
     homedir: "/tmp/home",
+    envPath: "/tmp/home/.ouro-cli/bin:/usr/bin",
     ...overrides,
   }
 }
@@ -71,11 +73,12 @@ describe("runDoctorChecks", () => {
     expect(typeof result.summary.failed).toBe("number")
   })
 
-  it("returns all 6 expected category names", async () => {
+  it("returns all 7 expected category names", async () => {
     const deps = createMockDeps()
     const result = await runDoctorChecks(deps)
     const names = result.categories.map((c) => c.name)
 
+    expect(names).toContain("CLI")
     expect(names).toContain("Daemon")
     expect(names).toContain("Agents")
     expect(names).toContain("Senses")
@@ -122,6 +125,88 @@ describe("runDoctorChecks", () => {
     // The crash detail should stringify the non-Error value
     const failedChecks = result.categories.flatMap((c) => c.checks).filter((c) => c.status === "fail")
     expect(failedChecks.some((c) => c.detail?.includes("string error"))).toBe(true)
+  })
+})
+
+// ── CLI PATH checks ──
+
+describe("checkCliPath", () => {
+  it("passes when PATH resolves to the managed ouro wrapper", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/home/.ouro-cli/bin/ouro"]),
+      readFileSync: readFileFor({
+        "/tmp/home/.ouro-cli/bin/ouro": `#!/bin/sh
+# Check for dev mode — if dev-config.json exists, dispatch to the dev repo
+# Skip dev dispatch for "up" command (explicitly returns to production)
+DEV_CONFIG="$HOME/.ouro-cli/dev-config.json"
+if [ -f "$DEV_CONFIG" ] && [ "$1" != "up" ]; then
+  DEV_REPO=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$DEV_CONFIG','utf-8')).repoPath)}catch{}" 2>/dev/null)
+  DEV_ENTRY="$DEV_REPO/dist/heart/daemon/ouro-entry.js"
+  if [ -n "$DEV_REPO" ] && [ -e "$DEV_ENTRY" ]; then
+    exec node "$DEV_ENTRY" "$@"
+  fi
+fi
+# Fall back to installed version
+ENTRY="$HOME/.ouro-cli/CurrentVersion/node_modules/@ouro.bot/cli/dist/heart/daemon/ouro-entry.js"
+if [ ! -e "$ENTRY" ]; then
+  echo "ouro not installed. Run: npx ouro.bot" >&2
+  exit 1
+fi
+exec node "$ENTRY" "$@"
+`,
+      }),
+    })
+
+    const cat = checkCliPath(deps)
+
+    expect(cat.name).toBe("CLI")
+    expect(cat.checks[0]).toMatchObject({
+      label: "ouro PATH resolution",
+      status: "pass",
+    })
+  })
+
+  it("fails with exact remediation when PATH resolves to a stale external ouro first", () => {
+    const deps = createMockDeps({
+      envPath: "/opt/homebrew/bin:/tmp/home/.ouro-cli/bin:/usr/bin",
+      existsSync: existsFor(["/opt/homebrew/bin/ouro", "/tmp/home/.ouro-cli/bin/ouro"]),
+      readFileSync: readFileFor({
+        "/opt/homebrew/bin/ouro": '#!/bin/sh\nexec npx --yes @ouro.bot/cli@0.1.0-alpha.323 "$@"\n',
+        "/tmp/home/.ouro-cli/bin/ouro": "current",
+      }),
+    })
+
+    const cat = checkCliPath(deps)
+
+    expect(cat.checks[0].status).toBe("fail")
+    expect(cat.checks[0].detail).toContain("PATH resolves ouro to /opt/homebrew/bin/ouro before /tmp/home/.ouro-cli/bin/ouro")
+    expect(cat.checks[0].detail).toContain("move /tmp/home/.ouro-cli/bin before /opt/homebrew/bin in PATH")
+    expect(cat.checks[0].detail).toContain("remove/replace /opt/homebrew/bin/ouro")
+  })
+
+  it("warns with exact remediation when ouro is not on PATH", () => {
+    const deps = createMockDeps({
+      envPath: "/usr/bin:/bin",
+      existsSync: existsFor([]),
+    })
+
+    const cat = checkCliPath(deps)
+
+    expect(cat.checks[0].status).toBe("warn")
+    expect(cat.checks[0].detail).toContain("PATH does not resolve ouro")
+    expect(cat.checks[0].detail).toContain("add /tmp/home/.ouro-cli/bin to PATH")
+  })
+
+  it("warns when envPath is omitted from doctor deps", () => {
+    const deps = createMockDeps({
+      envPath: undefined,
+      existsSync: existsFor([]),
+    })
+
+    const cat = checkCliPath(deps)
+
+    expect(cat.checks[0].status).toBe("warn")
+    expect(cat.checks[0].detail).toContain("PATH does not resolve ouro")
   })
 })
 

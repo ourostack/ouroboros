@@ -69,8 +69,8 @@
 **Severity**: high-value
 **Blast radius**: self-contained
 **Fix shape**: Teach install/update/doctor to detect when PATH resolves `ouro` to a stale external shim and either repair the shim or print exact path-specific remediation.
-**Status**: open
-**Linked work**:
+**Status**: fixed
+**Linked work**: https://github.com/ouroborosbot/ouroboros/pull/443
 
 ---
 

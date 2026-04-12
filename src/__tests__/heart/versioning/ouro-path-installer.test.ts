@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
-import { installOuroCommand, type OuroPathInstallerDeps } from "../../../heart/versioning/ouro-path-installer"
+import { installOuroCommand, diagnoseOuroPath, type OuroPathInstallerDeps } from "../../../heart/versioning/ouro-path-installer"
+import { emitNervesEvent } from "../../../nerves/runtime"
 
 vi.mock("../../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn(),
@@ -240,6 +241,86 @@ exec node "$ENTRY" "$@"
 
     expect(result.installed).toBe(false)
     expect(result.pathReady).toBe(false)
+  })
+
+  it("reports a PATH shadow when another ouro appears before the managed wrapper", () => {
+    const deps = makeDeps({
+      existsSync: (p) => p === "/home/test/.ouro-cli/bin/ouro" || p === "/opt/homebrew/bin/ouro",
+      readFileSync: (p) => {
+        if (p === "/home/test/.ouro-cli/bin/ouro") return CORRECT_CONTENT
+        if (p === "/opt/homebrew/bin/ouro") return '#!/bin/sh\nexec npx --yes @ouro.bot/cli@0.1.0-alpha.323 "$@"\n'
+        throw new Error("ENOENT")
+      },
+      envPath: "/opt/homebrew/bin:/home/test/.ouro-cli/bin:/usr/bin",
+    })
+
+    const result = installOuroCommand(deps)
+
+    expect(result.installed).toBe(false)
+    expect(result.pathResolution).toMatchObject({
+      status: "shadowed",
+      resolvedPath: "/opt/homebrew/bin/ouro",
+      expectedPath: "/home/test/.ouro-cli/bin/ouro",
+    })
+    expect(result.pathResolution?.remediation).toContain("move /home/test/.ouro-cli/bin before /opt/homebrew/bin")
+    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "daemon.ouro_path_shadowed",
+      meta: expect.objectContaining({ resolvedPath: "/opt/homebrew/bin/ouro" }),
+    }))
+  })
+
+  it("reports a PATH shadow after installing the managed wrapper", () => {
+    const deps = makeDeps({
+      existsSync: (p) => p === "/opt/homebrew/bin/ouro",
+      readFileSync: (p) => {
+        if (p === "/opt/homebrew/bin/ouro") return '#!/bin/sh\nexec npx --yes @ouro.bot/cli@0.1.0-alpha.323 "$@"\n'
+        throw new Error("ENOENT")
+      },
+      envPath: "/opt/homebrew/bin:/home/test/.ouro-cli/bin:/usr/bin",
+    })
+
+    const result = installOuroCommand(deps)
+
+    expect(result.installed).toBe(true)
+    expect(result.pathResolution?.status).toBe("shadowed")
+    expect(written["/home/test/.ouro-cli/bin/ouro"]).toContain("CurrentVersion")
+    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "daemon.ouro_path_shadowed",
+      meta: expect.objectContaining({ resolvedPath: "/opt/homebrew/bin/ouro" }),
+    }))
+  })
+
+  it("treats a compatible earlier wrapper as healthy", () => {
+    const result = diagnoseOuroPath({
+      homeDir: "/home/test",
+      envPath: "/opt/homebrew/bin:/home/test/.ouro-cli/bin",
+      existsSync: (p) => p === "/opt/homebrew/bin/ouro" || p === "/home/test/.ouro-cli/bin/ouro",
+      readFileSync: (p) => {
+        if (p === "/opt/homebrew/bin/ouro") return CORRECT_CONTENT
+        if (p === "/home/test/.ouro-cli/bin/ouro") return CORRECT_CONTENT
+        throw new Error("ENOENT")
+      },
+    })
+
+    expect(result).toMatchObject({
+      status: "ok",
+      resolvedPath: "/opt/homebrew/bin/ouro",
+      expectedPath: "/home/test/.ouro-cli/bin/ouro",
+      remediation: null,
+    })
+  })
+
+  it("returns a concrete remediation when ouro is missing from PATH", () => {
+    const result = diagnoseOuroPath({
+      homeDir: "/home/test",
+      envPath: "/usr/bin:/bin",
+      existsSync: () => false,
+      readFileSync: () => { throw new Error("ENOENT") },
+    })
+
+    expect(result.status).toBe("missing")
+    expect(result.detail).toContain("PATH does not resolve ouro")
+    expect(result.remediation).toContain("add /home/test/.ouro-cli/bin to PATH")
   })
 
   it("works on linux platform", () => {
