@@ -130,10 +130,34 @@ export function validateSchemaAndRedaction(events: ParsedEvent[]): string[] {
 function readPerTestData(perTestPath: string | undefined): PerTestData | null {
   if (!perTestPath || !existsSync(perTestPath)) return null
   try {
-    return JSON.parse(readFileSync(perTestPath, "utf8")) as PerTestData
+    const raw = readFileSync(perTestPath, "utf8").trim()
+    if (!raw) return null
+
+    try {
+      const parsed = JSON.parse(raw) as unknown
+      if (isPerTestRecord(parsed)) {
+        return { [parsed.testName]: parsed.events }
+      }
+      return parsed as PerTestData
+    } catch {
+      const perTestData: PerTestData = {}
+      for (const line of raw.split("\n").map((entry) => entry.trim()).filter(Boolean)) {
+        const parsed = JSON.parse(line) as unknown
+        if (!isPerTestRecord(parsed)) return null
+        const existing = perTestData[parsed.testName] ?? []
+        perTestData[parsed.testName] = existing.concat(parsed.events)
+      }
+      return perTestData
+    }
   } catch {
     return null
   }
+}
+
+function isPerTestRecord(value: unknown): value is { testName: string; events: PerTestData[string] } {
+  if (!value || typeof value !== "object") return false
+  const record = value as { testName?: unknown; events?: unknown }
+  return typeof record.testName === "string" && Array.isArray(record.events)
 }
 
 function scanSourceFiles(sourceRoot: string | undefined): {

@@ -37,9 +37,52 @@ function readJson(filePath) {
   return JSON.parse(readFileSync(filePath, "utf8"))
 }
 
+function readPerTestCapture(filePath) {
+  const raw = readFileSync(filePath, "utf8").trim()
+  if (!raw) {
+    return { ok: false, problem: `empty ${filePath}` }
+  }
+
+  try {
+    const parsed = JSON.parse(raw)
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      if (typeof parsed.testName === "string" && Array.isArray(parsed.events)) {
+        return { ok: true, problem: null }
+      }
+      const values = Object.values(parsed)
+      if (!values.every(Array.isArray)) {
+        return { ok: false, problem: `invalid ${filePath}: expected per-test event arrays` }
+      }
+      return {
+        ok: values.length > 0,
+        problem: values.length > 0 ? null : `invalid ${filePath}: no per-test records`,
+      }
+    }
+    return { ok: false, problem: `invalid ${filePath}: expected object or ndjson records` }
+  } catch {
+    let records = 0
+    for (const line of raw.split("\n").map((entry) => entry.trim()).filter(Boolean)) {
+      try {
+        const parsed = JSON.parse(line)
+        if (!parsed || typeof parsed !== "object" || typeof parsed.testName !== "string" || !Array.isArray(parsed.events)) {
+          return { ok: false, problem: `invalid ${filePath}: expected per-test ndjson records` }
+        }
+        records += 1
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        return { ok: false, problem: `invalid ${filePath}: ${message}` }
+      }
+    }
+    return {
+      ok: records > 0,
+      problem: records > 0 ? null : `invalid ${filePath}: no per-test records`,
+    }
+  }
+}
+
 function inspectCaptureArtifacts(runDir) {
   const eventsPath = path.join(runDir, "vitest-events.ndjson")
-  const perTestPath = path.join(runDir, "vitest-events-per-test.json")
+  const perTestPath = path.join(runDir, "vitest-events-per-test.ndjson")
   const problems = []
 
   if (!existsSync(eventsPath)) {
@@ -53,14 +96,9 @@ function inspectCaptureArtifacts(runDir) {
   } else if (statSync(perTestPath).size === 0) {
     problems.push(`empty ${perTestPath}`)
   } else {
-    try {
-      const perTest = readJson(perTestPath)
-      if (!perTest || typeof perTest !== "object" || Array.isArray(perTest)) {
-        problems.push(`invalid ${perTestPath}: expected object`)
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      problems.push(`invalid ${perTestPath}: ${message}`)
+    const parsed = readPerTestCapture(perTestPath)
+    if (!parsed.ok) {
+      problems.push(parsed.problem)
     }
   }
 

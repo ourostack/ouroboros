@@ -3,8 +3,8 @@ import { describe, it, expect } from "vitest"
 /**
  * Tests for individual audit rules 1-3 that operate on per-test event data.
  *
- * Rule 1: every-test-emits - every test must emit at least one nerves event
- * Rule 2: start/end pairing - _start events must have matching _end or _error
+ * Rule 1: every-test-emits - every captured test must emit at least one nerves event
+ * Rule 2: lifecycle start/end pairing - process-scoped _start events must have matching _end or _error
  * Rule 3: error context - error-level events must have non-empty meta
  */
 
@@ -42,14 +42,20 @@ describe("Rule 1: every-test-emits", () => {
     expect(result.status).toBe("fail")
     expect(result.silent_tests).toHaveLength(0)
   })
+
+  it("fails when no tests were captured", () => {
+    const result = checkEveryTestEmits({})
+    expect(result.status).toBe("fail")
+    expect(result.total_tests).toBe(0)
+  })
 })
 
 describe("Rule 2: start/end pairing", () => {
   it("passes when _start has matching _end", () => {
     const data: PerTestEvents = {
       "test A": [
-        { component: "engine", event: "turn_start" },
-        { component: "engine", event: "turn_end" },
+        { component: "daemon", event: "daemon.server_start" },
+        { component: "daemon", event: "daemon.server_end" },
       ],
     }
     const result = checkStartEndPairing(data)
@@ -60,8 +66,8 @@ describe("Rule 2: start/end pairing", () => {
   it("passes when _start has matching _error", () => {
     const data: PerTestEvents = {
       "test A": [
-        { component: "engine", event: "turn_start" },
-        { component: "engine", event: "turn_error" },
+        { component: "daemon", event: "daemon.server_start" },
+        { component: "daemon", event: "daemon.server_error" },
       ],
     }
     const result = checkStartEndPairing(data)
@@ -71,13 +77,13 @@ describe("Rule 2: start/end pairing", () => {
   it("fails when _start has no matching _end or _error", () => {
     const data: PerTestEvents = {
       "test A": [
-        { component: "engine", event: "turn_start" },
+        { component: "daemon", event: "daemon.server_start" },
       ],
     }
     const result = checkStartEndPairing(data)
     expect(result.status).toBe("fail")
     expect(result.unmatched.length).toBeGreaterThan(0)
-    expect(result.unmatched[0]).toContain("turn_start")
+    expect(result.unmatched[0]).toContain("daemon.server_start")
   })
 
   it("orphan _end without _start is OK", () => {
@@ -94,8 +100,8 @@ describe("Rule 2: start/end pairing", () => {
     const data = {
       "test A": "not-an-array" as unknown as PerTestEvents[string],
       "test B": [
-        { component: "engine", event: "turn_start" },
-        { component: "engine", event: "turn_end" },
+        { component: "daemon", event: "daemon.server_start" },
+        { component: "daemon", event: "daemon.server_end" },
       ],
     } as unknown as PerTestEvents
     const result = checkStartEndPairing(data)
@@ -105,14 +111,25 @@ describe("Rule 2: start/end pairing", () => {
   it("scopes pairing within a single test", () => {
     const data: PerTestEvents = {
       "test A": [
-        { component: "engine", event: "turn_start" },
+        { component: "daemon", event: "daemon.server_start" },
       ],
       "test B": [
-        { component: "engine", event: "turn_end" },
+        { component: "daemon", event: "daemon.server_end" },
       ],
     }
     const result = checkStartEndPairing(data)
     expect(result.status).toBe("fail")
+  })
+
+  it("ignores operation-local _start events that are not lifecycle contracts", () => {
+    const data: PerTestEvents = {
+      "test A": [
+        { component: "mind", event: "mind.step_start" },
+      ],
+    }
+    const result = checkStartEndPairing(data)
+    expect(result.status).toBe("pass")
+    expect(result.unmatched).toHaveLength(0)
   })
 
   it("handles null data gracefully", () => {

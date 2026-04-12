@@ -1,6 +1,6 @@
 {
   "name": "@ouro.bot/cli",
-  "version": "0.1.0-alpha.341",
+  "version": "0.1.0-alpha.342",
   "main": "dist/heart/daemon/ouro-entry.js",
   "bin": {
     "cli": "dist/heart/daemon/ouro-bot-entry.js",
