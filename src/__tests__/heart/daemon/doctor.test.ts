@@ -928,6 +928,82 @@ describe("checkSecurity", () => {
     expect(JSON.stringify(cat)).not.toContain("sk-ant-oat01-super-secret")
   })
 
+  it("fails when the machine-wide provider credential pool is unparseable", () => {
+    const config = JSON.stringify({ version: 2 })
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/agent.json",
+        "/tmp/secrets/test/secrets.json",
+        "/tmp/secrets/providers.json",
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      statSync: statFor({
+        "/tmp/secrets/test/secrets.json": { mode: 0o600, size: 100 },
+        "/tmp/secrets/providers.json": { mode: 0o600, size: 8 },
+      }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/test.ouro/agent.json": config,
+        "/tmp/secrets/providers.json": "not-json",
+      }),
+    })
+
+    const cat = checkSecurity(deps)
+
+    expect(cat.checks).toContainEqual(expect.objectContaining({
+      label: "machine provider credentials",
+      status: "fail",
+      detail: "unparseable JSON",
+    }))
+  })
+
+  it("passes provider state leak scan when no credential-looking keys are present", () => {
+    const config = JSON.stringify({ version: 2 })
+    const providerStatePath = "/tmp/bundles/test.ouro/state/providers.json"
+    const providerStateWithoutLeak = JSON.stringify({
+      schemaVersion: 1,
+      machineId: "machine_unit6",
+      updatedAt: "2026-04-12T22:21:00.000Z",
+      lanes: {
+        outward: {
+          provider: "anthropic",
+          model: "claude-opus-4-6",
+          source: "bootstrap",
+          updatedAt: "2026-04-12T22:21:00.000Z",
+        },
+        inner: {
+          provider: "minimax",
+          model: "MiniMax-M2.5",
+          source: "bootstrap",
+          updatedAt: "2026-04-12T22:21:00.000Z",
+        },
+      },
+      readiness: {},
+    })
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/agent.json",
+        "/tmp/bundles/test.ouro/state/providers.json",
+        "/tmp/secrets/test/secrets.json",
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      statSync: statFor({ "/tmp/secrets/test/secrets.json": { mode: 0o600, size: 100 } }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/test.ouro/agent.json": config,
+        [providerStatePath]: providerStateWithoutLeak,
+      }),
+    })
+
+    const cat = checkSecurity(deps)
+
+    expect(cat.checks).toContainEqual(expect.objectContaining({
+      label: "test.ouro state/providers.json credential leak",
+      status: "pass",
+      detail: "no credential keys",
+    }))
+  })
+
   it("warns when bundle provider state contains credential-looking keys without printing leaked values", () => {
     const config = JSON.stringify({ version: 2 })
     const providerStatePath = "/tmp/bundles/test.ouro/state/providers.json"
@@ -975,6 +1051,31 @@ describe("checkSecurity", () => {
       detail: expect.stringContaining("apiKey"),
     }))
     expect(JSON.stringify(cat)).not.toContain("leaked-provider-state-secret")
+  })
+
+  it("fails provider state leak scan when state/providers.json is unreadable", () => {
+    const config = JSON.stringify({ version: 2 })
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/agent.json",
+        "/tmp/bundles/test.ouro/state/providers.json",
+        "/tmp/secrets/test/secrets.json",
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      statSync: statFor({ "/tmp/secrets/test/secrets.json": { mode: 0o600, size: 100 } }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/test.ouro/agent.json": config,
+      }),
+    })
+
+    const cat = checkSecurity(deps)
+
+    expect(cat.checks).toContainEqual(expect.objectContaining({
+      label: "test.ouro state/providers.json credential leak",
+      status: "fail",
+      detail: "could not read state/providers.json",
+    }))
   })
 
   it("warns when no agents found", () => {
