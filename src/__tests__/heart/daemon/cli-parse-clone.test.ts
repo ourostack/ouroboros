@@ -91,5 +91,23 @@ describe("ouro clone CLI parsing", () => {
     it("handles SSH URL without .git suffix", () => {
       expect(inferAgentNameFromRemote("git@github.com:user/mybundle.ouro")).toBe("mybundle")
     })
+
+    it("handles bare name with no slash or colon separator", () => {
+      expect(inferAgentNameFromRemote("mybundle.ouro.git")).toBe("mybundle")
+    })
+
+    it("handles bare name with no suffix", () => {
+      expect(inferAgentNameFromRemote("mybundle")).toBe("mybundle")
+    })
+  })
+
+  describe("parseCloneCommand extra positional args", () => {
+    it("ignores extra positional args after remote is set", () => {
+      const cmd = parseOuroCommand(["clone", "https://github.com/user/agent.ouro.git", "extra-arg"])
+      expect(cmd).toEqual({
+        kind: "clone",
+        remote: "https://github.com/user/agent.ouro.git",
+      })
+    })
   })
 })

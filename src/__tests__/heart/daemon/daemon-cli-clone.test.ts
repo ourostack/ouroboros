@@ -360,6 +360,41 @@ describe("ouro clone execution", () => {
     ).rejects.toThrow("could not create work tree")
   })
 
+  it("clone uses getAgentBundlesRoot() when deps.bundlesRoot is not set", async () => {
+    const { runOuroCli, createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+    const deps = createDefaultOuroCliDeps()
+    deps.writeStdout = vi.fn()
+    // deliberately NOT setting deps.bundlesRoot
+
+    mockExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === "git" && args[0] === "--version") return Buffer.from("git version 2.40.0")
+      if (cmd === "git" && args[0] === "ls-remote") return Buffer.from("")
+      if (cmd === "git" && args[0] === "clone") return Buffer.from("")
+      return Buffer.from("")
+    })
+
+    mockExistsSync.mockImplementation((p: unknown) => {
+      const s = String(p)
+      if (s.includes("agent.ouro/agent.json")) return true
+      return false
+    })
+    mockReadFileSync.mockImplementation((p: unknown) => {
+      const s = String(p)
+      if (s.includes("agent.json")) return JSON.stringify({ name: "agent" })
+      if (s.includes("package.json")) return JSON.stringify({ version: "0.1.0" })
+      return ""
+    })
+
+    await runOuroCli(["clone", "https://github.com/user/agent.ouro.git"], deps)
+
+    // Verify clone was called with getAgentBundlesRoot() path (/mock/bundles from mock)
+    const cloneCalls = mockExecFileSync.mock.calls.filter(
+      (c: unknown[]) => c[0] === "git" && (c[1] as string[])[0] === "clone",
+    )
+    expect(cloneCalls.length).toBe(1)
+    expect(cloneCalls[0][1]).toContain("/mock/bundles/agent.ouro")
+  })
+
   it("agent name provided via --agent flag", async () => {
     const { runOuroCli, createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
     const deps = createDefaultOuroCliDeps()
