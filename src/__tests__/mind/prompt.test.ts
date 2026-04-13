@@ -1232,6 +1232,22 @@ describe("buildSystem", () => {
     expect(result).toContain("- settle:")
   })
 
+  it("inner dialog tool behavior guides agent to use rest/ponder for internal state, not surface", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("inner", { toolChoiceRequired: true })
+    // Should mention rest with note for internal state
+    expect(result).toMatch(/rest.*note|note.*rest/i)
+    // Should mention ponder for reflection
+    expect(result).toMatch(/ponder.*reflection|reflection.*ponder/i)
+    // Should NOT frame surface as progress reporting
+    expect(result).not.toContain("surface progress")
+  })
+
   it("toolsSection keeps flow tools when a custom tool subset is provided", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
@@ -2847,7 +2863,7 @@ describe("buildSystem with context", () => {
     expect(toolsBlock).toContain("- ponder:")
     expect(toolsBlock).not.toContain("- send_message:")
     expect(toolsBlock).not.toContain("- settle:")
-    expect(result).toContain("When a thought is ready to go outward, I call `surface`")
+    expect(result).toContain("When I have something to say to a person, I call `surface`")
     expect(result).toContain("I do not call `send_message` or `settle` from inner dialogue")
     expect(result).toContain("my outward delivery tool is `surface`, not `send_message`")
     expect(result).not.toContain("when i need a sibling's help, i `send_message` them")
