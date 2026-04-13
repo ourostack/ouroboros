@@ -94,9 +94,14 @@ interface SessionEnvelopeV1 {
 
 export interface SessionEnvelopeBuildOptions {
   existing: SessionEnvelope | null
+  /** Pre-sanitized previous messages (from projectProviderMessages). */
   previousMessages: OpenAI.ChatCompletionMessageParam[]
+  /** Pre-sanitized current messages. */
   currentMessages: OpenAI.ChatCompletionMessageParam[]
+  /** Pre-sanitized trimmed messages. */
   trimmedMessages: OpenAI.ChatCompletionMessageParam[]
+  /** Pre-captured ingress times (index-aligned with currentMessages, before sanitization stripped _ingressAt). */
+  currentIngressTimes?: (string | null)[]
   recordedAt: string
   lastUsage?: SessionUsageData | null
   state?: { mustResolveBeforeHandoff?: boolean; lastFriendActivityAt?: string } | null
@@ -830,11 +835,11 @@ function selectProjectedEventIds(
 
 export function buildCanonicalSessionEnvelope(options: SessionEnvelopeBuildOptions): SessionEnvelope {
   const existing = options.existing
-  // Capture ingress timestamps before sanitization strips extra properties
-  const currentIngressTimes = options.currentMessages.map(getIngressTime)
-  const previousMessages = sanitizeProviderMessages(options.previousMessages)
-  const currentMessages = sanitizeProviderMessages(options.currentMessages)
-  const trimmedMessages = sanitizeProviderMessages(options.trimmedMessages)
+  // Callers pass pre-sanitized messages + pre-captured ingress times.
+  const currentIngressTimes = options.currentIngressTimes ?? options.currentMessages.map(getIngressTime)
+  const previousMessages = options.previousMessages
+  const currentMessages = options.currentMessages
+  const trimmedMessages = options.trimmedMessages
   const previousProjectionIds = existing?.projection.eventIds.length
     ? [...existing.projection.eventIds]
     : existing?.events.map((event) => event.id) ?? []
