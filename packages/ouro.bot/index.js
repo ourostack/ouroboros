@@ -151,14 +151,11 @@ const cliArgs = process.argv.slice(2);
 if (previousVersion === null) {
   // First install — tell user about PATH
   console.error(`\nouro is ready! Open a new terminal or run: source ~/.zshrc`);
-  console.error(`Then run: ouro`);
 }
 
-if (previousVersion !== null || cliArgs.length > 0) {
-  // Pass through to CLI
-  try {
-    execFileSync("node", [entry, ...cliArgs], { stdio: "inherit" });
-  } catch (err) {
-    process.exitCode = err.status ?? 1;
-  }
+// Always pass through to CLI — first install triggers hatch-or-clone choice
+try {
+  execFileSync("node", [entry, ...cliArgs], { stdio: "inherit" });
+} catch (err) {
+  process.exitCode = err.status ?? 1;
 }
