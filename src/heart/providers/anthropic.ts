@@ -264,11 +264,25 @@ async function streamAnthropicMessages(
   // prompt when using OAuth setup tokens (sk-ant-oat01). Without it, Opus/Sonnet
   // 4.6 requests are rejected with 400. This is the API's validation that the
   // token is being used by a Claude Code client.
-  const claudeCodePreamble = { type: "text" as const, text: "You are Claude Code, Anthropic's official CLI for Claude." }
-  if (system) {
-    params.system = [claudeCodePreamble, { type: "text" as const, text: system }]
+  const preambleText = "You are Claude Code, Anthropic's official CLI for Claude."
+  if (request.systemPrompt) {
+    // Structured SystemPrompt: merge preamble + stable prefix into one cached block,
+    // volatile suffix as a separate uncached block.
+    const stableBlock = {
+      type: "text" as const,
+      text: preambleText + "\n\n" + request.systemPrompt.stable,
+      cache_control: { type: "ephemeral" as const },
+    }
+    if (request.systemPrompt.volatile) {
+      params.system = [stableBlock, { type: "text" as const, text: request.systemPrompt.volatile }]
+    } else {
+      params.system = [stableBlock]
+    }
+  } else if (system) {
+    // Fallback: no structured prompt, extract from messages (legacy path)
+    params.system = [{ type: "text" as const, text: preambleText }, { type: "text" as const, text: system }]
   } else {
-    params.system = [claudeCodePreamble]
+    params.system = [{ type: "text" as const, text: preambleText }]
   }
   if (anthropicTools.length > 0) params.tools = anthropicTools;
   if (request.toolChoiceRequired && anthropicTools.length > 0) {
