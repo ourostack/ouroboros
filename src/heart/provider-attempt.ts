@@ -150,7 +150,7 @@ export async function runProviderAttempt<T>(input: RunProviderAttemptInput<T>): 
         return { ok: false, error, classification, attempts }
       }
 
-      const retryDelayMs = delayMs ?? 0
+      const retryDelayMs = delayMs as number
       emitNervesEvent({
         component: "engine",
         event: "engine.provider_attempt_retry",

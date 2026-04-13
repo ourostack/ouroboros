@@ -8,6 +8,7 @@ vi.mock("../../nerves/runtime", () => ({
 
 import {
   DEFAULT_PROVIDER_ATTEMPT_POLICY,
+  ProviderAttemptAbortError,
   runProviderAttempt,
 } from "../../heart/provider-attempt"
 
@@ -137,6 +138,57 @@ describe("provider attempt runner", () => {
     })
     expect(run).toHaveBeenCalledTimes(3)
     expect(sleep).toHaveBeenCalledTimes(2)
+  })
+
+  it("calls onRetry with attempt metadata before sleeping", async () => {
+    emitTestEvent("provider attempt onRetry")
+    const error = errorWithStatus("provider unavailable", 503)
+    const onRetry = vi.fn()
+    const sleep = vi.fn(async () => undefined)
+
+    const result = await runProviderAttempt({
+      operation: "turn",
+      provider: "minimax",
+      model: "MiniMax-M2.5",
+      run: vi.fn()
+        .mockRejectedValueOnce(error)
+        .mockResolvedValueOnce("ok"),
+      classifyError: () => "server-error",
+      onRetry,
+      sleep,
+      policy: { maxAttempts: 2, baseDelayMs: 11, backoffMultiplier: 2 },
+    })
+
+    expect(result.ok).toBe(true)
+    expect(onRetry).toHaveBeenCalledWith(expect.objectContaining({
+      attempt: 1,
+      provider: "minimax",
+      model: "MiniMax-M2.5",
+      operation: "turn",
+      classification: "server-error",
+      willRetry: true,
+      delayMs: 11,
+    }), 2)
+    expect(sleep).toHaveBeenCalledWith(11)
+  })
+
+  it("rethrows provider attempt abort control flow without retrying", async () => {
+    emitTestEvent("provider attempt abort")
+    const abortError = new ProviderAttemptAbortError("stopped")
+    const run = vi.fn(async () => { throw abortError })
+    const sleep = vi.fn(async () => undefined)
+
+    await expect(runProviderAttempt({
+      operation: "turn",
+      provider: "openai-codex",
+      model: "gpt-5.4",
+      run,
+      classifyError: () => "unknown",
+      sleep,
+    })).rejects.toBe(abortError)
+
+    expect(run).toHaveBeenCalledTimes(1)
+    expect(sleep).not.toHaveBeenCalled()
   })
 
   it("classifies non-Error throws as unknown while preserving metadata", async () => {
