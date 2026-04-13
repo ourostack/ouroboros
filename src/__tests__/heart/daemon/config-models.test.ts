@@ -166,7 +166,7 @@ describe("ouro config models execution", () => {
       { id: "gpt-4o", name: "GPT-4o", capabilities: ["chat", "embeddings"] },
       { id: "claude-sonnet-4.6", name: "Claude Sonnet 4.6" },
     ]
-    const deps = makeCliDeps({ fetchImpl: makeMockFetch(body) })
+    const deps = makeCliDeps({ bundlesRoot, secretsRoot: path.join(homeDir, ".agentsecrets"), fetchImpl: makeMockFetch(body) })
     const result = await runOuroCli(["config", "models", "--agent", "TestAgent"], deps)
 
     expect(result).toContain("available models:")
@@ -266,6 +266,8 @@ describe("ouro config model validation for github-copilot", () => {
 
     const catalogBody = [{ id: "gpt-4o", name: "GPT-4o" }, { id: "claude-sonnet-4.6", name: "Claude Sonnet 4.6" }]
     const deps = makeCliDeps({
+      bundlesRoot,
+      secretsRoot: path.join(homeDir, ".agentsecrets"),
       fetchImpl: makeMockFetchSequence([
         { body: catalogBody },       // catalog GET /models
         { body: { id: "resp-1" } },  // ping POST succeeds
@@ -300,7 +302,7 @@ describe("ouro config model validation for github-copilot", () => {
       .mockReturnValue(path.join(homeDir, ".agentsecrets", "FetchFail", "secrets.json"))
 
     const failingFetch = (async () => { throw new Error("network error") }) as unknown as typeof fetch
-    const deps = makeCliDeps({ fetchImpl: failingFetch })
+    const deps = makeCliDeps({ bundlesRoot, secretsRoot: path.join(homeDir, ".agentsecrets"), fetchImpl: failingFetch })
     const result = await runOuroCli(["config", "model", "--agent", "FetchFail", "any-model"], deps)
 
     // Ping fails — model switch is rejected
@@ -331,6 +333,8 @@ describe("ouro config model validation for github-copilot", () => {
       .mockReturnValue(path.join(homeDir, ".agentsecrets", "PingFail", "secrets.json"))
 
     const deps = makeCliDeps({
+      bundlesRoot,
+      secretsRoot: path.join(homeDir, ".agentsecrets"),
       fetchImpl: makeMockFetchSequence([
         { body: [{ id: "gpt-4o", name: "GPT-4o" }] },                              // catalog OK
         { body: { error: { message: "model not supported" } }, status: 403 },       // ping 403
@@ -361,7 +365,7 @@ describe("ouro config model validation for github-copilot", () => {
     const secretsSpy = vi.spyOn(identity, "getAgentSecretsPath")
       .mockReturnValue(path.join(homeDir, ".agentsecrets", "AzModel", "secrets.json"))
 
-    const deps = makeCliDeps()
+    const deps = makeCliDeps({ bundlesRoot, secretsRoot: path.join(homeDir, ".agentsecrets") })
     const result = await runOuroCli(["config", "model", "--agent", "AzModel", "claude-sonnet-4.6"], deps)
 
     expect(result).toContain("updated AzModel model")

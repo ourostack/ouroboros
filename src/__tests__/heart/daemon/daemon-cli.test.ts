@@ -23,6 +23,7 @@ import {
 import { OuroDaemon } from "../../../heart/daemon/daemon"
 import * as identity from "../../../heart/identity"
 import * as sessionActivity from "../../../heart/session-activity"
+import { readProviderState } from "../../../heart/provider-state"
 import { createTmpBundle } from "../../test-helpers/tmpdir-bundle"
 
 const PACKAGE_VERSION = JSON.parse(
@@ -911,7 +912,7 @@ describe("ouro CLI execution", () => {
     }
   })
 
-  it("ouro auth switch updates provider in agent.json", async () => {
+  it("ouro auth switch updates local provider state instead of agent.json", async () => {
     const tmp = createTmpBundle({
       agentName: "auth-switch-new",
       agentJson: {
@@ -940,14 +941,19 @@ describe("ouro CLI execution", () => {
       expect(result).toContain("switched")
       expect(result).toContain("github-copilot")
       const updated = JSON.parse(fs.readFileSync(tmp.agentConfigPath, "utf-8")) as any
-      expect(updated.humanFacing.provider).toBe("github-copilot")
-      expect(updated.agentFacing.provider).toBe("github-copilot")
+      expect(updated.humanFacing.provider).toBe("anthropic")
+      expect(updated.agentFacing.provider).toBe("anthropic")
+      const stateResult = readProviderState(tmp.agentRoot)
+      expect(stateResult.ok).toBe(true)
+      if (!stateResult.ok) throw new Error(stateResult.error)
+      expect(stateResult.state.lanes.outward.provider).toBe("github-copilot")
+      expect(stateResult.state.lanes.inner.provider).toBe("github-copilot")
     } finally {
       tmp.cleanup()
     }
   })
 
-  it("ouro auth --switch flag form updates provider in agent.json", async () => {
+  it("ouro auth --switch flag form updates local provider state instead of agent.json", async () => {
     const tmp = createTmpBundle({
       agentName: "auth-flag-switch",
       agentJson: {
@@ -976,8 +982,13 @@ describe("ouro CLI execution", () => {
       expect(result).toContain("switched")
       expect(result).toContain("github-copilot")
       const updated = JSON.parse(fs.readFileSync(tmp.agentConfigPath, "utf-8")) as any
-      expect(updated.humanFacing.provider).toBe("github-copilot")
-      expect(updated.agentFacing.provider).toBe("github-copilot")
+      expect(updated.humanFacing.provider).toBe("openai-codex")
+      expect(updated.agentFacing.provider).toBe("openai-codex")
+      const stateResult = readProviderState(tmp.agentRoot)
+      expect(stateResult.ok).toBe(true)
+      if (!stateResult.ok) throw new Error(stateResult.error)
+      expect(stateResult.state.lanes.outward.provider).toBe("github-copilot")
+      expect(stateResult.state.lanes.inner.provider).toBe("github-copilot")
     } finally {
       tmp.cleanup()
     }
@@ -6782,7 +6793,7 @@ describe("ouro config model", () => {
     expect(() => parseOuroCommand(["config", "model", "--agent", "slugger", "--facing", "both", "gpt-5"])).toThrow("--facing must be 'human' or 'agent'")
   })
 
-  it("config.model writes model to specified facing in agent.json", async () => {
+  it("config.model updates the local provider-state lane instead of agent.json", async () => {
     const tmp = createTmpBundle({
       agentName: "config-model-facing",
       agentJson: {
@@ -6806,10 +6817,15 @@ describe("ouro config model", () => {
     try {
       const result = await runOuroCli(["config", "model", "--agent", tmp.agentName, "--facing", "human", "claude-sonnet-4.6"], deps)
       expect(result).toContain("claude-sonnet-4.6")
+      expect(result).toContain("deprecated")
       const updated = JSON.parse(fs.readFileSync(tmp.agentConfigPath, "utf-8")) as any
-      expect(updated.humanFacing.model).toBe("claude-sonnet-4.6")
-      // agentFacing should be unchanged
+      expect(updated.humanFacing.model).toBe("claude-opus-4-6")
       expect(updated.agentFacing.model).toBe("claude-opus-4-6")
+      const stateResult = readProviderState(tmp.agentRoot)
+      expect(stateResult.ok).toBe(true)
+      if (!stateResult.ok) throw new Error(stateResult.error)
+      expect(stateResult.state.lanes.outward.model).toBe("claude-sonnet-4.6")
+      expect(stateResult.state.lanes.inner.model).toBe("claude-opus-4-6")
     } finally {
       tmp.cleanup()
     }
@@ -6817,7 +6833,7 @@ describe("ouro config model", () => {
 })
 
 describe("auth.switch with facing", () => {
-  it("auth switch updates specified facing only", async () => {
+  it("auth switch updates specified local provider-state lane only", async () => {
     const tmp = createTmpBundle({
       agentName: "auth-switch-facing",
       agentJson: {
@@ -6846,15 +6862,19 @@ describe("auth.switch with facing", () => {
       expect(result).toContain("switched")
       expect(result).toContain("github-copilot")
       const updated = JSON.parse(fs.readFileSync(tmp.agentConfigPath, "utf-8")) as any
-      expect(updated.humanFacing.provider).toBe("github-copilot")
-      // agentFacing should be unchanged
+      expect(updated.humanFacing.provider).toBe("anthropic")
       expect(updated.agentFacing.provider).toBe("anthropic")
+      const stateResult = readProviderState(tmp.agentRoot)
+      expect(stateResult.ok).toBe(true)
+      if (!stateResult.ok) throw new Error(stateResult.error)
+      expect(stateResult.state.lanes.outward.provider).toBe("github-copilot")
+      expect(stateResult.state.lanes.inner.provider).toBe("anthropic")
     } finally {
       tmp.cleanup()
     }
   })
 
-  it("auth switch updates both facings when --facing not specified", async () => {
+  it("auth switch updates both local provider-state lanes when --facing is not specified", async () => {
     const tmp = createTmpBundle({
       agentName: "auth-switch-both",
       agentJson: {
@@ -6882,8 +6902,13 @@ describe("auth.switch with facing", () => {
       const result = await runOuroCli(["auth", "switch", "--agent", tmp.agentName, "--provider", "minimax"], deps)
       expect(result).toContain("switched")
       const updated = JSON.parse(fs.readFileSync(tmp.agentConfigPath, "utf-8")) as any
-      expect(updated.humanFacing.provider).toBe("minimax")
-      expect(updated.agentFacing.provider).toBe("minimax")
+      expect(updated.humanFacing.provider).toBe("anthropic")
+      expect(updated.agentFacing.provider).toBe("anthropic")
+      const stateResult = readProviderState(tmp.agentRoot)
+      expect(stateResult.ok).toBe(true)
+      if (!stateResult.ok) throw new Error(stateResult.error)
+      expect(stateResult.state.lanes.outward.provider).toBe("minimax")
+      expect(stateResult.state.lanes.inner.provider).toBe("minimax")
     } finally {
       tmp.cleanup()
     }
