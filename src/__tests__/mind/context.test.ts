@@ -1133,10 +1133,10 @@ describe("postTurnPersist return value", () => {
     const result = postTurnPersist("/tmp/sess.json", prepared)
 
     expect(result.length).toBeGreaterThan(0)
-    // Each event should have an id and type
+    // Each event should have an id and role
     for (const event of result) {
       expect(event).toHaveProperty("id")
-      expect(event).toHaveProperty("type")
+      expect(event).toHaveProperty("role")
     }
   })
 })
