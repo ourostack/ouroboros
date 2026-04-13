@@ -55,7 +55,7 @@ describe("Unit 2.6 - tool result formatting for remote channels", () => {
   })
 
   it("unrecognized tool falls back to arg summary", () => {
-    const summary = buildToolResultSummary("recall", { query: "something" }, "some result", true)
+    const summary = buildToolResultSummary("search_notes", { query: "something" }, "some result", true)
     expect(summary).toContain("query=something")
   })
 

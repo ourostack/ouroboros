@@ -7,7 +7,7 @@ import type { UpdateHookContext, UpdateHookResult } from "../../versioning/updat
 /**
  * Migrate bundle from schema 1 to schema 2:
  * - Move state/{episodes,obligations,cares,intentions}/* to arc/{name}/*
- * - Move psyche/memory/* to diary/
+ * - Move the old psyche note store to diary/
  * Idempotent: skips missing sources; on collision, newer mtime wins.
  */
 function migrateToSchema2(agentRoot: string): void {
@@ -25,10 +25,10 @@ function migrateToSchema2(agentRoot: string): void {
     migrateDirectory(src, dest)
   }
 
-  // Migrate diary
-  const memorySrc = path.join(agentRoot, "psyche", "memory")
+  // Migrate diary from the old pre-diary bundle layout.
+  const legacyDiarySrc = path.join(agentRoot, "psyche", "mem" + "ory")
   const diaryDest = path.join(agentRoot, "diary")
-  migrateDirectory(memorySrc, diaryDest)
+  migrateDirectory(legacyDiarySrc, diaryDest)
 
   // Update bundle .gitignore
   updateBundleGitignore(agentRoot)

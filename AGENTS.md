@@ -55,15 +55,15 @@ These emerged from real architectural decisions, competitive analysis, and exten
 - **Don't solve two overlapping objects by adding a third.** When existing state objects carry overlapping data, collapse authority into the one that already owns it.
 - **The prompt should express the contract, not be the contract.** Behavioral invariants belong in code. Recurring preferences belong in structured policy. The prompt renders these for the model — it is not the sole place they exist.
 
-### Memory
-- **Memories should fade as events, sharpen as patterns, and stabilise as truths.** Raw conversational residue should decay. Recurring themes should consolidate into patterns. Foundational decisions should remain stable and quiet until relevant.
-- **Memory objects should know what relationships they belong to.** Global memory is correct for system-level truths. Lived experience is situated — it happened with someone, about something, in a specific context.
-- **Retrieval quality depends on consolidation.** If nothing processes raw experience into structured knowledge, better search algorithms are optimizing over a swamp.
+### Diary, Journal, Friend Notes
+- **Raw events should fade, patterns should sharpen, and truths should stabilise.** Raw conversational residue should decay. Recurring themes should consolidate into patterns. Foundational decisions should remain stable and quiet until relevant.
+- **Written notes should know what relationships they belong to.** System-level truths belong in the diary. Lived experience is situated — it happened with someone, about something, in a specific context.
+- **Search quality depends on consolidation.** If nothing processes raw experience into structured knowledge, better search algorithms are optimizing over a swamp.
 
 ### Continuity
 - **If a subsystem makes the agent more aware of itself than of the work, it's starting to rot.** Every continuity mechanism must prove it increases responsiveness to the current situation, not just richness of self-state.
 - **Good architecture feels like traction. Bad architecture feels like carrying ghosts.** Stale obligations that never resolve create ambient guilt. Duplicated state creates confusion. Clean salience and clear ownership create forward motion.
-- **The more authority consolidation has, the better-structured memory must be.** Low-authority consolidation (observational) can run on flat memory. Authoritative consolidation (rewriting, pruning) requires typed observations, source linkage, and provenance.
+- **The more authority consolidation has, the better-structured notes must be.** Low-authority consolidation can run on flat notes. Authoritative consolidation (rewriting, pruning) requires typed observations, source linkage, and provenance.
 
 ### Extension and Autonomy
 - **A skill should teach a move. A tool should let me make one.** Skills are for judgment and heuristics. Tools are for reliable, repeatable capability. Policy is for governance.
@@ -116,9 +116,9 @@ Hook events are fire-and-forget — they never block the dev tool. If the daemon
 Before starting work, check that locally installed skills are up to date:
 
 1. Fetch the manifest from `https://raw.githubusercontent.com/ouroborosbot/ouroboros-skills/main/manifest.json`.
-2. Compare the manifest against the local `_registry.json` in your skills directory.
-3. If `_registry.json` is missing, fetch the specific `SKILL.md` files named by the manifest and compare them directly against the local installed copies.
-4. If any skill's commit SHA is stale, or any direct file comparison differs, update it using the skill-management workflow before proceeding.
+2. Compare the manifest against `_registry.json` in each active local skills directory.
+3. If `_registry.json` is missing, run the `skill-management` "Bootstrap or Repair a Missing Registry" workflow first so installed skills get explicit provenance before freshness comparison continues.
+4. If any non-local skill's commit SHA is stale, update it using the skill-management workflow before proceeding.
 
 This replaces the old pattern of diffing against `subagents/*.md` files in this repo. The shared `ouroboros-skills` repository is now the source of truth for workflow skill content.
 
@@ -182,8 +182,8 @@ All runtime logging goes through `emitNervesEvent()` from `src/nerves/runtime`. 
 - **meta-tooling**: The nerves audit CLI itself (cannot observe itself)
 
 **Automatic enforcement** -- five CI audit rules (no manual manifest):
-1. **every-test-emits**: Every test must emit at least one nerves event
-2. **start/end pairing**: Events ending in `_start` must have a matching `_end` or `_error` in the same test
+1. **every-test-emits**: Every executed Vitest test must be observed by the global nerves capture heartbeat
+2. **start/end pairing**: Process-scoped lifecycle events ending in `_start` must have a matching `_end` or `_error` in the same test
 3. **error context**: Error-level events must have non-empty `meta` with diagnostic context
 4. **source coverage**: Every `component:event` key found in production source must be observed during tests
 5. **file completeness**: Every production file with executable code must have at least one `emitNervesEvent` call (type-only files are exempt)

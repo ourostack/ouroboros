@@ -173,7 +173,7 @@ describe("daemon runtime logging", () => {
         event: `daemon.level_${level}`,
         level,
         message: `${level} level event`,
-        meta: {},
+        meta: { level },
       })
     }
 

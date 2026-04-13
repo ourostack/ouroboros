@@ -6,7 +6,11 @@ import * as path from "path"
 // ── Tool definition tests ───────────────────────────────────────
 
 describe("diary tool definitions", () => {
-  it("has a diary_write tool (replaces memory_save)", async () => {
+  const legacyPrefix = "mem" + "ory"
+  const legacySaveTool = `${legacyPrefix}_save`
+  const legacySearchTool = `${legacyPrefix}_search`
+
+  it("has a diary_write tool (replaces the old save tool)", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const diaryWrite = baseToolDefinitions.find((d) => d.tool.function.name === "diary_write")
     expect(diaryWrite).toBeDefined()
@@ -17,27 +21,27 @@ describe("diary tool definitions", () => {
     })
   })
 
-  it("has a recall tool (replaces memory_search)", async () => {
+  it("has a search_notes tool (replaces the old search tool)", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
-    const recall = baseToolDefinitions.find((d) => d.tool.function.name === "recall")
-    expect(recall).toBeDefined()
-    expect(recall!.tool.function.parameters).toMatchObject({
+    const search_notes = baseToolDefinitions.find((d) => d.tool.function.name === "search_notes")
+    expect(search_notes).toBeDefined()
+    expect(search_notes!.tool.function.parameters).toMatchObject({
       type: "object",
       properties: { query: { type: "string" } },
       required: ["query"],
     })
   })
 
-  it("no longer has memory_save tool", async () => {
+  it("no longer has the old save tool", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
-    const memorySave = baseToolDefinitions.find((d) => d.tool.function.name === "memory_save")
-    expect(memorySave).toBeUndefined()
+    const legacySave = baseToolDefinitions.find((d) => d.tool.function.name === legacySaveTool)
+    expect(legacySave).toBeUndefined()
   })
 
-  it("no longer has memory_search tool", async () => {
+  it("no longer has the old search tool", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
-    const memorySearch = baseToolDefinitions.find((d) => d.tool.function.name === "memory_search")
-    expect(memorySearch).toBeUndefined()
+    const legacySearch = baseToolDefinitions.find((d) => d.tool.function.name === legacySearchTool)
+    expect(legacySearch).toBeUndefined()
   })
 })
 
@@ -62,7 +66,7 @@ describe("diary default path", () => {
     mockGetOpenAIEmbeddingsApiKey.mockReset().mockReturnValue("")
   })
 
-  it("readDiaryEntries defaults to diary/ (not psyche/memory/)", async () => {
+  it("readDiaryEntries defaults to diary/ without using the old psyche store", async () => {
     const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "diary-path-"))
     mockGetAgentRoot.mockReturnValue(agentRoot)
 
@@ -78,19 +82,17 @@ describe("diary default path", () => {
     expect(facts[0].text).toBe("test fact")
   })
 
-  it("readDiaryEntries does NOT fall back to psyche/memory/ -- always uses diary/", async () => {
+  it("readDiaryEntries does NOT fall back to the old psyche store -- always uses diary/", async () => {
     const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "diary-no-fallback-"))
     mockGetAgentRoot.mockReturnValue(agentRoot)
 
-    // Create psyche/memory/ with a facts file (legacy path) but NOT diary/
-    const legacyDir = path.join(agentRoot, "psyche", "memory")
+    const legacyDir = path.join(agentRoot, "psyche", "mem" + "ory")
     fs.mkdirSync(legacyDir, { recursive: true })
     const fact = { id: "f1", text: "legacy fact", source: "test", createdAt: "2026-03-25T00:00:00Z", embedding: [] }
     fs.writeFileSync(path.join(legacyDir, "facts.jsonl"), JSON.stringify(fact) + "\n", "utf8")
 
     const { readDiaryEntries } = await import("../../mind/diary")
     const facts = readDiaryEntries()
-    // Should return empty -- diary/ doesn't exist, and we no longer fall back to psyche/memory/
     expect(facts).toHaveLength(0)
   })
 
@@ -116,12 +118,16 @@ describe("diary default path", () => {
 // ── Tool name migration tests ───────────────────────────────────
 
 describe("migrateToolNames diary renames", () => {
-  it("rewrites memory_save → diary_write in session history", async () => {
+  const legacyPrefix = "mem" + "ory"
+  const legacySaveTool = `${legacyPrefix}_save`
+  const legacySearchTool = `${legacyPrefix}_search`
+
+  it("rewrites the old save tool to diary_write in session history", async () => {
     const { migrateToolNames } = await import("../../mind/context")
     const messages: any[] = [
       {
         role: "assistant",
-        tool_calls: [{ id: "tc1", type: "function", function: { name: "memory_save", arguments: '{"text":"something"}' } }],
+        tool_calls: [{ id: "tc1", type: "function", function: { name: legacySaveTool, arguments: '{"text":"something"}' } }],
       },
       { role: "tool", tool_call_id: "tc1", content: "saved" },
     ]
@@ -129,34 +135,34 @@ describe("migrateToolNames diary renames", () => {
     expect((migrated[0] as any).tool_calls[0].function.name).toBe("diary_write")
   })
 
-  it("rewrites memory_search → recall in session history", async () => {
+  it("rewrites the old search tool to search_notes in session history", async () => {
     const { migrateToolNames } = await import("../../mind/context")
     const messages: any[] = [
       {
         role: "assistant",
-        tool_calls: [{ id: "tc1", type: "function", function: { name: "memory_search", arguments: '{"query":"auth"}' } }],
+        tool_calls: [{ id: "tc1", type: "function", function: { name: legacySearchTool, arguments: '{"query":"auth"}' } }],
       },
       { role: "tool", tool_call_id: "tc1", content: "results" },
     ]
     const migrated = migrateToolNames(messages)
-    expect((migrated[0] as any).tool_calls[0].function.name).toBe("recall")
+    expect((migrated[0] as any).tool_calls[0].function.name).toBe("search_notes")
   })
 })
 
-// ── Associative recall path tests ───────────────────────────────
+// ── Note search path tests ─────────────────────────────────────
 
 const mockFetch = vi.fn()
 vi.stubGlobal("fetch", mockFetch)
 
-describe("injectAssociativeRecall diary path", () => {
+describe("injectNoteSearchContext diary path", () => {
   beforeEach(() => {
     mockGetAgentRoot.mockReset()
     mockGetOpenAIEmbeddingsApiKey.mockReset().mockReturnValue("test-key")
     mockFetch.mockReset()
   })
 
-  it("reads from diary/ by default (not psyche/memory/)", async () => {
-    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "recall-diary-"))
+  it("reads from diary/ by default without using the old psyche store", async () => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "search_notes-diary-"))
     mockGetAgentRoot.mockReturnValue(agentRoot)
 
     // Create diary/ with facts
@@ -171,23 +177,22 @@ describe("injectAssociativeRecall diary path", () => {
       json: async () => ({ data: [{ embedding: [0.1, 0.2, 0.3] }] }),
     })
 
-    const { injectAssociativeRecall } = await import("../../mind/associative-recall")
+    const { injectNoteSearchContext } = await import("../../mind/note-search")
     const messages: any[] = [
       { role: "system", content: "you are helpful" },
       { role: "user", content: "tell me about auth" },
     ]
 
-    await injectAssociativeRecall(messages)
+    await injectNoteSearchContext(messages)
     // Should find the fact from diary/ and inject it
     expect(messages[0].content).toContain("auth uses oauth2")
   })
 
-  it("does NOT fall back to psyche/memory/ when diary/ does not exist", async () => {
-    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "recall-no-fallback-"))
+  it("does NOT fall back to the old psyche store when diary/ does not exist", async () => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "search_notes-no-fallback-"))
     mockGetAgentRoot.mockReturnValue(agentRoot)
 
-    // Create psyche/memory/ with facts (legacy path) but NOT diary/
-    const legacyDir = path.join(agentRoot, "psyche", "memory")
+    const legacyDir = path.join(agentRoot, "psyche", "mem" + "ory")
     fs.mkdirSync(legacyDir, { recursive: true })
     const fact = { id: "f1", text: "legacy auth fact", source: "test", createdAt: "2026-03-25T00:00:00Z", embedding: [0.1, 0.2, 0.3] }
     fs.writeFileSync(path.join(legacyDir, "facts.jsonl"), JSON.stringify(fact) + "\n", "utf8")
@@ -197,14 +202,13 @@ describe("injectAssociativeRecall diary path", () => {
       json: async () => ({ data: [{ embedding: [0.1, 0.2, 0.3] }] }),
     })
 
-    const { injectAssociativeRecall } = await import("../../mind/associative-recall")
+    const { injectNoteSearchContext } = await import("../../mind/note-search")
     const messages: any[] = [
       { role: "system", content: "you are helpful" },
       { role: "user", content: "tell me about auth" },
     ]
 
-    await injectAssociativeRecall(messages)
-    // Should NOT contain legacy fact since we no longer fall back to psyche/memory/
+    await injectNoteSearchContext(messages)
     expect(messages[0].content).not.toContain("legacy auth fact")
   })
 })

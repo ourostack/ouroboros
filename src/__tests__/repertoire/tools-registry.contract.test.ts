@@ -115,7 +115,7 @@ describe("tool registry contract", () => {
     expect(names).toContain("query_session");
     expect(names).toContain("web_search");
     expect(names).toContain("diary_write");
-    expect(names).toContain("recall");
+    expect(names).toContain("search_notes");
     expect(names).toContain("save_friend_note");
     expect(names).toContain("get_friend_note");
     expect(names).toContain("list_skills");

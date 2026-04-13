@@ -117,7 +117,7 @@ describe("nerves/coverage cli", () => {
     runAuditCli(["--run-dir", runDir])
     expect(auditSpy).toHaveBeenCalledWith({
       eventsPath: join(runDir, "vitest-events.ndjson"),
-      perTestPath: join(runDir, "vitest-events-per-test.json"),
+      perTestPath: join(runDir, "vitest-events-per-test.ndjson"),
       sourceRoot: resolve("src"),
     })
   })

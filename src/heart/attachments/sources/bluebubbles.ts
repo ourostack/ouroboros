@@ -6,7 +6,7 @@ import { downloadBlueBubblesAttachment } from "../../../senses/bluebubbles/attac
 import { getBlueBubblesChannelConfig, getBlueBubblesConfig } from "../../config"
 import { getAgentRoot } from "../../identity"
 import { buildOriginalMaterializedAttachment, ensureReadableFile, originalStoragePath } from "../originals"
-import { rememberRecentAttachment } from "../store"
+import { cacheRecentAttachment } from "../store"
 import { createAttachmentRecord, type AttachmentRecord } from "../types"
 import type { AttachmentSourceAdapter } from "./adapter"
 
@@ -114,7 +114,7 @@ export async function persistBlueBubblesAttachmentSource(
     },
   )
   updated.lastSeenAt = Date.now()
-  rememberRecentAttachment(agentName, updated, agentRoot)
+  cacheRecentAttachment(agentName, updated, agentRoot)
 
   emitNervesEvent({
     component: "engine",

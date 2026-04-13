@@ -127,7 +127,7 @@ export function detectBundleState(agentRoot: string, deps: DetectBundleStateDeps
 
 /**
  * First-person remediation hint text for the start-of-turn packet. Reads
- * as the agent's own voice per the "declarative first-person" memory rule.
+ * as the agent's own voice per the declarative first-person note rule.
  * Returns empty string when there are no issues (so the packet renderer
  * can skip the section entirely).
  */

@@ -15,10 +15,37 @@ import type {
 } from "./doctor-types"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { probeBlueBubblesHealth } from "./bluebubbles-health-diagnostics"
+import { diagnoseOuroPath } from "../versioning/ouro-path-installer"
 
 const DEFAULT_BLUEBUBBLES_REQUEST_TIMEOUT_MS = 30_000
 
 // ── Category checkers ──
+
+export function checkCliPath(deps: DoctorDeps): DoctorCategory {
+  const resolution = diagnoseOuroPath({
+    homeDir: deps.homedir,
+    envPath: deps.envPath ?? "",
+    existsSync: deps.existsSync,
+    readFileSync: (p) => deps.readFileSync(p),
+  })
+
+  const status = resolution.status === "ok"
+    ? "pass"
+    : resolution.status === "shadowed"
+      ? "fail"
+      : "warn"
+
+  return {
+    name: "CLI",
+    checks: [{
+      label: "ouro PATH resolution",
+      status,
+      detail: resolution.remediation
+        ? `${resolution.detail}; fix: ${resolution.remediation}`
+        : resolution.detail,
+    }],
+  }
+}
 
 export async function checkDaemon(deps: DoctorDeps): Promise<DoctorCategory> {
   const checks: DoctorCheck[] = []
@@ -392,6 +419,7 @@ function computeSummary(categories: DoctorCategory[]): DoctorSummary {
 type CategoryChecker = (deps: DoctorDeps) => DoctorCategory | Promise<DoctorCategory>
 
 const CATEGORY_CHECKERS: Array<{ name: string; fn: CategoryChecker }> = [
+  { name: "CLI", fn: checkCliPath },
   { name: "Daemon", fn: checkDaemon },
   { name: "Agents", fn: checkAgents },
   { name: "Senses", fn: checkSenses },

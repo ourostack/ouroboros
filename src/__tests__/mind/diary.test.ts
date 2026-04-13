@@ -10,12 +10,12 @@ import {
   searchDiaryEntries,
   type DiaryEntry,
 } from "../../mind/diary";
-import { cosineSimilarity } from "../../mind/associative-recall";
+import { cosineSimilarity } from "../../mind/note-search";
 import { baseToolDefinitions } from "../../repertoire/tools-base";
 
-describe("memory write path", () => {
-  it("ensures memory data file paths exist in bundle psyche memory root", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-paths-"));
+describe("diary write path", () => {
+  it("ensures diary data file paths exist", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "diary-paths-"));
     const stores = ensureDiaryStorePaths(root);
     expect(stores.factsPath).toBe(path.join(root, "facts.jsonl"));
     expect(stores.entitiesPath).toBe(path.join(root, "entities.json"));
@@ -27,7 +27,7 @@ describe("memory write path", () => {
   });
 
   it("writes novel facts and skips near-duplicates (>60% overlap)", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-dedup-"));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "diary-dedup-"));
     const stores = ensureDiaryStorePaths(root);
 
     const first: DiaryEntry = {
@@ -65,7 +65,7 @@ describe("memory write path", () => {
   });
 
   it("skips semantically duplicate facts even when word overlap is below threshold", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-semantic-dedup-"));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "diary-semantic-dedup-"));
     const stores = ensureDiaryStorePaths(root);
     const opts = { semanticThreshold: 0.95 };
 
@@ -92,7 +92,7 @@ describe("memory write path", () => {
   });
 
   it("allows facts through when embedding similarity is below semantic threshold", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-semantic-below-"));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "diary-semantic-below-"));
     const stores = ensureDiaryStorePaths(root);
 
     const factA: DiaryEntry = {
@@ -115,7 +115,7 @@ describe("memory write path", () => {
   });
 
   it("skips semantic dedup when either fact lacks embeddings", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-semantic-noembedding-"));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "diary-semantic-noembedding-"));
     const stores = ensureDiaryStorePaths(root);
 
     const withEmbedding: DiaryEntry = {
@@ -147,7 +147,7 @@ describe("memory write path", () => {
   });
 
   it("handles missing facts file and zero-word facts safely", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-missing-facts-"));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "diary-missing-facts-"));
     const stores = {
       rootDir: root,
       factsPath: path.join(root, "facts.jsonl"),
@@ -166,7 +166,7 @@ describe("memory write path", () => {
   });
 
   it("rebuilds entity index when entities file is missing", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-missing-entities-"));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "diary-missing-entities-"));
     const stores = {
       rootDir: root,
       factsPath: path.join(root, "facts.jsonl"),
@@ -191,19 +191,19 @@ describe("memory write path", () => {
   });
 
   it("updates entity index and daily logs for newly added facts", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-structures-"));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "diary-structures-"));
     const stores = ensureDiaryStorePaths(root);
     const facts: DiaryEntry[] = [
       {
         id: "f-entity-1",
-        text: "Ari improved the harness memory layer",
+        text: "Ari improved the harness diary layer",
         source: "unit-test",
         createdAt: "2026-03-06T10:00:00.000Z",
         embedding: [0.1, 0.2],
       },
       {
         id: "f-entity-2",
-        text: "Slugger improved memory coverage",
+        text: "Slugger improved diary coverage",
         source: "unit-test",
         createdAt: "2026-03-06T10:05:00.000Z",
         embedding: [0.2, 0.3],
@@ -216,8 +216,8 @@ describe("memory write path", () => {
     const entities = JSON.parse(fs.readFileSync(stores.entitiesPath, "utf8"));
     expect(entities.ari.factIds).toContain("f-entity-1");
     expect(entities.slugger.factIds).toContain("f-entity-2");
-    expect(entities.memory.factIds).toContain("f-entity-1");
-    expect(entities.memory.factIds).toContain("f-entity-2");
+    expect(entities.diary.factIds).toContain("f-entity-1");
+    expect(entities.diary.factIds).toContain("f-entity-2");
 
     const dailyPath = path.join(stores.dailyDir, "2026-03-06.jsonl");
     expect(fs.existsSync(dailyPath)).toBe(true);
@@ -226,7 +226,7 @@ describe("memory write path", () => {
   });
 
   it("recovers from malformed entities.json by rebuilding index", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-entities-malformed-"));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "diary-entities-malformed-"));
     const stores = ensureDiaryStorePaths(root);
     fs.writeFileSync(stores.entitiesPath, "{not-json", "utf8");
 
@@ -246,7 +246,7 @@ describe("memory write path", () => {
   });
 
   it("handles empty entities index files and avoids duplicate factIds for existing entities", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-entities-empty-"));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "diary-entities-empty-"));
     const stores = ensureDiaryStorePaths(root);
     fs.writeFileSync(stores.entitiesPath, "", "utf8");
 
@@ -276,21 +276,21 @@ describe("memory write path", () => {
     expect(fs.existsSync(unknownDayPath)).toBe(true);
   });
 
-  it("keeps friend memory tools available alongside agent diary tools", () => {
+  it("keeps friend note tools available alongside agent diary tools", () => {
     const names = baseToolDefinitions.map((def) => def.tool.function.name);
     expect(names).toContain("save_friend_note");
-    expect(names).toContain("recall");
+    expect(names).toContain("search_notes");
   });
 
   it("saveDiaryEntry writes embedding vectors when provider succeeds", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-save-embedding-"));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "diary-save-embedding-"));
     const fixedNow = "2026-03-06T12:00:00.000Z";
 
     const result = await saveDiaryEntry({
       diaryRoot: root,
       text: "Ari prefers crisp progress updates",
       about: "ari",
-      source: "tool:memory_save",
+      source: "tool:diary_write",
       now: () => new Date(fixedNow),
       idFactory: () => "fact-embedded",
       embeddingProvider: {
@@ -303,19 +303,19 @@ describe("memory write path", () => {
     const saved = JSON.parse(fs.readFileSync(factsPath, "utf8").trim()) as DiaryEntry;
     expect(saved.id).toBe("fact-embedded");
     expect(saved.text).toBe("Ari prefers crisp progress updates");
-    expect(saved.source).toBe("tool:memory_save");
+    expect(saved.source).toBe("tool:diary_write");
     expect(saved.about).toBe("ari");
     expect(saved.createdAt).toBe(fixedNow);
     expect(saved.embedding).toEqual([0.2, 0.4, 0.6]);
   });
 
   it("saveDiaryEntry degrades gracefully to empty embeddings when provider fails", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-save-fallback-"));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "diary-save-fallback-"));
 
     const result = await saveDiaryEntry({
       diaryRoot: root,
       text: "Store this even if embedding API is down",
-      source: "tool:memory_save",
+      source: "tool:diary_write",
       idFactory: () => "fact-fallback",
       embeddingProvider: {
         embed: async () => {
@@ -332,12 +332,12 @@ describe("memory write path", () => {
   });
 
   it("saveDiaryEntry degrades gracefully when provider throws non-Error", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-save-fallback-string-"));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "diary-save-fallback-string-"));
 
     const result = await saveDiaryEntry({
       diaryRoot: root,
       text: "Store this even if embedding API throws a string",
-      source: "tool:memory_save",
+      source: "tool:diary_write",
       idFactory: () => "fact-fallback-string",
       embeddingProvider: {
         embed: async () => {
@@ -354,12 +354,12 @@ describe("memory write path", () => {
   });
 
   it("saveDiaryEntry falls back to empty embedding when provider returns no vectors", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-save-no-vectors-"));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "diary-save-no-vectors-"));
 
     const result = await saveDiaryEntry({
       diaryRoot: root,
       text: "Save even when embedding vector list is empty",
-      source: "tool:memory_save",
+      source: "tool:diary_write",
       idFactory: () => "fact-empty-vectors",
       embeddingProvider: {
         embed: async () => [],
@@ -476,7 +476,7 @@ describe("memory write path", () => {
       },
       {
         id: "other",
-        text: "completely unrelated memory",
+        text: "completely unrelated note",
         source: "cli",
         createdAt: "2026-03-06T00:00:01.000Z",
         embedding: [0.2, 0.1],
@@ -594,7 +594,7 @@ describe("memory write path", () => {
   });
 
   it("backfillEmbeddings fills empty embeddings for existing facts", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-backfill-"));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "diary-backfill-"));
     const factsPath = path.join(root, "facts.jsonl");
     const facts: DiaryEntry[] = [
       { id: "has-embed", text: "already embedded", source: "cli", createdAt: "2026-03-06T00:00:00.000Z", embedding: [0.1, 0.2] },
@@ -618,7 +618,7 @@ describe("memory write path", () => {
   });
 
   it("backfillEmbeddings returns zeros when no facts need embedding", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-backfill-noop-"));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "diary-backfill-noop-"));
     const factsPath = path.join(root, "facts.jsonl");
     fs.writeFileSync(factsPath, JSON.stringify({ id: "ok", text: "good", source: "cli", createdAt: "", embedding: [1] }) + "\n", "utf8");
 
@@ -627,7 +627,7 @@ describe("memory write path", () => {
   });
 
   it("backfillEmbeddings returns zeros for missing facts file", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-backfill-missing-"));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "diary-backfill-missing-"));
     const result = await backfillEmbeddings({ diaryRoot: root });
     expect(result).toEqual({ total: 0, backfilled: 0, failed: 0 });
   });
@@ -640,7 +640,7 @@ describe("memory write path", () => {
     });
     const { backfillEmbeddings: dynamicBackfill } = await import("../../mind/diary");
 
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-backfill-noprovider-"));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "diary-backfill-noprovider-"));
     const factsPath = path.join(root, "facts.jsonl");
     fs.writeFileSync(factsPath, JSON.stringify({ id: "x", text: "needs it", source: "cli", createdAt: "", embedding: [] }) + "\n", "utf8");
 
@@ -649,7 +649,7 @@ describe("memory write path", () => {
   });
 
   it("backfillEmbeddings handles batch errors gracefully", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-backfill-batcherr-"));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "diary-backfill-batcherr-"));
     const factsPath = path.join(root, "facts.jsonl");
     const facts: DiaryEntry[] = [
       { id: "f1", text: "first", source: "cli", createdAt: "", embedding: [] },
@@ -675,7 +675,7 @@ describe("memory write path", () => {
   });
 
   it("backfillEmbeddings handles undefined vector entries from provider", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-backfill-undef-"));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "diary-backfill-undef-"));
     const factsPath = path.join(root, "facts.jsonl");
     fs.writeFileSync(factsPath, JSON.stringify({ id: "f1", text: "test", source: "cli", createdAt: "", embedding: [] }) + "\n", "utf8");
 
@@ -690,12 +690,12 @@ describe("memory write path", () => {
     expect(result).toEqual({ total: 1, backfilled: 0, failed: 1 });
   });
 
-  it("backfillEmbeddings uses default memoryRoot when not provided", async () => {
+  it("backfillEmbeddings uses default diary root when not provided", async () => {
     vi.resetModules();
-    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "memory-backfill-default-"));
-    const memoryDir = path.join(tmpRoot, "diary");
-    fs.mkdirSync(memoryDir, { recursive: true });
-    const factsPath = path.join(memoryDir, "facts.jsonl");
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "diary-backfill-default-"));
+    const notesDir = path.join(tmpRoot, "diary");
+    fs.mkdirSync(notesDir, { recursive: true });
+    const factsPath = path.join(notesDir, "facts.jsonl");
     fs.writeFileSync(factsPath, JSON.stringify({ id: "f1", text: "test", source: "cli", createdAt: "", embedding: [] }) + "\n", "utf8");
 
     vi.doMock("../../heart/identity", async () => {
@@ -712,7 +712,7 @@ describe("memory write path", () => {
   });
 
   it("backfillEmbeddings counts empty vectors from provider as failed", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-backfill-emptyvec-"));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "diary-backfill-emptyvec-"));
     const factsPath = path.join(root, "facts.jsonl");
     const facts: DiaryEntry[] = [
       { id: "f1", text: "gets a vector", source: "cli", createdAt: "", embedding: [] },
@@ -731,7 +731,7 @@ describe("memory write path", () => {
   });
 
   it("backfillEmbeddings handles batch error from non-Error throw", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-backfill-nonError-"));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "diary-backfill-nonError-"));
     const factsPath = path.join(root, "facts.jsonl");
     fs.writeFileSync(factsPath, JSON.stringify({ id: "f1", text: "first", source: "cli", createdAt: "", embedding: [] }) + "\n", "utf8");
 
@@ -746,14 +746,14 @@ describe("memory write path", () => {
   });
 
   it("saveDiaryEntry deduplicates paraphrased facts via semantic threshold", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-save-semantic-dedup-"));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "diary-save-semantic-dedup-"));
     const nearIdenticalVector = [0.9, 0.1, 0.05];
     let callCount = 0;
 
     const result1 = await saveDiaryEntry({
       diaryRoot: root,
       text: "the project deadline is next friday",
-      source: "tool:memory_save",
+      source: "tool:diary_write",
       idFactory: () => `sem-save-${++callCount}`,
       embeddingProvider: { embed: async () => [nearIdenticalVector] },
     });
@@ -762,7 +762,7 @@ describe("memory write path", () => {
     const result2 = await saveDiaryEntry({
       diaryRoot: root,
       text: "deliverable is due by end of week",
-      source: "tool:memory_save",
+      source: "tool:diary_write",
       idFactory: () => `sem-save-${++callCount}`,
       embeddingProvider: { embed: async () => [nearIdenticalVector] },
     });

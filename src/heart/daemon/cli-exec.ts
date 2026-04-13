@@ -86,6 +86,7 @@ import { runAgenticRepair } from "./agentic-repair"
 import { pollDaemonStartup } from "./startup-tui"
 import { pruneStaleEphemeralBundles } from "./stale-bundle-prune"
 import { UpProgress } from "./up-progress"
+import { pingGithubCopilotModel } from "../provider-ping"
 
 // ── ensureDaemonRunning ──
 
@@ -487,49 +488,6 @@ export async function listGithubCopilotModels(
   /* v8 ignore stop */
 }
 
-export async function pingGithubCopilotModel(
-  baseUrl: string,
-  token: string,
-  model: string,
-  fetchImpl: typeof fetch = fetch,
-): Promise<{ ok: true } | { ok: false; error: string }> {
-  const base = baseUrl.replace(/\/+$/, "")
-  const isClaude = model.startsWith("claude")
-  const url = isClaude ? `${base}/chat/completions` : `${base}/responses`
-  const body = isClaude
-    ? JSON.stringify({ model, messages: [{ role: "user", content: "ping" }], max_tokens: 1 })
-    : JSON.stringify({ model, input: "ping", max_output_tokens: 16 })
-  try {
-    const response = await fetchImpl(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body,
-    })
-    if (response.ok) return { ok: true }
-    let detail = `HTTP ${response.status}`
-    try {
-      const json = await response.json() as Record<string, unknown>
-      /* v8 ignore start -- error format parsing: all branches tested via config-models.test.ts @preserve */
-      if (typeof json.error === "string") detail = json.error
-      else if (typeof json.error === "object" && json.error !== null) {
-        const errObj = json.error as Record<string, unknown>
-        if (typeof errObj.message === "string") detail = errObj.message
-      }
-      else if (typeof json.message === "string") detail = json.message
-      /* v8 ignore stop */
-    } catch {
-      // response body not JSON — keep HTTP status
-    }
-    return { ok: false, error: detail }
-  } catch (err) {
-    /* v8 ignore next -- defensive: fetch errors are always Error instances @preserve */
-    return { ok: false, error: err instanceof Error ? err.message : String(err) }
-  }
-}
-
 // ── Provider credential verification ──
 
 /* v8 ignore next 3 -- only called from auth.switch inside integration block @preserve */
@@ -615,6 +573,12 @@ async function performSystemSetup(deps: OuroCliDeps): Promise<void> {
       /* v8 ignore next -- old-launcher repair hint: fires when stale ~/.local/bin/ouro is fixed @preserve */
       if (installResult.repairedOldLauncher) {
         deps.writeStdout("repaired stale ouro launcher at ~/.local/bin/ouro")
+      }
+      if (installResult.pathResolution?.status === "shadowed") {
+        deps.writeStdout(
+          `fix ouro PATH: ${installResult.pathResolution.detail}; ` +
+          `fix: ${installResult.pathResolution.remediation}`,
+        )
       }
     } catch (error) {
       emitNervesEvent({
@@ -2466,6 +2430,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       bundlesRoot: deps.bundlesRoot ?? getAgentBundlesRoot(),
       secretsRoot: deps.secretsRoot ?? path.join(os.homedir(), ".agentsecrets"),
       homedir: os.homedir(),
+      envPath: process.env.PATH ?? "",
     }
     const doctorResult = await runDoctorChecks(doctorDeps)
     const output = formatDoctorOutput(doctorResult)

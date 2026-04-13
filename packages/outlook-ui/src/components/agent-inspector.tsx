@@ -7,7 +7,7 @@ import { SessionsTab } from "./tabs/sessions"
 import { WorkTab } from "./tabs/work"
 import { ConnectionsTab } from "./tabs/connections"
 import { InnerTab } from "./tabs/inner"
-import { MemoryTab } from "./tabs/memory"
+import { NotesTab } from "./tabs/notes"
 import { RuntimeTab } from "./tabs/runtime"
 import type { OutlookAgentView, OutlookDeskPrefs } from "../contracts"
 
@@ -25,7 +25,7 @@ const TABS: Array<{ id: TabId; label: string }> = [
   { id: "work", label: "Work" },
   { id: "connections", label: "Connections" },
   { id: "inner", label: "Inner" },
-  { id: "memory", label: "Diary & Journal" },
+  { id: "notes", label: "Diary & Journal" },
   { id: "runtime", label: "Runtime" },
 ]
 
@@ -129,7 +129,7 @@ export function AgentInspector({ agentName, view, deskPrefs, refreshGeneration, 
           {activeTab === "work" && <WorkTab agentName={agentName} view={view} focus={focusTarget} onFocusConsumed={consumeFocus} refreshGeneration={refreshGeneration} />}
           {activeTab === "connections" && <ConnectionsTab agentName={agentName} focus={focusTarget} onFocusConsumed={consumeFocus} refreshGeneration={refreshGeneration} />}
           {activeTab === "inner" && <InnerTab agentName={agentName} view={view} refreshGeneration={refreshGeneration} />}
-          {activeTab === "memory" && <MemoryTab agentName={agentName} refreshGeneration={refreshGeneration} />}
+          {activeTab === "notes" && <NotesTab agentName={agentName} refreshGeneration={refreshGeneration} />}
           {activeTab === "runtime" && <RuntimeTab agentName={agentName} view={view} refreshGeneration={refreshGeneration} />}
         </div>
       </div>

@@ -58,7 +58,7 @@ export async function handleSurface(input: HandleSurfaceInput): Promise<string> 
 
   // On successful routing with delegationId:
   // 1. Advance obligation to "returned" (disk FIRST — crash safety)
-  // 2. Dequeue from in-memory queue (AFTER obligation advance)
+  // 2. Dequeue from process-local queue (AFTER obligation advance)
   if (delegationId && queueItem && result.status !== "failed") {
     if (queueItem.obligationId) {
       advanceObligation(queueItem.obligationId, {

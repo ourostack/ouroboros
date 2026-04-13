@@ -2,6 +2,45 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.344",
+      "changes": [
+        "Provider readiness groundwork now has stable machine identity stored at `~/.ouro-cli/machine.json`, preserving random machine IDs across hostname changes while recording aliases for diagnostics.",
+        "Per-agent provider bindings and readiness can now be read, validated, written, and bootstrapped in `<agent>.ouro/state/providers.json` using explicit `outward` and `inner` lanes without storing credentials in bundle state."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.343",
+      "changes": [
+        "Kept-notes preflight now blocks provider turns long enough to search diary, journal, and friend-note candidates, then injects only first-person found/fuzzy notes under source-specific headings.",
+        "Tooling, MCP, Outlook, session-tail, and note-search surfaces now use diary/journal/notes naming, including `search_notes` and `tools-notes.ts`, while old saved-session tool names migrate quietly."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.342",
+      "changes": [
+        "The nerves coverage gate now writes append-only per-test NDJSON records across Vitest workers, emits a redaction-safe heartbeat for every executed test, fails closed when per-test capture is missing or malformed, and scopes start/end pairing to explicit process lifecycle events so the full-suite audit is truthful instead of passable through empty artifacts."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.341",
+      "changes": [
+        "`ouro up` and `ouro doctor` now detect when PATH resolves `ouro` to a stale external launcher before the managed `~/.ouro-cli/bin/ouro` wrapper, then print exact path-specific remediation instead of leaving users stuck on an older shim."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.340",
+      "changes": [
+        "Prompt tool lists now match runtime flow-tool availability: `ponder` and the channel terminal tool remain visible even when tool choice is optional, custom tool subsets keep required flow tools, and group/reaction turns list `observe` when runtime exposes it."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.339",
+      "changes": [
+        "`ouro config model` now validates GitHub Copilot model probes through the shared provider ping module, keeping provider health request shapes in one place.",
+        "Provider startup checks, auth verification, provider discovery, and model validation now share `src/heart/provider-ping.ts` as the canonical home for live provider ping logic."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.338",
       "changes": [
         "fix(mind): instruct agent not to echo timestamp tags in responses"

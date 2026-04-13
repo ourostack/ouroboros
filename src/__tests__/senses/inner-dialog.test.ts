@@ -162,8 +162,8 @@ describe("inner dialog runtime", () => {
       callbacks?.onModelStreamStart?.()
       callbacks?.onTextChunk?.("inner-dialog text chunk")
       callbacks?.onReasoningChunk?.("inner-dialog reasoning chunk")
-      callbacks?.onToolStart?.("memory_search")
-      callbacks?.onToolEnd?.("memory_search", true)
+      callbacks?.onToolStart?.("search_notes")
+      callbacks?.onToolEnd?.("search_notes", true)
       callbacks?.onError?.(new Error("inner-dialog synthetic callback error"))
       return { usage: undefined }
     })
@@ -333,18 +333,18 @@ describe("inner dialog runtime", () => {
     expect(msg).toContain("a task needs my attention.")
     expect(msg).toContain("## task: habits/daily-standup")
     expect(msg).toContain("Summarize yesterday.")
-    expect(msg).toContain("last i remember: standup sent yesterday")
+    expect(msg).toContain("last checkpoint: standup sent yesterday")
   })
 
   it("shows fallback when task file is not found", () => {
     const msg = buildTaskTriggeredMessage("habits/missing", "", "some checkpoint")
     expect(msg).toContain("(task file not found)")
-    expect(msg).toContain("last i remember: some checkpoint")
+    expect(msg).toContain("last checkpoint: some checkpoint")
   })
 
   it("omits checkpoint line when no checkpoint is provided", () => {
     const msg = buildTaskTriggeredMessage("ongoing/review", "task body here")
-    expect(msg).not.toContain("last i remember")
+    expect(msg).not.toContain("last checkpoint")
   })
 
   it("omits fallback checkpoint boilerplate from instinct messages", () => {
@@ -354,13 +354,13 @@ describe("inner dialog runtime", () => {
       { checkpoint: "no prior checkpoint recorded" },
     )
     expect(msg).toContain("Instinct: review pending tasks.")
-    expect(msg).not.toContain("last i remember")
+    expect(msg).not.toContain("last checkpoint")
     expect(msg).not.toContain("no prior checkpoint recorded")
   })
 
   it("omits fallback checkpoint boilerplate from task-triggered messages", () => {
     const msg = buildTaskTriggeredMessage("ongoing/review", "task body here", "no prior checkpoint recorded")
-    expect(msg).not.toContain("last i remember")
+    expect(msg).not.toContain("last checkpoint")
     expect(msg).not.toContain("no prior checkpoint recorded")
   })
 
@@ -1136,7 +1136,7 @@ describe("inner dialog runtime", () => {
     const content = String(input.messages[0].content)
     expect(content).toContain("Instinct: review pending tasks.")
     expect(content).not.toContain("no prior checkpoint recorded")
-    expect(content).toContain("last i remember: I will rest until heartbeat.")
+    expect(content).toContain("last checkpoint: I will rest until heartbeat.")
   })
 
   it("includes checkpoint context in instinct message on resumed session with reason instinct", async () => {
@@ -1159,7 +1159,7 @@ describe("inner dialog runtime", () => {
     const input = mockHandleInboundTurn.mock.calls[0][0]
     const content = String(input.messages[0].content)
     expect(content).toContain("what was i working on?")
-    expect(content).toContain("last i remember:")
+    expect(content).toContain("last checkpoint:")
     expect(content).toContain("Unit 2b editing src/repertoire/tools.ts")
   })
 
@@ -1698,7 +1698,7 @@ describe("inner dialog runtime", () => {
     expect(content).toContain("a task needs my attention.")
     expect(content).toContain("## task: habits/daily-standup")
     expect(content).toContain("Summarize yesterday's work.")
-    expect(content).toContain("last i remember: standup sent")
+    expect(content).toContain("last checkpoint: standup sent")
   })
 
   it("shows task-not-found fallback when task file is missing", async () => {
@@ -2208,8 +2208,8 @@ describe("inner dialog runtime", () => {
           role: "assistant",
           content: null,
           tool_calls: [
-            { id: "tc_1", type: "function", function: { name: "memory_search", arguments: "{}" } },
-            { id: "tc_2", type: "function", function: { name: "memory_search", arguments: "{}" } },
+            { id: "tc_1", type: "function", function: { name: "search_notes", arguments: "{}" } },
+            { id: "tc_2", type: "function", function: { name: "search_notes", arguments: "{}" } },
           ],
         },
       ],
@@ -2223,7 +2223,7 @@ describe("inner dialog runtime", () => {
     const nervesCall = mockEmitNervesEvent.mock.calls.find(
       (call: any[]) => call[0].event === "senses.inner_dialog_turn",
     )
-    expect(nervesCall![0].meta.toolCalls).toEqual(["memory_search"])
+    expect(nervesCall![0].meta.toolCalls).toEqual(["search_notes"])
   })
 
   // ── Exact-origin routing tests ──────────────────────────────────

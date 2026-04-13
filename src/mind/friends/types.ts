@@ -1,5 +1,5 @@
 // Context kernel type definitions.
-// FriendRecord (merged identity + memory), channel capabilities, and resolved context.
+// FriendRecord (merged identity + notes), channel capabilities, and resolved context.
 
 import { emitNervesEvent } from "../../nerves/runtime"
 
@@ -78,7 +78,7 @@ export interface AgentMeta {
 
 // -- Friend Record --
 // The single merged type for a person the agent interacts with.
-// Combines identity (who they are) and memory (what the agent knows about them).
+// Combines identity (who they are) and notes (what the agent has written about them).
 // Stored as a unified JSON record in bundle `friends/`.
 export interface FriendRecord {
   id: string                              // stable UUID

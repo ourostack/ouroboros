@@ -4294,6 +4294,41 @@ describe("specialist integration (zero agents -> serpent guide)", () => {
     expect(callOrder.indexOf("syncGlobalOuroBotWrapper")).toBeLessThan(callOrder.indexOf("runSerpentGuide"))
   })
 
+  it("surfaces exact remediation when PATH resolves ouro to a stale external launcher", async () => {
+    const writeStdout = vi.fn()
+    const installOuroCommand = vi.fn(() => ({
+      installed: false,
+      scriptPath: "/home/test/.ouro-cli/bin/ouro",
+      pathReady: true,
+      shellProfileUpdated: null,
+      repairedOldLauncher: false,
+      pathResolution: {
+        status: "shadowed" as const,
+        expectedPath: "/home/test/.ouro-cli/bin/ouro",
+        resolvedPath: "/opt/homebrew/bin/ouro",
+        detail: "PATH resolves ouro to /opt/homebrew/bin/ouro before /home/test/.ouro-cli/bin/ouro",
+        remediation: "move /home/test/.ouro-cli/bin before /opt/homebrew/bin in PATH, or remove/replace /opt/homebrew/bin/ouro after confirming it is the stale ouro launcher",
+      },
+    }))
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({ ok: true })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout,
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      listDiscoveredAgents: vi.fn(async () => []),
+      runSerpentGuide: vi.fn(async () => null),
+      installOuroCommand,
+    }
+
+    await runOuroCli([], deps)
+
+    expect(writeStdout).toHaveBeenCalledWith(expect.stringContaining("fix ouro PATH: PATH resolves ouro to /opt/homebrew/bin/ouro"))
+    expect(writeStdout).toHaveBeenCalledWith(expect.stringContaining("move /home/test/.ouro-cli/bin before /opt/homebrew/bin in PATH"))
+  })
+
   it("handles installOuroCommand failure gracefully during system setup", async () => {
     const installOuroCommand = vi.fn(() => { throw new Error("permission denied") })
     const runSerpentGuide = vi.fn(async () => "GracefulBot")
