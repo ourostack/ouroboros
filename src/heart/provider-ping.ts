@@ -13,7 +13,7 @@ import { createAnthropicProviderRuntime } from "./providers/anthropic"
 import { createAzureProviderRuntime } from "./providers/azure"
 import { createMinimaxProviderRuntime } from "./providers/minimax"
 import { createOpenAICodexProviderRuntime } from "./providers/openai-codex"
-import { createGithubCopilotProviderRuntime } from "./providers/github-copilot"
+import { classifyGithubCopilotError, createGithubCopilotProviderRuntime } from "./providers/github-copilot"
 import { loadAgentSecrets } from "./auth/auth-flow"
 import { getDefaultModelForProvider } from "./provider-models"
 import { emitNervesEvent } from "../nerves/runtime"
@@ -107,6 +107,28 @@ export function sanitizeErrorMessage(message: string): string {
   return message
 }
 
+async function readGithubCopilotModelPingError(response: Response): Promise<string> {
+  let detail = `HTTP ${response.status}`
+  try {
+    const json = await response.json() as Record<string, unknown>
+    /* v8 ignore start -- error format parsing: all branches tested via config-models.test.ts @preserve */
+    if (typeof json.error === "string") detail = json.error
+    else if (typeof json.error === "object" && json.error !== null) {
+      const errObj = json.error as Record<string, unknown>
+      if (typeof errObj.message === "string") detail = errObj.message
+    }
+    else if (typeof json.message === "string") detail = json.message
+    /* v8 ignore stop */
+  } catch {
+    // response body not JSON — keep HTTP status
+  }
+  return detail
+}
+
+function createStatusError(message: string, status: number): Error {
+  return Object.assign(new Error(message), { status })
+}
+
 export async function pingGithubCopilotModel(
   baseUrl: string,
   token: string,
@@ -119,35 +141,33 @@ export async function pingGithubCopilotModel(
   const body = isClaude
     ? JSON.stringify(createChatPingRequest(model))
     : JSON.stringify(createResponsePingRequest(model))
-  try {
-    const response = await fetchImpl(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body,
-    })
-    if (response.ok) return { ok: true }
-    let detail = `HTTP ${response.status}`
-    try {
-      const json = await response.json() as Record<string, unknown>
-      /* v8 ignore start -- error format parsing: all branches tested via config-models.test.ts @preserve */
-      if (typeof json.error === "string") detail = json.error
-      else if (typeof json.error === "object" && json.error !== null) {
-        const errObj = json.error as Record<string, unknown>
-        if (typeof errObj.message === "string") detail = errObj.message
+
+  const attempt = await runProviderAttempt({
+    operation: "model-ping",
+    provider: "github-copilot",
+    model,
+    classifyError: classifyGithubCopilotError,
+    policy: {
+      maxAttempts: 3,
+      baseDelayMs: 0,
+      backoffMultiplier: 2,
+    },
+    run: async () => {
+      const response = await fetchImpl(url, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body,
+      })
+      if (!response.ok) {
+        throw createStatusError(await readGithubCopilotModelPingError(response), response.status)
       }
-      else if (typeof json.message === "string") detail = json.message
-      /* v8 ignore stop */
-    } catch {
-      // response body not JSON — keep HTTP status
-    }
-    return { ok: false, error: detail }
-  } catch (err) {
-    /* v8 ignore next -- defensive: fetch errors are always Error instances @preserve */
-    return { ok: false, error: err instanceof Error ? err.message : String(err) }
-  }
+    },
+  })
+
+  return attempt.ok ? { ok: true } : { ok: false, error: attempt.error.message }
 }
 
 function hasEmptyCredentials(provider: AgentProvider, config: ProviderConfig): boolean {
