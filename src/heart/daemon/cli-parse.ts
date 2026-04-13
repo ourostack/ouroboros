@@ -6,6 +6,7 @@
  */
 
 import type { AgentProvider } from "../identity"
+import type { ProviderLane } from "../provider-state"
 import { isIdentityProvider } from "../../mind/friends/types"
 import type { Facing } from "../../mind/friends/channel"
 import type { TrustLevel } from "../../mind/friends/types"
@@ -34,6 +35,25 @@ export function extractFacingFlag(args: string[]): { facing?: Facing; rest: stri
   return { facing: value, rest }
 }
 
+export function facingToProviderLane(facing: Facing): ProviderLane {
+  return facing === "human" ? "outward" : "inner"
+}
+
+function isProviderLane(value: unknown): value is ProviderLane {
+  return value === "outward" || value === "inner"
+}
+
+function extractLaneFlag(args: string[]): { lane?: ProviderLane; rest: string[] } {
+  const idx = args.indexOf("--lane")
+  if (idx === -1 || idx + 1 >= args.length) return { rest: args }
+  const value = args[idx + 1]
+  if (!isProviderLane(value)) {
+    throw new Error("--lane must be 'outward' or 'inner'")
+  }
+  const rest = [...args.slice(0, idx), ...args.slice(idx + 2)]
+  return { lane: value, rest }
+}
+
 export function isAgentProvider(value: unknown): value is AgentProvider {
   return value === "azure" || value === "anthropic" || value === "minimax" || value === "openai-codex" || value === "github-copilot"
 }
@@ -44,6 +64,9 @@ export function usage(): string {
     "  ouro [up] [--no-repair]",
     "  ouro dev [--repo-path <path>] [--clone [--clone-path <path>]]",
     "  ouro stop|down|status|logs|hatch",
+    "  ouro status --agent <name>",
+    "  ouro use --agent <name> --lane outward|inner --provider <provider> --model <model> [--force]",
+    "  ouro check --agent <name> --lane outward|inner",
     "  ouro outlook [--json]",
     "  ouro -v|--version",
     "  ouro config model --agent <name> <model-name>",
@@ -417,6 +440,65 @@ function parseAuthCommand(args: string[]): OuroCliCommand {
   return provider ? { kind: "auth.run", agent, provider } : { kind: "auth.run", agent }
 }
 
+function parseProviderUseCommand(args: string[]): OuroCliCommand {
+  const { agent, rest: afterAgent } = extractAgentFlag(args)
+  const { facing, rest: afterFacing } = extractFacingFlag(afterAgent)
+  const { lane, rest } = extractLaneFlag(afterFacing)
+  let provider: AgentProvider | undefined
+  let model: string | undefined
+  let force = false
+
+  for (let i = 0; i < rest.length; i += 1) {
+    const token = rest[i]
+    if (token === "--provider") {
+      const value = rest[i + 1]
+      if (!isAgentProvider(value)) throw new Error(`Usage: ouro use --agent <name> --lane outward|inner --provider <provider> --model <model>`)
+      provider = value
+      i += 1
+      continue
+    }
+    if (token === "--model") {
+      model = rest[i + 1]
+      i += 1
+      continue
+    }
+    if (token === "--force") {
+      force = true
+      continue
+    }
+  }
+
+  const resolvedLane = lane ?? (facing ? facingToProviderLane(facing) : undefined)
+  if (!agent || !resolvedLane || !provider || !model) {
+    throw new Error("Usage: ouro use --agent <name> --lane outward|inner --provider <provider> --model <model> [--force]")
+  }
+  return {
+    kind: "provider.use",
+    agent,
+    lane: resolvedLane,
+    provider,
+    model,
+    ...(force ? { force: true } : {}),
+    ...(facing ? { legacyFacing: facing } : {}),
+  }
+}
+
+function parseProviderCheckCommand(args: string[]): OuroCliCommand {
+  const { agent, rest: afterAgent } = extractAgentFlag(args)
+  const { facing, rest: afterFacing } = extractFacingFlag(afterAgent)
+  const { lane, rest } = extractLaneFlag(afterFacing)
+  const resolvedLane = lane ?? (facing ? facingToProviderLane(facing) : undefined)
+  if (!agent || !resolvedLane || rest.length > 0) {
+    throw new Error("Usage: ouro check --agent <name> --lane outward|inner")
+  }
+  return {
+    kind: "provider.check",
+    agent,
+    lane: resolvedLane,
+    ...(facing ? { legacyFacing: facing } : {}),
+  }
+}
+
 function parseReminderCommand(args: string[]): OuroCliCommand {
   const { agent, rest: cleaned } = extractAgentFlag(args)
   const [sub, ...rest] = cleaned
@@ -736,7 +818,16 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "rollback") return { kind: "rollback", ...(second ? { version: second } : {}) }
   if (head === "versions") return { kind: "versions" }
   if (head === "stop" || head === "down") return { kind: "daemon.stop" }
-  if (head === "status") return { kind: "daemon.status" }
+  if (head === "status") {
+    const { agent, rest } = extractAgentFlag(args.slice(1))
+    if (agent) {
+      if (rest.length > 0) throw new Error("Usage: ouro status --agent <name>")
+      return { kind: "provider.status", agent }
+    }
+    return { kind: "daemon.status" }
+  }
+  if (head === "use") return parseProviderUseCommand(args.slice(1))
+  if (head === "check") return parseProviderCheckCommand(args.slice(1))
   if (head === "logs") {
     if (second === "prune") return { kind: "daemon.logs.prune" }
     return { kind: "daemon.logs" }

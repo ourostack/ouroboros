@@ -6,6 +6,7 @@
  */
 
 import type { AgentProvider } from "../identity"
+import type { ProviderLane } from "../provider-state"
 import type { Facing } from "../../mind/friends/channel"
 import type { TrustLevel } from "../../mind/friends/types"
 import type { DaemonCommand, DaemonResponse } from "./daemon"
@@ -24,6 +25,9 @@ export type OuroCliCommand =
   | { kind: "daemon.logs" }
   | { kind: "daemon.logs.prune" }
   | { kind: "outlook"; json?: boolean }
+  | { kind: "provider.use"; agent: string; lane: ProviderLane; provider: AgentProvider; model: string; force?: boolean; legacyFacing?: Facing }
+  | { kind: "provider.check"; agent: string; lane: ProviderLane; legacyFacing?: Facing }
+  | { kind: "provider.status"; agent: string }
   | { kind: "auth.run"; agent: string; provider?: AgentProvider }
   | { kind: "auth.verify"; agent: string; provider?: AgentProvider }
   | { kind: "auth.switch"; agent: string; provider: AgentProvider; facing?: Facing }
@@ -188,6 +192,7 @@ export type ThoughtsCliCommand = Extract<OuroCliCommand, { kind: "thoughts" }>
 export type AuthCliCommand = Extract<OuroCliCommand, { kind: "auth.run" }>
 export type AuthVerifyCliCommand = Extract<OuroCliCommand, { kind: "auth.verify" }>
 export type AuthSwitchCliCommand = Extract<OuroCliCommand, { kind: "auth.switch" }>
+export type ProviderCliCommand = Extract<OuroCliCommand, { kind: "provider.use" } | { kind: "provider.check" } | { kind: "provider.status" }>
 export type ChangelogCliCommand = Extract<OuroCliCommand, { kind: "changelog" }>
 export type ConfigModelCliCommand = Extract<OuroCliCommand, { kind: "config.model" }>
 export type ConfigModelsCliCommand = Extract<OuroCliCommand, { kind: "config.models" }>

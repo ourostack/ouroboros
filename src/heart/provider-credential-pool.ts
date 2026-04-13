@@ -144,7 +144,7 @@ function copyKnownFields(
   return result
 }
 
-function splitLegacyProviderConfig(
+export function splitProviderCredentialFields(
   provider: AgentProvider,
   rawConfig: Record<string, unknown>,
 ): { credentials: Record<string, string | number>; config: Record<string, string | number> } {
@@ -393,7 +393,7 @@ export function readLegacyAgentProviderCredentials(
     if (!legacyProviderHasCredentialData(providerKey, rawProviderConfig)) {
       continue
     }
-    const { credentials, config } = splitLegacyProviderConfig(providerKey, rawProviderConfig)
+    const { credentials, config } = splitProviderCredentialFields(providerKey, rawProviderConfig)
     candidates.push({
       provider: providerKey,
       credentials,
