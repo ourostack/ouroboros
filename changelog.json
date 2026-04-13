@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.350",
+      "changes": [
+        "`ouro up`, hatch, and doctor now use the same local provider-state and machine-credential readiness path: new agents get bootstrapped `state/providers.json`, startup checks ping the selected lane/provider/model with machine-wide credentials, readiness is persisted per lane, legacy per-agent secrets migrate into `~/.agentsecrets/providers.json`, and doctor checks provider-pool/state safety without exposing secrets."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.349",
       "changes": [
         "`ouro use`, `ouro check`, provider-scoped `ouro status --agent`, and machine-pool `ouro auth` now operate on machine-local provider state and credentials, with safe provenance, explicit lane/provider/model repair guidance, and legacy `auth switch`/`config model` compatibility routed through `state/providers.json` instead of mutating synced `agent.json`."
