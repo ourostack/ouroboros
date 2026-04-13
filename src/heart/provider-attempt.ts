@@ -33,10 +33,18 @@ export interface RunProviderAttemptInput<T> {
   classifyError: (error: Error) => ProviderErrorClassification
   policy?: Partial<ProviderAttemptPolicy>
   sleep?: (delayMs: number) => Promise<void>
+  onRetry?: (record: ProviderAttemptRecord, maxAttempts: number) => void | Promise<void>
 }
 
 interface HttpError extends Error {
   status?: number
+}
+
+export class ProviderAttemptAbortError extends Error {
+  constructor(message = "provider attempt aborted") {
+    super(message)
+    this.name = "ProviderAttemptAbortError"
+  }
 }
 
 export const DEFAULT_PROVIDER_ATTEMPT_POLICY: ProviderAttemptPolicy = {
@@ -103,11 +111,12 @@ export async function runProviderAttempt<T>(input: RunProviderAttemptInput<T>): 
       })
       return { ok: true, value, attempts }
     } catch (caught) {
+      if (caught instanceof ProviderAttemptAbortError) throw caught
       const error = toError(caught)
       const classification = classify(caught, input.classifyError)
       const willRetry = attempt < maxAttempts
       const delayMs = willRetry ? delayForAttempt(policy, attempt) : undefined
-      attempts.push({
+      const record: ProviderAttemptRecord = {
         attempt,
         provider: input.provider,
         model: input.model,
@@ -118,7 +127,8 @@ export async function runProviderAttempt<T>(input: RunProviderAttemptInput<T>): 
         httpStatus: httpStatus(error),
         willRetry,
         ...(delayMs !== undefined ? { delayMs } : {}),
-      })
+      }
+      attempts.push(record)
 
       if (!willRetry) {
         emitNervesEvent({
@@ -157,6 +167,7 @@ export async function runProviderAttempt<T>(input: RunProviderAttemptInput<T>): 
           delayMs: retryDelayMs,
         },
       })
+      await input.onRetry?.(record, maxAttempts)
       await wait(retryDelayMs)
     }
   }
