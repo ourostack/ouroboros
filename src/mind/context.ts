@@ -275,6 +275,10 @@ export function loadSession(filePath: string): SessionData | null {
   }
 }
 
+/**
+ * Synchronous post-turn: sanitize, trim (mutates messages in place), and persist to disk.
+ * For non-blocking persist, use postTurnTrim() + deferPostTurnPersist() instead.
+ */
 export function postTurn(
   messages: OpenAI.ChatCompletionMessageParam[],
   sessPath: string,
@@ -282,6 +286,27 @@ export function postTurn(
   hooks?: PostTurnHooks,
   state?: SessionContinuityState,
 ): void {
+  const prepared = postTurnTrim(messages, usage, hooks)
+  postTurnPersist(sessPath, prepared, usage, state)
+}
+
+export interface PostTurnPrepared {
+  currentMessages: OpenAI.ChatCompletionMessageParam[]
+  trimmedMessages: OpenAI.ChatCompletionMessageParam[]
+  currentIngressTimes: (string | null)[]
+  maxTokens: number
+  contextMargin: number
+}
+
+/**
+ * Synchronous phase: run hooks, sanitize, trim, and mutate the messages array in place.
+ * Returns the data needed by postTurnPersist / deferPostTurnPersist.
+ */
+export function postTurnTrim(
+  messages: OpenAI.ChatCompletionMessageParam[],
+  usage?: UsageData,
+  hooks?: PostTurnHooks,
+): PostTurnPrepared {
   const preTrimMessages = [...messages]
   if (hooks?.beforeTrim) {
     try {
@@ -299,29 +324,68 @@ export function postTurn(
     }
   }
   const { maxTokens, contextMargin } = getContextConfig()
-  // Capture ingress times before sanitization strips _ingressAt
   const currentIngressTimes = messages.map(getIngressTime)
   const currentMessages = sanitizeProviderMessages(messages)
-  const trimmed = trimMessages(currentMessages, maxTokens, contextMargin, usage?.input_tokens)
-  messages.splice(0, messages.length, ...trimmed)
+  const trimmedMessages = trimMessages(currentMessages, maxTokens, contextMargin, usage?.input_tokens)
+  messages.splice(0, messages.length, ...trimmedMessages)
+  return { currentMessages, trimmedMessages, currentIngressTimes, maxTokens, contextMargin }
+}
+
+/**
+ * Synchronous persist: load existing envelope, build canonical envelope, write to disk.
+ */
+export function postTurnPersist(
+  sessPath: string,
+  prepared: PostTurnPrepared,
+  usage?: UsageData,
+  state?: SessionContinuityState,
+): void {
   const existing = loadSessionEnvelopeFile(sessPath)
   const previousMessages = existing ? projectProviderMessages(existing) : []
   const envelope = buildCanonicalSessionEnvelope({
     existing,
     previousMessages,
-    currentMessages,
-    trimmedMessages: trimmed,
-    currentIngressTimes,
+    currentMessages: prepared.currentMessages,
+    trimmedMessages: prepared.trimmedMessages,
+    currentIngressTimes: prepared.currentIngressTimes,
     recordedAt: new Date().toISOString(),
     lastUsage: usage ?? null,
     state,
     projectionBasis: {
-      maxTokens,
-      contextMargin,
+      maxTokens: prepared.maxTokens,
+      contextMargin: prepared.contextMargin,
       inputTokens: usage?.input_tokens ?? null,
     },
   })
   writeSessionEnvelope(sessPath, envelope)
+}
+
+/**
+ * Deferred persist: same as postTurnPersist but runs on the next event loop tick.
+ * Returns a promise that resolves when the persist completes.
+ */
+export function deferPostTurnPersist(
+  sessPath: string,
+  prepared: PostTurnPrepared,
+  usage?: UsageData,
+  state?: SessionContinuityState,
+): Promise<void> {
+  return new Promise((resolve) => {
+    setImmediate(() => {
+      try {
+        postTurnPersist(sessPath, prepared, usage, state)
+      } catch (err) {
+        emitNervesEvent({
+          level: "warn",
+          component: "mind",
+          event: "mind.deferred_persist_error",
+          message: "deferred session persist failed",
+          meta: { error: err instanceof Error ? err.message : String(err) },
+        })
+      }
+      resolve()
+    })
+  })
 }
 
 export function deleteSession(filePath: string): void {
