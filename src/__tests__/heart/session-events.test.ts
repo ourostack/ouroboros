@@ -1649,6 +1649,7 @@ describe("session events", () => {
       // Should not throw
       expect(() => appendEvictedToArchive(badPath, [event])).not.toThrow()
     })
+
   })
 
   describe("loadFullEventHistory", () => {

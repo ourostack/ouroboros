@@ -1009,6 +1009,7 @@ export function appendEvictedToArchive(sessPath: string, evictedEvents: SessionE
       meta: {
         archivePath,
         eventCount: evictedEvents.length,
+        /* v8 ignore next -- defensive: Node fs always throws Error instances @preserve */
         error: err instanceof Error ? err.message : String(err),
       },
     })
