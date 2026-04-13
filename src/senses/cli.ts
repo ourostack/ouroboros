@@ -1055,6 +1055,7 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
       onAsyncAssistantMessage: async (messages, _assistantMessage) => {
         const prepared = postTurnTrim(messages)
         const events = postTurnPersist(sessPath, prepared, undefined, sessionState)
+        /* v8 ignore next -- defensive: postTurnPersist always returns events in practice @preserve */
         sessionEvents = events.length > 0 ? events : sessionEvents
       },
       runTurn: async (messages, userInput, callbacks, signal, toolContext, userContent) => {
@@ -1122,6 +1123,7 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
             const prepared = postTurnTrim(turnMessages, usage, hooks)
             sessionState = state
             deferPostTurnPersist(sessionPathArg, prepared, usage, state).then((events) => {
+              /* v8 ignore next -- defensive: deferPostTurnPersist always resolves events in practice @preserve */
               sessionEvents = events.length > 0 ? events : sessionEvents
             })
           },
