@@ -18,6 +18,15 @@ const mocks = vi.hoisted(() => ({
   deleteSession: vi.fn(),
   trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
   postTurn: vi.fn(),
+  postTurnPersist: vi.fn().mockReturnValue([]),
+  postTurnTrim: vi.fn().mockImplementation((msgs: any) => ({
+    currentMessages: [...msgs],
+    trimmedMessages: [...msgs],
+    currentIngressTimes: {},
+    maxTokens: 80000,
+    contextMargin: 20,
+  })),
+  deferPostTurnPersist: vi.fn().mockResolvedValue([]),
   createCommandRegistry: vi.fn(),
   registerDefaultCommands: vi.fn(),
   parseSlashCommand: vi.fn().mockReturnValue(null),
@@ -161,6 +170,9 @@ vi.mock("../../mind/context", () => ({
   deleteSession: (...a: any[]) => mocks.deleteSession(...a),
   trimMessages: (...a: any[]) => mocks.trimMessages(...a),
   postTurn: (...a: any[]) => mocks.postTurn(...a),
+  postTurnPersist: (...a: any[]) => mocks.postTurnPersist(...a),
+  postTurnTrim: (...a: any[]) => mocks.postTurnTrim(...a),
+  deferPostTurnPersist: (...a: any[]) => mocks.deferPostTurnPersist(...a),
 }))
 vi.mock("../../mind/pending", () => ({
   getPendingDir: vi.fn(() => "/mock/pending"),
@@ -324,6 +336,15 @@ function resetMocks() {
   mocks.trimMessages.mockReset().mockImplementation((msgs: any) => [...msgs])
   mocks.buildSystem.mockReset().mockResolvedValue("system prompt")
   mocks.postTurn.mockReset()
+  mocks.postTurnPersist.mockReset().mockReturnValue([])
+  mocks.postTurnTrim.mockReset().mockImplementation((msgs: any) => ({
+    currentMessages: [...msgs],
+    trimmedMessages: [...msgs],
+    currentIngressTimes: {},
+    maxTokens: 80000,
+    contextMargin: 20,
+  }))
+  mocks.deferPostTurnPersist.mockReset().mockResolvedValue([])
   mocks.registerDefaultCommands.mockReset()
   mocks.parseSlashCommand.mockReset().mockReturnValue(null)
   mocks.getToolChoiceRequired.mockReset().mockReturnValue(false)
@@ -1554,15 +1575,18 @@ describe("agent.ts main() - pipeline integration", () => {
 
     await pipelineInput.runAgentOptions.toolContext.codingFeedback.send("codex coding-001 completed: hi")
 
-    expect(mocks.postTurn).toHaveBeenCalledWith(
+    // onAsyncAssistantMessage now uses postTurnTrim + postTurnPersist (no loadSession readback)
+    expect(mocks.postTurnTrim).toHaveBeenCalledWith(
       expect.arrayContaining([
         expect.objectContaining({
           role: "assistant",
           content: "codex coding-001 completed: hi",
         }),
       ]),
+    )
+    expect(mocks.postTurnPersist).toHaveBeenCalledWith(
       "/tmp/test-session.json",
-      undefined,
+      expect.any(Object),
       undefined,
       undefined,
     )
@@ -1617,11 +1641,11 @@ describe("agent.ts main() - pipeline integration", () => {
 
     // "first" + "second" + "/exit" = 3 pipeline calls
     expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(3)
-    expect(mocks.postTurn).toHaveBeenNthCalledWith(
-      1,
-      expect.any(Array),
+    // Pipeline postTurn callback now uses postTurnTrim + deferPostTurnPersist (no loadSession readback)
+    expect(mocks.postTurnTrim).toHaveBeenCalled()
+    expect(mocks.deferPostTurnPersist).toHaveBeenCalledWith(
       "/tmp/test-session.json",
-      undefined,
+      expect.any(Object),
       undefined,
       { mustResolveBeforeHandoff: true },
     )
