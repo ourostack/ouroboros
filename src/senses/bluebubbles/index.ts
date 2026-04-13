@@ -18,6 +18,7 @@ import { buildSystem } from "../../mind/prompt"
 import { getSharedMcpManager } from "../../repertoire/mcp-manager"
 // getPhrases removed — no longer needed after debug-activity cleanup
 import { emitNervesEvent } from "../../nerves/runtime"
+import { getProactiveInternalContentBlockReason, emitProactiveInternalContentBlocked } from "../proactive-content-guard"
 import type { BlueBubblesReplyTargetSelection } from "../../repertoire/tools-base"
 import {
   BlueBubblesIgnoredEventError,
@@ -142,7 +143,7 @@ export interface ProactiveBlueBubblesSessionSendParams {
 
 export interface ProactiveBlueBubblesSessionSendResult {
   delivered: boolean
-  reason?: "friend_not_found" | "trust_skip" | "missing_target" | "send_error" | "group_blocked"
+  reason?: "friend_not_found" | "trust_skip" | "missing_target" | "send_error" | "group_blocked" | "internal_content_blocked"
 }
 
 const defaultDeps: RuntimeDeps = {
@@ -1559,6 +1560,18 @@ export async function sendProactiveBlueBubblesMessageToSession(
   }
   /* v8 ignore stop */
 
+  const internalContentBlockReason = getProactiveInternalContentBlockReason(params.text)
+  if (internalContentBlockReason) {
+    emitProactiveInternalContentBlocked({
+      friendId: params.friendId,
+      sessionKey: params.sessionKey,
+      reason: internalContentBlockReason,
+      source: "session_send",
+      intent: params.intent ?? "generic_outreach",
+    })
+    return { delivered: false, reason: "internal_content_blocked" }
+  }
+
   try {
     await client.sendText({ chat, text: params.text })
     emitNervesEvent({
@@ -1663,6 +1676,18 @@ export async function drainAndSendPendingBlueBubbles(
     if (!messageText.trim()) {
       result.skipped++
       try { fs.unlinkSync(filePath) } catch { /* ignore */ }
+      continue
+    }
+
+    const internalBlockReason = getProactiveInternalContentBlockReason(messageText)
+    if (internalBlockReason) {
+      result.skipped++
+      try { fs.unlinkSync(filePath) } catch { /* ignore */ }
+      emitProactiveInternalContentBlocked({
+        friendId,
+        reason: internalBlockReason,
+        source: "pending_drain",
+      })
       continue
     }
 

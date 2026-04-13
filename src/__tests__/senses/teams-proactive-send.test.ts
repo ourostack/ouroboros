@@ -797,6 +797,35 @@ describe("drainAndSendPendingTeams", () => {
       }),
     )
   })
+
+  it("skips pending messages that contain internal content", async () => {
+    const friend = makeFriend()
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(friend),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+    const botApi = makeBotApi()
+
+    const filePath = writePendingFile(pendingRoot, "friend-uuid-1", "session", {
+      from: "testagent",
+      friendId: "friend-uuid-1",
+      channel: "teams",
+      content: "heartbeat check-in: same state, nothing new",
+      timestamp: Date.now(),
+    })
+
+    const teams = await loadTeams()
+    const result = await teams.drainAndSendPendingTeams(friendStore as any, botApi, pendingRoot)
+
+    expect(result.skipped).toBe(1)
+    expect(result.sent).toBe(0)
+    expect(botApi._mocks.conversationsCreate).not.toHaveBeenCalled()
+    expect(fs.existsSync(filePath)).toBe(false)
+  })
 })
 
 describe("sendProactiveTeamsMessageToSession", () => {
@@ -994,6 +1023,33 @@ describe("sendProactiveTeamsMessageToSession", () => {
         authorizingTrustLevel: null,
       }),
     }))
+  })
+
+  it("blocks proactive send when text contains internal content", async () => {
+    const friend = makeFriend()
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(friend),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+    const botApi = makeBotApi()
+
+    const teams = await loadTeams() as any
+    const result = await teams.sendProactiveTeamsMessageToSession({
+      friendId: "friend-uuid-1",
+      sessionKey: "session",
+      text: "heartbeat check-in: same state, nothing new",
+    }, {
+      botApi,
+      createFriendStore: () => friendStore as any,
+    })
+
+    expect(result).toEqual({ delivered: false, reason: "internal_content_blocked" })
+    expect(botApi._mocks.conversationsCreate).not.toHaveBeenCalled()
+    expect(botApi._mocks.activityCreate).not.toHaveBeenCalled()
   })
 })
 

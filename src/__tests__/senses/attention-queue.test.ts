@@ -413,7 +413,8 @@ describe("attention queue", () => {
       ]
 
       const summary = buildAttentionQueueSummary(items)
-      expect(summary).toContain("you're holding:")
+      expect(summary).toContain("[internal: held work items")
+      expect(summary).not.toContain("you're holding:")
       expect(summary).toContain("[abc123]")
       expect(summary).toContain("Ari asked:")
       expect(summary).toContain("think about penguins")

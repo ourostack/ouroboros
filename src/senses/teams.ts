@@ -16,6 +16,7 @@ import { loadSession, deleteSession, postTurn } from "../mind/context"
 import { createCommandRegistry, registerDefaultCommands, parseSlashCommand } from "./commands"
 import { createTraceId } from "../nerves"
 import { emitNervesEvent } from "../nerves/runtime"
+import { getProactiveInternalContentBlockReason, emitProactiveInternalContentBlocked } from "./proactive-content-guard"
 import { FileFriendStore } from "../mind/friends/store-file"
 import { TRUSTED_LEVELS, type FriendRecord } from "../mind/friends/types"
 import type { FriendStore } from "../mind/friends/store"
@@ -1091,7 +1092,7 @@ export interface ProactiveTeamsSessionSendParams {
 
 export interface ProactiveTeamsSessionSendResult {
   delivered: boolean
-  reason?: "friend_not_found" | "trust_skip" | "missing_target" | "send_error"
+  reason?: "friend_not_found" | "trust_skip" | "missing_target" | "send_error" | "internal_content_blocked"
 }
 
 interface ProactiveTeamsSessionSendDeps {
@@ -1180,6 +1181,17 @@ export async function sendProactiveTeamsMessageToSession(
       meta: { friendId: params.friendId, sessionKey: params.sessionKey },
     })
     return { delivered: false, reason: "missing_target" }
+  }
+
+  const internalContentBlockReason = getProactiveInternalContentBlockReason(params.text)
+  if (internalContentBlockReason) {
+    emitProactiveInternalContentBlocked({
+      friendId: params.friendId,
+      sessionKey: params.sessionKey,
+      reason: internalContentBlockReason,
+      source: "session_send",
+    })
+    return { delivered: false, reason: "internal_content_blocked" }
   }
 
   try {
@@ -1290,6 +1302,18 @@ export async function drainAndSendPendingTeams(
     if (!messageText.trim()) {
       result.skipped++
       try { fs.unlinkSync(filePath) } catch { /* ignore */ }
+      continue
+    }
+
+    const internalBlockReason = getProactiveInternalContentBlockReason(messageText)
+    if (internalBlockReason) {
+      result.skipped++
+      try { fs.unlinkSync(filePath) } catch { /* ignore */ }
+      emitProactiveInternalContentBlocked({
+        friendId,
+        reason: internalBlockReason,
+        source: "pending_drain",
+      })
       continue
     }
 

@@ -375,7 +375,7 @@ export function runtimeInfoSection(channel: Channel, options?: BuildSystemOption
     lines.push("i introduce myself on boot with a fun random greeting.");
   } else if (channel === "inner") {
     lines.push(
-      "this is my inner session. when a thought is ready to share, i surface it to whoever needs to hear it. when i'm done thinking and the queue is clear, i rest.",
+      "this is my inner session. when i have something to say to someone, i surface it. when i'm done thinking and the queue is clear, i rest.",
     )
   } else if (channel === "mcp") {
     lines.push(
@@ -626,9 +626,10 @@ function toolContractsSection(channel: Channel, options?: BuildSystemOptions): s
     lines.push(`## tool behavior`)
     lines.push(`tool_choice is set to "required" -- I must call a tool on every turn.`)
     if (channel === "inner") {
-      lines.push(`- When a thought is ready to go outward, I call \`surface\` with the content and, when available, its delegationId.`)
+      lines.push(`- When I have something to say to a person, I call \`surface\` with the content and, when available, its delegationId.`)
       lines.push(`- \`surface\` does not end the inner turn; after surfacing everything that needs delivery, I call \`rest\`.`)
-      lines.push(`- \`rest\` must be the only tool call in that turn.`)
+      lines.push(`- \`rest\` must be the only tool call in that turn. Internal state notes go in \`rest(note: "...")\` — that is my scratchpad, not \`surface\`.`)
+      lines.push(`- For deeper reflection I want to preserve, I use \`ponder\` with kind \`reflection\`.`)
       lines.push(`- I do not call \`send_message\` or \`settle\` from inner dialogue; those are not inner-session delivery tools.`)
     } else {
       lines.push(`- When I am ready to respond to the user, I call \`settle\`.`)
