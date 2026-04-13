@@ -243,7 +243,12 @@ describe("handleFailoverReply", () => {
   )
 
   it("matches 'switch to anthropic'", () => {
-    expect(handleFailoverReply("switch to anthropic", ctx)).toEqual({ action: "switch", provider: "anthropic" })
+    expect(handleFailoverReply("switch to anthropic", ctx)).toEqual({
+      action: "switch",
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+      lane: "outward",
+    })
   })
 
   it("returns selected lane and model when matching a provenance-rich ready provider", () => {
@@ -276,23 +281,45 @@ describe("handleFailoverReply", () => {
       model: "MiniMax-M2.7",
       lane: "outward",
       credentialRevision: "cred_minimax",
+      source: "manual",
+      contributedByAgent: "slugger",
     })
   })
 
   it("matches 'switch to azure'", () => {
-    expect(handleFailoverReply("switch to azure", ctx)).toEqual({ action: "switch", provider: "azure" })
+    expect(handleFailoverReply("switch to azure", ctx)).toEqual({
+      action: "switch",
+      provider: "azure",
+      model: "gpt-4o-mini",
+      lane: "outward",
+    })
   })
 
   it("matches bare provider name", () => {
-    expect(handleFailoverReply("anthropic", ctx)).toEqual({ action: "switch", provider: "anthropic" })
+    expect(handleFailoverReply("anthropic", ctx)).toEqual({
+      action: "switch",
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+      lane: "outward",
+    })
   })
 
   it("is case-insensitive", () => {
-    expect(handleFailoverReply("Switch to Anthropic", ctx)).toEqual({ action: "switch", provider: "anthropic" })
+    expect(handleFailoverReply("Switch to Anthropic", ctx)).toEqual({
+      action: "switch",
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+      lane: "outward",
+    })
   })
 
   it("trims whitespace", () => {
-    expect(handleFailoverReply("  switch to anthropic  ", ctx)).toEqual({ action: "switch", provider: "anthropic" })
+    expect(handleFailoverReply("  switch to anthropic  ", ctx)).toEqual({
+      action: "switch",
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+      lane: "outward",
+    })
   })
 
   it("dismisses unrelated messages", () => {
