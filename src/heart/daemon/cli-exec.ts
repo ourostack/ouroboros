@@ -1471,6 +1471,29 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       deps.listDiscoveredAgents ? deps.listDiscoveredAgents() : defaultListDiscoveredAgents(),
     )
     if (discovered.length === 0 && deps.runSerpentGuide) {
+      // Hatch-or-clone choice when promptInput is available
+      if (deps.promptInput) {
+        const choice = await deps.promptInput("No agents found. Would you like to hatch a new agent or clone an existing one? (hatch/clone): ")
+        if (choice.trim().toLowerCase() === "clone") {
+          emitNervesEvent({
+            component: "daemon",
+            event: "daemon.first_run_choice_clone",
+            message: "user chose clone in first-run flow",
+            meta: {},
+          })
+          const remote = await deps.promptInput("Enter the git remote URL for the agent bundle: ")
+          // Run clone execution path
+          const cloneCommand = { kind: "clone" as const, remote: remote.trim() }
+          return await runOuroCli(["clone", cloneCommand.remote], deps)
+        }
+        emitNervesEvent({
+          component: "daemon",
+          event: "daemon.first_run_choice_hatch",
+          message: "user chose hatch in first-run flow",
+          meta: {},
+        })
+      }
+
       // System setup first — ouro command, subagents, UTI — before the interactive specialist
       await performSystemSetup(deps)
 
