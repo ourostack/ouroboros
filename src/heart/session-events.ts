@@ -945,6 +945,50 @@ export function buildCanonicalSessionEnvelope(options: SessionEnvelopeBuildOptio
 }
 
 /**
+ * Load full event history from both the pruned envelope and the NDJSON archive.
+ * Returns all events deduplicated by id and sorted by sequence.
+ * Corrupted archive lines are silently skipped.
+ */
+export function loadFullEventHistory(sessPath: string): SessionEvent[] {
+  const envelope = loadSessionEnvelopeFile(sessPath)
+  if (!envelope) return []
+
+  const envelopeEvents = envelope.events
+  const archivePath = sessPath.replace(/\.json$/, ".archive.ndjson")
+  let archiveEvents: SessionEvent[] = []
+
+  try {
+    const raw = fs.readFileSync(archivePath, "utf-8")
+    const lines = raw.split("\n")
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (trimmed.length === 0) continue
+      try {
+        const event = JSON.parse(trimmed) as SessionEvent
+        if (event && typeof event.id === "string" && typeof event.sequence === "number") {
+          archiveEvents.push(event)
+        }
+      } catch {
+        // Skip corrupted lines
+      }
+    }
+  } catch {
+    // Archive file doesn't exist or can't be read -- that's fine
+  }
+
+  // Merge, deduplicate by id, sort by sequence
+  const seen = new Set<string>()
+  const merged: SessionEvent[] = []
+  for (const event of [...archiveEvents, ...envelopeEvents]) {
+    if (seen.has(event.id)) continue
+    seen.add(event.id)
+    merged.push(event)
+  }
+  merged.sort((a, b) => a.sequence - b.sequence)
+  return merged
+}
+
+/**
  * Append evicted events to an NDJSON archive file.
  * The archive path is derived from the session path by replacing .json with .archive.ndjson.
  * Each event is written as a single JSON line. The file is appended to, not overwritten.
