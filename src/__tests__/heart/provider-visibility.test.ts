@@ -4,6 +4,7 @@ import * as path from "path"
 import { afterEach, describe, expect, it } from "vitest"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { writeProviderCredentialPool } from "../../heart/provider-credential-pool"
+import type { AgentProviderVisibility } from "../../heart/provider-visibility"
 import { writeProviderState, type ProviderState } from "../../heart/provider-state"
 
 const cleanup: string[] = []
@@ -142,5 +143,121 @@ describe("provider visibility", () => {
     expect(rendered).toContain("ouro use --agent slugger --lane inner --provider <provider> --model <model>")
     expect(rendered).not.toContain("agentFacing")
     expect(rendered).not.toContain("humanFacing")
+  })
+
+  it("formats non-ready and unconfigured edge states for status and prompts", async () => {
+    emitNervesEvent({
+      component: "heart",
+      event: "heart.test_provider_visibility",
+      message: "provider visibility formatting edge test",
+      meta: { test: true },
+    })
+    const {
+      formatProviderVisibilityLine,
+      formatAgentProviderVisibilityForStartOfTurn,
+      providerVisibilityStatusRows,
+    } = await import("../../heart/provider-visibility")
+    const visibility: AgentProviderVisibility = {
+      agentName: "slugger",
+      lanes: [
+        {
+          lane: "outward",
+          status: "configured",
+          provider: "anthropic",
+          model: "claude-opus-4-6",
+          source: "local",
+          readiness: { status: "stale", reason: "credential-revision-changed" },
+          credential: { status: "invalid-pool", repairCommand: "ouro auth --agent slugger --provider anthropic" },
+          warnings: ["credential pool is invalid"],
+        },
+        {
+          lane: "inner",
+          status: "unconfigured",
+          provider: "unconfigured",
+          model: "-",
+          source: "missing",
+          readiness: { status: "unknown", reason: "provider-state-missing" },
+          credential: { status: "missing", repairCommand: "ouro use --agent slugger --lane inner --provider <provider> --model <model>" },
+          repairCommand: "ouro use --agent slugger --lane inner --provider <provider> --model <model>",
+          reason: "provider-state-missing",
+          warnings: ["missing local binding"],
+        },
+      ],
+    }
+
+    const rendered = formatAgentProviderVisibilityForStartOfTurn(visibility)
+    const rows = providerVisibilityStatusRows(visibility)
+
+    expect(rendered).toContain("stale: credential-revision-changed")
+    expect(rendered).toContain("credentials: invalid pool")
+    expect(rendered).toContain("repair: ouro auth --agent slugger --provider anthropic")
+    expect(rendered).toContain("warnings: credential pool is invalid")
+    expect(rendered).toContain("inner: unconfigured (provider-state-missing)")
+    expect(rows[1]).toMatchObject({
+      agent: "slugger",
+      lane: "inner",
+      provider: "unconfigured",
+      detail: "ouro use --agent slugger --lane inner --provider <provider> --model <model>",
+      credential: "missing",
+    })
+    expect(formatProviderVisibilityLine({
+      lane: "inner",
+      status: "configured",
+      provider: "minimax",
+      model: "MiniMax-M2.5",
+      source: "local",
+      readiness: { status: "failed" },
+      credential: { status: "present" },
+      warnings: [],
+    })).toContain("[failed; source: local; credentials: unknown]")
+    expect(formatProviderVisibilityLine({
+      lane: "inner",
+      status: "configured",
+      provider: "minimax",
+      model: "MiniMax-M2.5",
+      source: "local",
+      readiness: { status: "stale" },
+      credential: { status: "present", source: "manual" },
+      warnings: [],
+    })).toContain("[stale; source: local; credentials: manual]")
+    expect(formatProviderVisibilityLine({
+      lane: "inner",
+      status: "configured",
+      provider: "minimax",
+      model: "MiniMax-M2.5",
+      source: "local",
+      readiness: { status: "unknown" },
+      credential: { status: "missing", repairCommand: "ouro auth --agent slugger --provider minimax" },
+      warnings: [],
+    })).toContain("[unknown; source: local; credentials: missing; repair: ouro auth --agent slugger --provider minimax]")
+    expect(formatProviderVisibilityLine({
+      lane: "inner",
+      status: "configured",
+      provider: "minimax",
+      model: "MiniMax-M2.5",
+      source: "local",
+      readiness: { status: "unknown", reason: "credential-missing" },
+      credential: { status: "present", source: "auth-flow" },
+      warnings: [],
+    })).toContain("[unknown: credential-missing; source: local; credentials: auth-flow]")
+  })
+
+  it("guards provider visibility payload shape for pulse readers", async () => {
+    emitNervesEvent({
+      component: "heart",
+      event: "heart.test_provider_visibility",
+      message: "provider visibility guard test",
+      meta: { test: true },
+    })
+    const { isAgentProviderVisibility } = await import("../../heart/provider-visibility")
+
+    expect(isAgentProviderVisibility(null)).toBe(false)
+    expect(isAgentProviderVisibility([])).toBe(false)
+    expect(isAgentProviderVisibility({})).toBe(false)
+    expect(isAgentProviderVisibility({ agentName: "slugger", lanes: "nope" })).toBe(false)
+    expect(isAgentProviderVisibility({ agentName: "slugger", lanes: [null] })).toBe(false)
+    expect(isAgentProviderVisibility({ agentName: "slugger", lanes: [{ lane: "sideways", status: "configured" }] })).toBe(false)
+    expect(isAgentProviderVisibility({ agentName: "slugger", lanes: [{ lane: "inner", status: "weird" }] })).toBe(false)
+    expect(isAgentProviderVisibility({ agentName: "slugger", lanes: [{ lane: "inner", status: "configured" }] })).toBe(true)
   })
 })

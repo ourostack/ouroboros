@@ -206,4 +206,43 @@ describe("parseStatusPayload extended worker fields", () => {
     expect(output).toContain("legacy-agent-secrets from kicker")
     expect(output).not.toContain("secret-value")
   })
+
+  it("rejects malformed provider lane status payloads", () => {
+    const base = {
+      overview: makeOverview(),
+      workers: [],
+      senses: [],
+    }
+
+    expect(parseStatusPayload({ ...base, providers: { bad: true } })).toBeNull()
+    expect(parseStatusPayload({ ...base, providers: [null] })).toBeNull()
+    expect(parseStatusPayload({
+      ...base,
+      providers: [{
+        agent: "slugger",
+        lane: "inner",
+        provider: "minimax",
+        model: "MiniMax-M2.5",
+        source: "local",
+        readiness: "ready",
+      }],
+    })).toBeNull()
+    expect(parseStatusPayload({
+      ...base,
+      providers: [{
+        agent: "slugger",
+        lane: "inner",
+        provider: "minimax",
+        model: "MiniMax-M2.5",
+        source: "local",
+        readiness: "ready",
+        credential: "auth-flow from slugger",
+        detail: "fresh",
+      }],
+    })?.providers[0]).toMatchObject({
+      agent: "slugger",
+      lane: "inner",
+      detail: "fresh",
+    })
+  })
 })
