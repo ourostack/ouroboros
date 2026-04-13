@@ -944,6 +944,33 @@ export function buildCanonicalSessionEnvelope(options: SessionEnvelopeBuildOptio
   }
 }
 
+/**
+ * Append evicted events to an NDJSON archive file.
+ * The archive path is derived from the session path by replacing .json with .archive.ndjson.
+ * Each event is written as a single JSON line. The file is appended to, not overwritten.
+ * Failures are logged and swallowed -- archive write must never crash the persist path.
+ */
+export function appendEvictedToArchive(sessPath: string, evictedEvents: SessionEvent[]): void {
+  if (evictedEvents.length === 0) return
+  const archivePath = sessPath.replace(/\.json$/, ".archive.ndjson")
+  try {
+    const ndjson = evictedEvents.map((event) => JSON.stringify(event)).join("\n") + "\n"
+    fs.appendFileSync(archivePath, ndjson)
+  } catch (err) {
+    emitNervesEvent({
+      level: "warn",
+      component: "heart",
+      event: "heart.archive_write_error",
+      message: "failed to write evicted events to archive",
+      meta: {
+        archivePath,
+        eventCount: evictedEvents.length,
+        error: err instanceof Error ? err.message : String(err),
+      },
+    })
+  }
+}
+
 export function appendSyntheticAssistantEvent(
   envelope: SessionEnvelope,
   content: string,
