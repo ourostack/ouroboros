@@ -414,6 +414,23 @@ describe("pingGithubCopilotModel", () => {
     expect(result).toEqual({ ok: false, error: "model not available" })
   })
 
+  it("retries failed model pings before succeeding", async () => {
+    emitTestEvent("pingGithubCopilotModel retry success")
+    let calls = 0
+    const mockFetch = (async () => {
+      calls++
+      if (calls < 3) {
+        return { ok: false, status: 503, json: async () => ({ message: "temporarily down" }) }
+      }
+      return { ok: true, status: 200, json: async () => ({}) }
+    }) as unknown as typeof fetch
+
+    const result = await pingGithubCopilotModel("https://api.example.com", "tok", "gpt-4o", mockFetch)
+
+    expect(result).toEqual({ ok: true })
+    expect(calls).toBe(3)
+  })
+
   it("returns error string from flat error field", async () => {
     emitTestEvent("pingGithubCopilotModel error string")
     const mockFetch = makeMockFetch({ error: "forbidden" }, 403)

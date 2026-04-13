@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.348",
+      "changes": [
+        "Provider attempts now share one bounded retry runner across real runtime turns, provider pings, health inventory, working-provider discovery, and GitHub Copilot model validation, retrying every provider failure class before terminal handling while preserving attempt metadata and nerves events.",
+        "Provider checks can now ping the selected lane model instead of drifting to provider defaults, and readiness/model pings use zero-delay retries so health checks stay fast."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.347",
       "changes": [
         "Post-turn session persist functions now return the events array directly, eliminating a redundant `loadSession` file read after every CLI TUI turn. `postTurnPersist` returns `SessionEvent[]` and `deferPostTurnPersist` returns `Promise<SessionEvent[]>`, so the CLI sense uses the returned data instead of re-reading the file it just wrote."
