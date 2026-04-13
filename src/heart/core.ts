@@ -34,6 +34,10 @@ import { createToolLoopState, detectToolLoop, recordToolOutcome } from "./tool-l
 import { createPonderPacket, findHarnessFrictionPacket, revisePonderPacket, type PonderPacket, type PonderPacketKind } from "../arc/packets";
 import { createToolFrictionLedger, rewriteToolResultForModel } from "./tool-friction";
 import { getDefaultModelForProvider, getProviderModelMismatchMessage } from "./provider-models";
+import {
+  ProviderAttemptAbortError,
+  runProviderAttempt,
+} from "./provider-attempt";
 
 export type ProviderId = "azure" | "anthropic" | "minimax" | "openai-codex" | "github-copilot";
 
@@ -528,43 +532,6 @@ function isContextOverflow(err: unknown): boolean {
   return false;
 }
 
-// HTTP error with optional status code (OpenAI SDK errors)
-interface HttpError extends Error { status?: number }
-
-// HTTP statuses that will never become retryable on their own — the request is
-// semantically wrong (malformed, unauthorized, missing route, etc.) and the
-// caller has to do something different before it can succeed.
-const NON_RETRYABLE_HTTP_STATUSES: ReadonlySet<number> = new Set([
-  400, // Bad Request — malformed payload
-  401, // Unauthorized — credentials invalid/expired
-  403, // Forbidden — credentials lack permission
-  404, // Not Found — model/route doesn't exist
-  422, // Unprocessable Entity — semantic validation failure
-])
-
-// Provider-classified error categories that we never retry. usage-limit is
-// distinct from rate-limit: rate limits clear in seconds (retryable), usage
-// limits are billing quotas that take hours/days to reset.
-const NON_RETRYABLE_CLASSIFICATIONS: ReadonlySet<ProviderErrorClassification> = new Set([
-  "auth-failure",
-  "usage-limit",
-])
-
-// Default policy: retry every error from the provider, EXCEPT the small set
-// above. The user explicitly requested this — past behavior was to retry only
-// on a known-transient list, which silently dropped real harness/SDK timeouts
-// (e.g. OpenAI SDK's "Request timed out." has no err.code and no status, so
-// the substring matchers missed it).
-export function isRetryBlocked(error: Error, classification: ProviderErrorClassification): boolean {
-  const status = (error as HttpError).status
-  if (status !== undefined && NON_RETRYABLE_HTTP_STATUSES.has(status)) return true
-  if (NON_RETRYABLE_CLASSIFICATIONS.has(classification)) return true
-  return false
-}
-
-const MAX_RETRIES = 3;
-const RETRY_BASE_MS = 2000;
-
 const RETRY_LABELS: Record<ProviderErrorClassification, string> = {
   "auth-failure": "auth error",
   "usage-limit": "usage limit",
@@ -573,6 +540,33 @@ const RETRY_LABELS: Record<ProviderErrorClassification, string> = {
   "network-error": "network error",
   "unknown": "error",
 };
+
+function waitForProviderRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) {
+    return new Promise((resolve) => {
+      setTimeout(resolve, delayMs)
+    })
+  }
+
+  return new Promise((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout>
+    const onAbort = (): void => {
+      clearTimeout(timer)
+      reject(new ProviderAttemptAbortError())
+    }
+    timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort)
+      resolve()
+    }, delayMs)
+
+    if (signal.aborted) {
+      onAbort()
+      return
+    }
+
+    signal.addEventListener("abort", onAbort, { once: true })
+  })
+}
 
 function buildAuthFailureGuidance(provider: ProviderId, model: string, agentName: string, detail: string): string {
   const mismatch = getProviderModelMismatchMessage(provider, model)
@@ -681,7 +675,6 @@ export async function runAgent(
   let done = false;
   let lastUsage: UsageData | undefined;
   let overflowRetried = false;
-  let retryCount = 0;
   let outcome: RunAgentOutcome = "settled";
   let completion: CompletionMetadata | undefined;
   let terminalError: Error | undefined;
@@ -696,6 +689,41 @@ export async function runAgent(
   let sawExternalStateQuery = false;
   const toolLoopState = createToolLoopState();
   const toolFrictionLedger = createToolFrictionLedger();
+  const finishTerminalProviderError = (error: Error, classification: ProviderErrorClassification): void => {
+    terminalError = error;
+    terminalErrorClassification = classification;
+
+    /* v8 ignore start — auth-failure guidance: tested via provider error classification tests @preserve */
+    if (terminalErrorClassification === "auth-failure") {
+      const agentName = getAgentName()
+      const currentProvider = providerRuntime.id
+      callbacks.onError(new Error(buildAuthFailureGuidance(
+        currentProvider,
+        providerRuntime.model,
+        agentName,
+        terminalError.message,
+      )), "terminal")
+    } else {
+      callbacks.onError(terminalError, "terminal");
+    }
+    /* v8 ignore stop */
+
+    emitNervesEvent({
+      level: "error",
+      event: "engine.error",
+      trace_id: traceId,
+      component: "engine",
+      message: terminalError.message,
+      meta: {
+        provider: providerRuntime.id,
+        model: providerRuntime.model,
+        errorClassification: terminalErrorClassification,
+      },
+    });
+    stripLastToolCalls(messages);
+    outcome = "errored";
+    done = true;
+  };
 
   // Prevent MaxListenersExceeded warning — each iteration adds a listener
   try { require("events").setMaxListeners(50, signal); } catch { /* unsupported */ }
@@ -770,22 +798,71 @@ export async function runAgent(
       break;
     }
     try {
-      callbacks.onModelStart();
+      const callProviderTurn = async (): Promise<TurnResult> => {
+        callbacks.onModelStart();
+        try {
+          return await providerRuntime.streamTurn({
+            messages,
+            activeTools,
+            callbacks,
+            signal,
+            traceId,
+            toolChoiceRequired,
+            reasoningEffort: currentReasoningEffort,
+            eagerSettleStreaming: true,
+          });
+        } catch (error) {
+          if (signal?.aborted) throw new ProviderAttemptAbortError()
+          throw error
+        }
+      }
 
-      const result = await providerRuntime.streamTurn({
-        messages,
-        activeTools,
-        callbacks,
-        signal,
-        traceId,
-        toolChoiceRequired,
-        reasoningEffort: currentReasoningEffort,
-        eagerSettleStreaming: true,
+      const callProviderTurnWithOverflowRecovery = async (): Promise<TurnResult> => {
+        try {
+          return await callProviderTurn()
+        } catch (error) {
+          if (error instanceof ProviderAttemptAbortError) throw error
+          if (isContextOverflow(error) && !overflowRetried) {
+            overflowRetried = true;
+            stripLastToolCalls(messages);
+            const { maxTokens, contextMargin } = getContextConfig();
+            const trimmed = trimMessages(messages, maxTokens, contextMargin, maxTokens * 2);
+            messages.splice(0, messages.length, ...trimmed);
+            providerRuntime.resetTurnState(messages);
+            callbacks.onError(new Error("context trimmed, retrying..."), "transient");
+            return callProviderTurn()
+          }
+          throw error
+        }
+      }
+
+      const attempt = await runProviderAttempt({
+        operation: "turn",
+        provider: providerRuntime.id,
+        model: providerRuntime.model,
+        run: callProviderTurnWithOverflowRecovery,
+        classifyError: (error) => providerRuntime.classifyError(error),
+        onRetry: (record, maxAttempts) => {
+          const delayMs = record.delayMs as number
+          const seconds = delayMs / 1000
+          const cause = RETRY_LABELS[record.classification as ProviderErrorClassification]
+          callbacks.onError(new Error(`${cause}, retrying in ${seconds}s (${record.attempt}/${maxAttempts})...`), "transient");
+        },
+        sleep: async (delayMs) => {
+          await waitForProviderRetry(delayMs, signal)
+          providerRuntime.resetTurnState(messages);
+        },
       });
+
+      if (!attempt.ok) {
+        finishTerminalProviderError(attempt.error, attempt.classification);
+        continue;
+      }
+
+      const result = attempt.value;
 
       // Track usage from the latest API call
       if (result.usage) lastUsage = result.usage;
-      retryCount = 0; // reset on success
 
       // SHARED: build CC-format assistant message from TurnResult
       const msg: OpenAI.ChatCompletionAssistantMessageParam = {
@@ -1169,26 +1246,11 @@ export async function runAgent(
       }
     } catch (e) {
       // Abort is not an error — just stop cleanly
-      if (signal?.aborted) {
+      if (e instanceof ProviderAttemptAbortError || signal?.aborted) {
         stripLastToolCalls(messages);
         outcome = "aborted";
         break;
       }
-      // Context overflow: trim aggressively and retry once
-      if (isContextOverflow(e) && !overflowRetried) {
-        overflowRetried = true;
-        stripLastToolCalls(messages);
-        const { maxTokens, contextMargin } = getContextConfig();
-        const trimmed = trimMessages(messages, maxTokens, contextMargin, maxTokens * 2);
-        messages.splice(0, messages.length, ...trimmed);
-        providerRuntime.resetTurnState(messages);
-        callbacks.onError(new Error("context trimmed, retrying..."), "transient");
-        continue;
-      }
-      // Retry policy: retry every error EXCEPT those on the blocklist
-      // (NON_RETRYABLE_HTTP_STATUSES / NON_RETRYABLE_CLASSIFICATIONS).
-      // The classification still drives the user-facing label and the
-      // auth-failure guidance message below — it just no longer gates retries.
       const errorForClassification = e instanceof Error ? e : /* v8 ignore next -- defensive @preserve */ new Error(String(e))
       let providerClassification: ProviderErrorClassification
       try {
@@ -1197,81 +1259,7 @@ export async function runAgent(
         /* v8 ignore next -- defensive: classifyError should not throw @preserve */
         providerClassification = "unknown"
       }
-      const blocked = isRetryBlocked(errorForClassification, providerClassification)
-      const shouldRetry = !blocked && retryCount < MAX_RETRIES
-
-      emitNervesEvent({
-        level: shouldRetry ? "info" : "warn",
-        event: shouldRetry ? "engine.provider_retry" : "engine.provider_retry_skip",
-        component: "engine",
-        message: shouldRetry
-          ? `provider error is retryable (attempt ${retryCount + 1}/${MAX_RETRIES})`
-          : blocked
-            ? `provider error is on retry blocklist`
-            : `provider error retries exhausted`,
-        meta: {
-          provider: providerRuntime.id,
-          model: providerRuntime.model,
-          retryCount,
-          maxRetries: MAX_RETRIES,
-          blocked,
-          providerClassification,
-          errorMessage: errorForClassification.message.slice(0, 200),
-          httpStatus: (e as HttpError).status ?? null,
-        },
-      })
-
-      if (shouldRetry) {
-        retryCount++;
-        const delay = RETRY_BASE_MS * Math.pow(2, retryCount - 1);
-        const cause = RETRY_LABELS[providerClassification]
-        callbacks.onError(new Error(`${cause}, retrying in ${delay / 1000}s (${retryCount}/${MAX_RETRIES})...`), "transient");
-        // Wait with abort support
-        const aborted = await new Promise<boolean>((resolve) => {
-          const timer = setTimeout(() => resolve(false), delay);
-          if (signal) {
-            const onAbort = () => { clearTimeout(timer); resolve(true); };
-            if (signal.aborted) { clearTimeout(timer); resolve(true); return; }
-            signal.addEventListener("abort", onAbort, { once: true });
-          }
-        });
-        if (aborted) {
-          stripLastToolCalls(messages);
-          outcome = "aborted";
-          break;
-        }
-        providerRuntime.resetTurnState(messages);
-        continue;
-      }
-      terminalError = errorForClassification;
-      terminalErrorClassification = providerClassification;
-
-      /* v8 ignore start — auth-failure guidance: tested via provider error classification tests @preserve */
-      if (terminalErrorClassification === "auth-failure") {
-        const agentName = getAgentName()
-        const currentProvider = providerRuntime.id
-        callbacks.onError(new Error(buildAuthFailureGuidance(
-          currentProvider,
-          providerRuntime.model,
-          agentName,
-          terminalError.message,
-        )), "terminal")
-      } else {
-        callbacks.onError(terminalError, "terminal");
-      }
-      /* v8 ignore stop */
-
-      emitNervesEvent({
-        level: "error",
-        event: "engine.error",
-        trace_id: traceId,
-        component: "engine",
-        message: terminalError.message,
-        meta: { errorClassification: terminalErrorClassification },
-      });
-      stripLastToolCalls(messages);
-      outcome = "errored";
-      done = true;
+      finishTerminalProviderError(errorForClassification, providerClassification);
     }
   }
   emitNervesEvent({

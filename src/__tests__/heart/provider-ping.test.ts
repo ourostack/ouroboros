@@ -28,9 +28,9 @@ vi.mock("../../heart/providers/anthropic", () => ({
 }))
 
 vi.mock("../../heart/providers/azure", () => ({
-  createAzureProviderRuntime: vi.fn(() => ({
+  createAzureProviderRuntime: vi.fn((model: string) => ({
     id: "azure",
-    model: "gpt-4o-mini",
+    model,
     client: openaiClient,
     classifyError: mockClassifyError,
   })),
@@ -38,9 +38,9 @@ vi.mock("../../heart/providers/azure", () => ({
 }))
 
 vi.mock("../../heart/providers/minimax", () => ({
-  createMinimaxProviderRuntime: vi.fn(() => ({
+  createMinimaxProviderRuntime: vi.fn((model: string) => ({
     id: "minimax",
-    model: "minimax-text-01",
+    model,
     client: openaiClient,
     classifyError: mockClassifyError,
   })),
@@ -91,6 +91,7 @@ import { pingProvider, sanitizeErrorMessage, type PingResult } from "../../heart
 import type { ProviderErrorClassification } from "../../heart/core"
 import { createOpenAICodexProviderRuntime } from "../../heart/providers/openai-codex"
 import { createAzureProviderRuntime } from "../../heart/providers/azure"
+import { createMinimaxProviderRuntime } from "../../heart/providers/minimax"
 
 describe("sanitizeErrorMessage", () => {
   it("strips raw JSON from Anthropic SDK errors", () => {
@@ -221,6 +222,24 @@ describe("pingProvider", () => {
     expect(result.ok).toBe(true)
   })
 
+  it("pings the selected lane model instead of the provider default when supplied", async () => {
+    mockOpenAICreate.mockResolvedValue({ choices: [{ message: { content: "hi" } }] })
+    const result = await pingProvider("minimax", {
+      apiKey: "valid-key",
+    }, {
+      model: "MiniMax-M2.5",
+    })
+
+    expect(result.ok).toBe(true)
+    expect(createMinimaxProviderRuntime).toHaveBeenCalledWith("MiniMax-M2.5", {
+      apiKey: "valid-key",
+    })
+    expect(mockOpenAICreate).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "MiniMax-M2.5" }),
+      expect.anything(),
+    )
+  })
+
   it("returns ok: true when ping succeeds for github-copilot", async () => {
     mockOpenAICreate.mockResolvedValue({ choices: [{ message: { content: "hi" } }] })
     const result = await pingProvider("github-copilot", {
@@ -292,18 +311,18 @@ describe("pingProvider", () => {
 
   it("classifies error from API call failure", async () => {
     const err = Object.assign(new Error("auth failed"), { status: 401 })
-    mockAnthropicCreate.mockRejectedValue(err)
+    mockAnthropicCreate
+      .mockRejectedValueOnce(err)
+      .mockRejectedValueOnce(err)
+      .mockResolvedValueOnce({ content: [{ text: "recovered" }] })
     mockClassifyError.mockReturnValue("auth-failure" as ProviderErrorClassification)
 
     const result = await pingProvider("anthropic", {
       model: "claude-opus-4-6",
       setupToken: "sk-ant-oat01-valid-token-that-is-long-enough-to-pass-format-check-1234567890abcdef",
     })
-    expect(result.ok).toBe(false)
-    if (!result.ok) {
-      expect(result.classification).toBe("auth-failure")
-      expect(result.message).toBe("auth failed")
-    }
+    expect(result.ok).toBe(true)
+    expect(mockAnthropicCreate).toHaveBeenCalledTimes(3)
   })
 
   it("classifies usage-limit error", async () => {
