@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions"
+import * as fs from "fs"
+import * as os from "os"
+import * as path from "path"
 import type { ChannelCallbacks, RunAgentOptions } from "../../heart/core"
 import type { FriendRecord, ResolvedContext, ChannelCapabilities, SenseType, Channel } from "../../mind/friends/types"
 import type { FriendStore } from "../../mind/friends/store"
@@ -15,6 +18,7 @@ import * as temporalViewModule from "../../heart/temporal-view"
 import * as presenceModule from "../../arc/presence"
 import { handleInboundTurn } from "../../senses/pipeline"
 import type { InboundTurnInput, InboundTurnResult } from "../../senses/pipeline"
+import { readProviderState, writeProviderState, type ProviderState } from "../../heart/provider-state"
 
 const mockFindBridgesForSession = vi.fn()
 const mockListTargetSessionCandidates = vi.fn()
@@ -153,6 +157,46 @@ const usageData: UsageData = {
   output_tokens: 50,
   reasoning_tokens: 10,
   total_tokens: 160,
+}
+
+function providerState(overrides: Partial<ProviderState> = {}): ProviderState {
+  return {
+    schemaVersion: 1,
+    machineId: "machine_unit7",
+    updatedAt: "2026-04-13T05:30:00.000Z",
+    lanes: {
+      outward: {
+        provider: "openai-codex",
+        model: "gpt-5.4",
+        source: "local",
+        updatedAt: "2026-04-13T05:30:00.000Z",
+      },
+      inner: {
+        provider: "openai-codex",
+        model: "gpt-5.4",
+        source: "local",
+        updatedAt: "2026-04-13T05:30:00.000Z",
+      },
+    },
+    readiness: {
+      outward: {
+        status: "failed",
+        provider: "openai-codex",
+        model: "gpt-5.4",
+        checkedAt: "2026-04-13T05:30:00.000Z",
+        credentialRevision: "cred_codex",
+        error: "400 status code (no body)",
+      },
+      inner: {
+        status: "ready",
+        provider: "openai-codex",
+        model: "gpt-5.4",
+        checkedAt: "2026-04-13T05:30:00.000Z",
+        credentialRevision: "cred_codex",
+      },
+    },
+    ...overrides,
+  }
 }
 
 function makeStore(friend?: FriendRecord): FriendStore {
@@ -1529,6 +1573,71 @@ describe("handleInboundTurn", () => {
       expect(lastUserMsg?.content).toContain("anthropic")
       // Turn completed successfully on the new provider
       expect(result.turnOutcome).toBe("settled")
+    })
+
+    it("switches only the failed provider-state lane and preserves the other lane", async () => {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-pipeline-failover-"))
+      const agentRoot = path.join(tmp, "slugger.ouro")
+      fs.mkdirSync(agentRoot, { recursive: true })
+      writeProviderState(agentRoot, providerState())
+      const agentRootSpy = vi.spyOn(identity, "getAgentRoot" as any).mockReturnValue(agentRoot)
+      const mockRunAgent = vi.fn().mockResolvedValue({ usage: usageData, outcome: "settled" })
+      const failoverState = {
+        pending: {
+          errorSummary: "outward provider openai-codex model gpt-5.4 failed live check",
+          classification: "auth-failure" as const,
+          currentProvider: "openai-codex" as const,
+          currentLane: "outward" as const,
+          agentName: "slugger",
+          workingProviders: ["minimax" as const],
+          readyProviders: [{
+            provider: "minimax" as const,
+            model: "MiniMax-M2.7",
+            credentialRevision: "cred_minimax",
+            source: "auth-flow" as const,
+            contributedByAgent: "kicker",
+          }],
+          unconfiguredProviders: [],
+          userMessage: "switch available",
+        },
+      } as any
+      const input = makeInput({
+        failoverState,
+        messages: [{ role: "user", content: "switch to minimax" }],
+        runAgent: mockRunAgent,
+      })
+
+      try {
+        const result = await handleInboundTurn(input)
+
+        expect(result.switchedProvider).toBe("minimax")
+        expect(mockWriteAgentProviderSelection).not.toHaveBeenCalled()
+        const stateResult = readProviderState(agentRoot)
+        expect(stateResult.ok).toBe(true)
+        if (!stateResult.ok) throw new Error(stateResult.error)
+        expect(stateResult.state.lanes.outward).toMatchObject({
+          provider: "minimax",
+          model: "MiniMax-M2.7",
+          source: "local",
+        })
+        expect(stateResult.state.readiness.outward).toMatchObject({
+          status: "ready",
+          provider: "minimax",
+          model: "MiniMax-M2.7",
+          credentialRevision: "cred_minimax",
+        })
+        expect(stateResult.state.lanes.inner).toMatchObject({
+          provider: "openai-codex",
+          model: "gpt-5.4",
+        })
+        const passedMessages = mockRunAgent.mock.calls[0][0] as Array<{ role: string; content: string }>
+        const lastUserMsg = [...passedMessages].reverse().find((m) => m.role === "user")
+        expect(lastUserMsg?.content).toContain("outward")
+        expect(lastUserMsg?.content).toContain("credentials from kicker via auth-flow")
+      } finally {
+        agentRootSpy.mockRestore()
+        fs.rmSync(tmp, { recursive: true, force: true })
+      }
     })
 
     it("dismisses failover on unrelated reply and processes normally", async () => {
