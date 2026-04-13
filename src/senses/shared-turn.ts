@@ -170,6 +170,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   if (responseText.length === 0) {
     // Agent settled but no text came through callbacks — check session transcript for the settle answer
     // Await deferred persist so the session file is up-to-date before readback
+    /* v8 ignore next -- persistPromise set inside v8-ignored postTurn callback; tested via pipeline integration @preserve */
     if (persistPromise) await persistPromise
     const postTurnSession = loadSession(sessPath)
     if (postTurnSession?.messages) {
