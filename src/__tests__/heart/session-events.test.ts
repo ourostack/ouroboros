@@ -1408,4 +1408,158 @@ describe("session events", () => {
       expect(updated.events).toHaveLength(0)
     })
   })
+
+  describe("buildCanonicalSessionEnvelope returns evicted events", () => {
+    it("returns events not in projection as evicted", async () => {
+      const { buildCanonicalSessionEnvelope } = await import("../../heart/session-events")
+
+      // Build initial envelope with 5 messages
+      const turn1Messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "sys" },
+        { role: "user", content: "q1" },
+        { role: "assistant", content: "a1" },
+        { role: "user", content: "q2" },
+        { role: "assistant", content: "a2" },
+      ]
+      const existing = buildCanonicalSessionEnvelope({
+        existing: null,
+        previousMessages: [],
+        currentMessages: turn1Messages,
+        trimmedMessages: turn1Messages,
+        recordedAt: "2026-04-13T11:00:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      // Turn 2: add new messages, but trimmed window excludes old messages
+      const turn2Messages: OpenAI.ChatCompletionMessageParam[] = [
+        ...turn1Messages,
+        { role: "user", content: "q3" },
+        { role: "assistant", content: "a3" },
+      ]
+      const trimmedMessages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "sys" },
+        { role: "user", content: "q3" },
+        { role: "assistant", content: "a3" },
+      ]
+
+      const result = buildCanonicalSessionEnvelope({
+        existing: existing.envelope,
+        previousMessages: turn1Messages,
+        currentMessages: turn2Messages,
+        trimmedMessages,
+        recordedAt: "2026-04-13T11:01:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      // Evicted events are those not in the projection
+      expect(result.evictedEvents.length).toBeGreaterThan(0)
+      // The pruned envelope should only contain projected events
+      expect(result.envelope.events.length).toBeLessThan(7)
+      // Evicted + remaining should account for all events
+      const allEventIds = new Set([
+        ...result.envelope.events.map((e: any) => e.id),
+        ...result.evictedEvents.map((e: any) => e.id),
+      ])
+      expect(allEventIds.size).toBe(result.envelope.events.length + result.evictedEvents.length)
+    })
+
+    it("returns empty evictedEvents when all events are in projection", async () => {
+      const { buildCanonicalSessionEnvelope } = await import("../../heart/session-events")
+
+      const messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "sys" },
+        { role: "user", content: "q1" },
+        { role: "assistant", content: "a1" },
+      ]
+
+      const result = buildCanonicalSessionEnvelope({
+        existing: null,
+        previousMessages: [],
+        currentMessages: messages,
+        trimmedMessages: messages,
+        recordedAt: "2026-04-13T11:00:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      expect(result.evictedEvents).toEqual([])
+      expect(result.envelope.events).toHaveLength(3)
+    })
+
+    it("first-prune migration: large existing envelope with no prior pruning returns all non-projected as evicted", async () => {
+      const { buildCanonicalSessionEnvelope } = await import("../../heart/session-events")
+
+      // Build a large existing envelope
+      const turn1Messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "sys" },
+      ]
+      for (let i = 0; i < 10; i++) {
+        turn1Messages.push({ role: "user", content: `q${i}` })
+        turn1Messages.push({ role: "assistant", content: `a${i}` })
+      }
+
+      const existing = buildCanonicalSessionEnvelope({
+        existing: null,
+        previousMessages: [],
+        currentMessages: turn1Messages,
+        trimmedMessages: turn1Messages,
+        recordedAt: "2026-04-13T11:00:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      // Turn 2: same messages but trimmed to last 2 turns
+      const trimmedMessages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "sys" },
+        { role: "user", content: "q9" },
+        { role: "assistant", content: "a9" },
+      ]
+
+      const result = buildCanonicalSessionEnvelope({
+        existing: existing.envelope,
+        previousMessages: turn1Messages,
+        currentMessages: turn1Messages,
+        trimmedMessages,
+        recordedAt: "2026-04-13T11:01:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      // Most events should be evicted (only sys + q9 + a9 in projection)
+      expect(result.evictedEvents.length).toBe(18) // 20 non-system events minus 2 in projection
+      expect(result.envelope.events).toHaveLength(3) // only projected events remain
+    })
+
+    it("handles no existing envelope", async () => {
+      const { buildCanonicalSessionEnvelope } = await import("../../heart/session-events")
+
+      const messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "sys" },
+        { role: "user", content: "q1" },
+        { role: "assistant", content: "a1" },
+      ]
+
+      const result = buildCanonicalSessionEnvelope({
+        existing: null,
+        previousMessages: [],
+        currentMessages: messages,
+        trimmedMessages: [{ role: "system", content: "sys" }],
+        recordedAt: "2026-04-13T11:00:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      // Two events evicted (user and assistant not in trimmed)
+      expect(result.evictedEvents).toHaveLength(2)
+      expect(result.envelope.events).toHaveLength(1) // only system
+    })
+  })
 })
