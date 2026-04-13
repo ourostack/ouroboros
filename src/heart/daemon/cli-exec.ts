@@ -635,7 +635,6 @@ function providerCliLegacyRecord(agent: string, provider: AgentProvider, deps: O
   try {
     const { secrets } = loadAgentSecrets(agent, { secretsRoot: deps.secretsRoot })
     const providerSecrets = secrets.providers[provider]
-    if (!providerSecrets) return null
     const split = splitProviderCredentialFields(provider, providerSecrets)
     if (Object.keys(split.credentials).length === 0 && Object.keys(split.config).length === 0) return null
     return split
@@ -722,7 +721,7 @@ function writeProviderReadiness(input: {
   model: string
   deps: OuroCliDeps
   status: "ready" | "failed"
-  credentialRevision?: string
+  credentialRevision: string
   error?: string
   attempts?: number
 }): void {
@@ -733,7 +732,7 @@ function writeProviderReadiness(input: {
     provider: input.provider,
     model: input.model,
     checkedAt,
-    ...(input.credentialRevision ? { credentialRevision: input.credentialRevision } : {}),
+    credentialRevision: input.credentialRevision,
     ...(input.error ? { error: input.error } : {}),
     ...(input.attempts !== undefined ? { attempts: input.attempts } : {}),
   }
@@ -911,7 +910,7 @@ async function executeLegacyAuthSwitch(
     : ["outward", "inner"]
   const messages: string[] = []
   for (const lane of lanes) {
-    const model = state.lanes[lane]?.model ?? readAgentConfigForAgent(command.agent, deps.bundlesRoot).config.humanFacing.model
+    const model = state.lanes[lane].model
     messages.push(await executeProviderUse({
       kind: "provider.use",
       agent: command.agent,
