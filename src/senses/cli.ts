@@ -8,7 +8,7 @@ import { pickPhrase, getPhrases } from "../mind/phrases"
 import { formatKick, formatError } from "../mind/format"
 import { sessionPath } from "../heart/config"
 import { stampIngressTime } from "../heart/session-events"
-import { loadSession, deleteSession, postTurn } from "../mind/context"
+import { loadSession, deleteSession, postTurn, postTurnTrim, deferPostTurnPersist } from "../mind/context"
 import { getPendingDir, drainDeferredReturns, drainPending, type PendingMessage } from "../mind/pending"
 import type { UsageData } from "../mind/context"
 import { createCommandRegistry, registerDefaultCommands, parseSlashCommand, getToolChoiceRequired } from "./commands"
@@ -1067,9 +1067,10 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
         /* v8 ignore start -- failover-aware callback wrapper: tested via pipeline integration @preserve */
         const failoverAwareCallbacks: typeof callbacks = {
           ...callbacks,
-          // Save session after each tool result for crash recovery
+          // Save session after each tool result for crash recovery (deferred to avoid blocking)
           onToolResult: (turnMessages) => {
-            postTurn(turnMessages, sessPath, undefined, undefined, sessionState)
+            const prepared = postTurnTrim(turnMessages)
+            deferPostTurnPersist(sessPath, prepared, undefined, sessionState)
           },
           onError: (error: Error, severity: "transient" | "terminal") => {
             if (severity === "terminal" && failoverState) {
@@ -1115,9 +1116,13 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
             },
           }),
           postTurn: (turnMessages, sessionPathArg, usage, hooks, state) => {
-            postTurn(turnMessages, sessionPathArg, usage, hooks, state)
+            // Trim synchronously (mutates turnMessages for next turn),
+            // then defer envelope build + disk I/O to avoid blocking the TUI.
+            const prepared = postTurnTrim(turnMessages, usage, hooks)
             sessionState = state
-            sessionEvents = loadSession(sessionPathArg)?.events ?? sessionEvents
+            deferPostTurnPersist(sessionPathArg, prepared, usage, state).then(() => {
+              sessionEvents = loadSession(sessionPathArg)?.events ?? sessionEvents
+            })
           },
           accumulateFriendTokens,
           signal,
