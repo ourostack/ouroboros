@@ -4,6 +4,7 @@ import {
   annotateMessageTimestamps,
   appendSyntheticAssistantEvent,
   buildCanonicalSessionEnvelope,
+  getIngressTime,
   loadSessionEnvelopeFile,
   projectProviderMessages,
   sanitizeProviderMessages,
@@ -220,12 +221,14 @@ export function saveSession(
 ): void {
   const existing = loadSessionEnvelopeFile(filePath)
   const previousMessages = existing ? projectProviderMessages(existing) : []
+  const currentIngressTimes = messages.map(getIngressTime)
   const sanitized = sanitizeProviderMessages(messages)
   const envelope = buildCanonicalSessionEnvelope({
     existing,
     previousMessages,
     currentMessages: sanitized,
     trimmedMessages: sanitized,
+    currentIngressTimes,
     recordedAt: new Date().toISOString(),
     lastUsage: lastUsage ?? null,
     state,
@@ -296,6 +299,8 @@ export function postTurn(
     }
   }
   const { maxTokens, contextMargin } = getContextConfig()
+  // Capture ingress times before sanitization strips _ingressAt
+  const currentIngressTimes = messages.map(getIngressTime)
   const currentMessages = sanitizeProviderMessages(messages)
   const trimmed = trimMessages(currentMessages, maxTokens, contextMargin, usage?.input_tokens)
   messages.splice(0, messages.length, ...trimmed)
@@ -306,6 +311,7 @@ export function postTurn(
     previousMessages,
     currentMessages,
     trimmedMessages: trimmed,
+    currentIngressTimes,
     recordedAt: new Date().toISOString(),
     lastUsage: usage ?? null,
     state,
