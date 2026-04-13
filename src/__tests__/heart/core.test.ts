@@ -19,6 +19,12 @@ function mockReadFileToolResult(content: string, matcher: RegExp = /\.txt$/) {
   })
 }
 
+async function advanceProviderRetryTimers(): Promise<void> {
+  await vi.advanceTimersByTimeAsync(2100)
+  await vi.advanceTimersByTimeAsync(4100)
+  await vi.advanceTimersByTimeAsync(100)
+}
+
 function interceptFatalProviderInit() {
   const mockExit = vi.spyOn(process, "exit").mockImplementation((() => {
     throw new Error("process.exit called")
@@ -247,50 +253,6 @@ async function resetConfig() {
   const config = await import("../../heart/config")
   config.resetConfigCache()
 }
-
-describe("isRetryBlocked", () => {
-  it("blocks 400/401/403/404/422 HTTP statuses", async () => {
-    const { isRetryBlocked } = await import("../../heart/core")
-    for (const status of [400, 401, 403, 404, 422]) {
-      const err: any = new Error("client error")
-      err.status = status
-      expect(isRetryBlocked(err, "unknown")).toBe(true)
-    }
-  })
-
-  it("blocks auth-failure and usage-limit classifications", async () => {
-    const { isRetryBlocked } = await import("../../heart/core")
-    expect(isRetryBlocked(new Error("any"), "auth-failure")).toBe(true)
-    expect(isRetryBlocked(new Error("any"), "usage-limit")).toBe(true)
-  })
-
-  it("does NOT block HTTP 5xx, 429, or transport timeouts", async () => {
-    const { isRetryBlocked } = await import("../../heart/core")
-    for (const status of [429, 500, 502, 503, 504, 529]) {
-      const err: any = new Error("server error")
-      err.status = status
-      expect(isRetryBlocked(err, "server-error")).toBe(false)
-    }
-    // Bare "Request timed out." from the OpenAI/Anthropic SDK — no status,
-    // no err.code, no message keyword the old detector recognized. Must
-    // still retry under the new policy.
-    expect(isRetryBlocked(new Error("Request timed out."), "unknown")).toBe(false)
-  })
-
-  it("does NOT block unknown classifications by default", async () => {
-    const { isRetryBlocked } = await import("../../heart/core")
-    expect(isRetryBlocked(new Error("anything"), "unknown")).toBe(false)
-    expect(isRetryBlocked(new Error("anything"), "rate-limit")).toBe(false)
-    expect(isRetryBlocked(new Error("anything"), "network-error")).toBe(false)
-  })
-
-  it("treats blocklisted status as blocked even if classification disagrees", async () => {
-    const { isRetryBlocked } = await import("../../heart/core")
-    const err: any = new Error("malformed")
-    err.status = 400
-    expect(isRetryBlocked(err, "rate-limit")).toBe(true)
-  })
-})
 
 describe("ChannelCallbacks interface", () => {
   it("accepts an object with all required callback signatures", () => {
@@ -1124,9 +1086,11 @@ describe("runAgent", () => {
     expect(callCount).toBe(2)
   })
 
-  it("fires onError on API errors with terminal severity and ends loop", async () => {
-    // Use a blocklisted status (400) so the engine terminates without retry.
+  it("fires onError on API errors with terminal severity after provider attempts are exhausted", async () => {
+    vi.useFakeTimers()
+    let callCount = 0
     mockCreate.mockImplementation(() => {
+      callCount++
       const err: any = new Error("API rate limit")
       err.status = 400
       throw err
@@ -1142,10 +1106,16 @@ describe("runAgent", () => {
       onError: (err, severity) => errors.push({ error: err, severity }),
     }
 
-    await runAgent([{ role: "system", content: "test" }], callbacks)
-    expect(errors).toHaveLength(1)
-    expect(errors[0].error.message).toBe("API rate limit")
-    expect(errors[0].severity).toBe("terminal")
+    const promise = runAgent([{ role: "system", content: "test" }], callbacks)
+    await advanceProviderRetryTimers()
+    await promise
+
+    expect(callCount).toBe(3)
+    expect(errors.filter((entry) => entry.severity === "transient")).toHaveLength(2)
+    const terminal = errors.filter((entry) => entry.severity === "terminal")
+    expect(terminal).toHaveLength(1)
+    expect(terminal[0].error.message).toBe("API rate limit")
+    vi.useRealTimers()
   })
 
   it("pushes assistant message with content onto messages array", async () => {
@@ -1407,14 +1377,11 @@ describe("runAgent", () => {
     }
 
     const promise = runAgent([{ role: "system", content: "test" }], callbacks)
-    // Walk through 2s+4s+8s retry backoff, then terminal.
-    await vi.advanceTimersByTimeAsync(2100)
-    await vi.advanceTimersByTimeAsync(4100)
-    await vi.advanceTimersByTimeAsync(8100)
-    await vi.advanceTimersByTimeAsync(100)
+    // Walk through 2s+4s retry backoff, then terminal.
+    await advanceProviderRetryTimers()
     await promise
 
-    // 3 retry messages + 1 terminal — the terminal one carries the wrapped string.
+    // 2 retry messages + 1 terminal — the terminal one carries the wrapped string.
     const terminal = errors.find((e) => e.severity === "terminal")
     expect(terminal).toBeDefined()
     expect(terminal!.error).toBeInstanceOf(Error)
@@ -2318,7 +2285,7 @@ describe("runAgent", () => {
   })
 
   it("returns undefined usage on error", async () => {
-    // Use a blocklisted status so the engine terminates fast (no retry walk).
+    vi.useFakeTimers()
     mockCreate.mockImplementation(() => {
       const err: any = new Error("invalid request")
       err.status = 400
@@ -2335,8 +2302,11 @@ describe("runAgent", () => {
       onError: () => {},
     }
 
-    const result = await runAgent([{ role: "system", content: "test" }], callbacks)
+    const promise = runAgent([{ role: "system", content: "test" }], callbacks)
+    await advanceProviderRetryTimers()
+    const result = await promise
     expect(result.usage).toBeUndefined()
+    vi.useRealTimers()
   })
 
   it("returns a structured outcome alongside usage", async () => {
@@ -2468,9 +2438,7 @@ describe("runAgent", () => {
   })
 
   it("surfaces error via onError when retry also fails with overflow", async () => {
-    // Pair the overflow with a blocklisted 400 status so the second attempt
-    // (after trimming) terminates immediately instead of walking the retry
-    // backoff. This isolates the overflow-recovery path being tested.
+    vi.useFakeTimers()
     mockCreate.mockImplementation(() => {
       const err: any = new Error("context_length_exceeded")
       err.code = "context_length_exceeded"
@@ -2493,18 +2461,21 @@ describe("runAgent", () => {
       { role: "system", content: "sys" },
       { role: "user", content: "msg" },
     ]
-    await runAgent(messages, callbacks)
+    const promise = runAgent(messages, callbacks)
+    await advanceProviderRetryTimers()
+    await promise
 
-    // First error is trim info, second is the actual overflow error
+    // First error is trim info; terminal handling eventually surfaces the overflow.
     expect(errors.length).toBeGreaterThanOrEqual(2)
     expect(errors[errors.length - 1].message).toContain("context_length_exceeded")
+    vi.useRealTimers()
   })
 
   it("does not catch non-overflow errors with overflow recovery", async () => {
-    // Use a blocklisted status (400) so the engine terminates without retry —
-    // this test is about the overflow handler NOT swallowing non-overflow
-    // errors, not about retry semantics.
+    vi.useFakeTimers()
+    let callCount = 0
     mockCreate.mockImplementation(() => {
+      callCount++
       const err: any = new Error("invalid request format")
       err.status = 400
       throw err
@@ -2522,11 +2493,14 @@ describe("runAgent", () => {
     }
 
     const messages: any[] = [{ role: "system", content: "sys" }]
-    await runAgent(messages, callbacks)
+    const promise = runAgent(messages, callbacks)
+    await advanceProviderRetryTimers()
+    await promise
 
-    // Should have exactly 1 error (the original error), no retry
-    expect(errors).toHaveLength(1)
-    expect(errors[0].message).toBe("invalid request format")
+    expect(callCount).toBe(3)
+    expect(errors.some((error) => error.message.includes("trimm"))).toBe(false)
+    expect(errors[errors.length - 1].message).toBe("invalid request format")
+    vi.useRealTimers()
   })
 
   it("strips tool calls before trimming on mid-turn overflow", async () => {
@@ -2692,9 +2666,11 @@ describe("runAgent", () => {
     vi.useRealTimers()
   })
 
-  it("gives up after MAX_RETRIES transient failures with terminal final error", async () => {
+  it("gives up after bounded provider attempts with terminal final error", async () => {
     vi.useFakeTimers()
+    let callCount = 0
     mockCreate.mockImplementation(() => {
+      callCount++
       const err: any = new Error("connect failed")
       err.code = "ECONNREFUSED"
       throw err
@@ -2714,24 +2690,20 @@ describe("runAgent", () => {
     const messages: any[] = [{ role: "system", content: "test" }]
     const promise = runAgent(messages, callbacks)
 
-    // Advance through all 3 retry delays: 2s, 4s, 8s
-    await vi.advanceTimersByTimeAsync(2100)
-    await vi.advanceTimersByTimeAsync(4100)
-    await vi.advanceTimersByTimeAsync(8100)
-    await vi.advanceTimersByTimeAsync(100)
+    // Advance through the shared provider attempt delays: 2s, 4s
+    await advanceProviderRetryTimers()
 
     await promise
 
-    // 3 retry messages + 1 final error
-    expect(errors.length).toBe(4)
+    // 2 retry messages + 1 final error
+    expect(callCount).toBe(3)
+    expect(errors.length).toBe(3)
     expect(errors[0].error.message).toContain("retrying in 2s (1/3)")
     expect(errors[0].severity).toBe("transient")
     expect(errors[1].error.message).toContain("retrying in 4s (2/3)")
     expect(errors[1].severity).toBe("transient")
-    expect(errors[2].error.message).toContain("retrying in 8s (3/3)")
-    expect(errors[2].severity).toBe("transient")
-    expect(errors[3].error.message).toContain("connect failed")
-    expect(errors[3].severity).toBe("terminal")
+    expect(errors[2].error.message).toContain("connect failed")
+    expect(errors[2].severity).toBe("terminal")
 
     vi.useRealTimers()
   })
@@ -2892,8 +2864,8 @@ describe("runAgent", () => {
 
   // Regression: a bare "Request timed out." error from the OpenAI/Anthropic
   // SDKs (no err.code, no status) used to slip past the old isTransientError
-  // detector and surface as a terminal error in BlueBubbles. The new
-  // blocklist-based policy must retry it.
+  // detector and surface as a terminal error in BlueBubbles. The shared
+  // provider attempt policy must retry it.
   it("retries SDK 'Request timed out.' errors with no code or status", async () => {
     vi.useFakeTimers()
     let callCount = 0
@@ -2934,7 +2906,8 @@ describe("runAgent", () => {
     vi.useRealTimers()
   })
 
-  it("does NOT retry HTTP 400 / 401 / 403 / 404 / 422 — fails terminally on first hit", async () => {
+  it("retries HTTP 400 / 401 / 403 / 404 / 422 before terminal handling", async () => {
+    vi.useFakeTimers()
     for (const status of [400, 401, 403, 404, 422]) {
       let callCount = 0
       mockCreate.mockImplementation(() => {
@@ -2956,15 +2929,16 @@ describe("runAgent", () => {
       }
 
       const messages: any[] = [{ role: "system", content: "test" }]
-      await runAgent(messages, callbacks)
+      const promise = runAgent(messages, callbacks)
+      await advanceProviderRetryTimers()
+      await promise
 
-      // Exactly one call (no retries) and one terminal error.
-      expect(callCount).toBe(1)
-      // Filter to terminal severity — auth-failure path may produce a guidance
-      // wrapper before the underlying error.
+      expect(callCount).toBe(3)
+      expect(errors.filter((e) => e.severity === "transient")).toHaveLength(2)
       const terminal = errors.filter((e) => e.severity === "terminal")
       expect(terminal.length).toBe(1)
     }
+    vi.useRealTimers()
   })
 
   // ── system prompt refresh (Feature 5) ──
@@ -4842,53 +4816,60 @@ describe("openai-codex oauth provider contract", () => {
       },
     ] as const
 
-    for (const testCase of cases) {
-      vi.resetModules()
-      vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
-      await setupConfig({
-        humanFacingModel: testCase.model,
-        providers: {
-          "openai-codex": {
-            oauthAccessToken: makeOpenAICodexAccessToken(),
+    vi.useFakeTimers()
+    try {
+      for (const testCase of cases) {
+        vi.resetModules()
+        vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
+        await setupConfig({
+          humanFacingModel: testCase.model,
+          providers: {
+            "openai-codex": {
+              oauthAccessToken: makeOpenAICodexAccessToken(),
+            },
           },
-        },
-      } as any)
+        } as any)
 
-      const authError: any = new Error(testCase.detail)
-      authError.status = 401
-      mockResponsesCreate.mockReset()
-      mockResponsesCreate.mockRejectedValue(authError)
+        const authError: any = new Error(testCase.detail)
+        authError.status = 401
+        mockResponsesCreate.mockReset()
+        mockResponsesCreate.mockRejectedValue(authError)
 
-      const errors: { error: Error; severity: string }[] = []
-      const callbacks: ChannelCallbacks = {
-        onModelStart: vi.fn(),
-        onModelStreamStart: vi.fn(),
-        onTextChunk: vi.fn(),
-        onReasoningChunk: vi.fn(),
-        onToolStart: vi.fn(),
-        onToolEnd: vi.fn(),
-        onError: (error, severity) => errors.push({ error, severity }),
+        const errors: { error: Error; severity: string }[] = []
+        const callbacks: ChannelCallbacks = {
+          onModelStart: vi.fn(),
+          onModelStreamStart: vi.fn(),
+          onTextChunk: vi.fn(),
+          onReasoningChunk: vi.fn(),
+          onToolStart: vi.fn(),
+          onToolEnd: vi.fn(),
+          onError: (error, severity) => errors.push({ error, severity }),
+        }
+
+        const core = await import("../../heart/core")
+        const promise = core.runAgent([{ role: "system", content: "test" }], callbacks)
+        await advanceProviderRetryTimers()
+        await promise
+
+        const terminal = errors.find((entry) => entry.severity === "terminal")
+        expect(terminal?.error.message).toContain(testCase.expectedLabel)
+        if (testCase.expectedDetail) {
+          expect(terminal?.error.message).toContain(testCase.expectedDetail)
+        } else {
+          expect(terminal?.error.message).not.toContain("provider detail:")
+        }
+        if (testCase.expectedRepair) {
+          expect(terminal?.error.message).toContain(testCase.expectedRepair)
+          expect(terminal?.error.message).toContain("ouro config model --agent testagent --facing human gpt-5.4")
+          expect(terminal?.error.message).toContain("ouro config model --agent testagent --facing agent gpt-5.4")
+        } else {
+          expect(terminal?.error.message).not.toContain("Config warning:")
+        }
+        expect(terminal?.error.message).toContain("ouro auth --agent testagent --provider openai-codex")
+        expect(terminal?.error.message).toContain("ouro auth switch --agent testagent --provider <provider>")
       }
-
-      const core = await import("../../heart/core")
-      await core.runAgent([{ role: "system", content: "test" }], callbacks)
-
-      const terminal = errors.find((entry) => entry.severity === "terminal")
-      expect(terminal?.error.message).toContain(testCase.expectedLabel)
-      if (testCase.expectedDetail) {
-        expect(terminal?.error.message).toContain(testCase.expectedDetail)
-      } else {
-        expect(terminal?.error.message).not.toContain("provider detail:")
-      }
-      if (testCase.expectedRepair) {
-        expect(terminal?.error.message).toContain(testCase.expectedRepair)
-        expect(terminal?.error.message).toContain("ouro config model --agent testagent --facing human gpt-5.4")
-        expect(terminal?.error.message).toContain("ouro config model --agent testagent --facing agent gpt-5.4")
-      } else {
-        expect(terminal?.error.message).not.toContain("Config warning:")
-      }
-      expect(terminal?.error.message).toContain("ouro auth --agent testagent --provider openai-codex")
-      expect(terminal?.error.message).toContain("ouro auth switch --agent testagent --provider <provider>")
+    } finally {
+      vi.useRealTimers()
     }
   })
 
