@@ -1179,8 +1179,8 @@ describe("deferPostTurnPersist return value", () => {
       emitNervesEvent,
     }))
 
-    // Mock readFileSync to throw on the persist read
-    vi.mocked(fs.readFileSync).mockImplementation(() => {
+    // Mock writeFileSync to throw on the persist write
+    vi.mocked(fs.writeFileSync).mockImplementation(() => {
       throw new Error("disk failure")
     })
 
