@@ -1169,4 +1169,240 @@ describe("session events", () => {
       expect((annotated[0] as any).content).toMatch(/\[-10m\]/)
     })
   })
+
+  describe("findCommonPrefixLength skips system messages", () => {
+    it("BUG PROOF: changing system prompt causes all messages to be re-created as new events", async () => {
+      const { buildCanonicalSessionEnvelope } = await import("../../heart/session-events")
+
+      // Turn 1: build initial envelope
+      const previousMessages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "system prompt v1 with weather=sunny" },
+        { role: "user", content: "hello" },
+        { role: "assistant", content: "hi there" },
+      ]
+      const existing = buildCanonicalSessionEnvelope({
+        existing: null,
+        previousMessages: [],
+        currentMessages: previousMessages,
+        trimmedMessages: previousMessages,
+        recordedAt: "2026-04-13T10:00:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      expect(existing.events).toHaveLength(3)
+
+      // Turn 2: system prompt changes (weather update), same user/assistant messages, plus new turn
+      const currentMessages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "system prompt v2 with weather=rainy" },
+        { role: "user", content: "hello" },
+        { role: "assistant", content: "hi there" },
+        { role: "user", content: "what's new?" },
+        { role: "assistant", content: "not much" },
+      ]
+
+      const updated = buildCanonicalSessionEnvelope({
+        existing,
+        previousMessages,
+        currentMessages,
+        trimmedMessages: currentMessages,
+        recordedAt: "2026-04-13T10:01:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      // With the bug: prefix match returns 0 because system content differs,
+      // so ALL 5 messages are created as new events (3 existing + 5 new = 8 total)
+      // With the fix: prefix match should skip system messages, match user+assistant,
+      // and only create 2 new events (3 existing + 2 new = 5 total)
+      expect(updated.events).toHaveLength(5)
+    })
+
+    it("matches non-system messages correctly when system prompt changes between turns", async () => {
+      const { buildCanonicalSessionEnvelope, projectProviderMessages } = await import("../../heart/session-events")
+
+      // Turn 1
+      const turn1Messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "system v1" },
+        { role: "user", content: "question A" },
+        { role: "assistant", content: "answer A" },
+      ]
+      const existing = buildCanonicalSessionEnvelope({
+        existing: null,
+        previousMessages: [],
+        currentMessages: turn1Messages,
+        trimmedMessages: turn1Messages,
+        recordedAt: "2026-04-13T10:00:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      // Turn 2: different system prompt, same conversation + new messages
+      const turn2Messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "system v2 different" },
+        { role: "user", content: "question A" },
+        { role: "assistant", content: "answer A" },
+        { role: "user", content: "question B" },
+        { role: "assistant", content: "answer B" },
+      ]
+
+      const updated = buildCanonicalSessionEnvelope({
+        existing,
+        previousMessages: turn1Messages,
+        currentMessages: turn2Messages,
+        trimmedMessages: turn2Messages,
+        recordedAt: "2026-04-13T10:01:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      // Should reuse existing events for question A + answer A, only add question B + answer B
+      expect(updated.events).toHaveLength(5) // 3 original + 2 new
+      // The new system message should be a new event
+      expect(updated.events[3]!.role).toBe("user")
+      expect(updated.events[3]!.content).toBe("question B")
+      expect(updated.events[4]!.role).toBe("assistant")
+      expect(updated.events[4]!.content).toBe("answer B")
+
+      // Projection should include the new system event + reused non-system + new non-system
+      const projected = projectProviderMessages(updated)
+      expect(projected).toHaveLength(5)
+    })
+
+    it("handles no system messages in either array", async () => {
+      const { buildCanonicalSessionEnvelope } = await import("../../heart/session-events")
+
+      const turn1Messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "user", content: "hello" },
+        { role: "assistant", content: "hi" },
+      ]
+      const existing = buildCanonicalSessionEnvelope({
+        existing: null,
+        previousMessages: [],
+        currentMessages: turn1Messages,
+        trimmedMessages: turn1Messages,
+        recordedAt: "2026-04-13T10:00:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      const turn2Messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "user", content: "hello" },
+        { role: "assistant", content: "hi" },
+        { role: "user", content: "more" },
+      ]
+      const updated = buildCanonicalSessionEnvelope({
+        existing,
+        previousMessages: turn1Messages,
+        currentMessages: turn2Messages,
+        trimmedMessages: turn2Messages,
+        recordedAt: "2026-04-13T10:01:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      expect(updated.events).toHaveLength(3) // 2 existing + 1 new
+    })
+
+    it("handles multiple system messages scattered in the array", async () => {
+      const { buildCanonicalSessionEnvelope } = await import("../../heart/session-events")
+
+      const turn1Messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "system 1 v1" },
+        { role: "user", content: "hello" },
+        { role: "system", content: "system 2 v1" },
+        { role: "assistant", content: "hi" },
+      ]
+      const existing = buildCanonicalSessionEnvelope({
+        existing: null,
+        previousMessages: [],
+        currentMessages: turn1Messages,
+        trimmedMessages: turn1Messages,
+        recordedAt: "2026-04-13T10:00:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      // Same non-system messages, different system prompts
+      const turn2Messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "system 1 v2" },
+        { role: "user", content: "hello" },
+        { role: "system", content: "system 2 v2" },
+        { role: "assistant", content: "hi" },
+        { role: "user", content: "new question" },
+      ]
+      const updated = buildCanonicalSessionEnvelope({
+        existing,
+        previousMessages: turn1Messages,
+        currentMessages: turn2Messages,
+        trimmedMessages: turn2Messages,
+        recordedAt: "2026-04-13T10:01:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      // Should reuse user "hello" + assistant "hi", only create new "new question"
+      expect(updated.events).toHaveLength(5) // 4 original + 1 new
+    })
+
+    it("handles all system messages with no other roles", async () => {
+      const { buildCanonicalSessionEnvelope } = await import("../../heart/session-events")
+
+      const turn1Messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "only system v1" },
+      ]
+      const existing = buildCanonicalSessionEnvelope({
+        existing: null,
+        previousMessages: [],
+        currentMessages: turn1Messages,
+        trimmedMessages: turn1Messages,
+        recordedAt: "2026-04-13T10:00:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      const turn2Messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "only system v2" },
+      ]
+      const updated = buildCanonicalSessionEnvelope({
+        existing,
+        previousMessages: turn1Messages,
+        currentMessages: turn2Messages,
+        trimmedMessages: turn2Messages,
+        recordedAt: "2026-04-13T10:01:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      // No non-system messages to match, system changed, so new system event is created
+      expect(updated.events).toHaveLength(2) // 1 original + 1 new
+    })
+
+    it("handles empty arrays", async () => {
+      const { buildCanonicalSessionEnvelope } = await import("../../heart/session-events")
+
+      const updated = buildCanonicalSessionEnvelope({
+        existing: null,
+        previousMessages: [],
+        currentMessages: [],
+        trimmedMessages: [],
+        recordedAt: "2026-04-13T10:00:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      expect(updated.events).toHaveLength(0)
+    })
+  })
 })
