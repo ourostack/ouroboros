@@ -302,7 +302,7 @@ function summarizeAgent(state: OutlookAgentState): OutlookAgentSummary {
   return {
     agentName: state.agentName,
     enabled: state.enabled,
-    providers: state.providers ?? null,
+    providers: state.providers,
     freshness: state.freshness,
     degraded: state.degraded,
     tasks: {
