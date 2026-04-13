@@ -164,6 +164,46 @@ describe("provider credential pool", () => {
     })
   })
 
+  it("generates default credential revisions and rejects updates when the pool is invalid", () => {
+    emitTestEvent("provider credential default revision and invalid pool")
+    const defaultTimestampRecord = upsertProviderCredential({
+      homeDir,
+      provider: "github-copilot",
+      credentials: { githubToken: "gho_default_time" },
+      config: { baseUrl: "https://copilot.default-time.test" },
+      provenance: { source: "manual" },
+      makeRevision: () => "cred_default_time",
+    })
+    expect(defaultTimestampRecord.updatedAt).toEqual(expect.any(String))
+
+    const defaultRevisionRecord = upsertProviderCredential({
+      homeDir,
+      provider: "openai-codex",
+      credentials: { oauthAccessToken: "oauth-secret" },
+      config: {},
+      provenance: { source: "auth-flow", contributedByAgent: "slugger" },
+      now: new Date("2026-04-12T18:02:30.000Z"),
+    })
+
+    expect(defaultRevisionRecord.revision).toMatch(/^cred_[0-9a-f-]+$/)
+
+    fs.writeFileSync(getProviderCredentialPoolPath(homeDir), "not json{{{", "utf-8")
+    const readResult = readProviderCredentialPool(homeDir)
+    expect(readResult.ok).toBe(false)
+    if (readResult.ok) throw new Error("expected invalid pool")
+    expect(readResult.reason).toBe("invalid")
+
+    expect(() => upsertProviderCredential({
+      homeDir,
+      provider: "minimax",
+      credentials: { apiKey: "minimax-key" },
+      config: {},
+      provenance: { source: "manual" },
+      now: new Date("2026-04-12T18:02:31.000Z"),
+      makeRevision: () => "cred_minimax_invalid",
+    })).toThrow("Cannot update invalid provider credential pool")
+  })
+
   it("preserves Azure credential and config fields including managed identity", () => {
     emitTestEvent("provider credential azure fields")
 
@@ -267,6 +307,52 @@ describe("provider credential pool", () => {
       },
     ])
     expect(JSON.stringify(candidates.map((candidate) => candidate.provenance))).not.toContain("secrets.json")
+  })
+
+  it("handles missing, malformed, and unsupported legacy provider secrets", () => {
+    emitTestEvent("provider credential legacy malformed")
+
+    expect(readLegacyAgentProviderCredentials({ homeDir, agentName: "missing" })).toEqual([])
+
+    writeLegacySecrets("noProviders", { teams: { clientId: "x" } })
+    expect(readLegacyAgentProviderCredentials({ homeDir, agentName: "noProviders" })).toEqual([])
+
+    writeLegacySecrets("badProviders", {
+      providers: {
+        fake: { apiKey: "fake-key" },
+        minimax: "not-an-object",
+        azure: { apiVersion: "2025-04-01-preview" },
+      },
+    })
+    expect(readLegacyAgentProviderCredentials({ homeDir, agentName: "badProviders" })).toEqual([])
+
+    writeLegacySecrets("partialAzure", {
+      providers: {
+        azure: {
+          apiKey: "partial-azure-key",
+          endpoint: "",
+          deployment: "partial-deployment",
+          apiVersion: 0,
+          managedIdentityClientId: "",
+        },
+      },
+    })
+    expect(readLegacyAgentProviderCredentials({ homeDir, agentName: "partialAzure" })).toEqual([
+      {
+        provider: "azure",
+        credentials: { apiKey: "partial-azure-key" },
+        config: { deployment: "partial-deployment" },
+        provenance: {
+          source: "legacy-agent-secrets",
+          contributedByAgent: "partialAzure",
+        },
+      },
+    ])
+
+    const badJsonPath = path.join(homeDir, ".agentsecrets", "badJson", "secrets.json")
+    fs.mkdirSync(path.dirname(badJsonPath), { recursive: true })
+    fs.writeFileSync(badJsonPath, "not json{{{", "utf-8")
+    expect(() => readLegacyAgentProviderCredentials({ homeDir, agentName: "badJson" })).toThrow("Failed to read legacy provider credentials")
   })
 
   it("explicitly migrates legacy per-agent secrets into the machine-wide pool without deleting legacy files", () => {
@@ -377,6 +463,25 @@ describe("provider credential pool", () => {
     expect(() => validateProviderCredentialPool({
       ...base,
       providers: {
+        fake: {
+          provider: "fake",
+          revision: "cred_fake",
+          updatedAt: "x",
+          credentials: {},
+          config: {},
+          provenance: { source: "manual", updatedAt: "x" },
+        },
+      },
+    })).toThrow("unsupported provider")
+    expect(() => validateProviderCredentialPool({
+      ...base,
+      providers: {
+        anthropic: null,
+      },
+    })).toThrow("anthropic credential record")
+    expect(() => validateProviderCredentialPool({
+      ...base,
+      providers: {
         minimax: {
           provider: "anthropic",
           revision: "cred_wrong",
@@ -401,9 +506,128 @@ describe("provider credential pool", () => {
       providers: {
         anthropic: {
           ...base.providers.anthropic,
+          updatedAt: "",
+        },
+      },
+    })).toThrow("updatedAt")
+    expect(() => validateProviderCredentialPool({
+      ...base,
+      providers: {
+        anthropic: {
+          ...base.providers.anthropic,
+          credentials: [],
+        },
+      },
+    })).toThrow("credentials")
+    expect(() => validateProviderCredentialPool({
+      ...base,
+      providers: {
+        anthropic: {
+          ...base.providers.anthropic,
+          credentials: { setupToken: null },
+        },
+      },
+    })).toThrow("credentials.setupToken")
+    expect(() => validateProviderCredentialPool({
+      ...base,
+      providers: {
+        anthropic: {
+          ...base.providers.anthropic,
+          config: [],
+        },
+      },
+    })).toThrow("config")
+    expect(() => validateProviderCredentialPool({
+      ...base,
+      providers: {
+        anthropic: {
+          ...base.providers.anthropic,
+          config: { endpoint: null },
+        },
+      },
+    })).toThrow("config.endpoint")
+    expect(() => validateProviderCredentialPool({
+      ...base,
+      providers: {
+        anthropic: {
+          ...base.providers.anthropic,
+          provenance: null,
+        },
+      },
+    })).toThrow("provenance")
+    expect(() => validateProviderCredentialPool({
+      ...base,
+      providers: {
+        anthropic: {
+          ...base.providers.anthropic,
           provenance: { source: "mystery", updatedAt: "x" },
         },
       },
     })).toThrow("provenance.source")
+    expect(() => validateProviderCredentialPool({
+      ...base,
+      providers: {
+        anthropic: {
+          ...base.providers.anthropic,
+          provenance: { source: "manual", contributedByAgent: 1, updatedAt: "x" },
+        },
+      },
+    })).toThrow("contributedByAgent")
+    expect(() => validateProviderCredentialPool({
+      ...base,
+      providers: {
+        anthropic: {
+          ...base.providers.anthropic,
+          provenance: { source: "manual", updatedAt: "" },
+        },
+      },
+    })).toThrow("provenance.updatedAt")
+  })
+
+  it("can operate from the default home directory dependency", () => {
+    emitTestEvent("provider credential default home")
+    const previousHome = process.env.HOME
+    process.env.HOME = homeDir
+    try {
+      const record = upsertProviderCredential({
+        provider: "minimax",
+        credentials: { apiKey: "default-home-key" },
+        config: {},
+        provenance: { source: "manual" },
+        now: new Date("2026-04-12T18:07:00.000Z"),
+        makeRevision: () => "cred_default_home",
+      })
+      writeLegacySecrets("defaultHomeAgent", {
+        providers: {
+          minimax: { apiKey: "legacy-default-home-key" },
+        },
+      })
+
+      expect(getProviderCredentialPoolPath()).toBe(getProviderCredentialPoolPath(homeDir))
+      expect(record.revision).toBe("cred_default_home")
+      expect(readLegacyAgentProviderCredentials({ agentName: "defaultHomeAgent" })).toEqual([
+        {
+          provider: "minimax",
+          credentials: { apiKey: "legacy-default-home-key" },
+          config: {},
+          provenance: {
+            source: "legacy-agent-secrets",
+            contributedByAgent: "defaultHomeAgent",
+          },
+        },
+      ])
+      expect(migrateLegacyAgentProviderCredentials({
+        agentNames: ["defaultHomeAgent"],
+        now: new Date("2026-04-12T18:08:00.000Z"),
+        makeRevision: () => "cred_default_home_migrated",
+      })).toEqual({
+        poolPath: getProviderCredentialPoolPath(homeDir),
+        migrated: [
+          { agentName: "defaultHomeAgent", provider: "minimax", revision: "cred_default_home_migrated" },
+        ],
+      })
+    } finally {
+      process.env.HOME = previousHome
+    }
   })
 })

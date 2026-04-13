@@ -17,8 +17,8 @@ export interface ProviderCredentialRecord {
   provider: AgentProvider
   revision: string
   updatedAt: string
-  credentials: Record<string, string | number | boolean>
-  config: Record<string, string | number | boolean>
+  credentials: Record<string, string | number>
+  config: Record<string, string | number>
   provenance: ProviderCredentialProvenance
 }
 
@@ -34,8 +34,8 @@ export type ProviderCredentialPoolReadResult =
 
 export interface ProviderCredentialInput {
   provider: AgentProvider
-  credentials: Record<string, string | number | boolean>
-  config: Record<string, string | number | boolean>
+  credentials: Record<string, string | number>
+  config: Record<string, string | number>
   provenance: {
     source: ProviderCredentialProvenanceSource
     contributedByAgent?: string
@@ -120,22 +120,21 @@ function isProvenanceSource(value: unknown): value is ProviderCredentialProvenan
   return typeof value === "string" && (VALID_PROVENANCE_SOURCES as string[]).includes(value)
 }
 
-function isCredentialValue(value: unknown): value is string | number | boolean {
-  return typeof value === "string" || typeof value === "number" || typeof value === "boolean"
+function isCredentialValue(value: unknown): value is string | number {
+  return typeof value === "string" || typeof value === "number"
 }
 
-function isPresentCredentialValue(value: unknown): value is string | number | boolean {
+function isPresentCredentialValue(value: unknown): value is string | number {
   if (!isCredentialValue(value)) return false
   if (typeof value === "string") return value.trim().length > 0
-  if (typeof value === "number") return Number.isFinite(value) && value !== 0
-  return true
+  return Number.isFinite(value) && value !== 0
 }
 
 function copyKnownFields(
   source: Record<string, unknown>,
   fields: string[],
-): Record<string, string | number | boolean> {
-  const result: Record<string, string | number | boolean> = {}
+): Record<string, string | number> {
+  const result: Record<string, string | number> = {}
   for (const field of fields) {
     const value = source[field]
     if (isPresentCredentialValue(value)) {
@@ -148,7 +147,7 @@ function copyKnownFields(
 function splitLegacyProviderConfig(
   provider: AgentProvider,
   rawConfig: Record<string, unknown>,
-): { credentials: Record<string, string | number | boolean>; config: Record<string, string | number | boolean> } {
+): { credentials: Record<string, string | number>; config: Record<string, string | number> } {
   const fields = PROVIDER_FIELD_SPLITS[provider]
   return {
     credentials: copyKnownFields(rawConfig, fields.credentials),
@@ -216,12 +215,12 @@ export function validateProviderCredentialPool(value: unknown): ProviderCredenti
     }
     for (const [field, fieldValue] of Object.entries(rawRecord.credentials)) {
       if (!isCredentialValue(fieldValue)) {
-        throw new Error(`${providerKey}.credentials.${field} must be a string, number, or boolean`)
+        throw new Error(`${providerKey}.credentials.${field} must be a string or number`)
       }
     }
     for (const [field, fieldValue] of Object.entries(rawRecord.config)) {
       if (!isCredentialValue(fieldValue)) {
-        throw new Error(`${providerKey}.config.${field} must be a string, number, or boolean`)
+        throw new Error(`${providerKey}.config.${field} must be a string or number`)
       }
     }
     if (!isRecord(rawRecord.provenance)) {
@@ -275,13 +274,13 @@ export function readProviderCredentialPool(homeDir = os.homedir()): ProviderCred
       component: "config/identity",
       event: "config.provider_credential_pool_invalid",
       message: "provider credential pool invalid",
-      meta: { poolPath, reason: error instanceof Error ? error.message : String(error) },
+      meta: { poolPath, reason: String(error) },
     })
     return {
       ok: false,
       reason: "invalid",
       poolPath,
-      error: error instanceof Error ? error.message : String(error),
+      error: String(error),
     }
   }
 }
@@ -380,7 +379,7 @@ export function readLegacyAgentProviderCredentials(
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return []
     }
-    throw new Error(`Failed to read legacy provider credentials for ${input.agentName}: ${error instanceof Error ? error.message : String(error)}`)
+    throw new Error(`Failed to read legacy provider credentials for ${input.agentName}: ${String(error)}`)
   }
   if (!isRecord(parsed) || !isRecord(parsed.providers)) {
     return []
