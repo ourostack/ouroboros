@@ -178,6 +178,14 @@ export function createOpenAICodexProviderRuntime(model: string, codexConfig: Ope
         throw error instanceof Error ? error : new Error(String(error));
       }
     },
+    /* v8 ignore start -- ping: tested via provider-ping.test.ts @preserve */
+    async ping(signal?: AbortSignal): Promise<void> {
+      await (this.client as OpenAI).responses.create(
+        { model: this.model, input: "ping", max_output_tokens: 16 } as any,
+        { signal },
+      )
+    },
+    /* v8 ignore stop */
     /* v8 ignore next 3 -- delegation: classification logic tested via classifyOpenAICodexError @preserve */
     classifyError(error: Error): ProviderErrorClassification {
       return classifyOpenAICodexError(error);
