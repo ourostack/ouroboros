@@ -1,9 +1,13 @@
 import { describe, expect, it, vi } from "vitest"
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
 import { emitNervesEvent } from "../../../nerves/runtime"
 import type { AgentProvider } from "../../../heart/identity"
 import type { PingResult } from "../../../heart/provider-ping"
 import type { DiscoveredCredential } from "../../../heart/daemon/cli-types"
 import { discoverWorkingProvider, scanEnvVarCredentials } from "../../../heart/daemon/provider-discovery"
+import { writeProviderCredentialPool } from "../../../heart/provider-credential-pool"
 
 vi.mock("../../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn(),
@@ -75,6 +79,10 @@ describe("scanEnvVarCredentials", () => {
 
 describe("discoverWorkingProvider", () => {
   const defaultSecrets = "/fake/.agentsecrets"
+
+  function makeTempHome(): string {
+    return fs.mkdtempSync(path.join(os.tmpdir(), "provider-discovery-"))
+  }
 
   it("returns null when no credentials on disk or env", async () => {
     const result = await discoverWorkingProvider({
@@ -176,6 +184,96 @@ describe("discoverWorkingProvider", () => {
     expect(result!.credentials).toEqual({ setupToken: "sk-disk" })
     // Should only ping once (disk cred wins, env deduped)
     expect(pingProvider).toHaveBeenCalledOnce()
+  })
+
+  it("prefers the machine provider credential pool over legacy disk and env credentials", async () => {
+    const homeDir = makeTempHome()
+    try {
+      writeProviderCredentialPool(homeDir, {
+        schemaVersion: 1,
+        updatedAt: "2026-04-13T00:00:00.000Z",
+        providers: {
+          minimax: {
+            provider: "minimax",
+            revision: "cred_pool",
+            updatedAt: "2026-04-13T00:00:00.000Z",
+            credentials: { apiKey: "mm-pool" },
+            config: {},
+            provenance: {
+              source: "auth-flow",
+              contributedByAgent: "slugger",
+              updatedAt: "2026-04-13T00:00:00.000Z",
+            },
+          },
+        },
+      })
+      const diskCreds: DiscoveredCredential[] = [
+        makeDiskCred("minimax", { apiKey: "mm-legacy" }, "legacy-agent"),
+      ]
+      const pingProvider = vi.fn<(provider: AgentProvider, config: Record<string, string>) => Promise<PingResult>>()
+        .mockResolvedValue({ ok: true })
+
+      const result = await discoverWorkingProvider({
+        discoverExistingCredentials: () => diskCreds,
+        pingProvider,
+        env: { MINIMAX_API_KEY: "mm-env" },
+        secretsRoot: path.join(homeDir, ".agentsecrets"),
+      })
+
+      expect(result).toEqual({
+        provider: "minimax",
+        credentials: { apiKey: "mm-pool" },
+        providerConfig: {},
+      })
+      expect(pingProvider).toHaveBeenCalledOnce()
+      expect(pingProvider).toHaveBeenCalledWith("minimax", { apiKey: "mm-pool" })
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true })
+    }
+  })
+
+  it("labels machine pool credentials by provenance source when no contributing agent is recorded", async () => {
+    const homeDir = makeTempHome()
+    try {
+      vi.mocked(emitNervesEvent).mockClear()
+      writeProviderCredentialPool(homeDir, {
+        schemaVersion: 1,
+        updatedAt: "2026-04-13T00:00:00.000Z",
+        providers: {
+          minimax: {
+            provider: "minimax",
+            revision: "cred_pool_manual",
+            updatedAt: "2026-04-13T00:00:00.000Z",
+            credentials: { apiKey: "mm-manual" },
+            config: {},
+            provenance: {
+              source: "manual",
+              updatedAt: "2026-04-13T00:00:00.000Z",
+            },
+          },
+        },
+      })
+      const pingProvider = vi.fn<(provider: AgentProvider, config: Record<string, string>) => Promise<PingResult>>()
+        .mockResolvedValue({ ok: true })
+
+      const result = await discoverWorkingProvider({
+        discoverExistingCredentials: () => [],
+        pingProvider,
+        env: {},
+        secretsRoot: path.join(homeDir, ".agentsecrets"),
+      })
+
+      expect(result?.provider).toBe("minimax")
+      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: "daemon.provider_discovery_ping",
+        meta: expect.objectContaining({
+          provider: "minimax",
+          source: "machine-pool:manual",
+        }),
+      }))
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true })
+    }
   })
 
   it("returns null when all providers fail ping", async () => {
