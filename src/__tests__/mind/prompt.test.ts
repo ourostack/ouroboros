@@ -3655,6 +3655,58 @@ describe("providerSection facing derivation from channel", () => {
     expect(result).toContain("minimax (human-display-model)")
     expect(result).not.toContain("agent-display-model")
   })
+
+  it("buildSystem provider section leads with effective local lanes when provided", async () => {
+    const DEFAULT_AGENT_CONTEXT = { maxTokens: 80000, contextMargin: 20 }
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      name: "testagent",
+      configPath: "~/.agentsecrets/testagent/secrets.json",
+      humanFacing: { provider: "anthropic", model: "stale-human-agent-json-model" },
+      agentFacing: { provider: "anthropic", model: "stale-agent-json-model" },
+      context: { ...DEFAULT_AGENT_CONTEXT },
+    })
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { anthropic: { setupToken: `sk-ant-oat01-${"a".repeat(80)}` } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = await buildSystem("inner", {
+      providerVisibility: {
+        agentName: "testagent",
+        lanes: [
+          {
+            lane: "outward",
+            status: "configured",
+            provider: "minimax",
+            model: "MiniMax-M2.5",
+            source: "local",
+            readiness: { status: "ready", checkedAt: "2026-04-12T23:22:00.000Z" },
+            credential: { status: "present", source: "auth-flow", contributedByAgent: "slugger", revision: "cred_mm" },
+            warnings: [],
+          },
+          {
+            lane: "inner",
+            status: "configured",
+            provider: "openai-codex",
+            model: "gpt-5.4",
+            source: "local",
+            readiness: { status: "failed", error: "400 status code" },
+            credential: { status: "present", source: "legacy-agent-secrets", contributedByAgent: "kicker", revision: "cred_codex" },
+            warnings: [],
+          },
+        ],
+      },
+    } as any)
+
+    const providerBlock = result.match(/## my provider\n[\s\S]*?(?=\n\n## |\n\n# )/)?.[0] ?? ""
+    expect(providerBlock).toContain("outward: minimax / MiniMax-M2.5")
+    expect(providerBlock).toContain("inner: openai-codex / gpt-5.4")
+    expect(providerBlock).toContain("failed: 400 status code")
+    expect(providerBlock).not.toContain("stale-human-agent-json-model")
+    expect(providerBlock).not.toContain("stale-agent-json-model")
+  })
 })
 
 describe("active-work prompting", () => {
