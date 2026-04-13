@@ -264,6 +264,59 @@ describe("manual-clone detection (checkManualCloneBundles)", () => {
     expect(mockPrompt).not.toHaveBeenCalled()
   })
 
+  it("agent.json read fails -- skips bundle", async () => {
+    const { checkManualCloneBundles } = await import("../../../heart/daemon/cli-exec")
+    const mockPrompt = vi.fn()
+
+    mockReaddirSync.mockReturnValue(["myagent.ouro"])
+    mockExistsSync.mockImplementation((p: unknown) => {
+      const s = String(p)
+      if (s.includes("myagent.ouro/.git")) return true
+      if (s.includes("myagent.ouro/agent.json")) return true
+      return false
+    })
+    mockExecFileSync.mockReturnValue(Buffer.from("origin\thttps://github.com/user/myagent.ouro.git (fetch)\n"))
+    mockReadFileSync.mockImplementation(() => {
+      throw new Error("EACCES")
+    })
+
+    await checkManualCloneBundles({
+      bundlesRoot: "/mock/bundles",
+      promptInput: mockPrompt,
+    })
+
+    expect(mockPrompt).not.toHaveBeenCalled()
+  })
+
+  it("readdirSync fails -- returns silently", async () => {
+    const { checkManualCloneBundles } = await import("../../../heart/daemon/cli-exec")
+    const mockPrompt = vi.fn()
+
+    mockReaddirSync.mockImplementation(() => { throw new Error("ENOENT") })
+
+    await checkManualCloneBundles({
+      bundlesRoot: "/nonexistent",
+      promptInput: mockPrompt,
+    })
+
+    expect(mockPrompt).not.toHaveBeenCalled()
+  })
+
+  it("non-.ouro directories in bundles root are skipped", async () => {
+    const { checkManualCloneBundles } = await import("../../../heart/daemon/cli-exec")
+    const mockPrompt = vi.fn()
+
+    mockReaddirSync.mockReturnValue(["random-dir", "package.json", "myagent.ouro"])
+    mockExistsSync.mockReturnValue(false) // no .git for myagent.ouro
+
+    await checkManualCloneBundles({
+      bundlesRoot: "/mock/bundles",
+      promptInput: mockPrompt,
+    })
+
+    expect(mockPrompt).not.toHaveBeenCalled()
+  })
+
   it("multiple remotes: uses first remote name", async () => {
     const { checkManualCloneBundles } = await import("../../../heart/daemon/cli-exec")
     const mockPrompt = vi.fn().mockResolvedValue("y")
