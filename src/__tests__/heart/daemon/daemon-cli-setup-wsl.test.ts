@@ -156,6 +156,80 @@ describe("ouro setup WSL-aware", () => {
       expect(claudeWrites.length).toBeGreaterThan(0)
       expect(String(claudeWrites[0][0])).toContain("/mnt/c/Users/testuser/.claude/CLAUDE.md")
     })
+
+    it("wslpath command fails: propagates error", async () => {
+      mockDetectPlatform.mockReturnValue("wsl")
+      mockExecFileSync.mockImplementation((cmd: string) => {
+        if (cmd === "cmd.exe") return Buffer.from("C:\\Users\\testuser\r\n")
+        if (cmd === "wslpath") throw new Error("wslpath: command not found")
+        return Buffer.from("")
+      })
+
+      const { runOuroCli, createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps()
+      deps.writeStdout = vi.fn()
+
+      await expect(
+        runOuroCli(["setup", "--tool", "claude-code", "--agent", "test-agent"], deps),
+      ).rejects.toThrow("wslpath")
+    })
+
+    it("cmd.exe fails: propagates error", async () => {
+      mockDetectPlatform.mockReturnValue("wsl")
+      mockExecFileSync.mockImplementation((cmd: string) => {
+        if (cmd === "cmd.exe") throw new Error("cmd.exe not found")
+        return Buffer.from("")
+      })
+
+      const { runOuroCli, createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps()
+      deps.writeStdout = vi.fn()
+
+      await expect(
+        runOuroCli(["setup", "--tool", "claude-code", "--agent", "test-agent"], deps),
+      ).rejects.toThrow("cmd.exe")
+    })
+
+    it("Windows home path with spaces is handled correctly", async () => {
+      mockDetectPlatform.mockReturnValue("wsl")
+      mockExecFileSync.mockImplementation((cmd: string) => {
+        if (cmd === "cmd.exe") return Buffer.from("C:\\Users\\Test User\r\n")
+        if (cmd === "wslpath") return Buffer.from("/mnt/c/Users/Test User\n")
+        return Buffer.from("")
+      })
+
+      const { runOuroCli, createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps()
+      deps.writeStdout = vi.fn()
+
+      await runOuroCli(["setup", "--tool", "claude-code", "--agent", "test-agent"], deps)
+
+      const settingsWrites = mockWriteFileSync.mock.calls.filter(
+        (c: unknown[]) => String(c[0]).includes("settings.json"),
+      )
+      expect(settingsWrites.length).toBeGreaterThan(0)
+      expect(String(settingsWrites[0][0])).toContain("/mnt/c/Users/Test User/.claude/settings.json")
+    })
+
+    it("WSL codex setup uses wsl prefix for MCP serve command", async () => {
+      mockDetectPlatform.mockReturnValue("wsl")
+      mockExecFileSync.mockImplementation((cmd: string) => {
+        if (cmd === "cmd.exe") return Buffer.from("C:\\Users\\testuser\r\n")
+        if (cmd === "wslpath") return Buffer.from("/mnt/c/Users/testuser\n")
+        return Buffer.from("")
+      })
+
+      const { runOuroCli, createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps()
+      deps.writeStdout = vi.fn()
+
+      await runOuroCli(["setup", "--tool", "codex", "--agent", "test-agent"], deps)
+
+      const calls = mockExecSync.mock.calls.map((c: unknown[]) => String(c[0]))
+      const mcpCall = calls.find((c) => c.includes("codex") && c.includes("mcp") && c.includes("add"))
+      expect(mcpCall).toBeDefined()
+      expect(mcpCall).toContain("wsl ")
+    })
   })
 
   describe("windows-native platform", () => {
