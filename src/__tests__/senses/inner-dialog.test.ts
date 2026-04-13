@@ -8,7 +8,8 @@ const mockBuildSystem = vi.fn()
 const mockRunAgent = vi.fn()
 const mockSessionPath = vi.fn()
 const mockLoadSession = vi.fn()
-const mockPostTurn = vi.fn()
+const mockPostTurnTrim = vi.fn().mockReturnValue({ currentMessages: [], trimmedMessages: [], currentIngressTimes: [], maxTokens: 128000, contextMargin: 0 })
+const mockDeferPostTurnPersist = vi.fn().mockResolvedValue([])
 const mockGetAgentRoot = vi.fn()
 const mockGetAgentName = vi.fn()
 const mockDrainPending = vi.fn()
@@ -49,7 +50,8 @@ vi.mock("../../heart/config", () => ({
 
 vi.mock("../../mind/context", () => ({
   loadSession: (...args: any[]) => mockLoadSession(...args),
-  postTurn: (...args: any[]) => mockPostTurn(...args),
+  postTurnTrim: (...args: any[]) => mockPostTurnTrim(...args),
+  deferPostTurnPersist: (...args: any[]) => mockDeferPostTurnPersist(...args),
 }))
 
 vi.mock("../../heart/identity", () => ({
@@ -170,7 +172,8 @@ describe("inner dialog runtime", () => {
     })
     mockSessionPath.mockReset().mockReturnValue(sessionFile)
     mockLoadSession.mockReset().mockReturnValue(null)
-    mockPostTurn.mockReset().mockImplementation(() => {})
+    mockPostTurnTrim.mockReset().mockReturnValue({ currentMessages: [], trimmedMessages: [], currentIngressTimes: [], maxTokens: 128000, contextMargin: 0 })
+    mockDeferPostTurnPersist.mockReset().mockResolvedValue([])
     mockGetAgentRoot.mockReset().mockReturnValue(agentRoot)
     mockGetAgentName.mockReset().mockReturnValue("test-agent")
     mockDrainPending.mockReset().mockReturnValue([])
@@ -524,7 +527,7 @@ describe("inner dialog runtime", () => {
       now: () => new Date("2026-03-06T12:00:00.000Z"),
     })
 
-    expect(mockPostTurn).not.toHaveBeenCalled()
+    expect(mockPostTurnTrim).not.toHaveBeenCalled()
   })
 
   it("passes pending dir for self/inner/dialog to pipeline", async () => {

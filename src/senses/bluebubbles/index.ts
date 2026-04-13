@@ -6,7 +6,7 @@ import { runAgent, type ChannelCallbacks, createSummarize } from "../../heart/co
 import { getBlueBubblesChannelConfig, getBlueBubblesConfig, sessionPath } from "../../heart/config"
 import { getAgentName, getAgentRoot } from "../../heart/identity"
 import { withSharedTurnLock } from "../../heart/turn-coordinator"
-import { loadSession, postTurn } from "../../mind/context"
+import { loadSession, postTurnTrim, deferPostTurnPersist } from "../../mind/context"
 import { accumulateFriendTokens } from "../../mind/friends/tokens"
 import { upsertGroupContextParticipants } from "../../mind/friends/group-context"
 import { FriendResolver, type FriendResolverParams } from "../../mind/friends/resolver"
@@ -113,7 +113,8 @@ interface RuntimeDeps {
   buildSystem: typeof buildSystem
   runAgent: typeof runAgent
   loadSession: typeof loadSession
-  postTurn: typeof postTurn
+  postTurnTrim: typeof postTurnTrim
+  deferPostTurnPersist: typeof deferPostTurnPersist
   sessionPath: typeof sessionPath
   accumulateFriendTokens: typeof accumulateFriendTokens
   createClient: () => BlueBubblesClient
@@ -151,7 +152,8 @@ const defaultDeps: RuntimeDeps = {
   buildSystem,
   runAgent,
   loadSession,
-  postTurn,
+  postTurnTrim,
+  deferPostTurnPersist,
   sessionPath,
   accumulateFriendTokens,
   createClient: () => createBlueBubblesClient(),
@@ -908,7 +910,10 @@ async function handleBlueBubblesNormalizedEvent(
             },
           },
         }),
-        postTurn: resolvedDeps.postTurn,
+        postTurn: (turnMessages, sessionPathArg, usage, hooks, state) => {
+          const prepared = resolvedDeps.postTurnTrim(turnMessages, usage, hooks)
+          resolvedDeps.deferPostTurnPersist(sessionPathArg, prepared, usage, state)
+        },
         accumulateFriendTokens: resolvedDeps.accumulateFriendTokens,
         signal: controller.signal,
         runAgentOptions: { mcpManager, ...(isReaction ? { isReactionSignal: true } : {}) },

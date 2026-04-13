@@ -22,7 +22,8 @@ const mocks = vi.hoisted(() => ({
   getAgentName: vi.fn().mockReturnValue("testagent"),
   getAgentRoot: vi.fn().mockReturnValue("/mock/agent/root"),
   loadSession: vi.fn().mockReturnValue(null),
-  postTurn: vi.fn(),
+  postTurnTrim: vi.fn().mockReturnValue({ currentMessages: [], trimmedMessages: [], currentIngressTimes: [], maxTokens: 128000, contextMargin: 0 }),
+  deferPostTurnPersist: vi.fn().mockResolvedValue([]),
   accumulateFriendTokens: vi.fn(),
   resolveContext: vi.fn(),
   resolverCtor: vi.fn(),
@@ -132,7 +133,8 @@ vi.mock("../../../heart/config", () => ({
 
 vi.mock("../../../mind/context", () => ({
   loadSession: (...args: any[]) => mocks.loadSession(...args),
-  postTurn: (...args: any[]) => mocks.postTurn(...args),
+  postTurnTrim: (...args: any[]) => mocks.postTurnTrim(...args),
+  deferPostTurnPersist: (...args: any[]) => mocks.deferPostTurnPersist(...args),
   deleteSession: vi.fn(),
 }))
 
@@ -568,7 +570,8 @@ function resetMocks(): void {
   mocks.getAgentName.mockReset().mockReturnValue("testagent")
   mocks.getAgentRoot.mockReset().mockReturnValue("/mock/agent/root")
   mocks.loadSession.mockReset().mockReturnValue(null)
-  mocks.postTurn.mockReset()
+  mocks.postTurnTrim.mockReset().mockReturnValue({ currentMessages: [], trimmedMessages: [], currentIngressTimes: [], maxTokens: 128000, contextMargin: 0 })
+  mocks.deferPostTurnPersist.mockReset().mockResolvedValue([])
   mocks.accumulateFriendTokens.mockReset()
   mocks.resolveContext.mockReset().mockResolvedValue(defaultFriendContext)
   mocks.getChannelCapabilities.mockReset().mockReturnValue({
@@ -755,7 +758,7 @@ describe("BlueBubbles sense runtime", () => {
         text: "got it",
       }),
     )
-    expect(mocks.postTurn).toHaveBeenCalledTimes(1)
+    expect(mocks.postTurnTrim).toHaveBeenCalledTimes(1)
     expect(mocks.accumulateFriendTokens).toHaveBeenCalledWith(
       expect.anything(),
       "friend-uuid",
@@ -805,7 +808,7 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.markChatRead).not.toHaveBeenCalled()
     expect(mocks.setTyping).not.toHaveBeenCalled()
     expect(mocks.sendText).not.toHaveBeenCalled()
-    expect(mocks.postTurn).toHaveBeenCalledTimes(1)
+    expect(mocks.postTurnTrim).toHaveBeenCalledTimes(1)
   })
 
   it("routes top-level and threaded DM turns into the same persisted chat trunk", async () => {
@@ -1943,7 +1946,7 @@ describe("BlueBubbles sense runtime", () => {
         text: "\u2717 fatal",
       }),
     )
-    expect(mocks.postTurn).toHaveBeenCalledTimes(1)
+    expect(mocks.postTurnTrim).toHaveBeenCalledTimes(1)
   })
 
   it("formats group mutations with sender-forward phrasing before handing them to the agent", async () => {
