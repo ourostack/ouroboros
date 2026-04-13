@@ -42,7 +42,8 @@ vi.mock("../../../heart/config", () => ({
 
 vi.mock("../../../mind/context", () => ({
   loadSession: vi.fn().mockReturnValue(null),
-  postTurn: vi.fn(),
+  postTurnTrim: vi.fn().mockReturnValue({ currentMessages: [], trimmedMessages: [], currentIngressTimes: [], maxTokens: 128000, contextMargin: 0 }),
+  deferPostTurnPersist: vi.fn().mockResolvedValue([]),
   deleteSession: vi.fn(),
 }))
 
