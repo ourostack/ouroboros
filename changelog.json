@@ -2,9 +2,17 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.352",
+      "version": "0.1.0-alpha.353",
       "changes": [
         "Provider failover now uses the machine-wide credential pool and local provider-state lanes: terminal errors build ready-provider choices with safe credential provenance, `switch to <provider>` carries lane/model/revision context, and the retry path updates only the failed `state/providers.json` lane instead of mutating both synced `agent.json` facings."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.352",
+      "changes": [
+        "Settle tool description now communicates turn-ending semantics: 'deliver your response and end your turn' with explicit guidance against settling with status updates mid-task.",
+        "Observe tool now available in all outward channels including 1:1 chats, not just groups and reactions — agents can absorb messages without responding when the moment doesn't call for words.",
+        "Autonomous execution prompt contract added: when told to work autonomously, agents use ponder to absorb new messages and continue using tools, settling only with the final result."
       ]
     },
     {

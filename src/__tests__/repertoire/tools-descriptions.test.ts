@@ -108,7 +108,17 @@ describe("Phase 2: tool description enrichment", () => {
 
     it("settle description contains substantive response guidance", () => {
       const desc = settleTool.function.description ?? ""
-      expect(desc).toContain("If you're settling with 'I'll look into that,' you probably should be using a tool instead")
+      expect(desc).toMatch(/if you're settling with 'I'll look into that,' you probably should be using a tool instead/i)
+    })
+
+    it("settle description communicates turn-ending semantics", () => {
+      const desc = settleTool.function.description ?? ""
+      expect(desc).toMatch(/end.?s? your turn|hands control back/i)
+    })
+
+    it("settle description discourages mid-task status updates", () => {
+      const desc = settleTool.function.description ?? ""
+      expect(desc).toMatch(/do not settle with status updates/i)
     })
 
     it("claude description contains second opinions guidance", () => {
