@@ -1793,4 +1793,102 @@ describe("session events", () => {
       fs.rmdirSync(tmpDir)
     })
   })
+
+  describe("integration: full session lifecycle with pruning and archive", () => {
+    it("builds envelope, changes system prompt, prunes, archives, and reconstructs full history", async () => {
+      const fs = await import("fs")
+      const os = await import("os")
+      const path = await import("path")
+      const {
+        buildCanonicalSessionEnvelope,
+        appendEvictedToArchive,
+        loadFullEventHistory,
+        projectProviderMessages,
+      } = await import("../../heart/session-events")
+
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sess-integ-"))
+      const sessPath = path.join(tmpDir, "dialog.json")
+
+      // Phase 1: Build initial envelope with system + 10 user/assistant turns
+      const turn1Messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "You are a helpful assistant. Weather: sunny. Time: morning." },
+      ]
+      for (let i = 0; i < 10; i++) {
+        turn1Messages.push({ role: "user", content: `question ${i}` })
+        turn1Messages.push({ role: "assistant", content: `answer ${i}` })
+      }
+
+      const result1 = buildCanonicalSessionEnvelope({
+        existing: null,
+        previousMessages: [],
+        currentMessages: turn1Messages,
+        trimmedMessages: turn1Messages,
+        recordedAt: "2026-04-13T12:00:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      expect(result1.envelope.events).toHaveLength(21) // 1 sys + 20 user/assistant
+      expect(result1.evictedEvents).toHaveLength(0)
+      fs.writeFileSync(sessPath, JSON.stringify(result1.envelope))
+
+      // Phase 2: System prompt changes, add 2 new messages, trim to keep only last 2 turns
+      const turn2Messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "You are a helpful assistant. Weather: rainy. Time: afternoon." },
+        ...turn1Messages.slice(1), // all non-system from turn 1
+        { role: "user", content: "new question" },
+        { role: "assistant", content: "new answer" },
+      ]
+      const trimmedMessages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "You are a helpful assistant. Weather: rainy. Time: afternoon." },
+        { role: "user", content: "new question" },
+        { role: "assistant", content: "new answer" },
+      ]
+
+      const result2 = buildCanonicalSessionEnvelope({
+        existing: result1.envelope,
+        previousMessages: turn1Messages,
+        currentMessages: turn2Messages,
+        trimmedMessages,
+        recordedAt: "2026-04-13T12:01:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      // Key assertions: only 2 new events created (not 22 as the bug would cause)
+      // Total events created = 21 original + 1 new system + 2 new messages = 24
+      // But only 3 in projection (sys_v2, new_q, new_a)
+      expect(result2.envelope.events.length).toBeLessThanOrEqual(3) // only projected events
+      expect(result2.evictedEvents.length).toBeGreaterThan(0) // old events evicted
+
+      // Phase 3: Archive evicted events
+      appendEvictedToArchive(sessPath, result2.evictedEvents)
+      fs.writeFileSync(sessPath, JSON.stringify(result2.envelope))
+
+      // Phase 4: Reconstruct full history
+      const fullHistory = loadFullEventHistory(sessPath)
+
+      // Full history should have all unique events from both archive and envelope
+      expect(fullHistory.length).toBeGreaterThan(3) // more than just the projected events
+      // Events should be sorted by sequence
+      for (let i = 1; i < fullHistory.length; i++) {
+        expect(fullHistory[i]!.sequence).toBeGreaterThanOrEqual(fullHistory[i - 1]!.sequence)
+      }
+
+      // Phase 5: Verify projection works correctly
+      const projected = projectProviderMessages(result2.envelope)
+      expect(projected).toHaveLength(3) // sys + new_q + new_a
+      expect((projected[0] as any).content).toContain("rainy") // new system content
+      expect((projected[1] as any).content).toBe("new question")
+      expect((projected[2] as any).content).toBe("new answer")
+
+      // Cleanup
+      const archivePath = sessPath.replace(/\.json$/, ".archive.ndjson")
+      try { fs.unlinkSync(sessPath) } catch { /* */ }
+      try { fs.unlinkSync(archivePath) } catch { /* */ }
+      try { fs.rmdirSync(tmpDir) } catch { /* */ }
+    })
+  })
 })
