@@ -238,6 +238,128 @@ describe("ouro clone execution", () => {
     expect(cloneCalls[0][1]).toContain("/mock/bundles/mybot.ouro")
   })
 
+  it("clone succeeds even if agent.json is missing (no sync write)", async () => {
+    const { runOuroCli, createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+    const deps = createDefaultOuroCliDeps()
+    deps.writeStdout = vi.fn()
+    deps.bundlesRoot = "/mock/bundles"
+
+    mockExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === "git" && args[0] === "--version") return Buffer.from("git version 2.40.0")
+      if (cmd === "git" && args[0] === "ls-remote") return Buffer.from("")
+      if (cmd === "git" && args[0] === "clone") return Buffer.from("")
+      return Buffer.from("")
+    })
+
+    // agent.json does NOT exist after clone
+    mockExistsSync.mockReturnValue(false)
+
+    await runOuroCli(["clone", "https://github.com/user/agent.ouro.git"], deps)
+
+    // agent.json should NOT be written (it doesn't exist)
+    const agentJsonWrites = mockWriteFileSync.mock.calls.filter(
+      (c: unknown[]) => String(c[0]).includes("agent.json"),
+    )
+    expect(agentJsonWrites.length).toBe(0)
+
+    // Should still output success message
+    const output = (deps.writeStdout as ReturnType<typeof vi.fn>).mock.calls
+      .map((c: unknown[]) => c[0])
+      .join("\n")
+    expect(output).toContain("cloned agent to")
+  })
+
+  it("clone with SSH URL", async () => {
+    const { runOuroCli, createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+    const deps = createDefaultOuroCliDeps()
+    deps.writeStdout = vi.fn()
+    deps.bundlesRoot = "/mock/bundles"
+
+    mockExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === "git" && args[0] === "--version") return Buffer.from("git version 2.40.0")
+      if (cmd === "git" && args[0] === "ls-remote") return Buffer.from("")
+      if (cmd === "git" && args[0] === "clone") return Buffer.from("")
+      return Buffer.from("")
+    })
+
+    mockExistsSync.mockImplementation((p: unknown) => {
+      const s = String(p)
+      if (s.includes("test.ouro/agent.json")) return true
+      return false
+    })
+    mockReadFileSync.mockImplementation((p: unknown) => {
+      const s = String(p)
+      if (s.includes("agent.json")) return JSON.stringify({ name: "test" })
+      if (s.includes("package.json")) return JSON.stringify({ version: "0.1.0" })
+      return ""
+    })
+
+    await runOuroCli(["clone", "git@github.com:user/test.ouro.git"], deps)
+
+    const cloneCalls = mockExecFileSync.mock.calls.filter(
+      (c: unknown[]) => c[0] === "git" && (c[1] as string[])[0] === "clone",
+    )
+    expect(cloneCalls.length).toBe(1)
+    expect(cloneCalls[0][1]).toContain("git@github.com:user/test.ouro.git")
+  })
+
+  it("clone with existing sync block in agent.json", async () => {
+    const { runOuroCli, createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+    const deps = createDefaultOuroCliDeps()
+    deps.writeStdout = vi.fn()
+    deps.bundlesRoot = "/mock/bundles"
+
+    mockExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === "git" && args[0] === "--version") return Buffer.from("git version 2.40.0")
+      if (cmd === "git" && args[0] === "ls-remote") return Buffer.from("")
+      if (cmd === "git" && args[0] === "clone") return Buffer.from("")
+      return Buffer.from("")
+    })
+
+    mockExistsSync.mockImplementation((p: unknown) => {
+      const s = String(p)
+      if (s.includes("agent.ouro/agent.json")) return true
+      return false
+    })
+    mockReadFileSync.mockImplementation((p: unknown) => {
+      const s = String(p)
+      if (s.includes("agent.json")) return JSON.stringify({ name: "agent", sync: { enabled: false, remote: "upstream" } })
+      if (s.includes("package.json")) return JSON.stringify({ version: "0.1.0" })
+      return ""
+    })
+
+    await runOuroCli(["clone", "https://github.com/user/agent.ouro.git"], deps)
+
+    // sync should be overwritten with enabled: true, remote: "origin"
+    const agentJsonWrites = mockWriteFileSync.mock.calls.filter(
+      (c: unknown[]) => String(c[0]).includes("agent.json"),
+    )
+    expect(agentJsonWrites.length).toBe(1)
+    const written = JSON.parse(agentJsonWrites[0][1] as string)
+    expect(written.sync.enabled).toBe(true)
+    expect(written.sync.remote).toBe("origin")
+  })
+
+  it("git clone command failure propagates error", async () => {
+    const { runOuroCli, createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+    const deps = createDefaultOuroCliDeps()
+    deps.writeStdout = vi.fn()
+    deps.bundlesRoot = "/mock/bundles"
+
+    mockExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === "git" && args[0] === "--version") return Buffer.from("git version 2.40.0")
+      if (cmd === "git" && args[0] === "ls-remote") return Buffer.from("")
+      if (cmd === "git" && args[0] === "clone") {
+        throw new Error("fatal: could not create work tree")
+      }
+      return Buffer.from("")
+    })
+
+    await expect(
+      runOuroCli(["clone", "https://github.com/user/agent.ouro.git"], deps),
+    ).rejects.toThrow("could not create work tree")
+  })
+
   it("agent name provided via --agent flag", async () => {
     const { runOuroCli, createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
     const deps = createDefaultOuroCliDeps()
