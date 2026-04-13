@@ -1,12 +1,23 @@
 import { describe, it, expect, vi } from "vitest"
+import * as fs from "fs"
+import * as os from "os"
+import * as path from "path"
 
 vi.mock("../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn(),
 }))
 
-import { buildFailoverContext, handleFailoverReply } from "../../heart/provider-failover"
+import {
+  buildFailoverContext,
+  formatCredentialProvenanceLabel,
+  handleFailoverReply,
+  runMachineProviderFailoverInventory,
+} from "../../heart/provider-failover"
+import { writeProviderCredentialPool } from "../../heart/provider-credential-pool"
 
 const models = { anthropic: "claude-opus-4-6", "openai-codex": "gpt-5.4", azure: "gpt-4o-mini", minimax: "minimax-text-01" }
+
+const now = "2026-04-13T05:40:00.000Z"
 
 describe("buildFailoverContext", () => {
   it("builds message with working providers and model info", () => {
@@ -53,6 +64,56 @@ describe("buildFailoverContext", () => {
     expect(ctx.userMessage).toContain("switch to azure")
     expect(ctx.userMessage).toContain("claude-opus-4-6")
     expect(ctx.userMessage).toContain("gpt-4o-mini")
+  })
+
+  it("renders machine-wide ready providers with credential provenance labels", () => {
+    const ctx = buildFailoverContext(
+      "400 status code (no body)",
+      "auth-failure",
+      "openai-codex",
+      "gpt-5.4",
+      "slugger",
+      {
+        ready: [
+          {
+            provider: "minimax",
+            model: "MiniMax-M2.7",
+            credentialRevision: "cred_minimax",
+            source: "auth-flow",
+            contributedByAgent: "kicker",
+            result: { ok: true },
+          },
+        ],
+        unavailable: [
+          {
+            provider: "anthropic",
+            model: "claude-opus-4-6",
+            credentialRevision: "cred_anthropic",
+            source: "legacy-agent-secrets",
+            contributedByAgent: "slugger",
+            result: { ok: false, classification: "auth-failure", message: "expired" },
+          },
+        ],
+        unconfigured: ["azure"],
+      } as any,
+      {},
+    )
+
+    expect(ctx.workingProviders).toEqual(["minimax"])
+    expect((ctx as any).readyProviders).toEqual([
+      expect.objectContaining({
+        provider: "minimax",
+        model: "MiniMax-M2.7",
+        source: "auth-flow",
+        contributedByAgent: "kicker",
+      }),
+    ])
+    expect(ctx.userMessage).toContain("Ready providers:")
+    expect(ctx.userMessage).toContain('minimax (MiniMax-M2.7; credentials from kicker via auth-flow): reply "switch to minimax"')
+    expect(ctx.userMessage).toContain("anthropic: credentials need to be refreshed")
+    expect(ctx.userMessage).not.toContain("cred_minimax")
+    expect(ctx.userMessage).not.toContain("setupToken")
+    expect(ctx.userMessage).not.toContain(".agentsecrets")
   })
 
   it("handles no working providers", () => {
@@ -172,9 +233,125 @@ describe("buildFailoverContext", () => {
     expect(ctx.errorSummary).toBe("openai-codex [configured model: claude-sonnet-4.6] authentication failed")
     expect(ctx.userMessage).toContain("provider detail: 401 Provided authentication token is expired.")
     expect(ctx.userMessage).toContain("does not look like a model for OpenAI Codex")
-    expect(ctx.userMessage).toContain("ouro config model --agent slugger --facing human gpt-5.4")
+    expect(ctx.userMessage).toContain("ouro use --agent slugger --lane outward --provider openai-codex --model gpt-5.4")
     expect(ctx.userMessage).toContain("Ready providers:")
     expect(ctx.userMessage).toContain('reply "switch to anthropic"')
+  })
+
+  it("handles structured unavailable providers without a model hint", () => {
+    const ctx = buildFailoverContext(
+      "token expired",
+      "auth-failure",
+      "openai-codex",
+      "gpt-5.4",
+      "slugger",
+      {
+        ready: [],
+        unavailable: [
+          {
+            provider: "anthropic",
+            result: { ok: false, classification: "auth-failure", message: "expired" },
+          },
+        ],
+        unconfigured: [],
+      },
+      {},
+    )
+
+    expect(ctx.userMessage).toContain("Configured but unavailable:")
+    expect(ctx.userMessage).toContain("anthropic: credentials need to be refreshed")
+  })
+})
+
+describe("formatCredentialProvenanceLabel", () => {
+  it("renders only safe provenance labels", () => {
+    expect(formatCredentialProvenanceLabel({ source: "auth-flow", contributedByAgent: "slugger" }))
+      .toBe("credentials from slugger via auth-flow")
+    expect(formatCredentialProvenanceLabel({ contributedByAgent: "slugger" }))
+      .toBe("credentials from slugger")
+    expect(formatCredentialProvenanceLabel({ source: "manual" }))
+      .toBe("credentials from this machine via manual")
+    expect(formatCredentialProvenanceLabel({})).toBeUndefined()
+  })
+})
+
+describe("runMachineProviderFailoverInventory", () => {
+  it("pings machine credential-pool providers and preserves safe provenance", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-provider-failover-"))
+    try {
+      writeProviderCredentialPool(tmp, {
+        schemaVersion: 1,
+        updatedAt: now,
+        providers: {
+          anthropic: {
+            provider: "anthropic",
+            revision: "cred_anthropic",
+            updatedAt: now,
+            credentials: { setupToken: "anthropic-secret" },
+            config: {},
+            provenance: { source: "legacy-agent-secrets", contributedByAgent: "slugger", updatedAt: now },
+          },
+          minimax: {
+            provider: "minimax",
+            revision: "cred_minimax",
+            updatedAt: now,
+            credentials: { apiKey: "minimax-secret" },
+            config: {},
+            provenance: { source: "auth-flow", contributedByAgent: "kicker", updatedAt: now },
+          },
+        },
+      })
+      const ping = vi.fn(async (provider: string) => provider === "anthropic"
+        ? { ok: true as const }
+        : { ok: false as const, classification: "auth-failure" as const, message: "expired" })
+
+      const inventory = await runMachineProviderFailoverInventory("slugger", "openai-codex", {
+        homeDir: tmp,
+        ping: ping as any,
+      })
+
+      expect(ping).toHaveBeenCalledWith("anthropic", expect.objectContaining({ setupToken: "anthropic-secret" }), { model: "claude-opus-4-6" })
+      expect(ping).toHaveBeenCalledWith("minimax", expect.objectContaining({ apiKey: "minimax-secret" }), { model: "MiniMax-M2.7" })
+      expect(inventory.ready).toEqual([
+        expect.objectContaining({
+          provider: "anthropic",
+          model: "claude-opus-4-6",
+          credentialRevision: "cred_anthropic",
+          source: "legacy-agent-secrets",
+          contributedByAgent: "slugger",
+        }),
+      ])
+      expect(inventory.unavailable).toEqual([
+        expect.objectContaining({
+          provider: "minimax",
+          model: "MiniMax-M2.7",
+          credentialRevision: "cred_minimax",
+          source: "auth-flow",
+          contributedByAgent: "kicker",
+          result: expect.objectContaining({ ok: false, classification: "auth-failure" }),
+        }),
+      ])
+      expect(inventory.unconfigured).toEqual(["azure", "github-copilot"])
+      expect(JSON.stringify(inventory)).not.toContain("anthropic-secret")
+      expect(JSON.stringify(inventory)).not.toContain("minimax-secret")
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it("treats a missing machine credential pool as unconfigured providers without pinging", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-provider-failover-missing-"))
+    try {
+      const inventory = await runMachineProviderFailoverInventory("slugger", "anthropic", {
+        homeDir: tmp,
+      })
+
+      expect(inventory.ready).toEqual([])
+      expect(inventory.unavailable).toEqual([])
+      expect(inventory.unconfigured).toEqual(["openai-codex", "azure", "minimax", "github-copilot"])
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
   })
 })
 
@@ -193,23 +370,83 @@ describe("handleFailoverReply", () => {
   )
 
   it("matches 'switch to anthropic'", () => {
-    expect(handleFailoverReply("switch to anthropic", ctx)).toEqual({ action: "switch", provider: "anthropic" })
+    expect(handleFailoverReply("switch to anthropic", ctx)).toEqual({
+      action: "switch",
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+      lane: "outward",
+    })
+  })
+
+  it("returns selected lane and model when matching a provenance-rich ready provider", () => {
+    const richContext = buildFailoverContext(
+      "usage limit",
+      "usage-limit",
+      "openai-codex",
+      "gpt-5.4",
+      "slugger",
+      {
+        ready: [
+          {
+            provider: "minimax",
+            model: "MiniMax-M2.7",
+            credentialRevision: "cred_minimax",
+            source: "manual",
+            contributedByAgent: "slugger",
+            result: { ok: true },
+          },
+        ],
+        unavailable: [],
+        unconfigured: [],
+      } as any,
+      {},
+    )
+
+    expect(handleFailoverReply("switch to minimax", richContext)).toEqual({
+      action: "switch",
+      provider: "minimax",
+      model: "MiniMax-M2.7",
+      lane: "outward",
+      credentialRevision: "cred_minimax",
+      source: "manual",
+      contributedByAgent: "slugger",
+    })
   })
 
   it("matches 'switch to azure'", () => {
-    expect(handleFailoverReply("switch to azure", ctx)).toEqual({ action: "switch", provider: "azure" })
+    expect(handleFailoverReply("switch to azure", ctx)).toEqual({
+      action: "switch",
+      provider: "azure",
+      model: "gpt-4o-mini",
+      lane: "outward",
+    })
   })
 
   it("matches bare provider name", () => {
-    expect(handleFailoverReply("anthropic", ctx)).toEqual({ action: "switch", provider: "anthropic" })
+    expect(handleFailoverReply("anthropic", ctx)).toEqual({
+      action: "switch",
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+      lane: "outward",
+    })
   })
 
   it("is case-insensitive", () => {
-    expect(handleFailoverReply("Switch to Anthropic", ctx)).toEqual({ action: "switch", provider: "anthropic" })
+    expect(handleFailoverReply("Switch to Anthropic", ctx)).toEqual({
+      action: "switch",
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+      lane: "outward",
+    })
   })
 
   it("trims whitespace", () => {
-    expect(handleFailoverReply("  switch to anthropic  ", ctx)).toEqual({ action: "switch", provider: "anthropic" })
+    expect(handleFailoverReply("  switch to anthropic  ", ctx)).toEqual({
+      action: "switch",
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+      lane: "outward",
+    })
   })
 
   it("dismisses unrelated messages", () => {

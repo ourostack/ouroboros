@@ -22,10 +22,15 @@ import { requestInnerWake } from "../heart/daemon/socket-client"
 import { buildActiveWorkFrame } from "../heart/active-work"
 import { decideDelegation } from "../heart/delegation"
 import { readPendingObligations } from "../arc/obligations"
-import { buildFailoverContext, handleFailoverReply, type FailoverContext } from "../heart/provider-failover"
-import { runHealthInventory } from "../heart/provider-ping"
-import { writeAgentProviderSelection, loadAgentSecrets } from "../heart/auth/auth-flow"
-import { resolveModelForProviderDisplay } from "../heart/provider-models"
+import {
+  buildFailoverContext,
+  formatCredentialProvenanceLabel,
+  handleFailoverReply,
+  runMachineProviderFailoverInventory,
+  type FailoverAction,
+  type FailoverContext,
+} from "../heart/provider-failover"
+import { readProviderState, writeProviderState, type ProviderLane } from "../heart/provider-state"
 import { deriveTempo } from "../heart/tempo"
 import { buildTemporalView } from "../heart/temporal-view"
 import { buildStartOfTurnPacket, renderStartOfTurnPacket, buildCapabilitiesSection } from "../heart/start-of-turn-packet"
@@ -65,6 +70,58 @@ export function emitObligationTransitionEpisodes(
       })
     }
   }
+}
+
+function providerLaneForChannel(channel: Channel): ProviderLane {
+  return channel === "inner" ? "inner" : "outward"
+}
+
+function resolveCurrentFailoverBinding(agentName: string, lane: ProviderLane): { provider: import("../heart/identity").AgentProvider; model: string } {
+  const stateResult = readProviderState(getAgentRoot(agentName))
+  if (stateResult.ok) {
+    const binding = stateResult.state.lanes[lane]
+    return { provider: binding.provider, model: binding.model }
+  }
+
+  const agentConfig = loadAgentConfig()
+  const fallback = lane === "inner" ? agentConfig.agentFacing : agentConfig.humanFacing
+  return { provider: fallback.provider, model: fallback.model }
+}
+
+function writeFailoverProviderStateSwitch(agentName: string, action: Extract<FailoverAction, { action: "switch" }>): void {
+  const agentRoot = getAgentRoot(agentName)
+  const stateResult = readProviderState(agentRoot)
+  if (!stateResult.ok) {
+    throw new Error(`Cannot switch ${action.lane} lane for ${agentName}: ${stateResult.error}`)
+  }
+
+  const updatedAt = new Date().toISOString()
+  const lanes = { ...stateResult.state.lanes }
+  lanes[action.lane] = {
+    provider: action.provider,
+    model: action.model,
+    source: "local",
+    updatedAt,
+  }
+  const readiness = { ...stateResult.state.readiness }
+  readiness[action.lane] = {
+    status: "ready",
+    provider: action.provider,
+    model: action.model,
+    checkedAt: updatedAt,
+    ...(action.credentialRevision ? { credentialRevision: action.credentialRevision } : {}),
+  }
+  writeProviderState(agentRoot, {
+    ...stateResult.state,
+    updatedAt,
+    lanes,
+    readiness,
+  })
+}
+
+function formatFailoverSwitchLabel(action: Extract<FailoverAction, { action: "switch" }>): string {
+  const provenance = formatCredentialProvenanceLabel(action)
+  return `${action.provider} (${action.model}${provenance ? `; ${provenance}` : ""})`
 }
 
 
@@ -222,8 +279,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     if (failoverAction.action === "switch") {
       let switchSucceeded = false
       try {
-        writeAgentProviderSelection(failoverAgentName, "human", failoverAction.provider)
-        writeAgentProviderSelection(failoverAgentName, "agent", failoverAction.provider)
+        writeFailoverProviderStateSwitch(failoverAgentName, failoverAction)
         switchSucceeded = true
       /* v8 ignore start -- defensive: write failure during provider switch @preserve */
       } catch (switchError) {
@@ -231,8 +287,8 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
           level: "error",
           component: "senses",
           event: "senses.failover_switch_error",
-          message: `failed to switch provider to ${failoverAction.provider}`,
-          meta: { agentName: failoverAgentName, provider: failoverAction.provider, error: switchError instanceof Error ? switchError.message : String(switchError) },
+          message: `failed to switch ${failoverAction.lane} provider lane to ${failoverAction.provider}`,
+          meta: { agentName: failoverAgentName, lane: failoverAction.lane, provider: failoverAction.provider, model: failoverAction.model, error: switchError instanceof Error ? switchError.message : String(switchError) },
         })
       }
       /* v8 ignore stop */
@@ -241,25 +297,24 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
         emitNervesEvent({
           component: "senses",
           event: "senses.failover_switch",
-          message: `switched provider to ${failoverAction.provider} via failover`,
-          meta: { agentName: failoverAgentName, provider: failoverAction.provider },
+          message: `switched ${failoverAction.lane} provider lane to ${failoverAction.provider} via failover`,
+          meta: {
+            agentName: failoverAgentName,
+            lane: failoverAction.lane,
+            provider: failoverAction.provider,
+            model: failoverAction.model,
+            credentialRevision: failoverAction.credentialRevision,
+            source: failoverAction.source,
+            contributedByAgent: failoverAction.contributedByAgent,
+          },
         })
         // Replace "switch to <provider>" with a context message for the agent.
         // The session already has the user's original question from the failed turn.
         // The agent needs to know what happened so it can respond appropriately.
-        const newProviderSecrets = (() => {
-          try {
-            const { secrets } = loadAgentSecrets(failoverAgentName)
-            const cfg = secrets.providers[failoverAction.provider as keyof typeof secrets.providers] as Record<string, unknown> | undefined
-            const hint = cfg?.model ?? cfg?.modelName
-            return resolveModelForProviderDisplay(failoverAction.provider, typeof hint === "string" ? hint : "")
-          /* v8 ignore next 2 -- defensive: secrets read failure @preserve */
-          } catch { return resolveModelForProviderDisplay(failoverAction.provider) }
-        })()
-        const newProviderLabel = `${failoverAction.provider} (${newProviderSecrets})`
+        const newProviderLabel = formatFailoverSwitchLabel(failoverAction)
         input.messages = [{
           role: "user" as const,
-          content: `[provider switch: ${pendingContext.errorSummary}. switched to ${newProviderLabel}. your conversation history is intact — respond to the user's last message.]`,
+          content: `[provider switch: ${pendingContext.errorSummary}. switched ${failoverAction.lane} lane to ${newProviderLabel}. your conversation history is intact — respond to the user's last message.]`,
         }]
         input.switchedProvider = failoverAction.provider
       }
@@ -572,28 +627,22 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   if (result.outcome === "errored" && input.failoverState) {
     try {
       const agentName = getAgentName()
-      const agentConfig = loadAgentConfig()
-      const currentProvider = agentConfig.humanFacing.provider
+      const currentLane = providerLaneForChannel(input.channel)
+      const currentBinding = resolveCurrentFailoverBinding(agentName, currentLane)
+      const currentProvider = currentBinding.provider
       /* v8 ignore next -- defensive: errorClassification always set when errored @preserve */
       const classification = result.errorClassification ?? "unknown"
-      const inventory = await runHealthInventory(agentName, currentProvider)
-      const { secrets } = loadAgentSecrets(agentName)
-      const providerModels: Partial<Record<string, string>> = {}
-      for (const [p, cfg] of Object.entries(secrets.providers)) {
-        const model = (cfg as Record<string, unknown>).model ?? (cfg as Record<string, unknown>).modelName
-        if (typeof model === "string" && model) providerModels[p] = model
-      }
-      // Use agent.json model (source of truth), not secrets model (may be stale)
-      const currentModel = agentConfig.humanFacing.model
+      const inventory = await runMachineProviderFailoverInventory(agentName, currentProvider)
       const failoverContext = buildFailoverContext(
         /* v8 ignore next -- defensive: error always set when errored @preserve */
         result.error?.message ?? "unknown error",
         classification,
         currentProvider,
-        currentModel,
+        currentBinding.model,
         agentName,
         inventory,
-        providerModels,
+        {},
+        { currentLane },
       )
       input.failoverState.pending = failoverContext
       input.postTurn(sessionMessages, session.sessionPath, result.usage)
