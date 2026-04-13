@@ -149,6 +149,21 @@ async function checkAlreadyRunningAgentProviders(deps: OuroCliDeps): Promise<Arr
   return degraded
 }
 
+async function checkProviderHealthBeforeChat(
+  agentName: string,
+  deps: OuroCliDeps,
+): Promise<{ ok: true } | { ok: false; output: string }> {
+  const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
+  const secretsRoot = deps.secretsRoot ?? path.join(os.homedir(), ".agentsecrets")
+  const result = await checkAgentConfigWithProviderHealth(agentName, bundlesRoot, secretsRoot)
+  if (!result.ok) {
+    const output = `${result.error}\n${result.fix ? `      fix:   ${result.fix}` : ""}`
+    deps.writeStdout(output)
+    return { ok: false, output }
+  }
+  return { ok: true }
+}
+
 export function mergeStartupStability(
   stability: EnsureDaemonResult["stability"],
   extraDegraded: Array<{ agent: string; errorReason: string; fixHint: string }>,
@@ -1473,6 +1488,8 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     } else if (discovered.length === 1) {
       if (deps.startChat) {
         await ensureDaemonRunning(deps)
+        const health = await checkProviderHealthBeforeChat(discovered[0], deps)
+        if (!health.ok) return health.output
         await deps.startChat(discovered[0])
         return ""
       }
@@ -1484,6 +1501,8 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         const selected = discovered.includes(answer) ? answer : discovered[parseInt(answer, 10) - 1]
         if (!selected) throw new Error("Invalid selection")
         await ensureDaemonRunning(deps)
+        const health = await checkProviderHealthBeforeChat(selected, deps)
+        if (!health.ok) return health.output
         await deps.startChat(selected)
         return ""
       }
@@ -2758,6 +2777,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     }
     /* v8 ignore stop */
     await ensureDaemonRunning(deps)
+    // Check provider health before launching chat — fail fast with
+    // actionable guidance instead of erroring mid-conversation.
+    const health = await checkProviderHealthBeforeChat(agent, deps)
+    if (!health.ok) return health.output
     await deps.startChat(agent)
     return ""
   }

@@ -13,6 +13,11 @@ vi.mock("../../../heart/daemon/startup-tui", () => ({
   pollDaemonStartup: vi.fn(async () => ({ stable: [], degraded: [] })),
 }))
 
+// Mock agent-config-check so chat health checks don't hit real filesystem
+vi.mock("../../../heart/daemon/agent-config-check", () => ({
+  checkAgentConfigWithProviderHealth: vi.fn().mockResolvedValue({ ok: true }),
+}))
+
 import {
   createDefaultOuroCliDeps,
   discoverExistingCredentials,
@@ -25,6 +30,7 @@ import * as identity from "../../../heart/identity"
 import * as sessionActivity from "../../../heart/session-activity"
 import { readProviderState } from "../../../heart/provider-state"
 import { createTmpBundle } from "../../test-helpers/tmpdir-bundle"
+import { checkAgentConfigWithProviderHealth } from "../../../heart/daemon/agent-config-check"
 
 const PACKAGE_VERSION = JSON.parse(
   fs.readFileSync(path.join(process.cwd(), "package.json"), "utf-8"),
@@ -7185,5 +7191,158 @@ describe("OURO_CLI_TRUST_MANIFEST", () => {
     expect(OURO_CLI_TRUST_MANIFEST["config model"]).toBe("friend")
     expect(OURO_CLI_TRUST_MANIFEST["config models"]).toBe("friend")
     expect(OURO_CLI_TRUST_MANIFEST["friend update"]).toBe("family")
+  })
+})
+
+describe("chat provider health check", () => {
+  const mockHealthCheck = checkAgentConfigWithProviderHealth as ReturnType<typeof vi.fn>
+
+  it("ouro chat bails with error when provider health check fails", async () => {
+    mockHealthCheck.mockResolvedValueOnce({
+      ok: false,
+      error: "azure token expired",
+      fix: "run ouro auth refresh",
+    })
+    const startChat = vi.fn(async () => {})
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({ ok: true, message: "unexpected" })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 42 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      listDiscoveredAgents: vi.fn(async () => ["slugger"]),
+      startChat,
+    } as OuroCliDeps & {
+      listDiscoveredAgents: () => Promise<string[]>
+      startChat: typeof startChat
+    }
+
+    const result = await runOuroCli(["chat", "slugger"], deps)
+
+    expect(startChat).not.toHaveBeenCalled()
+    expect(deps.writeStdout).toHaveBeenCalledWith(
+      expect.stringContaining("azure token expired"),
+    )
+    expect(deps.writeStdout).toHaveBeenCalledWith(
+      expect.stringContaining("run ouro auth refresh"),
+    )
+    expect(result).toContain("azure token expired")
+  })
+
+  it("ouro chat proceeds when provider health check passes", async () => {
+    mockHealthCheck.mockResolvedValueOnce({ ok: true })
+    const startChat = vi.fn(async () => {})
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({ ok: true, message: "unexpected" })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 42 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      listDiscoveredAgents: vi.fn(async () => ["slugger"]),
+      startChat,
+    } as OuroCliDeps & {
+      listDiscoveredAgents: () => Promise<string[]>
+      startChat: typeof startChat
+    }
+
+    await runOuroCli(["chat", "slugger"], deps)
+
+    expect(startChat).toHaveBeenCalledWith("slugger")
+  })
+
+  it("bare ouro with single agent bails when provider health check fails", async () => {
+    mockHealthCheck.mockResolvedValueOnce({
+      ok: false,
+      error: "provider unreachable",
+      fix: "check your network",
+    })
+    const startChat = vi.fn(async () => {})
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({ ok: true, message: "unexpected" })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 42 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      listDiscoveredAgents: vi.fn(async () => ["slugger"]),
+      startChat,
+    } as OuroCliDeps & {
+      listDiscoveredAgents: () => Promise<string[]>
+      startChat: typeof startChat
+    }
+
+    const result = await runOuroCli([], deps)
+
+    expect(startChat).not.toHaveBeenCalled()
+    expect(result).toContain("provider unreachable")
+  })
+
+  it("bare ouro with multi-agent selection bails when provider health check fails", async () => {
+    mockHealthCheck.mockResolvedValueOnce({
+      ok: false,
+      error: "copilot token expired",
+      fix: "run ouro auth --provider github-copilot",
+    })
+    const startChat = vi.fn(async () => {})
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({ ok: true, message: "unexpected" })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 42 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      listDiscoveredAgents: vi.fn(async () => ["slugger", "ouroboros"]),
+      promptInput: vi.fn(async () => "slugger"),
+      startChat,
+    } as OuroCliDeps & {
+      listDiscoveredAgents: () => Promise<string[]>
+      promptInput: (prompt: string) => Promise<string>
+      startChat: typeof startChat
+    }
+
+    const result = await runOuroCli([], deps)
+
+    expect(startChat).not.toHaveBeenCalled()
+    expect(result).toContain("copilot token expired")
+    expect(deps.writeStdout).toHaveBeenCalledWith(
+      expect.stringContaining("run ouro auth --provider github-copilot"),
+    )
+  })
+
+  it("health check failure includes fix hint when provided", async () => {
+    mockHealthCheck.mockResolvedValueOnce({
+      ok: false,
+      error: "bad credentials",
+    })
+    const startChat = vi.fn(async () => {})
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({ ok: true, message: "unexpected" })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 42 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      listDiscoveredAgents: vi.fn(async () => ["slugger"]),
+      startChat,
+    } as OuroCliDeps & {
+      listDiscoveredAgents: () => Promise<string[]>
+      startChat: typeof startChat
+    }
+
+    const result = await runOuroCli(["chat", "slugger"], deps)
+
+    expect(startChat).not.toHaveBeenCalled()
+    expect(result).toContain("bad credentials")
+    // No fix hint in the output since none was provided
+    expect(deps.writeStdout).toHaveBeenCalledWith(
+      expect.stringContaining("bad credentials"),
+    )
   })
 })
