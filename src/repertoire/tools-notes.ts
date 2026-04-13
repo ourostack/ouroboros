@@ -8,10 +8,10 @@ import { emitNervesEvent } from "../nerves/runtime";
 import type { FriendRecord } from "../mind/friends/types";
 import { readDiaryEntries, saveDiaryEntry, searchDiaryEntries, type DiaryEntryProvenance } from "../mind/diary";
 import { classifyProvenanceTrust } from "../mind/provenance-trust";
-import { type JournalIndexEntry } from "../mind/associative-recall";
+import { type JournalIndexEntry } from "../mind/note-search";
 import type { ToolDefinition } from "./tools-base";
 
-export const memoryToolDefinitions: ToolDefinition[] = [
+export const notesToolDefinitions: ToolDefinition[] = [
   {
     tool: {
       type: "function",
@@ -124,9 +124,9 @@ export const memoryToolDefinitions: ToolDefinition[] = [
     tool: {
       type: "function",
       function: {
-        name: "recall",
+        name: "search_notes",
         description:
-          "Search my diary and journal for facts, thoughts, and working notes matching a query. Uses semantic similarity -- phrasing matters. Try different angles if the first query doesn't find what you're looking for. Check recall before asking the human something you might already know.",
+          "Search my diary and journal for facts, thoughts, and working notes matching a query. Uses semantic similarity -- phrasing matters. Try different angles if the first query doesn't find what you're looking for. Search written notes before asking the human something the notes may already answer.",
         parameters: {
           type: "object",
           properties: { query: { type: "string" } },
@@ -164,7 +164,7 @@ export const memoryToolDefinitions: ToolDefinition[] = [
             // Substring match on preview and filename
             const lowerQuery = query.toLowerCase();
             for (const entry of journalEntries) {
-              /* v8 ignore next 4 -- both sides tested (filename-only match in recall-journal.test.ts); v8 misreports || short-circuit @preserve */
+              /* v8 ignore next 4 -- both sides tested (filename-only match in search_notes-journal.test.ts); v8 misreports || short-circuit @preserve */
               if (
                 entry.preview.toLowerCase().includes(lowerQuery) ||
                 entry.filename.toLowerCase().includes(lowerQuery)
@@ -190,7 +190,7 @@ export const memoryToolDefinitions: ToolDefinition[] = [
       function: {
         name: "diary_write",
         description:
-          "Write an entry in my diary -- something I learned, noticed, or concluded that I want to recall later. Use 'about' to tag the entry to a person, topic, or context. Write for my future self: include enough context that the entry makes sense without the surrounding conversation. Prefer durable conclusions over passing noise. Don't duplicate what already belongs in friend notes.",
+          "Write an entry in my diary -- something I learned, noticed, or concluded that I want available later. Use 'about' to tag the entry to a person, topic, or context. Write for my future self: include enough context that the entry makes sense without the surrounding conversation. Prefer durable conclusions over passing noise. Don't duplicate what already belongs in friend notes.",
         parameters: {
           type: "object",
           properties: {

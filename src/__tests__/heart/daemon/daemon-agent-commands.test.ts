@@ -202,7 +202,7 @@ describe("daemon agent service command routing", () => {
       { kind: "agent.catchup", agent: "a", friendId: "f" },
       { kind: "agent.delegate", agent: "a", friendId: "f", task: "t" },
       { kind: "agent.getContext", agent: "a", friendId: "f" },
-      { kind: "agent.searchMemory", agent: "a", friendId: "f", query: "q" },
+      { kind: "agent.searchNotes", agent: "a", friendId: "f", query: "q" },
       { kind: "agent.getTask", agent: "a", friendId: "f" },
       { kind: "agent.checkScope", agent: "a", friendId: "f", item: "i" },
       { kind: "agent.requestDecision", agent: "a", friendId: "f", topic: "t" },

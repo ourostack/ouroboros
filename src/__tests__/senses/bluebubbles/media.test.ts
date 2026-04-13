@@ -2229,7 +2229,7 @@ describe("BlueBubbles media hydration — capability-aware image routing", () =>
     vi.doUnmock("../../../heart/attachments/image-normalize")
   })
 
-  it("non-vision chat model falls back cleanly when the remembered attachment record is not BlueBubbles-shaped", async () => {
+  it("non-vision chat model falls back cleanly when the cached attachment record is not BlueBubbles-shaped", async () => {
     vi.resetModules()
     vi.doMock("../../../heart/attachments/store", async () => {
       const actual = await vi.importActual<typeof import("../../../heart/attachments/store")>(
@@ -2237,7 +2237,7 @@ describe("BlueBubbles media hydration — capability-aware image routing", () =>
       )
       return {
         ...actual,
-        rememberRecentAttachment: vi.fn(() => ({
+        cacheRecentAttachment: vi.fn(() => ({
           id: "attachment:cli-local-file:fake",
           source: "cli-local-file",
           sourceId: "fake",

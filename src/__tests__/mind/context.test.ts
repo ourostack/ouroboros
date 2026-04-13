@@ -932,7 +932,7 @@ describe("postTurn", () => {
     const { postTurn } = await import("../../mind/context")
     const messages: any[] = [
       { role: "system", content: "sys" },
-      { role: "user", content: "remember: old memory that will be trimmed" },
+      { role: "user", content: "keep this: old note that will be trimmed" },
       { role: "assistant", content: "old reply" },
       { role: "user", content: "new message" },
     ]
@@ -949,7 +949,7 @@ describe("postTurn", () => {
         beforeTrim: (preTrimMessages: any[]) => {
           hookCalled = true
           sawOldMessage = preTrimMessages.some((m) =>
-            typeof m.content === "string" && m.content.includes("old memory that will be trimmed"),
+            typeof m.content === "string" && m.content.includes("old note that will be trimmed"),
           )
         },
       },
@@ -957,7 +957,7 @@ describe("postTurn", () => {
 
     expect(hookCalled).toBe(true)
     expect(sawOldMessage).toBe(true)
-    expect(messages.some((m) => typeof m.content === "string" && m.content.includes("old memory that will be trimmed"))).toBe(false)
+    expect(messages.some((m) => typeof m.content === "string" && m.content.includes("old note that will be trimmed"))).toBe(false)
   })
 
   it("continues saving session when extract-before-trim hook throws", async () => {

@@ -57,7 +57,7 @@ Canonical paths:
 - `psyche/LORE.md`
 - `psyche/TACIT.md`
 - `psyche/ASPIRATIONS.md`
-- `diary/` — durable facts, conclusions, things worth recalling (migrated from `psyche/memory/`; legacy fallback removed)
+- `diary/` — durable facts and conclusions the agent chose to keep
 - `journal/` — thinking-in-progress, working notes, drafts (the agent's desk)
 - `habits/` — autonomous rhythms: heartbeat, reflections, check-ins (extracted from `tasks/habits/`)
 - `friends/`
@@ -116,10 +116,10 @@ The daemon manages daemon-hosted senses and reports them in `ouro status`. CLI r
 The MCP sense is how agents talk to developer tools like Claude Code and Codex. It works like this:
 
 - `ouro mcp-serve --agent <name>` starts a JSON-RPC 2.0 server on stdin/stdout. The dev tool launches this as a subprocess.
-- The MCP server exposes tools (e.g., `send_message`, `check_response`, `status`, `search_memory`, `delegate`) that map to daemon commands.
+- The MCP server exposes tools (e.g., `send_message`, `check_response`, `status`, `search_notes`, `delegate`) that map to daemon commands.
 - `send_message` runs a full agent turn via `runSenseTurn()` — the agent gets their complete system prompt, diary, tools, everything. It's not a thin read-only proxy; it's a real conversation turn.
 - Sessions are keyed by the dev tool's session ID (e.g., Claude Code's session ID). This means each Claude Code session gets its own conversation thread with the agent.
-- Read-only tools like `status` and `search_memory` work even without the daemon running (they read the filesystem directly). Write operations and `send_message` require the daemon.
+- Read-only tools like `status` and `search_notes` work even without the daemon running (they read the filesystem directly). Write operations and `send_message` require the daemon.
 
 The `ouro setup --tool <tool> --agent <name>` command handles registration automatically, including lifecycle hooks.
 
@@ -132,7 +132,7 @@ BlueBubbles now uses:
 - agent-chosen outbound lane targeting
 - typing/read behavior coordinated through the sense transport
 
-Threads are treated as routing/context metadata, not as separate long-lived memory worlds.
+Threads are treated as routing/context metadata, not as separate long-lived worlds.
 
 ## Subsystems
 
@@ -150,9 +150,9 @@ Threads are treated as routing/context metadata, not as separate long-lived memo
   - `heart/providers/` — provider runtime adapters
   - `heart/bridges/` — bridge state management
 - `src/mind/`
-  Prompt assembly, sessions, bundle manifest, diary (memory), associative recall, journal indexing, embedding providers, phrases, formatting, obligation steering, and friend identity.
+  Prompt assembly, sessions, bundle manifest, diary, note search, journal indexing, embedding providers, phrases, formatting, obligation steering, and friend identity.
 - `src/repertoire/`
-  Tool registry (split into category modules: tools-files, tools-shell, tools-memory, tools-bridge, tools-session, tools-continuity, tools-flow, tools-surface, tools-config, tools-bluebubbles, tools-teams, tools-github), coding orchestration, task tooling, skills, shared API client, and integration clients (Graph, ADO, GitHub).
+  Tool registry (split into category modules: tools-files, tools-shell, tools-notes, tools-bridge, tools-session, tools-continuity, tools-flow, tools-surface, tools-config, tools-bluebubbles, tools-teams, tools-github), coding orchestration, task tooling, skills, shared API client, and integration clients (Graph, ADO, GitHub).
 - `src/senses/`
   CLI (with TUI in senses/cli/), Teams, BlueBubbles (in senses/bluebubbles/), MCP bridge, activity transport, trust gating, inner-dialog worker logic, and contextual heartbeat.
 - `src/nerves/`
@@ -173,8 +173,8 @@ The metacognitive tool vocabulary:
 - **rest** — "I'm putting this down" (inner dialog only, ends the turn)
 - **surface** — share a thought outward from inner dialog
 - **observe** — stay quiet in group chats
-- **diary_write** — record something to the diary for later recall
-- **recall** — search both diary and journal for relevant facts and notes
+- **diary_write** — record something to the diary for later use
+- **search_notes** — search both diary and journal for relevant facts and notes
 
 Other important tools include coding session orchestration, bridge management, and BlueBubbles reply-target selection.
 
@@ -218,7 +218,7 @@ The inner dialog session is continuous — different habits and delegations are 
 
 ## Diary And Journal
 
-- **Diary** (`diary/`): The agent's permanent record. `diary_write` saves entries with embeddings for associative recall. `recall` searches both diary and journal.
+- **Diary** (`diary/`): The agent's permanent written record. `diary_write` saves entries with embeddings for note search. `search_notes` searches both diary and journal.
 - **Journal** (`journal/`): The agent's desk. Freeform files the agent writes with `write_file`. The heartbeat shows a journal index (recent files, previews) so the agent sees where they left off.
 
 Both are searchable. The diary is the shelf; the journal is the desk.

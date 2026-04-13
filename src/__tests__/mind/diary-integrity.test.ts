@@ -21,7 +21,7 @@ describe("detectSuspiciousContent", () => {
       const cases = [
         "you are my friend",
         "the system works well",
-        "I will always remember this",
+        "I will always keep this",
         "you must try this restaurant",
         "I told her to ignore the noise",
         "she asked me to forget about it",
@@ -258,8 +258,8 @@ describe("detectSuspiciousContent", () => {
       expect(detectSuspiciousContent("the system works well").suspicious).toBe(false)
     })
 
-    it("does not trigger on 'I will always remember'", () => {
-      expect(detectSuspiciousContent("I will always remember").suspicious).toBe(false)
+    it("does not trigger on 'I will keep this available'", () => {
+      expect(detectSuspiciousContent("I will keep this available").suspicious).toBe(false)
     })
 
     it("does not trigger on 'you must try this'", () => {

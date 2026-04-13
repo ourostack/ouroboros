@@ -25,12 +25,12 @@ vi.stubGlobal("fetch", mockFetch)
 
 import {
   cosineSimilarity,
-  injectAssociativeRecall,
-  recallFactsForQuery,
+  injectNoteSearchContext,
+  searchDiaryFactsForQuery,
   type EmbeddingProvider,
-} from "../../mind/associative-recall"
+} from "../../mind/note-search"
 
-describe("associative recall", () => {
+describe("note search", () => {
   beforeEach(() => {
     mockGetOpenAIEmbeddingsApiKey.mockReset().mockReturnValue("test-openai-key")
     mockGetAgentRoot.mockReset().mockReturnValue("/mock/agent")
@@ -74,21 +74,21 @@ describe("associative recall", () => {
       makeFact("f3", "Ari prefers strict TypeScript checks", [0.1, 0.9]),
     ]
 
-    const recalled = await recallFactsForQuery("pizza", facts, provider, { minScore: 0.5, topK: 2 })
-    expect(recalled).toHaveLength(2)
-    expect(recalled[0].id).toBe("f1")
-    expect(recalled[1].id).toBe("f2")
+    const found = await searchDiaryFactsForQuery("pizza", facts, provider, { minScore: 0.5, topK: 2 })
+    expect(found).toHaveLength(2)
+    expect(found[0].id).toBe("f1")
+    expect(found[1].id).toBe("f2")
   })
 
-  it("returns no recalls for blank queries without calling provider", async () => {
+  it("returns no hits for blank queries without calling provider", async () => {
     const provider = { embed: vi.fn() }
-    const recalled = await recallFactsForQuery("   ", [makeFact("f1", "anything", [1, 0])], provider)
-    expect(recalled).toEqual([])
+    const found = await searchDiaryFactsForQuery("   ", [makeFact("f1", "anything", [1, 0])], provider)
+    expect(found).toEqual([])
     expect(provider.embed).not.toHaveBeenCalled()
   })
 
-  it("injects recalled context into the system prompt before model call", async () => {
-    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
+  it("injects from my diary and journal into the system prompt before model call", async () => {
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "note-search-"))
     writeFacts(diaryRoot, [makeFact("f1", "Ari likes mushroom pizza", [0.99, 0.01])])
 
     const provider: EmbeddingProvider = {
@@ -103,7 +103,7 @@ describe("associative recall", () => {
       { role: "user", content: "can we order pizza tonight?" },
     ]
 
-    await injectAssociativeRecall(messages, {
+    await injectNoteSearchContext(messages, {
       provider,
       diaryRoot,
       minScore: 0.5,
@@ -111,24 +111,24 @@ describe("associative recall", () => {
     })
 
     expect(typeof messages[0].content).toBe("string")
-    expect(messages[0].content).toContain("## recalled context")
+    expect(messages[0].content).toContain("## from my diary and journal")
     expect(messages[0].content).toContain("Ari likes mushroom pizza")
     expect(mockEmitNervesEvent).toHaveBeenCalledWith(
       expect.objectContaining({
-        event: "mind.associative_recall",
-        message: "associative recall injected",
+        event: "mind.note_search_context",
+        message: "note search injected",
       }),
     )
   })
 
   it("does nothing when message[0] is not a system string message", async () => {
     const messages: OpenAI.ChatCompletionMessageParam[] = [{ role: "user", content: "hello" }]
-    await injectAssociativeRecall(messages, { diaryRoot: "/tmp/unused" })
+    await injectNoteSearchContext(messages, { diaryRoot: "/tmp/unused" })
     expect(mockEmitNervesEvent).not.toHaveBeenCalled()
   })
 
   it("does nothing when there is no plain-text user query", async () => {
-    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "note-search-"))
     writeFacts(diaryRoot, [makeFact("f1", "Ari likes mushroom pizza", [0.99, 0.01])])
     const provider = { embed: vi.fn() }
 
@@ -137,13 +137,13 @@ describe("associative recall", () => {
       { role: "user", content: [{ type: "text", text: "pizza?" }] },
     ] as unknown as OpenAI.ChatCompletionMessageParam[]
 
-    await injectAssociativeRecall(messages, { diaryRoot, provider })
+    await injectNoteSearchContext(messages, { diaryRoot, provider })
     expect(provider.embed).not.toHaveBeenCalled()
     expect(messages[0].content).toBe("base system prompt")
   })
 
   it("does nothing when latest user text is only whitespace", async () => {
-    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "note-search-"))
     writeFacts(diaryRoot, [makeFact("f1", "Ari likes mushroom pizza", [0.99, 0.01])])
     const provider = { embed: vi.fn() }
 
@@ -152,25 +152,25 @@ describe("associative recall", () => {
       { role: "user", content: "   " },
     ]
 
-    await injectAssociativeRecall(messages, { diaryRoot, provider })
+    await injectNoteSearchContext(messages, { diaryRoot, provider })
     expect(provider.embed).not.toHaveBeenCalled()
     expect(messages[0].content).toBe("base system prompt")
   })
 
   it("does nothing when facts file is missing", async () => {
-    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "note-search-"))
     const provider = { embed: vi.fn() }
     const messages: OpenAI.ChatCompletionMessageParam[] = [
       { role: "system", content: "base system prompt" },
       { role: "user", content: "pizza?" },
     ]
 
-    await injectAssociativeRecall(messages, { diaryRoot, provider })
+    await injectNoteSearchContext(messages, { diaryRoot, provider })
     expect(provider.embed).not.toHaveBeenCalled()
   })
 
   it("does nothing when facts file is blank", async () => {
-    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "note-search-"))
     fs.writeFileSync(path.join(diaryRoot, "facts.jsonl"), "\n", "utf8")
     const provider = { embed: vi.fn() }
     const messages: OpenAI.ChatCompletionMessageParam[] = [
@@ -178,12 +178,12 @@ describe("associative recall", () => {
       { role: "user", content: "pizza?" },
     ]
 
-    await injectAssociativeRecall(messages, { diaryRoot, provider })
+    await injectNoteSearchContext(messages, { diaryRoot, provider })
     expect(provider.embed).not.toHaveBeenCalled()
   })
 
-  it("does nothing when recall returns no matches above threshold", async () => {
-    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
+  it("does nothing when search_notes returns no matches above threshold", async () => {
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "note-search-"))
     writeFacts(diaryRoot, [makeFact("f1", "Ari likes mushroom pizza", [0, 1])])
     const provider: EmbeddingProvider = {
       embed: async () => [[1, 0]],
@@ -193,12 +193,12 @@ describe("associative recall", () => {
       { role: "user", content: "pizza?" },
     ]
 
-    await injectAssociativeRecall(messages, { diaryRoot, provider, minScore: 0.95 })
+    await injectNoteSearchContext(messages, { diaryRoot, provider, minScore: 0.95 })
     expect(messages[0].content).toBe("base system prompt")
   })
 
   it("uses default OpenAI embedding provider when no provider is passed", async () => {
-    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "note-search-"))
     writeFacts(diaryRoot, [makeFact("f1", "Ari likes mushroom pizza", [0.99, 0.01])])
     mockFetch.mockResolvedValue({
       ok: true,
@@ -211,7 +211,7 @@ describe("associative recall", () => {
       { role: "user", content: "pizza?" },
     ]
 
-    await injectAssociativeRecall(messages, { diaryRoot, minScore: 0.5 })
+    await injectNoteSearchContext(messages, { diaryRoot, minScore: 0.5 })
     expect(mockFetch).toHaveBeenCalledWith(
       "https://api.openai.com/v1/embeddings",
       expect.objectContaining({
@@ -225,7 +225,7 @@ describe("associative recall", () => {
     expect(messages[0].content).toContain("Ari likes mushroom pizza")
   })
 
-  it("uses default agent-root memory path when options.diaryRoot is omitted", async () => {
+  it("uses default agent-root diary path when options.diaryRoot is omitted", async () => {
     const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "agent-root-"))
     const diaryRoot = path.join(agentRoot, "diary")
     writeFacts(diaryRoot, [makeFact("f1", "Ari likes mushroom pizza", [0.99, 0.01])])
@@ -239,13 +239,13 @@ describe("associative recall", () => {
       { role: "user", content: "pizza?" },
     ]
 
-    await injectAssociativeRecall(messages, { provider, minScore: 0.5 })
+    await injectNoteSearchContext(messages, { provider, minScore: 0.5 })
     expect(mockGetAgentRoot).toHaveBeenCalled()
     expect(messages[0].content).toContain("Ari likes mushroom pizza")
   })
 
   it("falls back to substring matching when embeddings API key is missing", async () => {
-    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "note-search-"))
     writeFacts(diaryRoot, [makeFact("f1", "Ari likes mushroom pizza", [0.99, 0.01])])
     mockGetOpenAIEmbeddingsApiKey.mockReturnValue("")
     const messages: OpenAI.ChatCompletionMessageParam[] = [
@@ -253,18 +253,18 @@ describe("associative recall", () => {
       { role: "user", content: "pizza" },
     ]
 
-    await injectAssociativeRecall(messages, { diaryRoot })
+    await injectNoteSearchContext(messages, { diaryRoot })
     expect(messages[0].content).toContain("Ari likes mushroom pizza")
     expect(mockEmitNervesEvent).toHaveBeenCalledWith(
       expect.objectContaining({
-        event: "mind.associative_recall_fallback",
+        event: "mind.note_search_fallback",
         meta: expect.objectContaining({ matchCount: 1 }),
       }),
     )
   })
 
   it("silently degrades when embeddings fail and no substring match exists", async () => {
-    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "note-search-"))
     writeFacts(diaryRoot, [makeFact("f1", "Ari likes mushroom pizza", [0.99, 0.01])])
     mockGetOpenAIEmbeddingsApiKey.mockReturnValue("")
     const messages: OpenAI.ChatCompletionMessageParam[] = [
@@ -272,15 +272,15 @@ describe("associative recall", () => {
       { role: "user", content: "basketball" },
     ]
 
-    await injectAssociativeRecall(messages, { diaryRoot })
+    await injectNoteSearchContext(messages, { diaryRoot })
     expect(messages[0].content).toBe("base system prompt")
     expect(mockEmitNervesEvent).not.toHaveBeenCalledWith(
-      expect.objectContaining({ event: "mind.associative_recall_fallback" }),
+      expect.objectContaining({ event: "mind.note_search_fallback" }),
     )
   })
 
   it("falls back to substring matching when embedding request fails", async () => {
-    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "note-search-"))
     writeFacts(diaryRoot, [makeFact("f1", "Ari likes mushroom pizza", [0.99, 0.01])])
     mockFetch.mockResolvedValue({
       ok: false,
@@ -292,17 +292,17 @@ describe("associative recall", () => {
       { role: "user", content: "mushroom" },
     ]
 
-    await injectAssociativeRecall(messages, { diaryRoot })
+    await injectNoteSearchContext(messages, { diaryRoot })
     expect(messages[0].content).toContain("Ari likes mushroom pizza")
     expect(mockEmitNervesEvent).toHaveBeenCalledWith(
       expect.objectContaining({
-        event: "mind.associative_recall_fallback",
+        event: "mind.note_search_fallback",
       }),
     )
   })
 
   it("falls back to substring matching when embedding response vectors are missing", async () => {
-    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "note-search-"))
     writeFacts(diaryRoot, [makeFact("f1", "Ari likes mushroom pizza", [0.99, 0.01])])
     mockFetch.mockResolvedValue({
       ok: true,
@@ -315,17 +315,17 @@ describe("associative recall", () => {
       { role: "user", content: "pizza" },
     ]
 
-    await injectAssociativeRecall(messages, { diaryRoot })
+    await injectNoteSearchContext(messages, { diaryRoot })
     expect(messages[0].content).toContain("Ari likes mushroom pizza")
     expect(mockEmitNervesEvent).toHaveBeenCalledWith(
       expect.objectContaining({
-        event: "mind.associative_recall_fallback",
+        event: "mind.note_search_fallback",
       }),
     )
   })
 
   it("converts non-Error thrown values gracefully in substring fallback", async () => {
-    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "note-search-"))
     writeFacts(diaryRoot, [makeFact("f1", "Ari likes mushroom pizza", [0.99, 0.01])])
     const provider: EmbeddingProvider = {
       embed: async () => {
@@ -337,12 +337,12 @@ describe("associative recall", () => {
       { role: "user", content: "pizza" },
     ]
 
-    await injectAssociativeRecall(messages, { diaryRoot, provider })
-    // Falls back to substring, finds match, injects recall
+    await injectNoteSearchContext(messages, { diaryRoot, provider })
+    // Falls back to substring, finds match, injects search_notes
     expect(messages[0].content).toContain("Ari likes mushroom pizza")
     expect(mockEmitNervesEvent).toHaveBeenCalledWith(
       expect.objectContaining({
-        event: "mind.associative_recall_fallback",
+        event: "mind.note_search_fallback",
       }),
     )
   })
@@ -354,17 +354,17 @@ describe("associative recall", () => {
       { role: "user", content: "anything" },
     ]
 
-    await injectAssociativeRecall(messages)
+    await injectNoteSearchContext(messages)
     expect(mockEmitNervesEvent).toHaveBeenCalledWith(
       expect.objectContaining({
-        event: "mind.associative_recall_error",
+        event: "mind.note_search_context_error",
         meta: expect.objectContaining({ reason: "non-error-value" }),
       }),
     )
   })
 
-  it("skips corrupt lines in facts file and recalls valid ones", async () => {
-    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
+  it("skips corrupt lines in facts file and finds valid ones", async () => {
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "note-search-"))
     const validFact = JSON.stringify(makeFact("f1", "Ari likes mushroom pizza", [0.99, 0.01]))
     fs.writeFileSync(path.join(diaryRoot, "facts.jsonl"), `not valid json\n\n${validFact}\n`, "utf8")
 
@@ -376,12 +376,12 @@ describe("associative recall", () => {
       { role: "user", content: "pizza?" },
     ]
 
-    await injectAssociativeRecall(messages, { diaryRoot, provider, minScore: 0.5 })
+    await injectNoteSearchContext(messages, { diaryRoot, provider, minScore: 0.5 })
     expect(messages[0].content).toContain("Ari likes mushroom pizza")
   })
 
   it("does nothing when facts file contains only invalid JSON", async () => {
-    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "associative-recall-"))
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "note-search-"))
     fs.writeFileSync(path.join(diaryRoot, "facts.jsonl"), "not valid json\n", "utf8")
     const provider = { embed: vi.fn() }
     const messages: OpenAI.ChatCompletionMessageParam[] = [
@@ -389,7 +389,7 @@ describe("associative recall", () => {
       { role: "user", content: "anything" },
     ]
 
-    await injectAssociativeRecall(messages, { diaryRoot, provider })
+    await injectNoteSearchContext(messages, { diaryRoot, provider })
     expect(provider.embed).not.toHaveBeenCalled()
     expect(messages[0].content).toBe("base system prompt")
   })

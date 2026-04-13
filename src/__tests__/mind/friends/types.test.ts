@@ -340,7 +340,7 @@ describe("FriendRecord kind and agentMeta fields", () => {
 })
 
 describe("ResolvedContext type", () => {
-  it("constructs with friend and channel (no identity, no memory, no checker)", () => {
+  it("constructs with friend and channel (no identity, no diary entries, no checker)", () => {
     const friend: FriendRecord = {
       id: "uuid-1",
       name: "Jordan",

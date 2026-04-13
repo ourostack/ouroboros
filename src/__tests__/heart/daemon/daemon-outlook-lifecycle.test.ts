@@ -12,7 +12,7 @@ import type { OutlookHttpServerHandle } from "../../../heart/outlook/outlook-htt
  * ignore block because the real factory binds port 6876, which is held
  * by the running production daemon on dev machines and caused
  * EADDRINUSE flakes. DI lets us exercise the full start→stop path with
- * an in-memory stub — no port, no races.
+ * an process-local stub — no port, no races.
  */
 
 function tmpSocketPath(name: string): string {

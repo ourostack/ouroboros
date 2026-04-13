@@ -74,9 +74,9 @@ function makeFriend(overrides: Partial<FriendRecord> = {}): FriendRecord {
   }
 }
 
-describe("memory/friend tools", () => {
+describe("notes/friend tools", () => {
   beforeEach(() => {
-    agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tools-memory-friend-"))
+    agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tools-notes-friend-"))
     fs.mkdirSync(path.join(agentRoot, "diary"), { recursive: true })
     fs.mkdirSync(path.join(agentRoot, "friends"), { recursive: true })
 

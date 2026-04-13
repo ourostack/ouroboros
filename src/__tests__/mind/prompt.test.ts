@@ -1157,7 +1157,8 @@ describe("buildSystem", () => {
     resetPsycheCache()
     const result = await buildSystem("cli", { toolChoiceRequired: false })
     expect(result).not.toContain("## tool behavior")
-    expect(result).not.toContain("settle")
+    expect(result).not.toContain("tool_choice is set to \"required\"")
+    expect(result).toContain("- settle:")
   })
 
   it("includes tool behavior section when options is undefined (defaults on)", async () => {
@@ -1219,7 +1220,7 @@ describe("buildSystem", () => {
     expect(result).toContain("- settle:")
   })
 
-  it("toolsSection does NOT include settle when toolChoiceRequired is false", async () => {
+  it("toolsSection still includes flow tools when toolChoiceRequired is false", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
@@ -1227,7 +1228,28 @@ describe("buildSystem", () => {
     const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = await buildSystem("cli", { toolChoiceRequired: false })
-    expect(result).not.toContain("- settle:")
+    expect(result).toContain("- ponder:")
+    expect(result).toContain("- settle:")
+  })
+
+  it("toolsSection keeps flow tools when a custom tool subset is provided", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("cli", {
+      toolChoiceRequired: false,
+      tools: [{
+        type: "function",
+        function: { name: "custom_lookup", description: "custom lookup", parameters: { type: "object", properties: {} } },
+      } as any],
+    })
+    const toolsBlock = result.match(/## my tools\n[\s\S]*?(?=\n\n## |\n\n# )/)?.[0] ?? ""
+    expect(toolsBlock).toContain("- custom_lookup:")
+    expect(toolsBlock).toContain("- ponder:")
+    expect(toolsBlock).toContain("- settle:")
   })
 
   it("does not export flagsSection (removed)", async () => {
@@ -1939,7 +1961,7 @@ describe("contextSection", () => {
 
   // --- New Unit 7a tests: contextSection redesign ---
 
-  it("includes memory ephemerality instruction when friend context exists", async () => {
+  it("includes context ephemerality instruction when friend context exists", async () => {
     const { contextSection } = await import("../../mind/prompt")
     const ctx = {
       friend: {
@@ -1963,7 +1985,7 @@ describe("contextSection", () => {
       },
     }
     const result = contextSection(ctx)
-    // Should include instruction about ephemeral conversation memory
+    // Should include instruction about ephemeral conversation context
     expect(result).toContain("ephemeral")
     expect(result).toContain("save_friend_note")
   })
@@ -2262,7 +2284,7 @@ describe("contextSection", () => {
     expect(result.toLowerCase()).not.toContain("request comes first")
   })
 
-  it("includes working-memory trust instruction", async () => {
+  it("includes working-context trust instruction", async () => {
     const { contextSection } = await import("../../mind/prompt")
     const ctx = {
       friend: {
@@ -2440,7 +2462,7 @@ describe("contextSection", () => {
     expect(result.toLowerCase()).not.toMatch(/get to know/)
   })
 
-  it("memory instruction lowers the bar -- saves anything learned, not just important things", async () => {
+  it("note instruction lowers the bar -- saves anything learned, not just important things", async () => {
     const { contextSection } = await import("../../mind/prompt")
     const ctx = {
       friend: {
@@ -2464,7 +2486,7 @@ describe("contextSection", () => {
       },
     }
     const result = contextSection(ctx)
-    // Memory instruction should NOT say "something important" -- bar is too high
+    // Note instruction should NOT say "something important" -- bar is too high
     expect(result).not.toContain("something important")
     // Should lower the bar to "anything i learn"
     expect(result.toLowerCase()).toMatch(/anything i learn/)
@@ -3492,7 +3514,25 @@ describe("groupChatParticipationSection", () => {
     }
     const result = await buildSystem("bluebubbles", undefined, ctx as any)
     expect(result).toContain("observe")
+    expect(result.match(/## my tools\n[\s\S]*?(?=\n\n## |\n\n# )/)?.[0] ?? "").toContain("- observe:")
     expect(result).toMatch(/reaction|tapback/i)
+  })
+
+  it("buildSystem includes observe in the tools list for reaction signal turns", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const ctx = {
+      friend: makeFriendForGroup(),
+      channel: makeChannelCaps("teams", "closed"),
+      isGroupChat: false,
+    }
+    const result = await buildSystem("teams", { isReactionSignal: true }, ctx as any)
+    const toolsBlock = result.match(/## my tools\n[\s\S]*?(?=\n\n## |\n\n# )/)?.[0] ?? ""
+    expect(toolsBlock).toContain("- observe:")
   })
 })
 
@@ -4378,7 +4418,7 @@ describe("toolContractsSection (Unit 1.5)", () => {
     expect(result).toContain("1. `save_friend_note` -- when I learn something about a person, I save it immediately")
     expect(result).toContain("2. `diary_write` -- when I learn something general about a project, system, or decision")
     expect(result).toContain("3. `get_friend_note` -- when I need context about someone not in this conversation")
-    expect(result).toContain("4. `recall` -- when I need to remember something from before")
+    expect(result).toContain("4. `search_notes` -- when I need older diary or journal material")
     expect(result).toContain("5. `query_session` -- when I need grounded session history")
   })
 
@@ -4670,7 +4710,7 @@ describe("familyCrossSessionTruthSection trimmed (Unit 1.7)", () => {
   })
 })
 
-describe("memory-awareness lines in contextSection (Unit 1.8)", () => {
+describe("note-awareness lines in contextSection (Unit 1.8)", () => {
   beforeEach(() => {
     vi.resetModules()
     const DEFAULT_AGENT_CONTEXT = { maxTokens: 80000, contextMargin: 20 }
@@ -4710,7 +4750,7 @@ describe("memory-awareness lines in contextSection (Unit 1.8)", () => {
     expect(result).toContain("My active friend's notes are auto-loaded")
   })
 
-  it("includes 'Associative recall auto-injects relevant facts'", async () => {
+  it("includes kept-notes surfacing guidance", async () => {
     setupReadFileSync()
     vi.mocked(fs.existsSync).mockReturnValue(false)
     vi.mocked(fs.readdirSync).mockReturnValue([])
@@ -4721,7 +4761,7 @@ describe("memory-awareness lines in contextSection (Unit 1.8)", () => {
     resetPsycheCache()
 
     const result = await buildSystem("teams", {}, makeOnboardingContext() as any)
-    expect(result).toContain("Associative recall auto-injects relevant facts")
+    expect(result).toContain("The pre-turn kept-notes check may surface relevant diary, journal, or friend-note material")
   })
 
   it("includes 'My psyche files are always loaded'", async () => {

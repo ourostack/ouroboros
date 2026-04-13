@@ -449,7 +449,7 @@ describe("log-tailer", () => {
         meta: {},
       })
 
-      // In-memory fixture: match by basename. tailer's discoverLogFiles
+      // Process-local fixture: match by basename. tailer's discoverLogFiles
       // will construct absolute paths like /home/test/AgentBundles/
       // slugger.ouro/state/daemon/logs/daemon.N.ndjson[.gz]. We key by
       // the basename of whatever the tailer asks for.

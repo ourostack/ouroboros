@@ -18,7 +18,7 @@ function makeFriend(overrides: Partial<FriendRecord> = {}): FriendRecord {
   }
 }
 
-// Mock in-memory implementation for interface contract tests
+// Mock process-local implementation for interface contract tests
 function createMockFriendStore(): FriendStore {
   const items = new Map<string, FriendRecord>()
   return {

@@ -21,7 +21,7 @@ import {
   handleAgentAsk, handleAgentCatchup, handleAgentCheckGuidance,
   handleAgentCheckScope, handleAgentDelegate, handleAgentGetContext,
   handleAgentGetTask, handleAgentReportBlocker, handleAgentReportComplete,
-  handleAgentReportProgress, handleAgentRequestDecision, handleAgentSearchMemory,
+  handleAgentReportProgress, handleAgentRequestDecision, handleAgentSearchNotes,
   handleAgentStatus,
 } from "./agent-service"
 import { getAlwaysOnSenseNames } from "../../mind/friends/channel"
@@ -314,7 +314,7 @@ export type DaemonCommand =
   | { kind: "agent.catchup"; agent: string; friendId: string; [key: string]: unknown }
   | { kind: "agent.delegate"; agent: string; friendId: string; task?: string; context?: string; [key: string]: unknown }
   | { kind: "agent.getContext"; agent: string; friendId: string; [key: string]: unknown }
-  | { kind: "agent.searchMemory"; agent: string; friendId: string; query?: string; [key: string]: unknown }
+  | { kind: "agent.searchNotes"; agent: string; friendId: string; query?: string; [key: string]: unknown }
   | { kind: "agent.getTask"; agent: string; friendId: string; [key: string]: unknown }
   | { kind: "agent.checkScope"; agent: string; friendId: string; item?: string; [key: string]: unknown }
   | { kind: "agent.requestDecision"; agent: string; friendId: string; topic?: string; options?: string[]; [key: string]: unknown }
@@ -1135,8 +1135,8 @@ export class OuroDaemon {
         return handleAgentDelegate(command)
       case "agent.getContext":
         return handleAgentGetContext(command)
-      case "agent.searchMemory":
-        return handleAgentSearchMemory(command)
+      case "agent.searchNotes":
+        return handleAgentSearchNotes(command)
       case "agent.getTask":
         return handleAgentGetTask(command)
       case "agent.checkScope":

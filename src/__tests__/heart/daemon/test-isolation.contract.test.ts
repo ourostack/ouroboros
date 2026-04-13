@@ -192,7 +192,7 @@ const OURO_DAEMON_INSTANTIATION_ALLOWLIST = new Set<string>([
   "src/__tests__/nerves/pairing-regression.test.ts",
   // Exercises the Outlook HTTP server lifecycle via the injected
   // outlookServerFactory seam. The real factory binds port 6876 which
-  // a running production daemon holds; DI lets tests use an in-memory
+  // a running production daemon holds; DI lets tests use an process-local
   // stub and cover the try/catch/stop branches that were previously
   // v8-ignored.
   "src/__tests__/heart/daemon/daemon-outlook-lifecycle.test.ts",

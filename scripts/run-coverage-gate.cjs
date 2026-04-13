@@ -1,11 +1,20 @@
 #!/usr/bin/env node
 const { spawnSync } = require("child_process")
-const { mkdirSync, writeFileSync, readFileSync, unlinkSync, existsSync } = require("fs")
+const { mkdirSync, writeFileSync, readFileSync, unlinkSync, existsSync, statSync } = require("fs")
 const path = require("path")
 const os = require("os")
+const crypto = require("crypto")
 
 const REPO_SLUG = "ouroboros-agent-harness"
-const ROOT = path.join(os.tmpdir(), "ouroboros-test-runs", REPO_SLUG)
+const BASE_ROOT = path.join(os.tmpdir(), "ouroboros-test-runs", REPO_SLUG)
+const RUN_OWNER = coverageRunOwner(process.cwd())
+const ROOT = path.join(BASE_ROOT, RUN_OWNER)
+
+function coverageRunOwner(cwd) {
+  const resolved = path.resolve(cwd)
+  const hash = crypto.createHash("sha256").update(resolved).digest("hex").slice(0, 12)
+  return `cwd-${hash}`
+}
 
 function npmCmd() {
   return process.platform === "win32" ? "npm.cmd" : "npm"
@@ -28,6 +37,79 @@ function readJson(filePath) {
   return JSON.parse(readFileSync(filePath, "utf8"))
 }
 
+function readPerTestCapture(filePath) {
+  const raw = readFileSync(filePath, "utf8").trim()
+  if (!raw) {
+    return { ok: false, problem: `empty ${filePath}` }
+  }
+
+  try {
+    const parsed = JSON.parse(raw)
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      if (typeof parsed.testName === "string" && Array.isArray(parsed.events)) {
+        return { ok: true, problem: null }
+      }
+      const values = Object.values(parsed)
+      if (!values.every(Array.isArray)) {
+        return { ok: false, problem: `invalid ${filePath}: expected per-test event arrays` }
+      }
+      return {
+        ok: values.length > 0,
+        problem: values.length > 0 ? null : `invalid ${filePath}: no per-test records`,
+      }
+    }
+    return { ok: false, problem: `invalid ${filePath}: expected object or ndjson records` }
+  } catch {
+    let records = 0
+    for (const line of raw.split("\n").map((entry) => entry.trim()).filter(Boolean)) {
+      try {
+        const parsed = JSON.parse(line)
+        if (!parsed || typeof parsed !== "object" || typeof parsed.testName !== "string" || !Array.isArray(parsed.events)) {
+          return { ok: false, problem: `invalid ${filePath}: expected per-test ndjson records` }
+        }
+        records += 1
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        return { ok: false, problem: `invalid ${filePath}: ${message}` }
+      }
+    }
+    return {
+      ok: records > 0,
+      problem: records > 0 ? null : `invalid ${filePath}: no per-test records`,
+    }
+  }
+}
+
+function inspectCaptureArtifacts(runDir) {
+  const eventsPath = path.join(runDir, "vitest-events.ndjson")
+  const perTestPath = path.join(runDir, "vitest-events-per-test.ndjson")
+  const problems = []
+
+  if (!existsSync(eventsPath)) {
+    problems.push(`missing ${eventsPath}`)
+  } else if (statSync(eventsPath).size === 0) {
+    problems.push(`empty ${eventsPath}`)
+  }
+
+  if (!existsSync(perTestPath)) {
+    problems.push(`missing ${perTestPath}`)
+  } else if (statSync(perTestPath).size === 0) {
+    problems.push(`empty ${perTestPath}`)
+  } else {
+    const parsed = readPerTestCapture(perTestPath)
+    if (!parsed.ok) {
+      problems.push(parsed.problem)
+    }
+  }
+
+  return {
+    ok: problems.length === 0,
+    eventsPath,
+    perTestPath,
+    problems,
+  }
+}
+
 function main() {
   mkdirSync(ROOT, { recursive: true })
   const runId = createRunId()
@@ -36,6 +118,7 @@ function main() {
 
   const info = {
     repo_slug: REPO_SLUG,
+    run_owner: RUN_OWNER,
     run_id: runId,
     run_dir: runDir,
     created_at: new Date().toISOString(),
@@ -115,9 +198,42 @@ function main() {
   }
 
   const vitestExit = runNpm(["run", "test:coverage:vitest"]).status ?? 1
+  const captureArtifacts = inspectCaptureArtifacts(runDir)
 
   if (existsSync(activePath)) {
     unlinkSync(activePath)
+  }
+
+  if (vitestExit === 0 && !captureArtifacts.ok) {
+    const reason =
+      `nerves capture artifacts were not produced for run ${runId}; ` +
+      `${captureArtifacts.problems.join("; ")}. ` +
+      `Coverage root is ${ROOT} (owner ${RUN_OWNER}); this usually means the Vitest setup file did not attach to the active run.`
+    const summary = {
+      overall_status: "fail",
+      lint: { status: "pass" },
+      changelog: { status: "pass" },
+      outlook_ui_typecheck: { status: "pass" },
+      outlook_ui_tests: { status: "pass" },
+      code_coverage: { status: "pass" },
+      nerves_coverage: {
+        status: "fail",
+        capture_artifacts: {
+          status: "fail",
+          events_path: captureArtifacts.eventsPath,
+          per_test_path: captureArtifacts.perTestPath,
+          problems: captureArtifacts.problems,
+        },
+      },
+      required_actions: [{
+        type: "logging",
+        target: "nerves-capture-artifacts",
+        reason,
+      }],
+    }
+    writeJson(summaryPath, summary)
+    console.log(`coverage gate: fail (${summaryPath})`)
+    process.exit(1)
   }
 
   const auditExit = runNpm([
@@ -181,4 +297,11 @@ function main() {
   process.exit(overallStatus === "pass" ? 0 : 1)
 }
 
-main()
+if (require.main === module) {
+  main()
+}
+
+module.exports = {
+  coverageRunOwner,
+  inspectCaptureArtifacts,
+}

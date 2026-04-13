@@ -15,7 +15,7 @@ import type OpenAI from "openai"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { getAgentName, getAgentRoot } from "../../heart/identity"
 import { renderAttachmentBlock } from "../../heart/attachments/render"
-import { rememberRecentAttachment } from "../../heart/attachments/store"
+import { cacheRecentAttachment } from "../../heart/attachments/store"
 import { materializeAttachment } from "../../heart/attachments/materialize"
 import { buildCliLocalFileAttachmentRecord } from "../../heart/attachments/sources/cli-local-file"
 import type { AttachmentRecord } from "../../heart/attachments/types"
@@ -222,7 +222,7 @@ export async function resolveImageContent(
   const agentName = getAgentName()
   const agentRoot = getAgentRoot(agentName)
   const parts: OpenAI.ChatCompletionContentPart[] = []
-  const rememberedAttachments: AttachmentRecord[] = []
+  const cachedAttachments: AttachmentRecord[] = []
 
   // Read all images in parallel
   const entries = Array.from(images.entries())
@@ -235,7 +235,7 @@ export async function resolveImageContent(
         ? await persistClipboardImage(agentRoot, absolutePath, image)
         : absolutePath
 
-      const attachment = rememberRecentAttachment(
+      const attachment = cacheRecentAttachment(
         agentName,
         buildCliLocalFileAttachmentRecord({
           path: sourcePath,
@@ -244,7 +244,7 @@ export async function resolveImageContent(
         }),
         agentRoot,
       )
-      rememberedAttachments.push(attachment)
+      cachedAttachments.push(attachment)
 
       try {
         const materialized = await materializeAttachment(agentName, attachment.id, {
@@ -277,7 +277,7 @@ export async function resolveImageContent(
   }
 
   // Always include the text part
-  const attachmentBlock = renderAttachmentBlock(rememberedAttachments)
+  const attachmentBlock = renderAttachmentBlock(cachedAttachments)
   const textWithAttachments = [text, attachmentBlock].filter(Boolean).join("\n")
   parts.push({ type: "text" as const, text: textWithAttachments || text })
 

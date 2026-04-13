@@ -15,13 +15,13 @@ import {
 } from "../heart/daemon/thoughts";
 import { createBridgeManager } from "../heart/bridges/manager";
 import {
-  recallSession,
+  summarizeSessionTail,
   searchSessionTranscript,
-  type SessionRecallOptions,
-  type SessionRecallResult,
+  type SessionTailOptions,
+  type SessionTailResult,
   type SessionSearchOptions,
   type SessionSearchResult,
-} from "../heart/session-recall";
+} from "../heart/session-transcript";
 import { listSessionActivity } from "../heart/session-activity";
 import { buildActiveWorkFrame, formatActiveWorkFrame, type ActiveWorkFrame } from "../heart/active-work";
 import { getCodingSessionManager, type CodingSessionStatus } from "./coding";
@@ -36,15 +36,15 @@ import type { ToolContext, ToolDefinition } from "./tools-base";
 const NO_SESSION_FOUND_MESSAGE = "no session found for that friend/channel/key combination."
 const EMPTY_SESSION_MESSAGE = "session exists but has no non-system messages."
 
-async function recallSessionSafely(options: SessionRecallOptions): Promise<SessionRecallResult | { kind: "missing" }> {
+async function summarizeSessionTailSafely(options: SessionTailOptions): Promise<SessionTailResult | { kind: "missing" }> {
   try {
-    return await recallSession(options)
+    return await summarizeSessionTail(options)
   } catch (error) {
     if (options.summarize) {
       emitNervesEvent({
         component: "daemon",
-        event: "daemon.session_recall_summary_fallback",
-        message: "session recall summarization failed; using raw transcript",
+        event: "daemon.session_tail_summary_summary_fallback",
+        message: "session tail summarization failed; using raw transcript",
         meta: {
           friendId: options.friendId,
           channel: options.channel,
@@ -53,11 +53,11 @@ async function recallSessionSafely(options: SessionRecallOptions): Promise<Sessi
         },
       })
       try {
-        return await recallSession({
+        return await summarizeSessionTail({
           ...options,
           summarize: undefined,
         })
-      /* v8 ignore start -- defensive: session recall failure fallback @preserve */
+      /* v8 ignore start -- defensive: session tail fallback @preserve */
       } catch {
         return { kind: "missing" }
       }
@@ -416,7 +416,7 @@ export const sessionToolDefinitions: ToolDefinition[] = [
       }
 
       const sessFile = resolveSessionPath(friendId, channel, key)
-      const recall = await recallSessionSafely({
+      const sessionTail = await summarizeSessionTailSafely({
         sessionPath: sessFile,
         friendId,
         channel,
@@ -426,14 +426,14 @@ export const sessionToolDefinitions: ToolDefinition[] = [
         summarize: ctx?.summarize,
       })
 
-      if (recall.kind === "missing") {
+      if (sessionTail.kind === "missing") {
         return NO_SESSION_FOUND_MESSAGE
       }
-      if (recall.kind === "empty") {
+      if (sessionTail.kind === "empty") {
         return EMPTY_SESSION_MESSAGE
       }
 
-      return recall.summary
+      return sessionTail.summary
     },
   },
   {
