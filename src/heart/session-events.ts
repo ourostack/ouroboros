@@ -850,7 +850,12 @@ function selectProjectedEventIds(
   return result
 }
 
-export function buildCanonicalSessionEnvelope(options: SessionEnvelopeBuildOptions): SessionEnvelope {
+export interface SessionEnvelopeBuildResult {
+  envelope: SessionEnvelope
+  evictedEvents: SessionEvent[]
+}
+
+export function buildCanonicalSessionEnvelope(options: SessionEnvelopeBuildOptions): SessionEnvelopeBuildResult {
   const existing = options.existing
   // Callers pass pre-sanitized messages + pre-captured ingress times.
   const currentIngressTimes = options.currentIngressTimes ?? options.currentMessages.map(getIngressTime)
@@ -914,19 +919,28 @@ export function buildCanonicalSessionEnvelope(options: SessionEnvelopeBuildOptio
 
   const projectionEventIds = selectProjectedEventIds(currentMessages, currentEventIds, trimmedMessages)
 
+  // Prune events: only keep events whose IDs are in the projection.
+  // Events not in projection are returned as evicted for archiving.
+  const projectionIdSet = new Set(projectionEventIds)
+  const prunedEvents = events.filter((event) => projectionIdSet.has(event.id))
+  const evictedEvents = events.filter((event) => !projectionIdSet.has(event.id))
+
   return {
-    version: 2,
-    events,
-    projection: {
-      eventIds: projectionEventIds,
-      trimmed: projectionEventIds.length < currentEventIds.length,
-      maxTokens: options.projectionBasis.maxTokens,
-      contextMargin: options.projectionBasis.contextMargin,
-      inputTokens: options.projectionBasis.inputTokens,
-      projectedAt: options.recordedAt,
+    envelope: {
+      version: 2,
+      events: prunedEvents,
+      projection: {
+        eventIds: projectionEventIds,
+        trimmed: projectionEventIds.length < currentEventIds.length,
+        maxTokens: options.projectionBasis.maxTokens,
+        contextMargin: options.projectionBasis.contextMargin,
+        inputTokens: options.projectionBasis.inputTokens,
+        projectedAt: options.recordedAt,
+      },
+      lastUsage: normalizeUsage(options.lastUsage),
+      state: normalizeContinuityState(options.state),
     },
-    lastUsage: normalizeUsage(options.lastUsage),
-    state: normalizeContinuityState(options.state),
+    evictedEvents,
   }
 }
 

@@ -72,7 +72,7 @@ describe("session events", () => {
       { role: "assistant", content: "latest answer" },
     ]
 
-    const envelope = buildCanonicalSessionEnvelope({
+    const { envelope } = buildCanonicalSessionEnvelope({
       existing: null,
       previousMessages: [],
       currentMessages: previousMessages,
@@ -87,7 +87,7 @@ describe("session events", () => {
       },
     })
 
-    const updated = buildCanonicalSessionEnvelope({
+    const { envelope: updated } = buildCanonicalSessionEnvelope({
       existing: envelope,
       previousMessages,
       currentMessages,
@@ -102,7 +102,8 @@ describe("session events", () => {
       },
     })
 
-    expect(updated.events).toHaveLength(5)
+    // Pruned envelope only contains projected events
+    expect(updated.events).toHaveLength(3)
     expect(updated.projection.eventIds).toEqual(["evt-000001", "evt-000004", "evt-000005"])
     expect(projectProviderMessages(updated)).toEqual(trimmedMessages)
   })
@@ -689,7 +690,7 @@ describe("session events", () => {
       { role: "assistant", content: "revised answer" },
     ]
 
-    const existing = buildCanonicalSessionEnvelope({
+    const { envelope: existing } = buildCanonicalSessionEnvelope({
       existing: null,
       previousMessages: [],
       currentMessages: previousMessages,
@@ -704,7 +705,7 @@ describe("session events", () => {
       },
     })
 
-    const updated = buildCanonicalSessionEnvelope({
+    const { envelope: updated } = buildCanonicalSessionEnvelope({
       existing,
       previousMessages,
       currentMessages,
@@ -719,7 +720,8 @@ describe("session events", () => {
       },
     })
 
-    expect(updated.events).toHaveLength(5)
+    // Pruned envelope only contains projected events (old events 2,3 evicted)
+    expect(updated.events).toHaveLength(3)
     expect(updated.projection.eventIds).toEqual(["evt-000001", "evt-000004", "evt-000005"])
     expect(projectProviderMessages(updated)).toEqual(currentMessages)
   })
@@ -1006,7 +1008,7 @@ describe("session events", () => {
       state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
     }
 
-    const updated = buildCanonicalSessionEnvelope({
+    const { envelope: updated } = buildCanonicalSessionEnvelope({
       existing,
       previousMessages: [
         { role: "system", content: "sys" },
@@ -1057,7 +1059,7 @@ describe("session events", () => {
       const userMsg: OpenAI.ChatCompletionMessageParam = { role: "user", content: "test" }
       ;(userMsg as Record<string, unknown>)._ingressAt = ingressTime
 
-      const envelope = buildCanonicalSessionEnvelope({
+      const { envelope } = buildCanonicalSessionEnvelope({
         existing: null,
         previousMessages: [],
         currentMessages: [userMsg],
@@ -1079,7 +1081,7 @@ describe("session events", () => {
       const batchTime = "2026-04-01T10:05:00.000Z"
       const userMsg: OpenAI.ChatCompletionMessageParam = { role: "user", content: "test" }
 
-      const envelope = buildCanonicalSessionEnvelope({
+      const { envelope } = buildCanonicalSessionEnvelope({
         existing: null,
         previousMessages: [],
         currentMessages: [userMsg],
@@ -1101,7 +1103,7 @@ describe("session events", () => {
       const assistantMsg: OpenAI.ChatCompletionMessageParam = { role: "assistant", content: "reply" }
       ;(assistantMsg as Record<string, unknown>)._ingressAt = ingressTime
 
-      const envelope = buildCanonicalSessionEnvelope({
+      const { envelope } = buildCanonicalSessionEnvelope({
         existing: null,
         previousMessages: [],
         currentMessages: [{ role: "user", content: "hi" }, assistantMsg],
@@ -1125,7 +1127,7 @@ describe("session events", () => {
       ;(msg1 as Record<string, unknown>)._ingressAt = "2026-04-01T10:00:00.000Z"
       ;(msg2 as Record<string, unknown>)._ingressAt = "2026-04-01T10:02:00.000Z"
 
-      const envelope = buildCanonicalSessionEnvelope({
+      const { envelope } = buildCanonicalSessionEnvelope({
         existing: null,
         previousMessages: [],
         currentMessages: [msg1, { role: "assistant", content: "ack" }, msg2],
@@ -1150,7 +1152,7 @@ describe("session events", () => {
       ;(msg1 as Record<string, unknown>)._ingressAt = "2026-04-01T10:00:00.000Z"
       const batchTime = "2026-04-01T10:05:00.000Z"
 
-      const envelope = buildCanonicalSessionEnvelope({
+      const { envelope } = buildCanonicalSessionEnvelope({
         existing: null,
         previousMessages: [],
         currentMessages: [msg1, { role: "assistant", content: "reply" }],
@@ -1180,7 +1182,7 @@ describe("session events", () => {
         { role: "user", content: "hello" },
         { role: "assistant", content: "hi there" },
       ]
-      const existing = buildCanonicalSessionEnvelope({
+      const { envelope: existing } = buildCanonicalSessionEnvelope({
         existing: null,
         previousMessages: [],
         currentMessages: previousMessages,
@@ -1202,7 +1204,7 @@ describe("session events", () => {
         { role: "assistant", content: "not much" },
       ]
 
-      const updated = buildCanonicalSessionEnvelope({
+      const { envelope: updated } = buildCanonicalSessionEnvelope({
         existing,
         previousMessages,
         currentMessages,
@@ -1217,7 +1219,8 @@ describe("session events", () => {
       // so ALL 5 messages are created as new events (3 existing + 5 new = 8 total)
       // With the fix: prefix match skips system messages, matches user+assistant,
       // creates new events only for: 1 changed system + 2 genuinely new messages = 3 new
-      expect(updated.events).toHaveLength(6) // 3 original + 3 new
+      // Pruned envelope: 6 total events created, 5 projected (old sys_v1 event evicted)
+      expect(updated.events).toHaveLength(5)
     })
 
     it("matches non-system messages correctly when system prompt changes between turns", async () => {
@@ -1229,7 +1232,7 @@ describe("session events", () => {
         { role: "user", content: "question A" },
         { role: "assistant", content: "answer A" },
       ]
-      const existing = buildCanonicalSessionEnvelope({
+      const { envelope: existing } = buildCanonicalSessionEnvelope({
         existing: null,
         previousMessages: [],
         currentMessages: turn1Messages,
@@ -1249,7 +1252,7 @@ describe("session events", () => {
         { role: "assistant", content: "answer B" },
       ]
 
-      const updated = buildCanonicalSessionEnvelope({
+      const { envelope: updated } = buildCanonicalSessionEnvelope({
         existing,
         previousMessages: turn1Messages,
         currentMessages: turn2Messages,
@@ -1260,15 +1263,14 @@ describe("session events", () => {
         projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
       })
 
-      // Should reuse existing events for question A + answer A
-      // New events: 1 changed system + 2 new non-system = 3 new
-      expect(updated.events).toHaveLength(6) // 3 original + 3 new
-      // New events start at index 3: system, then questionB, answerB
-      expect(updated.events[3]!.role).toBe("system")
-      expect(updated.events[4]!.role).toBe("user")
-      expect(updated.events[4]!.content).toBe("question B")
-      expect(updated.events[5]!.role).toBe("assistant")
-      expect(updated.events[5]!.content).toBe("answer B")
+      // Pruned envelope: 5 projected events (old sys_v1 event evicted)
+      expect(updated.events).toHaveLength(5)
+      // Reused events first (qA, aA), then new events (sys_v2, qB, aB)
+      expect(updated.events[0]!.content).toBe("question A")
+      expect(updated.events[1]!.content).toBe("answer A")
+      expect(updated.events[2]!.role).toBe("system")
+      expect(updated.events[3]!.content).toBe("question B")
+      expect(updated.events[4]!.content).toBe("answer B")
 
       // Projection should include the new system event + reused non-system + new non-system
       const projected = projectProviderMessages(updated)
@@ -1282,7 +1284,7 @@ describe("session events", () => {
         { role: "user", content: "hello" },
         { role: "assistant", content: "hi" },
       ]
-      const existing = buildCanonicalSessionEnvelope({
+      const { envelope: existing } = buildCanonicalSessionEnvelope({
         existing: null,
         previousMessages: [],
         currentMessages: turn1Messages,
@@ -1298,7 +1300,7 @@ describe("session events", () => {
         { role: "assistant", content: "hi" },
         { role: "user", content: "more" },
       ]
-      const updated = buildCanonicalSessionEnvelope({
+      const { envelope: updated } = buildCanonicalSessionEnvelope({
         existing,
         previousMessages: turn1Messages,
         currentMessages: turn2Messages,
@@ -1321,7 +1323,7 @@ describe("session events", () => {
         { role: "system", content: "system 2 v1" },
         { role: "assistant", content: "hi" },
       ]
-      const existing = buildCanonicalSessionEnvelope({
+      const { envelope: existing } = buildCanonicalSessionEnvelope({
         existing: null,
         previousMessages: [],
         currentMessages: turn1Messages,
@@ -1340,7 +1342,7 @@ describe("session events", () => {
         { role: "assistant", content: "hi" },
         { role: "user", content: "new question" },
       ]
-      const updated = buildCanonicalSessionEnvelope({
+      const { envelope: updated } = buildCanonicalSessionEnvelope({
         existing,
         previousMessages: turn1Messages,
         currentMessages: turn2Messages,
@@ -1351,9 +1353,8 @@ describe("session events", () => {
         projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
       })
 
-      // Should reuse user "hello" + assistant "hi"
-      // New events: 2 changed systems + 1 new user = 3 new
-      expect(updated.events).toHaveLength(7) // 4 original + 3 new
+      // Pruned envelope: 5 projected events (old sys1_v1 and sys2_v1 evicted)
+      expect(updated.events).toHaveLength(5)
     })
 
     it("handles all system messages with no other roles", async () => {
@@ -1362,7 +1363,7 @@ describe("session events", () => {
       const turn1Messages: OpenAI.ChatCompletionMessageParam[] = [
         { role: "system", content: "only system v1" },
       ]
-      const existing = buildCanonicalSessionEnvelope({
+      const { envelope: existing } = buildCanonicalSessionEnvelope({
         existing: null,
         previousMessages: [],
         currentMessages: turn1Messages,
@@ -1376,7 +1377,7 @@ describe("session events", () => {
       const turn2Messages: OpenAI.ChatCompletionMessageParam[] = [
         { role: "system", content: "only system v2" },
       ]
-      const updated = buildCanonicalSessionEnvelope({
+      const { envelope: updated } = buildCanonicalSessionEnvelope({
         existing,
         previousMessages: turn1Messages,
         currentMessages: turn2Messages,
@@ -1387,14 +1388,14 @@ describe("session events", () => {
         projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
       })
 
-      // No non-system messages to match, system changed, so new system event is created
-      expect(updated.events).toHaveLength(2) // 1 original + 1 new
+      // No non-system messages to match, system changed. Pruned: only new sys event projected.
+      expect(updated.events).toHaveLength(1)
     })
 
     it("handles empty arrays", async () => {
       const { buildCanonicalSessionEnvelope } = await import("../../heart/session-events")
 
-      const updated = buildCanonicalSessionEnvelope({
+      const { envelope: updated } = buildCanonicalSessionEnvelope({
         existing: null,
         previousMessages: [],
         currentMessages: [],
@@ -1421,7 +1422,7 @@ describe("session events", () => {
         { role: "user", content: "q2" },
         { role: "assistant", content: "a2" },
       ]
-      const existing = buildCanonicalSessionEnvelope({
+      const { envelope: existing } = buildCanonicalSessionEnvelope({
         existing: null,
         previousMessages: [],
         currentMessages: turn1Messages,
@@ -1445,7 +1446,7 @@ describe("session events", () => {
       ]
 
       const result = buildCanonicalSessionEnvelope({
-        existing: existing.envelope,
+        existing,
         previousMessages: turn1Messages,
         currentMessages: turn2Messages,
         trimmedMessages,
@@ -1503,7 +1504,7 @@ describe("session events", () => {
         turn1Messages.push({ role: "assistant", content: `a${i}` })
       }
 
-      const existing = buildCanonicalSessionEnvelope({
+      const { envelope: existing } = buildCanonicalSessionEnvelope({
         existing: null,
         previousMessages: [],
         currentMessages: turn1Messages,
@@ -1522,7 +1523,7 @@ describe("session events", () => {
       ]
 
       const result = buildCanonicalSessionEnvelope({
-        existing: existing.envelope,
+        existing,
         previousMessages: turn1Messages,
         currentMessages: turn1Messages,
         trimmedMessages,
