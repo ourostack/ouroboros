@@ -1563,4 +1563,91 @@ describe("session events", () => {
       expect(result.envelope.events).toHaveLength(1) // only system
     })
   })
+
+  describe("appendEvictedToArchive", () => {
+    it("writes evicted events as NDJSON lines to archive file", async () => {
+      const fs = await import("fs")
+      const os = await import("os")
+      const path = await import("path")
+      const { appendEvictedToArchive } = await import("../../heart/session-events")
+
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sess-test-"))
+      const sessPath = path.join(tmpDir, "dialog.json")
+
+      const evictedEvents = [
+        { id: "evt-000001", sequence: 1, role: "user" as const, content: "hello", name: null, toolCallId: null, toolCalls: [], attachments: [], time: { authoredAt: null, authoredAtSource: "unknown" as const, observedAt: "2026-04-13T10:00:00.000Z", observedAtSource: "ingest" as const, recordedAt: "2026-04-13T10:00:00.000Z", recordedAtSource: "save" as const }, relations: { replyToEventId: null, threadRootEventId: null, references: [] as string[], toolCallId: null, supersedesEventId: null, redactsEventId: null }, provenance: { captureKind: "live" as const, legacyVersion: null, sourceMessageIndex: null } },
+        { id: "evt-000002", sequence: 2, role: "assistant" as const, content: "hi", name: null, toolCallId: null, toolCalls: [], attachments: [], time: { authoredAt: "2026-04-13T10:01:00.000Z", authoredAtSource: "local" as const, observedAt: "2026-04-13T10:01:00.000Z", observedAtSource: "local" as const, recordedAt: "2026-04-13T10:01:00.000Z", recordedAtSource: "save" as const }, relations: { replyToEventId: null, threadRootEventId: null, references: [] as string[], toolCallId: null, supersedesEventId: null, redactsEventId: null }, provenance: { captureKind: "live" as const, legacyVersion: null, sourceMessageIndex: null } },
+      ]
+
+      appendEvictedToArchive(sessPath, evictedEvents)
+
+      const archivePath = sessPath.replace(/\.json$/, ".archive.ndjson")
+      const content = fs.readFileSync(archivePath, "utf-8")
+      const lines = content.trim().split("\n")
+      expect(lines).toHaveLength(2)
+      expect(JSON.parse(lines[0]!).id).toBe("evt-000001")
+      expect(JSON.parse(lines[1]!).id).toBe("evt-000002")
+
+      // Cleanup
+      fs.unlinkSync(archivePath)
+      fs.rmdirSync(tmpDir)
+    })
+
+    it("appends to existing archive file without overwriting", async () => {
+      const fs = await import("fs")
+      const os = await import("os")
+      const path = await import("path")
+      const { appendEvictedToArchive } = await import("../../heart/session-events")
+
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sess-test-"))
+      const sessPath = path.join(tmpDir, "dialog.json")
+      const archivePath = sessPath.replace(/\.json$/, ".archive.ndjson")
+
+      const event1 = { id: "evt-000001", sequence: 1, role: "user" as const, content: "first", name: null, toolCallId: null, toolCalls: [], attachments: [], time: { authoredAt: null, authoredAtSource: "unknown" as const, observedAt: "2026-04-13T10:00:00.000Z", observedAtSource: "ingest" as const, recordedAt: "2026-04-13T10:00:00.000Z", recordedAtSource: "save" as const }, relations: { replyToEventId: null, threadRootEventId: null, references: [] as string[], toolCallId: null, supersedesEventId: null, redactsEventId: null }, provenance: { captureKind: "live" as const, legacyVersion: null, sourceMessageIndex: null } }
+      const event2 = { id: "evt-000002", sequence: 2, role: "user" as const, content: "second", name: null, toolCallId: null, toolCalls: [], attachments: [], time: { authoredAt: null, authoredAtSource: "unknown" as const, observedAt: "2026-04-13T10:01:00.000Z", observedAtSource: "ingest" as const, recordedAt: "2026-04-13T10:01:00.000Z", recordedAtSource: "save" as const }, relations: { replyToEventId: null, threadRootEventId: null, references: [] as string[], toolCallId: null, supersedesEventId: null, redactsEventId: null }, provenance: { captureKind: "live" as const, legacyVersion: null, sourceMessageIndex: null } }
+
+      appendEvictedToArchive(sessPath, [event1])
+      appendEvictedToArchive(sessPath, [event2])
+
+      const content = fs.readFileSync(archivePath, "utf-8")
+      const lines = content.trim().split("\n")
+      expect(lines).toHaveLength(2)
+      expect(JSON.parse(lines[0]!).id).toBe("evt-000001")
+      expect(JSON.parse(lines[1]!).id).toBe("evt-000002")
+
+      // Cleanup
+      fs.unlinkSync(archivePath)
+      fs.rmdirSync(tmpDir)
+    })
+
+    it("does not write when evictedEvents is empty", async () => {
+      const fs = await import("fs")
+      const os = await import("os")
+      const path = await import("path")
+      const { appendEvictedToArchive } = await import("../../heart/session-events")
+
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sess-test-"))
+      const sessPath = path.join(tmpDir, "dialog.json")
+      const archivePath = sessPath.replace(/\.json$/, ".archive.ndjson")
+
+      appendEvictedToArchive(sessPath, [])
+
+      expect(fs.existsSync(archivePath)).toBe(false)
+
+      // Cleanup
+      fs.rmdirSync(tmpDir)
+    })
+
+    it("does not crash when archive write fails", async () => {
+      const fs = await import("fs")
+      const { appendEvictedToArchive } = await import("../../heart/session-events")
+
+      // Use an invalid path that will cause appendFileSync to fail
+      const badPath = "/nonexistent/deeply/nested/dialog.json"
+      const event = { id: "evt-000001", sequence: 1, role: "user" as const, content: "test", name: null, toolCallId: null, toolCalls: [], attachments: [], time: { authoredAt: null, authoredAtSource: "unknown" as const, observedAt: "2026-04-13T10:00:00.000Z", observedAtSource: "ingest" as const, recordedAt: "2026-04-13T10:00:00.000Z", recordedAtSource: "save" as const }, relations: { replyToEventId: null, threadRootEventId: null, references: [] as string[], toolCallId: null, supersedesEventId: null, redactsEventId: null }, provenance: { captureKind: "live" as const, legacyVersion: null, sourceMessageIndex: null } }
+
+      // Should not throw
+      expect(() => appendEvictedToArchive(badPath, [event])).not.toThrow()
+    })
+  })
 })
