@@ -535,6 +535,90 @@ async function verifyProviderCredentials(
 }
 /* v8 ignore stop */
 
+// ── Manual-clone detection ──
+
+export interface ManualCloneCheckDeps {
+  bundlesRoot: string
+  promptInput?: (question: string) => Promise<string>
+}
+
+export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promise<void> {
+  if (!deps.promptInput) return
+
+  let entries: string[]
+  try {
+    entries = fs.readdirSync(deps.bundlesRoot).filter((e) => e.endsWith(".ouro"))
+  } catch {
+    return
+  }
+
+  for (const agentDir of entries) {
+    const bundlePath = path.join(deps.bundlesRoot, agentDir)
+    const gitDir = path.join(bundlePath, ".git")
+
+    if (!fs.existsSync(gitDir)) continue
+
+    // Check for remotes
+    let remoteOutput: string
+    try {
+      remoteOutput = execFileSync("git", ["remote", "-v"], { cwd: bundlePath, stdio: "pipe" }).toString().trim()
+    } catch {
+      continue
+    }
+
+    if (!remoteOutput) continue
+
+    // Check if sync is already enabled
+    const agentJsonPath = path.join(bundlePath, "agent.json")
+    if (fs.existsSync(agentJsonPath)) {
+      try {
+        const raw = fs.readFileSync(agentJsonPath, "utf-8")
+        const config = JSON.parse(raw) as { sync?: { enabled?: boolean } }
+        if (config.sync?.enabled) continue
+      } catch {
+        // Can't read agent.json — skip
+        continue
+      }
+    }
+
+    // Parse first remote name
+    const firstLine = remoteOutput.split("\n")[0]
+    const remoteName = firstLine.split("\t")[0] || "origin"
+
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.manual_clone_detected",
+      message: "bundle appears to be a manually cloned git repo",
+      meta: { agent: agentDir, remote: remoteName },
+    })
+
+    const answer = await deps.promptInput(
+      `Bundle ${agentDir} appears to be a git clone with a remote. Enable sync? (y/n): `,
+    )
+
+    if (answer.trim().toLowerCase() === "y") {
+      const raw = fs.readFileSync(agentJsonPath, "utf-8")
+      const config = JSON.parse(raw) as Record<string, unknown>
+      config.sync = { enabled: true, remote: remoteName }
+      fs.writeFileSync(agentJsonPath, JSON.stringify(config, null, 2) + "\n")
+
+      emitNervesEvent({
+        component: "daemon",
+        event: "daemon.manual_clone_sync_enabled",
+        message: "sync enabled for manually cloned bundle",
+        meta: { agent: agentDir, remote: remoteName },
+      })
+    } else {
+      emitNervesEvent({
+        component: "daemon",
+        event: "daemon.manual_clone_sync_skipped",
+        message: "user declined sync for manually cloned bundle",
+        meta: { agent: agentDir },
+      })
+    }
+  }
+}
+
 // ── toDaemonCommand ──
 
 function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "outlook" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | CloneCliCommand | HookCliCommand | HabitLocalCliCommand | DoctorCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" }>): DaemonCommand {
@@ -1733,6 +1817,12 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       progress.startPhase("bundle cleanup")
       progress.completePhase("bundle cleanup", `pruned ${prunedBundles.length} stale bundle${prunedBundles.length === 1 ? "" : "s"}`)
     }
+
+    // ── manual-clone detection: offer to enable sync for manually cloned bundles ──
+    await checkManualCloneBundles({
+      bundlesRoot: deps.bundlesRoot ?? bundlesRoot,
+      promptInput: deps.promptInput,
+    })
 
     progress.startPhase("starting daemon")
     const daemonResult = await ensureDaemonRunning({
