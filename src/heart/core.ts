@@ -542,27 +542,29 @@ const RETRY_LABELS: Record<ProviderErrorClassification, string> = {
 };
 
 function waitForProviderRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    let settled = false
-    let onAbort: (() => void) | undefined
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const finish = (complete: () => void): void => {
-      if (settled) return
-      settled = true
-      if (timer) clearTimeout(timer)
-      if (signal && onAbort) signal.removeEventListener("abort", onAbort)
-      complete()
-    }
-    timer = setTimeout(() => finish(() => resolve()), delayMs)
+  if (!signal) {
+    return new Promise((resolve) => {
+      setTimeout(resolve, delayMs)
+    })
+  }
 
-    if (signal) {
-      onAbort = () => finish(() => reject(new ProviderAttemptAbortError()))
-      if (signal.aborted) {
-        onAbort()
-        return
-      }
-      signal.addEventListener("abort", onAbort, { once: true })
+  return new Promise((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout>
+    const onAbort = (): void => {
+      clearTimeout(timer)
+      reject(new ProviderAttemptAbortError())
     }
+    timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort)
+      resolve()
+    }, delayMs)
+
+    if (signal.aborted) {
+      onAbort()
+      return
+    }
+
+    signal.addEventListener("abort", onAbort, { once: true })
   })
 }
 
@@ -797,7 +799,6 @@ export async function runAgent(
     }
     try {
       const callProviderTurn = async (): Promise<TurnResult> => {
-        if (signal?.aborted) throw new ProviderAttemptAbortError()
         callbacks.onModelStart();
         try {
           return await providerRuntime.streamTurn({
@@ -842,9 +843,9 @@ export async function runAgent(
         run: callProviderTurnWithOverflowRecovery,
         classifyError: (error) => providerRuntime.classifyError(error),
         onRetry: (record, maxAttempts) => {
-          const delayMs = record.delayMs ?? 0
+          const delayMs = record.delayMs as number
           const seconds = delayMs / 1000
-          const cause = RETRY_LABELS[record.classification ?? "unknown"]
+          const cause = RETRY_LABELS[record.classification as ProviderErrorClassification]
           callbacks.onError(new Error(`${cause}, retrying in ${seconds}s (${record.attempt}/${maxAttempts})...`), "transient");
         },
         sleep: async (delayMs) => {
