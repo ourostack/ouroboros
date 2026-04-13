@@ -168,6 +168,7 @@ describe("ProviderRuntime interface shape", () => {
       streamTurn: async () => ({ content: "", toolCalls: [], outputItems: [], usage: undefined }),
       appendToolOutput: () => {},
       resetTurnState: () => {},
+      ping: async () => {},
     }
     expect(runtime.capabilities).toBeDefined()
     expect(runtime.capabilities.size).toBe(0)
@@ -189,6 +190,7 @@ describe("ProviderRuntime interface shape", () => {
       streamTurn: async () => ({ content: "", toolCalls: [], outputItems: [], usage: undefined }),
       appendToolOutput: () => {},
       resetTurnState: () => {},
+      ping: async () => {},
     }
     expect(runtime.capabilities.has("reasoning-effort")).toBe(true)
     expect(runtime.capabilities.has("phase-annotation")).toBe(true)

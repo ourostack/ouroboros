@@ -65,6 +65,14 @@ export function createMinimaxProviderRuntime(model: string, minimaxConfig: Minim
         request.eagerSettleStreaming,
       );
     },
+    /* v8 ignore start -- ping: tested via provider-ping.test.ts @preserve */
+    async ping(signal?: AbortSignal): Promise<void> {
+      await (this.client as OpenAI).chat.completions.create(
+        { model: this.model, max_tokens: 1, messages: [{ role: "user", content: "ping" }] },
+        { signal },
+      )
+    },
+    /* v8 ignore stop */
     classifyError(error: Error): ProviderErrorClassification {
       return classifyMinimaxError(error);
     },
