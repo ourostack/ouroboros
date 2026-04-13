@@ -67,12 +67,24 @@ interface StatusAgentRow {
   enabled: boolean
 }
 
+interface StatusProviderRow {
+  agent: string
+  lane: string
+  provider: string
+  model: string
+  source: string
+  readiness: string
+  detail?: string
+  credential: string
+}
+
 export interface StatusPayload {
   overview: StatusOverviewRow
   senses: StatusSenseRow[]
   workers: StatusWorkerRow[]
   sync: StatusSyncRow[]
   agents: StatusAgentRow[]
+  providers: StatusProviderRow[]
 }
 
 // ── Field extractors ──
@@ -99,11 +111,13 @@ export function parseStatusPayload(data: unknown): StatusPayload | null {
   const workers = raw.workers
   const sync = raw.sync
   const agents = raw.agents
+  const providers = raw.providers
   if (!overview || typeof overview !== "object" || Array.isArray(overview)) return null
   if (!Array.isArray(senses) || !Array.isArray(workers)) return null
-  // sync and agents are optional for backward compatibility — older daemons may omit them
+  // sync, agents, and providers are optional for backward compatibility — older daemons may omit them
   if (sync !== undefined && !Array.isArray(sync)) return null
   if (agents !== undefined && !Array.isArray(agents)) return null
+  if (providers !== undefined && !Array.isArray(providers)) return null
 
   const parsedOverview: StatusOverviewRow = {
     daemon: stringField((overview as Record<string, unknown>).daemon) ?? "unknown",
@@ -188,11 +202,37 @@ export function parseStatusPayload(data: unknown): StatusPayload | null {
     return { name, enabled } satisfies StatusAgentRow
   })
 
+  const parsedProviders = (providers ?? []).map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null
+    const row = entry as Record<string, unknown>
+    const agent = stringField(row.agent)
+    const lane = stringField(row.lane)
+    const provider = stringField(row.provider)
+    const model = stringField(row.model)
+    const source = stringField(row.source)
+    const readiness = stringField(row.readiness)
+    const credential = stringField(row.credential)
+    if (!agent || !lane || !provider || !model || !source || !readiness || !credential) return null
+    const parsed: StatusProviderRow = {
+      agent,
+      lane,
+      provider,
+      model,
+      source,
+      readiness,
+      credential,
+    }
+    const detail = stringField(row.detail)
+    if (detail !== null) parsed.detail = detail
+    return parsed
+  })
+
   if (
     parsedSenses.some((row) => row === null) ||
     parsedWorkers.some((row) => row === null) ||
     parsedSync.some((row) => row === null) ||
-    parsedAgents.some((row) => row === null)
+    parsedAgents.some((row) => row === null) ||
+    parsedProviders.some((row) => row === null)
   ) return null
 
   return {
@@ -201,6 +241,7 @@ export function parseStatusPayload(data: unknown): StatusPayload | null {
     workers: parsedWorkers as StatusWorkerRow[],
     sync: parsedSync as StatusSyncRow[],
     agents: parsedAgents as StatusAgentRow[],
+    providers: parsedProviders as StatusProviderRow[],
   }
 }
 
@@ -230,12 +271,15 @@ function statusDot(status: string): string {
     case "ok":
     case "interactive":
     case "enabled":
+    case "ready":
       return green("●")
     case "crashed":
     case "warn":
     case "error":
+    case "failed":
       return red("●")
     case "needs_config":
+    case "stale":
       return yellow("●")
     case "disabled":
     case "stopped":
@@ -317,6 +361,19 @@ export function formatDaemonStatusOutput(response: DaemonResponse, fallback: str
       const dot = row.enabled ? green("●") : dim("○")
       const stateText = row.enabled ? "enabled " : "disabled"
       lines.push(`    ${name} ${dot} ${stateText}`)
+    }
+    lines.push("")
+  }
+
+  // ── Providers ──
+  if (payload.providers.length > 0) {
+    lines.push(`  ${teal("──")} ${bold("Providers")} ${teal("─".repeat(34))}`)
+    const agentLaneWidth = Math.max(16, ...payload.providers.map((r) => `${r.agent} ${r.lane}`.length))
+    for (const row of payload.providers) {
+      const agentLane = `${row.agent} ${row.lane}`.padEnd(agentLaneWidth)
+      const model = `${row.provider} / ${row.model}`
+      const detail = [row.readiness, row.detail, row.source, row.credential].filter(Boolean).join("; ")
+      lines.push(`    ${agentLane} ${statusDot(row.readiness)} ${model}  ${dim(detail)}`)
     }
     lines.push("")
   }
@@ -457,6 +514,7 @@ export function buildStoppedStatusPayload(
     workers: [],
     sync: syncRows,
     agents: agentRows,
+    providers: [],
   }
 }
 
