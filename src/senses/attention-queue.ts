@@ -122,7 +122,7 @@ const CONTENT_PREVIEW_MAX = 80
 export function buildAttentionQueueSummary(queue: AttentionItem[]): string {
   if (queue.length === 0) return ""
 
-  const lines = ["you're holding:"]
+  const lines = ["[internal: held work items — not messages to send]"]
   for (const item of queue) {
     if (item.packetKind && item.packetObjective) {
       lines.push(`- [${item.id}] ${item.friendName} -> ${item.packetKind}: ${item.packetObjective}`)
