@@ -66,6 +66,69 @@ describe("machine identity", () => {
     }))
   })
 
+  it("creates a default random id when no id factory is provided", () => {
+    emitTestEvent("machine identity default random id")
+    const identity = loadOrCreateMachineIdentity({
+      homeDir,
+      now: () => new Date("2026-04-12T17:45:00.000Z"),
+      hostname: () => "",
+    })
+
+    expect(identity.machineId).toMatch(/^machine_[0-9a-f-]+$/)
+    expect(identity.hostnameAliases).toEqual([])
+  })
+
+  it("falls back to the default home and hostname helpers when omitted", async () => {
+    emitTestEvent("machine identity default home and hostname")
+    vi.resetModules()
+    vi.doMock("os", async () => {
+      const actual = await vi.importActual<typeof import("os")>("os")
+      return {
+        ...actual,
+        homedir: () => homeDir,
+        hostname: () => "default-host",
+      }
+    })
+    try {
+      const { loadOrCreateMachineIdentity: loadWithDefaultOs } = await import("../../heart/machine-identity")
+      const identity = loadWithDefaultOs({
+        now: () => new Date("2026-04-12T17:46:00.000Z"),
+        randomId: () => "machine_default_helpers",
+      })
+
+      expect(identity.machineId).toBe("machine_default_helpers")
+      expect(identity.hostnameAliases).toEqual(["default-host"])
+    } finally {
+      vi.doUnmock("os")
+      vi.resetModules()
+    }
+  })
+
+  it("falls back to a generated id when the injected id is empty", () => {
+    emitTestEvent("machine identity empty injected id")
+    const identity = loadOrCreateMachineIdentity({
+      homeDir,
+      now: () => new Date("2026-04-12T17:47:00.000Z"),
+      hostname: () => "empty-id-host",
+      randomId: () => "   ",
+    })
+
+    expect(identity.machineId).toMatch(/^machine_[0-9a-f-]+$/)
+    expect(identity.hostnameAliases).toEqual(["empty-id-host"])
+  })
+
+  it("uses the current time when no clock is injected", () => {
+    emitTestEvent("machine identity default clock")
+    const identity = loadOrCreateMachineIdentity({
+      homeDir,
+      hostname: () => "clock-host",
+      randomId: () => "machine_default_clock",
+    })
+
+    expect(Number.isNaN(Date.parse(identity.createdAt))).toBe(false)
+    expect(identity.updatedAt).toBe(identity.createdAt)
+  })
+
   it("survives hostname changes and records new aliases", () => {
     emitTestEvent("machine identity hostname aliases")
     const first = loadOrCreateMachineIdentity({
@@ -116,6 +179,29 @@ describe("machine identity", () => {
     }))
   })
 
+  it("normalizes existing hostname aliases when loading", () => {
+    emitTestEvent("machine identity normalizes aliases")
+    const machinePath = getMachineIdentityPath(homeDir)
+    const identity = {
+      schemaVersion: 1,
+      machineId: "machine_existing",
+      createdAt: "2026-04-12T17:00:00.000Z",
+      updatedAt: "2026-04-12T17:00:00.000Z",
+      hostnameAliases: [" same-host ", "same-host", "", 17, "other-host"],
+    }
+    fs.mkdirSync(path.dirname(machinePath), { recursive: true })
+    fs.writeFileSync(machinePath, `${JSON.stringify(identity, null, 2)}\n`, "utf-8")
+
+    const loaded = loadOrCreateMachineIdentity({
+      homeDir,
+      now: () => new Date("2026-04-12T18:00:00.000Z"),
+      hostname: () => "same-host",
+      randomId: () => "machine_unused",
+    })
+
+    expect(loaded.hostnameAliases).toEqual(["same-host", "other-host"])
+  })
+
   it("replaces corrupt machine files with a new valid identity", () => {
     emitTestEvent("machine identity corrupt file")
     const machinePath = getMachineIdentityPath(homeDir)
@@ -137,5 +223,38 @@ describe("machine identity", () => {
       component: "config/identity",
       event: "config.machine_identity_invalid",
     }))
+  })
+
+  it("replaces malformed machine identity JSON with a new valid identity", () => {
+    emitTestEvent("machine identity malformed object")
+    const machinePath = getMachineIdentityPath(homeDir)
+    fs.mkdirSync(path.dirname(machinePath), { recursive: true })
+    fs.writeFileSync(machinePath, JSON.stringify({ schemaVersion: 1, machineId: "" }), "utf-8")
+
+    const identity = loadOrCreateMachineIdentity({
+      homeDir,
+      now: () => new Date("2026-04-12T20:00:00.000Z"),
+      hostname: () => "repair-host",
+      randomId: () => "machine_repaired_from_object",
+    })
+
+    expect(identity.machineId).toBe("machine_repaired_from_object")
+    expect(identity.hostnameAliases).toEqual(["repair-host"])
+  })
+
+  it("replaces non-object machine identity JSON with a new valid identity", () => {
+    emitTestEvent("machine identity non-object json")
+    const machinePath = getMachineIdentityPath(homeDir)
+    fs.mkdirSync(path.dirname(machinePath), { recursive: true })
+    fs.writeFileSync(machinePath, "[]", "utf-8")
+
+    const identity = loadOrCreateMachineIdentity({
+      homeDir,
+      now: () => new Date("2026-04-12T20:30:00.000Z"),
+      hostname: () => "repair-host",
+      randomId: () => "machine_repaired_from_array",
+    })
+
+    expect(identity.machineId).toBe("machine_repaired_from_array")
   })
 })
