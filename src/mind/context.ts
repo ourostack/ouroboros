@@ -339,7 +339,7 @@ export function postTurnPersist(
   prepared: PostTurnPrepared,
   usage?: UsageData,
   state?: SessionContinuityState,
-): void {
+): SessionEvent[] {
   const existing = loadSessionEnvelopeFile(sessPath)
   const previousMessages = existing ? projectProviderMessages(existing) : []
   const envelope = buildCanonicalSessionEnvelope({
@@ -358,6 +358,7 @@ export function postTurnPersist(
     },
   })
   writeSessionEnvelope(sessPath, envelope)
+  return envelope.events
 }
 
 /**
