@@ -1389,6 +1389,61 @@ describe("runAgent", () => {
     vi.useRealTimers()
   })
 
+  it("wraps non-Error post-provider processing failures in Error", async () => {
+    mockCreate.mockReturnValue(makeStream([
+      makeChunk(undefined, [
+        { index: 0, id: "call_settle", function: { name: "settle", arguments: '{"answer":"done","intent":"complete"}' } },
+      ]),
+    ]))
+
+    const errors: { error: Error; severity: string }[] = []
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => { throw "callback exploded" }, // eslint-disable-line no-throw-literal
+      onError: (err, severity) => errors.push({ error: err, severity }),
+    }
+
+    const result = await runAgent([{ role: "system", content: "test" }], callbacks)
+
+    expect(result.outcome).toBe("errored")
+    expect(result.error).toBeInstanceOf(Error)
+    expect(result.error?.message).toBe("callback exploded")
+    expect(errors).toEqual([{
+      error: expect.objectContaining({ message: "callback exploded" }),
+      severity: "terminal",
+    }])
+  })
+
+  it("surfaces Error post-provider processing failures without rewrapping", async () => {
+    const callbackError = new Error("callback error")
+    mockCreate.mockReturnValue(makeStream([
+      makeChunk(undefined, [
+        { index: 0, id: "call_settle", function: { name: "settle", arguments: '{"answer":"done","intent":"complete"}' } },
+      ]),
+    ]))
+
+    const errors: { error: Error; severity: string }[] = []
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => { throw callbackError },
+      onError: (err, severity) => errors.push({ error: err, severity }),
+    }
+
+    const result = await runAgent([{ role: "system", content: "test" }], callbacks)
+
+    expect(result.outcome).toBe("errored")
+    expect(result.error).toBe(callbackError)
+    expect(errors).toEqual([{ error: callbackError, severity: "terminal" }])
+  })
+
   it("pushes assistant message without content when only tool calls are returned", async () => {
     mockReadFileToolResult("data")
 
@@ -2743,6 +2798,49 @@ describe("runAgent", () => {
     expect(errors[0].message).toContain("retrying")
 
     vi.useRealTimers()
+  })
+
+  it("continues after retry wait when signal remains live", async () => {
+    vi.useFakeTimers()
+    try {
+      const controller = new AbortController()
+      let callCount = 0
+      mockCreate.mockImplementation(() => {
+        callCount++
+        if (callCount === 1) {
+          const err: any = new Error("fetch failed")
+          throw err
+        }
+        return makeStream([makeChunk("done")])
+      })
+
+      const errors: Error[] = []
+      const callbacks: ChannelCallbacks = {
+        onModelStart: () => {},
+        onModelStreamStart: () => {},
+        onTextChunk: () => {},
+        onReasoningChunk: () => {},
+        onToolStart: () => {},
+        onToolEnd: () => {},
+        onError: (err) => errors.push(err),
+      }
+
+      const messages: any[] = [{ role: "system", content: "test" }]
+      const promise = runAgent(messages, callbacks, undefined, controller.signal)
+
+      await vi.advanceTimersByTimeAsync(100)
+      await vi.advanceTimersByTimeAsync(2100)
+
+      const result = await promise
+
+      expect(result.outcome).toBe("settled")
+      expect(callCount).toBe(2)
+      expect(errors.length).toBe(1)
+      expect(errors[0].message).toContain("retrying")
+      expect(controller.signal.aborted).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("skips retry wait immediately when signal is already aborted", async () => {

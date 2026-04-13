@@ -303,11 +303,11 @@ describe("rest tool in runAgent", () => {
   // ── Attention queue gating ──────────────────────────────────
 
   it("rest is rejected when attention queue has items", async () => {
+    vi.useFakeTimers()
     // First call: rest (should be rejected because attention queue has items)
     mockCreate.mockReturnValueOnce(makeStream(restToolCallChunks()))
-    // After rejection, model tries rest again. Once mocked-once calls are
-    // exhausted, fall through to a blocklisted (HTTP 400) error so the engine
-    // terminates immediately instead of walking the retry backoff.
+    // After rejection, model tries rest again. Once mocked-once calls are exhausted,
+    // fall through to an HTTP error and advance the shared provider attempt timers.
     mockCreate.mockReturnValueOnce(makeStream(restToolCallChunks()))
     mockCreate.mockReturnValueOnce(makeStream(restToolCallChunks()))
     mockCreate.mockReturnValueOnce(makeStream(restToolCallChunks()))
@@ -318,7 +318,7 @@ describe("rest tool in runAgent", () => {
     })
 
     const callbacks = makeCallbacks()
-    await runAgent(
+    const promise = runAgent(
       [{ role: "user", content: "heartbeat" }],
       callbacks,
       "inner",
@@ -332,6 +332,11 @@ describe("rest tool in runAgent", () => {
         },
       },
     )
+    await vi.advanceTimersByTimeAsync(2100)
+    await vi.advanceTimersByTimeAsync(4100)
+    await vi.advanceTimersByTimeAsync(100)
+    await promise
+    vi.useRealTimers()
 
     // First rest call was rejected with attention queue gate message
     expect(callbacks.onToolEnd).toHaveBeenCalledWith("rest", expect.any(String), false)
