@@ -11,7 +11,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 const mockRunAgent = vi.fn()
 const mockBuildSystem = vi.fn()
 const mockLoadSession = vi.fn()
-const mockPostTurn = vi.fn()
+const mockPostTurnTrim = vi.fn().mockReturnValue({ currentMessages: [], trimmedMessages: [], currentIngressTimes: [], maxTokens: 128000, contextMargin: 0 })
+const mockDeferPostTurnPersist = vi.fn().mockResolvedValue([])
 const mockCreateTraceId = vi.fn()
 const mockResolve = vi.fn()
 const mockHandleInboundTurn = vi.fn()
@@ -39,7 +40,8 @@ vi.mock("../../mind/prompt", () => ({
 
 vi.mock("../../mind/context", () => ({
   loadSession: (...args: any[]) => mockLoadSession(...args),
-  postTurn: (...args: any[]) => mockPostTurn(...args),
+  postTurnTrim: (...args: any[]) => mockPostTurnTrim(...args),
+  deferPostTurnPersist: (...args: any[]) => mockDeferPostTurnPersist(...args),
   deleteSession: vi.fn(),
 }))
 
@@ -138,7 +140,8 @@ describe("teams stranger gate integration (pipeline-based)", () => {
     mockRunAgent.mockReset().mockResolvedValue({ usage: undefined })
     mockBuildSystem.mockReset().mockResolvedValue("system prompt")
     mockLoadSession.mockReset().mockReturnValue(null)
-    mockPostTurn.mockReset()
+    mockPostTurnTrim.mockReset().mockReturnValue({ currentMessages: [], trimmedMessages: [], currentIngressTimes: [], maxTokens: 128000, contextMargin: 0 })
+    mockDeferPostTurnPersist.mockReset().mockResolvedValue([])
     mockCreateTraceId.mockReset().mockReturnValue("trace-1")
     mockResolve.mockReset().mockResolvedValue({
       friend: {
