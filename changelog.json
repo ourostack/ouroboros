@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.357",
+      "changes": [
+        "`ouro chat` now checks provider health before launching a session, failing fast with actionable error and fix guidance instead of erroring mid-conversation when a provider is broken (expired token, unsupported parameter, etc.). Applied to all three pre-chat paths: explicit `ouro chat <agent>`, bare `ouro` single-agent auto-chat, and bare `ouro` multi-agent selection."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.356",
       "changes": [
         "Provider ping for github-copilot GPT models (e.g. gpt-5.4) now uses the Responses API instead of chat completions, fixing `400 Unsupported parameter: 'max_tokens'` errors during live checks."
