@@ -30,7 +30,8 @@ vi.mock("../../../heart/daemon/socket-client", () => ({
 }))
 
 vi.mock("../../../mind/prompt", () => ({
-  buildSystem: vi.fn().mockResolvedValue("system prompt"),
+  buildSystem: vi.fn().mockResolvedValue({ stable: "system prompt", volatile: "" }),
+  flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
 }))
 
 vi.mock("../../../heart/config", () => ({
@@ -42,7 +43,8 @@ vi.mock("../../../heart/config", () => ({
 
 vi.mock("../../../mind/context", () => ({
   loadSession: vi.fn().mockReturnValue(null),
-  postTurn: vi.fn(),
+  postTurnTrim: vi.fn().mockReturnValue({ currentMessages: [], trimmedMessages: [], currentIngressTimes: [], maxTokens: 128000, contextMargin: 0 }),
+  deferPostTurnPersist: vi.fn().mockResolvedValue([]),
   deleteSession: vi.fn(),
 }))
 

@@ -25,6 +25,16 @@ import { preImplementationScrutinySection } from "./scrutiny";
 import { readPulse } from "../heart/daemon/pulse";
 import { formatAgentProviderVisibilityForPrompt, formatAgentProviderVisibilityForPulse, type AgentProviderVisibility } from "../heart/provider-visibility";
 
+export interface SystemPrompt {
+  stable: string;
+  volatile: string;
+}
+
+export function flattenSystemPrompt(sp: SystemPrompt): string {
+  const parts = [sp.stable, sp.volatile].filter(Boolean);
+  return parts.join("\n\n");
+}
+
 // Lazy-loaded psyche text cache
 let _psycheCache: {
   soul: string;
@@ -1355,7 +1365,7 @@ function channelHasCodingTools(
   return tools.some((t) => codingToolNames.has(t.function.name))
 }
 
-export async function buildSystem(channel: Channel = "cli", options?: BuildSystemOptions, context?: ResolvedContext): Promise<string> {
+export async function buildSystem(channel: Channel = "cli", options?: BuildSystemOptions, context?: ResolvedContext): Promise<SystemPrompt> {
   emitNervesEvent({
     event: "mind.step_start",
     component: "mind",
@@ -1366,7 +1376,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
   // Backfill bundle-meta.json for existing agents that don't have one
   backfillBundleMeta(getAgentRoot());
 
-  const system = [
+  const stableParts = [
     // Group 1: who i am
     "# who i am",
     soulSection(),
@@ -1375,14 +1385,12 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     tacitKnowledgeSection(),
     aspirationsSection(),
 
-    // Group 2: my body & environment
+    // Group 2: my body & environment (minus dateSection and rhythmStatusSection)
     "# my body & environment",
     bodyMapSection(getAgentName(), channel),
     runtimeInfoSection(channel, options),
-    rhythmStatusSection(options?.daemonHealth),
     channelNatureSection(getChannelCapabilities(channel)),
     providerSection(channel, options),
-    dateSection(),
 
     // Group 3: my tools & capabilities
     "# my tools & capabilities",
@@ -1417,6 +1425,12 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
       groupChatParticipationSection(context),
       feedbackSignalSection(context),
     ] : []),
+  ];
+
+  const volatileParts = [
+    // Volatile sections from Group 2 (date and rhythm change every turn)
+    dateSection(),
+    rhythmStatusSection(options?.daemonHealth),
 
     // Group 7: dynamic state for this turn
     "# dynamic state for this turn",
@@ -1449,9 +1463,12 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     // Group 9: task context
     "# task context",
     taskBoardSection(),
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+  ];
+
+  const result: SystemPrompt = {
+    stable: stableParts.filter(Boolean).join("\n\n"),
+    volatile: volatileParts.filter(Boolean).join("\n\n"),
+  };
 
   emitNervesEvent({
     event: "mind.step_end",
@@ -1460,5 +1477,5 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     meta: { channel },
   });
 
-  return system;
+  return result;
 }

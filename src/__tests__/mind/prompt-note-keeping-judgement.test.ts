@@ -97,10 +97,10 @@ describe("note-keeping judgement heuristics — locked content", () => {
   })
 
   it("includes locked note-keeping judgement heuristics in the system prompt", async () => {
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const system = await buildSystem("cli")
-
+    const system = flattenSystemPrompt(await buildSystem("cli")
+)
     // Friend note routing: person-specific information
     expect(system).toContain("save a friend note when i learn something about a specific person")
     expect(system).toContain("preferences")
@@ -125,10 +125,10 @@ describe("note-keeping judgement heuristics — locked content", () => {
   })
 
   it("includes the full locked heuristic block verbatim", async () => {
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const system = await buildSystem("cli")
-
+    const system = flattenSystemPrompt(await buildSystem("cli")
+)
     // The section header should be present
     expect(system).toContain("## note-keeping judgement")
 
@@ -138,10 +138,10 @@ describe("note-keeping judgement heuristics — locked content", () => {
   })
 
   it("heuristics appear in the tool contracts section alongside tool descriptions", async () => {
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const system = await buildSystem("cli")
-
+    const system = flattenSystemPrompt(await buildSystem("cli")
+)
     // The tool contracts section should still have the tool descriptions
     expect(system).toContain("save_friend_note")
     expect(system).toContain("diary_write")
@@ -177,36 +177,36 @@ describe("note-keeping judgement heuristics — routing rules", () => {
   })
 
   it("friend note guidance mentions personal facts and preferences", async () => {
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const system = await buildSystem("cli")
-
+    const system = flattenSystemPrompt(await buildSystem("cli")
+)
     expect(system).toContain("personal facts")
     expect(system).toContain("tool or communication likes/dislikes")
   })
 
   it("diary guidance mentions continuity patterns and coding workflow truths", async () => {
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const system = await buildSystem("cli")
-
+    const system = flattenSystemPrompt(await buildSystem("cli")
+)
     expect(system).toContain("continuity patterns")
     expect(system).toContain("coding workflow truths")
   })
 
   it("ephemeral guidance mentions one-off shell output", async () => {
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const system = await buildSystem("cli")
-
+    const system = flattenSystemPrompt(await buildSystem("cli")
+)
     expect(system).toContain("one-off shell output with no durable lesson")
   })
 
   it("diary guidance mentions bundle-layout discoveries so agents persist them via diary_write", async () => {
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const system = await buildSystem("cli")
-
+    const system = flattenSystemPrompt(await buildSystem("cli")
+)
     // Regression guard: slugger once spent a diary/journal search looking for a custom
     // travel/ folder that was right at the bundle root, then said "i should
     // know my own folder structure next time" — which is impossible without
@@ -218,10 +218,10 @@ describe("note-keeping judgement heuristics — routing rules", () => {
   })
 
   it("body map says custom top-level folders may exist and instructs glob before diary/journal search", async () => {
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const system = await buildSystem("cli")
-
+    const system = flattenSystemPrompt(await buildSystem("cli")
+)
     // Same slugger incident — bodyMapSection only listed the 7 standard
     // folders. Agents had no signal that bundles can have custom top-level
     // folders and no nudge to glob the bundle root before falling back to

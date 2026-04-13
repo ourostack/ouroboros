@@ -8,11 +8,11 @@ import type { ToolContext } from "../repertoire/tools"
 import { getToolsForChannel } from "../repertoire/tools"
 import { getChannelCapabilities } from "../mind/friends/channel"
 import { getOAuthConfig, resolveOAuthForTenant, getTeamsSecondaryConfig } from "../heart/config"
-import { buildSystem } from "../mind/prompt"
+import { buildSystem, flattenSystemPrompt } from "../mind/prompt"
 import { pickPhrase, getPhrases } from "../mind/phrases"
 import { formatKick, formatError } from "../mind/format"
 import { sessionPath, getTeamsConfig, getTeamsChannelConfig } from "../heart/config"
-import { loadSession, deleteSession, postTurn } from "../mind/context"
+import { loadSession, deleteSession, postTurnTrim, deferPostTurnPersist } from "../mind/context"
 import { createCommandRegistry, registerDefaultCommands, parseSlashCommand } from "./commands"
 import { createTraceId } from "../nerves"
 import { emitNervesEvent } from "../nerves/runtime"
@@ -672,7 +672,7 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
           const existing = loadSession(sessPath)
           const messages: OpenAI.ChatCompletionMessageParam[] = existing?.messages && existing.messages.length > 0
             ? existing.messages
-            : [{ role: "system", content: await buildSystem("teams", {}, resolvedContext) }]
+            : [{ role: "system", content: flattenSystemPrompt(await buildSystem("teams", {}, resolvedContext)) }]
           repairOrphanedToolCalls(messages)
           return {
             messages,
@@ -702,7 +702,10 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
           summarize: teamsToolContext.summarize,
         },
       }),
-      postTurn,
+      postTurn: (turnMessages, sessionPathArg, usage, hooks, state) => {
+        const prepared = postTurnTrim(turnMessages, usage, hooks)
+        deferPostTurnPersist(sessionPathArg, prepared, usage, state)
+      },
       accumulateFriendTokens,
       signal: controller.signal,
       runAgentOptions: agentOptions,

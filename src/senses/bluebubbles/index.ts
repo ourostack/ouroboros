@@ -6,7 +6,7 @@ import { runAgent, type ChannelCallbacks, createSummarize } from "../../heart/co
 import { getBlueBubblesChannelConfig, getBlueBubblesConfig, sessionPath } from "../../heart/config"
 import { getAgentName, getAgentRoot } from "../../heart/identity"
 import { withSharedTurnLock } from "../../heart/turn-coordinator"
-import { loadSession, postTurn } from "../../mind/context"
+import { loadSession, postTurnTrim, deferPostTurnPersist } from "../../mind/context"
 import { accumulateFriendTokens } from "../../mind/friends/tokens"
 import { upsertGroupContextParticipants } from "../../mind/friends/group-context"
 import { FriendResolver, type FriendResolverParams } from "../../mind/friends/resolver"
@@ -14,7 +14,7 @@ import { FileFriendStore } from "../../mind/friends/store-file"
 import { TRUSTED_LEVELS, type FriendRecord } from "../../mind/friends/types"
 import { getChannelCapabilities } from "../../mind/friends/channel"
 import { getPendingDir, drainDeferredReturns, drainPending } from "../../mind/pending"
-import { buildSystem } from "../../mind/prompt"
+import { buildSystem, flattenSystemPrompt } from "../../mind/prompt"
 import { getSharedMcpManager } from "../../repertoire/mcp-manager"
 // getPhrases removed — no longer needed after debug-activity cleanup
 import { emitNervesEvent } from "../../nerves/runtime"
@@ -113,7 +113,8 @@ interface RuntimeDeps {
   buildSystem: typeof buildSystem
   runAgent: typeof runAgent
   loadSession: typeof loadSession
-  postTurn: typeof postTurn
+  postTurnTrim: typeof postTurnTrim
+  deferPostTurnPersist: typeof deferPostTurnPersist
   sessionPath: typeof sessionPath
   accumulateFriendTokens: typeof accumulateFriendTokens
   createClient: () => BlueBubblesClient
@@ -151,7 +152,8 @@ const defaultDeps: RuntimeDeps = {
   buildSystem,
   runAgent,
   loadSession,
-  postTurn,
+  postTurnTrim,
+  deferPostTurnPersist,
   sessionPath,
   accumulateFriendTokens,
   createClient: () => createBlueBubblesClient(),
@@ -742,7 +744,7 @@ async function handleBlueBubblesNormalizedEvent(
     const sessionMessages: OpenAI.ChatCompletionMessageParam[] =
       existing?.messages && existing.messages.length > 0
         ? existing.messages
-        : [{ role: "system", content: await resolvedDeps.buildSystem("bluebubbles", {}, context) }]
+        : [{ role: "system", content: flattenSystemPrompt(await resolvedDeps.buildSystem("bluebubbles", {}, context)) }]
 
     if (event.kind === "message") {
       const agentName = resolvedDeps.getAgentName()
@@ -908,7 +910,10 @@ async function handleBlueBubblesNormalizedEvent(
             },
           },
         }),
-        postTurn: resolvedDeps.postTurn,
+        postTurn: (turnMessages, sessionPathArg, usage, hooks, state) => {
+          const prepared = resolvedDeps.postTurnTrim(turnMessages, usage, hooks)
+          resolvedDeps.deferPostTurnPersist(sessionPathArg, prepared, usage, state)
+        },
         accumulateFriendTokens: resolvedDeps.accumulateFriendTokens,
         signal: controller.signal,
         runAgentOptions: { mcpManager, ...(isReaction ? { isReactionSignal: true } : {}) },
