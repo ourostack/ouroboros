@@ -83,12 +83,12 @@ describe("system prompt reasoning effort section", () => {
     const config = await import("../../heart/config")
     config.resetConfigCache()
     config.patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { resetPsycheCache, buildSystem } = await import("../../mind/prompt")
+    const { resetPsycheCache, buildSystem, flattenSystemPrompt } = await import("../../mind/prompt")
     resetPsycheCache()
-    const system = await buildSystem("cli", {
+    const system = flattenSystemPrompt(await buildSystem("cli", {
       providerCapabilities: new Set(["reasoning-effort"]),
       supportedReasoningEfforts: ["low", "medium", "high"],
-    })
+    }))
     expect(system).toContain("reasoning effort")
     expect(system).toContain("set_reasoning_effort")
   })
@@ -98,11 +98,11 @@ describe("system prompt reasoning effort section", () => {
     const config = await import("../../heart/config")
     config.resetConfigCache()
     config.patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { resetPsycheCache, buildSystem } = await import("../../mind/prompt")
+    const { resetPsycheCache, buildSystem, flattenSystemPrompt } = await import("../../mind/prompt")
     resetPsycheCache()
-    const system = await buildSystem("cli", {
+    const system = flattenSystemPrompt(await buildSystem("cli", {
       providerCapabilities: new Set(),
-    })
+    }))
     expect(system).not.toContain("set_reasoning_effort")
   })
 
@@ -111,9 +111,9 @@ describe("system prompt reasoning effort section", () => {
     const config = await import("../../heart/config")
     config.resetConfigCache()
     config.patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { resetPsycheCache, buildSystem } = await import("../../mind/prompt")
+    const { resetPsycheCache, buildSystem, flattenSystemPrompt } = await import("../../mind/prompt")
     resetPsycheCache()
-    const system = await buildSystem("cli")
+    const system = flattenSystemPrompt(await buildSystem("cli"))
     expect(system).not.toContain("set_reasoning_effort")
   })
 
@@ -122,12 +122,12 @@ describe("system prompt reasoning effort section", () => {
     const config = await import("../../heart/config")
     config.resetConfigCache()
     config.patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { resetPsycheCache, buildSystem } = await import("../../mind/prompt")
+    const { resetPsycheCache, buildSystem, flattenSystemPrompt } = await import("../../mind/prompt")
     resetPsycheCache()
-    const system = await buildSystem("cli", {
+    const system = flattenSystemPrompt(await buildSystem("cli", {
       providerCapabilities: new Set(["reasoning-effort"]),
       // No supportedReasoningEfforts provided
-    })
+    }))
     expect(system).toContain("varies by model")
   })
 
@@ -136,12 +136,12 @@ describe("system prompt reasoning effort section", () => {
     const config = await import("../../heart/config")
     config.resetConfigCache()
     config.patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { resetPsycheCache, buildSystem } = await import("../../mind/prompt")
+    const { resetPsycheCache, buildSystem, flattenSystemPrompt } = await import("../../mind/prompt")
     resetPsycheCache()
-    const system = await buildSystem("cli", {
+    const system = flattenSystemPrompt(await buildSystem("cli", {
       providerCapabilities: new Set(["reasoning-effort"]),
       supportedReasoningEfforts: [],
-    })
+    }))
     expect(system).toContain("varies by model")
   })
 })

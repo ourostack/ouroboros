@@ -18,7 +18,7 @@ vi.mock("../../senses/pipeline", async () => {
 
 const mockGetProvider = vi.fn().mockReturnValue("anthropic")
 const mockRunAgent = vi.fn()
-const mockBuildSystem = vi.fn().mockResolvedValue("system prompt")
+const mockBuildSystem = vi.fn().mockResolvedValue({ stable: "system prompt", volatile: "" })
 
 vi.mock("../../heart/core", async () => {
   const actual = await vi.importActual<typeof import("../../heart/core")>("../../heart/core")
@@ -34,6 +34,7 @@ vi.mock("../../mind/prompt", async () => {
   return {
     ...actual,
     buildSystem: (...args: any[]) => mockBuildSystem(...args),
+  flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
   }
 })
 
