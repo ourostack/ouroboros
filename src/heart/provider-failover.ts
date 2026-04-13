@@ -329,6 +329,7 @@ export async function runMachineProviderFailoverInventory(
   currentProvider: AgentProvider,
   options: MachineFailoverInventoryOptions = {},
 ): Promise<ProviderFailoverInventory> {
+  const ping = options.ping ?? pingProvider
   const poolResult = readProviderCredentialPool(options.homeDir)
   const providers = (Object.keys(PROVIDER_CREDENTIALS) as AgentProvider[]).filter((provider) => provider !== currentProvider)
   const inventory: ProviderFailoverInventory = { ready: [], unavailable: [], unconfigured: [] }
@@ -344,7 +345,6 @@ export async function runMachineProviderFailoverInventory(
     return inventory
   }
 
-  const ping = options.ping ?? pingProvider
   const results = await Promise.all(providers.map(async (provider) => {
     const record = poolResult.pool.providers[provider]
     if (!record) return { provider, record: undefined, result: undefined }
@@ -355,7 +355,7 @@ export async function runMachineProviderFailoverInventory(
   }))
 
   for (const entry of results) {
-    if (!entry.record || !entry.result) {
+    if (!entry.record) {
       inventory.unconfigured.push(entry.provider)
     } else if (entry.result.ok) {
       inventory.ready.push({
