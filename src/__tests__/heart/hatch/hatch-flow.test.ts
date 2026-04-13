@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it } from "vitest"
 
 import { runRuntimeAuthFlow } from "../../../heart/auth/auth-flow"
 import { runHatchFlow } from "../../../heart/hatch/hatch-flow"
+import { getDefaultModelForProvider } from "../../../heart/provider-models"
+import { readProviderState } from "../../../heart/provider-state"
 
 function makeTempDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`))
@@ -102,6 +104,57 @@ describe("hatch flow", () => {
 
     // tasks/habits/ should NOT be created
     expect(fs.existsSync(path.join(result.bundleRoot, "tasks", "habits"))).toBe(false)
+  })
+
+  it("creates bootstrapped local provider state for the hatchling machine", async () => {
+    const homeDir = makeTempDir("hatch-provider-state-home")
+    const bundlesRoot = path.join(homeDir, "AgentBundles")
+    const secretsRoot = path.join(homeDir, ".agentsecrets")
+    const specialistSource = makeTempDir("hatch-provider-state-specialist")
+    const specialistTarget = makeTempDir("hatch-provider-state-specialist-target")
+    cleanup.push(homeDir, specialistSource, specialistTarget)
+
+    fs.writeFileSync(path.join(specialistSource, "medusa.md"), "# Medusa\n", "utf-8")
+
+    const result = await runHatchFlow(
+      {
+        agentName: "ProviderStateBot",
+        humanName: "Ari",
+        provider: "minimax",
+        credentials: {
+          apiKey: "minimax-secret-key",
+        },
+      },
+      {
+        bundlesRoot,
+        secretsRoot,
+        specialistIdentitySourceDir: specialistSource,
+        specialistIdentityTargetDir: specialistTarget,
+        now: () => new Date("2026-04-12T22:15:00.000Z"),
+        random: () => 0,
+      },
+    )
+
+    const stateResult = readProviderState(result.bundleRoot)
+    expect(stateResult.ok).toBe(true)
+    if (!stateResult.ok) throw new Error(stateResult.error)
+    expect(stateResult.state.machineId).toMatch(/^machine_/)
+    expect(stateResult.state.updatedAt).toBe("2026-04-12T22:15:00.000Z")
+    const expectedModel = getDefaultModelForProvider("minimax")
+    expect(stateResult.state.lanes.outward).toMatchObject({
+      provider: "minimax",
+      model: expectedModel,
+      source: "bootstrap",
+      updatedAt: "2026-04-12T22:15:00.000Z",
+    })
+    expect(stateResult.state.lanes.inner).toMatchObject({
+      provider: "minimax",
+      model: expectedModel,
+      source: "bootstrap",
+      updatedAt: "2026-04-12T22:15:00.000Z",
+    })
+    expect(stateResult.state.readiness).toEqual({})
+    expect(JSON.stringify(stateResult.state)).not.toContain("minimax-secret-key")
   })
 
   it("fails fast when required provider credentials are missing", async () => {

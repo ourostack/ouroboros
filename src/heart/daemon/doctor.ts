@@ -105,6 +105,21 @@ function readJsonObject(deps: DoctorDeps, filePath: string): Record<string, unkn
   }
 }
 
+const SENSITIVE_CONFIG_KEYS = ["apiKey", "token", "secret", "password"]
+
+function credentialKeyLeaks(raw: string): string[] {
+  return SENSITIVE_CONFIG_KEYS.filter((key) => raw.includes(`"${key}"`))
+}
+
+function checkCredentialLeak(checks: DoctorCheck[], label: string, raw: string): void {
+  const found = credentialKeyLeaks(raw)
+  if (found.length > 0) {
+    checks.push({ label, status: "warn", detail: `contains credential-looking keys: ${found.join(", ")}` })
+  } else {
+    checks.push({ label, status: "pass", detail: "no credential keys" })
+  }
+}
+
 export function checkAgents(deps: DoctorDeps): DoctorCategory {
   const checks: DoctorCheck[] = []
 
@@ -312,6 +327,24 @@ export function checkHabits(deps: DoctorDeps): DoctorCategory {
 export function checkSecurity(deps: DoctorDeps): DoctorCategory {
   const checks: DoctorCheck[] = []
   const agents = discoverAgents(deps)
+  const providerPoolPath = `${deps.secretsRoot}/providers.json`
+
+  if (deps.existsSync(providerPoolPath)) {
+    const stat = deps.statSync(providerPoolPath)
+    const worldReadable = (stat.mode & 0o004) !== 0
+    checks.push({
+      label: "machine provider credentials perms",
+      status: worldReadable ? "warn" : "pass",
+      detail: worldReadable ? "world-readable — consider chmod 600" : "not world-readable",
+    })
+
+    try {
+      JSON.parse(deps.readFileSync(providerPoolPath)) as unknown
+      checks.push({ label: "machine provider credentials", status: "pass", detail: "readable JSON" })
+    } catch {
+      checks.push({ label: "machine provider credentials", status: "fail", detail: "unparseable JSON" })
+    }
+  }
 
   for (const agentDir of agents) {
     const agentName = agentDir.replace(/\.ouro$/, "")
@@ -336,8 +369,7 @@ export function checkSecurity(deps: DoctorDeps): DoctorCategory {
     if (deps.existsSync(configPath)) {
       try {
         const raw = deps.readFileSync(configPath)
-        const sensitiveKeys = ["apiKey", "token", "secret", "password"]
-        const found = sensitiveKeys.filter((key) => raw.includes(`"${key}"`))
+        const found = credentialKeyLeaks(raw)
         if (found.length > 0) {
           checks.push({ label: `${agentDir} credential leak`, status: "warn", detail: `agent.json contains keys: ${found.join(", ")}` })
         } else {
@@ -345,6 +377,15 @@ export function checkSecurity(deps: DoctorDeps): DoctorCategory {
         }
       } catch {
         checks.push({ label: `${agentDir} credential leak`, status: "fail", detail: "could not read agent.json" })
+      }
+    }
+
+    const providerStatePath = `${deps.bundlesRoot}/${agentDir}/state/providers.json`
+    if (deps.existsSync(providerStatePath)) {
+      try {
+        checkCredentialLeak(checks, `${agentDir} state/providers.json credential leak`, deps.readFileSync(providerStatePath))
+      } catch {
+        checks.push({ label: `${agentDir} state/providers.json credential leak`, status: "fail", detail: "could not read state/providers.json" })
       }
     }
   }
