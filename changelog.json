@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.355",
+      "changes": [
+        "`ouro up` AI-assisted repair diagnosis now uses the same discovered and pinged provider credentials as provider readiness checks, including the machine-wide credential pool, instead of drifting back through the current agent's configured provider registry path."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.354",
       "changes": [
         "Provider visibility now surfaces the effective local outward/inner lanes across start-of-turn context, system prompts, pulse, Outlook, and daemon status, using the shared provider binding resolver with safe credential provenance and no raw secret exposure.",
