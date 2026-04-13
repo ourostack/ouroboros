@@ -806,13 +806,30 @@ export function loadSessionEnvelopeFile(filePath: string): SessionEnvelope | nul
   }
 }
 
+function messageRole(msg: OpenAI.ChatCompletionMessageParam): SessionEventRole {
+  return normalizeRole((msg as unknown as Record<string, unknown>).role)
+}
+
+function filterNonSystem(messages: OpenAI.ChatCompletionMessageParam[]): OpenAI.ChatCompletionMessageParam[] {
+  return messages.filter((msg) => messageRole(msg) !== "system")
+}
+
+/**
+ * Compare two message arrays by their non-system messages only.
+ * Returns the number of matching non-system messages from the start.
+ * System messages (whose content changes every turn due to live world-state)
+ * are excluded so that prefix matching is not defeated by system prompt updates.
+ */
 function findCommonPrefixLength(a: OpenAI.ChatCompletionMessageParam[], b: OpenAI.ChatCompletionMessageParam[]): number {
-  const max = Math.min(a.length, b.length)
+  const aNonSys = filterNonSystem(a)
+  const bNonSys = filterNonSystem(b)
+  const max = Math.min(aNonSys.length, bNonSys.length)
   for (let i = 0; i < max; i++) {
-    if (messageFingerprint(a[i]!) !== messageFingerprint(b[i]!)) return i
+    if (messageFingerprint(aNonSys[i]!) !== messageFingerprint(bNonSys[i]!)) return i
   }
   return max
 }
+
 
 function selectProjectedEventIds(
   currentMessages: OpenAI.ChatCompletionMessageParam[],
@@ -844,19 +861,57 @@ export function buildCanonicalSessionEnvelope(options: SessionEnvelopeBuildOptio
     ? [...existing.projection.eventIds]
     : existing?.events.map((event) => event.id) ?? []
 
-  const commonPrefix = findCommonPrefixLength(previousMessages, currentMessages)
-  const appendFrom = previousMessages.length === commonPrefix ? previousMessages.length : commonPrefix
-  const newMessages = currentMessages.slice(appendFrom)
-  const newIngressTimes = currentIngressTimes.slice(appendFrom)
-  const baseSequence = existing?.events.length ?? 0
-  const newEvents = newMessages.map((message, index) =>
-    buildEventFromMessage(message, baseSequence + index + 1, options.recordedAt, "live", null, null, newIngressTimes[index]),
-  )
-  const events = [...(existing?.events ?? []), ...newEvents]
-  const currentEventIds = [
-    ...previousProjectionIds.slice(0, appendFrom),
-    ...newEvents.map((event) => event.id),
-  ]
+  // Compare only non-system messages to find the common prefix.
+  // System messages change every turn (live world-state in system prompt)
+  // and must not defeat prefix matching of the actual conversation.
+  const nonSystemPrefix = findCommonPrefixLength(previousMessages, currentMessages)
+
+  // Build a lookup of non-system previous projection IDs.
+  const prevNonSystemIds: string[] = []
+  for (let i = 0; i < previousMessages.length; i++) {
+    if (messageRole(previousMessages[i]!) !== "system") {
+      prevNonSystemIds.push(previousProjectionIds[i]!)
+    }
+  }
+
+  // Walk currentMessages and build currentEventIds + new events.
+  // Non-system messages within the prefix reuse old event IDs.
+  // System messages and post-prefix messages get new events.
+  const events = [...(existing?.events ?? [])]
+  const currentEventIds: string[] = []
+  let nonSystemSeen = 0
+
+  for (let i = 0; i < currentMessages.length; i++) {
+    const role = messageRole(currentMessages[i]!)
+    const isSystem = role === "system"
+    const inPrefix = !isSystem && nonSystemSeen < nonSystemPrefix
+
+    if (inPrefix) {
+      // Reuse existing event ID for this matched non-system message
+      currentEventIds.push(prevNonSystemIds[nonSystemSeen]!)
+      nonSystemSeen++
+    } else if (isSystem && i < previousMessages.length
+      && messageRole(previousMessages[i]!) === "system"
+      && messageFingerprint(currentMessages[i]!) === messageFingerprint(previousMessages[i]!)) {
+      // System message at same position with identical content -- reuse event ID
+      currentEventIds.push(previousProjectionIds[i]!)
+    } else {
+      if (!isSystem) nonSystemSeen++
+      // Create a new event
+      const event = buildEventFromMessage(
+        currentMessages[i]!,
+        events.length + 1,
+        options.recordedAt,
+        "live",
+        null,
+        null,
+        currentIngressTimes[i],
+      )
+      events.push(event)
+      currentEventIds.push(event.id)
+    }
+  }
+
   const projectionEventIds = selectProjectedEventIds(currentMessages, currentEventIds, trimmedMessages)
 
   return {

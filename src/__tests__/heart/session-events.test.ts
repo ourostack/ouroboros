@@ -1215,9 +1215,9 @@ describe("session events", () => {
 
       // With the bug: prefix match returns 0 because system content differs,
       // so ALL 5 messages are created as new events (3 existing + 5 new = 8 total)
-      // With the fix: prefix match should skip system messages, match user+assistant,
-      // and only create 2 new events (3 existing + 2 new = 5 total)
-      expect(updated.events).toHaveLength(5)
+      // With the fix: prefix match skips system messages, matches user+assistant,
+      // creates new events only for: 1 changed system + 2 genuinely new messages = 3 new
+      expect(updated.events).toHaveLength(6) // 3 original + 3 new
     })
 
     it("matches non-system messages correctly when system prompt changes between turns", async () => {
@@ -1260,13 +1260,15 @@ describe("session events", () => {
         projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
       })
 
-      // Should reuse existing events for question A + answer A, only add question B + answer B
-      expect(updated.events).toHaveLength(5) // 3 original + 2 new
-      // The new system message should be a new event
-      expect(updated.events[3]!.role).toBe("user")
-      expect(updated.events[3]!.content).toBe("question B")
-      expect(updated.events[4]!.role).toBe("assistant")
-      expect(updated.events[4]!.content).toBe("answer B")
+      // Should reuse existing events for question A + answer A
+      // New events: 1 changed system + 2 new non-system = 3 new
+      expect(updated.events).toHaveLength(6) // 3 original + 3 new
+      // New events start at index 3: system, then questionB, answerB
+      expect(updated.events[3]!.role).toBe("system")
+      expect(updated.events[4]!.role).toBe("user")
+      expect(updated.events[4]!.content).toBe("question B")
+      expect(updated.events[5]!.role).toBe("assistant")
+      expect(updated.events[5]!.content).toBe("answer B")
 
       // Projection should include the new system event + reused non-system + new non-system
       const projected = projectProviderMessages(updated)
@@ -1349,8 +1351,9 @@ describe("session events", () => {
         projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
       })
 
-      // Should reuse user "hello" + assistant "hi", only create new "new question"
-      expect(updated.events).toHaveLength(5) // 4 original + 1 new
+      // Should reuse user "hello" + assistant "hi"
+      // New events: 2 changed systems + 1 new user = 3 new
+      expect(updated.events).toHaveLength(7) // 4 original + 3 new
     })
 
     it("handles all system messages with no other roles", async () => {
