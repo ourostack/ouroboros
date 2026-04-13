@@ -100,7 +100,46 @@ describe("buildPulseState", () => {
       fixHint: null,
       alertId: null,
       currentActivity: null,
+      providerVisibility: null,
     })
+  })
+
+  it("attaches safe provider visibility to each pulse agent when available", () => {
+    const result = buildPulseState(
+      [makeSnapshot({ name: "slugger" })],
+      "/Users/test/AgentBundles",
+      "0.1.0-alpha.354",
+      new Date("2026-04-08T22:00:00Z"),
+      () => null,
+      () => ({
+        agentName: "slugger",
+        lanes: [
+          {
+            lane: "inner",
+            status: "configured",
+            provider: "minimax",
+            model: "MiniMax-M2.5",
+            source: "local",
+            readiness: { status: "ready" },
+            credential: { status: "present", source: "auth-flow", contributedByAgent: "slugger", revision: "cred_mm" },
+            warnings: [],
+          },
+        ],
+      }),
+    )
+
+    expect(result.agents[0]!.providerVisibility).toMatchObject({
+      agentName: "slugger",
+      lanes: [
+        expect.objectContaining({
+          lane: "inner",
+          provider: "minimax",
+          model: "MiniMax-M2.5",
+          readiness: { status: "ready" },
+        }),
+      ],
+    })
+    expect(JSON.stringify(result.agents[0]!.providerVisibility)).not.toContain("secret")
   })
 
   it("maps broken snapshots to PulseAgentEntry with errorReason, fixHint, and alertId", () => {
@@ -359,6 +398,49 @@ describe("writePulse / readPulse roundtrip", () => {
       pulsePath: "/tmp/mixed.json",
     })
     expect(result?.agents.map((a) => a.name)).toEqual(["slugger", "ouroboros"])
+  })
+
+  it("normalizes provider visibility payloads when reading pulse state", () => {
+    const result = readPulse({
+      readFile: () => JSON.stringify({
+        generatedAt: "2026-04-08T22:00:00Z",
+        daemonVersion: "v",
+        agents: [
+          {
+            name: "slugger",
+            bundlePath: "/x",
+            status: "running",
+            lastSeenAt: null,
+            errorReason: null,
+            fixHint: null,
+            alertId: null,
+            currentActivity: null,
+            providerVisibility: { malformed: true },
+          },
+          {
+            name: "ouroboros",
+            bundlePath: "/y",
+            status: "running",
+            lastSeenAt: null,
+            errorReason: null,
+            fixHint: null,
+            alertId: null,
+            currentActivity: null,
+            providerVisibility: {
+              agentName: "ouroboros",
+              lanes: [{ lane: "inner", status: "configured" }],
+            },
+          },
+        ],
+      }),
+      pulsePath: "/tmp/provider-visibility.json",
+    })
+
+    expect(result?.agents[0]!.providerVisibility).toBeNull()
+    expect(result?.agents[1]!.providerVisibility).toMatchObject({
+      agentName: "ouroboros",
+      lanes: [{ lane: "inner", status: "configured" }],
+    })
   })
 
   it("writePulse swallows write errors (best-effort)", () => {

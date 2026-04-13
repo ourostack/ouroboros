@@ -9,6 +9,7 @@ import { listSessionActivity } from "../../session-activity"
 import { getAgentBundlesRoot } from "../../identity"
 import { listEnabledBundleAgents } from "../../daemon/agent-discovery"
 import { getRuntimeMetadata } from "../../daemon/runtime-metadata"
+import { buildAgentProviderVisibility } from "../../provider-visibility"
 import {
   deriveInnerJob,
   formatSurfacedValue,
@@ -301,6 +302,7 @@ function summarizeAgent(state: OutlookAgentState): OutlookAgentSummary {
   return {
     agentName: state.agentName,
     enabled: state.enabled,
+    providers: state.providers,
     freshness: state.freshness,
     degraded: state.degraded,
     tasks: {
@@ -336,6 +338,7 @@ export function readOutlookAgentState(agentName: string, options: OutlookReadOpt
 
   const coding = readCodingSummary(agentRoot)
   issues.push(...coding.issues)
+  const providers = buildAgentProviderVisibility({ agentName, agentRoot, homeDir: options.homeDir })
 
   const latestActivityAt = collectLatestActivityTimestamps({
     obligations: obligations.items,
@@ -350,6 +353,7 @@ export function readOutlookAgentState(agentName: string, options: OutlookReadOpt
     agentRoot,
     enabled: config.summary.enabled,
     provider: config.summary.provider,
+    providers,
     senses: config.summary.senses,
     freshness: summarizeFreshness(latestActivityAt, now),
     degraded: summarizeDegraded(issues),

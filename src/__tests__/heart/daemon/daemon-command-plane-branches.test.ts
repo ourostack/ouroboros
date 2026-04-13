@@ -201,6 +201,40 @@ describe("daemon command plane branches", () => {
     })
   })
 
+  it("includes provider rows in status when bundle agents exist", async () => {
+    const socketPath = tmpSocketPath("daemon-status-providers")
+    const isolatedBundles = path.join(os.tmpdir(), `daemon-status-provider-bundles-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+    const agentRoot = path.join(isolatedBundles, "slugger.ouro")
+    fs.mkdirSync(agentRoot, { recursive: true })
+    fs.writeFileSync(path.join(agentRoot, "agent.json"), `${JSON.stringify({ enabled: true })}\n`, "utf-8")
+    const { daemon } = make(socketPath, isolatedBundles)
+
+    try {
+      const status = await daemon.handleCommand({ kind: "daemon.status" })
+
+      expect(status.data).toMatchObject({
+        providers: [
+          expect.objectContaining({
+            agent: "slugger",
+            lane: "outward",
+            provider: "unconfigured",
+            model: "-",
+            detail: "ouro use --agent slugger --lane outward --provider <provider> --model <model>",
+          }),
+          expect.objectContaining({
+            agent: "slugger",
+            lane: "inner",
+            provider: "unconfigured",
+            model: "-",
+            detail: "ouro use --agent slugger --lane inner --provider <provider> --model <model>",
+          }),
+        ],
+      })
+    } finally {
+      fs.rmSync(isolatedBundles, { recursive: true, force: true })
+    }
+  })
+
   it("handles logs, chat connect, message, task poke, and hatch commands", async () => {
     const socketPath = tmpSocketPath("daemon-command-set")
     const { daemon, processManager, router, scheduler } = make(socketPath)

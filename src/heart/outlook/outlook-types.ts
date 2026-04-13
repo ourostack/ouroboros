@@ -3,6 +3,7 @@ import type { BridgeRecord, BridgeSessionRef, BridgeTaskLink } from "../../nerve
 import type { TaskStatus, RuntimeMetadata } from "../../nerves/observation"
 import type { UsageData } from "../../nerves/observation"
 import type { InnerJobStatus } from "../daemon/thoughts"
+import type { AgentProviderVisibility } from "../provider-visibility"
 import type { SessionEvent } from "../session-events"
 
 // Re-export domain types through the observation layer
@@ -130,6 +131,7 @@ export interface OutlookAgentState {
   agentRoot: string
   enabled: boolean
   provider: string | null
+  providers?: AgentProviderVisibility | null
   senses: string[]
   freshness: OutlookFreshness
   degraded: OutlookDegradedState
@@ -143,6 +145,7 @@ export interface OutlookAgentState {
 export interface OutlookAgentSummary {
   agentName: string
   enabled: boolean
+  providers?: AgentProviderVisibility | null
   freshness: OutlookFreshness
   degraded: OutlookDegradedState
   tasks: Pick<OutlookTaskSummary, "liveCount" | "blockedCount">
@@ -231,6 +234,7 @@ export interface OutlookAgentIdentityView {
   agentRoot: string
   enabled: boolean
   provider: string | null
+  providers?: AgentProviderVisibility | null
   senses: string[]
   freshness: OutlookFreshness
   degraded: OutlookDegradedState

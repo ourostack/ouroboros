@@ -22,6 +22,7 @@ export interface StartOfTurnPacket {
   syncFailure?: string
   bundleState?: BundleStateIssue[]
   capabilities?: string
+  providerState?: string
 }
 
 function estimateTokens(text: string): number {
@@ -245,6 +246,7 @@ export function renderStartOfTurnPacket(packet: StartOfTurnPacket): string {
     // are actionable "fix your git" signals. bundleState is preferred
     // because it's structured (array of enum values) while syncFailure is
     // a legacy free-form string; both render when populated.
+    { label: "provider", content: packet.providerState ?? "", priority: 8 },
     { label: "bundleState", content: renderBundleStateHint(packet.bundleState ?? []), priority: 7 },
     { label: "syncFailure", content: packet.syncFailure ?? "", priority: 7 },
     { label: "resume", content: packet.resumeHint, priority: 6 },
@@ -329,6 +331,9 @@ function formatSections(sections: Array<{ label: string; content: string }>): st
         break
       case "bundleState":
         parts.push(`**Bundle:** ${section.content}`)
+        break
+      case "provider":
+        parts.push(`**Provider:**\n${section.content}`)
         break
     }
   }

@@ -30,6 +30,7 @@ import { startOutlookHttpServer, type OutlookHttpServerHandle } from "../outlook
 import { OUTLOOK_DEFAULT_PORT } from "../outlook/outlook-types"
 import { readOutlookAgentState, readOutlookMachineState } from "../outlook/outlook-read"
 import { buildOutlookAgentView, buildOutlookMachineView } from "../outlook/outlook-view"
+import { buildAgentProviderVisibility, providerVisibilityStatusRows, type ProviderStatusRow } from "../provider-visibility"
 
 const PIDFILE_PATH = path.join(os.homedir(), ".ouro-cli", "daemon.pids")
 
@@ -400,6 +401,8 @@ interface DaemonStatusPayload {
    * enabled bundles, so without this field disabled agents are invisible
    * in `ouro status`. */
   agents: BundleAgentRow[]
+  /** Safe provider/model/readiness rows for every discovered bundle. */
+  providers?: ProviderStatusRow[]
 }
 
 interface SocketIdentity {
@@ -576,6 +579,12 @@ export class OuroDaemon {
     const repoRoot = getRepoRoot()
     const sync = listBundleSyncRows({ bundlesRoot: this.bundlesRoot })
     const agents = listAllBundleAgents({ bundlesRoot: this.bundlesRoot })
+    const providers = agents.flatMap((agent) =>
+      providerVisibilityStatusRows(buildAgentProviderVisibility({
+        agentName: agent.name,
+        agentRoot: path.join(this.bundlesRoot, `${agent.name}.ouro`),
+      })),
+    )
 
     return {
       overview: {
@@ -593,6 +602,7 @@ export class OuroDaemon {
       senses,
       sync,
       agents,
+      ...(providers.length > 0 ? { providers } : {}),
     }
   }
 

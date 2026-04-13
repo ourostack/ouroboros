@@ -23,6 +23,7 @@ import { findActivePersistentObligation, findStatusObligation, renderActiveOblig
 import { readHealth, getDefaultHealthPath } from "../heart/daemon/daemon-health";
 import { preImplementationScrutinySection } from "./scrutiny";
 import { readPulse } from "../heart/daemon/pulse";
+import { formatAgentProviderVisibilityForPrompt, formatAgentProviderVisibilityForPulse, type AgentProviderVisibility } from "../heart/provider-visibility";
 
 // Lazy-loaded psyche text cache
 let _psycheCache: {
@@ -469,7 +470,10 @@ function senseRuntimeGuidance(channel: Channel, preReadStatusLines?: string[]): 
   return lines
 }
 
-function providerSection(channel?: Channel): string {
+function providerSection(channel?: Channel, options?: BuildSystemOptions): string {
+  if (options?.providerVisibility) {
+    return `## my provider\n${formatAgentProviderVisibilityForPrompt(options.providerVisibility)}`
+  }
   return `## my provider\n${getProviderDisplayLabel(channelToFacing(channel))}`;
 }
 
@@ -701,6 +705,8 @@ export interface BuildSystemOptions {
   pendingMessages?: Array<{ from: string; content: string }>;
   /** Rendered start-of-turn packet for continuity-aware prompt. */
   startOfTurnPacket?: string;
+  /** Safe provider/model/readiness view for this machine. */
+  providerVisibility?: AgentProviderVisibility;
 
   // ── Pre-read state from TurnContext ─────────────────────────────
   // These fields are populated by buildTurnContext() in the main pipeline path.
@@ -801,6 +807,7 @@ export function pulseSection(channel: Channel = "cli"): string {
       lines.push(`  reason: ${sib.errorReason}`)
       if (sib.fixHint) lines.push(`  fix: ${sib.fixHint}`)
       lines.push(`  bundle: \`${sib.bundlePath}\``)
+      if (sib.providerVisibility) lines.push(`  provider: ${formatAgentProviderVisibilityForPulse(sib.providerVisibility)}`)
     }
     lines.push("")
   }
@@ -812,6 +819,7 @@ export function pulseSection(channel: Channel = "cli"): string {
     for (const sib of healthy) {
       const activity = sib.currentActivity ? ` — ${sib.currentActivity}` : ""
       lines.push(`- **${sib.name}** is running${activity}. bundle: \`${sib.bundlePath}\``)
+      if (sib.providerVisibility) lines.push(`  provider: ${formatAgentProviderVisibilityForPulse(sib.providerVisibility)}`)
     }
     lines.push("")
   }
@@ -820,6 +828,7 @@ export function pulseSection(channel: Channel = "cli"): string {
     lines.push("**idle siblings** — configured but not currently running:")
     for (const sib of idle) {
       lines.push(`- **${sib.name}** (status: ${sib.status}). bundle: \`${sib.bundlePath}\``)
+      if (sib.providerVisibility) lines.push(`  provider: ${formatAgentProviderVisibilityForPulse(sib.providerVisibility)}`)
     }
     lines.push("")
   }
@@ -1372,7 +1381,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     runtimeInfoSection(channel, options),
     rhythmStatusSection(options?.daemonHealth),
     channelNatureSection(getChannelCapabilities(channel)),
-    providerSection(channel),
+    providerSection(channel, options),
     dateSection(),
 
     // Group 3: my tools & capabilities

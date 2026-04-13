@@ -163,4 +163,86 @@ describe("parseStatusPayload extended worker fields", () => {
     expect(output).toContain("error: secrets.json for 'ouroboros' is missing providers.github-copilot section")
     expect(output).toContain("fix:   Run 'ouro auth ouroboros' to configure github-copilot credentials.")
   })
+
+  it("parses and renders provider lane readiness without leaking credentials", () => {
+    const output = formatDaemonStatusOutput({
+      ok: true,
+      data: {
+        overview: makeOverview({ workerCount: 0 }),
+        workers: [],
+        senses: [],
+        agents: [{ name: "slugger", enabled: true }],
+        providers: [
+          {
+            agent: "slugger",
+            lane: "outward",
+            provider: "minimax",
+            model: "MiniMax-M2.5",
+            source: "local",
+            readiness: "ready",
+            credential: "auth-flow from slugger",
+          },
+          {
+            agent: "slugger",
+            lane: "inner",
+            provider: "openai-codex",
+            model: "gpt-5.4",
+            source: "local",
+            readiness: "failed",
+            detail: "400 status code",
+            credential: "legacy-agent-secrets from kicker",
+          },
+        ],
+      },
+    }, "fallback")
+
+    expect(output).toContain("Providers")
+    expect(output).toContain("slugger outward")
+    expect(output).toContain("minimax / MiniMax-M2.5")
+    expect(output).toContain("ready")
+    expect(output).toContain("inner")
+    expect(output).toContain("openai-codex / gpt-5.4")
+    expect(output).toContain("400 status code")
+    expect(output).toContain("legacy-agent-secrets from kicker")
+    expect(output).not.toContain("secret-value")
+  })
+
+  it("rejects malformed provider lane status payloads", () => {
+    const base = {
+      overview: makeOverview(),
+      workers: [],
+      senses: [],
+    }
+
+    expect(parseStatusPayload({ ...base, providers: { bad: true } })).toBeNull()
+    expect(parseStatusPayload({ ...base, providers: [null] })).toBeNull()
+    expect(parseStatusPayload({
+      ...base,
+      providers: [{
+        agent: "slugger",
+        lane: "inner",
+        provider: "minimax",
+        model: "MiniMax-M2.5",
+        source: "local",
+        readiness: "ready",
+      }],
+    })).toBeNull()
+    expect(parseStatusPayload({
+      ...base,
+      providers: [{
+        agent: "slugger",
+        lane: "inner",
+        provider: "minimax",
+        model: "MiniMax-M2.5",
+        source: "local",
+        readiness: "ready",
+        credential: "auth-flow from slugger",
+        detail: "fresh",
+      }],
+    })?.providers[0]).toMatchObject({
+      agent: "slugger",
+      lane: "inner",
+      detail: "fresh",
+    })
+  })
 })
