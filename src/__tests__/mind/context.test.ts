@@ -1202,6 +1202,38 @@ describe("deferPostTurnPersist return value", () => {
       expect.objectContaining({ event: "mind.deferred_persist_error" }),
     )
   })
+
+  it("resolves with empty array when postTurnPersist throws a non-Error value", async () => {
+    vi.resetModules()
+    const emitNervesEvent = vi.fn()
+    vi.doMock("../../nerves/runtime", () => ({
+      emitNervesEvent,
+    }))
+
+    // Mock writeFileSync to throw a string (non-Error)
+    vi.mocked(fs.writeFileSync).mockImplementation(() => {
+      throw "string error"  // eslint-disable-line no-throw-literal
+    })
+
+    const { getContextConfig } = await import("../../heart/config")
+    vi.mocked(getContextConfig).mockReturnValue({ maxTokens: 80000, contextMargin: 20 })
+
+    const { deferPostTurnPersist, postTurnTrim } = await import("../../mind/context")
+    const messages: any[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "hello" },
+    ]
+    const prepared = postTurnTrim(messages)
+    const result = await deferPostTurnPersist("/tmp/sess.json", prepared)
+
+    expect(result).toEqual([])
+    expect(emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "mind.deferred_persist_error",
+        meta: { error: "string error" },
+      }),
+    )
+  })
 })
 
 describe("mind observability instrumentation", () => {
