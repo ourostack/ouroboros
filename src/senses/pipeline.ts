@@ -41,6 +41,7 @@ import { describeCurrentSessionTiming, stampIngressTime, type SessionEvent } fro
 import { derivePresence, writePresence } from "../arc/presence"
 import { emitEpisode } from "../arc/episodes"
 import { buildTurnContext } from "../heart/turn-context"
+import { formatAgentProviderVisibilityForStartOfTurn } from "../heart/provider-visibility"
 
 export interface FailoverState {
   pending: FailoverContext | null
@@ -550,6 +551,9 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     if (syncFailure) {
       startOfTurnPacket.syncFailure = syncFailure
     }
+    if (ctx.providerVisibility) {
+      startOfTurnPacket.providerState = formatAgentProviderVisibilityForStartOfTurn(ctx.providerVisibility)
+    }
     // Structured bundle state detection — surfaces discrete issues the
     // agent can remediate via the bundle_* tools. Runs independently of
     // syncFailure so the two signals coexist during the transition away
@@ -604,6 +608,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     bundleMeta: ctx.bundleMeta,
     daemonHealth: ctx.daemonHealth,
     journalFiles: ctx.journalFiles,
+    ...(ctx.providerVisibility ? { providerVisibility: ctx.providerVisibility } : {}),
     toolContext: {
       /* v8 ignore next -- default no-op signin satisfies interface; real signin injected by sense adapter @preserve */
       signin: async () => undefined,

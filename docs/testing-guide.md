@@ -80,21 +80,22 @@ Verify:
 
 ## 4. Provider Auth Recovery Smoke
 
-When a provider needs first-time setup, reauth, or a deliberate switch, use the
-installed runtime path instead of repo-local scripts:
+Provider credentials and provider selection are separate. `ouro auth` stores credentials only in the machine credential pool. Provider/model selection for each local machine lives in the bundle's `state/providers.json`.
+
+When a provider needs first-time setup or reauth, use the installed runtime path instead of repo-local scripts:
 
 ```bash
 ouro auth --agent Hatchling
 ouro auth --agent Hatchling --provider openai-codex
-ouro auth --agent Hatchling --facing agent --provider openai-codex
 ```
 
 Expected:
 
-- `ouro auth --agent Hatchling` reauths the human-facing provider already selected in `~/AgentBundles/Hatchling.ouro/agent.json`
-- `--provider <provider>` is optional and meant for an explicit provider add/switch
-- `--facing human|agent` controls which facing gets updated (defaults to `human`)
-- an explicit provider override updates the corresponding facing in `agent.json` so the newly authenticated provider becomes live runtime truth
+- `ouro auth` stores credentials only in `~/.agentsecrets/providers.json`
+- `ouro auth --agent Hatchling` reauths the provider already selected for Hatchling's outward lane
+- `--provider <provider>` authenticates that provider in the machine credential pool without switching a lane
+- provider state remains in `~/AgentBundles/Hatchling.ouro/state/providers.json`
+- use `ouro use --agent <agent> --lane <outward|inner> --provider <provider> --model <model>` to switch a lane after credentials exist and the provider/model check passes
 - if a session already failed, the follow-up move is to retry the failed `ouro` command or reconnect the session
 
 ## 5. Daemon Messaging Smoke
@@ -191,13 +192,18 @@ Run:
 ouro auth --agent <agent>
 ```
 
-Use this only when you need to authenticate or reauthenticate the human-facing provider
-already selected in `agent.json`.
+Use this when you need to authenticate or reauthenticate the provider already selected for that agent on this machine. `ouro auth` stores credentials only; it does not choose the runtime provider/model.
 
-If you are deliberately adding or switching providers, run:
+If you are deliberately adding credentials for another provider, run:
 
 ```bash
 ouro auth --agent <agent> --provider <provider>
+```
+
+If you are deliberately switching a runtime lane, run:
+
+```bash
+ouro use --agent <agent> --lane <outward|inner> --provider <provider> --model <model>
 ```
 
 After reauth succeeds, retry the failed `ouro` command or reconnect the session that
@@ -207,10 +213,12 @@ already errored.
 
 Check:
 
-- `~/AgentBundles/<agent>.ouro/agent.json` (check `humanFacing` and `agentFacing` for provider+model)
+- `~/AgentBundles/<agent>.ouro/agent.json` (check sense enablement)
+- `~/AgentBundles/<agent>.ouro/state/providers.json` (check outward/inner provider+model)
 - `~/.agentsecrets/<agent>/secrets.json`
+- `~/.agentsecrets/providers.json`
 
-Sense enablement lives in `agent.json`; provider+model selection per facing lives in `agent.json` under `humanFacing` and `agentFacing`; secret material (credentials only) lives in `secrets.json`.
+Sense enablement lives in `agent.json`; provider+model selection per machine lives in `state/providers.json`; provider credentials live in `~/.agentsecrets/providers.json`; sense-specific secret material lives in `~/.agentsecrets/<agent>/secrets.json`.
 
 ### BlueBubbles or Teams behavior feels wrong
 
@@ -221,4 +229,4 @@ ouro status
 ouro logs
 ```
 
-Then verify the sense-specific config block is complete in `secrets.json` and that the sense is actually enabled in `agent.json`. Check that both `humanFacing` and `agentFacing` are configured correctly.
+Then verify the sense-specific config block is complete in `secrets.json`, the sense is enabled in `agent.json`, and the relevant outward/inner lane is configured in `state/providers.json`.

@@ -39,6 +39,7 @@ import { readHealth, getDefaultHealthPath } from "./daemon/daemon-health"
 import { readJournalFiles } from "../mind/prompt"
 import type { FriendStore } from "../mind/friends/store"
 import type { CodingSessionStatus } from "../repertoire/coding/types"
+import { buildAgentProviderVisibility, type AgentProviderVisibility } from "./provider-visibility"
 
 // ── TurnContext: the raw state snapshot ─────────────────────────────
 
@@ -78,6 +79,8 @@ export interface TurnContext {
   syncConfig: SyncConfig
   /** Sync failure message if pre-turn pull failed. */
   syncFailure: string | undefined
+  /** Safe provider/model/readiness view for this machine. */
+  providerVisibility: AgentProviderVisibility
 
   // ── Prompt-assembly pre-reads ─────────────────────────────────────
 
@@ -373,6 +376,7 @@ export async function buildTurnContext(input: BuildTurnContextInput): Promise<Tu
   }
 
   const bundleMeta = readBundleMetaFile()
+  const providerVisibility = buildAgentProviderVisibility({ agentName, agentRoot })
 
   let daemonHealth: DaemonHealthState | null = null
   try {
@@ -401,6 +405,7 @@ export async function buildTurnContext(input: BuildTurnContextInput): Promise<Tu
       bridgeCount: activeBridges.length,
       codingSessionCount: codingSessions.length,
       episodeCount: recentEpisodes.length,
+      providerLaneCount: providerVisibility.lanes.length,
     },
   })
 
@@ -418,6 +423,7 @@ export async function buildTurnContext(input: BuildTurnContextInput): Promise<Tu
     activeCares,
     syncConfig,
     syncFailure: undefined, // Set by pipeline after preTurnPull
+    providerVisibility,
     daemonRunning,
     senseStatusLines,
     bundleMeta,

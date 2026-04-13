@@ -3,6 +3,11 @@ import * as os from "os"
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { DaemonAgentSnapshot } from "./process-manager"
+import {
+  buildAgentProviderVisibility,
+  isAgentProviderVisibility,
+  type AgentProviderVisibility,
+} from "../provider-visibility"
 
 /**
  * The pulse: machine-wide situational awareness shared across all agents
@@ -68,6 +73,8 @@ export interface PulseAgentEntry {
    *  no readable runtime state (just started, or its runtime.json is
    *  missing/malformed). */
   currentActivity: string | null
+  /** Safe provider/model/readiness view for this machine. Null when unavailable. */
+  providerVisibility?: AgentProviderVisibility | null
 }
 
 export interface PulseState {
@@ -186,6 +193,7 @@ export function buildPulseState(
   daemonVersion: string,
   now: Date,
   readActivity: (bundlePath: string) => string | null = readAgentActivity,
+  readProviderVisibility: (agentName: string, bundlePath: string) => AgentProviderVisibility | null = () => null,
 ): PulseState {
   const agents: PulseAgentEntry[] = snapshots.map((snap) => {
     const errorReason = snap.errorReason
@@ -201,6 +209,7 @@ export function buildPulseState(
       // Only read activity for agents that are actually running. For
       // crashed/stopped agents, the runtime.json is stale at best.
       currentActivity: snap.status === "running" ? readActivity(bundlePath) : null,
+      providerVisibility: readProviderVisibility(snap.name, bundlePath),
     }
   })
 
@@ -363,7 +372,16 @@ export function readPulse(deps: ReadPulseDeps = {}): PulseState | null {
     return {
       generatedAt: parsed.generatedAt,
       daemonVersion: parsed.daemonVersion,
-      agents: parsed.agents.filter(isValidPulseAgentEntry),
+      agents: parsed.agents.filter(isValidPulseAgentEntry).map((agent) => {
+        const rawAgent = agent as unknown as Record<string, unknown>
+        if (!Object.prototype.hasOwnProperty.call(rawAgent, "providerVisibility")) return agent
+        return {
+          ...agent,
+          providerVisibility: isAgentProviderVisibility(rawAgent.providerVisibility)
+            ? rawAgent.providerVisibility
+            : null,
+        }
+      }),
     }
   } catch {
     return null
@@ -502,7 +520,14 @@ export interface FlushPulseResult {
  * for production callers.
  */
 export function flushPulse(deps: FlushPulseDeps): FlushPulseResult {
-  const state = buildPulseState(deps.snapshots, deps.bundlesRoot, deps.daemonVersion, deps.now)
+  const state = buildPulseState(
+    deps.snapshots,
+    deps.bundlesRoot,
+    deps.daemonVersion,
+    deps.now,
+    readAgentActivity,
+    (agentName, bundlePath) => buildAgentProviderVisibility({ agentName, agentRoot: bundlePath }),
+  )
 
   /* v8 ignore start -- dep defaults: production daemon path; the arrow functions only fire when the corresponding dep is omitted, which only happens in production code paths. Tests inject all deps explicitly. @preserve */
   const readPrev = deps.readPrev ?? (() => readPulse())
