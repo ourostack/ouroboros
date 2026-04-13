@@ -484,6 +484,15 @@ export function createAnthropicProviderRuntime(model: string, anthropicConfig: A
       const freshClient = await ensureClient();
       return streamAnthropicMessages(freshClient, model, request);
     },
+    /* v8 ignore start -- ping: tested via provider-ping.test.ts @preserve */
+    async ping(signal?: AbortSignal): Promise<void> {
+      const freshClient = await ensureClient();
+      await (freshClient as Anthropic).messages.create(
+        { model: "claude-haiku-4-5-20251001", max_tokens: 1, messages: [{ role: "user", content: "ping" }] },
+        { signal, headers: { "anthropic-beta": "claude-code-20250219,oauth-2025-04-20" } },
+      )
+    },
+    /* v8 ignore stop */
     /* v8 ignore next 3 -- delegation: classification logic tested via classifyAnthropicError @preserve */
     classifyError(error: Error): ProviderErrorClassification {
       return classifyAnthropicError(error);

@@ -33,14 +33,17 @@ vi.mock("../../heart/providers/anthropic", () => ({
   classifyAnthropicError: vi.fn(() => "unknown"),
 }))
 
+// Azure client mock: uses responses.create (Responses API) for ping
+const azureClient = { chat: { completions: { create: (...args: any[]) => mockOpenAICreate(...args) } }, responses: { create: (...args: any[]) => mockResponsesCreate(...args) } }
+
 vi.mock("../../heart/providers/azure", () => ({
   createAzureProviderRuntime: vi.fn((model: string) => ({
     id: "azure",
     model,
-    client: openaiClient,
+    client: azureClient,
     classifyError: mockClassifyError,
     async ping(signal?: AbortSignal) {
-      await mockOpenAICreate({ model, max_tokens: 1, messages: [{ role: "user", content: "ping" }] }, { signal })
+      await mockResponsesCreate({ model, input: "ping", max_output_tokens: 16 }, { signal })
     },
   })),
   classifyAzureError: vi.fn(() => "unknown"),
@@ -218,7 +221,7 @@ describe("pingProvider", () => {
   })
 
   it("returns ok: true when ping succeeds for azure", async () => {
-    mockOpenAICreate.mockResolvedValue({ choices: [{ message: { content: "hi" } }] })
+    mockResponsesCreate.mockResolvedValue({ output: [{ text: "hi" }] })
     const result = await pingProvider("azure", {
       modelName: "gpt-4o-mini",
       apiKey: "valid-key",
@@ -230,7 +233,7 @@ describe("pingProvider", () => {
   })
 
   it("adds the default azure API version when ping config omits it", async () => {
-    mockOpenAICreate.mockResolvedValue({ choices: [{ message: { content: "hi" } }] })
+    mockResponsesCreate.mockResolvedValue({ output: [{ text: "hi" }] })
     const result = await pingProvider("azure", {
       modelName: "gpt-4o-mini",
       apiKey: "valid-key",
@@ -244,7 +247,7 @@ describe("pingProvider", () => {
   })
 
   it("allows azure managed identity credentials without an apiKey", async () => {
-    mockOpenAICreate.mockResolvedValue({ choices: [{ message: { content: "hi" } }] })
+    mockResponsesCreate.mockResolvedValue({ output: [{ text: "hi" }] })
     const result = await pingProvider("azure", {
       endpoint: "https://example.openai.azure.com",
       deployment: "gpt-4o-mini",

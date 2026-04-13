@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.360",
+      "changes": [
+        "Each provider runtime now owns its `ping()` method, replacing the centralized if/else routing chain. Azure ping switched from chat completions to Responses API to match its runtime. Prevents the entire class of ping/runtime API drift bugs."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.359",
       "changes": [
         "Fixed session storage explosion caused by `findCommonPrefixLength` returning 0 every turn (system prompt changes invalidated the prefix). Skips system messages in prefix comparison, prunes non-projected events from the envelope, archives evicted events to NDJSON, and adds `loadFullEventHistory()` for consumers that need full history. Eliminates unbounded duplicate event accumulation that caused 512MB session files and 15s freezes."
@@ -48,16 +54,16 @@
       "version": "0.1.0-alpha.352",
       "changes": [
         "Settle tool description now communicates turn-ending semantics: 'deliver your response and end your turn' with explicit guidance against settling with status updates mid-task.",
-        "Observe tool now available in all outward channels including 1:1 chats, not just groups and reactions — agents can absorb messages without responding when the moment doesn't call for words.",
+        "Observe tool now available in all outward channels including 1:1 chats, not just groups and reactions \u2014 agents can absorb messages without responding when the moment doesn't call for words.",
         "Autonomous execution prompt contract added: when told to work autonomously, agents use ponder to absorb new messages and continue using tools, settling only with the final result."
       ]
     },
     {
       "version": "0.1.0-alpha.351",
       "changes": [
-        "Surface tool description rewritten from 'surface progress' to 'send a message to someone' — makes it clear the tool is for interpersonal messaging, not status reporting.",
+        "Surface tool description rewritten from 'surface progress' to 'send a message to someone' \u2014 makes it clear the tool is for interpersonal messaging, not status reporting.",
         "Inner dialog prompt contract now guides agents to use rest(note) for heartbeat state and ponder(reflection) for deeper thoughts, keeping surface strictly for words meant for another person.",
-        "Removed [surfaced from inner dialog] prefix from synthetic session messages — provenance is tracked via captureKind: 'synthetic', the prefix was redundant and created echo loops.",
+        "Removed [surfaced from inner dialog] prefix from synthetic session messages \u2014 provenance is tracked via captureKind: 'synthetic', the prefix was redundant and created echo loops.",
         "Obligation summaries and attention queue headers reframed as structured internal data ([internal] tags) instead of surface-ready prose.",
         "Shared proactive-content-guard module blocks internal content (heartbeat, check-in, task board, obligation status, meta markers) from BlueBubbles and Teams proactive sends."
       ]
