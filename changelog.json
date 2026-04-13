@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.344",
+      "changes": [
+        "Provider readiness groundwork now has stable machine identity stored at `~/.ouro-cli/machine.json`, preserving random machine IDs across hostname changes while recording aliases for diagnostics.",
+        "Per-agent provider bindings and readiness can now be read, validated, written, and bootstrapped in `<agent>.ouro/state/providers.json` using explicit `outward` and `inner` lanes without storing credentials in bundle state."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.343",
       "changes": [
         "Kept-notes preflight now blocks provider turns long enough to search diary, journal, and friend-note candidates, then injects only first-person found/fuzzy notes under source-specific headings.",
