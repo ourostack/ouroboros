@@ -5,7 +5,7 @@
  * handler (local execution, daemon socket, or interactive flow).
  */
 
-import { execSync, spawn } from "child_process"
+import { execFileSync, execSync, spawn } from "child_process"
 import { randomUUID } from "crypto"
 import * as fs from "fs"
 import * as os from "os"
@@ -19,6 +19,7 @@ import type { TrustLevel } from "../../mind/friends/types"
 import type { DaemonCommand, DaemonResponse } from "./daemon"
 import { getRuntimeMetadata } from "./runtime-metadata"
 import { detectRuntimeMode } from "./runtime-mode"
+import { detectPlatform } from "../platform"
 import { ensureCurrentDaemonRuntime } from "./daemon-runtime-sync"
 import { applyPendingUpdates, registerUpdateHook } from "../versioning/update-hooks"
 import { bundleMetaHook } from "./hooks/bundle-meta"
@@ -74,10 +75,11 @@ import type {
   WhoamiCliCommand,
   SessionCliCommand,
   ThoughtsCliCommand,
+  CloneCliCommand,
   DoctorCliCommand,
   HelpCliCommand,
 } from "./cli-types"
-import { parseOuroCommand } from "./cli-parse"
+import { parseOuroCommand, inferAgentNameFromRemote } from "./cli-parse"
 import { isAgentProvider, usage } from "./cli-parse"
 import { getGroupedHelp, getCommandHelp } from "./cli-help"
 import {
@@ -533,9 +535,94 @@ async function verifyProviderCredentials(
 }
 /* v8 ignore stop */
 
+// ── Manual-clone detection ──
+
+export interface ManualCloneCheckDeps {
+  bundlesRoot: string
+  promptInput?: (question: string) => Promise<string>
+}
+
+export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promise<void> {
+  if (!deps.promptInput) return
+
+  let entries: string[]
+  try {
+    entries = fs.readdirSync(deps.bundlesRoot).filter((e) => e.endsWith(".ouro"))
+  } catch {
+    return
+  }
+
+  for (const agentDir of entries) {
+    const bundlePath = path.join(deps.bundlesRoot, agentDir)
+    const gitDir = path.join(bundlePath, ".git")
+
+    if (!fs.existsSync(gitDir)) continue
+
+    // Check for remotes
+    let remoteOutput: string
+    try {
+      remoteOutput = execFileSync("git", ["remote", "-v"], { cwd: bundlePath, stdio: "pipe" }).toString().trim()
+    } catch {
+      continue
+    }
+
+    if (!remoteOutput) continue
+
+    // Check if sync is already enabled
+    const agentJsonPath = path.join(bundlePath, "agent.json")
+    if (fs.existsSync(agentJsonPath)) {
+      try {
+        const raw = fs.readFileSync(agentJsonPath, "utf-8")
+        const config = JSON.parse(raw) as { sync?: { enabled?: boolean } }
+        if (config.sync?.enabled) continue
+      } catch {
+        // Can't read agent.json — skip
+        continue
+      }
+    }
+
+    // Parse first remote name
+    const firstLine = remoteOutput.split("\n")[0]
+    /* v8 ignore next -- defensive fallback: .trim() above strips leading tabs so empty-field path is unreachable @preserve */
+    const remoteName = firstLine.split("\t")[0] || "origin"
+
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.manual_clone_detected",
+      message: "bundle appears to be a manually cloned git repo",
+      meta: { agent: agentDir, remote: remoteName },
+    })
+
+    const answer = await deps.promptInput(
+      `Bundle ${agentDir} appears to be a git clone with a remote. Enable sync? (y/n): `,
+    )
+
+    if (answer.trim().toLowerCase() === "y") {
+      const raw = fs.readFileSync(agentJsonPath, "utf-8")
+      const config = JSON.parse(raw) as Record<string, unknown>
+      config.sync = { enabled: true, remote: remoteName }
+      fs.writeFileSync(agentJsonPath, JSON.stringify(config, null, 2) + "\n")
+
+      emitNervesEvent({
+        component: "daemon",
+        event: "daemon.manual_clone_sync_enabled",
+        message: "sync enabled for manually cloned bundle",
+        meta: { agent: agentDir, remote: remoteName },
+      })
+    } else {
+      emitNervesEvent({
+        component: "daemon",
+        event: "daemon.manual_clone_sync_skipped",
+        message: "user declined sync for manually cloned bundle",
+        meta: { agent: agentDir },
+      })
+    }
+  }
+}
+
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "outlook" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DoctorCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "outlook" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | CloneCliCommand | HookCliCommand | HabitLocalCliCommand | DoctorCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" }>): DaemonCommand {
   return command
 }
 
@@ -1469,6 +1556,29 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       deps.listDiscoveredAgents ? deps.listDiscoveredAgents() : defaultListDiscoveredAgents(),
     )
     if (discovered.length === 0 && deps.runSerpentGuide) {
+      // Hatch-or-clone choice when promptInput is available
+      if (deps.promptInput) {
+        const choice = await deps.promptInput("No agents found. Would you like to hatch a new agent or clone an existing one? (hatch/clone): ")
+        if (choice.trim().toLowerCase() === "clone") {
+          emitNervesEvent({
+            component: "daemon",
+            event: "daemon.first_run_choice_clone",
+            message: "user chose clone in first-run flow",
+            meta: {},
+          })
+          const remote = await deps.promptInput("Enter the git remote URL for the agent bundle: ")
+          // Run clone execution path
+          const cloneCommand = { kind: "clone" as const, remote: remote.trim() }
+          return await runOuroCli(["clone", cloneCommand.remote], deps)
+        }
+        emitNervesEvent({
+          component: "daemon",
+          event: "daemon.first_run_choice_hatch",
+          message: "user chose hatch in first-run flow",
+          meta: {},
+        })
+      }
+
       // System setup first — ouro command, subagents, UTI — before the interactive specialist
       await performSystemSetup(deps)
 
@@ -1708,6 +1818,12 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       progress.startPhase("bundle cleanup")
       progress.completePhase("bundle cleanup", `pruned ${prunedBundles.length} stale bundle${prunedBundles.length === 1 ? "" : "s"}`)
     }
+
+    // ── manual-clone detection: offer to enable sync for manually cloned bundles ──
+    await checkManualCloneBundles({
+      bundlesRoot: deps.bundlesRoot ?? bundlesRoot,
+      promptInput: deps.promptInput,
+    })
 
     progress.startPhase("starting daemon")
     const daemonResult = await ensureDaemonRunning({
@@ -2115,19 +2231,62 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   // ── setup: configure dev tool integration ──
   if (command.kind === "setup") {
     const { tool, agent: setupAgent } = command
+    const platform = detectPlatform()
+
+    // Windows native is not yet supported
+    if (platform === "windows-native") {
+      emitNervesEvent({
+        component: "daemon",
+        event: "daemon.setup_windows_native_unsupported",
+        message: "Windows native setup not yet supported",
+        meta: { tool, agent: setupAgent },
+      })
+      const message = "Windows native is not yet supported. Please run from WSL2: https://learn.microsoft.com/en-us/windows/wsl/install"
+      deps.writeStdout(message)
+      return message
+    }
+
+    // Resolve platform-specific paths and commands
+    let claudeCmd: string
+    let mcpServePrefix: string
+    let hookPrefix: string
+    let claudeConfigDir: string
+
+    if (platform === "wsl") {
+      const winProfile = execFileSync("cmd.exe", ["/C", "echo", "%USERPROFILE%"], { stdio: "pipe" }).toString().trim()
+      const windowsHome = execFileSync("wslpath", ["-u", winProfile], { stdio: "pipe" }).toString().trim()
+      emitNervesEvent({
+        component: "daemon",
+        event: "daemon.setup_wsl_home_resolved",
+        message: "resolved Windows home from WSL",
+        meta: { windowsHome },
+      })
+      claudeCmd = "claude.exe"
+      mcpServePrefix = "wsl "
+      hookPrefix = "wsl "
+      claudeConfigDir = path.join(windowsHome, ".claude")
+    } else {
+      // macos or linux
+      claudeCmd = "claude"
+      mcpServePrefix = ""
+      hookPrefix = ""
+      claudeConfigDir = path.join(os.homedir(), ".claude")
+    }
+
     const sourceRoot = getRepoRoot()
     const runtimeMode = detectRuntimeMode(sourceRoot)
-    const mcpServeCommand = runtimeMode === "dev"
+    const baseMcpServeCommand = runtimeMode === "dev"
       ? `node ${path.join(sourceRoot, "dist", "heart", "daemon", "ouro-bot-entry.js")} mcp-serve --agent ${setupAgent}`
       : `ouro mcp-serve --agent ${setupAgent}`
+    const mcpServeCommand = `${mcpServePrefix}${baseMcpServeCommand}`
 
     if (tool === "claude-code") {
       // 1. Register MCP server with Claude Code
-      const mcpAddCmd = `claude mcp add ouro-${setupAgent} -s user -- ${mcpServeCommand}`
+      const mcpAddCmd = `${claudeCmd} mcp add ouro-${setupAgent} -s user -- ${mcpServeCommand}`
       execSync(mcpAddCmd, { stdio: "pipe" })
 
-      // 2. Write hooks config to ~/.claude/settings.json
-      const settingsPath = path.join(os.homedir(), ".claude", "settings.json")
+      // 2. Write hooks config
+      const settingsPath = path.join(claudeConfigDir, "settings.json")
       let settings: Record<string, unknown> = {}
       if (fs.existsSync(settingsPath)) {
         try {
@@ -2135,13 +2294,11 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         } catch { /* start fresh */ }
       }
 
-      // Use `ouro hook <event>` — resolves the right code based on dev vs installed mode.
-      // Bare `ouro` works because ouro is on PATH via ~/.ouro-cli/bin/.
       settings.hooks = {
         ...(settings.hooks as Record<string, unknown> ?? {}),
-        SessionStart: [{ hooks: [{ type: "command", command: `ouro hook session-start --agent ${setupAgent}`, timeout: 5 }] }],
-        Stop: [{ hooks: [{ type: "command", command: `ouro hook stop --agent ${setupAgent}`, timeout: 5 }] }],
-        PostToolUse: [{ matcher: "Bash|Edit|Write", hooks: [{ type: "command", command: `ouro hook post-tool-use --agent ${setupAgent}`, timeout: 5 }] }],
+        SessionStart: [{ hooks: [{ type: "command", command: `${hookPrefix}ouro hook session-start --agent ${setupAgent}`, timeout: 5 }] }],
+        Stop: [{ hooks: [{ type: "command", command: `${hookPrefix}ouro hook stop --agent ${setupAgent}`, timeout: 5 }] }],
+        PostToolUse: [{ matcher: "Bash|Edit|Write", hooks: [{ type: "command", command: `${hookPrefix}ouro hook post-tool-use --agent ${setupAgent}`, timeout: 5 }] }],
       }
 
       fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
@@ -2151,11 +2308,11 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         component: "daemon",
         event: "daemon.setup_complete",
         message: "dev tool setup complete",
-        meta: { tool, agent: setupAgent, runtimeMode },
+        meta: { tool, agent: setupAgent, runtimeMode, platform },
       })
 
-      // 3. Write conversation formatting instructions to ~/.claude/CLAUDE.md
-      const claudeMdPath = path.join(os.homedir(), ".claude", "CLAUDE.md")
+      // 3. Write conversation formatting instructions
+      const claudeMdPath = path.join(claudeConfigDir, "CLAUDE.md")
       const agentInstructions = `\n## Agent conversations (ouro)\nWhen using MCP \`send_message\` to talk to an ouro agent, format the exchange clearly:\n- Before the tool call, briefly say what you're asking/telling the agent\n- After the response, quote the agent's reply in a blockquote, then add your reaction\n- Example: **Me → Agent:** "question" / > **Agent:** "response" / Your synthesis here\n`
       let existingClaudeMd = ""
       if (fs.existsSync(claudeMdPath)) {
@@ -2177,7 +2334,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         component: "daemon",
         event: "daemon.setup_complete",
         message: "dev tool setup complete",
-        meta: { tool, agent: setupAgent, runtimeMode },
+        meta: { tool, agent: setupAgent, runtimeMode, platform },
       })
 
       const message = `setup complete: codex + ${setupAgent}\n  MCP server registered`
@@ -2857,6 +3014,72 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       meta: { passed: doctorResult.summary.passed, warnings: doctorResult.summary.warnings, failed: doctorResult.summary.failed },
     })
     return output
+  }
+
+  // ── clone: clone an agent bundle from a git remote ──
+  if (command.kind === "clone") {
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.clone_start",
+      message: "starting agent bundle clone",
+      meta: { remote: command.remote, agent: command.agent },
+    })
+
+    // 1. Check git is installed
+    emitNervesEvent({ component: "daemon", event: "daemon.clone_git_check", message: "checking git installation", meta: {} })
+    try {
+      execFileSync("git", ["--version"], { stdio: "pipe" })
+    } catch (err) {
+      const message = "git is not installed -- install it from https://git-scm.com\nOn macOS: brew install git\nOn Ubuntu/Debian: sudo apt install git\nOn Windows: download from https://git-scm.com/download/win"
+      deps.writeStdout(message)
+      return message
+    }
+
+    // 2. Infer agent name
+    const agentName = command.agent ?? inferAgentNameFromRemote(command.remote)
+    const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
+    const targetPath = path.join(bundlesRoot, agentName + ".ouro")
+
+    // 3. Check target path does not exist
+    if (fs.existsSync(targetPath)) {
+      const message = `${targetPath} already exists. Remove it first or use --agent to pick a different name.`
+      deps.writeStdout(message)
+      return message
+    }
+
+    // 4. Check remote accessible
+    emitNervesEvent({ component: "daemon", event: "daemon.clone_remote_check", message: "checking remote accessibility", meta: { remote: command.remote } })
+    try {
+      execFileSync("git", ["ls-remote", "--exit-code", command.remote], { stdio: "pipe", timeout: 15000 })
+    } catch {
+      const message = `could not reach remote: ${command.remote}\nCheck the URL and your network connection.`
+      deps.writeStdout(message)
+      return message
+    }
+
+    // 5. Clone
+    emitNervesEvent({ component: "daemon", event: "daemon.clone_git_clone", message: "cloning agent bundle", meta: { remote: command.remote, targetPath } })
+    execFileSync("git", ["clone", command.remote, targetPath], { stdio: "pipe" })
+
+    // 6. Create machine identity
+    loadOrCreateMachineIdentity()
+    emitNervesEvent({ component: "daemon", event: "daemon.clone_identity_created", message: "machine identity created", meta: {} })
+
+    // 7. Enable sync in agent.json
+    const agentJsonPath = path.join(targetPath, "agent.json")
+    if (fs.existsSync(agentJsonPath)) {
+      const raw = fs.readFileSync(agentJsonPath, "utf-8")
+      const config = JSON.parse(raw) as Record<string, unknown>
+      config.sync = { enabled: true, remote: "origin" }
+      fs.writeFileSync(agentJsonPath, JSON.stringify(config, null, 2) + "\n")
+      emitNervesEvent({ component: "daemon", event: "daemon.clone_sync_enabled", message: "sync enabled in agent.json", meta: { agentName } })
+    }
+
+    // 8. Output success message
+    emitNervesEvent({ component: "daemon", event: "daemon.clone_complete", message: "clone complete", meta: { agentName, targetPath } })
+    const message = `cloned ${agentName} to ${targetPath}\nsync enabled (remote: origin)\nnext steps:\n  ouro auth run --agent ${agentName}`
+    deps.writeStdout(message)
+    return message
   }
 
   const daemonCommand = toDaemonCommand(command)

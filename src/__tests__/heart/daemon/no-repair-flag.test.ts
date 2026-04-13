@@ -50,6 +50,7 @@ function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
     cleanupStaleSocket: vi.fn(),
     listDiscoveredAgents: vi.fn(async () => []),
     fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    bundlesRoot: "/tmp/ouro-test-bundles-nonexistent",
     ...overrides,
   }
 }
