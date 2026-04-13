@@ -19,6 +19,7 @@ import type { TrustLevel } from "../../mind/friends/types"
 import type { DaemonCommand, DaemonResponse } from "./daemon"
 import { getRuntimeMetadata } from "./runtime-metadata"
 import { detectRuntimeMode } from "./runtime-mode"
+import { detectPlatform } from "../platform"
 import { ensureCurrentDaemonRuntime } from "./daemon-runtime-sync"
 import { applyPendingUpdates, registerUpdateHook } from "../versioning/update-hooks"
 import { bundleMetaHook } from "./hooks/bundle-meta"
@@ -2116,19 +2117,62 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   // ── setup: configure dev tool integration ──
   if (command.kind === "setup") {
     const { tool, agent: setupAgent } = command
+    const platform = detectPlatform()
+
+    // Windows native is not yet supported
+    if (platform === "windows-native") {
+      emitNervesEvent({
+        component: "daemon",
+        event: "daemon.setup_windows_native_unsupported",
+        message: "Windows native setup not yet supported",
+        meta: { tool, agent: setupAgent },
+      })
+      const message = "Windows native is not yet supported. Please run from WSL2: https://learn.microsoft.com/en-us/windows/wsl/install"
+      deps.writeStdout(message)
+      return message
+    }
+
+    // Resolve platform-specific paths and commands
+    let claudeCmd: string
+    let mcpServePrefix: string
+    let hookPrefix: string
+    let claudeConfigDir: string
+
+    if (platform === "wsl") {
+      const winProfile = execFileSync("cmd.exe", ["/C", "echo", "%USERPROFILE%"], { stdio: "pipe" }).toString().trim()
+      const windowsHome = execFileSync("wslpath", ["-u", winProfile], { stdio: "pipe" }).toString().trim()
+      emitNervesEvent({
+        component: "daemon",
+        event: "daemon.setup_wsl_home_resolved",
+        message: "resolved Windows home from WSL",
+        meta: { windowsHome },
+      })
+      claudeCmd = "claude.exe"
+      mcpServePrefix = "wsl "
+      hookPrefix = "wsl "
+      claudeConfigDir = path.join(windowsHome, ".claude")
+    } else {
+      // macos or linux
+      claudeCmd = "claude"
+      mcpServePrefix = ""
+      hookPrefix = ""
+      claudeConfigDir = path.join(os.homedir(), ".claude")
+    }
+
     const sourceRoot = getRepoRoot()
     const runtimeMode = detectRuntimeMode(sourceRoot)
-    const mcpServeCommand = runtimeMode === "dev"
+    const baseMcpServeCommand = runtimeMode === "dev"
       ? `node ${path.join(sourceRoot, "dist", "heart", "daemon", "ouro-bot-entry.js")} mcp-serve --agent ${setupAgent}`
       : `ouro mcp-serve --agent ${setupAgent}`
+    const mcpServeCommand = `${mcpServePrefix}${baseMcpServeCommand}`
 
     if (tool === "claude-code") {
       // 1. Register MCP server with Claude Code
-      const mcpAddCmd = `claude mcp add ouro-${setupAgent} -s user -- ${mcpServeCommand}`
+      const mcpAddCmd = `${claudeCmd} mcp add ouro-${setupAgent} -s user -- ${mcpServeCommand}`
       execSync(mcpAddCmd, { stdio: "pipe" })
 
-      // 2. Write hooks config to ~/.claude/settings.json
-      const settingsPath = path.join(os.homedir(), ".claude", "settings.json")
+      // 2. Write hooks config
+      const settingsPath = path.join(claudeConfigDir, "settings.json")
       let settings: Record<string, unknown> = {}
       if (fs.existsSync(settingsPath)) {
         try {
@@ -2136,13 +2180,11 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         } catch { /* start fresh */ }
       }
 
-      // Use `ouro hook <event>` — resolves the right code based on dev vs installed mode.
-      // Bare `ouro` works because ouro is on PATH via ~/.ouro-cli/bin/.
       settings.hooks = {
         ...(settings.hooks as Record<string, unknown> ?? {}),
-        SessionStart: [{ hooks: [{ type: "command", command: `ouro hook session-start --agent ${setupAgent}`, timeout: 5 }] }],
-        Stop: [{ hooks: [{ type: "command", command: `ouro hook stop --agent ${setupAgent}`, timeout: 5 }] }],
-        PostToolUse: [{ matcher: "Bash|Edit|Write", hooks: [{ type: "command", command: `ouro hook post-tool-use --agent ${setupAgent}`, timeout: 5 }] }],
+        SessionStart: [{ hooks: [{ type: "command", command: `${hookPrefix}ouro hook session-start --agent ${setupAgent}`, timeout: 5 }] }],
+        Stop: [{ hooks: [{ type: "command", command: `${hookPrefix}ouro hook stop --agent ${setupAgent}`, timeout: 5 }] }],
+        PostToolUse: [{ matcher: "Bash|Edit|Write", hooks: [{ type: "command", command: `${hookPrefix}ouro hook post-tool-use --agent ${setupAgent}`, timeout: 5 }] }],
       }
 
       fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
@@ -2152,11 +2194,11 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         component: "daemon",
         event: "daemon.setup_complete",
         message: "dev tool setup complete",
-        meta: { tool, agent: setupAgent, runtimeMode },
+        meta: { tool, agent: setupAgent, runtimeMode, platform },
       })
 
-      // 3. Write conversation formatting instructions to ~/.claude/CLAUDE.md
-      const claudeMdPath = path.join(os.homedir(), ".claude", "CLAUDE.md")
+      // 3. Write conversation formatting instructions
+      const claudeMdPath = path.join(claudeConfigDir, "CLAUDE.md")
       const agentInstructions = `\n## Agent conversations (ouro)\nWhen using MCP \`send_message\` to talk to an ouro agent, format the exchange clearly:\n- Before the tool call, briefly say what you're asking/telling the agent\n- After the response, quote the agent's reply in a blockquote, then add your reaction\n- Example: **Me → Agent:** "question" / > **Agent:** "response" / Your synthesis here\n`
       let existingClaudeMd = ""
       if (fs.existsSync(claudeMdPath)) {
@@ -2178,7 +2220,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         component: "daemon",
         event: "daemon.setup_complete",
         message: "dev tool setup complete",
-        meta: { tool, agent: setupAgent, runtimeMode },
+        meta: { tool, agent: setupAgent, runtimeMode, platform },
       })
 
       const message = `setup complete: codex + ${setupAgent}\n  MCP server registered`
