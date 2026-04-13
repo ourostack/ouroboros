@@ -176,6 +176,13 @@ export function getProviderCredentialPoolPath(homeDir = os.homedir()): string {
   return path.join(homeDir, ".agentsecrets", "providers.json")
 }
 
+export function providerCredentialHomeDirFromSecretsRoot(secretsRoot?: string): string {
+  if (!secretsRoot) return os.homedir()
+  return path.basename(secretsRoot) === ".agentsecrets"
+    ? path.dirname(secretsRoot)
+    : secretsRoot
+}
+
 export function validateProviderCredentialPool(value: unknown): ProviderCredentialPool {
   if (!isRecord(value)) {
     throw new Error("provider credential pool must be an object")

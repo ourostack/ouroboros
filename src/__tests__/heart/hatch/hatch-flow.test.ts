@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest"
 
 import { runRuntimeAuthFlow } from "../../../heart/auth/auth-flow"
 import { runHatchFlow } from "../../../heart/hatch/hatch-flow"
+import { getDefaultModelForProvider } from "../../../heart/provider-models"
 import { readProviderState } from "../../../heart/provider-state"
 
 function makeTempDir(prefix: string): string {
@@ -139,15 +140,16 @@ describe("hatch flow", () => {
     if (!stateResult.ok) throw new Error(stateResult.error)
     expect(stateResult.state.machineId).toMatch(/^machine_/)
     expect(stateResult.state.updatedAt).toBe("2026-04-12T22:15:00.000Z")
+    const expectedModel = getDefaultModelForProvider("minimax")
     expect(stateResult.state.lanes.outward).toMatchObject({
       provider: "minimax",
-      model: "MiniMax-M2.5",
+      model: expectedModel,
       source: "bootstrap",
       updatedAt: "2026-04-12T22:15:00.000Z",
     })
     expect(stateResult.state.lanes.inner).toMatchObject({
       provider: "minimax",
-      model: "MiniMax-M2.5",
+      model: expectedModel,
       source: "bootstrap",
       updatedAt: "2026-04-12T22:15:00.000Z",
     })

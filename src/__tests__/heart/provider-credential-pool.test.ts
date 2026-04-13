@@ -11,6 +11,7 @@ vi.mock("../../nerves/runtime", () => ({
 import {
   getProviderCredentialPoolPath,
   migrateLegacyAgentProviderCredentials,
+  providerCredentialHomeDirFromSecretsRoot,
   readLegacyAgentProviderCredentials,
   readProviderCredentialPool,
   redactProviderCredentialPool,
@@ -79,6 +80,14 @@ describe("provider credential pool", () => {
     emitTestEvent("provider credential pool path")
 
     expect(getProviderCredentialPoolPath(homeDir)).toBe(path.join(homeDir, ".agentsecrets", "providers.json"))
+  })
+
+  it("derives provider credential home from configured secrets roots", () => {
+    emitTestEvent("provider credential home from secrets root")
+
+    expect(providerCredentialHomeDirFromSecretsRoot(path.join(homeDir, ".agentsecrets"))).toBe(homeDir)
+    expect(providerCredentialHomeDirFromSecretsRoot(path.join(homeDir, "custom-secrets"))).toBe(path.join(homeDir, "custom-secrets"))
+    expect(providerCredentialHomeDirFromSecretsRoot()).toBe(os.homedir())
   })
 
   it("reports a missing machine-wide pool without creating one", () => {
